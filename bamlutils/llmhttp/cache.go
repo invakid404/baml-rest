@@ -129,9 +129,10 @@ const (
 //
 // Two HostClients are kept per fasthttp origin, differing only in body
 // handling:
-//   - host: StreamResponseBody=true. Used by ExecuteStream (SSE) and by the
-//     unary header-streaming lane in Execute where onSuccess must fire after
-//     2xx headers but before the body is read.
+//   - host: StreamResponseBody=true. Used by Execute's unary header-streaming
+//     lane where onSuccess must fire after 2xx headers but before the body is
+//     read. NOT used by ExecuteStream: SSE streaming routes exclusively through
+//     net/http (Stage 1 of the streaming memory effort, #475 follow-up).
 //   - unaryHost: StreamResponseBody=false, MaxResponseBodySize set to an
 //     OOM backstop (maxBufferedResponseBackstop). Used only by Execute's
 //     buffered fast lane (onSuccess==nil, deadline-only ctx), where fasthttp

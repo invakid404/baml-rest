@@ -303,9 +303,11 @@ func TestFastHTTPDefaultMaxConnsIsUnbounded(t *testing.T) {
 }
 
 // TestFastHTTPTuningPropagates_CachedHost pins that caller-supplied
-// FastHTTPClientOptions reach the per-origin HostClient (both pooled
-// and streaming variants), so users can actually tune the fasthttp
-// backend without forking the package.
+// FastHTTPClientOptions reach the per-origin pooled HostClient that unary
+// Execute uses, so users can actually tune the fasthttp backend without
+// forking the package. (Streaming no longer uses fasthttp — see Stage 1 of
+// the streaming memory effort, #475 follow-up — so there is no per-request
+// stream HostClient to assert here.)
 func TestFastHTTPTuningPropagates_CachedHost(t *testing.T) {
 	t.Parallel()
 
@@ -331,20 +333,6 @@ func TestFastHTTPTuningPropagates_CachedHost(t *testing.T) {
 	}
 	if entry.host.MaxIdleConnDuration != 11*time.Second {
 		t.Errorf("MaxIdleConnDuration = %v, want 11s", entry.host.MaxIdleConnDuration)
-	}
-
-	// Streaming per-request HostClient must mirror the pooled template's
-	// tuning — otherwise streams would silently revert to fasthttp's
-	// defaults regardless of caller configuration.
-	streamHC := newStreamHostClient(context.Background(), entry.host, &captureSlot{})
-	if streamHC.MaxConns != 123 {
-		t.Errorf("stream MaxConns = %d, want 123", streamHC.MaxConns)
-	}
-	if streamHC.MaxConnWaitTimeout != 7*time.Second {
-		t.Errorf("stream MaxConnWaitTimeout = %v, want 7s", streamHC.MaxConnWaitTimeout)
-	}
-	if streamHC.MaxIdleConnDuration != 11*time.Second {
-		t.Errorf("stream MaxIdleConnDuration = %v, want 11s", streamHC.MaxIdleConnDuration)
 	}
 }
 

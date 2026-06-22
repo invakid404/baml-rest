@@ -71,11 +71,12 @@ func StreamIdleTimeoutFromEnv() time.Duration {
 }
 
 // idleTimeoutReader wraps a streaming response body with an inter-byte idle
-// read timeout. It is created in the HTTP layer (ExecuteStream /
-// executeStreamFast) before the body is handed to sseclient.Stream, so it is
-// transport-agnostic: the net/http resp.Body and the fasthttp
-// *fastStreamReader are both io.ReadCloser whose Close() severs the
-// connection race-safely.
+// read timeout. It is created in the HTTP layer (ExecuteStream) before the
+// body is handed to sseclient.Stream. Streaming runs exclusively over
+// net/http (Stage 1 of the streaming memory effort, #475 follow-up), so the
+// wrapped body is always a net/http resp.Body — an io.ReadCloser whose
+// Close() severs the connection race-safely (it may be called concurrently
+// with a parked Read).
 //
 // Timer discipline (the load-bearing safety properties):
 //
@@ -92,13 +93,9 @@ func StreamIdleTimeoutFromEnv() time.Duration {
 //     elsewhere (the caller's context), not here.
 //
 // On fire, the watchdog sets fired and runs interrupt() — a race-safe action
-// that severs the connection to unblock the parked Read WITHOUT releasing any
-// pooled transport state (which the SSE scanner goroutine may still hold a
-// reference to). For net/http that is resp.Body.Close(); for fasthttp it is
-// the captured socket's shutdown (slot.shutdown), mirroring the existing
-// ctx-cancel watcher — the full fastStreamReader.Close (which returns pooled
-// request/response objects to fasthttp) is deferred to the consumer's Close()
-// after the scanner has exited, exactly as on the ctx-cancel path.
+// that severs the connection to unblock the parked Read. For the net/http
+// streaming path that is resp.Body.Close(), which net/http supports
+// concurrently with a parked Read.
 //
 // When the parked Read returns with NO usable data (n==0) because of the
 // idle close, Read surfaces ErrIdleTimeout (or ctx.Err() when the context was
@@ -135,11 +132,9 @@ type idleTimeoutReader struct {
 // returned unwrapped so there is zero added cost on that path.
 //
 // interrupt is the race-safe action invoked on idle fire to unblock a parked
-// Read without releasing pooled transport state. A nil interrupt defaults to
-// body.Close(), which is correct for the net/http backend (resp.Body.Close
-// may be called concurrently with a parked Read and is idempotent). The
-// fasthttp backend must pass slot.shutdown so the pooled request/response are
-// released only later, by the consumer's Close(), once the scanner has exited.
+// Read. A nil interrupt defaults to body.Close(), which is correct for the
+// net/http streaming backend (resp.Body.Close may be called concurrently with
+// a parked Read and is idempotent). ExecuteStream relies on this default.
 func newIdleTimeoutReader(ctx context.Context, body io.ReadCloser, interrupt func(), timeout time.Duration) io.ReadCloser {
 	if body == nil || timeout <= 0 {
 		return body
@@ -179,7 +174,7 @@ func (r *idleTimeoutReader) Read(p []byte) (int, error) {
 		// local conn) can produce — the upstream cannot make a local read
 		// return net.ErrClosed. `fired` alone is insufficient: it proves the
 		// callback ran, not that THIS error came from our close, so a genuine
-		// io.ErrUnexpectedEOF (fastStreamReader's truncated-chunked signal)
+		// io.ErrUnexpectedEOF (net/http's truncated-chunked signal)
 		// that merely races the timer must keep its real identity. When it IS
 		// our close, deliver the bytes now and let the subsequent n==0 read
 		// surface the ErrIdleTimeout sentinel.
@@ -249,8 +244,7 @@ func (r *idleTimeoutReader) fire() {
 }
 
 // Close stops the watchdog and closes the underlying body. Safe to call
-// multiple times: the underlying closers (net/http resp.Body, fastStreamReader)
-// are idempotent.
+// multiple times: the underlying closer (net/http resp.Body) is idempotent.
 func (r *idleTimeoutReader) Close() error {
 	r.mu.Lock()
 	r.closed = true

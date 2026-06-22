@@ -226,7 +226,46 @@ func TestFastExecute_HeadersForwardedCasePreserved(t *testing.T) {
 	}
 }
 
-func TestFastExecuteStream_Success(t *testing.T) {
+func TestFastExecute_ConnectionRefused(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	c := withFastClient(t, nil)
+	_, err = c.Execute(context.Background(), &Request{URL: "http://" + addr, Method: "POST", Body: `{}`}, nil)
+	if err == nil {
+		t.Fatal("expected connection-refused error")
+	}
+}
+
+// --- Streaming under ClientModeFastHTTP routes through net/http (Stage 1) ---
+//
+// Option A (#475 follow-up) routes ExecuteStream through net/http
+// unconditionally, even when BAML_REST_HTTP_CLIENT=fasthttp resolves the
+// origin to fasthttp for unary Execute. These tests drive ExecuteStream with
+// withFastClient (which forces ClientModeFastHTTP) and assert the streaming
+// contracts hold on the net/http path.
+
+// countingRoundTripper wraps an http.RoundTripper and counts invocations so a
+// test can prove the net/http transport actually served the request even when
+// the client is pinned to fasthttp mode.
+type countingRoundTripper struct {
+	rt    http.RoundTripper
+	count atomic.Int64
+}
+
+func (c *countingRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	c.count.Add(1)
+	return c.rt.RoundTrip(r)
+}
+
+// TestExecuteStream_FastHTTPModeUsesNetHTTP is the definitive proof of Option
+// A: with ClientModeFastHTTP set, ExecuteStream must still flow through the
+// injected net/http RoundTripper (fasthttp does not use http.Client at all).
+func TestExecuteStream_FastHTTPModeUsesNetHTTP(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
@@ -238,7 +277,9 @@ func TestFastExecuteStream_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := withFastClient(t, server.Client())
+	crt := &countingRoundTripper{rt: server.Client().Transport}
+	c := withFastClient(t, &http.Client{Transport: crt})
+
 	resp, err := c.ExecuteStream(context.Background(), &Request{URL: server.URL, Method: "POST", Body: `{}`})
 	if err != nil {
 		t.Fatalf("ExecuteStream: %v", err)
@@ -255,9 +296,14 @@ func TestFastExecuteStream_Success(t *testing.T) {
 	if len(got) != 2 || got[0].Data != "hello" || got[1].Data != "world" {
 		t.Errorf("unexpected events: %+v", got)
 	}
+	if crt.count.Load() == 0 {
+		t.Fatal("net/http RoundTripper was never called — ExecuteStream did not route through net/http under fasthttp mode")
+	}
 }
 
-func TestFastExecuteStream_HTTPError(t *testing.T) {
+// TestExecuteStream_FastHTTPModeHTTPError verifies the non-2xx error envelope
+// (capped *HTTPError) is preserved on the forced net/http stream path.
+func TestExecuteStream_FastHTTPModeHTTPError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(401)
 		fmt.Fprint(w, `{"error":"unauthorized"}`)
@@ -276,13 +322,35 @@ func TestFastExecuteStream_HTTPError(t *testing.T) {
 	if httpErr.StatusCode != 401 {
 		t.Errorf("status %d, want 401", httpErr.StatusCode)
 	}
+	if !strings.Contains(httpErr.Body, "unauthorized") {
+		t.Errorf("body did not include server message: %q", httpErr.Body)
+	}
 }
 
-func TestFastExecuteStream_ContextCancellation(t *testing.T) {
-	// Server flushes one event then blocks until r.Context() fires. The
-	// client cancels after 200ms; the stream must unblock and the events
-	// channel must close within the test budget — requires the ctx watcher
-	// to force-close the underlying conn (not just release it to the pool).
+// TestExecuteStream_FastHTTPModeMissingContentType verifies a response with no
+// Content-Type is rejected with the "missing Content-Type" diagnostic on the
+// forced net/http path (net/http does not synthesise a default content type).
+func TestExecuteStream_FastHTTPModeMissingContentType(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header()["Content-Type"] = nil
+		w.WriteHeader(200)
+		w.Write([]byte("raw bytes"))
+	}))
+	defer server.Close()
+
+	c := withFastClient(t, server.Client())
+	_, err := c.ExecuteStream(context.Background(), &Request{URL: server.URL, Method: "POST", Body: `{}`})
+	if err == nil {
+		t.Fatal("expected error for missing Content-Type")
+	}
+	if !strings.Contains(err.Error(), "missing Content-Type") {
+		t.Errorf("expected missing Content-Type error, got: %v", err)
+	}
+}
+
+// TestExecuteStream_FastHTTPModeContextCancellation verifies a mid-stream ctx
+// cancel unblocks the stream promptly on the forced net/http path.
+func TestExecuteStream_FastHTTPModeContextCancellation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
@@ -317,69 +385,29 @@ drainLoop:
 			t.Fatal("events channel did not close after ctx cancellation")
 		}
 	}
-
 	if len(events) < 1 {
 		t.Error("expected at least the first event before cancellation")
 	}
 }
 
-func TestFastExecuteStream_MissingContentType(t *testing.T) {
-	// Regression guard: fasthttp synthesises a default Content-Type of
-	// text/plain; charset=utf-8 when the server sends none; our streaming
-	// backend opts that default out so the "missing" error path works.
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header()["Content-Type"] = nil
-		w.WriteHeader(200)
-		w.Write([]byte("raw bytes"))
-	}))
-	defer server.Close()
-
-	c := withFastClient(t, server.Client())
-	_, err := c.ExecuteStream(context.Background(), &Request{URL: server.URL, Method: "POST", Body: `{}`})
-	if err == nil {
-		t.Fatal("expected error for missing Content-Type")
-	}
-	if !strings.Contains(err.Error(), "missing Content-Type") {
-		t.Errorf("expected missing Content-Type error, got: %v", err)
-	}
-}
-
-func TestFastExecute_ConnectionRefused(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	ln.Close()
-
-	c := withFastClient(t, nil)
-	_, err = c.Execute(context.Background(), &Request{URL: "http://" + addr, Method: "POST", Body: `{}`}, nil)
-	if err == nil {
-		t.Fatal("expected connection-refused error")
-	}
-}
-
-// truncatedChunkedHandler drops the conn mid-response without sending
-// the zero-size chunk terminator. Shared between the HTTP and HTTPS
-// truncation tests.
+// truncatedChunkedHandler drops the conn mid-response without sending the
+// zero-size chunk terminator. Shared between the HTTP and HTTPS truncation
+// tests. http.ErrAbortHandler tells Go's http server to close the conn without
+// the terminating chunk — simulating a provider that crashes mid-response.
 func truncatedChunkedHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(200)
 	flusher, _ := w.(http.Flusher)
 	fmt.Fprint(w, "data: hello\n\n")
 	flusher.Flush()
-	// http.ErrAbortHandler tells Go's http server to close the conn
-	// without sending the zero-size chunk terminator — simulates a
-	// provider that crashes mid-response.
 	panic(http.ErrAbortHandler)
 }
 
-// TestFastExecuteStream_TruncatedChunked verifies that a mid-stream
-// connection drop on a chunked response (no "0\r\n\r\n" terminator) is
-// surfaced as io.ErrUnexpectedEOF on the errc channel. fasthttp's chunked
-// reader reports bare EOF for both clean end and dropped conn; the
-// trackedConn + sawCleanEnd fallback translates the dirty case.
-func TestFastExecuteStream_TruncatedChunked(t *testing.T) {
+// TestExecuteStream_TruncatedChunkedHTTP verifies that a mid-stream connection
+// drop on a chunked response (no "0\r\n\r\n" terminator) surfaces as
+// io.ErrUnexpectedEOF on Errc. net/http's stdlib chunked reader detects the
+// missing terminator natively — no fasthttp tail-tracking needed.
+func TestExecuteStream_TruncatedChunkedHTTP(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(truncatedChunkedHandler))
 	defer server.Close()
 
@@ -401,13 +429,10 @@ func TestFastExecuteStream_TruncatedChunked(t *testing.T) {
 	}
 }
 
-// TestFastExecuteStream_TruncatedChunkedHTTPS covers the same case over
-// TLS. Critical because trackedConn sits above our in-Dial tls.Client
-// wrapper, seeing plaintext bytes — if we left TLS to fasthttp, the
-// tracker would be looking at ciphertext and the terminator check would
-// always report truncation (or, if we skipped the check, silently
-// accept truncated HTTPS responses as success).
-func TestFastExecuteStream_TruncatedChunkedHTTPS(t *testing.T) {
+// TestExecuteStream_TruncatedChunkedHTTPS covers the same truncation case over
+// TLS via httptest.NewTLSServer — proving stdlib TLS+chunked handling surfaces
+// the same io.ErrUnexpectedEOF (replaces the old fasthttp TLS tail test).
+func TestExecuteStream_TruncatedChunkedHTTPS(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(truncatedChunkedHandler))
 	defer server.Close()
 
@@ -429,20 +454,16 @@ func TestFastExecuteStream_TruncatedChunkedHTTPS(t *testing.T) {
 	}
 }
 
-// TestFastExecuteStream_CleanCloseHTTPS sanity-checks that a normal
-// HTTPS SSE stream (with proper chunked terminator) is not mis-flagged
-// as truncated. Guards against an over-strict tail check that would
-// reject every HTTPS response.
-func TestFastExecuteStream_CleanCloseHTTPS(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// TestExecuteStream_CleanChunkedHTTP sanity-checks that a normal SSE stream
+// with a proper chunked terminator ends with a nil Errc (no false truncation).
+func TestExecuteStream_CleanChunkedHTTP(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Transfer-Encoding", "chunked")
 		w.WriteHeader(200)
 		flusher, _ := w.(http.Flusher)
 		fmt.Fprint(w, "data: ok\n\n")
 		flusher.Flush()
-		// Handler returns normally — Go's server sends the 0-chunk
-		// terminator followed by an empty trailer section.
+		// Handler returns normally -> Go's server sends the 0-chunk terminator.
 	}))
 	defer server.Close()
 
@@ -465,118 +486,33 @@ func TestFastExecuteStream_CleanCloseHTTPS(t *testing.T) {
 	}
 }
 
-// TestFastExecuteStream_CancelBeforeDial verifies that ctx cancel
-// during the TCP connect phase (before any socket exists) returns
-// promptly. Uses a TEST-NET-1 address (RFC 5737) that is nominally
-// unroutable — DialContext blocks until ctx cancel.
-//
-// Note: some systems return ENETUNREACH immediately for TEST-NET-1
-// addresses, in which case this test exits promptly without actually
-// exercising the ctx-cancel path. That's still within the passing
-// bound; TestFastExecuteStream_CancelDuringFirstByte covers the
-// pre-response hang case deterministically via a local listener.
-func TestFastExecuteStream_CancelBeforeDial(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-
-	c := withFastClient(t, nil)
-
-	start := time.Now()
-	_, err := c.ExecuteStream(ctx, &Request{
-		URL:    "http://192.0.2.1:12345", // TEST-NET-1, nominally unroutable
-		Method: "POST",
-		Body:   `{}`,
-	})
-	elapsed := time.Since(start)
-
-	if err == nil {
-		t.Fatal("expected error after ctx cancellation")
-	}
-	// 3s is generous — the ctx deadline is 200ms. Without a ctx-aware
-	// dialer this would hang until the OS TCP connect timeout (~60s).
-	if elapsed > 3*time.Second {
-		t.Errorf("cancellation too slow: %v (want <3s)", elapsed)
-	}
-}
-
-// TestFastExecuteStream_CancelDuringFirstByte guarantees the
-// ctx-cancel path is exercised regardless of OS routing: a local
-// listener accepts the TCP connect but never writes a response, so
-// fasthttp's first read on the conn blocks until the ctx watcher
-// closes the socket via the captureSlot.
-func TestFastExecuteStream_CancelDuringFirstByte(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-
-	accepted := make(chan net.Conn, 1)
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		accepted <- conn
-	}()
-	defer func() {
-		select {
-		case conn := <-accepted:
-			conn.Close()
-		default:
-		}
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-
-	c := withFastClient(t, nil)
-
-	start := time.Now()
-	_, err = c.ExecuteStream(ctx, &Request{
-		URL:    "http://" + ln.Addr().String(),
-		Method: "POST",
-		Body:   `{}`,
-	})
-	elapsed := time.Since(start)
-
-	if err == nil {
-		t.Fatal("expected error after ctx cancellation")
-	}
-	// Connect succeeds instantly (local loopback), so the entire wait
-	// is on the response-read phase. Without slot-based close on ctx
-	// cancel the Read would hang for the HostClient's ReadTimeout (0
-	// by design) — i.e. forever.
-	if elapsed > 3*time.Second {
-		t.Errorf("cancellation during first-byte read too slow: %v (want <3s)", elapsed)
-	}
-}
-
-// TestFastStreamReader_CloseIdempotent ensures repeated Close calls don't
-// panic or re-release the fasthttp pool entries.
-func TestFastStreamReader_CloseIdempotent(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// TestExecuteStream_CleanChunkedHTTPS is the HTTPS counterpart: a clean TLS SSE
+// stream must not be mis-flagged as truncated.
+func TestExecuteStream_CleanChunkedHTTPS(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
+		flusher, _ := w.(http.Flusher)
 		fmt.Fprint(w, "data: ok\n\n")
+		flusher.Flush()
 	}))
 	defer server.Close()
 
 	c := withFastClient(t, server.Client())
 	resp, err := c.ExecuteStream(context.Background(), &Request{URL: server.URL, Method: "POST", Body: `{}`})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("ExecuteStream: %v", err)
 	}
-	// Drain
-	for range resp.Events {
-	}
-	<-resp.Errc
+	defer resp.Close()
 
-	resp.Close()
-	resp.Close() // must not panic / race
-	resp.Close()
+	var events []sseclient.Event
+	for ev := range resp.Events {
+		events = append(events, ev)
+	}
+	if err := <-resp.Errc; err != nil {
+		t.Fatalf("unexpected stream err: %v", err)
+	}
+	if len(events) != 1 || events[0].Data != "ok" {
+		t.Errorf("unexpected events: %+v", events)
+	}
 }
-
-// assert at compile time that fastStreamReader fulfils io.ReadCloser so the
-// signature change would be caught by tests rather than at a caller.
-var _ io.ReadCloser = (*fastStreamReader)(nil)
