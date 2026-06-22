@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/invakid404/baml-rest/bamlutils/sseclient"
 	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
@@ -85,7 +86,33 @@ type Response struct {
 	Headers http.Header
 
 	// Body is the complete response body as a string.
+	//
+	// On the net/http unary path Body is a zero-copy view over BodyBytes
+	// (see bytesToBodyString): the two share the same backing array, so
+	// callers MUST NOT mutate BodyBytes while Body is in use. On the
+	// fasthttp unary path Body is an owned copy of the (pooled) fasthttp
+	// response body and BodyBytes is nil.
 	Body string
+
+	// BodyBytes is the complete response body as caller-owned bytes,
+	// populated only on the net/http unary success path where io.ReadAll
+	// already returns a fresh, owned []byte. It lets callers parse the
+	// body without forcing a whole-body []byte->string copy (e.g. via
+	// gjson.GetBytes). Nil on the fasthttp unary path and on error/stream
+	// responses. Treat as read-only: Body aliases this backing array.
+	BodyBytes []byte
+}
+
+// bytesToBodyString returns a string that shares body's backing array
+// without copying. body must be caller-owned and never mutated for the
+// lifetime of the returned string — both conditions hold for the
+// io.ReadAll buffer on the net/http unary success path. Returning ""
+// for an empty body keeps the nil-pointer case safe.
+func bytesToBodyString(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	return unsafe.String(unsafe.SliceData(body), len(body))
 }
 
 // MaxResponseBodyBytes is the maximum response body size that Execute() will
@@ -649,10 +676,15 @@ func (c *Client) Execute(ctx context.Context, req *Request, onSuccess func()) (*
 		return nil, fmt.Errorf("llmhttp: response body exceeds maximum size (%d bytes)", MaxResponseBodyBytes)
 	}
 
+	// Expose the io.ReadAll buffer as caller-owned BodyBytes and present
+	// Body as a zero-copy view over it. This drops the whole-body
+	// []byte->string copy on the hot unary path; downstream extraction
+	// reads BodyBytes directly via gjson.GetBytes (see buildrequest).
 	return &Response{
 		StatusCode: resp.StatusCode,
 		Headers:    resp.Header,
-		Body:       string(body),
+		Body:       bytesToBodyString(body),
+		BodyBytes:  body,
 	}, nil
 }
 

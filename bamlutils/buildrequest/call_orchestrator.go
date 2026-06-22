@@ -326,7 +326,21 @@ func RunCallOrchestration(
 			return nil, httpErr
 		}
 
-		parseable, raw, reasoning, extractErr := extractResponse(provider, resp.Body, config.IncludeReasoning)
+		// Prefer the byte path when the transport handed back caller-owned
+		// bytes (net/http unary success): ExtractResponseContentBytes parses
+		// resp.BodyBytes via gjson.GetBytes without forcing a whole-body
+		// string copy. The injected extractResponse (string) remains the
+		// fallback for the fasthttp unary lane, where BodyBytes is nil and
+		// Body is an owned copy. Both produce identical results for the same
+		// JSON (TestExtractResponseContentBytesMatchesString), so this only
+		// changes allocations, not behavior.
+		var parseable, raw, reasoning string
+		var extractErr error
+		if resp.BodyBytes != nil {
+			parseable, raw, reasoning, extractErr = ExtractResponseContentBytes(provider, resp.BodyBytes, config.IncludeReasoning)
+		} else {
+			parseable, raw, reasoning, extractErr = extractResponse(provider, resp.Body, config.IncludeReasoning)
+		}
 		if extractErr != nil {
 			// Extraction failed before raw could be split out of the
 			// provider's 2xx JSON body — but the body itself is the
