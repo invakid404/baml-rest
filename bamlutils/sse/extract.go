@@ -102,6 +102,44 @@ func ExtractDeltaContent(provider string, chunk SSEChunk, includeReasoning bool)
 // construction so neither the BAML parser nor the wire's raw channel can
 // be influenced by reasoning text.
 func ExtractDeltaPartsFromText(provider string, rawText string, includeReasoning bool) (DeltaParts, error) {
+	// gjson.Get aliases rawText for unescaped result substrings; the
+	// per-provider logic copies what it keeps into string builders / the
+	// returned DeltaParts strings, so no aliasing outlives this call.
+	return extractDeltaParts(provider, func(path string) gjson.Result {
+		return gjson.Get(rawText, path)
+	}, includeReasoning)
+}
+
+// ExtractDeltaPartsFromBytes is the byte-oriented twin of
+// ExtractDeltaPartsFromText for the synchronous BuildRequest stream path,
+// where each SSE event's data is available as caller-owned bytes that live
+// only for the duration of the call (sseclient.ScanEvents hands the parser's
+// reused scratch buffer to its callback). It extracts via gjson.GetBytes
+// instead of converting the event data to a string first, eliminating the
+// per-frame Event.Data string the channel path must materialize.
+//
+// Safety: gjson.GetBytes views data as a string only for the duration of each
+// path lookup and copies the matched Raw/Str out before returning, so every
+// gjson.Result handed back owns its data; the per-provider extractors further
+// copy retained text into the returned DeltaParts strings. data must stay
+// valid through the call (it does — the callback runs before the next Scan);
+// it need not survive afterward. Returns results identical to
+// ExtractDeltaPartsFromText for the same JSON — see the callback-vs-channel
+// parity tests.
+func ExtractDeltaPartsFromBytes(provider string, data []byte, includeReasoning bool) (DeltaParts, error) {
+	return extractDeltaParts(provider, func(path string) gjson.Result {
+		return gjson.GetBytes(data, path)
+	}, includeReasoning)
+}
+
+// extractDeltaParts holds the provider-specific delta extraction logic shared
+// by ExtractDeltaPartsFromText (string input, gjson.Get) and
+// ExtractDeltaPartsFromBytes (byte input, gjson.GetBytes). The get closure
+// performs each top-level path lookup against the underlying JSON; nested
+// navigation happens on the returned gjson.Result values, which are
+// source-agnostic. This keeps the string and byte entry points sharing one
+// implementation so they cannot drift.
+func extractDeltaParts(provider string, get func(path string) gjson.Result, includeReasoning bool) (DeltaParts, error) {
 	switch provider {
 	// OpenAI-compatible providers (Chat Completions API format)
 	// Path: choices[0].delta.content (parseable+raw); choices[0].delta.reasoning_content
@@ -109,10 +147,10 @@ func ExtractDeltaPartsFromText(provider string, rawText string, includeReasoning
 	// for DeepSeek-R1 and several OAI-compat gateways; non-string values are
 	// silently skipped, matching the forgiving streaming semantics.
 	case "openai", "openai-generic", "azure-openai", "ollama", "openrouter":
-		delta := gjson.Get(rawText, "choices.0.delta.content").String()
+		delta := get("choices.0.delta.content").String()
 		parts := DeltaParts{Parseable: delta, Raw: delta}
 		if includeReasoning {
-			reasoning := gjson.Get(rawText, "choices.0.delta.reasoning_content")
+			reasoning := get("choices.0.delta.reasoning_content")
 			if reasoning.Type == gjson.String {
 				parts.Reasoning = reasoning.String()
 			}
@@ -126,9 +164,9 @@ func ExtractDeltaPartsFromText(provider string, rawText string, includeReasoning
 	// OpenAI exposes for o1/o3-style models; the underlying chain-of-thought
 	// is server-encrypted and intentionally not surfaced.
 	case "openai-responses":
-		switch gjson.Get(rawText, "type").String() {
+		switch get("type").String() {
 		case "response.output_text.delta":
-			delta := gjson.Get(rawText, "delta")
+			delta := get("delta")
 			if delta.Type != gjson.String {
 				return DeltaParts{}, nil
 			}
@@ -139,7 +177,7 @@ func ExtractDeltaPartsFromText(provider string, rawText string, includeReasoning
 			if !includeReasoning {
 				return DeltaParts{}, nil
 			}
-			delta := gjson.Get(rawText, "delta")
+			delta := get("delta")
 			if delta.Type != gjson.String {
 				return DeltaParts{}, nil
 			}
@@ -154,16 +192,16 @@ func ExtractDeltaPartsFromText(provider string, rawText string, includeReasoning
 	// always exclude thinking so neither the parser nor /with-raw's raw
 	// channel sees reasoning text.
 	case "anthropic":
-		if gjson.Get(rawText, "type").String() == "content_block_delta" {
-			switch gjson.Get(rawText, "delta.type").String() {
+		if get("type").String() == "content_block_delta" {
+			switch get("delta.type").String() {
 			case "text_delta":
-				delta := gjson.Get(rawText, "delta.text").String()
+				delta := get("delta.text").String()
 				return DeltaParts{Parseable: delta, Raw: delta}, nil
 			case "thinking_delta":
 				if !includeReasoning {
 					return DeltaParts{}, nil
 				}
-				return DeltaParts{Reasoning: gjson.Get(rawText, "delta.thinking").String()}, nil
+				return DeltaParts{Reasoning: get("delta.thinking").String()}, nil
 			}
 		}
 		return DeltaParts{}, nil
@@ -179,7 +217,7 @@ func ExtractDeltaPartsFromText(provider string, rawText string, includeReasoning
 	// on any part is silently skipped — preserving the forgiving streaming
 	// semantics.
 	case "google-ai", "vertex-ai":
-		parts := gjson.Get(rawText, "candidates.0.content.parts")
+		parts := get("candidates.0.content.parts")
 		var parseableSB strings.Builder
 		var rawSB strings.Builder
 		var reasoningSB strings.Builder
@@ -209,7 +247,7 @@ func ExtractDeltaPartsFromText(provider string, rawText string, includeReasoning
 	// AWS Bedrock (Debug string format)
 	// Path: debug (then parsed via regex)
 	case "aws-bedrock":
-		delta, err := extractBedrockFromDebug(gjson.Get(rawText, "debug").String())
+		delta, err := extractBedrockFromDebug(get("debug").String())
 		if err != nil {
 			return DeltaParts{}, err
 		}

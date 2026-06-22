@@ -449,11 +449,40 @@ var DefaultClient = NewClient(&http.Client{Transport: defaultLLMTransport})
 // On error (non-2xx status, connection failure), an error is returned and
 // no cleanup is needed.
 func (c *Client) ExecuteStream(ctx context.Context, req *Request) (*StreamResponse, error) {
+	body, status, headers, err := c.openStream(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Start SSE parsing on the response body. The terminal value sseclient
+	// emits on errc is run through classifyStreamErrc so a mid-stream typed
+	// transport drop (ECONNRESET / EPIPE / ECONNREFUSED / net.ErrClosed) or
+	// an idle timeout (ErrIdleTimeout) carries ErrTransportFlake out of the
+	// streaming path — matching the non-streaming body-read site at Execute
+	// below.
+	events, errc := sseclient.Stream(ctx, body)
+
+	return &StreamResponse{
+		StatusCode: status,
+		Headers:    headers,
+		Events:     events,
+		Errc:       classifyStreamErrc(errc),
+		body:       body,
+	}, nil
+}
+
+// openStream performs the shared streaming connect used by both the
+// channel-based ExecuteStream and the synchronous ExecuteStreamCallback: URL
+// rewrite, SigV4 signing, net/http request build + Do, status-code check,
+// Content-Type validation, and the inter-token idle-read-timeout body wrap.
+// It returns the wrapped body (caller owns Close), status code, and response
+// headers. On error nothing needs cleanup.
+func (c *Client) openStream(ctx context.Context, req *Request) (io.ReadCloser, int, http.Header, error) {
 	if c == nil || c.httpClient == nil {
-		return nil, fmt.Errorf("llmhttp: nil client")
+		return nil, 0, nil, fmt.Errorf("llmhttp: nil client")
 	}
 	if req == nil {
-		return nil, fmt.Errorf("llmhttp: nil request")
+		return nil, 0, nil, fmt.Errorf("llmhttp: nil request")
 	}
 
 	rewritten := c.resolveRequestURL(req)
@@ -463,7 +492,7 @@ func (c *Client) ExecuteStream(ctx context.Context, req *Request) (*StreamRespon
 	// backend dispatch (so net/http and fasthttp see the same signed
 	// headers).
 	if err := signRequest(ctx, req, rewritten); err != nil {
-		return nil, err
+		return nil, 0, nil, err
 	}
 
 	// Streaming always routes through net/http, even when BAML_REST_HTTP_CLIENT
@@ -477,22 +506,22 @@ func (c *Client) ExecuteStream(ctx context.Context, req *Request) (*StreamRespon
 
 	httpReq, err := buildHTTPRequest(ctx, req, rewritten)
 	if err != nil {
-		return nil, fmt.Errorf("llmhttp: failed to build request: %w", err)
+		return nil, 0, nil, fmt.Errorf("llmhttp: failed to build request: %w", err)
 	}
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		if te := classifyTransportErr(err, "llmhttp: request failed", true); te != nil {
-			return nil, te
+			return nil, 0, nil, te
 		}
-		return nil, fmt.Errorf("llmhttp: request failed: %w", err)
+		return nil, 0, nil, fmt.Errorf("llmhttp: request failed: %w", err)
 	}
 
 	// Check for non-success status codes
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, MaxErrorBodyBytes))
 		resp.Body.Close()
-		return nil, &HTTPError{
+		return nil, 0, nil, &HTTPError{
 			StatusCode: resp.StatusCode,
 			Body:       string(body),
 		}
@@ -507,9 +536,9 @@ func (c *Client) ExecuteStream(ctx context.Context, req *Request) (*StreamRespon
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, MaxErrorBodyBytes))
 		resp.Body.Close()
 		if ct == "" {
-			return nil, fmt.Errorf("llmhttp: missing Content-Type header (expected text/event-stream): %s", string(body))
+			return nil, 0, nil, fmt.Errorf("llmhttp: missing Content-Type header (expected text/event-stream): %s", string(body))
 		}
-		return nil, fmt.Errorf("llmhttp: unexpected Content-Type %q (expected text/event-stream): %s", ct, string(body))
+		return nil, 0, nil, fmt.Errorf("llmhttp: unexpected Content-Type %q (expected text/event-stream): %s", ct, string(body))
 	}
 
 	// Wrap the body with an inter-token idle read timeout before handing it
@@ -521,21 +550,70 @@ func (c *Client) ExecuteStream(ctx context.Context, req *Request) (*StreamRespon
 	// concurrently with a parked Read.
 	body := newIdleTimeoutReader(ctx, resp.Body, nil, c.GetStreamIdleTimeout())
 
-	// Start SSE parsing on the response body. The terminal value sseclient
-	// emits on errc is run through classifyStreamErrc so a mid-stream typed
-	// transport drop (ECONNRESET / EPIPE / ECONNREFUSED / net.ErrClosed) or
-	// an idle timeout (ErrIdleTimeout) carries ErrTransportFlake out of the
-	// streaming path — matching the non-streaming body-read site at Execute
-	// below.
-	events, errc := sseclient.Stream(ctx, body)
+	return body, resp.StatusCode, resp.Header, nil
+}
 
-	return &StreamResponse{
-		StatusCode: resp.StatusCode,
-		Headers:    resp.Header,
-		Events:     events,
-		Errc:       classifyStreamErrc(errc),
+// StreamCallback represents an active streaming HTTP connection consumed via a
+// synchronous per-event callback rather than the StreamResponse channel. It is
+// used by the BuildRequest stream orchestrator to parse each SSE event's data
+// bytes in place (gjson.GetBytes via sse.ExtractDeltaPartsFromBytes) WITHOUT
+// materializing a durable Event.Data string per frame — the saving that the
+// buffered channel path cannot make because there the parser runs ahead of the
+// consumer.
+//
+// The channel-based ExecuteStream / StreamResponse path is unchanged and
+// remains for all other consumers. The caller must call Close() when done.
+type StreamCallback struct {
+	// StatusCode is the HTTP response status code.
+	StatusCode int
+
+	// Headers are the HTTP response headers.
+	Headers http.Header
+
+	// body holds the (idle-timeout-wrapped) response body.
+	body io.ReadCloser
+}
+
+// ExecuteStreamCallback connects exactly like ExecuteStream (same URL rewrite,
+// signing, net/http transport, status/Content-Type checks, and idle-timeout
+// body wrap) but returns a StreamCallback for synchronous, per-event byte
+// consumption instead of a channel. The caller drives the stream with
+// ForEach and must Close() when done.
+func (c *Client) ExecuteStreamCallback(ctx context.Context, req *Request) (*StreamCallback, error) {
+	body, status, headers, err := c.openStream(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return &StreamCallback{
+		StatusCode: status,
+		Headers:    headers,
 		body:       body,
 	}, nil
+}
+
+// ForEach parses the SSE stream synchronously, invoking fn for each event in
+// stream order on the calling goroutine. fn receives byte views valid only for
+// the duration of the call (see sseclient.ScanEvents / EventBytes); it must
+// fully consume them before returning. fn may return sseclient.ErrStopScan to
+// halt parsing cleanly (ForEach returns nil).
+//
+// The terminal stream error is returned (nil on clean EOF), classified the
+// same way StreamResponse.Errc is: a mid-stream typed transport drop or idle
+// timeout carries the ErrTransportFlake umbrella, while io.ErrUnexpectedEOF
+// (chunked truncation) falls through to the generic wrap so its
+// content-integrity meaning is preserved.
+func (s *StreamCallback) ForEach(ctx context.Context, fn sseclient.EventFunc) error {
+	return classifyStreamErr(sseclient.ScanEvents(ctx, s.body, fn))
+}
+
+// Close releases the HTTP connection and interrupts a parked read. It is safe
+// to call multiple times.
+func (s *StreamCallback) Close() {
+	if s == nil || s.body == nil {
+		return
+	}
+	s.body.Close()
+	s.body = nil
 }
 
 // DefaultCallTimeout is the maximum time Execute() will wait for a

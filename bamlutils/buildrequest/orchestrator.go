@@ -23,6 +23,7 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/bamlutils/retry"
 	"github.com/invakid404/baml-rest/bamlutils/sse"
+	"github.com/invakid404/baml-rest/bamlutils/sseclient"
 )
 
 // parseBuildRequestEnv reads BAML_REST_USE_BUILD_REQUEST and returns its
@@ -789,11 +790,21 @@ func RunStreamOrchestration(
 			return nil, "", "", fmt.Errorf("buildrequest: failed to build request: %w", err)
 		}
 
-		resp, err := httpClient.ExecuteStream(ctx, req)
+		// Synchronous, per-event byte path (Stage 4 of #475 follow-up).
+		// Unlike the channel-based ExecuteStream/StreamResponse used by other
+		// consumers, ExecuteStreamCallback drives the SSE parser inline via
+		// ForEach: each event's data bytes are parsed in place
+		// (sse.ExtractDeltaPartsFromBytes -> gjson.GetBytes) before the next
+		// scanner read, so the parser never materializes a durable
+		// Event.Data string per frame. Everything the callback retains —
+		// the accumulated parseable/raw/reasoning deltas — is copied out of
+		// the byte view (gjson copies Str/Raw; WriteString copies into the
+		// builders), so no view into the scanner buffer escapes the call.
+		handle, err := httpClient.ExecuteStreamCallback(ctx, req)
 		if err != nil {
 			return nil, "", "", err
 		}
-		defer resp.Close()
+		defer handle.Close()
 
 		// Send heartbeat on connection success
 		sendHeartbeat()
@@ -808,12 +819,21 @@ func RunStreamOrchestration(
 		// ctx-cancellation / sawStreamFrame contract.
 		trySendPartial := trySendPartialShared
 
-		for ev := range resp.Events {
+		// callbackErr captures an error raised from inside the per-event
+		// callback (extraction failure or a trySendPartial ctx cancellation)
+		// so it can be propagated verbatim after ForEach returns. The
+		// callback returns sseclient.ErrStopScan to halt parsing cleanly
+		// (ForEach -> nil) whenever callbackErr is set, keeping that error
+		// distinct from a genuine transport/stream error.
+		var callbackErr error
+
+		streamErr := handle.ForEach(ctx, func(ev sseclient.EventBytes) error {
 			// Extract parseable/raw/reasoning delta content from the SSE
-			// event using this attempt's provider. Reasoning text never
-			// enters Parseable or Raw; under IncludeReasoning=true it
-			// populates DeltaParts.Reasoning instead.
-			delta, extractErr := sse.ExtractDeltaPartsFromText(provider, ev.Data, config.IncludeReasoning)
+			// event's data bytes using this attempt's provider. Reasoning
+			// text never enters Parseable or Raw; under IncludeReasoning=true
+			// it populates DeltaParts.Reasoning instead. ExtractDeltaPartsFromBytes
+			// parses ev.Data in place and copies out everything it returns.
+			delta, extractErr := sse.ExtractDeltaPartsFromBytes(provider, ev.Data, config.IncludeReasoning)
 			if extractErr != nil {
 				// Extraction error — fail the attempt so retry logic can handle it
 				// rather than silently accumulating incomplete text.
@@ -822,10 +842,11 @@ func RunStreamOrchestration(
 				// including) the failing frame so the outer error
 				// emission can forward whatever raw arrived before
 				// the break (per #256).
-				return nil, "", "", newRawError(
+				callbackErr = newRawError(
 					fmt.Errorf("buildrequest: delta extraction failed: %w", extractErr),
 					rawAccumulated.String(),
 				)
+				return sseclient.ErrStopScan
 			}
 			// Skip when nothing meaningful arrived on any channel. Under
 			// IncludeReasoning=true a reasoning-only event has empty Raw
@@ -833,7 +854,7 @@ func RunStreamOrchestration(
 			// Reasoning too, otherwise reasoning-only frames would be
 			// dropped without ever reaching the wire.
 			if delta.Raw == "" && delta.Parseable == "" && delta.Reasoning == "" {
-				continue
+				return nil
 			}
 
 			rawAccumulated.WriteString(delta.Raw)
@@ -847,10 +868,11 @@ func RunStreamOrchestration(
 			if config.NeedsPartials && delta.Parseable == "" {
 				if config.NeedsRaw {
 					if err := trySendPartial(nil, delta.Raw, delta.Reasoning); err != nil {
-						return nil, "", "", err
+						callbackErr = err
+						return sseclient.ErrStopScan
 					}
 				}
-				continue
+				return nil
 			}
 
 			// Emit partial if needed.
@@ -877,7 +899,8 @@ func RunStreamOrchestration(
 							reasoningForResult = delta.Reasoning
 						}
 						if err := trySendPartial(parsed, rawForResult, reasoningForResult); err != nil {
-							return nil, "", "", err
+							callbackErr = err
+							return sseclient.ErrStopScan
 						}
 					}
 				}
@@ -886,10 +909,18 @@ func RunStreamOrchestration(
 				// text is included in the final result via rawForFinal /
 				// reasoningForFinal.
 			}
+			return nil
+		})
+
+		// A callback-raised error (extraction failure / ctx cancellation) is
+		// propagated verbatim and takes precedence: ForEach returns nil in
+		// that case because the callback halts via ErrStopScan.
+		if callbackErr != nil {
+			return nil, "", "", callbackErr
 		}
 
 		// Check for stream errors
-		if streamErr := <-resp.Errc; streamErr != nil {
+		if streamErr != nil {
 			// Per #256: forward accumulated raw alongside the
 			// transport error so the outer emission attaches it to
 			// details.raw.
