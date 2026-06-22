@@ -177,6 +177,7 @@ func TestRunCallOrchestration_EmitsPlannedAndOutcome(t *testing.T) {
 		makeBuildCallRequest(server.URL),
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	if err != nil {
@@ -242,6 +243,7 @@ func TestRunCallOrchestration_NoMetadataPlanIsNoop(t *testing.T) {
 		makeBuildCallRequest(server.URL),
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	if err != nil {
@@ -367,6 +369,7 @@ func TestRunCallOrchestration_OutcomeClearsFallbackTargetFields(t *testing.T) {
 		makeBuildCallRequest(server.URL),
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	)
 	if err != nil {

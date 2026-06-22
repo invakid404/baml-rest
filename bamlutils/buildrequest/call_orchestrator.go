@@ -142,12 +142,29 @@ type BuildCallRequestFunc func(ctx context.Context, clientOverride string) (*llm
 // reasoning is empty.
 type ExtractResponseFunc func(provider string, responseBody string, includeReasoning bool) (parseable, raw, reasoning string, err error)
 
+// ExtractResponseBytesFunc is the optional byte-oriented twin of
+// ExtractResponseFunc. When supplied it is used in place of
+// ExtractResponseFunc on transports that hand back caller-owned response
+// bytes (the net/http unary lane, where llmhttp.Response.BodyBytes is
+// non-nil), letting the extractor parse the body without forcing a
+// whole-body []byte->string copy (e.g. via gjson.GetBytes).
+//
+// It is an OPTIONAL seam: when nil, RunCallOrchestration falls back to the
+// injected ExtractResponseFunc over the body on every lane, so a custom
+// string-only extractor is always honored — the byte path only changes
+// allocations, never which extractor runs. It must return results identical
+// to the injected ExtractResponseFunc for the same JSON.
+type ExtractResponseBytesFunc func(provider string, body []byte, includeReasoning bool) (parseable, raw, reasoning string, err error)
+
 // RunCallOrchestration executes the non-streaming BuildRequest path.
 //
 // Flow — single retry loop covering HTTP, extraction, and parsing:
 //  1. buildRequest(ctx, clientOverride) → llmhttp.Request
 //  2. httpClient.Execute(ctx, req, onSuccess) → llmhttp.Response
-//  3. extractResponse(provider, body, includeReasoning) → parseable + raw + reasoning text
+//  3. extract(provider, body, includeReasoning) → parseable + raw + reasoning
+//     text — extractResponseBytes over resp.BodyBytes when supplied and the
+//     transport returned owned bytes (net/http unary), else extractResponse
+//     over resp.Body (fasthttp unary, or no byte extractor injected)
 //  4. parseFinal(ctx, parseable) → typed result
 //  5. emit StreamResultKindFinal on channel
 //
@@ -180,6 +197,7 @@ func RunCallOrchestration(
 	buildRequest BuildCallRequestFunc,
 	parseFinal ParseFinalFunc,
 	extractResponse ExtractResponseFunc,
+	extractResponseBytes ExtractResponseBytesFunc,
 	newResult NewResultFunc,
 ) error {
 	if httpClient == nil {
@@ -326,7 +344,25 @@ func RunCallOrchestration(
 			return nil, httpErr
 		}
 
-		parseable, raw, reasoning, extractErr := extractResponse(provider, resp.Body, config.IncludeReasoning)
+		// Extractor routing. The byte path is taken ONLY when the transport
+		// handed back caller-owned bytes (net/http unary success →
+		// resp.BodyBytes != nil) AND the caller supplied a byte extractor;
+		// then we parse resp.BodyBytes directly (e.g. gjson.GetBytes),
+		// skipping the whole-body string copy. In every other case — the
+		// fasthttp unary lane (BodyBytes nil, Body an owned copy), or a
+		// caller that injected only a string extractor — we run the injected
+		// extractResponse over the body. This keeps the injection seam
+		// consistent: a custom extractor is always honored on both lanes; the
+		// byte extractor only changes allocations, never which extractor runs.
+		// The default and byte extractors are pinned identical for the same
+		// JSON by TestExtractResponseContentBytesMatchesString.
+		var parseable, raw, reasoning string
+		var extractErr error
+		if resp.BodyBytes != nil && extractResponseBytes != nil {
+			parseable, raw, reasoning, extractErr = extractResponseBytes(provider, resp.BodyBytes, config.IncludeReasoning)
+		} else {
+			parseable, raw, reasoning, extractErr = extractResponse(provider, resp.Body, config.IncludeReasoning)
+		}
 		if extractErr != nil {
 			// Extraction failed before raw could be split out of the
 			// provider's 2xx JSON body — but the body itself is the

@@ -112,6 +112,7 @@ func TestRunCallOrchestration_AWSBedrock(t *testing.T) {
 		buildRequestFn,
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	); err != nil {
 		t.Fatalf("RunCallOrchestration: %v", err)
@@ -211,6 +212,7 @@ func TestRunCallOrchestration_AWSBedrock_NoReasoning(t *testing.T) {
 		buildRequestFn,
 		identityParseFinal,
 		ExtractResponseContent,
+		ExtractResponseContentBytes,
 		newTestResult,
 	); err != nil {
 		t.Fatalf("RunCallOrchestration: %v", err)

@@ -7,6 +7,7 @@
 package buildrequest
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 
@@ -45,18 +46,60 @@ func ExtractResponseContent(provider string, responseBody string, includeReasoni
 		return "", "", "", fmt.Errorf("provider %s: response body is not valid JSON", provider)
 	}
 
+	// gjson.Get aliases responseBody for unescaped result substrings; the
+	// extractors copy what they keep into string builders, so no aliasing
+	// outlives this call.
+	return dispatchResponseContent(provider, func(path string) gjson.Result {
+		return gjson.Get(responseBody, path)
+	}, includeReasoning)
+}
+
+// ExtractResponseContentBytes is the byte-oriented twin of
+// ExtractResponseContent for the net/http unary path, where the response
+// body is available as caller-owned bytes (llmhttp.Response.BodyBytes).
+// It validates and extracts via gjson.ValidBytes / gjson.GetBytes instead
+// of converting the whole body to a string first, eliminating the
+// whole-body []byte->string copy on the hot unary path.
+//
+// Safety: gjson.GetBytes views body as a string only for the duration of
+// each call and copies the matched Raw/Str out before returning (see
+// getBytes in cloudwego/gjson), so every gjson.Result handed back owns its
+// data. The provider extractors further copy retained text into string
+// builders. body must stay valid through the call; it need not survive
+// afterward. Returns results identical to ExtractResponseContent for the
+// same JSON — see TestExtractResponseContentBytesMatchesString.
+func ExtractResponseContentBytes(provider string, body []byte, includeReasoning bool) (parseable, raw, reasoning string, err error) {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return "", "", "", fmt.Errorf("provider %s: empty response body", provider)
+	}
+
+	if !gjson.ValidBytes(body) {
+		return "", "", "", fmt.Errorf("provider %s: response body is not valid JSON", provider)
+	}
+
+	return dispatchResponseContent(provider, func(path string) gjson.Result {
+		return gjson.GetBytes(body, path)
+	}, includeReasoning)
+}
+
+// dispatchResponseContent routes to the per-provider extractor. The get
+// closure performs each top-level path lookup against the underlying JSON
+// (string via gjson.Get, or bytes via gjson.GetBytes); nested navigation
+// happens on the returned gjson.Result values, which are source-agnostic.
+// This keeps the string and byte entry points sharing one implementation.
+func dispatchResponseContent(provider string, get func(path string) gjson.Result, includeReasoning bool) (parseable, raw, reasoning string, err error) {
 	switch provider {
 	case "openai", "openai-generic", "azure-openai", "ollama", "openrouter":
-		return extractOpenAIContent(provider, responseBody, includeReasoning)
+		return extractOpenAIContent(provider, get, includeReasoning)
 
 	case "anthropic":
-		return extractAnthropicContent(provider, responseBody, includeReasoning)
+		return extractAnthropicContent(provider, get, includeReasoning)
 
 	case "openai-responses":
-		return extractOpenAIResponsesContent(provider, responseBody, includeReasoning)
+		return extractOpenAIResponsesContent(provider, get, includeReasoning)
 
 	case "google-ai", "vertex-ai":
-		return extractGeminiContent(provider, responseBody, includeReasoning)
+		return extractGeminiContent(provider, get, includeReasoning)
 
 	case "aws-bedrock":
 		// aws-bedrock non-streaming extractor for the Converse API.
@@ -65,7 +108,7 @@ func ExtractResponseContent(provider string, responseBody string, includeReasoni
 		// branch). Current scope: default credential chain only (no
 		// static `.baml` creds), no endpoint_url override, reasoning
 		// block signature/redactedContent skipped (see #254).
-		return extractAWSBedrockContent(provider, responseBody, includeReasoning)
+		return extractAWSBedrockContent(provider, get, includeReasoning)
 
 	default:
 		return "", "", "", fmt.Errorf("unsupported provider for non-streaming extraction: %s", provider)
@@ -94,12 +137,12 @@ func ExtractResponseContent(provider string, responseBody string, includeReasoni
 // Returns an error for refusals, missing/malformed content, and non-object
 // array elements. reasoning_content is telemetry — its presence does not
 // change content's strict error semantics.
-func extractOpenAIContent(provider, responseBody string, includeReasoning bool) (parseable, raw, reasoning string, err error) {
+func extractOpenAIContent(provider string, get func(string) gjson.Result, includeReasoning bool) (parseable, raw, reasoning string, err error) {
 	extractReasoning := func() string {
 		if !includeReasoning {
 			return ""
 		}
-		r := gjson.Get(responseBody, "choices.0.message.reasoning_content")
+		r := get("choices.0.message.reasoning_content")
 		if r.Type != gjson.String {
 			return ""
 		}
@@ -110,7 +153,7 @@ func extractOpenAIContent(provider, responseBody string, includeReasoning bool) 
 	// top-level message.refusal field or as a content array part with
 	// type == "refusal". The presence of the refusal field means the model
 	// refused, regardless of its value (empty, non-string, etc.).
-	refusal := gjson.Get(responseBody, "choices.0.message.refusal")
+	refusal := get("choices.0.message.refusal")
 	if refusal.Exists() && refusal.Type != gjson.Null {
 		refusalText := "unknown reason"
 		if refusal.Type == gjson.String && refusal.String() != "" {
@@ -119,7 +162,7 @@ func extractOpenAIContent(provider, responseBody string, includeReasoning bool) 
 		return "", "", "", fmt.Errorf("%s: model refused request: %s", provider, refusalText)
 	}
 
-	content := gjson.Get(responseBody, "choices.0.message.content")
+	content := get("choices.0.message.content")
 
 	// Scalar string — the common case
 	if content.Type == gjson.String {
@@ -195,8 +238,8 @@ func extractOpenAIContent(provider, responseBody string, includeReasoning bool) 
 //   - raw: same as parseable (text-only by construction).
 //   - reasoning: "thinking" blocks' thinking text, only when
 //     includeReasoning is true. Empty otherwise.
-func extractAnthropicContent(provider string, responseBody string, includeReasoning bool) (parseable, raw, reasoning string, err error) {
-	contentArray := gjson.Get(responseBody, "content")
+func extractAnthropicContent(provider string, get func(string) gjson.Result, includeReasoning bool) (parseable, raw, reasoning string, err error) {
+	contentArray := get("content")
 
 	if contentArray.IsArray() {
 		var parseableSB strings.Builder
@@ -264,8 +307,8 @@ func extractAnthropicContent(provider string, responseBody string, includeReason
 // remain errors. Thought parts are filtered, not validated — non-string
 // text on a thought part is silently skipped, since the part contributes
 // to neither parseable nor (validated) reasoning output.
-func extractGeminiContent(provider string, responseBody string, includeReasoning bool) (parseable, raw, reasoning string, err error) {
-	parts := gjson.Get(responseBody, "candidates.0.content.parts")
+func extractGeminiContent(provider string, get func(string) gjson.Result, includeReasoning bool) (parseable, raw, reasoning string, err error) {
+	parts := get("candidates.0.content.parts")
 
 	if parts.IsArray() {
 		var parseableSB strings.Builder
@@ -345,8 +388,8 @@ func extractGeminiContent(provider string, responseBody string, includeReasoning
 // silently skipped — they never produce errors. The strict no-message-item
 // contract is preserved: a reasoning-only response (no message item) still
 // errors regardless of the flag.
-func extractOpenAIResponsesContent(provider, responseBody string, includeReasoning bool) (parseable, raw, reasoning string, err error) {
-	output := gjson.Get(responseBody, "output")
+func extractOpenAIResponsesContent(provider string, get func(string) gjson.Result, includeReasoning bool) (parseable, raw, reasoning string, err error) {
+	output := get("output")
 	if !output.IsArray() {
 		return "", "", "", fmt.Errorf("%s: could not extract text content from response (output array not found)", provider)
 	}
@@ -465,8 +508,8 @@ func extractOpenAIResponsesContent(provider, responseBody string, includeReasoni
 // not contribute to any output, which preserves the strict
 // no-empty-success contract because the extractor still errors when
 // the message contains no recognised content blocks at all.
-func extractAWSBedrockContent(provider, responseBody string, includeReasoning bool) (parseable, raw, reasoning string, err error) {
-	message := gjson.Get(responseBody, "output.message")
+func extractAWSBedrockContent(provider string, get func(string) gjson.Result, includeReasoning bool) (parseable, raw, reasoning string, err error) {
+	message := get("output.message")
 	if !message.IsObject() {
 		return "", "", "", fmt.Errorf("%s: could not extract text content from response (output.message not found)", provider)
 	}
