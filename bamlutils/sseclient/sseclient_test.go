@@ -414,12 +414,12 @@ func TestParseSSELine(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.line, func(t *testing.T) {
-			field, value := parseSSELine(tt.line)
-			if field != tt.field {
-				t.Errorf("field: expected %q, got %q", tt.field, field)
+			field, value := parseSSELine([]byte(tt.line))
+			if string(field) != tt.field {
+				t.Errorf("field: expected %q, got %q", tt.field, string(field))
 			}
-			if value != tt.value {
-				t.Errorf("value: expected %q, got %q", tt.value, value)
+			if string(value) != tt.value {
+				t.Errorf("value: expected %q, got %q", tt.value, string(value))
 			}
 		})
 	}
