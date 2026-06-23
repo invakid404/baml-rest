@@ -934,6 +934,7 @@ func (me *methodEmitter) emitBuildCallRequest() {
 						jen.Id("parseFinalFn"),
 						jen.Qual(g.pkgs.BuildRequestPkg, "ExtractResponseContent"),
 						jen.Qual(g.pkgs.BuildRequestPkg, "ExtractResponseContentBytes"),
+						jen.Qual(g.pkgs.BuildRequestPkg, "ExtractResponseContentBorrowed"),
 						jen.Id("newResultFn"),
 					)),
 				),

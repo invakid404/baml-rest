@@ -999,7 +999,7 @@ func bamlRestDynamicBuildCallRequest(adapter bamlutils.Adapter, rawInput any, ou
 				__errR.Release()
 			}
 		}, func() error {
-			return buildrequest.RunCallOrchestration(adapter, out, callConfig, __httpClient, buildRequestFn, parseFinalFn, buildrequest.ExtractResponseContent, buildrequest.ExtractResponseContentBytes, newResultFn)
+			return buildrequest.RunCallOrchestration(adapter, out, callConfig, __httpClient, buildRequestFn, parseFinalFn, buildrequest.ExtractResponseContent, buildrequest.ExtractResponseContentBytes, buildrequest.ExtractResponseContentBorrowed, newResultFn)
 		})
 	}()
 	return nil

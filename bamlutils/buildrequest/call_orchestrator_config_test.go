@@ -30,7 +30,7 @@ func TestRunCallOrchestrationUsesConfig(t *testing.T) {
 
 	err := RunCallOrchestration(
 		context.Background(), out, config, nil,
-		nil, nil, nil, nil, newTestResult,
+		nil, nil, nil, nil, nil, newTestResult,
 	)
 	if err == nil {
 		t.Fatal("expected rejection when DisableCallBuildRequest=true")

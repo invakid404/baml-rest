@@ -155,6 +155,26 @@ type ExtractResponseFunc func(provider string, responseBody string, includeReaso
 // string-only extractor is always honored — the byte path only changes
 // allocations, never which extractor runs. It must return results identical
 // to the injected ExtractResponseFunc for the same JSON.
+//
+// RunCallOrchestration takes two values of this type: extractResponseBytes for
+// the net/http OWNED-bytes lane (typically ExtractResponseContentBytes, which
+// copies via gjson.GetBytes) and extractResponseBorrowed for the fasthttp
+// BORROWED lane (typically ExtractResponseContentBorrowed, which aliases
+// unescaped scalar/single-block content straight out of the borrowed buffer).
+// Both are optional and both must agree with the string extractor's output;
+// they differ only in allocation behavior and which transport lane they serve.
+//
+// Body lifetime — differs by lane and matters most for CUSTOM implementations:
+//   - As extractResponseBytes, body is caller-owned (the net/http io.ReadAll
+//     buffer) and stays valid for the life of the response.
+//   - As extractResponseBorrowed, body ALIASES pooled transport storage that
+//     the orchestrator recycles via resp.Release the instant the attempt is
+//     done. An implementation MUST treat body as READ-ONLY and MUST NOT retain
+//     body — or any string/[]byte that aliases it — after it returns. Anything
+//     that must outlive the call has to be copied (the default extractors alias
+//     for zero copy and rely on the orchestrator to clone every escaping value
+//     before Release; a custom extractor that returns owned strings is always
+//     safe).
 type ExtractResponseBytesFunc func(provider string, body []byte, includeReasoning bool) (parseable, raw, reasoning string, err error)
 
 // RunCallOrchestration executes the non-streaming BuildRequest path.
@@ -165,9 +185,10 @@ type ExtractResponseBytesFunc func(provider string, body []byte, includeReasonin
 //     (the orchestrator owns the borrow lifecycle and releases per-attempt;
 //     callers never see a release obligation)
 //  3. extract(provider, body, includeReasoning) → parseable + raw + reasoning
-//     text — extractResponseBytes over resp.BodyBytes() when supplied and the
-//     transport returned owned bytes (net/http unary), else extractResponse
-//     over resp.BodyString() (fasthttp unary, or no byte extractor injected)
+//     text — extractResponseBorrowed over resp.BorrowedBytes() on the fasthttp
+//     borrow lane (aliasing, zero-copy on scalar/single-block content), else
+//     extractResponseBytes over resp.BodyBytes() on the net/http owned-bytes
+//     lane, else extractResponse over resp.BodyString()
 //  4. parseFinal(ctx, parseable) → typed result
 //  5. emit StreamResultKindFinal on channel
 //
@@ -201,6 +222,7 @@ func RunCallOrchestration(
 	parseFinal ParseFinalFunc,
 	extractResponse ExtractResponseFunc,
 	extractResponseBytes ExtractResponseBytesFunc,
+	extractResponseBorrowed ExtractResponseBytesFunc,
 	newResult NewResultFunc,
 ) error {
 	if httpClient == nil {
@@ -362,22 +384,38 @@ func RunCallOrchestration(
 		// borrowed.
 		defer resp.Release()
 
-		// Extractor routing. The byte path is taken ONLY when the transport
-		// handed back caller-owned bytes (net/http unary success →
-		// resp.BodyBytes() != nil) AND the caller supplied a byte extractor;
-		// then we parse those bytes directly (e.g. gjson.GetBytes),
-		// skipping the whole-body string copy. In every other case — the
-		// fasthttp unary lane (BodyBytes() nil, BodyString() a borrowed view
-		// valid until resp.Release()), or a
-		// caller that injected only a string extractor — we run the injected
-		// extractResponse over the body. This keeps the injection seam
-		// consistent: a custom extractor is always honored on both lanes; the
-		// byte extractor only changes allocations, never which extractor runs.
-		// The default and byte extractors are pinned identical for the same
-		// JSON by TestExtractResponseContentBytesMatchesString.
+		// Extractor routing — three lanes, gated on how the transport owns the
+		// body, falling back to the always-present string extractor:
+		//
+		//  1. BORROWED (fasthttp unary success → resp.BorrowedBytes() != nil):
+		//     the body aliases pooled storage that the deferred Release recycles.
+		//     When a borrowed extractor is supplied we run it over those bytes;
+		//     it aliases unescaped scalar / single-block content straight out of
+		//     the borrowed buffer (gjson.Get over an unsafe string view), so our
+		//     side copies nothing for that common shape. SAFE because the aliased
+		//     parseable is consumed in-attempt by parseFinal — whose ParseFinalFunc
+		//     contract requires it to copy (not retain a reference to) accumulated
+		//     before returning, which the generated wrapper does by marshalling it
+		//     into the protobuf parse args before Release — and every value that
+		//     escapes the attempt is cloned below before the deferred Release fires.
+		//  2. OWNED BYTES (net/http unary success → resp.BodyBytes() != nil): the
+		//     io.ReadAll buffer is already caller-owned; the byte extractor parses
+		//     it directly (gjson.GetBytes, which copies matched content out),
+		//     skipping the whole-body string copy.
+		//  3. STRING (no owned/borrowed bytes, or no byte extractor injected): run
+		//     the injected extractResponse over resp.BodyString().
+		//
+		// This keeps the injection seam consistent: a custom string extractor is
+		// always honored, and the byte/borrowed extractors only change
+		// allocations, never which content is extracted. All three are pinned to
+		// identical output for the same JSON by
+		// TestExtractResponseContentBytesMatchesString /
+		// TestExtractResponseContentBorrowedMatchesString.
 		var parseable, raw, reasoning string
 		var extractErr error
-		if rb := resp.BodyBytes(); rb != nil && extractResponseBytes != nil {
+		if bb := resp.BorrowedBytes(); bb != nil && extractResponseBorrowed != nil {
+			parseable, raw, reasoning, extractErr = extractResponseBorrowed(provider, bb, config.IncludeReasoning)
+		} else if rb := resp.BodyBytes(); rb != nil && extractResponseBytes != nil {
 			parseable, raw, reasoning, extractErr = extractResponseBytes(provider, rb, config.IncludeReasoning)
 		} else {
 			parseable, raw, reasoning, extractErr = extractResponse(provider, resp.BodyString(), config.IncludeReasoning)

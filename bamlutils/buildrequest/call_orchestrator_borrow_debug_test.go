@@ -76,7 +76,7 @@ func TestRunCallOrchestration_RetryReleasesBeforeNextAttempt(t *testing.T) {
 			RetryPolicy: &retry.Policy{MaxRetries: 1, Strategy: &retry.ConstantDelay{DelayMs: 1}},
 		},
 		client, makeBuildCallRequest(server.URL),
-		parseFinal, extractor, nil, newTestResult,
+		parseFinal, extractor, nil, nil, newTestResult,
 	)
 	close(out)
 	if err != nil {
@@ -124,7 +124,7 @@ func TestRunCallOrchestration_FallbackReleasesBeforeSwitching(t *testing.T) {
 			ClientProviders: map[string]string{"child0": "openai", "child1": "openai"},
 		},
 		client, makeBuildCallRequest(server.URL),
-		identityParseFinal, extractor, nil, newTestResult,
+		identityParseFinal, extractor, nil, nil, newTestResult,
 	)
 	close(out)
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"unsafe"
 
@@ -91,7 +92,7 @@ func TestRunCallOrchestration_BorrowEscapesAreOwnedCopies(t *testing.T) {
 			context.Background(), out,
 			&CallConfig{Provider: "openai", NeedsRaw: true},
 			client, makeBuildCallRequest(server.URL),
-			identityParseFinal, extractor, nil, newTestResult,
+			identityParseFinal, extractor, nil, nil, newTestResult,
 		)
 		close(out)
 		if err != nil {
@@ -133,7 +134,7 @@ func TestRunCallOrchestration_BorrowEscapesAreOwnedCopies(t *testing.T) {
 			context.Background(), out,
 			&CallConfig{Provider: "openai", NeedsRaw: true},
 			client, makeBuildCallRequest(server.URL),
-			failParse, extractor, nil, newTestResult,
+			failParse, extractor, nil, nil, newTestResult,
 		)
 		close(out)
 		if err != nil {
@@ -146,6 +147,75 @@ func TestRunCallOrchestration_BorrowEscapesAreOwnedCopies(t *testing.T) {
 		}
 		if strPtr(errRes.Raw()) == aliasRaw {
 			t.Error("parse-failure raw was NOT copied before Release — it still aliases the borrowed buffer")
+		}
+	})
+
+	t.Run("real borrowed extractor is routed and its escaping raw is owned", func(t *testing.T) {
+		// End-to-end through the REAL ExtractResponseContentBorrowed on the
+		// fasthttp borrow lane. The extracted content aliases the borrowed
+		// buffer in-attempt; Stage 2 clones raw out before the per-attempt
+		// Release. Under -tags llmhttp_debug, Release poisons the recycled
+		// buffer, so a missed clone would surface here as a corrupted raw —
+		// making this the orchestrator-level use-after-free guard.
+		const content = "hello world"
+		const body = `{"choices":[{"message":{"content":"hello world"}}]}`
+		server := makeJSONServer(200, body)
+		defer server.Close()
+		client := forceFastClient(server)
+
+		var borrowedCalled, stringCalled atomic.Bool
+		// Capture the borrowed buffer the extractor saw and whether the raw it
+		// returned aliased that buffer, so the post-Release assertion below can
+		// detect a missed clone in NORMAL builds (no debug poisoning required).
+		var gotBorrowed []byte
+		var extractedRawAliased bool
+		borrowedExtractor := func(provider string, b []byte, incl bool) (string, string, string, error) {
+			borrowedCalled.Store(true)
+			p, raw, reason, err := ExtractResponseContentBorrowed(provider, b, incl)
+			gotBorrowed = b
+			extractedRawAliased = stringAliasesBuffer(raw, b)
+			return p, raw, reason, err
+		}
+		stringExtractor := func(provider, responseBody string, incl bool) (string, string, string, error) {
+			stringCalled.Store(true)
+			return ExtractResponseContent(provider, responseBody, incl)
+		}
+
+		out := make(chan bamlutils.StreamResult, 16)
+		err := RunCallOrchestration(
+			context.Background(), out,
+			&CallConfig{Provider: "openai", NeedsRaw: true},
+			client, makeBuildCallRequest(server.URL),
+			identityParseFinal, stringExtractor, nil, borrowedExtractor, newTestResult,
+		)
+		close(out)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		final := lastFinal(t, out)
+
+		if !borrowedCalled.Load() {
+			t.Error("borrowed extractor was NOT routed on the fasthttp borrow lane")
+		}
+		if stringCalled.Load() {
+			t.Error("string extractor ran even though a borrowed extractor was supplied for the borrow lane")
+		}
+		if final.Final() != content {
+			t.Errorf("final = %v, want %q", final.Final(), content)
+		}
+		// Correct value.
+		if final.Raw() != content {
+			t.Errorf("raw = %q, want %q", final.Raw(), content)
+		}
+		// Normal-build ownership check (the teeth, independent of debug
+		// poisoning): the extractor handed back a raw that aliased the borrowed
+		// buffer, so the orchestrator MUST have cloned it before Release — the
+		// escaping raw must not still point into that buffer.
+		if !extractedRawAliased {
+			t.Fatal("precondition: extractor's raw did not alias the borrowed buffer; test is not exercising the clone hazard")
+		}
+		if stringAliasesBuffer(final.Raw(), gotBorrowed) {
+			t.Error("final.Raw() still aliases the borrowed buffer — raw was NOT cloned before Release")
 		}
 	})
 
@@ -165,7 +235,7 @@ func TestRunCallOrchestration_BorrowEscapesAreOwnedCopies(t *testing.T) {
 			context.Background(), out,
 			&CallConfig{Provider: "openai", NeedsRaw: true},
 			client, makeBuildCallRequest(server.URL),
-			identityParseFinal, extractor, nil, newTestResult,
+			identityParseFinal, extractor, nil, nil, newTestResult,
 		)
 		close(out)
 		if err != nil {
