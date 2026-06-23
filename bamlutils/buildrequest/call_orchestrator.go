@@ -163,6 +163,18 @@ type ExtractResponseFunc func(provider string, responseBody string, includeReaso
 // unescaped scalar/single-block content straight out of the borrowed buffer).
 // Both are optional and both must agree with the string extractor's output;
 // they differ only in allocation behavior and which transport lane they serve.
+//
+// Body lifetime — differs by lane and matters most for CUSTOM implementations:
+//   - As extractResponseBytes, body is caller-owned (the net/http io.ReadAll
+//     buffer) and stays valid for the life of the response.
+//   - As extractResponseBorrowed, body ALIASES pooled transport storage that
+//     the orchestrator recycles via resp.Release the instant the attempt is
+//     done. An implementation MUST treat body as READ-ONLY and MUST NOT retain
+//     body — or any string/[]byte that aliases it — after it returns. Anything
+//     that must outlive the call has to be copied (the default extractors alias
+//     for zero copy and rely on the orchestrator to clone every escaping value
+//     before Release; a custom extractor that returns owned strings is always
+//     safe).
 type ExtractResponseBytesFunc func(provider string, body []byte, includeReasoning bool) (parseable, raw, reasoning string, err error)
 
 // RunCallOrchestration executes the non-streaming BuildRequest path.

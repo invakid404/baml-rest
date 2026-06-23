@@ -115,10 +115,14 @@ func (j *aliasJoiner) String() string {
 // # Lifetime contract (use-after-free critical)
 //
 // body MUST be the live borrowed buffer and MUST stay valid AND unmodified for
-// the duration of this call. The returned parseable/raw MAY alias body (the
-// single-segment / scalar cases above); reasoning is always assembled through
-// a strings.Builder and is therefore always owned. The CALLER must not retain
-// any aliasing return past the borrow's Release: the orchestrator consumes
+// the duration of this call. ALL THREE returned strings — parseable, raw, AND
+// reasoning — MAY alias body: parseable/raw via the single-segment / scalar
+// cases above, and reasoning via the providers that return a scalar reasoning
+// field directly (e.g. OpenAI Chat's message.reasoning_content, returned as
+// gjson's unescaped substring view). The multi-block providers assemble
+// reasoning through a strings.Builder, but callers MUST NOT rely on that —
+// treat every return as a potential alias. The CALLER must not retain any
+// returned string past the borrow's Release: the orchestrator consumes
 // parseable in-attempt via parseFinal (which copies it into the protobuf parse
 // arguments before the borrow is released) and clones every value that escapes
 // the attempt (raw/reasoning under NeedsRaw, parse-failure raw,

@@ -46,11 +46,17 @@ func ExtractResponseContent(provider string, responseBody string, includeReasoni
 		return "", "", "", fmt.Errorf("provider %s: response body is not valid JSON", provider)
 	}
 
-	// gjson.Get aliases responseBody for unescaped result substrings; the
-	// copyingJoiner concatenates every kept segment through a strings.Builder,
-	// so the returned parseable/raw own their bytes and no aliasing outlives
-	// this call. (The aliasing twin is ExtractResponseContentBorrowed, which
-	// swaps in aliasJoiner for the single-segment zero-copy fast-path.)
+	// gjson.Get aliases responseBody for unescaped result substrings. The
+	// copyingJoiner concatenates multi-segment array content through a
+	// strings.Builder (owned output), but the scalar/single-field fast-paths —
+	// OpenAI message.content and reasoning_content — return gjson's substring
+	// view directly, so a returned string MAY alias responseBody. That is safe
+	// for the owned-string inputs this entry point serves: the returned alias
+	// keeps responseBody's backing array live and nothing here mutates it.
+	// (The borrowed twin ExtractResponseContentBorrowed runs the same extractors
+	// over pooled storage and re-states this aliasing as a Release-lifetime
+	// constraint; the byte twin ExtractResponseContentBytes is the only
+	// uniformly-owned one, because gjson.GetBytes copies every match out.)
 	return dispatchResponseContent(provider, func(path string) gjson.Result {
 		return gjson.Get(responseBody, path)
 	}, includeReasoning, &copyingJoiner{})

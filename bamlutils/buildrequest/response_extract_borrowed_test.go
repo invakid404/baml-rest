@@ -180,6 +180,28 @@ func TestExtractResponseContentBorrowed_Aliasing(t *testing.T) {
 	}
 }
 
+// TestExtractResponseContentBorrowed_ReasoningAliases pins the (easily-missed)
+// fact that reasoning is NOT always owned: providers that return a scalar
+// reasoning field directly — here OpenAI Chat's message.reasoning_content —
+// hand back gjson's unescaped substring view, which aliases the borrowed
+// buffer. This is why the orchestrator must clone reasoning before Release,
+// and why the lifetime contract treats reasoning as a potential alias.
+func TestExtractResponseContentBorrowed_ReasoningAliases(t *testing.T) {
+	const wantReasoning = "unescaped reasoning telemetry"
+	body := []byte(`{"choices":[{"message":{"content":"answer","reasoning_content":"unescaped reasoning telemetry"}}]}`)
+
+	_, _, reasoning, err := ExtractResponseContentBorrowed("openai", body, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reasoning != wantReasoning {
+		t.Fatalf("reasoning = %q, want %q", reasoning, wantReasoning)
+	}
+	if !stringAliasesBuffer(reasoning, body) {
+		t.Error("OpenAI reasoning_content did NOT alias the borrowed buffer — the lifetime contract (reasoning MAY alias) would be wrong, or the orchestrator's clone-before-Release would be unnecessary; it is necessary")
+	}
+}
+
 // TestExtractResponseContentBorrowed_AliasSafetyAfterPoison is the
 // use-after-free guard for the aliasing extractor. It proves two things at
 // once for an aliasing single-segment result:
