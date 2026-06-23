@@ -70,7 +70,8 @@ func TestExecuteNetHTTPPopulatesBodyBytes(t *testing.T) {
 // by ExecuteBorrowed across both fasthttp lanes and net/http: the body is
 // correct before Release, BodyBytes stays nil on the fasthttp lanes (extractor
 // routing invariant) and non-nil on net/http, Release is idempotent, and the
-// accessors fail closed (empty) after Release.
+// borrowed fasthttp accessors fail closed (empty) after Release while the owned
+// net/http response keeps its accessors valid (Release is a no-op for it).
 func TestExecuteBorrowedContract(t *testing.T) {
 	const responseJSON = `{"choices":[{"message":{"content":"Hello world"}}]}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
