@@ -381,9 +381,11 @@ func RunCallOrchestration(
 		//     it aliases unescaped scalar / single-block content straight out of
 		//     the borrowed buffer (gjson.Get over an unsafe string view), so our
 		//     side copies nothing for that common shape. SAFE because the aliased
-		//     parseable is consumed in-attempt by parseFinal (which copies it into
-		//     the protobuf parse args before Release) and every value that escapes
-		//     the attempt is cloned below before the deferred Release fires.
+		//     parseable is consumed in-attempt by parseFinal — whose ParseFinalFunc
+		//     contract requires it to copy (not retain a reference to) accumulated
+		//     before returning, which the generated wrapper does by marshalling it
+		//     into the protobuf parse args before Release — and every value that
+		//     escapes the attempt is cloned below before the deferred Release fires.
 		//  2. OWNED BYTES (net/http unary success → resp.BodyBytes() != nil): the
 		//     io.ReadAll buffer is already caller-owned; the byte extractor parses
 		//     it directly (gjson.GetBytes, which copies matched content out),

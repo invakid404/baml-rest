@@ -164,9 +164,17 @@ func TestRunCallOrchestration_BorrowEscapesAreOwnedCopies(t *testing.T) {
 		client := forceFastClient(server)
 
 		var borrowedCalled, stringCalled atomic.Bool
+		// Capture the borrowed buffer the extractor saw and whether the raw it
+		// returned aliased that buffer, so the post-Release assertion below can
+		// detect a missed clone in NORMAL builds (no debug poisoning required).
+		var gotBorrowed []byte
+		var extractedRawAliased bool
 		borrowedExtractor := func(provider string, b []byte, incl bool) (string, string, string, error) {
 			borrowedCalled.Store(true)
-			return ExtractResponseContentBorrowed(provider, b, incl)
+			p, raw, reason, err := ExtractResponseContentBorrowed(provider, b, incl)
+			gotBorrowed = b
+			extractedRawAliased = stringAliasesBuffer(raw, b)
+			return p, raw, reason, err
 		}
 		stringExtractor := func(provider, responseBody string, incl bool) (string, string, string, error) {
 			stringCalled.Store(true)
@@ -192,13 +200,22 @@ func TestRunCallOrchestration_BorrowEscapesAreOwnedCopies(t *testing.T) {
 		if stringCalled.Load() {
 			t.Error("string extractor ran even though a borrowed extractor was supplied for the borrow lane")
 		}
-		// Correct value AND owned: if raw still aliased the borrowed buffer it
-		// would read poison garbage under the debug build.
-		if final.Raw() != content {
-			t.Errorf("raw = %q, want %q (corrupted raw under the debug build means a missed clone-before-Release)", final.Raw(), content)
-		}
 		if final.Final() != content {
 			t.Errorf("final = %v, want %q", final.Final(), content)
+		}
+		// Correct value.
+		if final.Raw() != content {
+			t.Errorf("raw = %q, want %q", final.Raw(), content)
+		}
+		// Normal-build ownership check (the teeth, independent of debug
+		// poisoning): the extractor handed back a raw that aliased the borrowed
+		// buffer, so the orchestrator MUST have cloned it before Release — the
+		// escaping raw must not still point into that buffer.
+		if !extractedRawAliased {
+			t.Fatal("precondition: extractor's raw did not alias the borrowed buffer; test is not exercising the clone hazard")
+		}
+		if stringAliasesBuffer(final.Raw(), gotBorrowed) {
+			t.Error("final.Raw() still aliases the borrowed buffer — raw was NOT cloned before Release")
 		}
 	})
 

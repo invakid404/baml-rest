@@ -419,6 +419,17 @@ type ParseStreamFunc func(ctx context.Context, accumulated string) (any, error)
 
 // ParseFinalFunc parses complete raw text into the typed final result.
 // This wraps Parse.Method(accumulated, opts...) from the generated code.
+//
+// Borrow contract: on the fasthttp borrow lane (RunCallOrchestration with an
+// aliasing borrowed extractor) accumulated MAY alias pooled transport storage
+// that is recycled the instant this call returns. An implementation MUST fully
+// consume accumulated before returning and MUST NOT retain a reference to it
+// (or to any substring of it) in the returned value or anywhere reachable
+// after return — it must copy anything it keeps. The generated wrapper
+// satisfies this because Parse.Method marshals accumulated into the protobuf
+// parse arguments (proto.Marshal copies the bytes) synchronously before the
+// orchestrator releases the borrow. Returned errors must likewise not embed an
+// alias of accumulated.
 type ParseFinalFunc func(ctx context.Context, accumulated string) (any, error)
 
 // NewResultFunc creates a new pooled StreamResult with the given fields.
