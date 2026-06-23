@@ -367,7 +367,8 @@ func RunCallOrchestration(
 		// resp.BodyBytes() != nil) AND the caller supplied a byte extractor;
 		// then we parse those bytes directly (e.g. gjson.GetBytes),
 		// skipping the whole-body string copy. In every other case — the
-		// fasthttp unary lane (BodyBytes() nil, BodyString() an owned copy), or a
+		// fasthttp unary lane (BodyBytes() nil, BodyString() a borrowed view
+		// valid until resp.Release()), or a
 		// caller that injected only a string extractor — we run the injected
 		// extractResponse over the body. This keeps the injection seam
 		// consistent: a custom extractor is always honored on both lanes; the
