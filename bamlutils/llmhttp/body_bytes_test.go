@@ -129,13 +129,17 @@ func TestExecuteBorrowedContract(t *testing.T) {
 		}
 	})
 
-	// net/http lane: the body is already owned (Release is a no-op), but the
-	// borrow API still applies and BodyBytes is exposed.
+	// net/http lane: the body is already owned even via ExecuteBorrowed
+	// (borrowed()==false), so Release is a true no-op and the accessors stay
+	// valid afterward; BodyBytes is exposed.
 	t.Run("nethttp", func(t *testing.T) {
 		c := NewClientWithOptions(ClientOptions{Mode: ClientModeNetHTTP})
 		resp, err := c.ExecuteBorrowed(context.Background(), req, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+		}
+		if resp.borrowed() {
+			t.Fatal("net/http lane must be owned, not borrowed")
 		}
 		if resp.BodyBytes() == nil {
 			t.Fatal("net/http unary success must populate BodyBytes")
@@ -144,9 +148,89 @@ func TestExecuteBorrowedContract(t *testing.T) {
 			t.Errorf("BodyString = %q, want %q", resp.BodyString(), responseJSON)
 		}
 		resp.Release()
-		if resp.BodyBytes() != nil {
-			t.Error("BodyBytes after Release must be nil")
+		// Owned: Release is a no-op for the accessors.
+		if string(resp.BodyBytes()) != responseJSON {
+			t.Errorf("owned BodyBytes after Release = %q, want %q", resp.BodyBytes(), responseJSON)
 		}
+	})
+}
+
+// TestReleaseOwnedVsBorrowed pins the owned/no-op vs borrowed Release contract:
+// Release must NOT invalidate an owned response's body (so `defer resp.Release()`
+// is safe for Execute / net/http results), but MUST return a borrowed
+// response's pooled storage and clear its now-dangling view.
+func TestReleaseOwnedVsBorrowed(t *testing.T) {
+	const responseJSON = `{"choices":[{"message":{"content":"Hello world"}}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		fmt.Fprint(w, responseJSON)
+	}))
+	defer server.Close()
+	req := &Request{URL: server.URL, Method: "POST", Body: `{}`}
+
+	// Owned net/http Execute response: accessors stay valid after Release.
+	t.Run("owned-nethttp-survives-release", func(t *testing.T) {
+		c := NewClientWithOptions(ClientOptions{Mode: ClientModeNetHTTP})
+		resp, err := c.Execute(context.Background(), req, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if resp.borrowed() {
+			t.Fatal("Execute must return an owned response")
+		}
+		resp.Release()
+		resp.Release() // idempotent
+		if resp.BodyString() != responseJSON {
+			t.Errorf("owned BodyString after Release = %q, want %q", resp.BodyString(), responseJSON)
+		}
+		if string(resp.BodyBytes()) != responseJSON {
+			t.Errorf("owned BodyBytes after Release = %q, want %q", resp.BodyBytes(), responseJSON)
+		}
+	})
+
+	// Owned fasthttp Execute response (own() copied out of the pool): body still
+	// valid after Release, BodyBytes still nil (routing invariant).
+	t.Run("owned-fasthttp-survives-release", func(t *testing.T) {
+		c := withFastClient(t, server.Client())
+		resp, err := c.Execute(context.Background(), req, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if resp.borrowed() {
+			t.Fatal("Execute must return an owned response")
+		}
+		resp.Release()
+		if resp.BodyString() != responseJSON {
+			t.Errorf("owned BodyString after Release = %q, want %q", resp.BodyString(), responseJSON)
+		}
+		if resp.BodyBytes() != nil {
+			t.Error("fasthttp owned lane must keep BodyBytes nil")
+		}
+	})
+
+	// Borrowed fasthttp ExecuteBorrowed response: Release returns the pooled
+	// storage and clears the view; double-release stays safe.
+	t.Run("borrowed-fasthttp-releases-storage", func(t *testing.T) {
+		c := withFastClient(t, server.Client())
+		resp, err := c.ExecuteBorrowed(context.Background(), req, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !resp.borrowed() {
+			t.Fatal("fasthttp ExecuteBorrowed must return a borrowed response")
+		}
+		if resp.BodyString() != responseJSON {
+			t.Errorf("borrowed BodyString = %q, want %q", resp.BodyString(), responseJSON)
+		}
+		resp.Release()
+		if resp.borrowed() {
+			t.Error("Release must clear borrowed pooled storage (fastResp/drainBuf)")
+		}
+		if resp.BodyString() != "" {
+			t.Errorf("borrowed BodyString after Release = %q, want empty", resp.BodyString())
+		}
+		resp.Release() // idempotent / double-release-safe
 	})
 }
 

@@ -178,6 +178,14 @@ func (r *Response) Release() {
 		return
 	}
 	r.released = true
+	// Owned responses (net/http, or a copy produced by Execute) hold no pooled
+	// storage, so Release is a true no-op for them: leave body / exposeBytes
+	// intact so a `defer resp.Release()` does not invalidate an owned body. Only
+	// a genuinely borrowed response returns its pooled storage and clears the
+	// now-dangling body view.
+	if !r.borrowed() {
+		return
+	}
 	r.body = nil
 	if r.fastResp != nil {
 		fasthttp.ReleaseResponse(r.fastResp)
