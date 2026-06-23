@@ -1602,7 +1602,8 @@ func TestRunCallOrchestration_MixedChain_HTTPBackedEndToEnd(t *testing.T) {
 		if err != nil {
 			return nil, "", "", err
 		}
-		raw := resp.Body
+		defer resp.Release()
+		raw := resp.BodyString()
 		if !needsRaw {
 			raw = ""
 		}

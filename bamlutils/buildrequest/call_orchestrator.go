@@ -145,7 +145,7 @@ type ExtractResponseFunc func(provider string, responseBody string, includeReaso
 // ExtractResponseBytesFunc is the optional byte-oriented twin of
 // ExtractResponseFunc. When supplied it is used in place of
 // ExtractResponseFunc on transports that hand back caller-owned response
-// bytes (the net/http unary lane, where llmhttp.Response.BodyBytes is
+// bytes (the net/http unary lane, where llmhttp.Response.BodyBytes() is
 // non-nil), letting the extractor parse the body without forcing a
 // whole-body []byte->string copy (e.g. via gjson.GetBytes).
 //
@@ -162,9 +162,9 @@ type ExtractResponseBytesFunc func(provider string, body []byte, includeReasonin
 //  1. buildRequest(ctx, clientOverride) → llmhttp.Request
 //  2. httpClient.Execute(ctx, req, onSuccess) → llmhttp.Response
 //  3. extract(provider, body, includeReasoning) → parseable + raw + reasoning
-//     text — extractResponseBytes over resp.BodyBytes when supplied and the
+//     text — extractResponseBytes over resp.BodyBytes() when supplied and the
 //     transport returned owned bytes (net/http unary), else extractResponse
-//     over resp.Body (fasthttp unary, or no byte extractor injected)
+//     over resp.BodyString() (fasthttp unary, or no byte extractor injected)
 //  4. parseFinal(ctx, parseable) → typed result
 //  5. emit StreamResultKindFinal on channel
 //
@@ -343,13 +343,21 @@ func RunCallOrchestration(
 		if httpErr != nil {
 			return nil, httpErr
 		}
+		// Execute returns an OWNED response (its body is safe to hold for the
+		// life of resp; Release is a no-op here), so the extracted parseable/raw
+		// remain valid through parseFinal below and across the retry boundary.
+		// Release per the llmhttp borrow contract anyway — it is the canonical
+		// pattern and stays correct when Stage 2 switches this call site to
+		// ExecuteBorrowed (which will additionally copy raw/reasoning/error text
+		// before release).
+		defer resp.Release()
 
 		// Extractor routing. The byte path is taken ONLY when the transport
 		// handed back caller-owned bytes (net/http unary success →
-		// resp.BodyBytes != nil) AND the caller supplied a byte extractor;
-		// then we parse resp.BodyBytes directly (e.g. gjson.GetBytes),
+		// resp.BodyBytes() != nil) AND the caller supplied a byte extractor;
+		// then we parse those bytes directly (e.g. gjson.GetBytes),
 		// skipping the whole-body string copy. In every other case — the
-		// fasthttp unary lane (BodyBytes nil, Body an owned copy), or a
+		// fasthttp unary lane (BodyBytes() nil, BodyString() an owned copy), or a
 		// caller that injected only a string extractor — we run the injected
 		// extractResponse over the body. This keeps the injection seam
 		// consistent: a custom extractor is always honored on both lanes; the
@@ -358,10 +366,10 @@ func RunCallOrchestration(
 		// JSON by TestExtractResponseContentBytesMatchesString.
 		var parseable, raw, reasoning string
 		var extractErr error
-		if resp.BodyBytes != nil && extractResponseBytes != nil {
-			parseable, raw, reasoning, extractErr = extractResponseBytes(provider, resp.BodyBytes, config.IncludeReasoning)
+		if rb := resp.BodyBytes(); rb != nil && extractResponseBytes != nil {
+			parseable, raw, reasoning, extractErr = extractResponseBytes(provider, rb, config.IncludeReasoning)
 		} else {
-			parseable, raw, reasoning, extractErr = extractResponse(provider, resp.Body, config.IncludeReasoning)
+			parseable, raw, reasoning, extractErr = extractResponse(provider, resp.BodyString(), config.IncludeReasoning)
 		}
 		if extractErr != nil {
 			// Extraction failed before raw could be split out of the
@@ -374,7 +382,7 @@ func RunCallOrchestration(
 			// details.body via the existing provider_error classifier.
 			return nil, newRawError(
 				fmt.Errorf("buildrequest: failed to extract response content: %w", extractErr),
-				resp.Body,
+				resp.BodyString(),
 			)
 		}
 

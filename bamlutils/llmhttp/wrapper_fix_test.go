@@ -60,8 +60,9 @@ func TestFastBufferedLaneSizeLimit(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error for body at limit: %v", err)
 			}
-			if len(resp.Body) != tc.size {
-				t.Errorf("expected body length %d, got %d", tc.size, len(resp.Body))
+			defer resp.Release()
+			if len(resp.BodyString()) != tc.size {
+				t.Errorf("expected body length %d, got %d", tc.size, len(resp.BodyString()))
 			}
 		})
 	}
@@ -97,8 +98,9 @@ func TestFastBufferedLaneNoPerRequestGoroutine(t *testing.T) {
 		if err != nil {
 			t.Fatalf("request %d failed: %v", i, err)
 		}
-		if resp.Body != `{"ok":true}` {
-			t.Fatalf("request %d body mismatch: %q", i, resp.Body)
+		defer resp.Release()
+		if resp.BodyString() != `{"ok":true}` {
+			t.Fatalf("request %d body mismatch: %q", i, resp.BodyString())
 		}
 	}
 	runtime.GC()
@@ -140,8 +142,9 @@ func TestFastStreamedLaneOnSuccessBeforeBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.Body != `{"ok":true}` {
-		t.Errorf("unexpected body: %q", resp.Body)
+	defer resp.Release()
+	if resp.BodyString() != `{"ok":true}` {
+		t.Errorf("unexpected body: %q", resp.BodyString())
 	}
 	if seen := <-seenBeforeBody; !seen {
 		t.Fatal("onSuccess did not fire before the body on the streamed fasthttp lane")
@@ -296,8 +299,9 @@ func assertCleanConnReuse(t *testing.T, c *Client, url, normal string, onSuccess
 		if err != nil {
 			t.Fatalf("follow-up request %d failed (dirty pooled conn?): %v", i, err)
 		}
-		if resp.Body != normal {
-			t.Fatalf("follow-up request %d got corrupted body (dirty pooled conn?): %q", i, resp.Body)
+		defer resp.Release()
+		if resp.BodyString() != normal {
+			t.Fatalf("follow-up request %d got corrupted body (dirty pooled conn?): %q", i, resp.BodyString())
 		}
 	}
 }
@@ -410,8 +414,9 @@ func TestFastStreamedConnReuseAfterErrorBodyReadError(t *testing.T) {
 		if ferr != nil {
 			continue // tolerate a transient stale-keepalive close
 		}
-		if resp.Body != normal {
-			t.Fatalf("follow-up %d returned corrupted body (dirty pooled conn?): %q", i, resp.Body)
+		defer resp.Release()
+		if resp.BodyString() != normal {
+			t.Fatalf("follow-up %d returned corrupted body (dirty pooled conn?): %q", i, resp.BodyString())
 		}
 		gotClean = true
 	}
@@ -445,8 +450,9 @@ func TestFastBufferedLaneConcurrent(t *testing.T) {
 					errs <- err
 					return
 				}
-				if resp.Body != want {
-					errs <- fmt.Errorf("body mismatch: %q", resp.Body)
+				defer resp.Release()
+				if resp.BodyString() != want {
+					errs <- fmt.Errorf("body mismatch: %q", resp.BodyString())
 					return
 				}
 			}

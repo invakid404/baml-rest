@@ -9,6 +9,7 @@
 package llmhttp
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -22,6 +23,8 @@ import (
 	"sync/atomic"
 	"time"
 	"unsafe"
+
+	"github.com/valyala/fasthttp"
 
 	"github.com/invakid404/baml-rest/bamlutils/sseclient"
 	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
@@ -78,6 +81,24 @@ func (s *StreamResponse) Close() {
 
 // Response represents a completed non-streaming HTTP response from an LLM
 // provider. Unlike StreamResponse, the full body has already been read.
+//
+// # Lifetime / borrow contract
+//
+// A Response can hold a body that BORROWS pooled transport storage (the
+// fasthttp response buffer, or a pooled drain buffer). Such a Response is
+// produced only by Client.ExecuteBorrowed; the body accessors (BodyString /
+// BodyBytes) then return data that is valid ONLY until Release/Close is
+// called, after which the storage returns to its pool and may be overwritten.
+// The consumer MUST call Release (typically `defer resp.Release()`) and MUST
+// NOT retain any returned string/[]byte past that point. Anything that must
+// outlive the response — raw/reasoning text crossing a retry boundary, an
+// error diagnostic — must be copied before Release.
+//
+// Client.Execute (the default) never returns a borrow: its body is an owned
+// copy (net/http already owns its io.ReadAll buffer; the fasthttp lanes are
+// materialized into an owned copy before return), so the accessors stay valid
+// for the life of the value and Release is a harmless no-op. External callers
+// that do not want to manage a borrow should use Execute.
 type Response struct {
 	// StatusCode is the HTTP response status code.
 	StatusCode int
@@ -85,22 +106,125 @@ type Response struct {
 	// Headers are the HTTP response headers.
 	Headers http.Header
 
-	// Body is the complete response body as a string.
-	//
-	// On the net/http unary path Body is a zero-copy view over BodyBytes
-	// (see bytesToBodyString): the two share the same backing array, so
-	// callers MUST NOT mutate BodyBytes while Body is in use. On the
-	// fasthttp unary path Body is an owned copy of the (pooled) fasthttp
-	// response body and BodyBytes is nil.
-	Body string
+	// body is the complete response body bytes. On owned responses (Execute,
+	// or the net/http lane) it is valid for the life of the Response; on a
+	// borrowed response (ExecuteBorrowed fasthttp lanes) it aliases pooled
+	// storage and is valid only until Release/Close. Stored privately so
+	// Release can invalidate it — a stale exported field would be a
+	// use-after-release footgun.
+	body []byte
 
-	// BodyBytes is the complete response body as caller-owned bytes,
-	// populated only on the net/http unary success path where io.ReadAll
-	// already returns a fresh, owned []byte. It lets callers parse the
-	// body without forcing a whole-body []byte->string copy (e.g. via
-	// gjson.GetBytes). Nil on the fasthttp unary path and on error/stream
-	// responses. Treat as read-only: Body aliases this backing array.
-	BodyBytes []byte
+	// exposeBytes reports whether BodyBytes returns body or nil. It is true
+	// only on the net/http unary lane, where io.ReadAll already owns a fresh
+	// []byte; the fasthttp lanes leave it false so BodyBytes stays nil and the
+	// orchestrator keeps routing them through the string extractor (the
+	// per-backend extractor-routing invariant, see body_bytes_test.go). This
+	// is independent of borrow vs owned.
+	exposeBytes bool
+
+	// fastResp / drainBuf hold the pooled transport storage backing body on a
+	// borrowed response; Release returns it to its pool. At most one is
+	// non-nil. Both nil means the body is owned (the net/http lane, or a copy
+	// produced by Execute) and Release is a no-op. These are concrete fields
+	// rather than a release closure so ExecuteBorrowed allocates nothing per
+	// request beyond the Response itself — the point of the borrow is to drop
+	// the full-body copy, not trade it for a closure.
+	fastResp *fasthttp.Response // buffered fast lane: fasthttp.ReleaseResponse
+	drainBuf *bytes.Buffer      // streamed fast lane: returnFastBodyBuf
+
+	// released guards Release/Close against double-free and makes the
+	// accessors fail closed (empty) after release.
+	released bool
+}
+
+// borrowed reports whether r holds pooled storage that Release must return.
+func (r *Response) borrowed() bool {
+	return r != nil && (r.fastResp != nil || r.drainBuf != nil)
+}
+
+// BodyString returns the complete response body as a string. It is a
+// zero-copy view over the body bytes (see bytesToBodyString), so callers MUST
+// NOT mutate the body while the string is in use. On a borrowed response
+// (ExecuteBorrowed) the returned string is valid only until Release/Close;
+// on an owned response (Execute) it is valid for the life of the Response.
+func (r *Response) BodyString() string {
+	if r == nil {
+		return ""
+	}
+	return bytesToBodyString(r.body)
+}
+
+// BodyBytes returns the complete response body as bytes on the net/http unary
+// lane (where io.ReadAll already owns a fresh []byte), or nil on the fasthttp
+// lanes and on a released response. The orchestrator branches on a non-nil
+// BodyBytes to select the byte extractor, so this per-backend contract must
+// hold. Treat as read-only: BodyString aliases the same backing array. On a
+// borrowed response the slice is valid only until Release/Close.
+func (r *Response) BodyBytes() []byte {
+	if r == nil || !r.exposeBytes {
+		return nil
+	}
+	return r.body
+}
+
+// Release returns any pooled storage backing the response body to its pool and
+// invalidates BodyString/BodyBytes (they return empty/nil afterwards). It is
+// idempotent and always safe to call, including on owned responses (where it
+// is a no-op) and on nil. Callers of ExecuteBorrowed MUST call it; the
+// canonical pattern is `defer resp.Release()` immediately after the error
+// check.
+func (r *Response) Release() {
+	if r == nil || r.released {
+		return
+	}
+	r.released = true
+	// Owned responses (net/http, or a copy produced by Execute) hold no pooled
+	// storage, so Release is a true no-op for them: leave body / exposeBytes
+	// intact so a `defer resp.Release()` does not invalidate an owned body. Only
+	// a genuinely borrowed response returns its pooled storage and clears the
+	// now-dangling body view.
+	if !r.borrowed() {
+		return
+	}
+	r.body = nil
+	if r.fastResp != nil {
+		fasthttp.ReleaseResponse(r.fastResp)
+		r.fastResp = nil
+	}
+	if r.drainBuf != nil {
+		returnFastBodyBuf(r.drainBuf)
+		r.drainBuf = nil
+	}
+}
+
+// Close is an io.Closer-style alias for Release; it always returns nil. It
+// lets a Response satisfy `func() error` close-on-defer call sites.
+func (r *Response) Close() error {
+	r.Release()
+	return nil
+}
+
+// own returns an owned copy of r with any borrowed pooled storage released, so
+// the result is safe to hold indefinitely. For an already-owned response (the
+// net/http lane, or a body Execute already copied) it returns r unchanged. For
+// a borrowed response it copies the body into a fresh caller-owned []byte,
+// releases the borrow, and returns a new owned Response preserving
+// StatusCode/Headers and the exposeBytes routing flag. This backs the safe
+// Client.Execute path; ExecuteBorrowed skips it.
+func (r *Response) own() *Response {
+	if !r.borrowed() {
+		return r
+	}
+	owned := make([]byte, len(r.body))
+	copy(owned, r.body)
+	out := &Response{
+		StatusCode:  r.StatusCode,
+		Headers:     r.Headers,
+		body:        owned,
+		exposeBytes: r.exposeBytes,
+	}
+	r.Release()
+	return out
 }
 
 // bytesToBodyString returns a string that shares body's backing array
@@ -649,7 +773,40 @@ const DefaultCallTimeout = 5 * time.Minute
 // available.
 //
 // On error (non-2xx status, connection failure, timeout), an error is returned.
+//
+// The returned Response is OWNED: its body is safe to hold indefinitely and
+// Release is a no-op (see Response's lifetime contract). Callers on the hot
+// path that can release promptly should prefer ExecuteBorrowed to avoid the
+// extra owned copy on the fasthttp lanes.
 func (c *Client) Execute(ctx context.Context, req *Request, onSuccess func()) (*Response, error) {
+	resp, err := c.executeBorrow(ctx, req, onSuccess)
+	if err != nil {
+		return nil, err
+	}
+	// Materialize an owned copy so external/non-borrow callers never have to
+	// manage a pooled-buffer lifetime. own() is free on the net/http lane.
+	return resp.own(), nil
+}
+
+// ExecuteBorrowed behaves exactly like Execute but returns a BORROWED Response
+// on the fasthttp lanes: the body accessors alias pooled transport storage and
+// are valid only until Release/Close. This removes the self-inflicted
+// full-body copy the fasthttp buffered lane otherwise pays (wire→fasthttp
+// buffer, then a second copy into an owned string). The consumer MUST call
+// Release when done and MUST copy anything that has to outlive the response
+// before releasing. See Response's lifetime contract.
+//
+// The net/http lane and error responses are unaffected — their bodies are
+// already owned (Release is a no-op there), so the borrow is opt-in only for
+// the lane where it actually saves a copy.
+func (c *Client) ExecuteBorrowed(ctx context.Context, req *Request, onSuccess func()) (*Response, error) {
+	return c.executeBorrow(ctx, req, onSuccess)
+}
+
+// executeBorrow is the shared unary dispatch core. It returns the body in its
+// natural per-lane form, which may borrow pooled storage (fasthttp); Execute
+// wraps it with own() for the safe path, ExecuteBorrowed returns it directly.
+func (c *Client) executeBorrow(ctx context.Context, req *Request, onSuccess func()) (*Response, error) {
 	if c == nil || c.httpClient == nil {
 		return nil, fmt.Errorf("llmhttp: nil client")
 	}
@@ -754,15 +911,16 @@ func (c *Client) Execute(ctx context.Context, req *Request, onSuccess func()) (*
 		return nil, fmt.Errorf("llmhttp: response body exceeds maximum size (%d bytes)", MaxResponseBodyBytes)
 	}
 
-	// Expose the io.ReadAll buffer as caller-owned BodyBytes and present
-	// Body as a zero-copy view over it. This drops the whole-body
-	// []byte->string copy on the hot unary path; downstream extraction
-	// reads BodyBytes directly via gjson.GetBytes (see buildrequest).
+	// The io.ReadAll buffer is already a fresh, caller-owned []byte, so this
+	// lane is "borrowed" only nominally: release is nil (nothing to free) and
+	// BodyBytes is exposed so downstream extraction reads it directly via
+	// gjson.GetBytes (see buildrequest), with BodyString a zero-copy view over
+	// it. own() therefore returns it unchanged for the safe Execute path.
 	return &Response{
-		StatusCode: resp.StatusCode,
-		Headers:    resp.Header,
-		Body:       bytesToBodyString(body),
-		BodyBytes:  body,
+		StatusCode:  resp.StatusCode,
+		Headers:     resp.Header,
+		body:        body,
+		exposeBytes: true,
 	}, nil
 }
 

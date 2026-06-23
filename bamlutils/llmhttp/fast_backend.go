@@ -81,11 +81,15 @@ func fastDeadline(ctx context.Context) time.Time {
 func (c *Client) executeFastBuffered(ctx context.Context, req *Request, rewrittenURL string, hc *fasthttp.HostClient) (*Response, error) {
 	fReq := fasthttp.AcquireRequest()
 	fResp := fasthttp.AcquireResponse()
+	// The request is never borrowed past Do, so release it promptly. The
+	// response, by contrast, is NOT released with a defer: on success it backs
+	// the borrowed Response and is released by Response.Release; every error
+	// path below releases it explicitly before returning.
 	defer fasthttp.ReleaseRequest(fReq)
-	defer fasthttp.ReleaseResponse(fResp)
 	buildFastRequest(fReq, req, rewrittenURL)
 
 	if err := hc.DoDeadline(fReq, fResp, fastDeadline(ctx)); err != nil {
+		fasthttp.ReleaseResponse(fResp)
 		if errors.Is(err, fasthttp.ErrBodyTooLarge) {
 			// Body exceeded the OOM backstop (maxBufferedResponseBackstop),
 			// well above MaxResponseBodyBytes. We can't read status, so report
@@ -107,13 +111,16 @@ func (c *Client) executeFastBuffered(ctx context.Context, req *Request, rewritte
 	// matching the net/http and streamed error-body policy. The buffered host's
 	// MaxResponseBodySize is only an OOM backstop, so a non-2xx body larger
 	// than MaxResponseBodyBytes still reaches here and is capped (preserving
-	// the error contract — see B2 / maxBufferedResponseBackstop).
+	// the error contract — see B2 / maxBufferedResponseBackstop). The body is
+	// copied into the error (small/capped), so the response is released here.
 	if status < 200 || status >= 300 {
 		body := fResp.Body()
 		if len(body) > MaxErrorBodyBytes {
 			body = body[:MaxErrorBodyBytes]
 		}
-		return nil, &HTTPError{StatusCode: status, Body: string(body)}
+		httpErr := &HTTPError{StatusCode: status, Body: string(body)}
+		fasthttp.ReleaseResponse(fResp)
+		return nil, httpErr
 	}
 
 	// Success: enforce the real MaxResponseBodyBytes limit in code (strictly
@@ -123,14 +130,22 @@ func (c *Client) executeFastBuffered(ctx context.Context, req *Request, rewritte
 	// truncated.
 	body := fResp.Body()
 	if len(body) > MaxResponseBodyBytes {
+		fasthttp.ReleaseResponse(fResp)
 		return nil, fmt.Errorf("llmhttp: response body exceeds maximum size (%d bytes)", MaxResponseBodyBytes)
 	}
 
-	// onSuccess is nil in this lane by construction (executeFast gates on it).
+	// Success borrow: body aliases fResp.Body(), valid until Response.Release
+	// returns fResp to the pool. fResp's StreamResponseBody=false means the
+	// connection was already read and released before DoDeadline returned, so
+	// holding fResp here pins only the pooled response buffer, not the conn.
+	// BodyBytes stays unexposed (exposeBytes=false) so the orchestrator keeps
+	// routing the fasthttp lane through the string extractor. onSuccess is nil
+	// in this lane by construction (executeFast gates on it).
 	return &Response{
 		StatusCode: status,
 		Headers:    fastHeadersToHTTP(&fResp.Header),
-		Body:       string(body),
+		body:       body,
+		fastResp:   fResp,
 	}, nil
 }
 
@@ -224,15 +239,23 @@ func (c *Client) executeFastStreamed(ctx context.Context, req *Request, rewritte
 		onSuccess()
 	}
 
-	body, err := drainFastBodyLimited(ctx, fResp, MaxResponseBodyBytes)
+	buf, err := drainFastBodyLimited(ctx, fResp, MaxResponseBodyBytes)
 	if err != nil {
 		return nil, err
 	}
 
+	// The drained body lives in the pooled buf, independent of fResp — so the
+	// deferred ReleaseRequest/ReleaseResponse above can return fResp to the pool
+	// on function return (the connection was already drained to EOF and released
+	// by drainFastBodyLimited's CloseBodyStream). The borrowed Response holds
+	// only buf; Response.Release returns it to fastBodyBufPool. Headers are
+	// converted here, before the defers run. BodyBytes stays unexposed so the
+	// orchestrator keeps routing this lane through the string extractor.
 	return &Response{
 		StatusCode: status,
 		Headers:    fastHeadersToHTTP(&fResp.Header),
-		Body:       body,
+		body:       buf.Bytes(),
+		drainBuf:   buf,
 	}, nil
 }
 
@@ -329,6 +352,18 @@ var fastBodyBufPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
 // retained footprint bounded.
 const maxPooledFastBody = 1 << 20
 
+// returnFastBodyBuf returns a drain buffer to fastBodyBufPool, dropping it when
+// oversized so an occasional large body cannot pin large memory in the pool. It
+// is idempotent against nil. On the streamed unary success path this runs from
+// Response.Release (the consumer-managed borrow), NOT before return, so the
+// borrowed buf.Bytes() stays valid until the consumer is done; on the drain
+// error/oversize paths it runs immediately since no borrow is handed out.
+func returnFastBodyBuf(buf *bytes.Buffer) {
+	if buf != nil && buf.Cap() <= maxPooledFastBody {
+		fastBodyBufPool.Put(buf)
+	}
+}
+
 // drainFastBodyLimited reads a streamed unary response body up to maxBytes,
 // synchronously (no per-request goroutine). It drains BodyStream into a pooled
 // scratch buffer with a maxBytes+1 limit so a body exceeding the cap is
@@ -342,25 +377,29 @@ const maxPooledFastBody = 1 << 20
 // having no real mid-flight abort. awaitCtxIfPastDeadline still normalises a
 // deadline-race error to ctx.Err() so downstream cancellation suppression stays
 // consistent.
-func drainFastBodyLimited(ctx context.Context, resp *fasthttp.Response, maxBytes int) (string, error) {
+//
+// On success it returns a pooled *bytes.Buffer whose Bytes() back the borrowed
+// response body; the caller hands ownership to Response.Release (which calls
+// returnFastBodyBuf). On every error path it returns the buffer to the pool
+// itself and returns a nil buffer, so no borrow ever escapes a failed drain.
+func drainFastBodyLimited(ctx context.Context, resp *fasthttp.Response, maxBytes int) (*bytes.Buffer, error) {
+	buf := fastBodyBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+
 	stream := resp.BodyStream()
 	if stream == nil {
 		// Body already buffered (defensive — the streaming host should always
-		// yield a stream). One copy, with the same strictly-greater cap check.
+		// yield a stream). Copy into the pooled buffer (the fasthttp response is
+		// released by executeFastStreamed on return, so we cannot alias it),
+		// with the same strictly-greater cap check.
 		body := resp.Body()
 		if len(body) > maxBytes {
-			return "", fmt.Errorf("llmhttp: response body exceeds maximum size (%d bytes)", maxBytes)
+			returnFastBodyBuf(buf)
+			return nil, fmt.Errorf("llmhttp: response body exceeds maximum size (%d bytes)", maxBytes)
 		}
-		return string(body), nil
+		buf.Write(body)
+		return buf, nil
 	}
-
-	buf := fastBodyBufPool.Get().(*bytes.Buffer)
-	buf.Reset()
-	defer func() {
-		if buf.Cap() <= maxPooledFastBody {
-			fastBodyBufPool.Put(buf)
-		}
-	}()
 
 	// LimitReader caps at maxBytes+1. If the body is <= maxBytes the underlying
 	// stream reaches EOF and the connection is clean → poolable. If we stop at
@@ -369,27 +408,29 @@ func drainFastBodyLimited(ctx context.Context, resp *fasthttp.Response, maxBytes
 	// that pooled conn would read leftover garbage (B1).
 	_, err := buf.ReadFrom(io.LimitReader(stream, int64(maxBytes)+1))
 	if err != nil {
+		returnFastBodyBuf(buf)
 		closeFastConnDiscard(resp)
 		// fasthttp's per-conn SetDeadline (installed by DoDeadline) can fire a
 		// tick ahead of the Go ctx timer. If we're past the deadline, wait
 		// briefly for the ctx timer to land and surface ctx.Err() so the
 		// orchestrator's trySend cancellation suppression stays consistent.
 		if ctxErr := awaitCtxIfPastDeadline(ctx); ctxErr != nil {
-			return "", ctxErr
+			return nil, ctxErr
 		}
 		if te := classifyTransportErr(err, "llmhttp: failed to read response body", false); te != nil {
-			return "", te
+			return nil, te
 		}
-		return "", fmt.Errorf("llmhttp: failed to read response body: %w", err)
+		return nil, fmt.Errorf("llmhttp: failed to read response body: %w", err)
 	}
 	if buf.Len() > maxBytes {
 		// Oversize: we stopped before EOF, so the conn is dirty — discard it.
+		returnFastBodyBuf(buf)
 		closeFastConnDiscard(resp)
-		return "", fmt.Errorf("llmhttp: response body exceeds maximum size (%d bytes)", maxBytes)
+		return nil, fmt.Errorf("llmhttp: response body exceeds maximum size (%d bytes)", maxBytes)
 	}
 	// Full body read to EOF: the connection is clean and can return to the pool.
 	_ = resp.CloseBodyStream()
-	return buf.String(), nil
+	return buf, nil
 }
 
 // closeFastConnDiscard closes a streamed fasthttp response body in a way that

@@ -39,11 +39,12 @@ func TestFastExecute_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	defer resp.Release()
 	if resp.StatusCode != 200 {
 		t.Errorf("status %d, want 200", resp.StatusCode)
 	}
-	if resp.Body != responseJSON {
-		t.Errorf("body %q, want %q", resp.Body, responseJSON)
+	if resp.BodyString() != responseJSON {
+		t.Errorf("body %q, want %q", resp.BodyString(), responseJSON)
 	}
 	if resp.Headers.Get("Content-Type") != "application/json" {
 		t.Errorf("Content-Type missing or wrong: %q", resp.Headers.Get("Content-Type"))

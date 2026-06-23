@@ -181,10 +181,11 @@ func warmup(tb testing.TB, client *Client, m *mockServer, conc int) {
 					failed.Store(true)
 					return
 				}
-				if resp.Body != m.body {
-					tb.Errorf("warmup body mismatch: got %d bytes, want %d", len(resp.Body), len(m.body))
+				if resp.BodyString() != m.body {
+					tb.Errorf("warmup body mismatch: got %d bytes, want %d", len(resp.BodyString()), len(m.body))
 					failed.Store(true)
 				}
+				resp.Release()
 			}()
 		}
 		wg.Wait()
@@ -252,14 +253,20 @@ func BenchmarkExecute(b *testing.B) {
 							defer wg.Done()
 							req := m.request()
 							for atomic.AddInt64(&remaining, -1) >= 0 {
-								resp, err := client.Execute(ctx, req, nil)
+								// ExecuteBorrowed exercises the consumer-managed
+								// borrow lane this benchmark exists to measure: on
+								// fasthttp the buffered/streamed body is borrowed
+								// (no owned copy) and freed by Release. BodyString
+								// is a zero-copy view valid until Release.
+								resp, err := client.ExecuteBorrowed(ctx, req, nil)
 								if err != nil {
 									errCount.Add(1)
 									continue
 								}
-								if resp.Body != m.body {
+								if resp.BodyString() != m.body {
 									errCount.Add(1)
 								}
+								resp.Release()
 							}
 						}()
 					}
@@ -329,16 +336,17 @@ func runLoad(tb testing.TB, client *Client, m *mockServer, bc backendCase, size 
 					return
 				}
 				t0 := time.Now()
-				resp, err := client.Execute(ctx, req, nil)
+				resp, err := client.ExecuteBorrowed(ctx, req, nil)
 				lat := time.Since(t0)
 				latencies[i] = lat
 				if err != nil {
 					errCount.Add(1)
 					continue
 				}
-				if resp.Body != m.body {
+				if resp.BodyString() != m.body {
 					errCount.Add(1)
 				}
+				resp.Release()
 			}
 		}()
 	}
