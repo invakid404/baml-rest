@@ -3,6 +3,7 @@ package buildrequest
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -160,7 +161,9 @@ type ExtractResponseBytesFunc func(provider string, body []byte, includeReasonin
 //
 // Flow — single retry loop covering HTTP, extraction, and parsing:
 //  1. buildRequest(ctx, clientOverride) → llmhttp.Request
-//  2. httpClient.Execute(ctx, req, onSuccess) → llmhttp.Response
+//  2. httpClient.ExecuteBorrowed(ctx, req, onSuccess) → llmhttp.Response
+//     (the orchestrator owns the borrow lifecycle and releases per-attempt;
+//     callers never see a release obligation)
 //  3. extract(provider, body, includeReasoning) → parseable + raw + reasoning
 //     text — extractResponseBytes over resp.BodyBytes() when supplied and the
 //     transport returned owned bytes (net/http unary), else extractResponse
@@ -339,17 +342,24 @@ func RunCallOrchestration(
 		if err != nil {
 			return nil, fmt.Errorf("buildrequest: failed to build request: %w", err)
 		}
-		resp, httpErr := httpClient.Execute(ctx, req, sendHeartbeat)
+		resp, httpErr := httpClient.ExecuteBorrowed(ctx, req, sendHeartbeat)
 		if httpErr != nil {
 			return nil, httpErr
 		}
-		// Execute returns an OWNED response (its body is safe to hold for the
-		// life of resp; Release is a no-op here), so the extracted parseable/raw
-		// remain valid through parseFinal below and across the retry boundary.
-		// Release per the llmhttp borrow contract anyway — it is the canonical
-		// pattern and stays correct when Stage 2 switches this call site to
-		// ExecuteBorrowed (which will additionally copy raw/reasoning/error text
-		// before release).
+		// ExecuteBorrowed returns a response whose body may BORROW pooled
+		// transport storage (the fasthttp lanes; the net/http lane is already
+		// owned and Release is a no-op there). The orchestrator OWNS that
+		// lifecycle — public BAML/dynclient callers never see a release
+		// obligation. Release runs per-attempt: this defer fires when tryOneChild
+		// returns, which is strictly before the next retry or fallback child runs,
+		// so no borrowed buffer accumulates across attempts.
+		//
+		// Everything that crosses this attempt boundary must be an owned copy
+		// taken BEFORE this Release fires: raw/reasoning escaping via
+		// callAttemptResult (gated on NeedsRaw), raw on parse-failure, and the
+		// diagnostic body on extraction-failure are each cloned below. Anything
+		// consumed within the attempt — parseable feeding parseFinal — stays
+		// borrowed.
 		defer resp.Release()
 
 		// Extractor routing. The byte path is taken ONLY when the transport
@@ -380,9 +390,12 @@ func RunCallOrchestration(
 			// Pre-2xx provider errors don't reach this path — those
 			// surface as *HTTPError from Execute above and map to
 			// details.body via the existing provider_error classifier.
+			// The body crosses the retry boundary inside the error, recovered by
+			// rawFromError after retries; it aliases the borrowed buffer, so clone
+			// it before the deferred Release returns that storage to the pool.
 			return nil, newRawError(
 				fmt.Errorf("buildrequest: failed to extract response content: %w", extractErr),
-				resp.BodyString(),
+				strings.Clone(resp.BodyString()),
 			)
 		}
 
@@ -394,16 +407,30 @@ func RunCallOrchestration(
 			// already-split text-only return from extractResponse —
 			// not the full body — matching what success would have
 			// surfaced on /call-with-raw.
+			// raw crosses the retry boundary inside the error (recovered by
+			// rawFromError); it may alias the borrowed buffer when extraction
+			// returned a view into the body, so clone before the deferred Release.
 			return nil, newRawError(
 				wrapOutputParse(fmt.Errorf("buildrequest: failed to parse final result: %w", parseErr)),
-				raw,
+				strings.Clone(raw),
 			)
 		}
 
+		// raw/reasoning escape this attempt via callAttemptResult -> StreamResult,
+		// which is BAML-facing — but only when NeedsRaw gates them through at the
+		// final emission (see rawForFinal/reasoningForFinal below). They may alias
+		// the borrowed buffer, so clone the pair out before the deferred Release
+		// when needed; otherwise leave them empty so no borrowed view is retained
+		// past Release.
+		var rawOut, reasoningOut string
+		if config.NeedsRaw {
+			rawOut = strings.Clone(raw)
+			reasoningOut = strings.Clone(reasoning)
+		}
 		return &callAttemptResult{
 			finalResult:    finalResult,
-			raw:            raw,
-			reasoning:      reasoning,
+			raw:            rawOut,
+			reasoning:      reasoningOut,
 			winnerProvider: provider,
 			winnerPath:     "buildrequest",
 		}, nil

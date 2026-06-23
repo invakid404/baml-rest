@@ -37,7 +37,14 @@ func makeBuildCallRequest(serverURL string) BuildCallRequestFunc {
 }
 
 func identityParseFinal(_ context.Context, text string) (any, error) {
-	return text, nil
+	// Model production parse semantics: BAML Parse copies parseable into the
+	// protobuf FFI arguments and returns a freshly-decoded typed value, so the
+	// final result never aliases the (possibly borrowed) response body. Clone so
+	// this stand-in is honest about that ownership — returning text verbatim
+	// would hand back the borrowed parseable view, which the llmhttp_debug
+	// build's release-poisoning correctly flags as a use-after-release once the
+	// per-attempt Release recycles the buffer.
+	return strings.Clone(text), nil
 }
 
 func TestRunCallOrchestration_Success(t *testing.T) {

@@ -186,6 +186,12 @@ func (r *Response) Release() {
 	if !r.borrowed() {
 		return
 	}
+	// Borrowed: drop the missed-release finalizer (this IS the release), then —
+	// in debug builds — poison the about-to-be-recycled storage so any retained
+	// BodyString/BodyBytes view reads garbage instead of stale/aliased data.
+	// Both hooks are no-ops in production builds (see borrow_guard.go).
+	disarmBorrowGuard(r)
+	poisonReleasedBody(r.body)
 	r.body = nil
 	if r.fastResp != nil {
 		fasthttp.ReleaseResponse(r.fastResp)
