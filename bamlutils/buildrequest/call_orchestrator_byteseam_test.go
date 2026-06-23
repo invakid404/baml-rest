@@ -52,6 +52,7 @@ func TestRunCallOrchestration_ByteExtractorSeam(t *testing.T) {
 			identityParseFinal,
 			stringExtractor,
 			byteExtractor,
+			nil,
 			newTestResult,
 		)
 		close(out)
@@ -100,7 +101,7 @@ func TestRunCallOrchestration_ByteExtractorSeam(t *testing.T) {
 			makeBuildCallRequest(server.URL),
 			identityParseFinal,
 			stringExtractor,
-			nil, // no byte extractor — the injected string extractor must still run
+			nil, nil, // no byte extractor — the injected string extractor must still run
 			newTestResult,
 		)
 		close(out)

@@ -178,6 +178,7 @@ func TestRunCallOrchestration_EmitsPlannedAndOutcome(t *testing.T) {
 		identityParseFinal,
 		ExtractResponseContent,
 		ExtractResponseContentBytes,
+		nil,
 		newTestResult,
 	)
 	if err != nil {
@@ -244,6 +245,7 @@ func TestRunCallOrchestration_NoMetadataPlanIsNoop(t *testing.T) {
 		identityParseFinal,
 		ExtractResponseContent,
 		ExtractResponseContentBytes,
+		nil,
 		newTestResult,
 	)
 	if err != nil {
@@ -370,6 +372,7 @@ func TestRunCallOrchestration_OutcomeClearsFallbackTargetFields(t *testing.T) {
 		identityParseFinal,
 		ExtractResponseContent,
 		ExtractResponseContentBytes,
+		nil,
 		newTestResult,
 	)
 	if err != nil {

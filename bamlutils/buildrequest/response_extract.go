@@ -47,11 +47,13 @@ func ExtractResponseContent(provider string, responseBody string, includeReasoni
 	}
 
 	// gjson.Get aliases responseBody for unescaped result substrings; the
-	// extractors copy what they keep into string builders, so no aliasing
-	// outlives this call.
+	// copyingJoiner concatenates every kept segment through a strings.Builder,
+	// so the returned parseable/raw own their bytes and no aliasing outlives
+	// this call. (The aliasing twin is ExtractResponseContentBorrowed, which
+	// swaps in aliasJoiner for the single-segment zero-copy fast-path.)
 	return dispatchResponseContent(provider, func(path string) gjson.Result {
 		return gjson.Get(responseBody, path)
-	}, includeReasoning)
+	}, includeReasoning, &copyingJoiner{})
 }
 
 // ExtractResponseContentBytes is the byte-oriented twin of
@@ -79,27 +81,36 @@ func ExtractResponseContentBytes(provider string, body []byte, includeReasoning 
 
 	return dispatchResponseContent(provider, func(path string) gjson.Result {
 		return gjson.GetBytes(body, path)
-	}, includeReasoning)
+	}, includeReasoning, &copyingJoiner{})
 }
 
 // dispatchResponseContent routes to the per-provider extractor. The get
 // closure performs each top-level path lookup against the underlying JSON
 // (string via gjson.Get, or bytes via gjson.GetBytes); nested navigation
 // happens on the returned gjson.Result values, which are source-agnostic.
-// This keeps the string and byte entry points sharing one implementation.
-func dispatchResponseContent(provider string, get func(path string) gjson.Result, includeReasoning bool) (parseable, raw, reasoning string, err error) {
+// This keeps the string, byte, and borrowed entry points sharing one
+// implementation.
+//
+// pj is the accumulator the array/multi-block providers use to assemble
+// parseable text. The string/byte entry points pass a copyingJoiner (always
+// concatenate through strings.Builder → owned output); the borrowed entry
+// point passes an aliasJoiner (single content block → return that block's
+// aliasing view verbatim, zero copy). pj never changes the extracted VALUE,
+// only whether a single-segment result aliases the source — see
+// TestExtractResponseContentBorrowedMatchesString.
+func dispatchResponseContent(provider string, get func(path string) gjson.Result, includeReasoning bool, pj parseableJoiner) (parseable, raw, reasoning string, err error) {
 	switch provider {
 	case "openai", "openai-generic", "azure-openai", "ollama", "openrouter":
-		return extractOpenAIContent(provider, get, includeReasoning)
+		return extractOpenAIContent(provider, get, includeReasoning, pj)
 
 	case "anthropic":
-		return extractAnthropicContent(provider, get, includeReasoning)
+		return extractAnthropicContent(provider, get, includeReasoning, pj)
 
 	case "openai-responses":
-		return extractOpenAIResponsesContent(provider, get, includeReasoning)
+		return extractOpenAIResponsesContent(provider, get, includeReasoning, pj)
 
 	case "google-ai", "vertex-ai":
-		return extractGeminiContent(provider, get, includeReasoning)
+		return extractGeminiContent(provider, get, includeReasoning, pj)
 
 	case "aws-bedrock":
 		// aws-bedrock non-streaming extractor for the Converse API.
@@ -108,7 +119,7 @@ func dispatchResponseContent(provider string, get func(path string) gjson.Result
 		// branch). Current scope: default credential chain only (no
 		// static `.baml` creds), no endpoint_url override, reasoning
 		// block signature/redactedContent skipped (see #254).
-		return extractAWSBedrockContent(provider, get, includeReasoning)
+		return extractAWSBedrockContent(provider, get, includeReasoning, pj)
 
 	default:
 		return "", "", "", fmt.Errorf("unsupported provider for non-streaming extraction: %s", provider)
@@ -137,7 +148,7 @@ func dispatchResponseContent(provider string, get func(path string) gjson.Result
 // Returns an error for refusals, missing/malformed content, and non-object
 // array elements. reasoning_content is telemetry — its presence does not
 // change content's strict error semantics.
-func extractOpenAIContent(provider string, get func(string) gjson.Result, includeReasoning bool) (parseable, raw, reasoning string, err error) {
+func extractOpenAIContent(provider string, get func(string) gjson.Result, includeReasoning bool, pj parseableJoiner) (parseable, raw, reasoning string, err error) {
 	extractReasoning := func() string {
 		if !includeReasoning {
 			return ""
@@ -172,7 +183,6 @@ func extractOpenAIContent(provider string, get func(string) gjson.Result, includ
 
 	// Array of content parts
 	if content.IsArray() {
-		var sb strings.Builder
 		var iterErr error
 		content.ForEach(func(_, part gjson.Result) bool {
 			// Reject non-object array elements
@@ -193,7 +203,7 @@ func extractOpenAIContent(provider string, get func(string) gjson.Result, includ
 					iterErr = fmt.Errorf("%s: unexpected type for content part text field (got %s)", provider, textField.Type)
 					return false
 				}
-				sb.WriteString(textField.String())
+				pj.WriteString(textField.String())
 			case "refusal":
 				// A refusal part is never a valid completion. Error
 				// unconditionally — even if the refusal text is empty or
@@ -213,7 +223,7 @@ func extractOpenAIContent(provider string, get func(string) gjson.Result, includ
 		if iterErr != nil {
 			return "", "", "", iterErr
 		}
-		text := sb.String()
+		text := pj.String()
 		return text, text, extractReasoning(), nil
 	}
 
@@ -238,11 +248,10 @@ func extractOpenAIContent(provider string, get func(string) gjson.Result, includ
 //   - raw: same as parseable (text-only by construction).
 //   - reasoning: "thinking" blocks' thinking text, only when
 //     includeReasoning is true. Empty otherwise.
-func extractAnthropicContent(provider string, get func(string) gjson.Result, includeReasoning bool) (parseable, raw, reasoning string, err error) {
+func extractAnthropicContent(provider string, get func(string) gjson.Result, includeReasoning bool, pj parseableJoiner) (parseable, raw, reasoning string, err error) {
 	contentArray := get("content")
 
 	if contentArray.IsArray() {
-		var parseableSB strings.Builder
 		var reasoningSB strings.Builder
 		var iterErr error
 		contentArray.ForEach(func(_, value gjson.Result) bool {
@@ -264,7 +273,7 @@ func extractAnthropicContent(provider string, get func(string) gjson.Result, inc
 					iterErr = fmt.Errorf("%s: unexpected type for text block (got %s)", provider, textField.Type)
 					return false
 				}
-				parseableSB.WriteString(textField.String())
+				pj.WriteString(textField.String())
 			case "thinking":
 				thinkField := value.Get("thinking")
 				if thinkField.Type != gjson.String {
@@ -283,7 +292,7 @@ func extractAnthropicContent(provider string, get func(string) gjson.Result, inc
 		if iterErr != nil {
 			return "", "", "", iterErr
 		}
-		text := parseableSB.String()
+		text := pj.String()
 		return text, text, reasoningSB.String(), nil
 	}
 
@@ -307,11 +316,10 @@ func extractAnthropicContent(provider string, get func(string) gjson.Result, inc
 // remain errors. Thought parts are filtered, not validated — non-string
 // text on a thought part is silently skipped, since the part contributes
 // to neither parseable nor (validated) reasoning output.
-func extractGeminiContent(provider string, get func(string) gjson.Result, includeReasoning bool) (parseable, raw, reasoning string, err error) {
+func extractGeminiContent(provider string, get func(string) gjson.Result, includeReasoning bool, pj parseableJoiner) (parseable, raw, reasoning string, err error) {
 	parts := get("candidates.0.content.parts")
 
 	if parts.IsArray() {
-		var parseableSB strings.Builder
 		var reasoningSB strings.Builder
 		var iterErr error
 		parts.ForEach(func(_, part gjson.Result) bool {
@@ -338,14 +346,14 @@ func extractGeminiContent(provider string, get func(string) gjson.Result, includ
 					iterErr = fmt.Errorf("%s: unexpected type for part text field (got %s)", provider, text.Type)
 					return false
 				}
-				parseableSB.WriteString(text.String())
+				pj.WriteString(text.String())
 			}
 			return true
 		})
 		if iterErr != nil {
 			return "", "", "", iterErr
 		}
-		text := parseableSB.String()
+		text := pj.String()
 		return text, text, reasoningSB.String(), nil
 	}
 
@@ -388,7 +396,7 @@ func extractGeminiContent(provider string, get func(string) gjson.Result, includ
 // silently skipped — they never produce errors. The strict no-message-item
 // contract is preserved: a reasoning-only response (no message item) still
 // errors regardless of the flag.
-func extractOpenAIResponsesContent(provider string, get func(string) gjson.Result, includeReasoning bool) (parseable, raw, reasoning string, err error) {
+func extractOpenAIResponsesContent(provider string, get func(string) gjson.Result, includeReasoning bool, pj parseableJoiner) (parseable, raw, reasoning string, err error) {
 	output := get("output")
 	if !output.IsArray() {
 		return "", "", "", fmt.Errorf("%s: could not extract text content from response (output array not found)", provider)
@@ -398,7 +406,6 @@ func extractOpenAIResponsesContent(provider string, get func(string) gjson.Resul
 	// items. We must not stop early because trailing output items still need
 	// validation and may contain additional assistant text.
 	var foundMessage bool
-	var parseableSB strings.Builder
 	var reasoningSB strings.Builder
 	var outputErr error
 	output.ForEach(func(_, item gjson.Result) bool {
@@ -438,7 +445,7 @@ func extractOpenAIResponsesContent(provider string, get func(string) gjson.Resul
 						outputErr = fmt.Errorf("%s: unexpected type for output_text text field (got %s)", provider, textField.Type)
 						return false
 					}
-					parseableSB.WriteString(textField.String())
+					pj.WriteString(textField.String())
 				case "refusal":
 					refusalField := entry.Get("refusal")
 					refusalText := "unknown reason"
@@ -469,7 +476,7 @@ func extractOpenAIResponsesContent(provider string, get func(string) gjson.Resul
 		return "", "", "", fmt.Errorf("%s: no message item found in output array", provider)
 	}
 
-	text := parseableSB.String()
+	text := pj.String()
 	return text, text, reasoningSB.String(), nil
 }
 
@@ -508,7 +515,7 @@ func extractOpenAIResponsesContent(provider string, get func(string) gjson.Resul
 // not contribute to any output, which preserves the strict
 // no-empty-success contract because the extractor still errors when
 // the message contains no recognised content blocks at all.
-func extractAWSBedrockContent(provider string, get func(string) gjson.Result, includeReasoning bool) (parseable, raw, reasoning string, err error) {
+func extractAWSBedrockContent(provider string, get func(string) gjson.Result, includeReasoning bool, pj parseableJoiner) (parseable, raw, reasoning string, err error) {
 	message := get("output.message")
 	if !message.IsObject() {
 		return "", "", "", fmt.Errorf("%s: could not extract text content from response (output.message not found)", provider)
@@ -518,7 +525,6 @@ func extractAWSBedrockContent(provider string, get func(string) gjson.Result, in
 		return "", "", "", fmt.Errorf("%s: output.message.content is not an array", provider)
 	}
 
-	var parseableSB strings.Builder
 	var reasoningSB strings.Builder
 	var iterErr error
 	var sawAnyBlock bool
@@ -535,7 +541,7 @@ func extractAWSBedrockContent(provider string, get func(string) gjson.Result, in
 				iterErr = fmt.Errorf("%s: unexpected type for text block (got %s)", provider, textField.Type)
 				return false
 			}
-			parseableSB.WriteString(textField.String())
+			pj.WriteString(textField.String())
 			sawAnyBlock = true
 			return true
 		}
@@ -567,7 +573,7 @@ func extractAWSBedrockContent(provider string, get func(string) gjson.Result, in
 	if !sawAnyBlock {
 		return "", "", "", fmt.Errorf("%s: output.message.content array has no recognised content blocks", provider)
 	}
-	text := parseableSB.String()
+	text := pj.String()
 	return text, text, reasoningSB.String(), nil
 }
 

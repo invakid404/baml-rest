@@ -167,6 +167,25 @@ func (r *Response) BodyBytes() []byte {
 	return r.body
 }
 
+// BorrowedBytes returns the borrowed response body bytes on a genuinely
+// borrowed, not-yet-released response (the fasthttp ExecuteBorrowed lanes),
+// and nil otherwise — owned responses (net/http, or an Execute copy) and
+// released responses both return nil. It is the orchestrator's borrow-gating
+// seam: a non-nil result means the bytes alias pooled transport storage that
+// Release will recycle, so the caller may run an ALIASING extractor over them
+// (zero-copy on unescaped scalar/single-segment content) but MUST NOT retain
+// any returned view past Release. This is deliberately distinct from BodyBytes
+// (which stays nil on the fasthttp lanes to preserve the net/http-only
+// owned-bytes routing invariant): BorrowedBytes is true exactly on the borrow
+// lanes, BodyBytes exactly on the owned net/http lane, and both are nil for an
+// owned Execute copy.
+func (r *Response) BorrowedBytes() []byte {
+	if r == nil || !r.borrowed() {
+		return nil
+	}
+	return r.body
+}
+
 // Release returns any pooled storage backing the response body to its pool and
 // invalidates BodyString/BodyBytes (they return empty/nil afterwards). It is
 // idempotent and always safe to call, including on owned responses (where it
