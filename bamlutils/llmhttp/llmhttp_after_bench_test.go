@@ -42,12 +42,15 @@ func wrappedFastBufferedDriver(_ testing.TB, m *mockServer) controlDoFunc {
 	req := m.request()
 	ctx := context.Background()
 	return func() error {
-		resp, err := client.Execute(ctx, req, nil)
+		resp, err := client.ExecuteBorrowed(ctx, req, nil)
 		if err != nil {
 			return err
 		}
-		if resp.Body != m.body {
-			return fmt.Errorf("wf-buffered: body mismatch (%d vs %d bytes)", len(resp.Body), len(m.body))
+		ok := resp.BodyString() == m.body
+		got := len(resp.BodyString())
+		resp.Release()
+		if !ok {
+			return fmt.Errorf("wf-buffered: body mismatch (%d vs %d bytes)", got, len(m.body))
 		}
 		return nil
 	}
@@ -65,12 +68,15 @@ func wrappedFastStreamedDriver(tb testing.TB, m *mockServer) controlDoFunc {
 	// per-request atomic overhead to the measured lane.
 	onSuccess := func() {}
 	return func() error {
-		resp, err := client.Execute(ctx, req, onSuccess)
+		resp, err := client.ExecuteBorrowed(ctx, req, onSuccess)
 		if err != nil {
 			return err
 		}
-		if resp.Body != m.body {
-			return fmt.Errorf("wf-streamed: body mismatch (%d vs %d bytes)", len(resp.Body), len(m.body))
+		ok := resp.BodyString() == m.body
+		got := len(resp.BodyString())
+		resp.Release()
+		if !ok {
+			return fmt.Errorf("wf-streamed: body mismatch (%d vs %d bytes)", got, len(m.body))
 		}
 		return nil
 	}

@@ -413,12 +413,13 @@ func TestExecuteSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	defer resp.Release()
 
 	if resp.StatusCode != 200 {
 		t.Errorf("expected status 200, got %d", resp.StatusCode)
 	}
-	if resp.Body != responseJSON {
-		t.Errorf("expected body %q, got %q", responseJSON, resp.Body)
+	if resp.BodyString() != responseJSON {
+		t.Errorf("expected body %q, got %q", responseJSON, resp.BodyString())
 	}
 	if resp.Headers.Get("Content-Type") != "application/json" {
 		t.Errorf("expected Content-Type application/json, got %q", resp.Headers.Get("Content-Type"))
@@ -600,8 +601,9 @@ func TestExecuteNilContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil context to be handled gracefully, got error: %v", err)
 	}
-	if resp.Body != `{"ok":true}` {
-		t.Errorf("unexpected body: %q", resp.Body)
+	defer resp.Release()
+	if resp.BodyString() != `{"ok":true}` {
+		t.Errorf("unexpected body: %q", resp.BodyString())
 	}
 }
 
@@ -640,8 +642,9 @@ func TestExecuteEmptyBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.Body != `{"result":"ok"}` {
-		t.Errorf("unexpected body: %q", resp.Body)
+	defer resp.Release()
+	if resp.BodyString() != `{"result":"ok"}` {
+		t.Errorf("unexpected body: %q", resp.BodyString())
 	}
 }
 
@@ -689,8 +692,9 @@ func TestExecuteExactlyAtLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error for body at limit: %v", err)
 	}
-	if len(resp.Body) != MaxResponseBodyBytes {
-		t.Errorf("expected body length %d, got %d", MaxResponseBodyBytes, len(resp.Body))
+	defer resp.Release()
+	if len(resp.BodyString()) != MaxResponseBodyBytes {
+		t.Errorf("expected body length %d, got %d", MaxResponseBodyBytes, len(resp.BodyString()))
 	}
 }
 
@@ -766,8 +770,9 @@ func TestExecuteDefaultTimeoutInjected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.Body != `{"ok":true}` {
-		t.Errorf("unexpected body: %q", resp.Body)
+	defer resp.Release()
+	if resp.BodyString() != `{"ok":true}` {
+		t.Errorf("unexpected body: %q", resp.BodyString())
 	}
 
 	if !capture.hasDeadline {
@@ -813,8 +818,9 @@ func TestExecuteCallerDeadlinePreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.Body != `{"ok":true}` {
-		t.Errorf("unexpected body: %q", resp.Body)
+	defer resp.Release()
+	if resp.BodyString() != `{"ok":true}` {
+		t.Errorf("unexpected body: %q", resp.BodyString())
 	}
 
 	if !capture.hasDeadline {
@@ -852,11 +858,12 @@ func TestExecuteOnSuccessCallbackFired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	defer resp.Release()
 	if !called {
 		t.Fatal("onSuccess callback was not fired on 2xx response")
 	}
-	if resp.Body != `{"ok":true}` {
-		t.Errorf("unexpected body: %q", resp.Body)
+	if resp.BodyString() != `{"ok":true}` {
+		t.Errorf("unexpected body: %q", resp.BodyString())
 	}
 }
 
@@ -895,8 +902,9 @@ func TestExecuteOnSuccessFiresBeforeBodyRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.Body != `{"ok":true}` {
-		t.Errorf("unexpected body: %q", resp.Body)
+	defer resp.Release()
+	if resp.BodyString() != `{"ok":true}` {
+		t.Errorf("unexpected body: %q", resp.BodyString())
 	}
 
 	// Assert the handler saw the callback BEFORE it sent the body.

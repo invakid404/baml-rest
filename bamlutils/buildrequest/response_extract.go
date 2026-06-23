@@ -56,7 +56,7 @@ func ExtractResponseContent(provider string, responseBody string, includeReasoni
 
 // ExtractResponseContentBytes is the byte-oriented twin of
 // ExtractResponseContent for the net/http unary path, where the response
-// body is available as caller-owned bytes (llmhttp.Response.BodyBytes).
+// body is available as caller-owned bytes (llmhttp.Response.BodyBytes()).
 // It validates and extracts via gjson.ValidBytes / gjson.GetBytes instead
 // of converting the whole body to a string first, eliminating the
 // whole-body []byte->string copy on the hot unary path.

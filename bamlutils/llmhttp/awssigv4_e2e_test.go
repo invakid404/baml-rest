@@ -85,6 +85,7 @@ func TestEndpointOverride_E2E_NonStreaming(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
+	defer resp.Release()
 	if resp.StatusCode != 200 {
 		t.Errorf("StatusCode = %d, want 200", resp.StatusCode)
 	}

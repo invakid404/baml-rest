@@ -31,18 +31,19 @@ func TestExecuteNetHTTPPopulatesBodyBytes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if resp.BodyBytes == nil {
+		defer resp.Release()
+		if resp.BodyBytes() == nil {
 			t.Fatal("net/http unary success must populate BodyBytes")
 		}
-		if string(resp.BodyBytes) != responseJSON {
-			t.Errorf("BodyBytes = %q, want %q", resp.BodyBytes, responseJSON)
+		if string(resp.BodyBytes()) != responseJSON {
+			t.Errorf("BodyBytes = %q, want %q", resp.BodyBytes(), responseJSON)
 		}
-		if resp.Body != responseJSON {
-			t.Errorf("Body = %q, want %q", resp.Body, responseJSON)
+		if resp.BodyString() != responseJSON {
+			t.Errorf("Body = %q, want %q", resp.BodyString(), responseJSON)
 		}
-		// Body must be a zero-copy view over BodyBytes.
-		if unsafe.StringData(resp.Body) != unsafe.SliceData(resp.BodyBytes) {
-			t.Error("Body must alias BodyBytes backing array (zero-copy)")
+		// BodyString must be a zero-copy view over BodyBytes.
+		if unsafe.StringData(resp.BodyString()) != unsafe.SliceData(resp.BodyBytes()) {
+			t.Error("BodyString must alias BodyBytes backing array (zero-copy)")
 		}
 	})
 
@@ -52,16 +53,141 @@ func TestExecuteNetHTTPPopulatesBodyBytes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		// fasthttp response storage is pooled/released, so its body is an
-		// owned copy and BodyBytes stays nil — the orchestrator falls back to
-		// the string extractor for this lane.
-		if resp.BodyBytes != nil {
-			t.Errorf("fasthttp lane must leave BodyBytes nil, got %d bytes", len(resp.BodyBytes))
+		defer resp.Release()
+		// The fasthttp lane leaves BodyBytes nil (exposeBytes=false) so the
+		// orchestrator falls back to the string extractor for this lane,
+		// regardless of borrow vs owned. Execute returns an owned copy here.
+		if resp.BodyBytes() != nil {
+			t.Errorf("fasthttp lane must leave BodyBytes nil, got %d bytes", len(resp.BodyBytes()))
 		}
-		if resp.Body != responseJSON {
-			t.Errorf("Body = %q, want %q", resp.Body, responseJSON)
+		if resp.BodyString() != responseJSON {
+			t.Errorf("Body = %q, want %q", resp.BodyString(), responseJSON)
 		}
 	})
+}
+
+// TestExecuteBorrowedContract exercises the consumer-managed borrow returned
+// by ExecuteBorrowed across both fasthttp lanes and net/http: the body is
+// correct before Release, BodyBytes stays nil on the fasthttp lanes (extractor
+// routing invariant) and non-nil on net/http, Release is idempotent, and the
+// accessors fail closed (empty) after Release.
+func TestExecuteBorrowedContract(t *testing.T) {
+	const responseJSON = `{"choices":[{"message":{"content":"Hello world"}}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		fmt.Fprint(w, responseJSON)
+	}))
+	defer server.Close()
+	req := &Request{URL: server.URL, Method: "POST", Body: `{}`}
+
+	// fasthttp buffered lane: background ctx + nil onSuccess.
+	t.Run("fasthttp-buffered", func(t *testing.T) {
+		c := withFastClient(t, server.Client())
+		resp, err := c.ExecuteBorrowed(context.Background(), req, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if resp.BodyBytes() != nil {
+			t.Errorf("fasthttp borrow must keep BodyBytes nil, got %d bytes", len(resp.BodyBytes()))
+		}
+		if resp.BodyString() != responseJSON {
+			t.Errorf("BodyString = %q, want %q", resp.BodyString(), responseJSON)
+		}
+		resp.Release()
+		resp.Release() // idempotent
+		if resp.BodyString() != "" {
+			t.Errorf("BodyString after Release = %q, want empty", resp.BodyString())
+		}
+		if resp.BodyBytes() != nil {
+			t.Error("BodyBytes after Release must be nil")
+		}
+	})
+
+	// fasthttp streamed-header lane: non-nil onSuccess selects it.
+	t.Run("fasthttp-streamed", func(t *testing.T) {
+		c := withFastClient(t, server.Client())
+		var fired bool
+		resp, err := c.ExecuteBorrowed(context.Background(), req, func() { fired = true })
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !fired {
+			t.Error("onSuccess should have fired on the streamed lane")
+		}
+		if resp.BodyBytes() != nil {
+			t.Errorf("fasthttp borrow must keep BodyBytes nil, got %d bytes", len(resp.BodyBytes()))
+		}
+		if resp.BodyString() != responseJSON {
+			t.Errorf("BodyString = %q, want %q", resp.BodyString(), responseJSON)
+		}
+		if err := resp.Close(); err != nil {
+			t.Errorf("Close returned %v, want nil", err)
+		}
+		if resp.BodyString() != "" {
+			t.Errorf("BodyString after Close = %q, want empty", resp.BodyString())
+		}
+	})
+
+	// net/http lane: the body is already owned (Release is a no-op), but the
+	// borrow API still applies and BodyBytes is exposed.
+	t.Run("nethttp", func(t *testing.T) {
+		c := NewClientWithOptions(ClientOptions{Mode: ClientModeNetHTTP})
+		resp, err := c.ExecuteBorrowed(context.Background(), req, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if resp.BodyBytes() == nil {
+			t.Fatal("net/http unary success must populate BodyBytes")
+		}
+		if resp.BodyString() != responseJSON {
+			t.Errorf("BodyString = %q, want %q", resp.BodyString(), responseJSON)
+		}
+		resp.Release()
+		if resp.BodyBytes() != nil {
+			t.Error("BodyBytes after Release must be nil")
+		}
+	})
+}
+
+// TestExecuteOwnedSurvivesPoolReuse pins the safe-default contract: the owned
+// Response returned by Execute on the fasthttp buffered lane keeps a valid body
+// even after subsequent requests churn the fasthttp response pool — i.e. own()
+// really copied out of the pooled buffer rather than aliasing it.
+func TestExecuteOwnedSurvivesPoolReuse(t *testing.T) {
+	const responseJSON = `{"choices":[{"message":{"content":"Hello world"}}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		fmt.Fprint(w, responseJSON)
+	}))
+	defer server.Close()
+	req := &Request{URL: server.URL, Method: "POST", Body: `{}`}
+
+	c := withFastClient(t, server.Client())
+	resp, err := c.Execute(context.Background(), req, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Release()
+	owned := resp.BodyString()
+
+	// Churn the pool: many more requests whose responses recycle the same
+	// pooled fasthttp.Response buffers the first owned copy was taken from.
+	for i := 0; i < 50; i++ {
+		r2, err := c.ExecuteBorrowed(context.Background(), req, nil)
+		if err != nil {
+			t.Fatalf("churn request %d failed: %v", i, err)
+		}
+		r2.Release()
+	}
+
+	if owned != responseJSON {
+		t.Errorf("owned body corrupted by pool reuse: %q, want %q", owned, responseJSON)
+	}
+	if resp.BodyString() != responseJSON {
+		t.Errorf("owned BodyString corrupted by pool reuse: %q, want %q", resp.BodyString(), responseJSON)
+	}
 }
 
 // TestBytesToBodyStringZeroCopy proves the net/http unary success path no

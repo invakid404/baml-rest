@@ -159,12 +159,15 @@ func wrappedDriver(mode ClientMode, m *mockServer) controlDoFunc {
 	req := m.request()
 	ctx := context.Background()
 	return func() error {
-		resp, err := client.Execute(ctx, req, nil)
+		resp, err := client.ExecuteBorrowed(ctx, req, nil)
 		if err != nil {
 			return err
 		}
-		if resp.Body != m.body {
-			return fmt.Errorf("wrapped: body mismatch (%d vs %d bytes)", len(resp.Body), len(m.body))
+		ok := resp.BodyString() == m.body
+		got := len(resp.BodyString())
+		resp.Release()
+		if !ok {
+			return fmt.Errorf("wrapped: body mismatch (%d vs %d bytes)", got, len(m.body))
 		}
 		return nil
 	}
