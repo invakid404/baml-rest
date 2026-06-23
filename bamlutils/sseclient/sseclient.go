@@ -11,6 +11,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"sync"
@@ -224,6 +225,181 @@ func scan(ctx context.Context, r io.Reader, out chan<- Event) error {
 		case out <- ev:
 		case <-ctx.Done():
 			return ctx.Err()
+		}
+	}
+
+	return nil
+}
+
+// EventBytes is the byte-oriented view of a parsed SSE event handed to an
+// EventFunc by ScanEvents. Every slice aliases parser-owned scratch buffers
+// that are RESET and reused on the next event — the views are valid ONLY for
+// the duration of the EventFunc invocation that received them.
+//
+// The callback MUST fully consume these bytes (e.g. parse Data via
+// gjson.GetBytes) before returning, and MUST NOT let any slice — nor any
+// gjson.Result / string that aliases one — escape the call. gjson.GetBytes
+// copies the matched Raw/Str out before returning, so DeltaParts strings
+// built from it are owned and safe to retain; the raw Data/Type/ID slices
+// themselves are not.
+//
+// This is the whole point of the synchronous path: because the parser never
+// runs ahead of the consumer (no channel, no goroutine), Data need not be
+// materialized into a durable string per frame the way Stream's Event.Data
+// must be.
+type EventBytes struct {
+	// Type is the SSE event type (from "event:" lines), empty for the
+	// default "message" type. Aliases a parser-owned buffer.
+	Type []byte
+
+	// Data is the concatenated content of all "data:" lines for this event,
+	// joined with "\n". Aliases a parser-owned buffer.
+	Data []byte
+
+	// ID is the event ID from "id:" lines, if present. Aliases a
+	// parser-owned buffer.
+	ID []byte
+}
+
+// EventFunc is invoked synchronously by ScanEvents for each parsed SSE event,
+// in stream order. Returning a non-nil error stops scanning: ScanEvents
+// returns that error verbatim, EXCEPT ErrStopScan, which stops scanning
+// cleanly (ScanEvents returns nil) so a caller can halt for its own reason
+// while tracking its own error separately.
+type EventFunc func(ev EventBytes) error
+
+// ErrStopScan, when returned by an EventFunc, stops ScanEvents cleanly:
+// ScanEvents returns nil rather than surfacing this sentinel as a stream
+// error. Use it when the caller wants to abort parsing for a caller-side
+// reason (e.g. a downstream context cancellation or a tracked extraction
+// error) without it being misclassified as a transport failure.
+var ErrStopScan = errors.New("sseclient: stop scan")
+
+// ScanEvents reads SSE events from r until EOF, an error, or ctx
+// cancellation, invoking fn synchronously for each event. Unlike Stream, it
+// uses NO channel and NO goroutine — fn runs inline on the parsing goroutine,
+// so the event bytes handed to fn never cross a buffering boundary and need
+// not be copied into a durable string. This lets a caller parse Data in place
+// (gjson.GetBytes) without the per-frame Event.Data allocation Stream
+// requires.
+//
+// fn receives EventBytes whose slices alias parser-owned scratch buffers that
+// are reused on the next event; fn must fully consume them before returning
+// (see EventBytes). The terminal error is returned directly (nil on clean
+// EOF), with the same semantics as the value Stream delivers on its error
+// channel before classification.
+//
+// The public Stream channel API is unchanged and remains the path for all
+// concurrent/buffered consumers; ScanEvents is the additional synchronous
+// path for callers that can consume each event in place.
+func ScanEvents(ctx context.Context, r io.Reader, fn EventFunc) error {
+	bufp := getSSEScannerBuffer()
+	defer putSSEScannerBuffer(bufp)
+
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer((*bufp)[:0], sseScannerMaxTokenSize)
+
+	// Reused per-event scratch buffers. Field values are append-copied out of
+	// the scanner buffer into these (so they survive across the several Scan
+	// iterations that make up one event), and reset to [:0] at each event
+	// boundary so steady-state parsing allocates nothing per token. The
+	// buffers — and therefore the EventBytes views built from them — are
+	// reused on the next event, which is safe precisely because fn consumes
+	// them synchronously before the next Scan.
+	var (
+		typeBuf []byte
+		dataBuf []byte
+		idBuf   []byte
+		hasData bool
+	)
+
+	emit := func() error {
+		// Re-check ctx at dispatch time, mirroring the channel-based Stream's
+		// `select { case out <- ev: case <-ctx.Done(): return ctx.Err() }`.
+		// The top-of-loop check alone leaves two gaps: a concurrent cancel in
+		// the window between that check and this dispatch, and the trailing
+		// (post-loop) event below — which the loop-body check never guards
+		// because the loop exits via a false Scan(). Checking here stops a
+		// cancelled stream promptly without ever entering fn for a further
+		// event. ctx.Err() is allocation-free. Returned ctx.Err() is not
+		// ErrStopScan, so callers surface it as the terminal error.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return fn(EventBytes{Type: typeBuf, Data: dataBuf, ID: idBuf})
+	}
+
+	for scanner.Scan() {
+		// Check for context cancellation between lines.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		// line aliases the scanner's pooled buffer; valid only until the next
+		// Scan(). Field values are copied out of it via append below.
+		line := bytes.TrimRight(scanner.Bytes(), "\r")
+
+		// Blank line = event boundary (dispatch if we have data).
+		if len(line) == 0 {
+			if hasData {
+				if err := emit(); err != nil {
+					if errors.Is(err, ErrStopScan) {
+						return nil
+					}
+					return err
+				}
+			}
+			// Reset for next event. Truncate (not reallocate) so the backing
+			// arrays are reused.
+			typeBuf = typeBuf[:0]
+			dataBuf = dataBuf[:0]
+			idBuf = idBuf[:0]
+			hasData = false
+			continue
+		}
+
+		// SSE comment lines start with ':' — skip them (keepalives).
+		if line[0] == ':' {
+			continue
+		}
+
+		field, value := parseSSELine(line)
+
+		switch string(field) {
+		case "data":
+			if hasData {
+				// Multiple data lines are joined with newlines per SSE spec.
+				dataBuf = append(dataBuf, '\n')
+			}
+			// append copies value out of the scanner buffer into dataBuf.
+			dataBuf = append(dataBuf, value...)
+			hasData = true
+		case "event":
+			// Last event: line wins per spec; overwrite by truncating first.
+			typeBuf = append(typeBuf[:0], value...)
+		case "id":
+			// Per SSE spec, ignore IDs containing null.
+			if bytes.IndexByte(value, '\x00') < 0 {
+				idBuf = append(idBuf[:0], value...)
+			}
+		case "retry":
+			// Not relevant for one-shot LLM streams; ignore.
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+
+	// Trailing event without a final blank line.
+	if hasData {
+		if err := emit(); err != nil {
+			if errors.Is(err, ErrStopScan) {
+				return nil
+			}
+			return err
 		}
 	}
 

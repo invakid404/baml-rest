@@ -184,16 +184,23 @@ func classifyStreamErrc(src <-chan error) <-chan error {
 	out := make(chan error, 1)
 	go func() {
 		defer close(out)
-		err := <-src
-		if err == nil {
-			out <- nil
-			return
-		}
-		if te := classifyTransportErr(err, "llmhttp: failed to read response body", false); te != nil {
-			out <- te
-			return
-		}
-		out <- fmt.Errorf("llmhttp: failed to read response body: %w", err)
+		out <- classifyStreamErr(<-src)
 	}()
 	return out
+}
+
+// classifyStreamErr is the synchronous core of classifyStreamErrc, shared with
+// the callback streaming path (StreamCallback.ForEach). It runs a non-nil
+// terminal stream error through classifyTransportErr with body-read semantics
+// (staleConnTeardownAcceptable=false, since any delivered bytes rule out the
+// gated stale-conn-teardown family) and wraps anything else generically so
+// io.ErrUnexpectedEOF keeps its content-integrity meaning. nil passes through.
+func classifyStreamErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	if te := classifyTransportErr(err, "llmhttp: failed to read response body", false); te != nil {
+		return te
+	}
+	return fmt.Errorf("llmhttp: failed to read response body: %w", err)
 }
