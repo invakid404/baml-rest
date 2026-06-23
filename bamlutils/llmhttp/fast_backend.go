@@ -141,12 +141,15 @@ func (c *Client) executeFastBuffered(ctx context.Context, req *Request, rewritte
 	// BodyBytes stays unexposed (exposeBytes=false) so the orchestrator keeps
 	// routing the fasthttp lane through the string extractor. onSuccess is nil
 	// in this lane by construction (executeFast gates on it).
-	return &Response{
+	resp := &Response{
 		StatusCode: status,
 		Headers:    fastHeadersToHTTP(&fResp.Header),
 		body:       body,
 		fastResp:   fResp,
-	}, nil
+	}
+	// Arm the debug-only missed-release guard (no-op in production builds).
+	armBorrowGuard(resp)
+	return resp, nil
 }
 
 // executeFastStreamed runs the streamed-header lane against the streaming host
@@ -251,12 +254,15 @@ func (c *Client) executeFastStreamed(ctx context.Context, req *Request, rewritte
 	// only buf; Response.Release returns it to fastBodyBufPool. Headers are
 	// converted here, before the defers run. BodyBytes stays unexposed so the
 	// orchestrator keeps routing this lane through the string extractor.
-	return &Response{
+	resp := &Response{
 		StatusCode: status,
 		Headers:    fastHeadersToHTTP(&fResp.Header),
 		body:       buf.Bytes(),
 		drainBuf:   buf,
-	}, nil
+	}
+	// Arm the debug-only missed-release guard (no-op in production builds).
+	armBorrowGuard(resp)
+	return resp, nil
 }
 
 // buildFastRequest populates fReq from the llmhttp.Request. Caller supplies
