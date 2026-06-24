@@ -6,7 +6,7 @@ ARG GO_VERSION=1.26.3
 # Pinned to a digest so a silent base-image bump cannot change the
 # toolchain (and thus the produced .so) underneath a fixed cache key.
 # renovate: datasource=docker
-FROM rust:bookworm@sha256:291beadc19a5645caae741f61810440c5dc792718f2459f44b69c715714bae5d AS cffi-builder
+FROM rust:bookworm@sha256:a2bcd76be08d10f1b5dcb9424badc65f598130b0b6a566fc92fbb782b1ac9cf4 AS cffi-builder
 
 # Install Go (needed for protoc-gen-go during CFFI build)
 ARG TARGETARCH{{ if .defaultTargetArch }}={{ .defaultTargetArch }}{{ end }}
