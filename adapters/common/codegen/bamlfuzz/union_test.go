@@ -2157,14 +2157,125 @@ func fixtureSchemaMapVsClassSiblingUnion() FuzzSchema {
 	})
 }
 
+// fixtureFieldUnion returns the type of className.fieldName from an
+// analysed fixture schema so the deterministic gate assertions below run
+// against the exact FuzzType drawUnion sees, rather than a hand-rebuilt
+// copy that could drift from the fixture.
+func fixtureFieldUnion(t *testing.T, schema FuzzSchema, className, fieldName string) FuzzType {
+	t.Helper()
+	for _, cls := range schema.Classes {
+		if cls.Name != className {
+			continue
+		}
+		for _, p := range cls.Properties {
+			if p.Name == fieldName {
+				return p.Type
+			}
+		}
+	}
+	t.Fatalf("fixture missing %s.%s field", className, fieldName)
+	return FuzzType{}
+}
+
+// assertMapArmNonEmptyGateEngages pins, deterministically and on every
+// run, that drawUnion routes variant `mapArm` of `unionFT` through
+// drawArmEnsuringMapNonEmpty (the non-empty-map path) instead of the
+// unconstrained draw. drawUnion's gate is
+//
+//	pickedArmReachesMapThroughTransparent(arm, 0) && unionHasClassReachableSibling(ft, idx)
+//
+// so for the map arm both conjuncts must hold: the arm reaches a map
+// leaf through whatever transparent wrappers (optional / nested union /
+// deep nesting) this shape stacks, and a sibling reaches a class so an
+// empty `{}` would be ambiguous under BAML coercion. The candidate
+// filter must also retain the map arm: armForcesEmptyMap is false for
+// these shallow shapes (the map inner never blows the recursion cap),
+// so the class-driven prune keeps it selectable. Asserting these
+// decision points is the deterministic replacement for the flaky
+// post-loop coverage sentinel, whose firing depended on the random
+// rapid draw reaching the map leaf within budget (#389 → #417).
+func assertMapArmNonEmptyGateEngages(t *testing.T, schema FuzzSchema, unionFT FuzzType, mapArm int, wantCandidates []int) {
+	t.Helper()
+	// First gate conjunct: the picked arm reaches a map leaf through the
+	// shape's transparent wrappers, so its drawn value can render as the
+	// bare `{}` that collides with a class sibling.
+	if !pickedArmReachesMapThroughTransparent(unionFT.Variants[mapArm], 0) {
+		t.Fatalf("pickedArmReachesMapThroughTransparent(arm %d) = false; want true (arm reaches a map leaf through transparent wrappers)", mapArm)
+	}
+	// Second gate conjunct: a sibling reaches a class, so the empty-map
+	// ambiguity is real and the non-empty constraint must engage. Both
+	// conjuncts true ⇒ drawUnion takes the ensure-non-empty branch and
+	// drawArmEnsuringMapNonEmpty draws the map leaf with minLen=1.
+	if !unionHasClassReachableSibling(unionFT, mapArm) {
+		t.Fatalf("unionHasClassReachableSibling(union, %d) = false; want true (a sibling reaches a class — empty {} would be ambiguous)", mapArm)
+	}
+	// The candidate filter's class-driven prune is active here (a class is
+	// reachable in the union) ...
+	if !unionHasClassReachableArm(unionFT) {
+		t.Fatalf("unionHasClassReachableArm(union) = false; want true (class reachable ⇒ candidate prune active)")
+	}
+	// ... yet it must not drop the map arm: armForcesEmptyMap is false for
+	// this shallow shape, so the map arm stays selectable and, once
+	// picked, is held non-empty by the gate above. (Were the arm forced to
+	// a depth-clamped `{}` it would be pruned instead — that is the other
+	// half of the invariant, exercised by the *MayBeEmpty / *WithoutClass
+	// tests.)
+	ctx := &valueDrawCtx{schema: schema, depth: make(map[string]int)}
+	candidates := ctx.unionDrawCandidates(unionFT, false)
+	if !reflect.DeepEqual(candidates, wantCandidates) {
+		t.Fatalf("unionDrawCandidates(union, false) = %v; want %v (map arm retained — it does not force an empty map)", candidates, wantCandidates)
+	}
+}
+
+// assertOverCapMapArmPruned pins the recursion-cap fallback,
+// deterministically and on every run: once the map arm's inner type
+// would blow the per-class recursion cap, drawing it is forced to a
+// depth-clamped empty `{}`. With a class_ref sibling present that `{}`
+// is byte-identical to a null-materialized class instance — which BAML
+// coerces to the class arm — so the candidate filter must DROP the
+// forced-empty map arm and leave only the class-reachable sibling
+// selectable. Seeding the draw context's depth at the cap for the
+// recursive class simulates the over-cap leaf without relying on the
+// rapid draw recursing deep enough to hit the clamp; that statistical
+// dependence was the #389/#498 flake the post-loop `exercised` sentinel
+// carried.
+func assertOverCapMapArmPruned(t *testing.T, schema FuzzSchema, unionFT FuzzType, mapArm, classArm int, recursiveClass string) {
+	t.Helper()
+	ctx := &valueDrawCtx{schema: schema, depth: map[string]int{recursiveClass: MaxValueRecursion}}
+	// The over-cap map arm really is forced to a clamped empty map ...
+	if !ctx.armForcesEmptyMap(unionFT.Variants[mapArm], 0) {
+		t.Fatalf("armForcesEmptyMap(arm %d) = false at the recursion cap; want true (map inner over the cap forces a clamped {})", mapArm)
+	}
+	// ... so it must be pruned, leaving the terminating class_ref sibling
+	// as the only candidate. Were the prune to miss, the draw could fall
+	// back to the forced-empty map arm and emit the ambiguous {}.
+	candidates := ctx.unionDrawCandidates(unionFT, false)
+	want := []int{classArm}
+	if !reflect.DeepEqual(candidates, want) {
+		t.Fatalf("unionDrawCandidates(union, false) at the recursion cap = %v; want %v (forced-empty map arm pruned, class sibling retained)", candidates, want)
+	}
+}
+
 // TestValueGenMapArmWithClassSiblingNeverEmpty is the durable
 // regression guard. With a union whose map arm has a class-reachable
 // sibling, ValueGen must never produce an empty map for the picked
 // map arm — otherwise the walker's Expected (`{}`) diverges from BAML
 // (which coerces `{}` to the class arm with null-filled fields).
+//
+// The non-empty-map invariant is asserted deterministically via
+// assertMapArmNonEmptyGateEngages (drawUnion's gate engages and the
+// candidate filter retains the map arm). The retained rapid.Check is
+// panic-only — it exercises ValueGen on the shape for breadth and fails
+// only if an empty map is actually drawn; it carries no statistical
+// post-loop coverage sentinel (the #389 flake source #417 removed).
 func TestValueGenMapArmWithClassSiblingNeverEmpty(t *testing.T) {
 	schema := fixtureSchemaMapVsClassSiblingUnion()
-	var exercised bool
+	unionFT := fixtureFieldUnion(t, schema, "Outer", "f")
+	// Deterministic invariant: the direct map arm (index 0) is gated onto
+	// the non-empty path and retained as a candidate, regardless of any
+	// rapid draw.
+	assertMapArmNonEmptyGateEngages(t, schema, unionFT, 0, []int{0, 1})
+
 	rapid.Check(t, func(rt *rapid.T) {
 		v := ValueGen(schema).Draw(rt, "v")
 		fv, ok := v.LookupField("f")
@@ -2180,14 +2291,10 @@ func TestValueGenMapArmWithClassSiblingNeverEmpty(t *testing.T) {
 		if fv.Variant.Kind != KindMap {
 			rt.Fatalf("union arm 0 expected to be a map value, got %v", fv.Variant.Kind)
 		}
-		exercised = true
 		if len(fv.Variant.MapEntries) == 0 {
 			rt.Fatalf("map arm produced an empty map — ambiguous with class sibling under BAML coercion")
 		}
 	})
-	if !exercised {
-		t.Fatalf("rapid budget never picked the direct map arm — coverage sentinel never fired; non-empty-map invariant unverified")
-	}
 }
 
 // fixtureSchemaOptionalMapVsClassSiblingUnion mirrors
@@ -2237,7 +2344,12 @@ func fixtureSchemaOptionalMapVsClassSiblingUnion() FuzzSchema {
 // coercion to remain unambiguous.
 func TestValueGenOptionalMapArmWithClassSiblingNeverEmpty(t *testing.T) {
 	schema := fixtureSchemaOptionalMapVsClassSiblingUnion()
-	var exercised bool
+	unionFT := fixtureFieldUnion(t, schema, "Outer", "f")
+	// Deterministic invariant: the optional<map> arm reaches a map through
+	// the optional wrapper, so the gate engages and a present optional is
+	// held non-empty — no dependence on the rapid draw reaching the leaf.
+	assertMapArmNonEmptyGateEngages(t, schema, unionFT, 0, []int{0, 1})
+
 	rapid.Check(t, func(rt *rapid.T) {
 		v := ValueGen(schema).Draw(rt, "v")
 		fv, ok := v.LookupField("f")
@@ -2262,14 +2374,10 @@ func TestValueGenOptionalMapArmWithClassSiblingNeverEmpty(t *testing.T) {
 		if fv.Variant.Inner.Kind != KindMap {
 			rt.Fatalf("present optional expected map at leaf, got %v", fv.Variant.Inner.Kind)
 		}
-		exercised = true
 		if len(fv.Variant.Inner.MapEntries) == 0 {
 			rt.Fatalf("present optional<map> drew empty map — ambiguous with class sibling under BAML coercion")
 		}
 	})
-	if !exercised {
-		t.Fatalf("rapid budget never reached present-optional<map> leaf — coverage sentinel never fired; non-empty-map invariant unverified")
-	}
 }
 
 // fixtureSchemaNestedUnionMapVsClassSibling pins the nested-union
@@ -2322,7 +2430,13 @@ func fixtureSchemaNestedUnionMapVsClassSibling() FuzzSchema {
 // reachable sibling.
 func TestValueGenNestedUnionMapArmWithClassSiblingNeverEmpty(t *testing.T) {
 	schema := fixtureSchemaNestedUnionMapVsClassSibling()
-	var exercised bool
+	unionFT := fixtureFieldUnion(t, schema, "Outer", "f")
+	// Deterministic invariant: the nested-union arm reaches a map through
+	// the inner union, so the gate engages and the nested map leaf is held
+	// non-empty against the outer class sibling — no dependence on the
+	// rapid draw reaching outer→nested→map.
+	assertMapArmNonEmptyGateEngages(t, schema, unionFT, 0, []int{0, 1})
+
 	rapid.Check(t, func(rt *rapid.T) {
 		v := ValueGen(schema).Draw(rt, "v")
 		fv, ok := v.LookupField("f")
@@ -2347,14 +2461,10 @@ func TestValueGenNestedUnionMapArmWithClassSiblingNeverEmpty(t *testing.T) {
 		if fv.Variant.Variant.Kind != KindMap {
 			rt.Fatalf("nested union arm 0 expected to be a map value, got %v", fv.Variant.Variant.Kind)
 		}
-		exercised = true
 		if len(fv.Variant.Variant.MapEntries) == 0 {
 			rt.Fatalf("nested-union map arm produced an empty map — ambiguous with outer class sibling under BAML coercion")
 		}
 	})
-	if !exercised {
-		t.Fatalf("rapid budget never reached nested-union map leaf — coverage sentinel never fired; non-empty-map invariant unverified")
-	}
 }
 
 // fixtureSchemaOptionalNestedUnionMapVsClassSibling layers an
@@ -2406,7 +2516,13 @@ func fixtureSchemaOptionalNestedUnionMapVsClassSibling() FuzzSchema {
 // empty.
 func TestValueGenOptionalNestedUnionMapArmWithClassSiblingNeverEmpty(t *testing.T) {
 	schema := fixtureSchemaOptionalNestedUnionMapVsClassSibling()
-	var exercised bool
+	unionFT := fixtureFieldUnion(t, schema, "Outer", "f")
+	// Deterministic invariant: the optional<nested-union> arm reaches a map
+	// through both an optional and a nested union, so the gate engages and
+	// a present compound is held non-empty — no dependence on the rapid
+	// draw reaching outer→optional(present)→nested→map.
+	assertMapArmNonEmptyGateEngages(t, schema, unionFT, 0, []int{0, 1})
+
 	rapid.Check(t, func(rt *rapid.T) {
 		v := ValueGen(schema).Draw(rt, "v")
 		fv, ok := v.LookupField("f")
@@ -2440,14 +2556,10 @@ func TestValueGenOptionalNestedUnionMapArmWithClassSiblingNeverEmpty(t *testing.
 		if fv.Variant.Inner.Variant.Kind != KindMap {
 			rt.Fatalf("nested union arm 0 expected to be a map value, got %v", fv.Variant.Inner.Variant.Kind)
 		}
-		exercised = true
 		if len(fv.Variant.Inner.Variant.MapEntries) == 0 {
 			rt.Fatalf("optional+nested-union map arm produced an empty map — ambiguous with outer class sibling under BAML coercion")
 		}
 	})
-	if !exercised {
-		t.Fatalf("rapid budget never reached optional+nested-union map leaf — coverage sentinel never fired; non-empty-map invariant unverified")
-	}
 }
 
 // fixtureSchemaDeepNestedUnionMapVsClassSibling stacks two levels of
@@ -2500,7 +2612,14 @@ func fixtureSchemaDeepNestedUnionMapVsClassSibling() FuzzSchema {
 // outer → middle → innermost → map, the leaf map must be non-empty.
 func TestValueGenDeepNestedUnionMapArmWithClassSiblingNeverEmpty(t *testing.T) {
 	schema := fixtureSchemaDeepNestedUnionMapVsClassSibling()
-	var exercised bool
+	unionFT := fixtureFieldUnion(t, schema, "Outer", "f")
+	// Deterministic invariant: the map leaf sits two nested-union levels
+	// deep, yet the gate's reach walk descends through both, so the gate
+	// engages and the deep leaf is held non-empty against the outermost
+	// class sibling — no dependence on the rapid draw threading
+	// outer→middle→innermost→map.
+	assertMapArmNonEmptyGateEngages(t, schema, unionFT, 0, []int{0, 1})
+
 	rapid.Check(t, func(rt *rapid.T) {
 		v := ValueGen(schema).Draw(rt, "v")
 		fv, ok := v.LookupField("f")
@@ -2531,14 +2650,10 @@ func TestValueGenDeepNestedUnionMapArmWithClassSiblingNeverEmpty(t *testing.T) {
 		if leaf.Kind != KindMap {
 			rt.Fatalf("innermost arm 0 expected map value, got %v", leaf.Kind)
 		}
-		exercised = true
 		if len(leaf.MapEntries) == 0 {
 			rt.Fatalf("deep-nested map arm produced an empty map — ambiguous with outermost class sibling under BAML coercion")
 		}
 	})
-	if !exercised {
-		t.Fatalf("rapid budget never reached deep-nested map leaf — coverage sentinel never fired; non-empty-map invariant unverified")
-	}
 }
 
 // TestValueGenMapArmWithoutClassSiblingMayBeEmpty pins the fix's
@@ -2659,44 +2774,40 @@ func fixtureSchemaRecursiveUnionMapClampClassSibling() FuzzSchema {
 	})
 }
 
-// recursiveFallbackExercised reports whether the draw populated the
-// root union's map arm. Each map entry is a depth-2 A instance whose
-// own union sits over the recursion cap on both arms — the fallback
-// the regression guards. A non-empty root map therefore proves the
-// clamp path was reached, so the assertion below actually covered it.
-func recursiveFallbackExercised(v FuzzValue) bool {
-	fv, ok := v.LookupField("f")
-	if !ok || fv.Kind != KindUnion || fv.Variant == nil {
-		return false
-	}
-	if fv.VariantIndex != 0 || fv.Variant.Kind != KindMap {
-		return false
-	}
-	return len(fv.Variant.MapEntries) > 0
-}
-
 // TestValueGenRecursiveFallbackMapArmWithClassSiblingNeverEmpty is the
 // deterministic regression for the recursion-cap fallback Codex found
-// in r3. When the union's safe-arm set empties (every arm over the
-// cap) and a class_ref sibling is present, the draw must not fall back
-// to the map arm and render a depth-clamped `{}` — BAML coerces that
-// empty map to the class sibling, diverging from the walker's recorded
-// map choice. Before the picker-level fix this fixture draws empty
-// ambiguous maps at the depth-2 union; after it, the fallback picks
-// the terminating class_ref arm and the leaf invariant holds.
+// in r3. The fixture's class A has field `f: union[map<string,A>, B]`
+// and B reaches A again, so at depth 2 BOTH union arms are over the
+// per-class recursion cap. The safe-arm set empties and the draw falls
+// back to the full index range; with a class_ref sibling present, the
+// map arm (forced to a depth-clamped `{}`) must be pruned so the
+// fallback lands on the terminating class_ref arm — otherwise the
+// empty `{}` coerces to the class sibling, diverging from the walker's
+// recorded map choice.
+//
+// The invariant is asserted deterministically: assertOverCapMapArmPruned
+// seeds the draw context's depth at the cap and proves the forced map
+// arm is dropped from the candidate set, leaving only the class arm.
+// assertMapArmNonEmptyGateEngages covers the below-cap case (map arm
+// live and gated non-empty). Neither depends on the rapid draw recursing
+// to the depth-2 clamp — the statistical reach the removed post-loop
+// `exercised` sentinel relied on, and the #498 flake source. The
+// retained rapid.Check is panic-only: walkValueForMapArmAmbiguity fails
+// only if a drawn value actually exhibits the ambiguity.
 func TestValueGenRecursiveFallbackMapArmWithClassSiblingNeverEmpty(t *testing.T) {
 	schema := fixtureSchemaRecursiveUnionMapClampClassSibling()
-	var exercised bool
+	unionFT := fixtureFieldUnion(t, schema, "A", "f")
+	// Below the cap the map arm is a live candidate and held non-empty by
+	// the gate (the same family invariant as the sibling tests).
+	assertMapArmNonEmptyGateEngages(t, schema, unionFT, 0, []int{0, 1})
+	// At the cap the map arm is forced to a clamped `{}` and must be pruned
+	// so the fallback picks the terminating class_ref sibling instead.
+	assertOverCapMapArmPruned(t, schema, unionFT, 0, 1, "A")
+
 	rapid.Check(t, func(rt *rapid.T) {
 		v := ValueGen(schema).Draw(rt, "v")
-		if recursiveFallbackExercised(v) {
-			exercised = true
-		}
 		walkValueForMapArmAmbiguity(rt, schema.EffectiveRoot(), v, schema)
 	})
-	if !exercised {
-		t.Fatalf("rapid budget never reached the depth-clamped fallback union — coverage sentinel never fired; regression unverified")
-	}
 }
 
 // raiseRapidChecksFloor lifts the rapid check budget for the calling
