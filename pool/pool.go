@@ -265,6 +265,14 @@ type Pool struct {
 	shutdownCancel     context.CancelFunc                  // cancels shutdownCtx
 	newWorker          func(id int) (*workerHandle, error) // override for testing; nil in production
 	beforeRestartStart func()
+	// onSilentStreamEOF is a test-only seam fired on the CallStream
+	// silent channel-close path (worker result channel closed with no
+	// terminal/error frame) after cleanup() and before the restart
+	// decision. It lets a test deterministically interleave caller
+	// cancellation into the exact window where the cancel-vs-close race
+	// lives, without relying on select-arm scheduling luck. nil in
+	// production.
+	onSilentStreamEOF func()
 
 	// admissionMu serialises Shutdown's draining transition with
 	// beginLogicalRequest. A request that observes draining=false
@@ -1567,6 +1575,34 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 			}
 
 			cleanup()
+
+			// Test-only seam: fires on the silent channel-close path
+			// (no terminal/error frame) in the window between cleanup and
+			// the restart decision, so a test can deterministically observe
+			// and cancel the caller context here. Gated on !shouldRetry so
+			// it only triggers for genuine silent EOF, never for an
+			// explicit retryable mid-stream error. nil in production.
+			if !shouldRetry && p.onSilentStreamEOF != nil {
+				p.onSilentStreamEOF()
+			}
+
+			// A silent channel close (no terminal/error frame) that races a
+			// caller cancellation must NOT be treated as a worker death: the
+			// worker is healthy, the client simply went away, and the close
+			// arm of the stream-loop select can win even when ctx is already
+			// done. Suppress the restart in that case. Use the parent caller
+			// ctx, not attemptCtx — cleanup() above cancels attemptCtx, so it
+			// is contaminated by local teardown and can't distinguish caller
+			// cancellation from our own cleanup.
+			//
+			// This is gated on !shouldRetry so it only covers silent EOF:
+			// explicit retryable worker errors (shouldRetry) still restart
+			// even when the caller cancelled, because a genuinely dead worker
+			// must be replaced. The ctx.Err() check below the restart stays
+			// in place to avoid starting another attempt after such an error.
+			if !shouldRetry && ctx.Err() != nil {
+				return
+			}
 
 			// Reaching here means either a mid-stream retryable error or an
 			// unexpected EOF (channel closed without terminal). Both are
