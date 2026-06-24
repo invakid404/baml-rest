@@ -60,6 +60,85 @@ func TestStderrRingBuffer_ByteCapBounded(t *testing.T) {
 	}
 }
 
+// assertWithinCaps fails if the buffer's snapshot exceeds either cap.
+// It checks the snapshot-visible totals (lines including the partial,
+// and content bytes excluding the join separators), which is exactly
+// what the host surfaces.
+func assertWithinCaps(t *testing.T, r *stderrRingBuffer) {
+	t.Helper()
+	snap, n := r.snapshot()
+	if n > r.maxLines {
+		t.Fatalf("snapshot has %d lines, exceeds maxLines=%d", n, r.maxLines)
+	}
+	// Content bytes = joined length minus the (n-1) "\n" separators.
+	contentBytes := len(snap)
+	if n > 1 {
+		contentBytes -= n - 1
+	}
+	if contentBytes > r.maxBytes {
+		t.Fatalf("snapshot has %d content bytes, exceeds maxBytes=%d", contentBytes, r.maxBytes)
+	}
+}
+
+// TestStderrRingBuffer_StrictCapsUnderAdversarialInput proves the
+// "last N lines / M bytes" contract holds for the two pathological
+// shapes that previously broke it: (i) a single line larger than the
+// byte cap, and (ii) more than the line cap of short lines followed by
+// an unterminated partial (which snapshot includes as an extra line).
+func TestStderrRingBuffer_StrictCapsUnderAdversarialInput(t *testing.T) {
+	const (
+		maxLines = 100
+		maxBytes = 64 * 1024
+	)
+
+	t.Run("single oversized line", func(t *testing.T) {
+		r := newTestRing(maxLines, maxBytes)
+		// One newline-terminated line ~3x the byte cap.
+		big := strings.Repeat("A", 3*maxBytes)
+		r.Write([]byte(big + "\n"))
+		assertWithinCaps(t, r)
+
+		// The TAIL is what's kept: the freshest bytes survive.
+		snap, _ := r.snapshot()
+		if !strings.HasSuffix(big, snap) {
+			t.Fatalf("retained content is not the tail of the input line")
+		}
+	})
+
+	t.Run("over line-cap then trailing partial", func(t *testing.T) {
+		r := newTestRing(maxLines, maxBytes)
+		for i := 0; i < 150; i++ {
+			fmt.Fprintf(r, "short-line-%d\n", i)
+		}
+		// Unterminated partial on top of an already-full ring — this is
+		// the case that used to yield maxLines+1 lines / ~2x bytes.
+		r.Write([]byte("panic: still being written"))
+		assertWithinCaps(t, r)
+
+		snap, _ := r.snapshot()
+		if !strings.HasSuffix(snap, "panic: still being written") {
+			t.Fatalf("partial line not surfaced as final snapshot line; got:\n%s", snap)
+		}
+	})
+
+	t.Run("oversized partial alone", func(t *testing.T) {
+		r := newTestRing(maxLines, maxBytes)
+		// A partial larger than the byte cap, never newline-terminated.
+		r.Write([]byte(strings.Repeat("B", 5*maxBytes)))
+		assertWithinCaps(t, r)
+	})
+
+	t.Run("mixed: oversized line then more lines then partial", func(t *testing.T) {
+		r := newTestRing(maxLines, maxBytes)
+		r.Write([]byte(strings.Repeat("C", 2*maxBytes) + "\n"))
+		for i := 0; i < 200; i++ {
+			fmt.Fprintf(r, "follow-%d\n", i)
+		}
+		r.Write([]byte("trailing partial no newline"))
+		assertWithinCaps(t, r)
+	})
+}
+
 func TestStderrRingBuffer_ReassemblesChunkedLine(t *testing.T) {
 	r := newTestRing(10, 1<<20)
 	// A single logical line split across several Write calls, the last

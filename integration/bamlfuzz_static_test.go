@@ -26,6 +26,7 @@
 package integration
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -596,6 +597,7 @@ func dumpStaticEnvLogs(t *testing.T, batchLabel string, env *testutil.TestEnviro
 func dumpContainerLogTail(t *testing.T, marker string, container testcontainers.Container) {
 	t.Helper()
 	if container == nil {
+		t.Logf("=== %s === (container is nil)", marker)
 		return
 	}
 
@@ -609,28 +611,30 @@ func dumpContainerLogTail(t *testing.T, marker string, container testcontainers.
 	}
 	defer rc.Close()
 
-	data, err := io.ReadAll(rc)
-	if err != nil {
+	// Stream the logs through a fixed-size ring of the last
+	// staticLogTailLines lines instead of buffering the whole log into
+	// memory: a crash-looping or verbose worker could otherwise emit
+	// megabytes before we trim. Only the retained tail is ever held
+	// (mirrors the bounded ring buffer #1 uses on the worker stderr).
+	ring := make([]string, 0, staticLogTailLines)
+	scanner := bufio.NewScanner(rc)
+	// Raise the per-line limit well above bufio's 64KB default so a
+	// single long log line (e.g. a wide panic frame) doesn't abort the
+	// scan with ErrTooLong.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		if len(ring) == staticLogTailLines {
+			ring = ring[1:]
+		}
+		ring = append(ring, scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
 		t.Logf("=== %s === (failed to read logs: %v)", marker, err)
 		return
 	}
 
-	tail := lastLines(string(data), staticLogTailLines)
+	tail := strings.Join(ring, "\n")
 	t.Logf("=== %s (last %d lines) ===\n%s\n=== end %s ===", marker, staticLogTailLines, tail, marker)
-}
-
-// lastLines returns the last n newline-delimited lines of s. A single
-// trailing newline is ignored so it does not count as an empty final
-// line; if s has n or fewer lines it is returned (trimmed) unchanged.
-func lastLines(s string, n int) string {
-	if n <= 0 || s == "" {
-		return s
-	}
-	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
-	if len(lines) <= n {
-		return strings.Join(lines, "\n")
-	}
-	return strings.Join(lines[len(lines)-n:], "\n")
 }
 
 func terminateStaticEnv(t *testing.T, env *testutil.TestEnvironment) {

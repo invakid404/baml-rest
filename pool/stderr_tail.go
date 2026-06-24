@@ -62,12 +62,16 @@ func (r *stderrRingBuffer) Write(p []byte) (int, error) {
 		i := bytes.IndexByte(rest, '\n')
 		if i < 0 {
 			r.partial = append(r.partial, rest...)
-			// Bound the partial accumulator too: a producer that never
-			// emits a newline must not grow it without limit. Keep the
-			// most recent maxBytes (where the crash text most likely is).
+			// Bound the partial accumulator: a producer that never emits a
+			// newline must not grow it without limit. Keep the most recent
+			// maxBytes (where the crash text most likely is).
 			if len(r.partial) > r.maxBytes {
 				r.partial = append(r.partial[:0], r.partial[len(r.partial)-r.maxBytes:]...)
 			}
+			// snapshot() appends this partial as one extra line, so evict
+			// retained lines to keep the partial-inclusive total within
+			// both caps.
+			r.enforceBounds()
 			break
 		}
 		// string(...) copies, so reusing partial's backing array next
@@ -80,14 +84,37 @@ func (r *stderrRingBuffer) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-// appendLine adds one completed line and evicts the oldest lines until
-// both the line-count and byte-count bounds hold. At least one line is
-// always retained even if it alone exceeds maxBytes, so the freshest
-// output is never dropped entirely.
+// appendLine adds one completed line and re-establishes both bounds. A
+// single line longer than maxBytes (one huge newline-terminated Write)
+// is truncated to its TAIL — the freshest bytes, where the panic
+// message/stack frames live — so it can never retain an arbitrarily
+// large string.
 func (r *stderrRingBuffer) appendLine(line string) {
+	if len(line) > r.maxBytes {
+		line = line[len(line)-r.maxBytes:]
+	}
 	r.lines = append(r.lines, line)
 	r.curBytes += len(line)
-	for len(r.lines) > r.maxLines || (r.curBytes > r.maxBytes && len(r.lines) > 1) {
+	r.enforceBounds()
+}
+
+// enforceBounds evicts the oldest retained lines until the snapshot —
+// the kept lines PLUS, when present, the unterminated partial as one
+// extra trailing line — fits within BOTH the line-count and byte-count
+// caps. Accounting for the partial here (not just the completed lines)
+// is what guarantees any sequence of Writes yields a snapshot of at most
+// maxLines lines and maxBytes content bytes. At least the freshest unit
+// (the newest line, or the partial when all lines are evicted) always
+// survives, since each individual line and the partial are themselves
+// capped at maxBytes.
+func (r *stderrRingBuffer) enforceBounds() {
+	extraLines := 0
+	if len(r.partial) > 0 {
+		extraLines = 1
+	}
+	extraBytes := len(r.partial)
+	for len(r.lines) > 0 &&
+		(len(r.lines)+extraLines > r.maxLines || r.curBytes+extraBytes > r.maxBytes) {
 		r.curBytes -= len(r.lines[0])
 		r.lines = r.lines[1:]
 	}
