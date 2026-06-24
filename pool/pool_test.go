@@ -2021,6 +2021,58 @@ func TestParseNonRetryableError(t *testing.T) {
 	}
 }
 
+// TestParseRetryableErrorWithCallerCancel verifies that when worker.Parse
+// returns a retryable worker error (worker dead) and the caller's context
+// is ALSO already cancelled at the point Pool.Parse classifies the error,
+// the dead worker is STILL restarted. This is the mirror of
+// TestCallStreamSetupUnavailableWithCallerCancel for the unary Parse path
+// (issue #506): the early `if ctx.Err() != nil { return }` must not be
+// allowed to skip the restart of a genuinely-failed worker.
+//
+// The reproduction is deterministic because Parse is sequential (no select
+// race): parseFn cancels the caller context BEFORE returning Unavailable,
+// so ctx.Err() is guaranteed set when Pool.Parse reaches the classify/restart
+// decision. On pre-fix code the early ctx.Err() return fires first and the
+// restart is skipped (no replacement worker is ever created → this test
+// blocks on `restarted` and fails). With the fix, dispatchRestart runs
+// before the caller-cancel early return.
+func TestParseRetryableErrorWithCallerCancel(t *testing.T) {
+	ctx := newManualCancelContext()
+	restarted := make(chan struct{}, 1)
+	var restartSignal sync.Once
+
+	factory := func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		w.parseFn = func(context.Context, string, []byte) (*workerplugin.ParseResult, error) {
+			// Cancel the caller context first, THEN return a retryable
+			// worker error. At the point Pool.Parse classifies the error,
+			// ctx.Err() is already set, yet the worker genuinely failed —
+			// the dead worker must still be restarted.
+			ctx.cancel(context.Canceled)
+			return nil, status.Error(codes.Unavailable, "worker died")
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	p.newWorker = func(id int) (*workerHandle, error) {
+		restartSignal.Do(func() { close(restarted) })
+		return newMockHandle(id, newMockWorker()), nil
+	}
+	defer p.Close()
+
+	_, err := p.Parse(ctx, "Test", []byte(`{}`))
+	if err == nil {
+		t.Fatal("Parse should return an error when the worker fails and caller cancels")
+	}
+
+	select {
+	case <-restarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker should restart after retryable error even when caller cancelled")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Tests: CallStream edge cases
 // ---------------------------------------------------------------------------

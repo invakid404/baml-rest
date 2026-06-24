@@ -1171,19 +1171,43 @@ func (p *Pool) Parse(ctx context.Context, methodName string, inputJSON []byte) (
 			return result, nil
 		}
 
-		// Don't retry if the caller cancelled
-		if ctx.Err() != nil {
+		workerFailed := isRetryableWorkerError(err)
+		callerCancelled := ctx.Err() != nil
+
+		// A genuinely-failed worker must be replaced for FUTURE requests
+		// even when THIS caller cancelled. Classify and restart the dead
+		// worker BEFORE the caller-cancel early return below, mirroring
+		// Pool.CallStream's setup path (the #505 fix): the callerCancelled
+		// check then only suppresses a RETRY of this request, never the
+		// restart. Without this, a retryable worker failure that races a
+		// caller cancellation would skip dispatchRestart and leave the dead
+		// worker in the pool until the health checker or a future request
+		// surfaces it (issue #506).
+		//
+		// Skip the restart for cancellation-shaped errors when the caller
+		// also cancelled — that's just gRPC propagating the caller's
+		// context, not a worker death. This guards against the inverse
+		// (#505-style) over-restart: a healthy worker returning
+		// context.Canceled / codes.Canceled solely because the caller went
+		// away must NOT be torn down. Use the parent caller ctx (not
+		// attemptCtx) — cleanup() above cancels attemptCtx, so it can't
+		// distinguish caller cancellation from our own teardown.
+		if workerFailed && !(callerCancelled && isCallerCancellationError(err)) {
+			handle.healthy.Store(false)
+			p.dispatchRestart(handle)
+		}
+
+		// Caller cancelled — don't retry, the caller is gone. The restart
+		// above (if triggered) already ensured pool health.
+		if callerCancelled {
 			return nil, err
 		}
 
-		if isRetryableWorkerError(err) {
-			handle.healthy.Store(false)
-
+		if workerFailed {
 			handle.logger.Info().
 				Int("attempt", attempt+1).
 				Err(err).
 				Msg("Retrying parse after worker failure")
-			p.dispatchRestart(handle)
 			lastFailed = handle
 			lastErr = err
 			continue
