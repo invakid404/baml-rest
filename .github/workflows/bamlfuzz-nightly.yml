@@ -185,25 +185,25 @@ jobs:
       # and the pull step skips it.
       - name: Cache node:22-bookworm tarball
         id: cache-node
-        uses: actions/cache@v5.0.5
+        uses: actions/cache@v6.0.0
         with:
           path: warm-images/node.tar
           key: warm-image-${{ runner.os }}-node-${{ steps.resolve.outputs.node }}
       - name: Cache debian:bookworm-slim tarball
         id: cache-debian
-        uses: actions/cache@v5.0.5
+        uses: actions/cache@v6.0.0
         with:
           path: warm-images/debian.tar
           key: warm-image-${{ runner.os }}-debian-${{ steps.resolve.outputs.debian }}
       - name: Cache golang:1.26.3-alpine tarball
         id: cache-golang
-        uses: actions/cache@v5.0.5
+        uses: actions/cache@v6.0.0
         with:
           path: warm-images/golang.tar
           key: warm-image-${{ runner.os }}-golang-${{ steps.resolve.outputs.golang }}
       - name: Cache alpine:3.19 tarball
         id: cache-alpine
-        uses: actions/cache@v5.0.5
+        uses: actions/cache@v6.0.0
         with:
           path: warm-images/alpine.tar
           key: warm-image-${{ runner.os }}-alpine-${{ steps.resolve.outputs.alpine }}
