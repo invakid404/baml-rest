@@ -320,6 +320,13 @@ type workerHandle struct {
 	restartDone    chan struct{} // closed when the current restart cycle completes; nil when idle
 	inFlightMu     sync.RWMutex
 	inFlightReq    map[uint64]*inFlightRequest
+	// stderrTail captures the subprocess worker's most recent stderr
+	// (a bounded ring buffer) so a worker crash's panic/stack can be
+	// appended to the terminal pool error surfaced to the host (issue
+	// #450). Only populated by subprocess startup; nil in in-process
+	// builds — there is no separate process, so withWorkerStderr is a
+	// clean no-op there.
+	stderrTail *stderrRingBuffer
 }
 
 // kill releases worker-side resources and tears down build-mode-
@@ -1157,7 +1164,7 @@ func (p *Pool) Parse(ctx context.Context, methodName string, inputJSON []byte) (
 			// awaitAnyRestart / getWorkerAccepted), matching the
 			// pre-loop tail in Pool.CallStream.
 			if lastErr != nil {
-				return nil, fmt.Errorf("%w: retry failed, no workers available: %w (previous: %v)", ErrPoolRetriesExhausted, err, lastErr)
+				return nil, withWorkerStderr(fmt.Errorf("%w: retry failed, no workers available: %w (previous: %v)", ErrPoolRetriesExhausted, err, lastErr), lastFailed)
 			}
 			return nil, err
 		}
@@ -1217,7 +1224,7 @@ func (p *Pool) Parse(ctx context.Context, methodName string, inputJSON []byte) (
 		return nil, err
 	}
 
-	return nil, fmt.Errorf("%w: %w", ErrPoolRetriesExhausted, lastErr)
+	return nil, withWorkerStderr(fmt.Errorf("%w: %w", ErrPoolRetriesExhausted, lastErr), lastFailed)
 }
 
 // Call executes a BAML method and returns the final result.
@@ -1406,7 +1413,7 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 					if ctx.Err() != nil {
 						sendErr = fmt.Errorf("retry failed, no workers available: %w (pool error: %v)", ctx.Err(), err)
 					} else {
-						sendErr = fmt.Errorf("%w: retry failed, no workers available: %w", ErrPoolRetriesExhausted, err)
+						sendErr = withWorkerStderr(fmt.Errorf("%w: retry failed, no workers available: %w", ErrPoolRetriesExhausted, err), lastFailed)
 					}
 					sendStreamError(ctx, wrappedResults, sendErr)
 					return
@@ -1667,6 +1674,7 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 		} else {
 			exhaustedErr = fmt.Errorf("%w (no terminal stream frame)", ErrPoolRetriesExhausted)
 		}
+		exhaustedErr = withWorkerStderr(exhaustedErr, lastFailed)
 		sendStreamError(ctx, wrappedResults, exhaustedErr)
 	}()
 
