@@ -1,6 +1,6 @@
 upstream_module=github.com/boundaryml/baml
-upstream_version=v0.222.0
+upstream_version=v0.223.0
 module_path=github.com/invakid404/baml-rest/dynclient/baml-patched
 patches=patches/baml3620_serde_nil_v222.diff:f43c6977e017286a53dc702f03059a4cc8a76bd2ee6e0d6f853254b70343e4ec
-upstream_sum=h1:m0GrGCN/gYPdj3UPArXwzO3gkwjH8qBahD83kyJYC40=
+upstream_sum=h1:0aPaZXr7iYvkn4duVSG2jV4RBae5XEJLaFfCbxsPyjc=
 generated_by=cmd/regenerate-dynclient

@@ -1,6 +1,6 @@
 # Patches applied to this BAML fork
 
-This directory holds a copy of `github.com/boundaryml/baml` (version v0.222.0)
+This directory holds a copy of `github.com/boundaryml/baml` (version v0.223.0)
 rewritten to module path `github.com/invakid404/baml-rest/dynclient/baml-patched`.
 
 ## Embedded patches
