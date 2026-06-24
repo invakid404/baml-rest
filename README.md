@@ -231,7 +231,7 @@ tolerance for losing in-flight requests when the process crashes.
 
 ## Known broken versions
 
-Recommended version: **v0.221.0**
+Recommended version: **v0.223.0**
 
 The BuildRequest code path (`BAML_REST_USE_BUILD_REQUEST=true`) requires
 BAML **v0.219.0** or newer. Older BAML versions remain functional via the
