@@ -7,11 +7,11 @@ require (
 	github.com/enriquebris/goconcurrentqueue v0.7.0
 	github.com/google/uuid v1.6.0
 	github.com/gregwebs/go-recovery v0.4.1
-	github.com/invakid404/baml-rest/adapters/common v0.0.47
-	github.com/invakid404/baml-rest/bamlutils v0.0.47
-	github.com/invakid404/baml-rest/dynclient/baml-patched v0.0.47
-	github.com/invakid404/baml-rest/worker v0.0.47
-	github.com/invakid404/baml-rest/workerplugin v0.0.47
+	github.com/invakid404/baml-rest/adapters/common v0.0.48
+	github.com/invakid404/baml-rest/bamlutils v0.0.48
+	github.com/invakid404/baml-rest/dynclient/baml-patched v0.0.48
+	github.com/invakid404/baml-rest/worker v0.0.48
+	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 )
 
@@ -46,7 +46,7 @@ require (
 	github.com/hashicorp/go-hclog v1.6.3 // indirect
 	github.com/hashicorp/go-plugin v1.8.0 // indirect
 	github.com/hashicorp/yamux v0.1.2 // indirect
-	github.com/invakid404/baml-rest/introspected v0.0.47 // indirect
+	github.com/invakid404/baml-rest/introspected v0.0.48 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect

@@ -37,8 +37,8 @@ require (
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/cloudwego/gjson v0.1.1 // indirect
 	github.com/dave/jennifer v1.7.1 // indirect
-	github.com/invakid404/baml-rest/bamlutils v0.0.47 // indirect
-	github.com/invakid404/baml-rest/introspected v0.0.47 // indirect
+	github.com/invakid404/baml-rest/bamlutils v0.0.48 // indirect
+	github.com/invakid404/baml-rest/introspected v0.0.48 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
 	github.com/stoewer/go-strcase v1.3.1 // indirect
