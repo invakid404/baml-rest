@@ -2538,6 +2538,85 @@ func TestCallStreamClientCancelUnexpectedCloseDoesNotRestartWorker(t *testing.T)
 	}
 }
 
+// TestCallStreamSilentEOFRacingCallerCancelDoesNotRestartWorker is the
+// DETERMINISTIC reproduction of issue #505. Unlike the probabilistic
+// TestCallStreamClientCancelUnexpectedCloseDoesNotRestartWorker above
+// (which depends on select-arm scheduling luck and does not reliably
+// reproduce), this test forces the exact ordering:
+//
+//  1. The worker result channel closes with NO terminal/error frame
+//     while the caller context is STILL live, so the stream loop
+//     deterministically takes the silent-EOF (close) select arm rather
+//     than the ctx.Done() arm.
+//  2. The onSilentStreamEOF seam fires in that close path, AFTER
+//     cleanup() and BEFORE the restart decision, and the test cancels
+//     the caller context synchronously inside it.
+//
+// So when CallStream reaches the restart decision, the caller context is
+// guaranteed already cancelled AND the path taken is guaranteed the
+// silent-close path. On the unfixed code this dispatches a spurious
+// restart of a perfectly healthy worker; the fix suppresses it.
+func TestCallStreamSilentEOFRacingCallerCancelDoesNotRestartWorker(t *testing.T) {
+	var factoryCalls atomic.Int32
+
+	factory := func(id int) (*workerHandle, error) {
+		factoryCalls.Add(1)
+		w := newMockWorker()
+		w.callStreamFn = func(_ context.Context, _ string, _ []byte, _ bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error) {
+			// Close immediately with no terminal/error frame. The caller
+			// context is still live at this point, so the stream loop's
+			// select picks the closed-channel arm deterministically.
+			ch := make(chan *workerplugin.StreamResult)
+			close(ch)
+			return ch, nil
+		}
+		return newMockHandle(id, w), nil
+	}
+
+	p := newTestPool(t, 1, factory)
+	defer p.Close()
+	original := p.workers[0]
+	factoryCalls.Store(0)
+
+	ctx := newManualCancelContext()
+
+	// The seam fires on the silent-close path, after cleanup() and before
+	// the restart decision. Cancelling here makes ctx.Err() != nil exactly
+	// when the restart decision is evaluated — the race window, forced.
+	var hookFired atomic.Bool
+	p.onSilentStreamEOF = func() {
+		hookFired.Store(true)
+		ctx.cancel(context.Canceled)
+	}
+
+	results, err := p.CallStream(ctx, "Test", []byte(`{}`), bamlutils.StreamModeStream)
+	if err != nil {
+		t.Fatalf("CallStream setup failed: %v", err)
+	}
+
+	requireCompleteWithin(t, 2*time.Second, func() {
+		for result := range results {
+			workerplugin.ReleaseStreamResult(result)
+		}
+	})
+	requireCompleteWithin(t, time.Second, func() {
+		p.restartWG.Wait()
+	})
+
+	if !hookFired.Load() {
+		t.Fatal("silent-EOF seam never fired — test did not exercise the close path")
+	}
+	if calls := factoryCalls.Load(); calls != 0 {
+		t.Fatalf("spurious restart: expected 0 replacement starts after caller cancel racing silent close, got %d", calls)
+	}
+	if p.workers[0] != original {
+		t.Fatal("healthy worker was replaced after caller cancel racing silent close")
+	}
+	if !original.healthy.Load() {
+		t.Fatal("healthy worker was marked unhealthy after caller cancel racing silent close")
+	}
+}
+
 // TestCallStreamCallerCancelWithNonRetryableSetupError verifies that
 // a caller cancellation racing with a non-retryable setup error (like
 // InvalidArgument) does NOT trigger a spurious worker restart. The
@@ -3881,9 +3960,9 @@ func TestCallStreamOutcomeMetadataPreventsHungKill(t *testing.T) {
 	// a terminal frame; reading the pooled struct after Release would
 	// race with the next pool.Get caller.
 	var (
-		lastKind    workerplugin.StreamResultKind
-		sawAny      bool
-		sawOutcome  bool
+		lastKind   workerplugin.StreamResultKind
+		sawAny     bool
+		sawOutcome bool
 	)
 	requireCompleteWithin(t, 2*time.Second, func() {
 		for r := range results {
