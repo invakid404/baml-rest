@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"reflect"
 	"strconv"
@@ -2256,6 +2257,105 @@ func assertOverCapMapArmPruned(t *testing.T, schema FuzzSchema, unionFT FuzzType
 	}
 }
 
+// assertMapArmDrawsNonEmpty drives the REAL generator down the map arm
+// of unionFT and asserts the value it produces at the map leaf is
+// non-empty — deterministically, with zero dependence on a random rapid
+// draw reaching that leaf (the gap the gate/candidate predicates alone
+// left, and the flake the old post-loop sentinel carried).
+//
+// It runs drawUnion against an all-zero bitstream via rapid.MakeFuzz.
+// Every draw then takes its minimum: each variant pick resolves to
+// candidate index 0 (the map-reaching arm), drawOptionalShape resolves
+// to OptionalPresent (idx 0), and drawMap's length resolves to minLen.
+// So the draw threads the full picked path —
+// outer-union → [present-optional →] [nested-union arm 0 →] … → map leaf
+// — on every run, exercising drawUnion's non-empty gate
+// (generator.go:514) and drawArmEnsuringMapNonEmpty's minLen=1 map draw
+// (generator.go:686). The leaf reached by descending the picked
+// variants / present optionals must be a map with len>=1. Each of the
+// three ways the production code could emit an ambiguous empty map makes
+// this fail deterministically under the all-zero drive:
+//   - the gate skips the non-empty branch → drawValueForType draws the
+//     map with minLen=0 → length 0 → empty;
+//   - drawArmEnsuringMapNonEmpty stops forwarding the constraint into a
+//     nested union/optional → the picked path no longer lands on the
+//     constrained map leaf;
+//   - drawMap's minLen drops to 0 → length 0 → empty.
+//
+// rapid is pinned at v1.3.0, whose all-zero draw is the range minimum;
+// the buffer is far larger than these shapes consume, so the drive never
+// overruns (an overrun would surface as a SKIP, not a silent pass).
+func assertMapArmDrawsNonEmpty(t *testing.T, schema FuzzSchema, unionFT FuzzType) {
+	t.Helper()
+	var got FuzzValue
+	ran := false
+	input := make([]byte, 1<<16) // all-zero bitstream; ample for these shapes
+	rapid.MakeFuzz(func(rt *rapid.T) {
+		ctx := &valueDrawCtx{schema: schema, depth: make(map[string]int)}
+		got = ctx.drawUnion(rt, unionFT, "v")
+		ran = true
+	})(t, input)
+	if !ran {
+		t.Fatalf("all-zero drive did not run drawUnion (bitstream overrun?) — non-empty-map invariant unverified")
+	}
+	leaf := mapLeafThroughPickedPath(t, got)
+	if leaf.Kind != KindMap {
+		t.Fatalf("all-zero drive descended to %s, not a map — drawUnion's non-empty gate or drawArmEnsuringMapNonEmpty's descent did not select the map leaf (picked path: %s)", leaf.Kind, describePickedPath(got))
+	}
+	if len(leaf.MapEntries) == 0 {
+		t.Fatalf("map arm drew an empty map at minLen — drawArmEnsuringMapNonEmpty/drawMap is not enforcing minLen>=1; empty {} is ambiguous with the class sibling under BAML coercion")
+	}
+}
+
+// mapLeafThroughPickedPath descends a drawn value through the picked
+// union variant and present-optional inner — the transparent wrappers
+// drawArmEnsuringMapNonEmpty forwards the non-empty constraint through —
+// and returns the value at the leaf. A non-present optional or a missing
+// variant returns that wrapper itself, so the caller observes a non-map
+// leaf and fails. Bounded so a malformed value cannot loop.
+func mapLeafThroughPickedPath(t *testing.T, v FuzzValue) FuzzValue {
+	t.Helper()
+	for i := 0; i < MaxTypeDepth+2; i++ {
+		switch v.Kind {
+		case KindUnion:
+			if v.Variant == nil {
+				return v
+			}
+			v = *v.Variant
+		case KindOptional:
+			if v.OptionalShape != OptionalPresent || v.Inner == nil {
+				return v
+			}
+			v = *v.Inner
+		default:
+			return v
+		}
+	}
+	t.Fatalf("picked-path descent exceeded the depth bound without reaching a leaf")
+	return FuzzValue{}
+}
+
+// describePickedPath renders the picked path of a drawn value for
+// assertion failure messages, e.g. union#0(opt-present(map(len=0))).
+func describePickedPath(v FuzzValue) string {
+	switch v.Kind {
+	case KindUnion:
+		if v.Variant == nil {
+			return fmt.Sprintf("union#%d<nil>", v.VariantIndex)
+		}
+		return fmt.Sprintf("union#%d(%s)", v.VariantIndex, describePickedPath(*v.Variant))
+	case KindOptional:
+		if v.OptionalShape != OptionalPresent || v.Inner == nil {
+			return fmt.Sprintf("opt[%s]", v.OptionalShape)
+		}
+		return fmt.Sprintf("opt-present(%s)", describePickedPath(*v.Inner))
+	case KindMap:
+		return fmt.Sprintf("map(len=%d)", len(v.MapEntries))
+	default:
+		return string(v.Kind)
+	}
+}
+
 // TestValueGenMapArmWithClassSiblingNeverEmpty is the durable
 // regression guard. With a union whose map arm has a class-reachable
 // sibling, ValueGen must never produce an empty map for the picked
@@ -2275,6 +2375,9 @@ func TestValueGenMapArmWithClassSiblingNeverEmpty(t *testing.T) {
 	// the non-empty path and retained as a candidate, regardless of any
 	// rapid draw.
 	assertMapArmNonEmptyGateEngages(t, schema, unionFT, 0, []int{0, 1})
+	// And drive the real generator down that arm: the map leaf it produces
+	// must be non-empty.
+	assertMapArmDrawsNonEmpty(t, schema, unionFT)
 
 	rapid.Check(t, func(rt *rapid.T) {
 		v := ValueGen(schema).Draw(rt, "v")
@@ -2349,6 +2452,9 @@ func TestValueGenOptionalMapArmWithClassSiblingNeverEmpty(t *testing.T) {
 	// the optional wrapper, so the gate engages and a present optional is
 	// held non-empty — no dependence on the rapid draw reaching the leaf.
 	assertMapArmNonEmptyGateEngages(t, schema, unionFT, 0, []int{0, 1})
+	// And drive the real generator through outer-union → present-optional →
+	// map leaf: the leaf must be non-empty.
+	assertMapArmDrawsNonEmpty(t, schema, unionFT)
 
 	rapid.Check(t, func(rt *rapid.T) {
 		v := ValueGen(schema).Draw(rt, "v")
@@ -2436,6 +2542,9 @@ func TestValueGenNestedUnionMapArmWithClassSiblingNeverEmpty(t *testing.T) {
 	// non-empty against the outer class sibling — no dependence on the
 	// rapid draw reaching outer→nested→map.
 	assertMapArmNonEmptyGateEngages(t, schema, unionFT, 0, []int{0, 1})
+	// And drive the real generator through outer-union → nested-union →
+	// map leaf: the leaf must be non-empty.
+	assertMapArmDrawsNonEmpty(t, schema, unionFT)
 
 	rapid.Check(t, func(rt *rapid.T) {
 		v := ValueGen(schema).Draw(rt, "v")
@@ -2522,6 +2631,9 @@ func TestValueGenOptionalNestedUnionMapArmWithClassSiblingNeverEmpty(t *testing.
 	// a present compound is held non-empty — no dependence on the rapid
 	// draw reaching outer→optional(present)→nested→map.
 	assertMapArmNonEmptyGateEngages(t, schema, unionFT, 0, []int{0, 1})
+	// And drive the real generator through outer-union → present-optional →
+	// nested-union → map leaf: the leaf must be non-empty.
+	assertMapArmDrawsNonEmpty(t, schema, unionFT)
 
 	rapid.Check(t, func(rt *rapid.T) {
 		v := ValueGen(schema).Draw(rt, "v")
@@ -2619,6 +2731,9 @@ func TestValueGenDeepNestedUnionMapArmWithClassSiblingNeverEmpty(t *testing.T) {
 	// class sibling — no dependence on the rapid draw threading
 	// outer→middle→innermost→map.
 	assertMapArmNonEmptyGateEngages(t, schema, unionFT, 0, []int{0, 1})
+	// And drive the real generator through both nested-union levels to the
+	// map leaf: the leaf must be non-empty.
+	assertMapArmDrawsNonEmpty(t, schema, unionFT)
 
 	rapid.Check(t, func(rt *rapid.T) {
 		v := ValueGen(schema).Draw(rt, "v")
@@ -2803,6 +2918,10 @@ func TestValueGenRecursiveFallbackMapArmWithClassSiblingNeverEmpty(t *testing.T)
 	// At the cap the map arm is forced to a clamped `{}` and must be pruned
 	// so the fallback picks the terminating class_ref sibling instead.
 	assertOverCapMapArmPruned(t, schema, unionFT, 0, 1, "A")
+	// And drive the real generator down the below-cap map arm: the root map
+	// leaf it produces must be non-empty (the recursive value draw
+	// terminates via the over-cap prune above).
+	assertMapArmDrawsNonEmpty(t, schema, unionFT)
 
 	rapid.Check(t, func(rt *rapid.T) {
 		v := ValueGen(schema).Draw(rt, "v")
