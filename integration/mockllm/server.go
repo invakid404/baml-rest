@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -184,10 +185,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.h2srv != nil {
 		tlsErr = s.h2srv.Shutdown(ctx)
 	}
-	if err := s.app.ShutdownWithContext(ctx); err != nil {
-		return err
-	}
-	return tlsErr
+	fiberErr := s.app.ShutdownWithContext(ctx)
+	// Join so a TLS-shutdown error isn't dropped when the fiber shutdown
+	// also fails. errors.Join(nil, nil) is nil, so the common nil-h2srv
+	// happy path and single-error cases are unchanged.
+	return errors.Join(tlsErr, fiberErr)
 }
 
 // Addr returns the server's address.
