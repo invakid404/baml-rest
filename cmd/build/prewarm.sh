@@ -138,6 +138,16 @@ done
 echo "Regenerating embed.go..."
 go run cmd/embed/main.go || echo "prewarm: embed regen failed (continuing)"
 
+# Detect a provided custom BAML Go library via the .provided marker, exactly as
+# build.sh does. The Dockerfile copies the module into custom_baml_go_lib and
+# touches .provided before this layer runs (e.g. --baml-source builds), and that
+# marker — not the env var — is how build.sh discovers it, so the marker path
+# takes precedence here too.
+CUSTOM_BAML_GO_LIB_PATH="${USER_CONTEXT_PATH}/custom_baml_go_lib"
+if [ -f "${CUSTOM_BAML_GO_LIB_PATH}/.provided" ]; then
+    export CUSTOM_BAML_GO_LIB="${CUSTOM_BAML_GO_LIB_PATH}"
+fi
+
 # Pin the BAML Go dependency the same way build.sh does so the module graph
 # resolves to the cell's version before downloading.
 if [ -n "${CUSTOM_BAML_GO_LIB:-}" ]; then
