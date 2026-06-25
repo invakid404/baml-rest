@@ -19,9 +19,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/containerd/containerd/v2/pkg/protobuf/proto"
 	"github.com/containerd/platforms"
-	"github.com/bytedance/sonic"
 	"github.com/docker/buildx/util/progress"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	buildkitclient "github.com/moby/buildkit/client"
@@ -47,6 +47,9 @@ var dockerfileDockerTemplateInput string
 
 //go:embed build.sh
 var buildScript string
+
+//go:embed prewarm.sh
+var prewarmScript string
 
 type fileWriter interface {
 	WriteFile(name string, data io.Reader, size int64, mode int64) error
@@ -558,6 +561,19 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 
 	if _, err := tarWriter.Write([]byte(buildScript)); err != nil {
 		return fmt.Errorf("failed to write build.sh to build context: %w", err)
+	}
+
+	prewarmScriptHeader := tar.Header{
+		Name: "prewarm.sh",
+		Mode: 0755,
+		Size: int64(len(prewarmScript)),
+	}
+	if err := tarWriter.WriteHeader(&prewarmScriptHeader); err != nil {
+		return fmt.Errorf("failed to write prewarm.sh header to build context: %w", err)
+	}
+
+	if _, err := tarWriter.Write([]byte(prewarmScript)); err != nil {
+		return fmt.Errorf("failed to write prewarm.sh to build context: %w", err)
 	}
 
 	for path, source := range bamlrest.Sources {

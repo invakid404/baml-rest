@@ -761,6 +761,22 @@ func createBAMLRestBuildContext(opts SetupOptions) (io.ReadSeeker, error) {
 		return nil, err
 	}
 
+	// Get prewarm.sh from embedded sources
+	prewarmScript, err := getPrewarmScript()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get prewarm script: %w", err)
+	}
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "prewarm.sh",
+		Mode: 0755,
+		Size: int64(len(prewarmScript)),
+	}); err != nil {
+		return nil, err
+	}
+	if _, err := tw.Write(prewarmScript); err != nil {
+		return nil, err
+	}
+
 	// Add baml_rest sources from embedded FS
 	for path, source := range bamlrest.Sources {
 		if err := copyFSToTar(source, tw, "baml_rest/"+path); err != nil {
@@ -852,6 +868,16 @@ func getBuildScript() ([]byte, error) {
 	}
 
 	return fs.ReadFile(rootFS, "cmd/build/build.sh")
+}
+
+func getPrewarmScript() ([]byte, error) {
+	// The prewarm script is in cmd/build/prewarm.sh within the root embedded FS
+	rootFS, ok := bamlrest.Sources["."]
+	if !ok {
+		return nil, fmt.Errorf("root source not found in embedded sources")
+	}
+
+	return fs.ReadFile(rootFS, "cmd/build/prewarm.sh")
 }
 
 func getDockerfileTemplate() ([]byte, error) {
