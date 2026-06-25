@@ -64,14 +64,14 @@ RUN go install golang.org/x/tools/cmd/goimports@latest
 # Set up working directories
 WORKDIR /workspace
 
-# Copy build script
+# Copy build scripts
 COPY build.sh /workspace/build.sh
-RUN chmod +x /workspace/build.sh
+COPY prewarm.sh /workspace/prewarm.sh
+RUN chmod +x /workspace/build.sh /workspace/prewarm.sh
 
-# Copy user's baml_src
-COPY baml_src /workspace/baml_src
-
-# Copy baml_rest sources
+# Copy baml_rest sources (stable across batches; copied before baml_src so the
+# dependency-prewarm layer below is keyed only on these sources and the build
+# matrix env, not on the per-batch generated baml_src)
 COPY baml_rest /workspace/baml_rest
 
 {{- if .bamlSource }}
@@ -137,6 +137,24 @@ ENV SUBPROCESS="true"
 {{- if .baseURLRewrites }}
 ENV BAML_REST_BASE_URL_REWRITES="{{ .baseURLRewrites }}"
 {{- end }}
+
+# Warm caches with the source-independent portion of the build (Go module
+# downloads, npm package downloads, and Go build-cache population). The build
+# env above is set first so this layer's cache key reflects every axis the final
+# build depends on (BAML/adapter version, target arch, build tags, baml-source
+# mode); only a change to one of those — not a per-batch baml_src — invalidates
+# it. The cache locations match build.sh exactly so the warmed directories are
+# the ones build.sh reads.
+{{- if .noCacheMount }}
+RUN /workspace/prewarm.sh
+{{- else }}
+RUN --mount=type=cache,target=/cache \
+    /workspace/prewarm.sh
+{{- end }}
+
+# Copy user's baml_src (per-batch generated source; only the layers below this
+# point rebuild when it changes)
+COPY baml_src /workspace/baml_src
 
 # Run build
 {{- if .noCacheMount }}
