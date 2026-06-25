@@ -21,6 +21,8 @@ RUN apk --no-cache add ca-certificates
 COPY --from=builder /mockllm /mockllm
 
 ENV ADDR=:8080
-EXPOSE 8080
+# 8080 = plaintext HTTP; 8443 = optional HTTPS/h2 lane (enabled when the
+# integration harness supplies MOCK_LLM_TLS_CERT_PEM/KEY_PEM).
+EXPOSE 8080 8443
 
 CMD ["/mockllm"]

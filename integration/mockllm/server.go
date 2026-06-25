@@ -4,10 +4,14 @@ package mockllm
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,6 +22,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/adaptor"
 )
 
 // Server is a mock LLM server for integration testing.
@@ -26,6 +31,12 @@ type Server struct {
 	app   *fiber.App
 	addr  string
 	debug bool
+
+	// h2srv is the optional net/http TLS listener that serves the same
+	// fiber app over HTTPS with ALPN advertising h2 + http/1.1. fasthttp
+	// (the plaintext :8080 listener) cannot speak HTTP/2, so the TLS lane
+	// runs through net/http via the fiber adaptor. Nil unless StartTLS ran.
+	h2srv *http.Server
 }
 
 // NewServer creates a new mock LLM server.
@@ -46,6 +57,7 @@ func NewServer(addr string) *Server {
 	app.Get("/_admin/health", s.handleHealth)
 
 	app.Get("/_admin/scenarios/:id/last-request", s.handleGetLastRequest)
+	app.Get("/_admin/scenarios/:id/last-protocol", s.handleGetLastProtocol)
 	app.Get("/_admin/scenarios/:id/request-count", s.handleGetRequestCount)
 	app.Post("/_admin/scenarios/:id/reset-count", s.handleResetRequestCount)
 
@@ -78,9 +90,106 @@ func (s *Server) Start() error {
 	return nil
 }
 
-// Shutdown gracefully shuts down the server.
+// StartTLS starts an additional net/http listener serving the same fiber
+// app over TLS, with ALPN advertising "h2" then "http/1.1". This is the
+// opt-in HTTPS/h2 lane the integration http-client ALPN test points at: an
+// llmhttp `auto`/`nethttp` backend negotiates h2 (→ net/http) while a
+// `fasthttp` backend, which offers no ALPN, falls back to http/1.1. The
+// plaintext :8080 fiber listener is unaffected, so the rest of the suite
+// keeps using HTTP unchanged.
+//
+// certPEM/keyPEM are a PEM-encoded cert + private key (self-signed at test
+// setup, SAN covering the dial host). HTTP/2 is auto-enabled by net/http's
+// ServeTLS because NextProtos contains "h2" and TLSNextProto is left nil.
+func (s *Server) StartTLS(addr, certPEM, keyPEM string) error {
+	cert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
+	if err != nil {
+		return fmt.Errorf("failed to load TLS keypair: %w", err)
+	}
+
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: s.recordProtocol(adaptor.FiberApp(s.app)),
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			NextProtos:   []string{"h2", "http/1.1"},
+			MinVersion:   tls.VersionTLS12,
+		},
+	}
+	s.h2srv = srv
+
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s: %w", addr, err)
+	}
+
+	go func() {
+		// Certs live in TLSConfig, so the file args are empty.
+		if err := srv.ServeTLS(ln, "", ""); err != nil && err != http.ErrServerClosed {
+			log.Printf("Mock LLM TLS server error: %v", err)
+		}
+	}()
+	return nil
+}
+
+// recordProtocol wraps the TLS handler to capture, per scenario (model),
+// the HTTP protocol of each LLM request before delegating to the fiber
+// adaptor. This is the assertion signal for the ALPN selection test: the
+// fiber/fasthttp adaptor flattens everything to HTTP/1.1 internally, so the
+// real negotiated protocol (r.Proto) must be read here at the net/http edge.
+func (s *Server) recordProtocol(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isLLMEndpoint(r.URL.Path) && r.Body != nil {
+			body, err := io.ReadAll(r.Body)
+			if err == nil {
+				// Restore the body for the downstream adaptor; ContentLength
+				// is unchanged so the conversion still reads the full payload.
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				if model := peekModel(body); model != "" {
+					s.store.RecordProtocol(model, r.Proto)
+					s.log("recorded protocol %s for model %s", r.Proto, model)
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// isLLMEndpoint reports whether path is one of the mock's LLM completion
+// endpoints (the only routes the worker's llmhttp backend dials).
+func isLLMEndpoint(path string) bool {
+	switch path {
+	case "/v1/chat/completions", "/chat/completions", "/v1/messages":
+		return true
+	default:
+		return false
+	}
+}
+
+// peekModel extracts the top-level "model" field shared by the OpenAI and
+// Anthropic request shapes, used to key the recorded protocol by scenario.
+func peekModel(body []byte) string {
+	var m struct {
+		Model string `json:"model"`
+	}
+	if err := sonic.Unmarshal(body, &m); err != nil {
+		return ""
+	}
+	return m.Model
+}
+
+// Shutdown gracefully shuts down the server (both the plaintext fiber
+// listener and the optional TLS listener).
 func (s *Server) Shutdown(ctx context.Context) error {
-	return s.app.ShutdownWithContext(ctx)
+	var tlsErr error
+	if s.h2srv != nil {
+		tlsErr = s.h2srv.Shutdown(ctx)
+	}
+	fiberErr := s.app.ShutdownWithContext(ctx)
+	// Join so a TLS-shutdown error isn't dropped when the fiber shutdown
+	// also fails. errors.Join(nil, nil) is nil, so the common nil-h2srv
+	// happy path and single-error cases are unchanged.
+	return errors.Join(tlsErr, fiberErr)
 }
 
 // Addr returns the server's address.
@@ -160,6 +269,20 @@ func (s *Server) handleGetLastRequest(c fiber.Ctx) error {
 	return c.Send(req.Body)
 }
 
+func (s *Server) handleGetLastProtocol(c fiber.Ctx) error {
+	id := c.Params("id")
+	if id == "" {
+		return c.Status(fiber.StatusBadRequest).SendString("scenario ID is required")
+	}
+
+	proto, ok := s.store.GetLastProtocol(id)
+	if !ok {
+		return c.Status(fiber.StatusNotFound).SendString("no protocol captured for scenario")
+	}
+
+	return c.JSON(fiber.Map{"protocol": proto})
+}
+
 func (s *Server) handleGetRequestCount(c fiber.Ctx) error {
 	id := c.Params("id")
 	if id == "" {
@@ -192,7 +315,7 @@ type chatCompletionsRequest struct {
 }
 
 type chatMessage struct {
-	Role    string          `json:"role"`
+	Role    string             `json:"role"`
 	Content stdjson.RawMessage `json:"content"` // Can be string or array of content parts
 }
 
@@ -700,6 +823,35 @@ func (c *Client) GetRequestCount(ctx context.Context, scenarioID string) (int, e
 		return 0, fmt.Errorf("failed to decode response: %w", err)
 	}
 	return result.Count, nil
+}
+
+// GetLastProtocol returns the HTTP protocol (e.g. "HTTP/2.0", "HTTP/1.1")
+// of the last LLM request the mock's TLS listener observed for a scenario.
+// Used by the http-client ALPN test to assert which llmhttp backend the
+// worker negotiated: h2 ⇒ net/http (auto won ALPN / nethttp), http/1.1 ⇒
+// fasthttp.
+func (c *Client) GetLastProtocol(ctx context.Context, scenarioID string) (string, error) {
+	escapedID := url.PathEscape(scenarioID)
+	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/_admin/scenarios/%s/last-protocol", c.baseURL, escapedID), nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+	}
+	var result struct {
+		Protocol string `json:"protocol"`
+	}
+	if err := sonic.ConfigDefault.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("failed to decode response: %w", err)
+	}
+	return result.Protocol, nil
 }
 
 // ResetRequestCount resets the request counter for a scenario to zero.
