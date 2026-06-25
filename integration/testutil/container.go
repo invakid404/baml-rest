@@ -37,6 +37,16 @@ const (
 	// MockLLMInternalPort is the port the mock server listens on inside Docker
 	MockLLMInternalPort = "8080/tcp"
 
+	// MockLLMTLSInternalPort is the port the mock server's HTTPS/h2 listener
+	// uses inside Docker. Reached by the worker over the docker network (no
+	// host mapping required); exposed for parity/debuggability only.
+	MockLLMTLSInternalPort = "8443/tcp"
+
+	// mockLLMCAContainerPath is where the self-signed mock CA is mounted in
+	// the baml-rest container. SSL_CERT_FILE points the Go llmhttp client's
+	// system cert pool at it so the worker trusts the mock's HTTPS listener.
+	mockLLMCAContainerPath = "/etc/mockllm-ca.pem"
+
 	// BAMLRestInternalPort is the port baml-rest listens on inside Docker
 	BAMLRestInternalPort = "8080/tcp"
 
@@ -46,13 +56,14 @@ const (
 
 // TestEnvironment holds the running test containers and network.
 type TestEnvironment struct {
-	Network          *testcontainers.DockerNetwork
-	MockLLM          testcontainers.Container
-	BAMLRest         testcontainers.Container
-	MockLLMURL       string // URL to reach mock server from host (http://localhost:xxxxx)
-	BAMLRestURL      string // URL to reach baml-rest from host (http://localhost:xxxxx)
-	BAMLRestUnaryURL string // URL to reach unary server from host (http://localhost:xxxxx)
-	MockLLMInternal  string // URL to reach mock server from baml-rest (http://mockllm:8080)
+	Network            *testcontainers.DockerNetwork
+	MockLLM            testcontainers.Container
+	BAMLRest           testcontainers.Container
+	MockLLMURL         string // URL to reach mock server from host (http://localhost:xxxxx)
+	BAMLRestURL        string // URL to reach baml-rest from host (http://localhost:xxxxx)
+	BAMLRestUnaryURL   string // URL to reach unary server from host (http://localhost:xxxxx)
+	MockLLMInternal    string // URL to reach mock server from baml-rest (http://mockllm:8080)
+	MockLLMInternalTLS string // HTTPS/h2 URL to reach mock server from baml-rest (https://mockllm:8443)
 }
 
 // Terminate shuts down all containers and network.
@@ -419,6 +430,16 @@ func setupOnce(ctx context.Context, opts SetupOptions) (*TestEnvironment, error)
 		}
 	}()
 
+	// Generate a self-signed cert for the mock's HTTPS/h2 lane. The SAN
+	// covers the docker-network alias the worker dials ("mockllm") plus
+	// loopback names. The same PEM is served by the mock and mounted into
+	// baml-rest as the trust anchor (it is its own CA).
+	mockCertPEM, mockKeyPEM, err := GenerateMockTLSCert([]string{MockLLMContainerName, "localhost", "127.0.0.1"})
+	if err != nil {
+		runSetupCleanup(env.Terminate)
+		return nil, fmt.Errorf("failed to generate mock TLS cert: %w", err)
+	}
+
 	// Create Docker network
 	net, err := network.New(ctx)
 	if err != nil {
@@ -427,7 +448,7 @@ func setupOnce(ctx context.Context, opts SetupOptions) (*TestEnvironment, error)
 	env.Network = net
 
 	// Start mock LLM server
-	mockLLM, err := startMockLLMContainer(ctx, net.Name)
+	mockLLM, err := startMockLLMContainer(ctx, net.Name, mockCertPEM, mockKeyPEM)
 	if err != nil {
 		runSetupCleanup(env.Terminate)
 		return nil, fmt.Errorf("failed to start mock LLM container: %w", err)
@@ -447,9 +468,10 @@ func setupOnce(ctx context.Context, opts SetupOptions) (*TestEnvironment, error)
 	}
 	env.MockLLMURL = fmt.Sprintf("http://%s:%s", mockHost, mockPort.Port())
 	env.MockLLMInternal = fmt.Sprintf("http://%s:8080", MockLLMContainerName)
+	env.MockLLMInternalTLS = fmt.Sprintf("https://%s:8443", MockLLMContainerName)
 
 	// Build and start baml-rest container
-	bamlRest, err := startBAMLRestContainer(ctx, net.Name, opts)
+	bamlRest, err := startBAMLRestContainer(ctx, net.Name, opts, mockCertPEM)
 	if err != nil {
 		runSetupCleanup(env.Terminate)
 		return nil, fmt.Errorf("failed to start baml-rest container: %w", err)
@@ -481,7 +503,7 @@ func setupOnce(ctx context.Context, opts SetupOptions) (*TestEnvironment, error)
 	return env, nil
 }
 
-func startMockLLMContainer(ctx context.Context, networkName string) (testcontainers.Container, error) {
+func startMockLLMContainer(ctx context.Context, networkName string, certPEM, keyPEM []byte) (testcontainers.Container, error) {
 	// Build context from the mockllm directory
 	buildCtx, err := createMockLLMBuildContext()
 	if err != nil {
@@ -494,10 +516,17 @@ func startMockLLMContainer(ctx context.Context, networkName string) (testcontain
 			Dockerfile:     "integration/mockllm/Dockerfile",
 			PrintBuildLog:  true, // Enable build log output to see compilation errors
 		},
-		ExposedPorts: []string{MockLLMInternalPort},
+		ExposedPorts: []string{MockLLMInternalPort, MockLLMTLSInternalPort},
 		Networks:     []string{networkName},
 		NetworkAliases: map[string][]string{
 			networkName: {MockLLMContainerName},
+		},
+		// Supplying the cert/key turns on the mock's HTTPS/h2 listener on
+		// :8443 (see integration/mockllm/cmd/main.go); the plaintext :8080
+		// lane is unaffected so the rest of the suite is unchanged.
+		Env: map[string]string{
+			"MOCK_LLM_TLS_CERT_PEM": string(certPEM),
+			"MOCK_LLM_TLS_KEY_PEM":  string(keyPEM),
 		},
 		WaitingFor: wait.ForHTTP("/_admin/health").WithPort(MockLLMInternalPort).WithStartupTimeout(30 * time.Second),
 	}
@@ -548,11 +577,18 @@ func createMockLLMBuildContext() (io.ReadSeeker, error) {
 	return bytes.NewReader(buf.Bytes()), nil
 }
 
-func startBAMLRestContainer(ctx context.Context, networkName string, opts SetupOptions) (testcontainers.Container, error) {
+func startBAMLRestContainer(ctx context.Context, networkName string, opts SetupOptions, mockCAPEM []byte) (testcontainers.Container, error) {
 	buildCtx, err := createBAMLRestBuildContext(opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create baml-rest build context: %w", err)
 	}
+
+	// Trust the mock's self-signed HTTPS cert: mount it and point the Go
+	// llmhttp client's system cert pool at it via SSL_CERT_FILE (honored by
+	// crypto/x509 on Linux for both the net/http and fasthttp backends).
+	// Harmless for the plaintext lane — no other HTTPS calls happen in tests.
+	containerEnv := buildContainerEnv(opts)
+	containerEnv["SSL_CERT_FILE"] = mockLLMCAContainerPath
 
 	exposedPorts := []string{BAMLRestInternalPort}
 	cmd := []string{"--sse-keepalive-interval=100ms"}
@@ -581,7 +617,14 @@ func startBAMLRestContainer(ctx context.Context, networkName string, opts SetupO
 		NetworkAliases: map[string][]string{
 			networkName: {BAMLRestContainerName},
 		},
-		Env: buildContainerEnv(opts),
+		Env: containerEnv,
+		Files: []testcontainers.ContainerFile{
+			{
+				Reader:            bytes.NewReader(mockCAPEM),
+				ContainerFilePath: mockLLMCAContainerPath,
+				FileMode:          0o644,
+			},
+		},
 		HostConfigModifier: func(hc *container.HostConfig) {
 			if hc.Sysctls == nil {
 				hc.Sysctls = make(map[string]string)

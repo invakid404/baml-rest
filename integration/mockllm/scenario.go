@@ -67,6 +67,11 @@ type ScenarioStore struct {
 	scenarios     map[string]*Scenario
 	requestCounts map[string]int              // tracks request count per scenario ID
 	lastRequests  map[string]*CapturedRequest // stores the last request per scenario ID
+	// lastProtocols records the HTTP protocol (e.g. "HTTP/2.0", "HTTP/1.1")
+	// of the most recent LLM request per scenario ID, observed at the
+	// net/http TLS listener. It is the assertion signal for the http-client
+	// ALPN selection test: h2 ⇒ net/http won ALPN, http/1.1 ⇒ fasthttp.
+	lastProtocols map[string]string
 }
 
 // NewScenarioStore creates a new empty scenario store.
@@ -75,6 +80,7 @@ func NewScenarioStore() *ScenarioStore {
 		scenarios:     make(map[string]*Scenario),
 		requestCounts: make(map[string]int),
 		lastRequests:  make(map[string]*CapturedRequest),
+		lastProtocols: make(map[string]string),
 	}
 }
 
@@ -86,6 +92,7 @@ func (s *ScenarioStore) Register(scenario *Scenario) {
 	s.scenarios[scenario.ID] = scenario
 	s.requestCounts[scenario.ID] = 0
 	delete(s.lastRequests, scenario.ID)
+	delete(s.lastProtocols, scenario.ID)
 }
 
 // Get retrieves a scenario by ID.
@@ -142,6 +149,25 @@ func (s *ScenarioStore) GetLastRequest(id string) (*CapturedRequest, bool) {
 	return req, ok
 }
 
+// RecordProtocol stores the HTTP protocol of the most recent LLM request
+// for a scenario (e.g. "HTTP/2.0", "HTTP/1.1"). Recorded by the TLS
+// listener's middleware so tests can assert which transport the worker's
+// llmhttp backend negotiated via ALPN.
+func (s *ScenarioStore) RecordProtocol(id, proto string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastProtocols[id] = proto
+}
+
+// GetLastProtocol returns the protocol of the last LLM request observed for
+// a scenario, and whether one was recorded.
+func (s *ScenarioStore) GetLastProtocol(id string) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	proto, ok := s.lastProtocols[id]
+	return proto, ok
+}
+
 // GetRequestCount returns the number of requests received for a scenario.
 func (s *ScenarioStore) GetRequestCount(id string) int {
 	s.mu.RLock()
@@ -185,6 +211,7 @@ func (s *ScenarioStore) Delete(id string) bool {
 	delete(s.scenarios, id)
 	delete(s.requestCounts, id)
 	delete(s.lastRequests, id)
+	delete(s.lastProtocols, id)
 	return existed
 }
 
@@ -195,6 +222,7 @@ func (s *ScenarioStore) Clear() {
 	s.scenarios = make(map[string]*Scenario)
 	s.requestCounts = make(map[string]int)
 	s.lastRequests = make(map[string]*CapturedRequest)
+	s.lastProtocols = make(map[string]string)
 }
 
 // List returns all registered scenarios.

@@ -40,11 +40,15 @@ jobs:
           #      http-client value).
           #
           # The "auto" value exercises the default dispatch path (ALPN
-          # probe on HTTPS, fasthttp short-circuit on plain http); the
-          # mockllm used in integration tests is plain HTTP so auto and
-          # fasthttp hit the same backend, but keeping auto in the
-          # matrix guards against accidentally breaking the default-mode
-          # wiring.
+          # probe on HTTPS, fasthttp short-circuit on plain http). mockllm
+          # now also serves an HTTPS/h2 lane (:8443) alongside plaintext
+          # :8080, and TestHTTPClientALPNSelection points the BuildRequest
+          # path at it: auto/nethttp negotiate h2 via ALPN → net/http while
+          # fasthttp falls back to http/1.1, asserted per arm via the
+          # protocol the mock observes. So "auto" genuinely takes the
+          # ALPN → h2 → net/http branch and is no longer indistinguishable
+          # from fasthttp — the auto-selection path is real coverage, not
+          # just a guard against breaking the default-mode wiring.
           matrix=$(jq -c '
             def parseVer: split(".") | map(tonumber);
             def supportsBuildRequest: parseVer | .[0] > 0 or (.[0] == 0 and .[1] >= 219);
