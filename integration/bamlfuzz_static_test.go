@@ -26,6 +26,7 @@
 package integration
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -42,6 +43,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/testcontainers/testcontainers-go"
 	"pgregory.net/rapid"
 
 	"github.com/invakid404/baml-rest/adapters/common/codegen/bamlfuzz"
@@ -274,6 +276,18 @@ func runStaticBatch(t *testing.T, cases []bamlfuzz.OracleCase, batchLabel string
 		return
 	}
 	defer terminateStaticEnv(t, env)
+	// On ANY case failure in this batch, dump the dedicated per-batch
+	// container logs BEFORE teardown so CI shows the underlying worker
+	// panic/stack, not just the bare gRPC EOF the host surfaces (issue
+	// #450). Registered after the terminate defer so it runs first
+	// (LIFO). A failed t.Run marks this parent test failed, so
+	// t.Failed() here is true iff at least one case below failed —
+	// bounded, once per batch, and silent on a fully green batch.
+	defer func() {
+		if t.Failed() {
+			dumpStaticEnvLogs(t, batchLabel, env)
+		}
+	}()
 
 	mockClient := mockllm.NewClient(env.MockLLMURL)
 	bamlClient := testutil.NewBAMLRestClient(env.BAMLRestURL)
@@ -552,6 +566,75 @@ func setupStaticEnv(bamlSrcDir string) (*testutil.TestEnvironment, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), testutil.SetupBudget(opts))
 	defer cancel()
 	return testutil.Setup(ctx, opts)
+}
+
+// staticLogTailLines bounds the per-batch container log dump so a
+// failure surfaces the panic stack and the preceding worker
+// restart/error context without drowning CI in the full container
+// history.
+const staticLogTailLines = 400
+
+// dumpStaticEnvLogs dumps the dedicated per-batch container logs for a
+// FAILED static-oracle batch so CI shows the underlying worker panic
+// rather than just the bare gRPC EOF the host surfaces (issue #450).
+// Each container is bounded to the last staticLogTailLines lines; this
+// is called at most once per batch, before terminateStaticEnv tears the
+// env down. The suite-level dumpContainerLogs only targets the global
+// TestEnv, so static oracle's per-batch envs need this dedicated dump.
+func dumpStaticEnvLogs(t *testing.T, batchLabel string, env *testutil.TestEnvironment) {
+	t.Helper()
+	if env == nil {
+		return
+	}
+	dumpContainerLogTail(t, fmt.Sprintf("static oracle baml-rest logs: %s", batchLabel), env.BAMLRest)
+	dumpContainerLogTail(t, fmt.Sprintf("static oracle mock-llm logs: %s", batchLabel), env.MockLLM)
+}
+
+// dumpContainerLogTail fetches a container's logs with a short timeout
+// and writes the last staticLogTailLines lines to the test log under a
+// clear marker. A nil container or a fetch/read error is reported but
+// never fatal — diagnostics must not themselves break the teardown path.
+func dumpContainerLogTail(t *testing.T, marker string, container testcontainers.Container) {
+	t.Helper()
+	if container == nil {
+		t.Logf("=== %s === (container is nil)", marker)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rc, err := container.Logs(ctx)
+	if err != nil {
+		t.Logf("=== %s === (failed to get logs: %v)", marker, err)
+		return
+	}
+	defer rc.Close()
+
+	// Stream the logs through a fixed-size ring of the last
+	// staticLogTailLines lines instead of buffering the whole log into
+	// memory: a crash-looping or verbose worker could otherwise emit
+	// megabytes before we trim. Only the retained tail is ever held
+	// (mirrors the bounded ring buffer #1 uses on the worker stderr).
+	ring := make([]string, 0, staticLogTailLines)
+	scanner := bufio.NewScanner(rc)
+	// Raise the per-line limit well above bufio's 64KB default so a
+	// single long log line (e.g. a wide panic frame) doesn't abort the
+	// scan with ErrTooLong.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		if len(ring) == staticLogTailLines {
+			ring = ring[1:]
+		}
+		ring = append(ring, scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		t.Logf("=== %s === (failed to read logs: %v)", marker, err)
+		return
+	}
+
+	tail := strings.Join(ring, "\n")
+	t.Logf("=== %s (last %d lines) ===\n%s\n=== end %s ===", marker, staticLogTailLines, tail, marker)
 }
 
 func terminateStaticEnv(t *testing.T, env *testutil.TestEnvironment) {

@@ -71,6 +71,16 @@ func (p *Pool) startWorkerWithStop(id int, stop <-chan struct{}) (*workerHandle,
 	// Create a zerolog-backed hclog for plugin communication
 	pluginLogger := newHclogZerolog(p.logger.With().Int("worker", id).Logger())
 
+	// Capture the worker subprocess's stderr into a bounded ring buffer
+	// so a crash's panic/stack can be appended to the terminal pool
+	// error the host sees (issue #450). go-plugin drains the original
+	// subprocess stderr to ClientConfig.Stderr line-by-line; after the
+	// worker calls goplugin.Serve it redirects os.Stderr to the
+	// SyncStderr stdio channel, so a Go panic written post-Serve lands
+	// there instead — capture both into the same (thread-safe) buffer.
+	// Both default to io.Discard, so without this the panic text is lost.
+	stderrTail := newStderrRingBuffer()
+
 	client := plugin.NewClient(&plugin.ClientConfig{
 		HandshakeConfig: workerplugin.Handshake,
 		Plugins:         p.pluginMap(),
@@ -80,6 +90,8 @@ func (p *Pool) startWorkerWithStop(id int, stop <-chan struct{}) (*workerHandle,
 		},
 		Logger:          pluginLogger,
 		GRPCDialOptions: workerplugin.GRPCDialOptions(),
+		Stderr:          stderrTail,
+		SyncStderr:      stderrTail,
 	})
 
 	select {
@@ -91,7 +103,7 @@ func (p *Pool) startWorkerWithStop(id int, stop <-chan struct{}) (*workerHandle,
 
 	resultCh := make(chan workerStartResult, 1)
 	go func() {
-		handle, err := p.finishWorkerStartup(id, client)
+		handle, err := p.finishWorkerStartup(id, client, stderrTail)
 		resultCh <- workerStartResult{handle: handle, err: err}
 	}()
 
@@ -123,7 +135,7 @@ func (p *Pool) startWorkerWithStop(id int, stop <-chan struct{}) (*workerHandle,
 	}
 }
 
-func (p *Pool) finishWorkerStartup(id int, client *plugin.Client) (*workerHandle, error) {
+func (p *Pool) finishWorkerStartup(id int, client *plugin.Client, stderrTail *stderrRingBuffer) (*workerHandle, error) {
 	rpcClient, err := client.Client()
 	if err != nil {
 		client.Kill()
@@ -156,6 +168,7 @@ func (p *Pool) finishWorkerStartup(id int, client *plugin.Client) (*workerHandle
 		killFn:      client.Kill,
 		worker:      worker,
 		inFlightReq: make(map[uint64]*inFlightRequest),
+		stderrTail:  stderrTail,
 	}
 	if reattach := client.ReattachConfig(); reattach != nil {
 		h.nativePid = reattach.Pid
