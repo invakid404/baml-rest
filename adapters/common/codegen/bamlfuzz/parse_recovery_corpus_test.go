@@ -2,6 +2,8 @@ package bamlfuzz
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -58,6 +60,42 @@ func TestParseRecoveryCorpusWellFormed(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestLoadParseRecoveryCorpusStrictDecode pins the strict-decode contract:
+// a typo'd / unknown corpus key and trailing JSON after the case object are
+// both hard load errors, so a malformed fixture fails fast instead of being
+// silently accepted with the bad key dropped.
+func TestLoadParseRecoveryCorpusStrictDecode(t *testing.T) {
+	const good = `{"name":"x","schema":{"classes":[{"name":"Root",` +
+		`"properties":[{"name":"a","type":{"kind":"string"}}]}],"root_class":"Root"},` +
+		`"raw":"{}","want":{"status":"error"}}`
+
+	cases := map[string]string{
+		"unknown_field": `{"name":"x","bogus_key":1}`,
+		"trailing_data": good + `{"name":"y"}`,
+	}
+	for label, body := range cases {
+		label, body := label, body
+		t.Run(label, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "00_bad.json"), []byte(body), 0o644); err != nil {
+				t.Fatalf("write fixture: %v", err)
+			}
+			if _, err := LoadParseRecoveryCorpus(dir); err == nil {
+				t.Fatalf("expected load error for %s, got nil", label)
+			}
+		})
+	}
+
+	// A well-formed single document still loads cleanly.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "00_ok.json"), []byte(good), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	if _, err := LoadParseRecoveryCorpus(dir); err != nil {
+		t.Fatalf("well-formed corpus must load, got %v", err)
 	}
 }
 

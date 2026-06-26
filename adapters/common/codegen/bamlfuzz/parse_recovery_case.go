@@ -1,8 +1,10 @@
 package bamlfuzz
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -101,7 +103,19 @@ func LoadParseRecoveryCorpus(dir string) ([]ParseRecoveryCase, error) {
 			return nil, fmt.Errorf("%s: %w", name, err)
 		}
 		var c ParseRecoveryCase
-		if err := json.Unmarshal(data, &c); err != nil {
+		// Decode strictly: a typo'd corpus key must fail fast rather than
+		// being silently dropped (plain json.Unmarshal accepts unknown
+		// fields). Mirror json.Unmarshal's single-document, no-trailing-data
+		// contract by confirming the stream is at EOF after the one case.
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&c); err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		if err := dec.Decode(&struct{}{}); err != io.EOF {
+			if err == nil {
+				return nil, fmt.Errorf("%s: unexpected trailing JSON after case object", name)
+			}
 			return nil, fmt.Errorf("%s: %w", name, err)
 		}
 		if c.Name == "" {

@@ -51,7 +51,12 @@ type ParseDiffFailureEnvelope struct {
 
 	SkippedNative bool         `json:"skipped_native,omitempty"`
 	BAML          ParseOutcome `json:"baml"`
-	Native        ParseOutcome `json:"native,omitempty"`
+	// Native is a pointer so an absent/skipped native leg is omitted from
+	// the JSON entirely. A non-pointer ParseOutcome would not be elided by
+	// encoding/json (omitempty does not apply to a zero-value struct), and
+	// ParseOutcome.Parser is non-omitempty, so a BAML-only failure envelope
+	// would otherwise emit a misleading {"parser":""} native stub.
+	Native *ParseOutcome `json:"native,omitempty"`
 
 	SemanticDiff []SemanticDiffEntry    `json:"semantic_diff,omitempty"`
 	OrderDiff    []SchemaOrderDiffEntry `json:"order_diff,omitempty"`

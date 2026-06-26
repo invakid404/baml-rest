@@ -162,6 +162,18 @@ func DiffParserPrefixes(ctx context.Context, baml, native Parser, req ParseReque
 	return out
 }
 
+// NativeOutcome returns a pointer to the candidate's outcome, or nil when
+// the native leg was skipped or never ran (its Parser name is unset).
+// Envelope constructors use it so an absent native leg is omitted from the
+// failure JSON instead of emitting an empty {"parser":""} stub.
+func (r ParseDiffResult) NativeOutcome() *ParseOutcome {
+	if r.SkippedNative || r.Native.Parser == "" {
+		return nil
+	}
+	n := r.Native
+	return &n
+}
+
 // parseOutcome packages a parser's (result, error) into a ParseOutcome.
 // On error only Error is set (diagnostic text); on success only JSON.
 func parseOutcome(name string, res ParseResult, err error) ParseOutcome {

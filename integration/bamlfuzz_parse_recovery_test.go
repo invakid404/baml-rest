@@ -303,7 +303,7 @@ func runDynamicParseDiffLeg(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Orac
 				PreserveSchemaOrder: c.PreserveSchemaOrder, Schema: c.Schema,
 				PrefixIndex: -1, Raw: string(c.MockLLMContent),
 				ExpectedStatus: bamlfuzz.ParseStatusSuccess, Expected: c.Expected,
-				SkippedNative: res.SkippedNative, BAML: res.BAML, Native: res.Native,
+				SkippedNative: res.SkippedNative, BAML: res.BAML, Native: res.NativeOutcome(),
 				SemanticDiff: res.SemanticDiff, OrderDiff: res.OrderDiff, Failures: res.Failures,
 			}
 			dumpParseDiffAndFail(t, dynamicOracleArtifactDir, env, strings.Join(res.Failures, "; "))
@@ -348,7 +348,7 @@ func parseDiffEnvelope(c bamlfuzz.ParseRecoveryCase, idx, prefixIdx int, prefixN
 		Stream: stream, PrefixIndex: prefixIdx, PrefixName: prefixName, Raw: raw,
 		SkippedNative: res.SkippedNative,
 		BAML:          res.BAML,
-		Native:        res.Native,
+		Native:        res.NativeOutcome(),
 		SemanticDiff:  res.SemanticDiff,
 		OrderDiff:     res.OrderDiff,
 		Failures:      res.Failures,
