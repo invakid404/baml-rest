@@ -1,0 +1,82 @@
+{
+  "target": {
+    "kind": "class",
+    "name": "LinkedList",
+    "mode": "non_streaming"
+  },
+  "classes": [
+    {
+      "name": {
+        "name": "Node"
+      },
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "data"
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "int"
+          }
+        },
+        {
+          "name": {
+            "name": "next"
+          },
+          "type": {
+            "kind": "union",
+            "union": {
+              "variants": [
+                {
+                  "kind": "class",
+                  "name": "Node",
+                  "mode": "non_streaming"
+                }
+              ],
+              "nullable": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": {
+        "name": "LinkedList"
+      },
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "head"
+          },
+          "type": {
+            "kind": "union",
+            "union": {
+              "variants": [
+                {
+                  "kind": "class",
+                  "name": "Node",
+                  "mode": "non_streaming"
+                }
+              ],
+              "nullable": true
+            }
+          }
+        },
+        {
+          "name": {
+            "name": "len"
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "int"
+          }
+        }
+      ]
+    }
+  ],
+  "recursive_classes": [
+    "Node"
+  ]
+}

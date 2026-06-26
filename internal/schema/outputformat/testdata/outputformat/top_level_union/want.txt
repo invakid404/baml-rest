@@ -1,0 +1,11 @@
+Answer in JSON using any of these schemas:
+{
+  description: string,
+  severity: string,
+} or {
+  title: string,
+  description: string,
+} or {
+  module: string,
+  format: string,
+}

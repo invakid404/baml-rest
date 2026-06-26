@@ -1,0 +1,13 @@
+A {
+  pointer: B,
+}
+
+B {
+  pointer: C,
+}
+
+C {
+  pointer: A or null,
+}
+
+Answer in JSON using this schema: A

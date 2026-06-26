@@ -1,0 +1,112 @@
+{
+  "target": {
+    "kind": "class",
+    "name": "NonRecursive",
+    "mode": "non_streaming"
+  },
+  "classes": [
+    {
+      "name": {
+        "name": "A"
+      },
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "pointer"
+          },
+          "type": {
+            "kind": "class",
+            "name": "B",
+            "mode": "non_streaming"
+          }
+        }
+      ]
+    },
+    {
+      "name": {
+        "name": "B"
+      },
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "pointer"
+          },
+          "type": {
+            "kind": "class",
+            "name": "C",
+            "mode": "non_streaming"
+          }
+        }
+      ]
+    },
+    {
+      "name": {
+        "name": "C"
+      },
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "pointer"
+          },
+          "type": {
+            "kind": "union",
+            "union": {
+              "variants": [
+                {
+                  "kind": "class",
+                  "name": "A",
+                  "mode": "non_streaming"
+                }
+              ],
+              "nullable": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": {
+        "name": "NonRecursive"
+      },
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "pointer"
+          },
+          "type": {
+            "kind": "class",
+            "name": "A",
+            "mode": "non_streaming"
+          }
+        },
+        {
+          "name": {
+            "name": "data"
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "int"
+          }
+        },
+        {
+          "name": {
+            "name": "field"
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "bool"
+          }
+        }
+      ]
+    }
+  ],
+  "recursive_classes": [
+    "A",
+    "B",
+    "C"
+  ]
+}

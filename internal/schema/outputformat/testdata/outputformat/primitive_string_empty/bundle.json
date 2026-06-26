@@ -1,0 +1,6 @@
+{
+  "target": {
+    "kind": "primitive",
+    "primitive": "string"
+  }
+}

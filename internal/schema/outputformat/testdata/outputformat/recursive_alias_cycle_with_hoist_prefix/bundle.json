@@ -1,0 +1,36 @@
+{
+  "target": {
+    "kind": "recursive_alias",
+    "name": "A",
+    "mode": "non_streaming"
+  },
+  "structural_recursive_aliases": [
+    {
+      "name": "A",
+      "target": {
+        "kind": "recursive_alias",
+        "name": "B",
+        "mode": "non_streaming"
+      }
+    },
+    {
+      "name": "B",
+      "target": {
+        "kind": "recursive_alias",
+        "name": "C",
+        "mode": "non_streaming"
+      }
+    },
+    {
+      "name": "C",
+      "target": {
+        "kind": "list",
+        "elem": {
+          "kind": "recursive_alias",
+          "name": "A",
+          "mode": "non_streaming"
+        }
+      }
+    }
+  ]
+}

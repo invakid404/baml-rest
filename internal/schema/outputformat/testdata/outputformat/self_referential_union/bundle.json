@@ -1,0 +1,46 @@
+{
+  "target": {
+    "kind": "class",
+    "name": "SelfReferential",
+    "mode": "non_streaming"
+  },
+  "classes": [
+    {
+      "name": {
+        "name": "SelfReferential"
+      },
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "recursion"
+          },
+          "type": {
+            "kind": "union",
+            "union": {
+              "variants": [
+                {
+                  "kind": "primitive",
+                  "primitive": "int"
+                },
+                {
+                  "kind": "primitive",
+                  "primitive": "string"
+                },
+                {
+                  "kind": "class",
+                  "name": "SelfReferential",
+                  "mode": "non_streaming"
+                }
+              ],
+              "nullable": true
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "recursive_classes": [
+    "SelfReferential"
+  ]
+}

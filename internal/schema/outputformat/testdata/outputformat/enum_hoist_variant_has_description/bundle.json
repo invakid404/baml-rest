@@ -1,0 +1,66 @@
+{
+  "target": {
+    "kind": "class",
+    "name": "Output",
+    "mode": "non_streaming"
+  },
+  "enums": [
+    {
+      "name": {
+        "name": "Enm"
+      },
+      "values": [
+        {
+          "name": {
+            "name": "A"
+          },
+          "description": "A description"
+        },
+        {
+          "name": {
+            "name": "B"
+          }
+        },
+        {
+          "name": {
+            "name": "C"
+          }
+        },
+        {
+          "name": {
+            "name": "D"
+          }
+        },
+        {
+          "name": {
+            "name": "E"
+          }
+        },
+        {
+          "name": {
+            "name": "F"
+          }
+        }
+      ]
+    }
+  ],
+  "classes": [
+    {
+      "name": {
+        "name": "Output"
+      },
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "output"
+          },
+          "type": {
+            "kind": "enum",
+            "name": "Enm"
+          }
+        }
+      ]
+    }
+  ]
+}

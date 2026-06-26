@@ -1,0 +1,3 @@
+RecursiveMapAlias = map<string, RecursiveMapAlias>
+
+Answer in JSON using this schema: RecursiveMapAlias

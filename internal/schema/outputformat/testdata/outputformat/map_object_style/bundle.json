@@ -1,0 +1,13 @@
+{
+  "target": {
+    "kind": "map",
+    "key": {
+      "kind": "primitive",
+      "primitive": "string"
+    },
+    "value": {
+      "kind": "primitive",
+      "primitive": "string"
+    }
+  }
+}

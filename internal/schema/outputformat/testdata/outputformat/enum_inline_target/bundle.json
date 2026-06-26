@@ -1,0 +1,30 @@
+{
+  "target": {
+    "kind": "enum",
+    "name": "Color"
+  },
+  "enums": [
+    {
+      "name": {
+        "name": "Color"
+      },
+      "values": [
+        {
+          "name": {
+            "name": "Red"
+          }
+        },
+        {
+          "name": {
+            "name": "Green"
+          }
+        },
+        {
+          "name": {
+            "name": "Blue"
+          }
+        }
+      ]
+    }
+  ]
+}

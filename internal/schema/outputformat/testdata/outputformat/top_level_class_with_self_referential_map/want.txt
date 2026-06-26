@@ -1,0 +1,5 @@
+RecursiveMap {
+  data: map<string, RecursiveMap>,
+}
+
+Answer in JSON using this schema: RecursiveMap

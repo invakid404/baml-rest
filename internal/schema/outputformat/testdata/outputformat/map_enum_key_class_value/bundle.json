@@ -1,0 +1,52 @@
+{
+  "target": {
+    "kind": "map",
+    "key": {
+      "kind": "enum",
+      "name": "Key"
+    },
+    "value": {
+      "kind": "class",
+      "name": "Val",
+      "mode": "non_streaming"
+    }
+  },
+  "enums": [
+    {
+      "name": {
+        "name": "Key"
+      },
+      "values": [
+        {
+          "name": {
+            "name": "A"
+          }
+        },
+        {
+          "name": {
+            "name": "B"
+          }
+        }
+      ]
+    }
+  ],
+  "classes": [
+    {
+      "name": {
+        "name": "Val"
+      },
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "x"
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "int"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+Node {
+  data: int,
+  next: Node or null,
+}
+
+Answer in JSON using this schema:
+map<string, Node>

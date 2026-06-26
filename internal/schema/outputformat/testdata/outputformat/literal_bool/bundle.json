@@ -1,0 +1,9 @@
+{
+  "target": {
+    "kind": "literal",
+    "literal": {
+      "kind": "bool",
+      "bool": true
+    }
+  }
+}

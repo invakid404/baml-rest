@@ -1,0 +1,5 @@
+SelfReferential {
+  recursion: int or string or SelfReferential or null,
+}
+
+Answer in JSON using this schema: SelfReferential

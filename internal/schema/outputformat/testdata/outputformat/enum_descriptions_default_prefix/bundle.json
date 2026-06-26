@@ -1,0 +1,36 @@
+{
+  "target": {
+    "kind": "enum",
+    "name": "EnumOutput"
+  },
+  "enums": [
+    {
+      "name": {
+        "name": "EnumOutput",
+        "alias": "VALUE_ENUM"
+      },
+      "values": [
+        {
+          "name": {
+            "name": "ONE"
+          },
+          "description": "The first enum."
+        },
+        {
+          "name": {
+            "name": "TWO",
+            "alias": "two"
+          },
+          "description": "The second enum."
+        },
+        {
+          "name": {
+            "name": "THREE",
+            "alias": "hi"
+          },
+          "description": "three"
+        }
+      ]
+    }
+  ]
+}

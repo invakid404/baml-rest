@@ -1,0 +1,14 @@
+Answer in JSON using this schema:
+{
+  category: {
+    description: string,
+    severity: string,
+  } or {
+    title: string,
+    description: string,
+  } or {
+    module: string,
+    format: string,
+  },
+  date: string,
+}

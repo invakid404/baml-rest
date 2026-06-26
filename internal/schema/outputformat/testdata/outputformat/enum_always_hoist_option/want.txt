@@ -1,0 +1,13 @@
+Enm
+----
+- A
+- B
+- C
+- D
+- E
+- F
+
+Answer in JSON using this schema:
+{
+  output: Enm,
+}

@@ -1,0 +1,61 @@
+{
+  "target": {
+    "kind": "class",
+    "name": "Tree",
+    "mode": "non_streaming"
+  },
+  "classes": [
+    {
+      "name": {
+        "name": "Tree"
+      },
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "data"
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "int"
+          }
+        },
+        {
+          "name": {
+            "name": "children"
+          },
+          "type": {
+            "kind": "class",
+            "name": "Forest",
+            "mode": "non_streaming"
+          }
+        }
+      ]
+    },
+    {
+      "name": {
+        "name": "Forest"
+      },
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "trees"
+          },
+          "type": {
+            "kind": "list",
+            "elem": {
+              "kind": "class",
+              "name": "Tree",
+              "mode": "non_streaming"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "recursive_classes": [
+    "Tree",
+    "Forest"
+  ]
+}

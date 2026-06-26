@@ -1,0 +1,14 @@
+{
+  "target": {
+    "kind": "union",
+    "union": {
+      "variants": [
+        {
+          "kind": "primitive",
+          "primitive": "int"
+        }
+      ],
+      "nullable": true
+    }
+  }
+}

@@ -1,0 +1,8 @@
+Answer in JSON using this schema:
+{
+  // A professional resume
+  // containing work history
+  // and qualifications
+
+  name: string,
+}

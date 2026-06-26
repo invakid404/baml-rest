@@ -1,0 +1,2 @@
+Answer in JSON using this schema:
+int or null

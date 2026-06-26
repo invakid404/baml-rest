@@ -1,0 +1,10 @@
+Tree {
+  data: int,
+  children: Forest,
+}
+
+Forest {
+  trees: Tree[],
+}
+
+Answer in JSON using this schema: Tree

@@ -1,0 +1,13 @@
+Enm
+----
+- A: A description
+- B
+- C
+- D
+- E
+- F
+
+Answer in JSON using this schema:
+{
+  output: Enm,
+}

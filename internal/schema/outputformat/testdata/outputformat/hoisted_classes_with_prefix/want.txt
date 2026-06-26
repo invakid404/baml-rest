@@ -1,0 +1,18 @@
+interface A {
+  pointer: B,
+}
+
+interface B {
+  pointer: C,
+}
+
+interface C {
+  pointer: A or null,
+}
+
+Answer in JSON using this interface:
+{
+  pointer: A,
+  data: int,
+  field: bool,
+}

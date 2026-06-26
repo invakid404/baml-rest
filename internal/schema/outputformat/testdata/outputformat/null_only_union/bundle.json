@@ -1,0 +1,9 @@
+{
+  "target": {
+    "kind": "union",
+    "union": {
+      "variants": null,
+      "nullable": true
+    }
+  }
+}

@@ -1,0 +1,5 @@
+EnumOutput
+----
+- ONE: The first enum.
+- two: The second enum.
+- hi: three

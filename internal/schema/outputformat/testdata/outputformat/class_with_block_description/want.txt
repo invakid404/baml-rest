@@ -1,0 +1,6 @@
+Answer in JSON using this schema:
+{
+  // Represents a system user
+
+  name: string,
+}

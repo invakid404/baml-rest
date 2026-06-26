@@ -37,6 +37,12 @@ codegen/internal
 # Codegen test corpora for the bamlfuzz property fuzzer.
 codegen/testdata
 
+# Golden/differential fixture corpus for the native output_format renderer
+# (internal/schema/outputformat). The want.txt/bundle.json files are
+# test-only parity fixtures, not a customer-build input — keep them out of
+# the server binary's embed.FS, mirroring codegen/testdata above.
+internal/schema/outputformat/testdata
+
 # bamlfuzz lives publicly under codegen/ (not internal/) so the
 # root-module integration test can import it without coupling
 # adapters/common to integration/testutil. The package is test

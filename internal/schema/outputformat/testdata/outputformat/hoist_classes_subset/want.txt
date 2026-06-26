@@ -1,0 +1,16 @@
+A {
+  prop: int,
+}
+
+B {
+  prop: string,
+}
+
+Answer in JSON using this schema:
+{
+  a: A,
+  b: B,
+  c: {
+    prop: float,
+  },
+}

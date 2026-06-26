@@ -1,0 +1,104 @@
+{
+  "target": {
+    "kind": "union",
+    "union": {
+      "variants": [
+        {
+          "kind": "class",
+          "name": "Bug",
+          "mode": "non_streaming"
+        },
+        {
+          "kind": "class",
+          "name": "Enhancement",
+          "mode": "non_streaming"
+        },
+        {
+          "kind": "class",
+          "name": "Documentation",
+          "mode": "non_streaming"
+        }
+      ]
+    }
+  },
+  "classes": [
+    {
+      "name": {
+        "name": "Bug"
+      },
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "description"
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "string"
+          }
+        },
+        {
+          "name": {
+            "name": "severity"
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "string"
+          }
+        }
+      ]
+    },
+    {
+      "name": {
+        "name": "Enhancement"
+      },
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "title"
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "string"
+          }
+        },
+        {
+          "name": {
+            "name": "description"
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "string"
+          }
+        }
+      ]
+    },
+    {
+      "name": {
+        "name": "Documentation"
+      },
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "module"
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "string"
+          }
+        },
+        {
+          "name": {
+            "name": "format"
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "string"
+          }
+        }
+      ]
+    }
+  ]
+}
