@@ -170,6 +170,8 @@ run_case "15m vs 15m1s tolerates"                  boundary_526.log     1 0 Fuzz
 run_case "fractional fuzztime completed tolerates" boundary_526.log     1 0 FuzzBamlfuzzDynamic            empty loud 14.5m
 # Malformed fuzztime must fail closed.
 run_case "malformed fuzztime propagates"           boundary_526.log     1 1 FuzzBamlfuzzDynamic            empty "" 15x
+# Negative fuzztime is meaningless / invalid -> fail closed (not parsed as +15m).
+run_case "negative fuzztime propagates"            boundary_526.log     1 1 FuzzBamlfuzzDynamic            empty "" -15m
 
 # --- propagate: structural / state violations ------------------------------
 run_case "multiple FAIL lines propagate"           multi_fail.log        1 1 FuzzBamlfuzzDynamic            empty

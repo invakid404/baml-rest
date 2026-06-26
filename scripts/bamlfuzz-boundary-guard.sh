@@ -144,8 +144,13 @@ parse_go_duration_ns() {
   awk -v s="$1" '
     BEGIN {
       if (s == "") exit 1
+      # Only a leading "+" (or no sign) is allowed. A negative duration is
+      # meaningless for this completed-budget guard (and `go test
+      # -fuzztime=-15m` is itself invalid), so reject it as unparseable — the
+      # caller then fails closed via "could not parse ...".
       c = substr(s, 1, 1)
-      if (c == "+" || c == "-") s = substr(s, 2)
+      if (c == "-") exit 1
+      if (c == "+") s = substr(s, 2)
       if (s == "") exit 1
       total = 0.0; found = 0
       while (length(s) > 0) {
