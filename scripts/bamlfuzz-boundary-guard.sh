@@ -154,6 +154,12 @@ done
 if [ "$boundary_idx" -lt 1 ]; then
   propagate "no '(0/sec)' boundary progress line preceded by another progress line"
 fi
+# The (0/sec) line MUST be the terminal progress line: any further
+# 'fuzz: elapsed:' line after it means fuzzing kept going, so this was not the
+# completed-budget shutdown shape. Fail closed.
+if [ "$boundary_idx" -ne $(( ${#elapsed_lines[@]} - 1 )) ]; then
+  propagate "(0/sec) line at index ${boundary_idx} is not the final progress line ($(( ${#elapsed_lines[@]} - 1 ))); fuzzing continued after it"
+fi
 
 boundary_line="${elapsed_lines[$boundary_idx]}"
 prev_line="${elapsed_lines[$((boundary_idx - 1))]}"
@@ -176,15 +182,19 @@ fi
 # (5) No replay artifact was written under any <target>/_artifacts/ dir. The
 #     workflow uploads these on failure; their absence confirms no oracle case
 #     produced an envelope (parity mismatches always write one before failing).
+#     A missing artifact root means we cannot make that determination, so fail
+#     closed — do NOT fall through to tolerate. Preexisting _artifacts subdirs
+#     are NOT required: the failure writers create them on demand.
 # ---------------------------------------------------------------------------
-if [ -d "$artifact_root" ]; then
-  while IFS= read -r d; do
-    [ -n "$d" ] || continue
-    if [ -n "$(find "$d" -type f -print -quit 2>/dev/null)" ]; then
-      propagate "replay artifact present under ${d}"
-    fi
-  done < <(find "$artifact_root" -type d -name _artifacts 2>/dev/null || true)
+if [ ! -d "$artifact_root" ]; then
+  propagate "artifact root ${artifact_root} is missing; cannot confirm no replay envelope"
 fi
+while IFS= read -r d; do
+  [ -n "$d" ] || continue
+  if [ -n "$(find "$d" -type f -print -quit 2>/dev/null)" ]; then
+    propagate "replay artifact present under ${d}"
+  fi
+done < <(find "$artifact_root" -type d -name _artifacts 2>/dev/null || true)
 
 # All conditions held: this is the issue #526 coordinator-boundary artifact.
 echo "BAMLFUZZ: tolerated Go native fuzz coordinator deadline at fuzztime boundary; no crasher or replay envelope produced; see issue #526."

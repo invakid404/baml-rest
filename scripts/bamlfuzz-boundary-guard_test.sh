@@ -23,13 +23,21 @@ fail=0
 #   artifact_mode: "empty" (clean dir)
 #                | "with-artifact[:<subdir>]" (a <subdir>/_artifacts file exists;
 #                                              subdir defaults to "dynamic")
-#   expect_loud:   non-empty -> require the tolerated BAMLFUZZ: line on stdout
+#   artifact_mode "missing-root" -> point the guard at a nonexistent root
+#   expect_loud:   non-empty -> require the tolerated BAMLFUZZ: line on STDOUT
+#                  (stdout/stderr are captured separately so this enforces the
+#                  guard's stdout-only contract for the loud tolerated line)
 run_case() {
   local name="$1" logf="$2" code="$3" want="$4" tgt="$5" artmode="$6" loud="${7:-}"
-  local artroot out got ok=1 subdir
+  local artroot out errf outf got ok=1 subdir
 
   artroot="$(mktemp -d)"
   case "$artmode" in
+    missing-root)
+      # Hand the guard a path that does not exist (F4 fail-closed check).
+      rm -rf "$artroot"
+      artroot="${artroot}/does-not-exist"
+      ;;
     with-artifact*)
       subdir="${artmode#with-artifact}"
       subdir="${subdir#:}"
@@ -39,13 +47,18 @@ run_case() {
       ;;
   esac
 
-  out="$("$guard" "${fixtures}/${logf}" "$code" "$tgt" "15m" "$artroot" 2>&1)"
+  # Capture stdout and stderr SEPARATELY so the loud-line assertion can be
+  # made against stdout only (the guard echoes the tolerated line to stdout;
+  # propagate diagnostics go to stderr).
+  outf="$(mktemp)"
+  errf="$(mktemp)"
+  "$guard" "${fixtures}/${logf}" "$code" "$tgt" "15m" "$artroot" >"$outf" 2>"$errf"
   got=$?
-  rm -rf "$artroot"
+  [ "$artmode" = "missing-root" ] || rm -rf "$artroot"
 
   [ "$got" -eq "$want" ] || ok=0
   if [ -n "$loud" ]; then
-    grep -qF "BAMLFUZZ: tolerated Go native fuzz coordinator deadline" <<<"$out" || ok=0
+    grep -qF "BAMLFUZZ: tolerated Go native fuzz coordinator deadline" "$outf" || ok=0
   fi
 
   if [ "$ok" -eq 1 ]; then
@@ -53,11 +66,13 @@ run_case() {
     pass=$((pass + 1))
   else
     echo "FAIL - ${name}: got exit ${got}, want ${want}"
+    out="$(cat "$outf" "$errf")"
     while IFS= read -r diag_line; do
       echo "       | ${diag_line}"
     done <<<"$out"
     fail=$((fail + 1))
   fi
+  rm -f "$outf" "$errf"
 }
 
 # --- tolerate ---------------------------------------------------------------
@@ -82,6 +97,9 @@ run_case "harness-failure marker propagates"       harness_failure_marker.log 1 
 run_case "CDE before full budget propagates"       cde_before_budget.log 1 1 FuzzBamlfuzzDynamic            empty
 run_case "missing (0/sec) shape propagates"        no_zerosec.log        1 1 FuzzBamlfuzzDynamic            empty
 run_case "execs changed at boundary propagates"    execs_changed.log     1 1 FuzzBamlfuzzDynamic            empty
+# F3: a progress line AFTER the (0/sec) line means fuzzing kept going — the
+# (0/sec) was not the terminal completed-budget shape. Fail closed.
+run_case "progress after (0/sec) propagates"       progress_after_zerosec.log 1 1 FuzzBamlfuzzDynamic       empty
 
 # --- propagate: structural / state violations ------------------------------
 run_case "multiple FAIL lines propagate"           multi_fail.log        1 1 FuzzBamlfuzzDynamic            empty
@@ -92,6 +110,11 @@ run_case "replay artifact on disk propagates"      boundary_526.log      1 1 Fuz
 # NO oracle marker — but failAndDumpInvalid wrote an _artifacts file that
 # survives on disk. The artifact check is the durable backstop here.
 run_case "invalid artifact (boundary drop) propagates" boundary_invalid.log 1 1 FuzzBamlfuzzInvalidJSONCoercion with-artifact:invalid_json_coercion
+# F4: a missing artifact root means we can't confirm "no replay envelope" —
+# fail closed instead of falling through to tolerate.
+run_case "missing artifact root propagates"        boundary_526.log      1 1 FuzzBamlfuzzDynamic            missing-root
+# F2: a non-1 go test exit code is propagated verbatim (not coerced to 1).
+run_case "non-1 go test exit propagates"           no_zerosec.log        2 2 FuzzBamlfuzzDynamic            empty
 
 echo "---"
 echo "passed=${pass} failed=${fail}"

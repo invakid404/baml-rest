@@ -32,8 +32,8 @@ artifact_root="${repo_root}/adapters/common/codegen/testdata/bamlfuzz"
 logfile="$(mktemp "${TMPDIR:-/tmp}/bamlfuzz-native.XXXXXX")"
 echo "run-bamlfuzz-native: target=${target} fuzztime=${fuzztime} fuzzcachedir=${fuzzcachedir}"
 
-# Tee everything to the job output AND the log the guard inspects. pipefail +
-# PIPESTATUS[0] recovers go test's real exit code through the tee.
+# Tee everything to the job output AND the log the guard inspects. Capture the
+# FULL pipe status: PIPESTATUS[0] is go test, PIPESTATUS[1] is tee.
 set -x
 go test -tags=integration,subprocess -v -count=1 -p 1 -timeout "${go_timeout}" \
   -run='^$' \
@@ -41,8 +41,22 @@ go test -tags=integration,subprocess -v -count=1 -p 1 -timeout "${go_timeout}" \
   -fuzztime="${fuzztime}" \
   ./integration \
   -test.fuzzcachedir="${fuzzcachedir}" 2>&1 | tee "${logfile}"
-status="${PIPESTATUS[0]}"
+pipe=("${PIPESTATUS[@]}")
 set +x
+go_status="${pipe[0]}"
+tee_status="${pipe[1]}"
 
-echo "run-bamlfuzz-native: go test exited ${status}"
-exec "${here}/bamlfuzz-boundary-guard.sh" "${logfile}" "${status}" "${target}" "${fuzztime}" "${artifact_root}"
+echo "run-bamlfuzz-native: go test exited ${go_status}, tee exited ${tee_status}"
+
+# Fail closed if tee failed: the log the guard inspects may be truncated or
+# missing, so the guard cannot safely decide. Never hand a partial log to the
+# guard — propagate a nonzero exit instead.
+if [ "${tee_status}" -ne 0 ]; then
+  echo "run-bamlfuzz-native: tee failed (status ${tee_status}); the captured log is unreliable — NOT invoking the boundary guard." >&2
+  if [ "${go_status}" -ne 0 ]; then
+    exit "${go_status}"
+  fi
+  exit 1
+fi
+
+exec "${here}/bamlfuzz-boundary-guard.sh" "${logfile}" "${go_status}" "${target}" "${fuzztime}" "${artifact_root}"
