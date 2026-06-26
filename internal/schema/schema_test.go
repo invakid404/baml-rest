@@ -3,10 +3,97 @@ package schema
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
 func ptr(s string) *string { return &s }
+
+func strType() Type { return Type{Kind: TypePrimitive, Primitive: PrimitiveString} }
+
+// TestRebuildIndexesFailClosed verifies the whole rebuild is atomic: when
+// RebuildIndexes fails partway, a later definition that was indexed by a
+// prior successful rebuild but is NOT reached by the failing rebuild must
+// not keep a stale per-definition index. C3 (the unreached class) is
+// mutated so its old field index would be a wrong-positive, then the
+// rebuild is failed three ways — each before C3 is reached.
+func TestRebuildIndexesFailClosed(t *testing.T) {
+	newValid := func(t *testing.T) *Bundle {
+		t.Helper()
+		b := &Bundle{
+			Target: Type{Kind: TypeClass, Name: "C1", Mode: NonStreaming},
+			Enums: []EnumDef{
+				{Name: Name{Name: "E1"}, Values: []EnumValue{{Name: Name{Name: "X"}}}},
+				{Name: Name{Name: "E2"}, Values: []EnumValue{{Name: Name{Name: "Y"}}}},
+			},
+			Classes: []ClassDef{
+				{Name: Name{Name: "C1"}, Mode: NonStreaming, Fields: []ClassField{{Name: Name{Name: "f1"}, Type: strType()}}},
+				{Name: Name{Name: "C2"}, Mode: NonStreaming, Fields: []ClassField{{Name: Name{Name: "f2"}, Type: strType()}}},
+				{Name: Name{Name: "C3"}, Mode: NonStreaming, Fields: []ClassField{{Name: Name{Name: "f3"}, Type: strType()}}},
+			},
+		}
+		if err := b.RebuildIndexes(); err != nil {
+			t.Fatalf("initial RebuildIndexes: %v", err)
+		}
+		// Precondition: C3's field index is live after the first rebuild.
+		if _, ok := b.Classes[2].Field("f3"); !ok {
+			t.Fatal("precondition: C3.Field(f3) should hit after a clean rebuild")
+		}
+		// Mutate C3 so its OLD index {"f3":0} is now stale/wrong: the field
+		// is renamed, so a surviving stale index would wrong-positively
+		// resolve "f3".
+		b.Classes[2].Fields = []ClassField{{Name: Name{Name: "renamed"}, Type: strType()}}
+		return b
+	}
+
+	tests := []struct {
+		name string
+		// fail injects a failure that triggers before C3 (index 2) is
+		// reached, and returns the substring the error must contain.
+		fail func(b *Bundle) string
+	}{
+		{
+			name: "duplicate enum name fails before classes",
+			fail: func(b *Bundle) string {
+				b.Enums[1].Name.Name = "E1" // dup in the enum loop
+				return "duplicate enum name"
+			},
+		},
+		{
+			name: "invalid class mode fails before C3",
+			fail: func(b *Bundle) string {
+				b.Classes[0].Mode = StreamingMode("bogus") // fails at class index 0
+				return "invalid streaming mode"
+			},
+		},
+		{
+			name: "duplicate class key fails before C3",
+			fail: func(b *Bundle) string {
+				b.Classes[1].Name.Name = "C1" // dup (C1, NonStreaming) at class index 1
+				return "duplicate class"
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := newValid(t)
+			wantSub := tt.fail(b)
+			if err := b.RebuildIndexes(); err == nil {
+				t.Fatalf("expected rebuild failure containing %q, got nil", wantSub)
+			} else if !strings.Contains(err.Error(), wantSub) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), wantSub)
+			}
+			// The unreached, mutated C3 must expose no stale field index.
+			if _, ok := b.Classes[2].Field("f3"); ok {
+				t.Error("stale field index survived a failed rebuild: C3.Field(f3) hit")
+			}
+			if _, ok := b.Classes[2].FieldByRenderedName("f3"); ok {
+				t.Error("stale rendered field index survived a failed rebuild")
+			}
+		})
+	}
+}
 
 // sampleBundle exercises every type kind and lookup the bundle owns, so
 // the round-trip and index tests cover the whole model surface.

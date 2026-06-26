@@ -17,16 +17,31 @@ import "fmt"
 // call this after decoding a Bundle from JSON (which cannot populate the
 // unexported maps) or after mutating any slice.
 //
-// On the first violation it returns an error. The bundle-level indexes
-// are cleared to nil up front and only reassigned once every loop
-// succeeds, so a failed rebuild never leaves a stale index from a prior
-// successful build reachable — callers must still treat a non-nil return
-// as "do not use the indexes", but a contract violation degrades to a
-// lookup miss rather than a stale hit.
+// On the first violation it returns an error. Every index — the
+// bundle-level maps AND every per-definition value/field map on each enum
+// and class — is cleared to nil up front, before any validation runs, and
+// the bundle-level maps are reassigned only once all loops succeed. So a
+// rebuild that fails partway (e.g. a duplicate enum name detected before a
+// later class is reached) can never leave a stale index from a prior
+// successful build reachable through Bundle.Find* or the per-definition
+// Value*/Field* accessors: callers must still treat a non-nil return as
+// "do not use the indexes", but a contract violation degrades to a lookup
+// miss rather than a stale hit or an out-of-range panic.
 func (b *Bundle) RebuildIndexes() error {
 	b.enumByName = nil
 	b.classByKey = nil
 	b.aliasByName = nil
+	// Clear EVERY per-definition index before validating anything, so an
+	// early failure below leaves later, unreached definitions with nil
+	// maps (miss) rather than stale maps from a prior successful build.
+	for i := range b.Enums {
+		b.Enums[i].valueByName = nil
+		b.Enums[i].valueByRenderedName = nil
+	}
+	for i := range b.Classes {
+		b.Classes[i].fieldByName = nil
+		b.Classes[i].fieldByRenderedName = nil
+	}
 
 	enumByName := make(map[string]int, len(b.Enums))
 	for i := range b.Enums {
