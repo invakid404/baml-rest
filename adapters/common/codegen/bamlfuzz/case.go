@@ -43,6 +43,12 @@ const (
 	// walker-computed value: BAML passes reasoning through untouched, so
 	// the oracle proves preservation + separation, not reasoning parsing.
 	OracleReasoning OracleMode = "reasoning"
+	// OracleParseDiff: drive the same raw model text through a BAML
+	// parser (oracle) and a registered native parser (candidate) and
+	// diff their final / parse-stream outcomes directly, bypassing the
+	// call path. Backs the native-vs-BAML differential parsing harness
+	// and the JSONish recovery corpus.
+	OracleParseDiff OracleMode = "parse_diff"
 )
 
 // CaseMetadata is per-case provenance that's useful to a developer

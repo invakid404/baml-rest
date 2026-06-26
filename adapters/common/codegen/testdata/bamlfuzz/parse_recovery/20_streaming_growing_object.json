@@ -1,0 +1,26 @@
+{
+  "name": "streaming_growing_object",
+  "description": "Accumulated prefixes grow through { , key, colon, partial string, full string, next key, full object. STREAMING DIFFERENTIAL IS BLOCKED ON DIRECT PARSE-STREAM EXPOSURE (deferred): the per-prefix `want` values are NOT yet BAML-characterized and the harness does not gate on them today — only the corpus format and prefix-growth monotonicity are exercised.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "name", "type": {"kind": "string"}},
+          {"name": "age", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "prefixes": [
+    {"name": "open_brace", "raw": "{", "want": {"status": "error"}},
+    {"name": "first_key", "raw": "{\"name\"", "want": {"status": "error"}},
+    {"name": "colon", "raw": "{\"name\":", "want": {"status": "error"}},
+    {"name": "partial_string", "raw": "{\"name\":\"Ad", "want": {"status": "success", "json": {"name": "Ad", "age": null}}},
+    {"name": "full_string", "raw": "{\"name\":\"Ada\"", "want": {"status": "success", "json": {"name": "Ada", "age": null}}},
+    {"name": "second_key", "raw": "{\"name\":\"Ada\",\"age\"", "want": {"status": "success", "json": {"name": "Ada", "age": null}}},
+    {"name": "full_object", "raw": "{\"name\":\"Ada\",\"age\":36}", "want": {"status": "success", "json": {"name": "Ada", "age": 36}}}
+  ]
+}

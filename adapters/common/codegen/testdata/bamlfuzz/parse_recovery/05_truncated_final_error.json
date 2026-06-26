@@ -1,0 +1,21 @@
+{
+  "name": "truncated_final_error",
+  "description": "Genuinely truncated JSON cut off mid-value. want is BAML's observed final-parse outcome — recorded as captured (success-with-coercion or error).",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "name", "type": {"kind": "string"}},
+          {"name": "age", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"name\":\"Ada\",\"age\":",
+  "want": {
+    "status": "error"
+  }
+}

@@ -316,6 +316,14 @@ func runDynamicOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Oracle
 	}
 	envelope.DynamicSchema = &lowered
 
+	// Issue 523: direct final-parse differential leg. Parse the exact mock
+	// content through BAML directly and (a) anchor it against the walker's
+	// Expected, (b) diff it against any registered native parser. With the
+	// default NoopParser the native leg is a vacuous skip, so this is a
+	// no-op-pass today and becomes a live native-vs-BAML differential the
+	// moment a real native parser registers — no harness rewrite.
+	runDynamicParseDiffLeg(t, dyn, c, caseIdx)
+
 	scenarioID := fmt.Sprintf("bamlfuzz-dyn-%s", scenarioSafe(c.Name))
 	envelope.MockLLMScenarioID = scenarioID
 	registerCtx, registerCancel := context.WithTimeout(context.Background(), 10*time.Second)
