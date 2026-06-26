@@ -104,6 +104,7 @@ reject_markers=(
   'dynclient errored:'         # oracle-body dynclient error
   'REST errored'               # oracle-body REST error ("REST errored (status N): ...")
   'register scenario:'         # mock scenario registration error
+  'harness failure:'           # invalid-oracle harness/transport failure (now also dumps an artifact)
   'schema key order mismatch'  # preserve-order parity failure
   'schema order'               # schema-order unsupported / error
   ' diff:'                     # semantic-diff decode error (expected_vs_* diff:)

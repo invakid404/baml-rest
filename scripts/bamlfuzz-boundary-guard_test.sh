@@ -20,17 +20,24 @@ pass=0
 fail=0
 
 # run_case <name> <logfile> <go_exit> <want_guard_exit> <target> <artifact_mode> [expect_loud]
-#   artifact_mode: "empty" (clean dir) | "with-artifact" (a _artifacts file exists)
+#   artifact_mode: "empty" (clean dir)
+#                | "with-artifact[:<subdir>]" (a <subdir>/_artifacts file exists;
+#                                              subdir defaults to "dynamic")
 #   expect_loud:   non-empty -> require the tolerated BAMLFUZZ: line on stdout
 run_case() {
   local name="$1" logf="$2" code="$3" want="$4" tgt="$5" artmode="$6" loud="${7:-}"
-  local artroot out got ok=1
+  local artroot out got ok=1 subdir
 
   artroot="$(mktemp -d)"
-  if [ "$artmode" = "with-artifact" ]; then
-    mkdir -p "${artroot}/dynamic/_artifacts"
-    printf '{}' > "${artroot}/dynamic/_artifacts/fuzz.json"
-  fi
+  case "$artmode" in
+    with-artifact*)
+      subdir="${artmode#with-artifact}"
+      subdir="${subdir#:}"
+      subdir="${subdir:-dynamic}"
+      mkdir -p "${artroot}/${subdir}/_artifacts"
+      printf '{}' > "${artroot}/${subdir}/_artifacts/fuzz.json"
+      ;;
+  esac
 
   out="$("$guard" "${fixtures}/${logf}" "$code" "$tgt" "15m" "$artroot" 2>&1)"
   got=$?
@@ -66,6 +73,10 @@ run_case "dynclient errored: propagates"           dynclient_errored.log 1 1 Fuz
 run_case "REST errored propagates"                 rest_errored.log      1 1 FuzzBamlfuzzDynamic            empty
 run_case "register scenario: propagates"           register_scenario.log 1 1 FuzzBamlfuzzDynamic            empty
 run_case "semantic mismatch (≠) propagates"        semantic_neq.log      1 1 FuzzBamlfuzzDynamic            empty
+# Invalid-oracle harness/transport failure (invalid_test.go:370/403). The
+# "harness failure:" marker must force propagation even when it surfaces at
+# the boundary (near-boundary case where the worker result was not dropped).
+run_case "harness-failure marker propagates"       harness_failure_marker.log 1 1 FuzzBamlfuzzInvalidDynamic empty
 
 # --- propagate: budget / boundary-shape violations -------------------------
 run_case "CDE before full budget propagates"       cde_before_budget.log 1 1 FuzzBamlfuzzDynamic            empty
@@ -76,6 +87,11 @@ run_case "execs changed at boundary propagates"    execs_changed.log     1 1 Fuz
 run_case "multiple FAIL lines propagate"           multi_fail.log        1 1 FuzzBamlfuzzDynamic            empty
 run_case "FAIL for a different target propagates"  wrong_target.log      1 1 FuzzBamlfuzzDynamic            empty
 run_case "replay artifact on disk propagates"      boundary_526.log      1 1 FuzzBamlfuzzDynamic            with-artifact
+# The TRUE boundary-drop case for the invalid harness paths: the worker
+# result (and any marker) is dropped, so the log is the pure #526 shape with
+# NO oracle marker — but failAndDumpInvalid wrote an _artifacts file that
+# survives on disk. The artifact check is the durable backstop here.
+run_case "invalid artifact (boundary drop) propagates" boundary_invalid.log 1 1 FuzzBamlfuzzInvalidJSONCoercion with-artifact:invalid_json_coercion
 
 echo "---"
 echo "passed=${pass} failed=${fail}"
