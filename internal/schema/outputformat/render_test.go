@@ -1,6 +1,7 @@
 package outputformat
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"os"
@@ -157,12 +158,24 @@ func TestCorpusFiles(t *testing.T) {
 			}
 
 			// The persisted corpus must be self-describing: a non-default case
-			// carries an options.json, a default case must not.
-			_, optsErr := os.Stat(filepath.Join(dir, "options.json"))
-			if len(describeOptions(opts)) > 0 && optsErr != nil {
-				t.Errorf("case %q has non-default options but no options.json", name)
-			}
-			if len(describeOptions(opts)) == 0 && optsErr == nil {
+			// carries an options.json whose CONTENTS match the expected knobs,
+			// a default case must not carry one at all. Validating the contents
+			// (not just presence) catches a wrong or stale options.json.
+			optsPath := filepath.Join(dir, "options.json")
+			optsRaw, optsErr := os.ReadFile(optsPath)
+			if len(describeOptions(opts)) > 0 {
+				if optsErr != nil {
+					t.Errorf("case %q has non-default options but no readable options.json: %v", name, optsErr)
+				} else {
+					wantOpts, err := json.MarshalIndent(describeOptions(opts), "", "  ")
+					if err != nil {
+						t.Fatalf("marshal expected options: %v", err)
+					}
+					if got := string(bytes.TrimRight(optsRaw, "\n")); got != string(wantOpts) {
+						t.Errorf("case %q options.json mismatch\n got: %s\nwant: %s", name, got, string(wantOpts))
+					}
+				}
+			} else if optsErr == nil {
 				t.Errorf("case %q has default options but an unexpected options.json", name)
 			}
 
