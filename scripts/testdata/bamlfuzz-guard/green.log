@@ -1,0 +1,6 @@
+=== TestMain: integration env up ===
+fuzz: elapsed: 3s, gathering baseline coverage: 1124/1124 completed, now fuzzing with 4 workers
+fuzz: elapsed: 15m0s, execs: 62457 (72/sec), new interesting: 7 (total: 1124)
+fuzz: elapsed: 15m1s, execs: 62457 (0/sec), new interesting: 7 (total: 1124)
+PASS
+ok  	github.com/invakid404/baml-rest/integration	901.231s

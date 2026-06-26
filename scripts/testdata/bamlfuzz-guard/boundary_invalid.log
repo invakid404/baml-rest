@@ -1,0 +1,8 @@
+fuzz: elapsed: 14m58s, execs: 51200 (61/sec), new interesting: 4 (total: 980)
+fuzz: elapsed: 15m0s, execs: 51280 (63/sec), new interesting: 4 (total: 980)
+fuzz: elapsed: 15m1s, execs: 51280 (0/sec), new interesting: 4 (total: 980)
+--- FAIL: FuzzBamlfuzzInvalidJSONCoercion (901.02s)
+context deadline exceeded
+FAIL
+exit status 1
+FAIL	github.com/invakid404/baml-rest/integration	901.18s
