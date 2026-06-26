@@ -367,7 +367,18 @@ func runInvalidOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Invali
 		return
 	}
 	if libErr != nil && (errors.Is(libErr, context.Canceled) || errors.Is(libErr, context.DeadlineExceeded)) {
-		t.Fatalf("harness failure: dynclient context (case=%s mutation=%s): %v", c.Name, c.Mutation, libErr)
+		// Harness/transport failure, not an oracle disagreement — but it must
+		// still be DURABLE on disk. At the -fuzztime boundary the Go fuzz
+		// coordinator drops the worker's RPC result, and worker stdout/stderr
+		// are wired to /dev/null, so a bare t.Fatal here would surface only as
+		// the coordinator's own "context deadline exceeded" line — the exact
+		// shape scripts/bamlfuzz-boundary-guard.sh tolerates (issue #526).
+		// Routing through failAndDumpInvalid writes a replay artifact, the one
+		// signal that survives the boundary; the "harness failure:" text is a
+		// secondary, guard-rejected marker for the non-boundary case.
+		envelope.DynclientError = libErr.Error()
+		failAndDumpInvalid(t, artifactDir, envelope, "harness failure: dynclient context (case=%s mutation=%s): %v", c.Name, c.Mutation, libErr)
+		return
 	}
 	var dynSuccess bool
 	switch {
@@ -400,7 +411,13 @@ func runInvalidOracleCase(t *testing.T, dyn *dynclient.Client, c bamlfuzz.Invali
 		return
 	}
 	if err != nil {
-		t.Fatalf("harness failure: REST transport (case=%s mutation=%s): %v", c.Name, c.Mutation, err)
+		// Harness/transport failure — dump a durable envelope for the same
+		// boundary-safety reason as the dynclient leg above (issue #526): the
+		// _artifacts file is the only signal that survives the coordinator's
+		// drop of the worker result at the -fuzztime boundary.
+		envelope.RESTError = err.Error()
+		failAndDumpInvalid(t, artifactDir, envelope, "harness failure: REST transport (case=%s mutation=%s): %v", c.Name, c.Mutation, err)
+		return
 	}
 	if restResp == nil {
 		envelope.RESTError = "nil response from BAMLClient.DynamicCallJSON"

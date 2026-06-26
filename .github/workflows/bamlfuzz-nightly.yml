@@ -438,13 +438,20 @@ jobs:
         # failAndDump / failStaticAndDump / failAndDumpInvalid.
         env:
           BAMLFUZZ_KEEP_ARTIFACTS: ""
-        run: |
-          go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 80m \
-            -run='^$' \
-            -fuzz='^${{ matrix.target }}$' \
-            -fuzztime="${FUZZTIME}" \
-            ./integration \
-            -test.fuzzcachedir="$(pwd)/adapters/common/codegen/testdata/bamlfuzz/.fuzzcache"
+          # Drives scripts/run-bamlfuzz-native.sh, which runs the identical
+          # `go test -fuzz` invocation but routes the result through
+          # scripts/bamlfuzz-boundary-guard.sh. The guard tolerates ONLY the
+          # Go fuzz coordinator's own -fuzztime boundary deadline (issue #526)
+          # — a Go-stdlib fuzzing artifact at the budget edge that produces no
+          # crasher input and no replay envelope. Every other failure shape
+          # (reproducible inputs, parity mismatches, real oracle deadlines,
+          # hangs) propagates unchanged, so the cell still fails, uploads
+          # replay artifacts, and comments on the sticky issue. The guard is
+          # target-parameterized via BAMLFUZZ_FUNCTION so it covers every
+          # native-fuzz cell (Dynamic / InvalidDynamic / InvalidJSONCoercion);
+          # Static and Streaming run under -run below and are unaffected.
+          BAMLFUZZ_FUNCTION: ${{ matrix.target }}
+        run: ./scripts/run-bamlfuzz-native.sh
 
       - name: Static oracle (-run, no fuzz watchdog) (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }})
         if: ${{ env.MODE == 'fuzz' && matrix.target == 'FuzzBamlfuzzStatic' }}

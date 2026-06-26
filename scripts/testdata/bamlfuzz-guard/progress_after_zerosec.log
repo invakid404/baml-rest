@@ -1,0 +1,7 @@
+fuzz: elapsed: 15m0s, execs: 62457 (72/sec), new interesting: 7 (total: 1124)
+fuzz: elapsed: 15m1s, execs: 62457 (0/sec), new interesting: 7 (total: 1124)
+fuzz: elapsed: 15m4s, execs: 62500 (14/sec), new interesting: 7 (total: 1124)
+--- FAIL: FuzzBamlfuzzDynamic (904.06s)
+context deadline exceeded
+exit status 1
+FAIL	github.com/invakid404/baml-rest/integration	904.231s
