@@ -157,30 +157,79 @@ func TestInvalidMapKeyRejected(t *testing.T) {
 	}
 }
 
+// mapKeyBundle wraps key as the key type of a single map field on Root,
+// for map-key validation tests.
+func mapKeyBundle(key Type) *Bundle {
+	k := key
+	return &Bundle{
+		Target: Type{Kind: TypeClass, Name: "Root", Mode: NonStreaming},
+		Enums:  []EnumDef{{Name: Name{Name: "E"}, Values: []EnumValue{{Name: Name{Name: "A"}}}}},
+		Classes: []ClassDef{
+			{Name: Name{Name: "Root"}, Mode: NonStreaming, Fields: []ClassField{
+				{Name: Name{Name: "m"}, Type: Type{Kind: TypeMap, Key: &k, Value: &Type{Kind: TypePrimitive, Primitive: PrimitiveString}}},
+			}},
+		},
+	}
+}
+
+func litStr(s string) Type {
+	return Type{Kind: TypeLiteral, Literal: &LiteralValue{Kind: LiteralString, String: s}}
+}
+
+// TestValidMapKeysAccepted covers the keys BAML accepts: a top-level
+// string / enum / string literal, and a (possibly nested) non-nullable
+// union of string literals.
 func TestValidMapKeysAccepted(t *testing.T) {
 	keys := []Type{
 		{Kind: TypePrimitive, Primitive: PrimitiveString},
 		{Kind: TypeEnum, Name: "E"},
-		{Kind: TypeLiteral, Literal: &LiteralValue{Kind: LiteralString, String: "k"}},
+		litStr("k"),
+		{Kind: TypeUnion, Union: &UnionType{Variants: []Type{litStr("a"), litStr("b")}}},
 		{Kind: TypeUnion, Union: &UnionType{Variants: []Type{
-			{Kind: TypePrimitive, Primitive: PrimitiveString},
-			{Kind: TypeEnum, Name: "E"},
+			litStr("a"),
+			{Kind: TypeUnion, Union: &UnionType{Variants: []Type{litStr("b"), litStr("c")}}},
 		}}},
 	}
 	for i, k := range keys {
-		key := k
-		b := &Bundle{
-			Target: Type{Kind: TypeClass, Name: "Root", Mode: NonStreaming},
-			Enums:  []EnumDef{{Name: Name{Name: "E"}, Values: []EnumValue{{Name: Name{Name: "A"}}}}},
-			Classes: []ClassDef{
-				{Name: Name{Name: "Root"}, Mode: NonStreaming, Fields: []ClassField{
-					{Name: Name{Name: "m"}, Type: Type{Kind: TypeMap, Key: &key, Value: &Type{Kind: TypePrimitive, Primitive: PrimitiveString}}},
-				}},
-			},
-		}
-		if err := b.Validate(); err != nil {
+		if err := mapKeyBundle(k).Validate(); err != nil {
 			t.Errorf("key[%d] %+v: unexpected error %v", i, k, err)
 		}
+	}
+}
+
+// TestInvalidMapKeysRejected covers union map keys BAML rejects: only
+// string literals are allowed inside a union key, and the union must be
+// non-nullable (jsonish walks iter_include_null and rejects the appended
+// null).
+func TestInvalidMapKeysRejected(t *testing.T) {
+	tests := []struct {
+		name string
+		key  Type
+	}{
+		{"string|enum union", Type{Kind: TypeUnion, Union: &UnionType{Variants: []Type{
+			{Kind: TypePrimitive, Primitive: PrimitiveString},
+			{Kind: TypeEnum, Name: "E"},
+		}}}},
+		{"nullable union of literals", Type{Kind: TypeUnion, Union: &UnionType{Nullable: true, Variants: []Type{
+			litStr("a"), litStr("b"),
+		}}}},
+		{"enum-containing union", Type{Kind: TypeUnion, Union: &UnionType{Variants: []Type{
+			litStr("a"), {Kind: TypeEnum, Name: "E"},
+		}}}},
+		{"string-primitive in union", Type{Kind: TypeUnion, Union: &UnionType{Variants: []Type{
+			{Kind: TypePrimitive, Primitive: PrimitiveString}, litStr("a"),
+		}}}},
+		{"nested nullable union of literals", Type{Kind: TypeUnion, Union: &UnionType{Variants: []Type{
+			litStr("a"),
+			{Kind: TypeUnion, Union: &UnionType{Nullable: true, Variants: []Type{litStr("b")}}},
+		}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := mapKeyBundle(tt.key).Validate(); err == nil || !strings.Contains(err.Error(), "map key must be") {
+				t.Fatalf("expected map key error, got %v", err)
+			}
+		})
 	}
 }
 

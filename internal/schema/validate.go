@@ -158,7 +158,7 @@ func (b *Bundle) validateType(t *Type, path string) error {
 			return fmt.Errorf("schema: %s: map type requires key and value", path)
 		}
 		if !b.isValidMapKey(t.Key) {
-			return fmt.Errorf("schema: %s: map key must be string, enum, string literal, or a non-nullable union of those", path)
+			return fmt.Errorf("schema: %s: map key must be string, enum, string literal, or a non-nullable union of string literals", path)
 		}
 		if err := b.validateType(t.Key, path+"[key]"); err != nil {
 			return err
@@ -203,9 +203,15 @@ func (b *Bundle) validateType(t *Type, path string) error {
 	}
 }
 
-// isValidMapKey reports whether t is a type jsonish accepts as a map key:
-// a string primitive, an enum, a string literal, or a non-nullable union
-// whose variants are all themselves valid keys.
+// isValidMapKey reports whether t is a type BAML accepts as a map key. It
+// matches both BAML map-key gates exactly (compile-time
+// baml-core/.../validations/types.rs and jsonish coerce_map.rs): a
+// top-level key may be a string primitive, an enum, or a string literal;
+// a union key may contain ONLY string literals (recursing through nested
+// non-nullable unions). String primitives and enums are NOT permitted
+// inside a union key, and the union must be non-nullable — jsonish walks
+// iter_include_null(), so a nullable union injects a null that is neither
+// a literal nor a union and is rejected.
 func (b *Bundle) isValidMapKey(t *Type) bool {
 	switch t.Kind {
 	case TypePrimitive:
@@ -215,18 +221,38 @@ func (b *Bundle) isValidMapKey(t *Type) bool {
 	case TypeLiteral:
 		return t.Literal != nil && t.Literal.Kind == LiteralString
 	case TypeUnion:
-		if t.Union == nil || t.Union.Nullable || len(t.Union.Variants) == 0 {
-			return false
-		}
-		for i := range t.Union.Variants {
-			if !b.isValidMapKey(&t.Union.Variants[i]) {
-				return false
-			}
-		}
-		return true
+		return isStringLiteralUnion(t)
 	default:
 		return false
 	}
+}
+
+// isStringLiteralUnion reports whether t is a non-nullable union every
+// member of which is a string literal or a nested non-nullable union of
+// string literals — the only union shape BAML allows as a map key. This
+// mirrors the iterative recursion in BAML's two map-key validators; the
+// non-nullable requirement reproduces jsonish rejecting the null that
+// iter_include_null() appends for an optional union.
+func isStringLiteralUnion(t *Type) bool {
+	if t.Union == nil || t.Union.Nullable || len(t.Union.Variants) == 0 {
+		return false
+	}
+	for i := range t.Union.Variants {
+		v := &t.Union.Variants[i]
+		switch v.Kind {
+		case TypeLiteral:
+			if v.Literal == nil || v.Literal.Kind != LiteralString {
+				return false
+			}
+		case TypeUnion:
+			if !isStringLiteralUnion(v) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // classExists reports whether a class with the given canonical name
