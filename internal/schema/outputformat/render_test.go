@@ -99,6 +99,15 @@ func writeCorpusCase(t *testing.T, tc goldenCase, bundleJSON []byte) {
 // TestCorpusFiles renders every persisted corpus case from its bundle.json and
 // checks it against want.txt, proving the on-disk fixtures stay in sync with
 // the renderer independently of the in-code fixtures.
+//
+// It first cross-checks the on-disk directory set against the expected case
+// names, failing on any missing or extra directory, so a stale corpus (a case
+// added or removed in code without rerunning `-update`) is caught rather than
+// silently skipped. It also requires an options.json for every non-default
+// case and forbids one for default cases, keeping the persisted corpus
+// self-describing. Rendering still uses the in-code options table: options.json
+// is a human-readable description (the unexported setting fields don't
+// round-trip through JSON), so it documents the knobs rather than driving them.
 func TestCorpusFiles(t *testing.T) {
 	entries, err := os.ReadDir(corpusDir)
 	if err != nil {
@@ -107,16 +116,35 @@ func TestCorpusFiles(t *testing.T) {
 		}
 		t.Fatalf("read corpus dir: %v", err)
 	}
-	// Map case name -> options so persisted cases render with the right knobs.
-	optsByName := make(map[string]Options)
+
+	// Expected case set (name -> options) from the single source of truth.
+	expected := make(map[string]Options)
 	for _, tc := range goldenCases() {
-		optsByName[tc.name] = tc.opts
+		expected[tc.name] = tc.opts
 	}
+
+	// On-disk case set.
+	onDisk := make(map[string]struct{})
 	for _, e := range entries {
-		if !e.IsDir() {
-			continue
+		if e.IsDir() {
+			onDisk[e.Name()] = struct{}{}
 		}
-		name := e.Name()
+	}
+
+	// Fail on drift in either direction so the corpus can never silently
+	// diverge from goldenCases().
+	for name := range expected {
+		if _, ok := onDisk[name]; !ok {
+			t.Errorf("corpus missing directory %q (run `go test ./internal/schema/outputformat -update`)", name)
+		}
+	}
+	for name := range onDisk {
+		if _, ok := expected[name]; !ok {
+			t.Errorf("corpus has stale directory %q with no matching fixture (run `-update`)", name)
+		}
+	}
+
+	for name, opts := range expected {
 		t.Run(name, func(t *testing.T) {
 			dir := filepath.Join(corpusDir, name)
 			raw, err := os.ReadFile(filepath.Join(dir, "bundle.json"))
@@ -127,11 +155,22 @@ func TestCorpusFiles(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read want.txt: %v", err)
 			}
+
+			// The persisted corpus must be self-describing: a non-default case
+			// carries an options.json, a default case must not.
+			_, optsErr := os.Stat(filepath.Join(dir, "options.json"))
+			if len(describeOptions(opts)) > 0 && optsErr != nil {
+				t.Errorf("case %q has non-default options but no options.json", name)
+			}
+			if len(describeOptions(opts)) == 0 && optsErr == nil {
+				t.Errorf("case %q has default options but an unexpected options.json", name)
+			}
+
 			var b schema.Bundle
 			if err := json.Unmarshal(raw, &b); err != nil {
 				t.Fatalf("unmarshal bundle.json: %v", err)
 			}
-			got, err := Render(&b, optsByName[name])
+			got, err := Render(&b, opts)
 			if err != nil {
 				t.Fatalf("Render error: %v", err)
 			}
