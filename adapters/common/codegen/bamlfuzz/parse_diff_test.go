@@ -201,6 +201,31 @@ func TestDiffParserPrefixesGrowthAndDiff(t *testing.T) {
 	}
 }
 
+// typedNilParser exists only to construct a typed-nil Parser (a nil
+// *typedNilParser wrapped in the interface) for the registry guard test.
+type typedNilParser struct{}
+
+func (*typedNilParser) Name() string { return "typed_nil" }
+func (*typedNilParser) Parse(context.Context, ParseRequest) (ParseResult, error) {
+	return ParseResult{}, nil
+}
+
+// A typed-nil parser (non-nil interface wrapping a nil pointer) must be
+// rejected like an untyped nil — otherwise DiffParsers would later panic
+// calling Parse/Name on the nil receiver.
+func TestRegisterNativeParserRejectsTypedNil(t *testing.T) {
+	var p *typedNilParser // nil pointer, but Parser(p) is a non-nil interface
+	restore := RegisterNativeParser(p)
+	defer restore()
+	got := RegisteredNativeParser()
+	if _, ok := got.(NoopParser); !ok {
+		t.Fatalf("typed-nil parser must fall back to NoopParser, got %T", got)
+	}
+	if got.Name() != "native_stub" {
+		t.Fatalf("expected native_stub after typed-nil registration, got %q", got.Name())
+	}
+}
+
 func TestRegisterNativeParserRoundTrip(t *testing.T) {
 	if _, ok := RegisteredNativeParser().(NoopParser); !ok {
 		t.Fatalf("default registered parser should be NoopParser, got %T", RegisteredNativeParser())

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"sync"
 )
 
@@ -95,13 +96,15 @@ var nativeParserRegistry = struct {
 // RegisterNativeParser installs p as the process-wide native parser the
 // differential harness diffs against and returns a restore func that
 // reinstalls whatever was registered before. The restore func is
-// idempotent. Passing a nil parser resets the registry to NoopParser so
-// the harness never holds a nil candidate.
+// idempotent. Passing a nil parser — an untyped nil, or a typed-nil such
+// as a nil `*SomeParser` (a non-nil interface wrapping a nil pointer) —
+// resets the registry to NoopParser, so the harness never holds a
+// candidate that panics the moment DiffParsers calls Parse / Name.
 //
 // The returned restore is intended for `defer restore()` in a test that
 // swaps in a fake or a real native parser for the duration of the test.
 func RegisterNativeParser(p Parser) (restore func()) {
-	if p == nil {
+	if isNilParser(p) {
 		p = NoopParser{}
 	}
 	nativeParserRegistry.mu.Lock()
@@ -116,6 +119,25 @@ func RegisterNativeParser(p Parser) (restore func()) {
 			nativeParserRegistry.p = prev
 			nativeParserRegistry.mu.Unlock()
 		})
+	}
+}
+
+// isNilParser reports whether p is unusable as a candidate: an untyped
+// nil interface, or a typed-nil whose underlying value is a nilable kind
+// (pointer, map, chan, func, slice, interface) that is itself nil. The
+// latter is a non-nil interface — `p == nil` is false — but calling any
+// method that dereferences the receiver would panic, so it must be
+// treated like a missing registration.
+func isNilParser(p Parser) bool {
+	if p == nil {
+		return true
+	}
+	v := reflect.ValueOf(p)
+	switch v.Kind() {
+	case reflect.Ptr, reflect.Map, reflect.Chan, reflect.Func, reflect.Slice, reflect.Interface:
+		return v.IsNil()
+	default:
+		return false
 	}
 }
 

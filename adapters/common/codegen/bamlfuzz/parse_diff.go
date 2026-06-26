@@ -200,6 +200,16 @@ func parseOutcome(name string, res ParseResult, err error) ParseOutcome {
 // expected output, must surface here. `side` is copied verbatim onto each
 // emitted entry. Either input being empty is a decode error, mirroring
 // SemanticDiff's contract.
+//
+// strictDiffAny / strictDeepEqual are a deliberately separate recursion
+// from envelope.go's semanticDiff / diffAny / deepEqualSemantic, not an
+// accidental copy. The shared comparator unconditionally applies the
+// lenient boundaryml/baml#3690 extra-null tolerance; the native-vs-BAML
+// leg requires exact equality and must NOT inherit it. Folding the two
+// behind a shared `nullStrict` mode is deferred precisely to avoid
+// re-entangling the strict and lenient paths and risking the tolerance
+// leaking back into this comparator — the small duplication buys that
+// safety property.
 func SemanticDiffStrict(side string, a, b json.RawMessage) ([]SemanticDiffEntry, error) {
 	av, err := decodeAny(a)
 	if err != nil {
