@@ -312,6 +312,21 @@ func goldenCases() []goldenCase {
 			bundle: mkBundle(optional(pInt()), nil, nil, nil, nil),
 			want:   "Answer in JSON using this schema:\nint or null",
 		},
+		{
+			// or_splitter joins inline union/enum alternatives. An explicitly
+			// empty splitter (BAML Some("")) joins with nothing — distinct from
+			// the unset zero value, which is the default " or ".
+			name:   "or_splitter_empty",
+			bundle: mkBundle(oneOf(pInt(), pString(), pBool()), nil, nil, nil, nil),
+			opts:   Options{OrSplitter: SetOrSplitter("")},
+			want:   "Answer in JSON using any of these schemas:\nintstringbool",
+		},
+		{
+			name:   "or_splitter_custom",
+			bundle: mkBundle(oneOf(pInt(), pString(), pBool()), nil, nil, nil, nil),
+			opts:   Options{OrSplitter: SetOrSplitter(" | ")},
+			want:   "Answer in JSON using any of these schemas:\nint | string | bool",
+		},
 
 		// --- maps -----------------------------------------------------------
 		{

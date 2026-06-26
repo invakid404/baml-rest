@@ -75,6 +75,32 @@ func AlwaysBool(b bool) BoolSetting { return BoolSetting{mode: settingAlways, va
 // Rust `matches!(opt, RenderSetting::Always(true))` guard.
 func (s BoolSetting) isTrue() bool { return s.mode == settingAlways && s.val }
 
+// OrSplitterSetting models BAML's or_splitter, which is an Option<String> at
+// the callable boundary unwrapped with unwrap_or(DEFAULT_OR_SPLITTER). It is
+// therefore two-state, not the tri-state of [StringSetting]: unset (the zero
+// value) renders the default " or ", and a value set via [SetOrSplitter]
+// renders exactly — including the empty string, so ctx.output_format(or_splitter="")
+// joins inline enum/union alternatives with nothing, matching BAML.
+type OrSplitterSetting struct {
+	set bool
+	val string
+}
+
+// SetOrSplitter returns an OrSplitterSetting that renders s exactly as the
+// separator between inline union and inline enum alternatives. Passing "" is
+// meaningful: alternatives are joined with no separator, mirroring BAML's
+// Some("") path.
+func SetOrSplitter(s string) OrSplitterSetting { return OrSplitterSetting{set: true, val: s} }
+
+// value resolves the effective separator: the set value (possibly empty) when
+// present, else the BAML default " or ".
+func (o OrSplitterSetting) value() string {
+	if o.set {
+		return o.val
+	}
+	return defaultOrSplitter
+}
+
 // HoistMode selects how [HoistClasses] behaves. The zero value is
 // HoistAuto, matching BAML HoistClasses::Auto.
 type HoistMode uint8
@@ -113,14 +139,12 @@ const (
 // prefix ("- "), auto hoisted-class prefix, auto class hoisting (recursive
 // only), auto enum hoisting, angle map style, and unquoted class fields.
 //
-// OrSplitter is a plain string for fidelity with BAML's RenderOptions (where
-// it is a String, not an Option): the empty zero value is normalised to the
-// default " or " so a zero-value Options matches BAML's default. An empty
-// splitter therefore cannot be expressed, an accepted trade-off for the
-// defaults-only first production cut.
+// OrSplitter is presence-aware ([OrSplitterSetting]): the zero value renders
+// the BAML default " or ", and an explicitly-set value (including "") renders
+// exactly, matching BAML's Option<String> + unwrap_or(DEFAULT_OR_SPLITTER).
 type Options struct {
 	Prefix             StringSetting
-	OrSplitter         string
+	OrSplitter         OrSplitterSetting
 	EnumValuePrefix    StringSetting
 	HoistedClassPrefix StringSetting
 	HoistClasses       HoistClasses
@@ -138,13 +162,10 @@ const defaultOrSplitter = " or "
 // prefix is configured.
 const defaultTypePrefixWord = "schema"
 
-// orSplitter returns the effective union/enum alternative separator,
-// substituting the BAML default for the empty zero value.
+// orSplitter returns the effective union/enum alternative separator: the
+// BAML default for an unset OrSplitter, else the explicitly-set value.
 func (o *Options) orSplitter() string {
-	if o.OrSplitter == "" {
-		return defaultOrSplitter
-	}
-	return o.OrSplitter
+	return o.OrSplitter.value()
 }
 
 // enumValuePrefix resolves the per-value bullet prefix: Auto is "- ",

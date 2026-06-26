@@ -153,8 +153,8 @@ func describeOptions(o Options) map[string]any {
 	} else if o.Prefix.mode == settingNever {
 		m["prefix"] = nil
 	}
-	if o.OrSplitter != "" {
-		m["or_splitter"] = o.OrSplitter
+	if o.OrSplitter.set {
+		m["or_splitter"] = o.OrSplitter.val
 	}
 	if s, ok := o.HoistedClassPrefix.alwaysNonEmpty(); ok {
 		m["hoisted_class_prefix"] = s
