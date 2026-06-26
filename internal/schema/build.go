@@ -462,10 +462,10 @@ func (b *builder) resolveRef(name, path string) (Type, error) {
 // toInt64 coerces a JSON-decoded literal_int value to int64. JSON numbers
 // decode to float64 through the standard decoders; json.Number and the
 // integer types are accepted too. A float is rejected when it is
-// non-integral, out of int64 range, or beyond ±2^53 (where float64 can no
-// longer represent every integer, so the decoded value may already be a
-// rounded approximation of the caller's literal). The integrality, range,
-// and exactness checks all run BEFORE the int64 cast, because converting
+// non-integral, out of int64 range, or at or beyond ±2^53 (where float64
+// can no longer represent every integer, so the decoded value may already
+// be a rounded approximation of the caller's literal). The integrality,
+// range, and exactness checks all run BEFORE the int64 cast, because converting
 // an out-of-range float64 to int64 is undefined in Go (float64(2^63)
 // would otherwise round-trip through MaxInt64 and pass a naive
 // v == float64(int64(v)) test).
@@ -487,14 +487,17 @@ func toInt64(value any) (int64, error) {
 		if v < minInt64f || v >= twoPow63 {
 			return 0, fmt.Errorf("value %v is out of int64 range", v)
 		}
-		// float64 represents every integer exactly only within ±2^53.
-		// Above that it skips integers, so the upstream JSON decode (which
+		// float64 represents every integer exactly only BELOW 2^53. At and
+		// above 2^53 it skips integers, so the upstream JSON decode (which
 		// already produced this float64) may have silently rounded the
-		// caller's literal — the original digits are unrecoverable, so we
-		// fail closed rather than store a value that differs from the input.
+		// caller's literal — e.g. 2^53+1 rounds to exactly float64(2^53).
+		// The boundary is therefore rejected too: a value that arrives as
+		// float64(2^53) is indistinguishable from a rounded 2^53+1, and the
+		// original digits are unrecoverable, so we fail closed rather than
+		// store a value that may differ from the input.
 		const maxExactInt = 9007199254740992.0 // 2^53
-		if v > maxExactInt || v < -maxExactInt {
-			return 0, fmt.Errorf("value %v cannot be represented exactly (magnitude exceeds 2^53; it may have been rounded during JSON decoding)", v)
+		if v >= maxExactInt || v <= -maxExactInt {
+			return 0, fmt.Errorf("value %v cannot be represented exactly (magnitude at or beyond 2^53; it may have been rounded during JSON decoding)", v)
 		}
 		return int64(v), nil
 	case json.Number:

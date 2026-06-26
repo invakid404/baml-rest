@@ -364,15 +364,31 @@ func TestBuildLiteralIntOutOfRange(t *testing.T) {
 }
 
 // TestBuildLiteralIntInexact covers the precision follow-up: a literal_int
-// that is within int64 range but beyond ±2^53 may already be a rounded
-// approximation after JSON decoding, so it is rejected rather than stored
-// as a wrong value. 9e18 < 2^63 (in range) but > 2^53 (inexact).
+// that is within int64 range but at or beyond ±2^53 may already be a
+// rounded approximation after JSON decoding, so it is rejected rather than
+// stored as a wrong value. The 2^53 boundary is rejected too — JSON
+// 2^53+1 (9007199254740993) rounds to exactly float64(2^53) before
+// reaching the conversion, so the boundary is indistinguishable from a
+// rounded-down value and must fail closed.
 func TestBuildLiteralIntInexact(t *testing.T) {
-	_, err := FromDynamicOutputSchema(mustSchema(t, `{
-		"properties": {"x": {"type": "literal_int", "value": 9e18}}
-	}`), BuildOptions{})
-	if err == nil || !strings.Contains(err.Error(), "cannot be represented exactly") {
-		t.Fatalf("expected inexact-int error, got %v", err)
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{"in range above 2^53", "9e18"},
+		{"exactly 2^53", "9007199254740992"},
+		{"2^53 plus one rounds to 2^53", "9007199254740993"},
+		{"negative 2^53", "-9007199254740992"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := FromDynamicOutputSchema(mustSchema(t, `{
+				"properties": {"x": {"type": "literal_int", "value": `+tc.value+`}}
+			}`), BuildOptions{})
+			if err == nil || !strings.Contains(err.Error(), "cannot be represented exactly") {
+				t.Fatalf("value %s: expected inexact-int error, got %v", tc.value, err)
+			}
+		})
 	}
 }
 
