@@ -168,6 +168,7 @@ type Type struct {
 	Meta TypeMeta `json:"meta,omitzero"`
 
 	Primitive PrimitiveKind `json:"primitive,omitempty"` // TypePrimitive
+	Media     MediaKind     `json:"media,omitempty"`     // TypePrimitive when Primitive == PrimitiveMedia
 	Name      string        `json:"name,omitempty"`      // TypeEnum, TypeClass, TypeRecursiveAlias
 	Mode      StreamingMode `json:"mode,omitempty"`      // TypeClass, TypeRecursiveAlias
 	Dynamic   bool          `json:"dynamic,omitempty"`   // TypeEnum, TypeClass
@@ -196,8 +197,12 @@ const (
 	PrimitiveMedia  PrimitiveKind = "media"
 )
 
-// MediaKind enumerates BAML media subtypes. Carried for fidelity with
-// PrimitiveMedia; unused by the current dynamic-schema construction path.
+// MediaKind enumerates BAML's media subtypes (BamlMediaType). It is the
+// payload of [Type.Media] when Primitive == PrimitiveMedia, preserving the
+// distinction Rust's TypeValue::Media(BamlMediaType) carries rather than
+// collapsing all media into one value. The current dynamic-schema path
+// never produces media (and ValidateOutput rejects it), but a media
+// primitive must still name a valid subtype to pass structural validation.
 type MediaKind string
 
 const (

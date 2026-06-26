@@ -17,45 +17,70 @@ import "fmt"
 // call this after decoding a Bundle from JSON (which cannot populate the
 // unexported maps) or after mutating any slice.
 //
-// On the first violation it returns an error and leaves the indexes in a
-// partially built but self-consistent-per-definition state; callers
-// should treat a non-nil return as "do not use the indexes".
+// On the first violation it returns an error. The bundle-level indexes
+// are cleared to nil up front and only reassigned once every loop
+// succeeds, so a failed rebuild never leaves a stale index from a prior
+// successful build reachable — callers must still treat a non-nil return
+// as "do not use the indexes", but a contract violation degrades to a
+// lookup miss rather than a stale hit.
 func (b *Bundle) RebuildIndexes() error {
-	b.enumByName = make(map[string]int, len(b.Enums))
+	b.enumByName = nil
+	b.classByKey = nil
+	b.aliasByName = nil
+
+	enumByName := make(map[string]int, len(b.Enums))
 	for i := range b.Enums {
 		e := &b.Enums[i]
-		if _, dup := b.enumByName[e.Name.Name]; dup {
+		if _, dup := enumByName[e.Name.Name]; dup {
 			return fmt.Errorf("schema: duplicate enum name %q", e.Name.Name)
 		}
-		b.enumByName[e.Name.Name] = i
+		enumByName[e.Name.Name] = i
 		if err := e.rebuildIndexes(); err != nil {
 			return err
 		}
 	}
 
-	b.classByKey = make(map[ClassKey]int, len(b.Classes))
+	classByKey := make(map[ClassKey]int, len(b.Classes))
 	for i := range b.Classes {
 		c := &b.Classes[i]
+		if err := validateStreamingMode(c.Mode); err != nil {
+			return fmt.Errorf("schema: class %q: %w", c.Name.Name, err)
+		}
 		key := ClassKey{Name: c.Name.Name, Mode: c.Mode}
-		if _, dup := b.classByKey[key]; dup {
+		if _, dup := classByKey[key]; dup {
 			return fmt.Errorf("schema: duplicate class %q (mode %q)", key.Name, key.Mode)
 		}
-		b.classByKey[key] = i
+		classByKey[key] = i
 		if err := c.rebuildIndexes(); err != nil {
 			return err
 		}
 	}
 
-	b.aliasByName = make(map[string]int, len(b.StructuralRecursiveAliases))
+	aliasByName := make(map[string]int, len(b.StructuralRecursiveAliases))
 	for i := range b.StructuralRecursiveAliases {
 		a := &b.StructuralRecursiveAliases[i]
-		if _, dup := b.aliasByName[a.Name]; dup {
+		if _, dup := aliasByName[a.Name]; dup {
 			return fmt.Errorf("schema: duplicate structural recursive alias %q", a.Name)
 		}
-		b.aliasByName[a.Name] = i
+		aliasByName[a.Name] = i
 	}
 
+	b.enumByName = enumByName
+	b.classByKey = classByKey
+	b.aliasByName = aliasByName
 	return nil
+}
+
+// validateStreamingMode rejects a StreamingMode that is not one of BAML's
+// two variants. An empty mode is invalid: every class definition and
+// class/recursive-alias reference carries an explicit mode in BAML.
+func validateStreamingMode(mode StreamingMode) error {
+	switch mode {
+	case NonStreaming, Streaming:
+		return nil
+	default:
+		return fmt.Errorf("invalid streaming mode %q", mode)
+	}
 }
 
 func (e *EnumDef) rebuildIndexes() error {

@@ -2,6 +2,7 @@ package schema
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -157,9 +158,51 @@ func TestBuildRefsClassesEnums(t *testing.T) {
 	if enum.Name.RenderedName() != "State" {
 		t.Errorf("enum alias = %q, want State", enum.Name.RenderedName())
 	}
-	// Skipped enum values are carried as ordinary values in this first cut.
-	if len(enum.Values) != 2 {
-		t.Errorf("enum values = %d, want 2 (skip not yet modelled)", len(enum.Values))
+	// Skipped values (INACTIVE) are dropped, mirroring BAML: only the
+	// non-skipped ACTIVE survives.
+	if len(enum.Values) != 1 {
+		t.Fatalf("enum values = %d, want 1 (skipped value dropped)", len(enum.Values))
+	}
+	if enum.Values[0].Name.Name != "ACTIVE" {
+		t.Errorf("surviving value = %q, want ACTIVE", enum.Values[0].Name.Name)
+	}
+}
+
+// TestBuildSkipDropsAliasedAndDescribedValue is a regression for R1: a
+// skipped value is dropped even when it carries an alias and description,
+// so a hidden category never reaches OutputFormatContent.
+func TestBuildSkipDropsAliasedAndDescribedValue(t *testing.T) {
+	b := mustBuild(t, `{
+		"enums": {
+			"E": {"values": [
+				{"name": "KEEP"},
+				{"name": "HIDE", "alias": "hidden", "description": "should vanish", "skip": true}
+			]}
+		},
+		"properties": {"e": {"ref": "E"}}
+	}`)
+	enum, _ := b.FindEnum("E")
+	if len(enum.Values) != 1 || enum.Values[0].Name.Name != "KEEP" {
+		t.Fatalf("values = %+v, want only KEEP", enum.Values)
+	}
+	if _, ok := enum.Value("HIDE"); ok {
+		t.Error("skipped HIDE must not be indexed")
+	}
+	if _, ok := enum.ValueByRenderedName("hidden"); ok {
+		t.Error("skipped value's alias must not be indexed")
+	}
+}
+
+// TestBuildEnumNilDefinitionFails covers C3: a null enum definition is
+// malformed input and construction fails closed rather than inventing an
+// empty enum.
+func TestBuildEnumNilDefinitionFails(t *testing.T) {
+	_, err := FromDynamicOutputSchema(mustSchema(t, `{
+		"enums": {"E": null},
+		"properties": {"x": {"type": "string"}}
+	}`), BuildOptions{})
+	if err == nil || !strings.Contains(err.Error(), `enum "E": nil definition`) {
+		t.Fatalf("expected nil enum definition error, got %v", err)
 	}
 }
 
@@ -223,6 +266,87 @@ func TestBuildUnionWithExplicitNullNormalises(t *testing.T) {
 	}
 	if len(x.Type.Union.Variants) != 2 {
 		t.Errorf("variants = %d, want 2 (null extracted)", len(x.Type.Union.Variants))
+	}
+}
+
+// fieldType builds a single-property schema and returns the lowered type
+// of property "x", for focused type-shape assertions.
+func fieldType(t *testing.T, propJSON string) Type {
+	t.Helper()
+	b := mustBuild(t, `{"properties":{"x":`+propJSON+`}}`)
+	cls, _ := b.FindClass(dynamicOutputClassName, NonStreaming)
+	f, ok := cls.Field("x")
+	if !ok {
+		t.Fatal("field x missing")
+	}
+	return f.Type
+}
+
+// TestBuildUnionSimplification covers R2: dynamic unions are normalised
+// exactly as BAML's TypeIR::union(...).simplify() — single-choice
+// collapse, nested-union flattening with null hoisting, first-seen
+// deduplication, and all-null collapse.
+func TestBuildUnionSimplification(t *testing.T) {
+	t.Run("singleton collapses to the choice", func(t *testing.T) {
+		ty := fieldType(t, `{"type":"union","oneOf":[{"type":"string"}]}`)
+		if ty.Kind != TypePrimitive || ty.Primitive != PrimitiveString {
+			t.Fatalf("got %+v, want bare string (single-choice union collapses)", ty)
+		}
+	})
+	t.Run("nested optional flattens and hoists null", func(t *testing.T) {
+		ty := fieldType(t, `{"type":"union","oneOf":[{"type":"optional","inner":{"type":"string"}},{"type":"int"}]}`)
+		if ty.Kind != TypeUnion || ty.Union == nil || !ty.Union.Nullable {
+			t.Fatalf("got %+v, want nullable union", ty)
+		}
+		if len(ty.Union.Variants) != 2 {
+			t.Fatalf("variants = %d, want 2 (string,int flattened out of the nested optional)", len(ty.Union.Variants))
+		}
+		for _, v := range ty.Union.Variants {
+			if v.Kind == TypeUnion {
+				t.Error("nested union was not flattened")
+			}
+			if isNull(v) {
+				t.Error("null leaked into variants instead of Nullable")
+			}
+		}
+	})
+	t.Run("duplicates removed preserving first-seen order", func(t *testing.T) {
+		ty := fieldType(t, `{"type":"union","oneOf":[{"type":"string"},{"type":"string"},{"type":"int"}]}`)
+		if ty.Kind != TypeUnion || ty.Union == nil || len(ty.Union.Variants) != 2 {
+			t.Fatalf("got %+v, want 2 deduped variants", ty)
+		}
+		if ty.Union.Variants[0].Primitive != PrimitiveString || ty.Union.Variants[1].Primitive != PrimitiveInt {
+			t.Errorf("order = %+v, want [string,int]", ty.Union.Variants)
+		}
+	})
+	t.Run("duplicate non-null collapses to single", func(t *testing.T) {
+		ty := fieldType(t, `{"type":"union","oneOf":[{"type":"string"},{"type":"string"}]}`)
+		if ty.Kind != TypePrimitive || ty.Primitive != PrimitiveString {
+			t.Fatalf("got %+v, want bare string", ty)
+		}
+	})
+	t.Run("all-null collapses to null primitive", func(t *testing.T) {
+		ty := fieldType(t, `{"type":"union","oneOf":[{"type":"null"},{"type":"null"}]}`)
+		if ty.Kind != TypePrimitive || ty.Primitive != PrimitiveNull {
+			t.Fatalf("got %+v, want null primitive", ty)
+		}
+	})
+	t.Run("single non-null plus null stays optional-of-one", func(t *testing.T) {
+		ty := fieldType(t, `{"type":"union","oneOf":[{"type":"string"},{"type":"null"}]}`)
+		if ty.Kind != TypeUnion || ty.Union == nil || !ty.Union.Nullable || len(ty.Union.Variants) != 1 {
+			t.Fatalf("got %+v, want optional-of-one union", ty)
+		}
+	})
+}
+
+// TestBuildLiteralIntOutOfRange covers C4: a JSON integer literal beyond
+// int64 range is rejected, not silently cast to a wrong value.
+func TestBuildLiteralIntOutOfRange(t *testing.T) {
+	_, err := FromDynamicOutputSchema(mustSchema(t, `{
+		"properties": {"x": {"type": "literal_int", "value": 1e19}}
+	}`), BuildOptions{})
+	if err == nil || !strings.Contains(err.Error(), "out of int64 range") {
+		t.Fatalf("expected out-of-range int64 error, got %v", err)
 	}
 }
 

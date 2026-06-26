@@ -3,6 +3,8 @@ package schema
 import (
 	"encoding/json"
 	"fmt"
+	"math"
+	"reflect"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 )
@@ -59,11 +61,10 @@ type BuildOptions struct {
 // bundle has its indexes built; the caller runs [Bundle.Validate] or
 // [Bundle.ValidateOutput] to enforce the remaining invariants.
 //
-// Streaming behavior, constraints, and the per-value enum skip flag have
-// no representation in the current dynamic input, so they are absent
-// (non-streaming, no constraints) in the produced bundle. Skipped enum
-// values are carried as ordinary values: skip is a rendering concern (P3)
-// the model does not yet express.
+// Streaming behavior and constraints have no representation in the
+// current dynamic input, so they are absent (non-streaming, no
+// constraints) in the produced bundle. Skipped enum values are dropped,
+// mirroring BAML's OutputFormatContent (see [buildEnum]).
 func FromDynamicOutputSchema(s *bamlutils.DynamicOutputSchema, opts BuildOptions) (*Bundle, error) {
 	if s == nil {
 		return nil, fmt.Errorf("schema: nil DynamicOutputSchema")
@@ -98,7 +99,11 @@ func FromDynamicOutputSchema(s *bamlutils.DynamicOutputSchema, opts BuildOptions
 
 	// Enums, declared order.
 	for _, e := range s.Enums.Entries() {
-		bundle.Enums = append(bundle.Enums, buildEnum(e.Key, e.Value))
+		enumDef, err := buildEnum(e.Key, e.Value)
+		if err != nil {
+			return nil, err
+		}
+		bundle.Enums = append(bundle.Enums, enumDef)
 	}
 
 	// Synthetic top-level class first, then user classes in declared order.
@@ -141,14 +146,27 @@ type builder struct {
 	enumNames  map[string]struct{}
 }
 
-func buildEnum(name string, e *bamlutils.DynamicEnum) EnumDef {
+// buildEnum lowers a dynamic enum into an EnumDef. A nil definition is a
+// malformed input (DynamicTypes.Validate rejects it too), so construction
+// fails closed rather than inventing an empty enum.
+//
+// Skipped values are dropped: BAML's jsonish helper and runtime
+// output-format builder both return None for @skip values, so they are
+// absent from OutputFormatContent — keeping them would render hidden
+// categories (P3) and let the parser accept values BAML never resolves
+// (P4/P5). OutputFormatContent.Enum has no skip field for the same
+// reason; this model stores only final parse/render values.
+func buildEnum(name string, e *bamlutils.DynamicEnum) (EnumDef, error) {
 	def := EnumDef{Name: Name{Name: name}}
 	if e == nil {
-		return def
+		return EnumDef{}, fmt.Errorf("schema: enum %q: nil definition", name)
 	}
 	def.Name.Alias = strPtr(e.Alias)
 	for _, v := range e.Values {
 		if v == nil {
+			continue
+		}
+		if v.Skip {
 			continue
 		}
 		def.Values = append(def.Values, EnumValue{
@@ -156,7 +174,7 @@ func buildEnum(name string, e *bamlutils.DynamicEnum) EnumDef {
 			Description: strPtr(v.Description),
 		})
 	}
-	return def
+	return def, nil
 }
 
 func (b *builder) buildFields(className string, props bamlutils.OrderedMap[*bamlutils.DynamicProperty]) ([]ClassField, error) {
@@ -244,7 +262,7 @@ func (b *builder) convertType(
 		if err != nil {
 			return Type{}, err
 		}
-		return makeNullable(innerTy), nil
+		return makeOptional(innerTy), nil
 	case "map":
 		if keys == nil || values == nil {
 			return Type{}, fmt.Errorf("schema: %s: 'map' requires 'keys' and 'values'", path)
@@ -262,7 +280,15 @@ func (b *builder) convertType(
 		if len(oneOf) == 0 {
 			return Type{}, fmt.Errorf("schema: %s: 'union' requires 'oneOf' with at least one type", path)
 		}
-		return b.buildUnion(oneOf, path)
+		choices := make([]Type, 0, len(oneOf))
+		for i, spec := range oneOf {
+			v, err := b.convertSpec(spec, fmt.Sprintf("%s[oneOf.%d]", path, i))
+			if err != nil {
+				return Type{}, err
+			}
+			choices = append(choices, v)
+		}
+		return makeUnion(choices), nil
 	case "literal_string":
 		str, ok := value.(string)
 		if !ok {
@@ -286,39 +312,118 @@ func (b *builder) convertType(
 	}
 }
 
-// buildUnion lowers a union, normalising any explicit null variant into
-// the nullable marker so [UnionType.Variants] never contains a null
-// primitive — matching BAML's union construction and iter_include_null
-// ordering (non-null variants first, canonical null appended last).
-func (b *builder) buildUnion(oneOf []*bamlutils.DynamicTypeSpec, path string) (Type, error) {
-	var variants []Type
-	nullable := false
-	for i, spec := range oneOf {
-		v, err := b.convertSpec(spec, fmt.Sprintf("%s[oneOf.%d]", path, i))
-		if err != nil {
-			return Type{}, err
-		}
-		if v.Kind == TypePrimitive && v.Primitive == PrimitiveNull {
-			nullable = true
-			continue
-		}
-		variants = append(variants, v)
-	}
-	return Type{Kind: TypeUnion, Union: &UnionType{Variants: variants, Nullable: nullable}}, nil
+// nullType is the canonical null primitive, the value BAML represents as
+// TypeGeneric::null().
+func nullType() Type {
+	return Type{Kind: TypePrimitive, Primitive: PrimitiveNull}
 }
 
-// makeNullable wraps inner in a nullable union, the TypeIR representation
-// of optional<inner>. When inner is already a union, the existing
-// variants are preserved and only the nullable marker is set, avoiding a
-// redundant nested union.
-func makeNullable(inner Type) Type {
-	if inner.Kind == TypeUnion && inner.Union != nil {
-		u := *inner.Union
-		u.Nullable = true
-		inner.Union = &u
+// isNull reports whether t is the null primitive (BAML TypeGeneric::is_null,
+// which matches only Primitive(Null), not optional unions).
+func isNull(t Type) bool {
+	return t.Kind == TypePrimitive && t.Primitive == PrimitiveNull
+}
+
+// makeOptional mirrors BAML's TypeIR::optional: optional<null> is null,
+// otherwise it is union([inner, null]) run through the same simplifier.
+func makeOptional(inner Type) Type {
+	if isNull(inner) {
 		return inner
 	}
-	return Type{Kind: TypeUnion, Union: &UnionType{Variants: []Type{inner}, Nullable: true}}
+	return makeUnion([]Type{inner, nullType()})
+}
+
+// makeUnion mirrors BAML's TypeIR::union constructor: a single choice
+// collapses to that choice, otherwise the union is simplified. This is
+// the only way unions are built so every union is normalised.
+func makeUnion(choices []Type) Type {
+	if len(choices) == 1 {
+		return choices[0]
+	}
+	return simplifyUnion(choices)
+}
+
+// simplifyUnion reproduces BAML's UnionConstructor + simplify() for the
+// dynamic-construction path (engine/baml-lib/baml-types/src/ir_type/
+// simplify/ir.rs and union_type.rs):
+//
+//   - flatten nested unions (an optional nested union contributes a
+//     trailing null);
+//   - deduplicate variants, preserving first-seen order;
+//   - hoist null out of the variant list into the Nullable marker;
+//   - collapse an all-null union to the null primitive;
+//   - collapse a single non-null variant to that variant, unless the
+//     union is also nullable (then it stays an optional-of-one).
+//
+// The dynamic input carries no constraints or streaming metadata, so the
+// metadata-distribution and subtype-absorption steps BAML performs for
+// constraint-wrapped unions cannot trigger here and are intentionally
+// omitted; flattening already fully unwraps every (constraint-free)
+// nested union, leaving no union-typed variant for absorption to act on.
+func simplifyUnion(choices []Type) Type {
+	flattened := make([]Type, 0, len(choices))
+	for _, c := range choices {
+		flattened = append(flattened, flattenForUnion(c)...)
+	}
+
+	hasNull := false
+	variants := make([]Type, 0, len(flattened))
+	seen := make([]Type, 0, len(flattened))
+	for _, t := range flattened {
+		if isNull(t) {
+			hasNull = true
+			continue
+		}
+		if containsType(seen, t) {
+			continue
+		}
+		seen = append(seen, t)
+		variants = append(variants, t)
+	}
+
+	switch len(variants) {
+	case 0:
+		return nullType()
+	case 1:
+		if hasNull {
+			return Type{Kind: TypeUnion, Union: &UnionType{Variants: []Type{variants[0]}, Nullable: true}}
+		}
+		return variants[0]
+	default:
+		return Type{Kind: TypeUnion, Union: &UnionType{Variants: variants, Nullable: hasNull}}
+	}
+}
+
+// flattenForUnion mirrors BAML's TypeGeneric::flatten + the union view's
+// flatten: a constraint-free union is replaced by its non-null variants
+// (recursively flattened) with a trailing null when it is nullable; every
+// other type, and any constraint-carrying union (preserved as a unit),
+// flattens to itself.
+func flattenForUnion(t Type) []Type {
+	if t.Kind == TypeUnion && t.Union != nil && len(t.Meta.Constraints) == 0 {
+		out := make([]Type, 0, len(t.Union.Variants)+1)
+		for _, v := range t.Union.Variants {
+			out = append(out, flattenForUnion(v)...)
+		}
+		if t.Union.Nullable {
+			out = append(out, nullType())
+		}
+		return out
+	}
+	return []Type{t}
+}
+
+// containsType reports whether ts already holds a type structurally equal
+// to t. BAML's simplify() deduplicates with full structural equality
+// (TypeGeneric derives Eq), which for the metadata-free dynamic path
+// reduces to a deep comparison of the type trees.
+func containsType(ts []Type, t Type) bool {
+	for i := range ts {
+		if reflect.DeepEqual(ts[i], t) {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveRef turns a reference name into a class or enum reference node.
@@ -353,7 +458,11 @@ func (b *builder) resolveRef(name, path string) (Type, error) {
 
 // toInt64 coerces a JSON-decoded literal_int value to int64. JSON numbers
 // decode to float64 through the standard decoders; json.Number and the
-// integer types are accepted too. A non-integral float is rejected.
+// integer types are accepted too. A non-integral or out-of-range float is
+// rejected: the integrality and range checks run BEFORE the int64 cast,
+// because converting an out-of-range float64 to int64 is undefined in Go
+// (float64(2^63) would otherwise round-trip through MaxInt64 and pass a
+// naive v == float64(int64(v)) test).
 func toInt64(value any) (int64, error) {
 	switch v := value.(type) {
 	case int:
@@ -361,8 +470,16 @@ func toInt64(value any) (int64, error) {
 	case int64:
 		return v, nil
 	case float64:
-		if v != float64(int64(v)) {
+		if math.Trunc(v) != v {
 			return 0, fmt.Errorf("value %v is not an integer", v)
+		}
+		// math.MinInt64 is exactly representable as float64; math.MaxInt64
+		// is not (it rounds up to 2^63), so the upper bound is exclusive at
+		// 2^63 to exclude everything that would overflow int64.
+		const minInt64f = -9223372036854775808.0 // math.MinInt64
+		const twoPow63 = 9223372036854775808.0   // math.MaxInt64 + 1
+		if v < minInt64f || v >= twoPow63 {
+			return 0, fmt.Errorf("value %v is out of int64 range", v)
 		}
 		return int64(v), nil
 	case json.Number:

@@ -197,8 +197,8 @@ func TestOutputProfileRejectsUnsupportedKinds(t *testing.T) {
 		{"tuple", Type{Kind: TypeTuple, Items: []Type{{Kind: TypePrimitive, Primitive: PrimitiveString}}}, "tuple is not usable"},
 		{"arrow", Type{Kind: TypeArrow, Arrow: &ArrowType{Return: Type{Kind: TypePrimitive, Primitive: PrimitiveString}}}, "arrow is not usable"},
 		{"top", Type{Kind: TypeTop}, "top is not usable"},
-		{"media", Type{Kind: TypePrimitive, Primitive: PrimitiveMedia}, "media is not usable"},
-		{"nested media in list", Type{Kind: TypeList, Elem: &Type{Kind: TypePrimitive, Primitive: PrimitiveMedia}}, "media is not usable"},
+		{"media", Type{Kind: TypePrimitive, Primitive: PrimitiveMedia, Media: MediaImage}, "media is not usable"},
+		{"nested media in list", Type{Kind: TypeList, Elem: &Type{Kind: TypePrimitive, Primitive: PrimitiveMedia, Media: MediaAudio}}, "media is not usable"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -226,13 +226,15 @@ func TestOutputProfileRejectsUnsupportedKinds(t *testing.T) {
 // not yet produce these), confirming traversal resolves their references
 // and terminates.
 func TestRecursiveAliasValidates(t *testing.T) {
+	// BAML's RecursiveTypeAlias carries a StreamingMode, so references set
+	// one explicitly.
 	b := &Bundle{
-		Target: Type{Kind: TypeRecursiveAlias, Name: "JSON"},
+		Target: Type{Kind: TypeRecursiveAlias, Name: "JSON", Mode: NonStreaming},
 		StructuralRecursiveAliases: []RecursiveAliasDef{
 			{Name: "JSON", Target: Type{Kind: TypeUnion, Union: &UnionType{Variants: []Type{
 				{Kind: TypePrimitive, Primitive: PrimitiveString},
-				{Kind: TypeList, Elem: &Type{Kind: TypeRecursiveAlias, Name: "JSON"}},
-				{Kind: TypeMap, Key: &Type{Kind: TypePrimitive, Primitive: PrimitiveString}, Value: &Type{Kind: TypeRecursiveAlias, Name: "JSON"}},
+				{Kind: TypeList, Elem: &Type{Kind: TypeRecursiveAlias, Name: "JSON", Mode: NonStreaming}},
+				{Kind: TypeMap, Key: &Type{Kind: TypePrimitive, Primitive: PrimitiveString}, Value: &Type{Kind: TypeRecursiveAlias, Name: "JSON", Mode: NonStreaming}},
 			}}}},
 		},
 	}
@@ -249,7 +251,7 @@ func TestRecursiveClassSetResolves(t *testing.T) {
 		Target: Type{Kind: TypeClass, Name: "Node", Mode: NonStreaming},
 		Classes: []ClassDef{
 			{Name: Name{Name: "Node"}, Mode: NonStreaming, Fields: []ClassField{
-				{Name: Name{Name: "next"}, Type: makeNullable(Type{Kind: TypeClass, Name: "Node", Mode: NonStreaming})},
+				{Name: Name{Name: "next"}, Type: makeOptional(Type{Kind: TypeClass, Name: "Node", Mode: NonStreaming})},
 			}},
 		},
 		RecursiveClasses: []string{"Node"},
@@ -261,5 +263,66 @@ func TestRecursiveClassSetResolves(t *testing.T) {
 	b.RecursiveClasses = []string{"Ghost"}
 	if err := b.Validate(); err == nil || !strings.Contains(err.Error(), `unresolved class "Ghost"`) {
 		t.Fatalf("expected unresolved recursive class error, got %v", err)
+	}
+}
+
+func TestInvalidStreamingModeRejected(t *testing.T) {
+	// A bogus mode shared by ref and definition would otherwise resolve;
+	// StreamingMode has only non_streaming/streaming in BAML.
+	t.Run("class definition", func(t *testing.T) {
+		b := &Bundle{
+			Target: Type{Kind: TypeClass, Name: "Root", Mode: NonStreaming},
+			Classes: []ClassDef{
+				{Name: Name{Name: "Root"}, Mode: StreamingMode("bogus"), Fields: nil},
+			},
+		}
+		if err := b.Validate(); err == nil || !strings.Contains(err.Error(), `invalid streaming mode "bogus"`) {
+			t.Fatalf("expected invalid streaming mode error, got %v", err)
+		}
+	})
+	t.Run("class reference", func(t *testing.T) {
+		b := &Bundle{
+			Target: Type{Kind: TypeClass, Name: "Root", Mode: NonStreaming},
+			Classes: []ClassDef{
+				{Name: Name{Name: "Root"}, Mode: NonStreaming, Fields: []ClassField{
+					{Name: Name{Name: "f"}, Type: Type{Kind: TypeClass, Name: "Root", Mode: StreamingMode("bogus")}},
+				}},
+			},
+		}
+		if err := b.Validate(); err == nil || !strings.Contains(err.Error(), `invalid streaming mode "bogus"`) {
+			t.Fatalf("expected invalid streaming mode error, got %v", err)
+		}
+	})
+	t.Run("recursive alias reference", func(t *testing.T) {
+		b := &Bundle{
+			Target: Type{Kind: TypeRecursiveAlias, Name: "A", Mode: StreamingMode("bogus")},
+			StructuralRecursiveAliases: []RecursiveAliasDef{
+				{Name: "A", Target: Type{Kind: TypePrimitive, Primitive: PrimitiveString}},
+			},
+		}
+		if err := b.Validate(); err == nil || !strings.Contains(err.Error(), `invalid streaming mode "bogus"`) {
+			t.Fatalf("expected invalid streaming mode error, got %v", err)
+		}
+	})
+}
+
+func TestInvalidMediaSubtypeRejected(t *testing.T) {
+	b := &Bundle{
+		Target: Type{Kind: TypeClass, Name: "Root", Mode: NonStreaming},
+		Classes: []ClassDef{
+			{Name: Name{Name: "Root"}, Mode: NonStreaming, Fields: []ClassField{
+				{Name: Name{Name: "f"}, Type: Type{Kind: TypePrimitive, Primitive: PrimitiveMedia}},
+			}},
+		},
+	}
+	if err := b.Validate(); err == nil || !strings.Contains(err.Error(), "media primitive has invalid subtype") {
+		t.Fatalf("expected invalid media subtype error, got %v", err)
+	}
+
+	// A valid subtype passes structural validation (output profile still
+	// rejects media — covered by TestOutputProfileRejectsUnsupportedKinds).
+	b.Classes[0].Fields[0].Type.Media = MediaVideo
+	if err := b.Validate(); err != nil {
+		t.Fatalf("valid media subtype should pass structural validate, got %v", err)
 	}
 }

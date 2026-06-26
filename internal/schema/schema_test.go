@@ -37,7 +37,7 @@ func sampleBundle(t *testing.T) *Bundle {
 						Key:   &Type{Kind: TypePrimitive, Primitive: PrimitiveString},
 						Value: &Type{Kind: TypePrimitive, Primitive: PrimitiveInt},
 					}},
-					{Name: Name{Name: "nickname", Alias: ptr("nick")}, Type: makeNullable(Type{Kind: TypePrimitive, Primitive: PrimitiveString})},
+					{Name: Name{Name: "nickname", Alias: ptr("nick")}, Type: makeOptional(Type{Kind: TypePrimitive, Primitive: PrimitiveString})},
 					{Name: Name{Name: "kind"}, Type: Type{Kind: TypeUnion, Union: &UnionType{Variants: []Type{
 						{Kind: TypeLiteral, Literal: &LiteralValue{Kind: LiteralString, String: "a"}},
 						{Kind: TypeLiteral, Literal: &LiteralValue{Kind: LiteralInt, Int: 7}},

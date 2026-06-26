@@ -105,8 +105,15 @@ func (b *Bundle) validateType(t *Type, path string) error {
 		return nil
 	case TypePrimitive:
 		switch t.Primitive {
-		case PrimitiveString, PrimitiveInt, PrimitiveFloat, PrimitiveBool, PrimitiveNull, PrimitiveMedia:
+		case PrimitiveString, PrimitiveInt, PrimitiveFloat, PrimitiveBool, PrimitiveNull:
 			return nil
+		case PrimitiveMedia:
+			switch t.Media {
+			case MediaImage, MediaAudio, MediaPDF, MediaVideo:
+				return nil
+			default:
+				return fmt.Errorf("schema: %s: media primitive has invalid subtype %q", path, t.Media)
+			}
 		default:
 			return fmt.Errorf("schema: %s: unknown primitive %q", path, t.Primitive)
 		}
@@ -126,11 +133,17 @@ func (b *Bundle) validateType(t *Type, path string) error {
 		}
 		return nil
 	case TypeClass:
+		if err := validateStreamingMode(t.Mode); err != nil {
+			return fmt.Errorf("schema: %s: class reference %q: %w", path, t.Name, err)
+		}
 		if _, ok := b.FindClass(t.Name, t.Mode); !ok {
 			return fmt.Errorf("schema: %s: unresolved class reference %q (mode %q)", path, t.Name, t.Mode)
 		}
 		return nil
 	case TypeRecursiveAlias:
+		if err := validateStreamingMode(t.Mode); err != nil {
+			return fmt.Errorf("schema: %s: recursive alias reference %q: %w", path, t.Name, err)
+		}
 		if _, ok := b.FindRecursiveAlias(t.Name); !ok {
 			return fmt.Errorf("schema: %s: unresolved recursive alias reference %q", path, t.Name)
 		}
