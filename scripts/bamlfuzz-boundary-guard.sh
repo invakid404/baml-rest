@@ -221,12 +221,34 @@ fi
 if [ ! -d "$artifact_root" ]; then
   propagate "artifact root ${artifact_root} is missing; cannot confirm no replay envelope"
 fi
+# The scan must FAIL CLOSED: a find error (e.g. an unreadable subtree) must not
+# be swallowed and read as "no envelope". Capture find's exit status — never
+# mask it with `2>/dev/null || true` — and propagate on any error.
+artifacts_dirs="$(mktemp)"
+if ! find "$artifact_root" -type d -name _artifacts -print >"$artifacts_dirs" 2>/dev/null; then
+  rm -f "$artifacts_dirs"
+  propagate "artifact scan failed under ${artifact_root}; cannot confirm no replay envelope"
+fi
+# Slurp the discovered dirs into an array and drop the temp file BEFORE
+# iterating, so we never read and write the same file together.
+artifacts_list=()
 while IFS= read -r d; do
-  [ -n "$d" ] || continue
-  if [ -n "$(find "$d" -type f -print -quit 2>/dev/null)" ]; then
-    propagate "replay artifact present under ${d}"
-  fi
-done < <(find "$artifact_root" -type d -name _artifacts 2>/dev/null || true)
+  [ -n "$d" ] && artifacts_list+=("$d")
+done <"$artifacts_dirs"
+rm -f "$artifacts_dirs"
+
+if [ "${#artifacts_list[@]}" -gt 0 ]; then
+  for d in "${artifacts_list[@]}"; do
+    # Checked per-dir scan: a find error here also fails closed (status checked
+    # directly via the assignment, not masked).
+    if ! found_file="$(find "$d" -type f -print -quit 2>/dev/null)"; then
+      propagate "artifact scan failed under ${d}; cannot confirm no replay envelope"
+    fi
+    if [ -n "$found_file" ]; then
+      propagate "replay artifact present under ${d}"
+    fi
+  done
+fi
 
 # All conditions held: this is the issue #526 coordinator-boundary artifact.
 echo "BAMLFUZZ: tolerated Go native fuzz coordinator deadline at fuzztime boundary; no crasher or replay envelope produced; see issue #526."

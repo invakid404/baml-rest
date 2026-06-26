@@ -33,6 +33,13 @@ run_case() {
   local artroot out errf outf got ok=1 subdir
 
   artroot="$(mktemp -d)"
+  outf="$(mktemp)"
+  errf="$(mktemp)"
+  # Clean up this case's temp files/dir on return — even on a mid-run failure,
+  # so the harness stays correct (and leak-free) if errexit is ever enabled.
+  # shellcheck disable=SC2064  # expand artroot/outf/errf now, by design
+  trap "rm -rf '$artroot' '$outf' '$errf'" RETURN
+
   case "$artmode" in
     missing-root)
       # Hand the guard a path that does not exist (F4 fail-closed check).
@@ -50,12 +57,13 @@ run_case() {
 
   # Capture stdout and stderr SEPARATELY so the loud-line assertion can be
   # made against stdout only (the guard echoes the tolerated line to stdout;
-  # propagate diagnostics go to stderr).
-  outf="$(mktemp)"
-  errf="$(mktemp)"
-  "$guard" "${fixtures}/${logf}" "$code" "$tgt" "$fz" "$artroot" >"$outf" 2>"$errf"
-  got=$?
-  [ "$artmode" = "missing-root" ] || rm -rf "$artroot"
+  # propagate diagnostics go to stderr). Invoke as a non-aborting conditional
+  # so a nonzero guard exit never trips errexit if it is ever enabled.
+  if "$guard" "${fixtures}/${logf}" "$code" "$tgt" "$fz" "$artroot" >"$outf" 2>"$errf"; then
+    got=0
+  else
+    got=$?
+  fi
 
   [ "$got" -eq "$want" ] || ok=0
   if [ -n "$loud" ]; then
@@ -73,7 +81,55 @@ run_case() {
     done <<<"$out"
     fail=$((fail + 1))
   fi
-  rm -f "$outf" "$errf"
+  # temp files/dir removed by the RETURN trap set above
+}
+
+# N2: an artifact_root containing an UNREADABLE subtree (with an _artifacts
+# file inside) makes the find scan error. The guard must FAIL CLOSED (propagate
+# nonzero), not silently conclude "no replay envelope" and tolerate.
+#
+# This is permission-based: under a uid that bypasses permissions (root, as in
+# some container CI) chmod 000 does not make find error, so the scan-failure
+# path is unreachable. We detect that and SKIP rather than emit a false pass —
+# the assertion still runs in the normal (non-root) case, including GitHub's
+# ubuntu-latest runners.
+run_unreadable_subtree_case() {
+  local name="$1"
+  local artroot outf errf got ok=1
+  artroot="$(mktemp -d)"
+  outf="$(mktemp)"
+  errf="$(mktemp)"
+  # shellcheck disable=SC2064  # expand now, by design; chmod restores perms first
+  trap "chmod -R u+rwx '$artroot' 2>/dev/null; rm -rf '$artroot' '$outf' '$errf'" RETURN
+
+  mkdir -p "${artroot}/sub/dynamic/_artifacts"
+  printf '{}' > "${artroot}/sub/dynamic/_artifacts/fuzz.json"
+  chmod 000 "${artroot}/sub"
+
+  # If find can still traverse the 000 subtree, permissions aren't enforced for
+  # this uid — the scan-failure path can't be exercised, so skip.
+  if find "${artroot}" -type d -name _artifacts -print >/dev/null 2>&1; then
+    echo "skip - ${name} (find did not error; permissions not enforced, likely root)"
+    return
+  fi
+
+  if "$guard" "${fixtures}/boundary_526.log" 1 FuzzBamlfuzzDynamic 15m "${artroot}" >"$outf" 2>"$errf"; then
+    got=0
+  else
+    got=$?
+  fi
+
+  [ "$got" -ne 0 ] || ok=0   # MUST propagate (nonzero), never tolerate
+  if [ "$ok" -eq 1 ]; then
+    echo "ok   - ${name} (exit ${got})"
+    pass=$((pass + 1))
+  else
+    echo "FAIL - ${name}: got exit ${got}, want nonzero (fail closed)"
+    while IFS= read -r diag_line; do
+      echo "       | ${diag_line}"
+    done <<<"$(cat "$outf" "$errf")"
+    fail=$((fail + 1))
+  fi
 }
 
 # --- tolerate ---------------------------------------------------------------
@@ -127,6 +183,8 @@ run_case "invalid artifact (boundary drop) propagates" boundary_invalid.log 1 1 
 # F4: a missing artifact root means we can't confirm "no replay envelope" —
 # fail closed instead of falling through to tolerate.
 run_case "missing artifact root propagates"        boundary_526.log      1 1 FuzzBamlfuzzDynamic            missing-root
+# N2: an unreadable subtree makes the artifact scan error -> fail closed.
+run_unreadable_subtree_case "unreadable artifact subtree propagates"
 # F2: a non-1 go test exit code is propagated verbatim (not coerced to 1).
 run_case "non-1 go test exit propagates"           no_zerosec.log        2 2 FuzzBamlfuzzDynamic            empty
 
