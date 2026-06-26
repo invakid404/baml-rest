@@ -1,0 +1,22 @@
+{
+  "name": "streaming_truncated_string",
+  "description": "Accumulated prefixes stop inside a string value and then complete it. STREAMING DIFFERENTIAL IS BLOCKED ON DIRECT PARSE-STREAM EXPOSURE (deferred): the per-prefix `want` values are NOT yet BAML-characterized and the harness does not gate on them today — only the corpus format and prefix-growth monotonicity are exercised.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "name", "type": {"kind": "string"}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "prefixes": [
+    {"name": "open", "raw": "{\"name\":\"", "want": {"status": "success", "json": {"name": ""}}},
+    {"name": "mid_string", "raw": "{\"name\":\"Ad", "want": {"status": "success", "json": {"name": "Ad"}}},
+    {"name": "closed_string", "raw": "{\"name\":\"Ada\"", "want": {"status": "success", "json": {"name": "Ada"}}},
+    {"name": "closed_object", "raw": "{\"name\":\"Ada\"}", "want": {"status": "success", "json": {"name": "Ada"}}}
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "name": "streaming_trailing_comma",
+  "description": "Accumulated prefixes build a list with a trailing comma before the closing bracket/brace. STREAMING DIFFERENTIAL IS BLOCKED ON DIRECT PARSE-STREAM EXPOSURE (deferred): the per-prefix `want` values are NOT yet BAML-characterized and the harness does not gate on them today — only the corpus format and prefix-growth monotonicity are exercised.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "name", "type": {"kind": "string"}},
+          {"name": "tags", "type": {"kind": "list", "inner": {"kind": "string"}}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "prefixes": [
+    {"name": "list_open", "raw": "{\"name\":\"Ada\",\"tags\":[\"x\"", "want": {"status": "success", "json": {"name": "Ada", "tags": ["x"]}}},
+    {"name": "trailing_comma", "raw": "{\"name\":\"Ada\",\"tags\":[\"x\",\"y\",", "want": {"status": "success", "json": {"name": "Ada", "tags": ["x", "y"]}}},
+    {"name": "list_closed", "raw": "{\"name\":\"Ada\",\"tags\":[\"x\",\"y\",]", "want": {"status": "success", "json": {"name": "Ada", "tags": ["x", "y"]}}},
+    {"name": "object_closed", "raw": "{\"name\":\"Ada\",\"tags\":[\"x\",\"y\",]}", "want": {"status": "success", "json": {"name": "Ada", "tags": ["x", "y"]}}}
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "name": "mixed_jsonish",
+  "description": "Composed recovery: markdown fence + prose + unquoted keys + single quotes together. want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "name", "type": {"kind": "string"}},
+          {"name": "age", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "Here you go:\n```json\n{name: 'Ada', age: 36}\n```\nThat's the record.",
+  "want": {
+    "status": "success",
+    "json": {"name": "Ada", "age": 36}
+  }
+}

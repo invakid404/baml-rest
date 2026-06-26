@@ -1,0 +1,22 @@
+{
+  "name": "trailing_commas",
+  "description": "Object and nested list carry trailing commas; BAML's JSONish parser tolerates them. want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "name", "type": {"kind": "string"}},
+          {"name": "tags", "type": {"kind": "list", "inner": {"kind": "string"}}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"name\":\"Ada\",\"tags\":[\"x\",\"y\",],}",
+  "want": {
+    "status": "success",
+    "json": {"name": "Ada", "tags": ["x", "y"]}
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "prose_before_after_json",
+  "description": "Natural-language prose surrounds the JSON object; BAML extracts the embedded object. want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "name", "type": {"kind": "string"}},
+          {"name": "age", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "Sure! Here is the person you asked for:\n{\"name\":\"Ada\",\"age\":36}\nLet me know if you need anything else.",
+  "want": {
+    "status": "success",
+    "json": {"name": "Ada", "age": 36}
+  }
+}
