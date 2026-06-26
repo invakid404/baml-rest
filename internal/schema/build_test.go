@@ -206,6 +206,19 @@ func TestBuildEnumNilDefinitionFails(t *testing.T) {
 	}
 }
 
+// TestBuildEnumNilValueFails covers the nil-value follow-up: a null entry
+// in an enum's values is malformed and fails closed rather than silently
+// shrinking the enum.
+func TestBuildEnumNilValueFails(t *testing.T) {
+	_, err := FromDynamicOutputSchema(mustSchema(t, `{
+		"enums": {"E": {"values": [{"name": "A"}, null]}},
+		"properties": {"e": {"ref": "E"}}
+	}`), BuildOptions{})
+	if err == nil || !strings.Contains(err.Error(), `enum "E": value at index 1 is nil`) {
+		t.Fatalf("expected nil enum value error, got %v", err)
+	}
+}
+
 func TestBuildSyntheticClassIsFirst(t *testing.T) {
 	b := mustBuild(t, `{
 		"classes": {"Address": {"properties": {"city": {"type": "string"}}}},
@@ -347,6 +360,19 @@ func TestBuildLiteralIntOutOfRange(t *testing.T) {
 	}`), BuildOptions{})
 	if err == nil || !strings.Contains(err.Error(), "out of int64 range") {
 		t.Fatalf("expected out-of-range int64 error, got %v", err)
+	}
+}
+
+// TestBuildLiteralIntInexact covers the precision follow-up: a literal_int
+// that is within int64 range but beyond ±2^53 may already be a rounded
+// approximation after JSON decoding, so it is rejected rather than stored
+// as a wrong value. 9e18 < 2^63 (in range) but > 2^53 (inexact).
+func TestBuildLiteralIntInexact(t *testing.T) {
+	_, err := FromDynamicOutputSchema(mustSchema(t, `{
+		"properties": {"x": {"type": "literal_int", "value": 9e18}}
+	}`), BuildOptions{})
+	if err == nil || !strings.Contains(err.Error(), "cannot be represented exactly") {
+		t.Fatalf("expected inexact-int error, got %v", err)
 	}
 }
 

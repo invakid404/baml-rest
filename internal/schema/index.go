@@ -83,39 +83,59 @@ func validateStreamingMode(mode StreamingMode) error {
 	}
 }
 
+// rebuildIndexes follows the same fail-closed discipline as
+// [Bundle.RebuildIndexes]: the live maps are cleared up front and the
+// freshly built locals are assigned only after every duplicate check
+// passes, so a failed rebuild can never leave a stale or half-built index
+// reachable through Value/ValueByRenderedName.
 func (e *EnumDef) rebuildIndexes() error {
-	e.valueByName = make(map[string]int, len(e.Values))
-	e.valueByRenderedName = make(map[string]int, len(e.Values))
+	e.valueByName = nil
+	e.valueByRenderedName = nil
+
+	byName := make(map[string]int, len(e.Values))
+	byRendered := make(map[string]int, len(e.Values))
 	for i := range e.Values {
 		v := &e.Values[i]
-		if _, dup := e.valueByName[v.Name.Name]; dup {
+		if _, dup := byName[v.Name.Name]; dup {
 			return fmt.Errorf("schema: enum %q: duplicate value name %q", e.Name.Name, v.Name.Name)
 		}
-		e.valueByName[v.Name.Name] = i
+		byName[v.Name.Name] = i
 		rendered := v.Name.RenderedName()
-		if _, dup := e.valueByRenderedName[rendered]; dup {
+		if _, dup := byRendered[rendered]; dup {
 			return fmt.Errorf("schema: enum %q: duplicate rendered value name %q", e.Name.Name, rendered)
 		}
-		e.valueByRenderedName[rendered] = i
+		byRendered[rendered] = i
 	}
+
+	e.valueByName = byName
+	e.valueByRenderedName = byRendered
 	return nil
 }
 
+// rebuildIndexes mirrors [EnumDef.rebuildIndexes]: build locals, validate,
+// then assign, so Field/FieldByRenderedName cannot hit a stale or
+// half-built index after a failed rebuild.
 func (c *ClassDef) rebuildIndexes() error {
-	c.fieldByName = make(map[string]int, len(c.Fields))
-	c.fieldByRenderedName = make(map[string]int, len(c.Fields))
+	c.fieldByName = nil
+	c.fieldByRenderedName = nil
+
+	byName := make(map[string]int, len(c.Fields))
+	byRendered := make(map[string]int, len(c.Fields))
 	for i := range c.Fields {
 		f := &c.Fields[i]
-		if _, dup := c.fieldByName[f.Name.Name]; dup {
+		if _, dup := byName[f.Name.Name]; dup {
 			return fmt.Errorf("schema: class %q: duplicate field name %q", c.Name.Name, f.Name.Name)
 		}
-		c.fieldByName[f.Name.Name] = i
+		byName[f.Name.Name] = i
 		rendered := f.Name.RenderedName()
-		if _, dup := c.fieldByRenderedName[rendered]; dup {
+		if _, dup := byRendered[rendered]; dup {
 			return fmt.Errorf("schema: class %q: duplicate rendered field name %q", c.Name.Name, rendered)
 		}
-		c.fieldByRenderedName[rendered] = i
+		byRendered[rendered] = i
 	}
+
+	c.fieldByName = byName
+	c.fieldByRenderedName = byRendered
 	return nil
 }
 

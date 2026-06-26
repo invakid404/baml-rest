@@ -53,6 +53,11 @@ func sampleBundle(t *testing.T) *Bundle {
 				},
 			},
 		},
+		// A structural recursive alias so the round-trip, index-rebuild,
+		// and lookup paths exercise aliasByName / FindRecursiveAlias too.
+		StructuralRecursiveAliases: []RecursiveAliasDef{
+			{Name: "Tree", Target: Type{Kind: TypeList, Elem: &Type{Kind: TypeRecursiveAlias, Name: "Tree", Mode: NonStreaming}}},
+		},
 	}
 	if err := b.RebuildIndexes(); err != nil {
 		t.Fatalf("RebuildIndexes: %v", err)
@@ -148,6 +153,12 @@ func TestLookups(t *testing.T) {
 	}
 	if _, ok := b.FindEnum("Status"); !ok {
 		t.Error("FindEnum Status: not found")
+	}
+	if _, ok := b.FindRecursiveAlias("Tree"); !ok {
+		t.Error("FindRecursiveAlias Tree: not found")
+	}
+	if _, ok := b.FindRecursiveAlias("Nope"); ok {
+		t.Error("FindRecursiveAlias should miss an unknown alias")
 	}
 
 	cls, ok := b.FindClass("Baml_Rest_DynamicOutput", NonStreaming)
