@@ -27,8 +27,9 @@ fail=0
 #   expect_loud:   non-empty -> require the tolerated BAMLFUZZ: line on STDOUT
 #                  (stdout/stderr are captured separately so this enforces the
 #                  guard's stdout-only contract for the loud tolerated line)
+#   fuzztime (arg 8): configured fuzztime passed to the guard (default 15m)
 run_case() {
-  local name="$1" logf="$2" code="$3" want="$4" tgt="$5" artmode="$6" loud="${7:-}"
+  local name="$1" logf="$2" code="$3" want="$4" tgt="$5" artmode="$6" loud="${7:-}" fz="${8:-15m}"
   local artroot out errf outf got ok=1 subdir
 
   artroot="$(mktemp -d)"
@@ -52,7 +53,7 @@ run_case() {
   # propagate diagnostics go to stderr).
   outf="$(mktemp)"
   errf="$(mktemp)"
-  "$guard" "${fixtures}/${logf}" "$code" "$tgt" "15m" "$artroot" >"$outf" 2>"$errf"
+  "$guard" "${fixtures}/${logf}" "$code" "$tgt" "$fz" "$artroot" >"$outf" 2>"$errf"
   got=$?
   [ "$artmode" = "missing-root" ] || rm -rf "$artroot"
 
@@ -100,6 +101,19 @@ run_case "execs changed at boundary propagates"    execs_changed.log     1 1 Fuz
 # F3: a progress line AFTER the (0/sec) line means fuzzing kept going — the
 # (0/sec) was not the terminal completed-budget shape. Fail closed.
 run_case "progress after (0/sec) propagates"       progress_after_zerosec.log 1 1 FuzzBamlfuzzDynamic       empty
+
+# --- fractional / malformed fuzztime (Go-duration parser) ------------------
+# Proven fail-open hole: FUZZTIME=15.5m (=930s) with elapsed 15m1s (=901s) —
+# 901 < 930, the budget did NOT complete, so it must PROPAGATE. The old
+# truncating parser read 15.5m as 300s and wrongly tolerated.
+run_case "fractional fuzztime short run propagates" boundary_526.log    1 1 FuzzBamlfuzzDynamic            empty "" 15.5m
+# No regression: integer fuzztime with elapsed exactly at / past budget.
+run_case "15m vs 15m0s tolerates"                  boundary_15m0s.log   1 0 FuzzBamlfuzzDynamic            empty loud 15m
+run_case "15m vs 15m1s tolerates"                  boundary_526.log     1 0 FuzzBamlfuzzDynamic            empty loud 15m
+# Fractional fuzztime that genuinely completed: 14.5m (=870s) vs 15m1s (901s).
+run_case "fractional fuzztime completed tolerates" boundary_526.log     1 0 FuzzBamlfuzzDynamic            empty loud 14.5m
+# Malformed fuzztime must fail closed.
+run_case "malformed fuzztime propagates"           boundary_526.log     1 1 FuzzBamlfuzzDynamic            empty "" 15x
 
 # --- propagate: structural / state violations ------------------------------
 run_case "multiple FAIL lines propagate"           multi_fail.log        1 1 FuzzBamlfuzzDynamic            empty

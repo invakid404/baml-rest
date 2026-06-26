@@ -131,15 +131,39 @@ if [ "${#elapsed_lines[@]}" -lt 2 ]; then
   propagate "fewer than two 'fuzz: elapsed:' progress lines"
 fi
 
-# Convert a Go duration string (e.g. 15m, 15m0s, 15m1s, 1h0m0s, 30s) to
-# whole seconds. Fractional seconds are floored; only integer progress
-# durations appear on `fuzz: elapsed:` lines.
-dur_to_secs() {
-  local d="$1" total=0
-  [[ "$d" =~ ([0-9]+)h ]] && total=$(( total + BASH_REMATCH[1] * 3600 ))
-  [[ "$d" =~ ([0-9]+)m ]] && total=$(( total + BASH_REMATCH[1] * 60 ))
-  [[ "$d" =~ ([0-9]+)s ]] && total=$(( total + BASH_REMATCH[1] ))
-  echo "$total"
+# Parse a full Go duration string to integer NANOSECONDS, supporting
+# FRACTIONAL units (e.g. 15.5m, 59.9s, 0.5h, 1h2.5m) as well as the integer
+# forms Go fuzz prints (15m, 15m0s, 15m1s, 1h0m0s, 30s). Prints the ns value
+# and exits 0; exits 1 on an empty, malformed, or partially-consumed string so
+# the caller can fail closed. Go durations are integer nanoseconds and stay
+# well under 2^53, so the double math is exact for any realistic fuzztime.
+# A whole-string parser is required: the previous unanchored h/m/s substring
+# match mis-read 15.5m as 300s, which fail-OPEN tolerated a short run (#526
+# follow-up). awk handles the float math portably (no bc dependency).
+parse_go_duration_ns() {
+  awk -v s="$1" '
+    BEGIN {
+      if (s == "") exit 1
+      c = substr(s, 1, 1)
+      if (c == "+" || c == "-") s = substr(s, 2)
+      if (s == "") exit 1
+      total = 0.0; found = 0
+      while (length(s) > 0) {
+        if (match(s, /^([0-9]+(\.[0-9]*)?|\.[0-9]+)/) == 0) exit 1
+        num = substr(s, 1, RLENGTH) + 0
+        s = substr(s, RLENGTH + 1)
+        if      (substr(s, 1, 2) == "ns") { mult = 1;      s = substr(s, 3) }
+        else if (substr(s, 1, 2) == "us") { mult = 1e3;    s = substr(s, 3) }
+        else if (substr(s, 1, 2) == "ms") { mult = 1e6;    s = substr(s, 3) }
+        else if (substr(s, 1, 1) == "s")  { mult = 1e9;    s = substr(s, 2) }
+        else if (substr(s, 1, 1) == "m")  { mult = 60e9;   s = substr(s, 2) }
+        else if (substr(s, 1, 1) == "h")  { mult = 3600e9; s = substr(s, 2) }
+        else exit 1
+        total += num * mult; found = 1
+      }
+      if (!found) exit 1
+      printf "%.0f\n", total
+    }'
 }
 exec_of()    { sed -E 's/.*execs: ([0-9]+).*/\1/' <<<"$1"; }
 elapsed_of() { sed -E 's/.*elapsed: ([^,]+),.*/\1/' <<<"$1"; }
@@ -169,13 +193,21 @@ if [ "$b_exec" != "$p_exec" ]; then
   propagate "exec count changed at the (0/sec) boundary (${p_exec} -> ${b_exec}); not a completed-budget stall"
 fi
 
-want_secs="$(dur_to_secs "$fuzztime")"
-have_secs="$(dur_to_secs "$(elapsed_of "$boundary_line")")"
-if [ "${want_secs:-0}" -le 0 ]; then
-  propagate "could not parse fuzztime '${fuzztime}'"
+elapsed_tok="$(elapsed_of "$boundary_line")"
+# Parse both to exact nanoseconds; a parse failure fails closed (propagate),
+# never silently zero. Comparing in nanoseconds (not truncated seconds) keeps
+# a fractional fuzztime like 15.5m from fail-OPEN tolerating a 15m1s run.
+if ! want_ns="$(parse_go_duration_ns "$fuzztime")"; then
+  propagate "could not parse configured fuzztime '${fuzztime}'"
 fi
-if [ "${have_secs:-0}" -lt "$want_secs" ]; then
-  propagate "boundary elapsed ${have_secs}s < configured fuzztime ${want_secs}s; budget did not complete"
+if ! have_ns="$(parse_go_duration_ns "$elapsed_tok")"; then
+  propagate "could not parse boundary elapsed '${elapsed_tok}'"
+fi
+if [ "$want_ns" -le 0 ]; then
+  propagate "configured fuzztime '${fuzztime}' is non-positive"
+fi
+if [ "$have_ns" -lt "$want_ns" ]; then
+  propagate "boundary elapsed ${elapsed_tok} (${have_ns}ns) < configured fuzztime ${fuzztime} (${want_ns}ns); budget did not complete"
 fi
 
 # ---------------------------------------------------------------------------
