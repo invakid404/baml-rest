@@ -112,10 +112,11 @@ func writeCorpusCase(t *testing.T, tc goldenCase, bundleJSON []byte) {
 func TestCorpusFiles(t *testing.T) {
 	entries, err := os.ReadDir(corpusDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			t.Skip("corpus not generated; run with -update")
-		}
-		t.Fatalf("read corpus dir: %v", err)
+		// The corpus is a committed artifact, so its absence is a real failure
+		// (e.g. it was deleted or never checked in) rather than a reason to
+		// skip — skipping would hide missing fixtures from CI. Regenerate with
+		// `go test ./internal/schema/outputformat -update`.
+		t.Fatalf("read corpus dir %q (committed fixtures missing; regenerate with -update): %v", corpusDir, err)
 	}
 
 	// Expected case set (name -> options) from the single source of truth.
