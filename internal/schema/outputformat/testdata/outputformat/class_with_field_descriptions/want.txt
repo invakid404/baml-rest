@@ -1,0 +1,7 @@
+Answer in JSON using this schema:
+{
+  // The person's name
+  name: string,
+  // The person's age
+  age: int,
+}

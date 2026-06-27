@@ -1,0 +1,2 @@
+Answer in JSON using any of these schemas:
+intstringbool

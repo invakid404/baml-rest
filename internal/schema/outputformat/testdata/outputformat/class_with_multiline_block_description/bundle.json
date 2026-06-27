@@ -1,0 +1,27 @@
+{
+  "target": {
+    "kind": "class",
+    "name": "Resume",
+    "mode": "non_streaming"
+  },
+  "classes": [
+    {
+      "name": {
+        "name": "Resume"
+      },
+      "description": "A professional resume\ncontaining work history\nand qualifications",
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "name"
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "string"
+          }
+        }
+      ]
+    }
+  ]
+}

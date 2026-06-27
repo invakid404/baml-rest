@@ -1,0 +1,10 @@
+Node {
+  data: int,
+  next: Node or null,
+}
+
+Answer in JSON using this schema:
+{
+  head: Node or null,
+  len: int,
+}

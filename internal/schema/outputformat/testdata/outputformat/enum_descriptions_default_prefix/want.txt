@@ -1,0 +1,6 @@
+Answer with any of the categories:
+VALUE_ENUM
+----
+- ONE: The first enum.
+- two: The second enum.
+- hi: three

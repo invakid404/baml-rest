@@ -1,0 +1,9 @@
+{
+  "target": {
+    "kind": "literal",
+    "literal": {
+      "kind": "string",
+      "string": "foo"
+    }
+  }
+}

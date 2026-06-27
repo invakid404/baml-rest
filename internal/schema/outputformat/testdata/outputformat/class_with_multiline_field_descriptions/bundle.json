@@ -1,0 +1,54 @@
+{
+  "target": {
+    "kind": "class",
+    "name": "Education",
+    "mode": "non_streaming"
+  },
+  "classes": [
+    {
+      "name": {
+        "name": "Education"
+      },
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "school"
+          },
+          "type": {
+            "kind": "union",
+            "union": {
+              "variants": [
+                {
+                  "kind": "primitive",
+                  "primitive": "string"
+                }
+              ],
+              "nullable": true
+            }
+          },
+          "description": "111\n  "
+        },
+        {
+          "name": {
+            "name": "degree"
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "string"
+          },
+          "description": "2222222"
+        },
+        {
+          "name": {
+            "name": "year"
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "int"
+          }
+        }
+      ]
+    }
+  ]
+}

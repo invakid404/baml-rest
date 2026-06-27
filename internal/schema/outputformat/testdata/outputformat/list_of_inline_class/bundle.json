@@ -1,0 +1,29 @@
+{
+  "target": {
+    "kind": "list",
+    "elem": {
+      "kind": "class",
+      "name": "Foo",
+      "mode": "non_streaming"
+    }
+  },
+  "classes": [
+    {
+      "name": {
+        "name": "Foo"
+      },
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "a"
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "string"
+          }
+        }
+      ]
+    }
+  ]
+}

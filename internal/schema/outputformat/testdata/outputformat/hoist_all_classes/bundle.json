@@ -1,0 +1,98 @@
+{
+  "target": {
+    "kind": "class",
+    "name": "Ret",
+    "mode": "non_streaming"
+  },
+  "classes": [
+    {
+      "name": {
+        "name": "A"
+      },
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "prop"
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "int"
+          }
+        }
+      ]
+    },
+    {
+      "name": {
+        "name": "B"
+      },
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "prop"
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "string"
+          }
+        }
+      ]
+    },
+    {
+      "name": {
+        "name": "C"
+      },
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "prop"
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "float"
+          }
+        }
+      ]
+    },
+    {
+      "name": {
+        "name": "Ret"
+      },
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "a"
+          },
+          "type": {
+            "kind": "class",
+            "name": "A",
+            "mode": "non_streaming"
+          }
+        },
+        {
+          "name": {
+            "name": "b"
+          },
+          "type": {
+            "kind": "class",
+            "name": "B",
+            "mode": "non_streaming"
+          }
+        },
+        {
+          "name": {
+            "name": "c"
+          },
+          "type": {
+            "kind": "class",
+            "name": "C",
+            "mode": "non_streaming"
+          }
+        }
+      ]
+    }
+  ]
+}

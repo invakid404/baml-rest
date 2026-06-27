@@ -1,0 +1,6 @@
+Answer with any of the categories:
+Color
+----
+- Red
+- Green
+- Blue

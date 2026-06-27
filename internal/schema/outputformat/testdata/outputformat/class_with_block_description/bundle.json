@@ -1,0 +1,27 @@
+{
+  "target": {
+    "kind": "class",
+    "name": "User",
+    "mode": "non_streaming"
+  },
+  "classes": [
+    {
+      "name": {
+        "name": "User"
+      },
+      "description": "Represents a system user",
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "name"
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "string"
+          }
+        }
+      ]
+    }
+  ]
+}

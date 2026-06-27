@@ -1,0 +1,6 @@
+Answer with a JSON Array using this schema:
+[
+  {
+    a: string,
+  }
+]

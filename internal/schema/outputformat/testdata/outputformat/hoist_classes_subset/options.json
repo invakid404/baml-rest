@@ -1,0 +1,6 @@
+{
+  "hoist_classes": [
+    "A",
+    "B"
+  ]
+}

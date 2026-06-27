@@ -1,0 +1,37 @@
+{
+  "target": {
+    "kind": "class",
+    "name": "Person",
+    "mode": "non_streaming"
+  },
+  "classes": [
+    {
+      "name": {
+        "name": "Person"
+      },
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "name"
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "string"
+          },
+          "description": "The person's name"
+        },
+        {
+          "name": {
+            "name": "age"
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "int"
+          },
+          "description": "The person's age"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+Node {
+  // A node in a linked list
+
+  value: int,
+  next: Node or null,
+}
+
+Answer in JSON using this schema: Node

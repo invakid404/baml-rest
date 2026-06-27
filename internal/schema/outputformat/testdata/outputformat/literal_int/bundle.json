@@ -1,0 +1,9 @@
+{
+  "target": {
+    "kind": "literal",
+    "literal": {
+      "kind": "int",
+      "int": 42
+    }
+  }
+}

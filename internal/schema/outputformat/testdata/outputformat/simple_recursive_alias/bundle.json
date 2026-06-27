@@ -1,0 +1,24 @@
+{
+  "target": {
+    "kind": "recursive_alias",
+    "name": "RecursiveMapAlias",
+    "mode": "non_streaming"
+  },
+  "structural_recursive_aliases": [
+    {
+      "name": "RecursiveMapAlias",
+      "target": {
+        "kind": "map",
+        "key": {
+          "kind": "primitive",
+          "primitive": "string"
+        },
+        "value": {
+          "kind": "recursive_alias",
+          "name": "RecursiveMapAlias",
+          "mode": "non_streaming"
+        }
+      }
+    }
+  ]
+}

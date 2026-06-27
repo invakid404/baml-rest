@@ -1,0 +1,19 @@
+A {
+  prop: int,
+}
+
+B {
+  prop: string,
+}
+
+C {
+  prop: float,
+}
+
+Ret {
+  a: A,
+  b: B,
+  c: C,
+}
+
+Answer in JSON using this schema: Ret

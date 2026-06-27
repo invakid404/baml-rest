@@ -1,0 +1,37 @@
+{
+  "target": {
+    "kind": "class",
+    "name": "RecursiveMap",
+    "mode": "non_streaming"
+  },
+  "classes": [
+    {
+      "name": {
+        "name": "RecursiveMap"
+      },
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "data"
+          },
+          "type": {
+            "kind": "map",
+            "key": {
+              "kind": "primitive",
+              "primitive": "string"
+            },
+            "value": {
+              "kind": "class",
+              "name": "RecursiveMap",
+              "mode": "non_streaming"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "recursive_classes": [
+    "RecursiveMap"
+  ]
+}

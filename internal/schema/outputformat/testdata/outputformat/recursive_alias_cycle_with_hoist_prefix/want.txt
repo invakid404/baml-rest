@@ -1,0 +1,5 @@
+type A = B
+type B = C
+type C = A[]
+
+Answer in JSON using this type: A

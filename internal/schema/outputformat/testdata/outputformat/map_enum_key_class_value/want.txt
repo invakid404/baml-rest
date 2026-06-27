@@ -1,0 +1,4 @@
+Answer in JSON using this schema:
+map<'A' or 'B', {
+  x: int,
+}>

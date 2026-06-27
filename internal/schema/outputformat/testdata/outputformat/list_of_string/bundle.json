@@ -1,0 +1,9 @@
+{
+  "target": {
+    "kind": "list",
+    "elem": {
+      "kind": "primitive",
+      "primitive": "string"
+    }
+  }
+}

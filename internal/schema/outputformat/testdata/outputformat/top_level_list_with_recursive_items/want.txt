@@ -1,0 +1,7 @@
+Node {
+  data: int,
+  next: Node or null,
+}
+
+Answer with a JSON Array using this schema:
+Node[]

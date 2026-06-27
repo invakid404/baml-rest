@@ -1,0 +1,48 @@
+{
+  "target": {
+    "kind": "class",
+    "name": "Node",
+    "mode": "non_streaming"
+  },
+  "classes": [
+    {
+      "name": {
+        "name": "Node"
+      },
+      "description": "A node in a linked list",
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "value"
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "int"
+          }
+        },
+        {
+          "name": {
+            "name": "next"
+          },
+          "type": {
+            "kind": "union",
+            "union": {
+              "variants": [
+                {
+                  "kind": "class",
+                  "name": "Node",
+                  "mode": "non_streaming"
+                }
+              ],
+              "nullable": true
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "recursive_classes": [
+    "Node"
+  ]
+}
