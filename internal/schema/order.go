@@ -247,7 +247,10 @@ func displayKey(t Type) string {
 		}
 		return "(" + strings.Join(parts, ", ") + ") -> " + displayKey(t.Arrow.Return)
 	case TypeTop:
-		return "top"
+		// BAML's fmt_type_body prints Top as "ANY" (never reached on the
+		// dynamic path: ValidateOutput rejects top and the traversal never
+		// produces it, but match BAML's display for the dedup key anyway).
+		return "ANY"
 	default:
 		return string(t.Kind)
 	}
