@@ -300,6 +300,9 @@ func (me *methodEmitter) deBAMLOutputFormatStmts() []jen.Code {
 	if !me.isDeBAMLMethod() {
 		return nil
 	}
+	// Record that the call was emitted so generate() writes the matching
+	// debaml.go helper into this package (the call resolves to it).
+	me.g.emittedDeBAMLCall = true
 	return []jen.Code{
 		jen.Id(me.deBAMLMessagesVar()).Op(":=").
 			Id("maybeApplyDeBAMLOutputFormat").Call(jen.Id("adapter"), jen.Id(me.deBAMLConvertedVar())),

@@ -250,6 +250,11 @@ type generator struct {
 	supportsWithClient   bool
 	mirrors              *mirrorStructTracker
 	emittedUnwrapHelpers map[string]bool
+	// emittedDeBAMLCall records whether a BuildRequest closure emitted
+	// the maybeApplyDeBAMLOutputFormat call for the de-BAML dynamic
+	// method. When true, generate() writes the matching debaml.go helper
+	// next to adapter.go so the call resolves in this package.
+	emittedDeBAMLCall bool
 	// slicePools dedupes pooled-slice helper emission across all method
 	// preambles + nested struct conversions. Lifetime is per-file: every
 	// pooled inner type encountered during emission lazily lands one
@@ -396,4 +401,9 @@ func generate(opts Options) {
 	if err := g.out.Save(g.pkgs.OutputPath); err != nil {
 		panic(err)
 	}
+
+	// Emit the de-BAML helper next to adapter.go when a BuildRequest
+	// closure consumed it. Done after Save so a generation that never
+	// emits the call leaves no orphan helper file.
+	g.maybeWriteDeBAMLHelper()
 }
