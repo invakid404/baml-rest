@@ -48,9 +48,18 @@ type BuildOptions struct {
 // schema (the DynamicOutputSchema / DynamicTypes input surface) into a
 // self-contained [Bundle], mirroring how the worker payload is built:
 //
-//   - a synthetic Baml_Rest_DynamicOutput class is injected first, with
-//     the top-level properties as its fields (matching buildWorkerClassMap);
-//   - user classes and enums follow in their declared order;
+//   - a synthetic Baml_Rest_DynamicOutput class is the target, with the
+//     top-level properties as its fields (matching buildWorkerClassMap);
+//   - Bundle.Enums and Bundle.Classes are ordered by BAML's target-
+//     reachability traversal, NOT declared order: definitions are
+//     discovered from the target via a LIFO stack and appended on first
+//     pop, so the order is reverse-of-reference (DFS), matching BAML's
+//     render_output_format relevant_data_models exactly (see
+//     [orderByReachability]). The synthetic class is the first class popped,
+//     so it stays first in Bundle.Classes;
+//   - definitions the target cannot reach are pruned (BAML returns only the
+//     relevant data models), so a declared-but-unreferenced dynamic enum or
+//     class is absent from the bundle;
 //   - the optional type lowers to a nullable union (BAML TypeIR has no
 //     optional kind);
 //   - every reference resolves to a class/enum in the bundle, or via an
@@ -97,25 +106,33 @@ func FromDynamicOutputSchema(s *bamlutils.DynamicOutputSchema, opts BuildOptions
 		Target: Type{Kind: TypeClass, Name: dynamicOutputClassName, Mode: NonStreaming, Dynamic: true},
 	}
 
-	// Enums, declared order.
+	// Lower every definition body into local lookup tables keyed the way
+	// BAML's OutputFormatContent indexes them (enum by canonical name,
+	// class by (name, mode)). The bundle's ordered slices are NOT filled
+	// here: the reachability traversal below decides which definitions are
+	// reachable from the target and in what order they appear, matching
+	// BAML's relevant_data_models. Lowering is unchanged from the declared-
+	// order path — only the storage differs.
+	enumDefs := make(map[string]EnumDef, s.Enums.Len())
 	for _, e := range s.Enums.Entries() {
 		enumDef, err := buildEnum(e.Key, e.Value)
 		if err != nil {
 			return nil, err
 		}
-		bundle.Enums = append(bundle.Enums, enumDef)
+		enumDefs[e.Key] = enumDef
 	}
 
-	// Synthetic top-level class first, then user classes in declared order.
+	classDefs := make(map[ClassKey]ClassDef, s.Classes.Len()+1)
+	// Synthetic top-level class: its fields are the top-level properties.
 	syntheticFields, err := b.buildFields(dynamicOutputClassName, s.Properties)
 	if err != nil {
 		return nil, err
 	}
-	bundle.Classes = append(bundle.Classes, ClassDef{
+	classDefs[ClassKey{Name: dynamicOutputClassName, Mode: NonStreaming}] = ClassDef{
 		Name:   Name{Name: dynamicOutputClassName},
 		Mode:   NonStreaming,
 		Fields: syntheticFields,
-	})
+	}
 	for _, c := range s.Classes.Entries() {
 		cls := c.Value
 		if cls == nil {
@@ -125,13 +142,20 @@ func FromDynamicOutputSchema(s *bamlutils.DynamicOutputSchema, opts BuildOptions
 		if err != nil {
 			return nil, err
 		}
-		bundle.Classes = append(bundle.Classes, ClassDef{
+		classDefs[ClassKey{Name: c.Key, Mode: NonStreaming}] = ClassDef{
 			Name:        Name{Name: c.Key, Alias: strPtr(cls.Alias)},
 			Description: strPtr(cls.Description),
 			Mode:        NonStreaming,
 			Fields:      fields,
-		})
+		}
 	}
+
+	// Walk from the target with BAML's LIFO reachability traversal, which
+	// yields the enum and class definitions in BAML's hoist order
+	// (reverse-of-reference DFS) and prunes anything the target cannot
+	// reach. Assign the ordered slices, then rebuild the indexes ONCE on
+	// the final source-of-truth slices.
+	bundle.Enums, bundle.Classes = orderByReachability(bundle.Target, enumDefs, classDefs)
 
 	if err := bundle.RebuildIndexes(); err != nil {
 		return nil, err

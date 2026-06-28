@@ -40,24 +40,27 @@ import (
 // exactly and cannot mask an ordering divergence.
 //
 // Scope of the dynamic-path fixtures (deliberately narrower than the renderer's
-// full capability), and the two known dynamic-path fidelity gaps they steer
-// around — both in the Bundle-construction layer, NOT the renderer (which is
-// pinned byte-exact against BAML's own static render tests by the outputformat
-// package's 40+ goldens):
+// full capability), and the known dynamic-path fidelity gap they steer around —
+// in the Bundle-construction layer, NOT the renderer (which is pinned byte-exact
+// against BAML's own static render tests by the outputformat package's 40+
+// goldens):
 //
-//   - Multi-definition order. BAML does NOT name-sort definitions: it discovers
-//     reachable enums/classes from the target via a LIFO stack
-//     (baml-runtime relevant_data_models), so the rendered definition order is
-//     reverse-of-reference (DFS) order. schema.FromDynamicOutputSchema instead
-//     emits definitions in declared (OrderedMap) order. With two-plus hoisted
-//     definitions these diverge — e.g. fields referencing enums A then B render
-//     the B block before the A block under BAML but A-before-B under the native
-//     renderer (each block's CONTENTS are byte-identical; only their order
-//     differs). This is a schema.FromDynamicOutputSchema ordering gap (the #524
-//     keystone), out of scope for the P3 renderer. These fixtures therefore use
-//     at most one hoisted definition so the comparison is order-unambiguous; the
-//     renderer's own multi-definition ordering is correct given a correctly
-//     ordered Bundle, as the static goldens demonstrate.
+//   - Multi-definition order is now COVERED (#534). BAML does NOT name-sort
+//     definitions: it discovers reachable enums/classes from the target via a
+//     LIFO stack (baml-runtime relevant_data_models), so the rendered definition
+//     order is reverse-of-reference (DFS) order. schema.FromDynamicOutputSchema
+//     reproduces that traversal, so two-plus hoisted definitions now match
+//     byte-exact — e.g. fields referencing enums First then Second render the
+//     Second block before the First block on BOTH sides. The two_hoisted_enums_*,
+//     hoisted_enums_containers, and mixed_reachable_graph fixtures below pin this:
+//     enums are declared in the OPPOSITE order to their reference order to prove
+//     declared (OrderedMap) order does not drive the output. (Non-recursive class
+//     definition order under hoist_classes=true is not observable through the
+//     production bare {{ ctx.output_format }} content part, which never hoists
+//     non-recursive classes; that order is pinned by the native-render HoistAll
+//     unit fixtures in internal/schema and the renderer's static goldens. A real
+//     BAML hoist_classes=true oracle for the dynamic path is a follow-up — see
+//     the note in internal/schema/order.go and the #534 PR.)
 //   - Descriptions/aliases. At this BAML version the dynamic TypeBuilder
 //     propagates enum-value descriptions and aliases but NOT class-level or
 //     field-level descriptions or field aliases. schema.FromDynamicOutputSchema
@@ -244,9 +247,7 @@ func rendererParityCases() []rendererParityCase {
 		{
 			// One inline enum (<= 6 values, no descriptions) and one hoisted
 			// enum (a value description forces hoisting; also exercises an enum
-			// value alias). Exactly ONE hoisted definition so the comparison is
-			// order-unambiguous: see the doc comment on TestNativeOutputFormatRendererParity
-			// for why multi-hoisted-definition ordering is excluded here.
+			// value alias).
 			name: "enum_inline_and_hoisted",
 			schema: func() *bamlutils.DynamicOutputSchema {
 				return &bamlutils.DynamicOutputSchema{
@@ -299,6 +300,164 @@ func rendererParityCases() []rendererParityCase {
 				}
 			},
 			mockContent: `{"attributes":{"k":"v"},"either":"x","kind":"fixed"}`,
+		},
+		{
+			// Two hoisted enums referenced top-level as First then Second.
+			// BAML's LIFO traversal pops the last-referenced (Second) first,
+			// so the Second definition block renders BEFORE the First block.
+			// The enums are DECLARED in First, Second order to prove declared
+			// (OrderedMap) order does not drive the output: a declared-order
+			// build would emit First-before-Second and diverge. Each enum is
+			// hoisted via a value-level description (descriptions on enum
+			// VALUES propagate through the dynamic TypeBuilder).
+			name: "two_hoisted_enums_top_level",
+			schema: func() *bamlutils.DynamicOutputSchema {
+				return &bamlutils.DynamicOutputSchema{
+					Properties: dProps(
+						dProp("first", &bamlutils.DynamicProperty{Ref: "First"}),
+						dProp("second", &bamlutils.DynamicProperty{Ref: "Second"}),
+					),
+					Enums: dEnums(
+						dEnum("First", &bamlutils.DynamicEnum{
+							Values: []*bamlutils.DynamicEnumValue{
+								{Name: "F1", Description: "first one"},
+								{Name: "F2"},
+							},
+						}),
+						dEnum("Second", &bamlutils.DynamicEnum{
+							Values: []*bamlutils.DynamicEnumValue{
+								{Name: "S1", Description: "second one"},
+								{Name: "S2"},
+							},
+						}),
+					),
+				}
+			},
+			mockContent: `{"first":"F1","second":"S1"}`,
+		},
+		{
+			// A reached class drives enum order: the synthetic target reaches
+			// Envelope, whose fields reference First then Second. The enum
+			// blocks must order [Second, First] because Envelope's fields are
+			// queued in field order and popped last-first. Enums declared
+			// First, Second to defeat declared-order parity.
+			name: "two_hoisted_enums_nested_class",
+			schema: func() *bamlutils.DynamicOutputSchema {
+				return &bamlutils.DynamicOutputSchema{
+					Properties: dProps(
+						dProp("env", &bamlutils.DynamicProperty{Ref: "Envelope"}),
+					),
+					Classes: dClasses(
+						dClass("Envelope", &bamlutils.DynamicClass{
+							Properties: dProps(
+								dProp("a", &bamlutils.DynamicProperty{Ref: "First"}),
+								dProp("b", &bamlutils.DynamicProperty{Ref: "Second"}),
+							),
+						}),
+					),
+					Enums: dEnums(
+						dEnum("First", &bamlutils.DynamicEnum{
+							Values: []*bamlutils.DynamicEnumValue{
+								{Name: "F1", Description: "first one"},
+								{Name: "F2"},
+							},
+						}),
+						dEnum("Second", &bamlutils.DynamicEnum{
+							Values: []*bamlutils.DynamicEnumValue{
+								{Name: "S1", Description: "second one"},
+								{Name: "S2"},
+							},
+						}),
+					),
+				}
+			},
+			mockContent: `{"env":{"a":"F1","b":"S1"}}`,
+		},
+		{
+			// Container placements exercising the push-order details that
+			// drive traversal: a list element, a map (key pushed THEN value,
+			// so the value enum is processed first), and a union (members
+			// pushed in iter_include_null order, last member popped first).
+			// All four enums hoist (value descriptions); the comparison pins
+			// that the native traversal reproduces BAML's per-container stack
+			// discipline byte-exact. Map key is a plain string to stay inside
+			// BAML's map-key rules.
+			name: "hoisted_enums_containers",
+			schema: func() *bamlutils.DynamicOutputSchema {
+				return &bamlutils.DynamicOutputSchema{
+					Properties: dProps(
+						dProp("tags", &bamlutils.DynamicProperty{
+							Type:  "list",
+							Items: &bamlutils.DynamicTypeSpec{Ref: "Alpha"},
+						}),
+						dProp("attrs", &bamlutils.DynamicProperty{
+							Type:   "map",
+							Keys:   &bamlutils.DynamicTypeSpec{Type: "string"},
+							Values: &bamlutils.DynamicTypeSpec{Ref: "Beta"},
+						}),
+						dProp("choice", &bamlutils.DynamicProperty{
+							Type: "union",
+							OneOf: []*bamlutils.DynamicTypeSpec{
+								{Ref: "Gamma"},
+								{Ref: "Delta"},
+							},
+						}),
+					),
+					Enums: dEnums(
+						dEnum("Alpha", &bamlutils.DynamicEnum{
+							Values: []*bamlutils.DynamicEnumValue{{Name: "A1", Description: "a"}, {Name: "A2"}},
+						}),
+						dEnum("Beta", &bamlutils.DynamicEnum{
+							Values: []*bamlutils.DynamicEnumValue{{Name: "B1", Description: "b"}, {Name: "B2"}},
+						}),
+						dEnum("Gamma", &bamlutils.DynamicEnum{
+							Values: []*bamlutils.DynamicEnumValue{{Name: "G1", Description: "g"}, {Name: "G2"}},
+						}),
+						dEnum("Delta", &bamlutils.DynamicEnum{
+							Values: []*bamlutils.DynamicEnumValue{{Name: "D1", Description: "d"}, {Name: "D2"}},
+						}),
+					),
+				}
+			},
+			mockContent: `{"tags":["A1"],"attrs":{"k":"B1"},"choice":"G1"}`,
+		},
+		{
+			// Mixed reachable graph: hoisted enums interleaved with a class
+			// reference. The class (Wrapper) renders inline under bare
+			// ctx.output_format, but its fields still feed the traversal, so
+			// the enum block order reflects the full DFS. Proves BAML emits
+			// ALL enum definitions before any (here inline) class content and
+			// that class refs influence enum discovery order.
+			name: "mixed_reachable_graph",
+			schema: func() *bamlutils.DynamicOutputSchema {
+				return &bamlutils.DynamicOutputSchema{
+					Properties: dProps(
+						dProp("status", &bamlutils.DynamicProperty{Ref: "First"}),
+						dProp("payload", &bamlutils.DynamicProperty{Ref: "Wrapper"}),
+						dProp("tail", &bamlutils.DynamicProperty{Ref: "Third"}),
+					),
+					Classes: dClasses(
+						dClass("Wrapper", &bamlutils.DynamicClass{
+							Properties: dProps(
+								dProp("inner", &bamlutils.DynamicProperty{Ref: "Second"}),
+								dProp("note", &bamlutils.DynamicProperty{Type: "string"}),
+							),
+						}),
+					),
+					Enums: dEnums(
+						dEnum("First", &bamlutils.DynamicEnum{
+							Values: []*bamlutils.DynamicEnumValue{{Name: "F1", Description: "f"}, {Name: "F2"}},
+						}),
+						dEnum("Second", &bamlutils.DynamicEnum{
+							Values: []*bamlutils.DynamicEnumValue{{Name: "S1", Description: "s"}, {Name: "S2"}},
+						}),
+						dEnum("Third", &bamlutils.DynamicEnum{
+							Values: []*bamlutils.DynamicEnumValue{{Name: "T1", Description: "t"}, {Name: "T2"}},
+						}),
+					),
+				}
+			},
+			mockContent: `{"status":"F1","payload":{"inner":"S1","note":"n"},"tail":"T1"}`,
 		},
 	}
 }
