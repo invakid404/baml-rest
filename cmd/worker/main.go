@@ -13,6 +13,7 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
+	"github.com/invakid404/baml-rest/internal/debaml"
 	"github.com/invakid404/baml-rest/internal/memlimit"
 	"github.com/invakid404/baml-rest/internal/rootruntime"
 	"github.com/invakid404/baml-rest/worker"
@@ -42,6 +43,7 @@ func main() {
 	// boundary; library-mode callers wire their own config inside the
 	// host process instead.
 	buildRequestConfig := buildrequest.EnvConfig()
+	deBAMLConfig := bamlutils.DeBAMLConfigFromEnv()
 	baseURLRewrites := urlrewrite.LoadDefaultRules()
 	streamIdleTimeout := llmhttp.StreamIdleTimeoutFromEnv()
 	clientMode := llmhttp.ClientModeFromEnv()
@@ -107,6 +109,8 @@ func main() {
 		BuildRequest:    buildRequestConfig,
 		BaseURLRewrites: baseURLRewrites,
 		HTTPClient:      httpClient,
+		DeBAML:          deBAMLConfig,
+		DeBAMLRender:    debaml.Render,
 	})
 	if err != nil {
 		logger.Error("failed to construct worker handler", "err", err.Error())

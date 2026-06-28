@@ -32,6 +32,8 @@ type Option func(*config) error
 // the tuning value would otherwise look like a zero value.
 type config struct {
 	buildRequest    bamlutils.BuildRequestConfig
+	deBAML          bamlutils.DeBAMLConfig
+	deBAMLRender    bamlutils.DeBAMLRenderFunc
 	baseURLRewrites []urlrewrite.Rule
 	logger          bamlutils.Logger
 	metrics         *prometheus.Registry
@@ -73,6 +75,36 @@ func WithUseBuildRequest(enabled bool) Option {
 func WithDisableCallBuildRequest(disabled bool) Option {
 	return func(c *config) error {
 		c.buildRequest.DisableCallBuildRequest = disabled
+		return nil
+	}
+}
+
+// WithDeBAML mirrors the BAML_REST_USE_DEBAML umbrella switch for a
+// single client. When enabled, native de-BAML behaviour runs on routes
+// that expose a native seam — today, the native ctx.output_format
+// renderer on the dynamic BuildRequest route. dynclient never reads the
+// env var; callers opt in explicitly here. Distinct from
+// WithUseBuildRequest: the native output_format seam only exists on the
+// BuildRequest route, so enabling de-BAML without
+// WithUseBuildRequest leaves the request on the legacy BAML path for
+// this cut (route coupling tracked in #537).
+func WithDeBAML(enabled bool) Option {
+	return func(c *config) error {
+		c.deBAML.Enabled = enabled
+		return nil
+	}
+}
+
+// WithDeBAMLRenderer injects the native ctx.output_format render callback.
+// dynclient lives in a separate Go module and cannot import baml-rest's
+// root internal/schema + outputformat packages, so a caller in the root
+// module supplies the renderer (e.g. internal/debaml.Render). Without it,
+// WithDeBAML has no renderer wired and the dynamic path stays
+// BAML-as-today. Pairs with WithDeBAML (the enable switch) and
+// WithUseBuildRequest (the native seam only exists on that route, #537).
+func WithDeBAMLRenderer(render bamlutils.DeBAMLRenderFunc) Option {
+	return func(c *config) error {
+		c.deBAMLRender = render
 		return nil
 	}
 }

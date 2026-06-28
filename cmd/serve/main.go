@@ -31,6 +31,7 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
 	"github.com/invakid404/baml-rest/internal/apierror"
+	"github.com/invakid404/baml-rest/internal/debaml"
 	"github.com/invakid404/baml-rest/internal/memlimit"
 	"github.com/invakid404/baml-rest/internal/rootruntime"
 	"github.com/invakid404/baml-rest/introspected"
@@ -238,6 +239,7 @@ var serveCmd = &cobra.Command{
 		// configuration the subprocess build's cmd/worker would
 		// produce on its own at process startup.
 		buildRequestConfig := buildrequest.EnvConfig()
+		deBAMLConfig := bamlutils.DeBAMLConfigFromEnv()
 		preserveSchemaOrderDefault := preserveSchemaOrderDefaultFromEnv()
 		baseURLRewrites := urlrewrite.LoadDefaultRules()
 		streamIdleTimeout := llmhttp.StreamIdleTimeoutFromEnv()
@@ -251,6 +253,8 @@ var serveCmd = &cobra.Command{
 		runtimeCfg := workerModeRuntimeConfig{
 			Runtime:         rootruntime.Runtime{},
 			BuildRequest:    buildRequestConfig,
+			DeBAML:          deBAMLConfig,
+			DeBAMLRender:    debaml.Render,
 			BaseURLRewrites: baseURLRewrites,
 			HTTPClient:      httpClient,
 		}

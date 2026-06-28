@@ -180,6 +180,70 @@ func TestHandlerPerInstanceBuildRequestConfig(t *testing.T) {
 	}
 }
 
+// TestHandlerDeBAMLConfigAndSchemaWiring pins that the de-BAML umbrella
+// switch is installed per-handler via configureAdapter (alongside
+// BuildRequest) and that the carried output schema from
+// __baml_options__.output_schema is installed via apply. The generated
+// dynamic BuildRequest seam reads both through DeBAMLConfig() /
+// DeBAMLOutputSchema(); they MUST reflect the per-handler config and the
+// per-request payload, not a shared global.
+func TestHandlerDeBAMLConfigAndSchemaWiring(t *testing.T) {
+	t.Parallel()
+
+	var captured *fakeAdapter
+	rt := &fakeRuntime{methods: map[string]bamlutils.StreamingMethod{
+		"x": {
+			MakeInput: func() any { return &map[string]any{} },
+			Impl: func(adapter bamlutils.Adapter, _ any) (<-chan bamlutils.StreamResult, error) {
+				captured = adapter.(*fakeAdapter)
+				ch := make(chan bamlutils.StreamResult)
+				close(ch)
+				return ch, nil
+			},
+		},
+	}}
+	renderCalls := 0
+	render := func(*bamlutils.DynamicOutputSchema) (string, error) {
+		renderCalls++
+		return "block", nil
+	}
+	h := newTestHandler(t, Config{Runtime: rt, DeBAML: bamlutils.DeBAMLConfig{Enabled: true}, DeBAMLRender: render})
+
+	body := []byte(`{"__baml_options__":{"output_schema":{"properties":{"answer":{"type":"string"}}}}}`)
+	out, err := h.CallStream(context.Background(), "x", body, bamlutils.StreamModeCall)
+	if err != nil {
+		t.Fatalf("CallStream: %v", err)
+	}
+	for range out {
+	}
+
+	if captured == nil {
+		t.Fatal("expected the handler to install an adapter via the fake runtime")
+	}
+	if !captured.DeBAMLConfig().Enabled {
+		t.Errorf("DeBAMLConfig not installed: %#v", captured.DeBAMLConfig())
+	}
+	if captured.setDeBAMLConfigCalls != 1 {
+		t.Errorf("SetDeBAMLConfig called %d times, want 1", captured.setDeBAMLConfigCalls)
+	}
+	if captured.setDeBAMLOutputSchemaCalls != 1 {
+		t.Errorf("SetDeBAMLOutputSchema called %d times, want 1", captured.setDeBAMLOutputSchemaCalls)
+	}
+	schema := captured.DeBAMLOutputSchema()
+	if schema == nil || !schema.Properties.Has("answer") {
+		t.Errorf("carried output schema not installed from __baml_options__: %#v", schema)
+	}
+	if captured.setDeBAMLRendererCalls != 1 {
+		t.Errorf("SetDeBAMLRenderer called %d times, want 1", captured.setDeBAMLRendererCalls)
+	}
+	if captured.deBAMLRenderer == nil {
+		t.Fatal("render callback not installed on the adapter")
+	}
+	if _, err := captured.deBAMLRenderer(schema); err != nil || renderCalls != 1 {
+		t.Errorf("installed renderer not the one wired in: err=%v calls=%d", err, renderCalls)
+	}
+}
+
 // TestHandlerPerInstanceURLRewrites pins that the worker's
 // __baml_options__.client_registry rewrite pass reads from the
 // per-handler BaseURLRewrites slice rather than the urlrewrite global.

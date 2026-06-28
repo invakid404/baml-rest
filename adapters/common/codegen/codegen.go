@@ -183,6 +183,19 @@ type Options struct {
 	// observations to a running test.
 	EmitPoolAuditHooks bool
 
+	// DeBAMLDynamicMethod names the BAML method whose dynamic
+	// BuildRequest closures emit the native ctx.output_format
+	// pre-substitution call (maybeApplyDeBAMLOutputFormat on the
+	// converted message slice, gated at runtime on the de-BAML flag).
+	// Empty (default) emits nothing, so generic/customer adapters never
+	// depend on the baml-rest dynamic helper. baml-rest's dynclient
+	// genadapter sets it to bamlutils.DynamicMethodName
+	// ("Baml_Rest_Dynamic"); the helper lives in a hand-written file in
+	// the dynclient generated package. Only the streaming + non-streaming
+	// BuildRequest closures are touched — the legacy CallStream path is
+	// intentionally left BAML-as-today (route coupling tracked in #537).
+	DeBAMLDynamicMethod string
+
 	// Test-only regression seeds — DO NOT use in production codegen.
 	// Each seed reintroduces one bug class the slice-pool lifecycle
 	// harness is designed to catch. The harness flips them one at a
@@ -237,6 +250,11 @@ type generator struct {
 	supportsWithClient   bool
 	mirrors              *mirrorStructTracker
 	emittedUnwrapHelpers map[string]bool
+	// emittedDeBAMLCall records whether a BuildRequest closure emitted
+	// the maybeApplyDeBAMLOutputFormat call for the de-BAML dynamic
+	// method. When true, generate() writes the matching debaml.go helper
+	// next to adapter.go so the call resolves in this package.
+	emittedDeBAMLCall bool
 	// slicePools dedupes pooled-slice helper emission across all method
 	// preambles + nested struct conversions. Lifetime is per-file: every
 	// pooled inner type encountered during emission lazily lands one
@@ -380,7 +398,37 @@ func generate(opts Options) {
 	g.emitInitBamlRuntime()
 	generateStreamHelpers(g.out, g.pkgs)
 
+	// Fail loudly when a de-BAML dynamic method was configured but no
+	// BuildRequest closure actually emitted the injection call. Without
+	// this, method-name drift / a missing struct-media param / the method
+	// not being in the emitted set would silently ship a de-BAML-inert
+	// build — the exact production-inert regression #536 P1 fixed. Done
+	// after emitMethods (which sets emittedDeBAMLCall) and before Save so
+	// no misleading inert adapter.go is written.
+	if err := validateDeBAMLEmission(g.opts.DeBAMLDynamicMethod, g.emittedDeBAMLCall); err != nil {
+		panic(err.Error())
+	}
+
 	if err := g.out.Save(g.pkgs.OutputPath); err != nil {
 		panic(err)
 	}
+
+	// Emit the de-BAML helper next to adapter.go when a BuildRequest
+	// closure consumed it. Done after Save so a generation that never
+	// emits the call leaves no orphan helper file.
+	g.maybeWriteDeBAMLHelper()
+}
+
+// validateDeBAMLEmission enforces that a configured de-BAML dynamic method
+// actually produced an injection call. It returns nil when de-BAML is not
+// configured (empty method) or when the call was emitted; it returns a
+// descriptive error when the method is configured but no BuildRequest
+// closure matched it — method-name drift, a missing struct/media param, or
+// the method being absent from the emitted set — so a silently
+// de-BAML-inert build becomes a generation-time failure instead.
+func validateDeBAMLEmission(deBAMLMethod string, emitted bool) error {
+	if deBAMLMethod == "" || emitted {
+		return nil
+	}
+	return fmt.Errorf("codegen: de-BAML dynamic method %q configured but no BuildRequest closure emitted the injection call (method-name drift, missing struct/media param, or the method is not in the emitted set)", deBAMLMethod)
 }

@@ -56,9 +56,15 @@ type fakeAdapter struct {
 	roundRobinAdvancer     bamlutils.RoundRobinAdvancer
 	httpClient             *llmhttp.Client
 	buildRequestConfig     bamlutils.BuildRequestConfig
+	deBAMLConfig           bamlutils.DeBAMLConfig
+	deBAMLOutputSchema     *bamlutils.DynamicOutputSchema
+	deBAMLRenderer         bamlutils.DeBAMLRenderFunc
 
 	setBuildRequestConfigCalls int
 	setHTTPClientCalls         int
+	setDeBAMLConfigCalls       int
+	setDeBAMLOutputSchemaCalls int
+	setDeBAMLRendererCalls     int
 }
 
 func newFakeAdapter(ctx context.Context) *fakeAdapter {
@@ -102,6 +108,25 @@ func (a *fakeAdapter) SetRoundRobinAdvancer(adv bamlutils.RoundRobinAdvancer) {
 	a.roundRobinAdvancer = adv
 }
 func (a *fakeAdapter) RoundRobinAdvancer() bamlutils.RoundRobinAdvancer { return a.roundRobinAdvancer }
+func (a *fakeAdapter) SetDeBAMLConfig(c bamlutils.DeBAMLConfig) {
+	a.setDeBAMLConfigCalls++
+	a.deBAMLConfig = c
+}
+func (a *fakeAdapter) DeBAMLConfig() bamlutils.DeBAMLConfig { return a.deBAMLConfig }
+func (a *fakeAdapter) SetDeBAMLOutputSchema(s *bamlutils.DynamicOutputSchema) {
+	a.setDeBAMLOutputSchemaCalls++
+	a.deBAMLOutputSchema = s
+}
+func (a *fakeAdapter) DeBAMLOutputSchema() *bamlutils.DynamicOutputSchema {
+	return a.deBAMLOutputSchema
+}
+
+// SetDeBAMLRenderer satisfies the worker's narrow deBAMLRendererSetter
+// optional interface so configureAdapter installs the callback here.
+func (a *fakeAdapter) SetDeBAMLRenderer(fn bamlutils.DeBAMLRenderFunc) {
+	a.setDeBAMLRendererCalls++
+	a.deBAMLRenderer = fn
+}
 
 // newTestHandler constructs a Handler with a fake runtime as the
 // default. Tests pass in any non-Runtime fields they care about; the

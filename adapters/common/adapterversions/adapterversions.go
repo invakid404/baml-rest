@@ -21,6 +21,7 @@ import (
 	"fmt"
 
 	"github.com/invakid404/baml-rest/adapters/common/codegen"
+	"github.com/invakid404/baml-rest/bamlutils"
 )
 
 // FrameworkAdapter declares the codegen.Options for one pinned
@@ -77,6 +78,15 @@ var FrameworkAdapters = []FrameworkAdapter{
 			SupportsWithClient: true,
 			HasWrapMapValues:   false,
 			HasHTTPClient:      true,
+			// v0.219 is the first BuildRequest-capable adapter, so it is the
+			// production surface where the native ctx.output_format seam
+			// exists. Wiring DeBAMLDynamicMethod here is what makes
+			// BAML_REST_USE_DEBAML live for REST production traffic (#536):
+			// codegen emits the maybeApplyDeBAMLOutputFormat call in the
+			// dynamic method's BuildRequest closures plus the matching
+			// debaml.go helper next to adapter.go. v0.204/v0.215 have no
+			// BuildRequest surface, so the seam is intentionally absent there.
+			DeBAMLDynamicMethod: bamlutils.DynamicMethodName,
 		},
 	},
 }

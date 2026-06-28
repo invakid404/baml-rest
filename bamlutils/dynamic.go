@@ -708,6 +708,12 @@ func (d *DynamicInput) ToWorkerInput() (b []byte, err error) {
 				DynamicTypes: dynamicTypes,
 			},
 			IncludeReasoning: d.IncludeReasoning,
+			// Carry the original output schema so the worker can drive the
+			// native ctx.output_format renderer at the dynamic BuildRequest
+			// seam under BAML_REST_USE_DEBAML. Always carried; only consumed
+			// when the de-BAML flag is on (otherwise it is stored and
+			// ignored, leaving the provider request byte-identical).
+			OutputSchema: d.OutputSchema,
 		},
 	}
 	return sonic.Marshal(internal)

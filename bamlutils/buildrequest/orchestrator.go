@@ -30,13 +30,7 @@ import (
 // boolean interpretation. Extracted so the test can verify parsing logic
 // independently of the cache.
 func parseBuildRequestEnv() bool {
-	v := os.Getenv("BAML_REST_USE_BUILD_REQUEST")
-	switch strings.ToLower(v) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
-	}
+	return bamlutils.IsTruthyEnvValue(os.Getenv("BAML_REST_USE_BUILD_REQUEST"))
 }
 
 // useBuildRequestOnce caches the result of parseBuildRequestEnv. The env var
@@ -84,13 +78,7 @@ func UseBuildRequest() bool {
 // and returns its boolean interpretation. Extracted so the test can verify
 // parsing logic independently of the cache.
 func parseDisableCallBuildRequestEnv() bool {
-	v := os.Getenv("BAML_REST_DISABLE_CALL_BUILD_REQUEST")
-	switch strings.ToLower(v) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
-	}
+	return bamlutils.IsTruthyEnvValue(os.Getenv("BAML_REST_DISABLE_CALL_BUILD_REQUEST"))
 }
 
 // disableCallBuildRequestOnce caches the result of the env lookup so

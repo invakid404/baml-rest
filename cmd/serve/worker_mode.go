@@ -29,6 +29,18 @@ type workerModeRuntimeConfig struct {
 	// generated router reads through adapter.BuildRequestConfig().
 	BuildRequest bamlutils.BuildRequestConfig
 
+	// DeBAML mirrors BAML_REST_USE_DEBAML — the umbrella switch the
+	// generated dynamic BuildRequest seam reads through
+	// adapter.DeBAMLConfig() to drive the native ctx.output_format
+	// renderer.
+	DeBAML bamlutils.DeBAMLConfig
+
+	// DeBAMLRender is the native render callback the in-process worker
+	// installs on every adapter. Wired to internal/debaml.Render at
+	// startup (the root module owns the renderer; worker cannot import
+	// it across the module boundary).
+	DeBAMLRender bamlutils.DeBAMLRenderFunc
+
 	// BaseURLRewrites is the URL rewrite ruleset the worker applies
 	// before SetClientRegistry. Outbound HTTP rewrites go through
 	// HTTPClient's per-client rules below — populated from the same
