@@ -14,6 +14,7 @@ package main
 
 import (
 	"github.com/invakid404/baml-rest/adapters/common/codegen"
+	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/dynclient/internal/generated/introspected"
 )
 
@@ -34,6 +35,10 @@ func main() {
 		SupportsWithClient: true,
 		HasWrapMapValues:   false,
 		HasHTTPClient:      true,
+		// Wire native ctx.output_format pre-substitution into the dynamic
+		// method's BuildRequest closures (de-BAML, #536). The matching
+		// helper is hand-written in dynclient/internal/generated/debaml.go.
+		DeBAMLDynamicMethod: bamlutils.DynamicMethodName,
 		Packages: codegen.PackageConfig{
 			OutputPkg:          selfPkg,
 			OutputPkgName:      "generated",

@@ -67,6 +67,17 @@ type BamlAdapter struct {
 	// in the same process can carry distinct configurations.
 	buildRequestConfig bamlutils.BuildRequestConfig
 
+	// deBAMLConfig carries the per-handler BAML_REST_USE_DEBAML
+	// umbrella switch. The generated dynamic BuildRequest seam reads
+	// it via DeBAMLConfig() to decide whether to render
+	// ctx.output_format natively instead of letting BAML render it.
+	deBAMLConfig bamlutils.DeBAMLConfig
+
+	// deBAMLOutputSchema carries the original dynamic output schema
+	// from __baml_options__ so the native renderer can lower and
+	// render it at the BuildRequest seam. nil when none installed.
+	deBAMLOutputSchema *bamlutils.DynamicOutputSchema
+
 	// rrAdvancer is the per-request round-robin Advancer installed by the
 	// worker; nil falls back to the introspected Coordinator.
 	rrAdvancer bamlutils.RoundRobinAdvancer
@@ -214,6 +225,18 @@ func (b *BamlAdapter) SetBuildRequestConfig(cfg bamlutils.BuildRequestConfig) {
 }
 func (b *BamlAdapter) BuildRequestConfig() bamlutils.BuildRequestConfig {
 	return b.buildRequestConfig
+}
+func (b *BamlAdapter) SetDeBAMLConfig(cfg bamlutils.DeBAMLConfig) {
+	b.deBAMLConfig = cfg
+}
+func (b *BamlAdapter) DeBAMLConfig() bamlutils.DeBAMLConfig {
+	return b.deBAMLConfig
+}
+func (b *BamlAdapter) SetDeBAMLOutputSchema(schema *bamlutils.DynamicOutputSchema) {
+	b.deBAMLOutputSchema = schema
+}
+func (b *BamlAdapter) DeBAMLOutputSchema() *bamlutils.DynamicOutputSchema {
+	return b.deBAMLOutputSchema
 }
 func (b *BamlAdapter) SetRoundRobinAdvancer(advancer bamlutils.RoundRobinAdvancer) {
 	b.rrAdvancer = advancer

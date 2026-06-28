@@ -42,6 +42,7 @@ func main() {
 	// boundary; library-mode callers wire their own config inside the
 	// host process instead.
 	buildRequestConfig := buildrequest.EnvConfig()
+	deBAMLConfig := bamlutils.DeBAMLConfigFromEnv()
 	baseURLRewrites := urlrewrite.LoadDefaultRules()
 	streamIdleTimeout := llmhttp.StreamIdleTimeoutFromEnv()
 	clientMode := llmhttp.ClientModeFromEnv()
@@ -107,6 +108,7 @@ func main() {
 		BuildRequest:    buildRequestConfig,
 		BaseURLRewrites: baseURLRewrites,
 		HTTPClient:      httpClient,
+		DeBAML:          deBAMLConfig,
 	})
 	if err != nil {
 		logger.Error("failed to construct worker handler", "err", err.Error())

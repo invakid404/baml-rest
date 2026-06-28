@@ -238,6 +238,7 @@ var serveCmd = &cobra.Command{
 		// configuration the subprocess build's cmd/worker would
 		// produce on its own at process startup.
 		buildRequestConfig := buildrequest.EnvConfig()
+		deBAMLConfig := bamlutils.DeBAMLConfigFromEnv()
 		preserveSchemaOrderDefault := preserveSchemaOrderDefaultFromEnv()
 		baseURLRewrites := urlrewrite.LoadDefaultRules()
 		streamIdleTimeout := llmhttp.StreamIdleTimeoutFromEnv()
@@ -251,6 +252,7 @@ var serveCmd = &cobra.Command{
 		runtimeCfg := workerModeRuntimeConfig{
 			Runtime:         rootruntime.Runtime{},
 			BuildRequest:    buildRequestConfig,
+			DeBAML:          deBAMLConfig,
 			BaseURLRewrites: baseURLRewrites,
 			HTTPClient:      httpClient,
 		}

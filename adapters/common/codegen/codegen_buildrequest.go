@@ -260,6 +260,35 @@ func buildLegacyChildCallParams(args []string, argCallParam func(string) jen.Cod
 	return out
 }
 
+// deBAMLOutputFormatStmts returns the native ctx.output_format
+// pre-substitution call to splice in after the BuildRequest preamble,
+// or nil when this method is not the configured dynamic method. The
+// emitted statement hands the converted message slice
+// (__struct_<param>) and the adapter to maybeApplyDeBAMLOutputFormat,
+// a hand-written helper in the dynclient generated package. That helper
+// no-ops unless adapter.DeBAMLConfig().Enabled, and on a genuine
+// lowering/rendering error leaves the messages untouched so BAML
+// renders ctx.output_format as today (render-first, rewrite-after).
+//
+// Emitting nothing when DeBAMLDynamicMethod is unset keeps generic and
+// customer adapters free of any dependency on the baml-rest dynamic
+// helper.
+func (me *methodEmitter) deBAMLOutputFormatStmts() []jen.Code {
+	want := me.g.opts.DeBAMLDynamicMethod
+	if want == "" || me.methodName != want {
+		return nil
+	}
+	// The dynamic function's message slice is its sole struct-with-media
+	// param; its converted slice is __struct_<paramName>.
+	if len(me.structMediaParams) == 0 {
+		return nil
+	}
+	convertedVar := "__struct_" + me.structMediaParams[0].paramName
+	return []jen.Code{
+		jen.Id("maybeApplyDeBAMLOutputFormat").Call(jen.Id("adapter"), jen.Id(convertedVar)),
+	}
+}
+
 // emitBuildRequest emits the streaming BuildRequest impl for this
 // method (<method>_buildRequest) using BAML's StreamRequest API to
 // produce a BAML HTTPRequest, execute it, and parse SSE events
@@ -315,6 +344,12 @@ func (me *methodEmitter) emitBuildRequest() {
 
 	// The _buildRequest body
 	buildRequestBody := me.makePreamble()
+	// De-BAML native output_format pre-substitution: rewrite the
+	// converted message slice before BAML BuildRequest renders the
+	// provider request. No-op unless this is the configured dynamic
+	// method (Options.DeBAMLDynamicMethod); gated again at runtime on
+	// the de-BAML flag inside the emitted helper.
+	buildRequestBody = append(buildRequestBody, me.deBAMLOutputFormatStmts()...)
 
 	// Build the closures for RunStreamOrchestration
 	buildRequestBody = append(buildRequestBody,
@@ -704,6 +739,8 @@ func (me *methodEmitter) emitBuildCallRequest() {
 	legacyCallStreamCallParams := buildLegacyChildCallParams(me.args, me.argCallParam)
 
 	buildCallRequestBody := me.makePreamble()
+	// De-BAML native output_format pre-substitution — see emitBuildRequest.
+	buildCallRequestBody = append(buildCallRequestBody, me.deBAMLOutputFormatStmts()...)
 
 	buildCallRequestBody = append(buildCallRequestBody,
 		// buildRequestFn: calls Request.Method(ctx, args, opts...) → baml.HTTPRequest → llmhttp.Request

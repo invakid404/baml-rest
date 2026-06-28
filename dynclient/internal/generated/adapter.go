@@ -604,6 +604,7 @@ func bamlRestDynamicBuildRequest(adapter bamlutils.Adapter, rawInput any, out ch
 		}
 		__struct_messages[__i] = __converted
 	}
+	maybeApplyDeBAMLOutputFormat(adapter, __struct_messages)
 	buildRequestFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 		callOpts := options
 		if clientOverride != "" {
@@ -845,6 +846,7 @@ func bamlRestDynamicBuildCallRequest(adapter bamlutils.Adapter, rawInput any, ou
 		}
 		__struct_messages[__i] = __converted
 	}
+	maybeApplyDeBAMLOutputFormat(adapter, __struct_messages)
 	buildRequestFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 		callOpts := options
 		if clientOverride != "" {

@@ -52,6 +52,13 @@ func (o *workerBamlOptions) apply(adapter bamlutils.Adapter, defaults *clientdef
 	// leaves the structured reasoning channel empty.
 	adapter.SetIncludeReasoning(o.Options.IncludeReasoning)
 
+	// Carry the original dynamic output schema (may be nil) so the
+	// dynamic BuildRequest seam can drive the native ctx.output_format
+	// renderer under BAML_REST_USE_DEBAML. Stored unconditionally; the
+	// seam only consults it when the de-BAML flag is on, so a nil schema
+	// or a disabled flag both leave the provider request BAML-as-today.
+	adapter.SetDeBAMLOutputSchema(o.Options.OutputSchema)
+
 	return nil
 }
 

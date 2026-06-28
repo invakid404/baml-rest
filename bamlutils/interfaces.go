@@ -5,6 +5,8 @@ import (
 	stdjson "encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/bytedance/sonic"
 
@@ -991,6 +993,52 @@ type BuildRequestConfig struct {
 	DisableCallBuildRequest bool
 }
 
+// DeBAMLConfig is the single umbrella switch for baml-rest's native
+// "de-BAML" behaviour: Go-native ports of pieces BAML currently owns at
+// request time (the ctx.output_format renderer first; a native parser
+// and other native paths later attach to this same flag). It mirrors
+// BAML_REST_USE_DEBAML.
+//
+// One flag, all-on-or-all-off. There is intentionally no per-feature
+// switch: every implemented native path is gated on Enabled together so
+// operators flip a single, observable rollout control. It is distinct
+// from BuildRequestConfig — BuildRequestConfig selects the transport/
+// request-construction route, while DeBAMLConfig selects whether native
+// de-BAML behaviour is active on routes that expose a native seam.
+//
+// Default (zero value) is disabled: the dynamic request path renders
+// ctx.output_format through BAML exactly as it does today.
+type DeBAMLConfig struct {
+	// Enabled turns on every implemented native de-BAML path. When false
+	// (default) no native behaviour is attempted and the dynamic path is
+	// BAML-as-today, byte-for-byte.
+	Enabled bool
+}
+
+// EnvUseDeBAML is the umbrella env var that enables native de-BAML
+// behaviour. Distinct from BAML_REST_USE_BUILD_REQUEST: that selects the
+// transport route, this selects whether native de-BAML paths run on
+// routes that expose a native seam.
+const EnvUseDeBAML = "BAML_REST_USE_DEBAML"
+
+// DeBAMLConfigFromEnv resolves BAML_REST_USE_DEBAML into a DeBAMLConfig.
+// Shared by cmd/serve and cmd/worker so both server builds observe the
+// same value; resolved once at startup. Truthy parsing matches the
+// BuildRequest env contract (1/true/yes/on, case-insensitive, no
+// whitespace trimming); every other value (including empty) is disabled.
+func DeBAMLConfigFromEnv() DeBAMLConfig {
+	return DeBAMLConfig{Enabled: parseTruthyDeBAMLEnv(os.Getenv(EnvUseDeBAML))}
+}
+
+func parseTruthyDeBAMLEnv(v string) bool {
+	switch strings.ToLower(v) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 type Adapter interface {
 	context.Context
 	SetClientRegistry(clientRegistry *ClientRegistry) error
@@ -1050,6 +1098,25 @@ type Adapter interface {
 	// installed via SetBuildRequestConfig. Zero value when unset —
 	// the codegen-emitted router treats both fields as false.
 	BuildRequestConfig() BuildRequestConfig
+	// SetDeBAMLConfig stores the per-handler DeBAMLConfig (the
+	// BAML_REST_USE_DEBAML umbrella switch). cmd/serve and cmd/worker
+	// resolve the env once at startup and install it next to the
+	// BuildRequest config; dynclient installs it from an explicit option.
+	SetDeBAMLConfig(DeBAMLConfig)
+	// DeBAMLConfig returns the per-handler DeBAMLConfig installed via
+	// SetDeBAMLConfig. Zero value (disabled) when unset — the generated
+	// dynamic BuildRequest seam treats native de-BAML behaviour as off.
+	DeBAMLConfig() DeBAMLConfig
+	// SetDeBAMLOutputSchema carries the original dynamic output schema
+	// (DynamicInput.OutputSchema) to the dynamic BuildRequest seam so the
+	// native ctx.output_format renderer can lower and render it under the
+	// de-BAML flag. Nil is the no-schema sentinel; the seam then leaves
+	// messages untouched. Carried in __baml_options__ because the
+	// generated dynamic input type only carries Messages.
+	SetDeBAMLOutputSchema(*DynamicOutputSchema)
+	// DeBAMLOutputSchema returns the carried dynamic output schema, or nil
+	// when none was installed.
+	DeBAMLOutputSchema() *DynamicOutputSchema
 	// SetRoundRobinAdvancer installs the per-request Advancer used by the
 	// BuildRequest path to resolve baml-roundrobin strategy clients. Pool-
 	// managed workers set this to a RemoteAdvancer that talks to the host
@@ -1078,6 +1145,15 @@ type BamlOptions struct {
 	// never muxed into raw under any flag value. The flag never affects
 	// the parseable text passed to Parse/ParseStream.
 	IncludeReasoning bool `json:"include_reasoning,omitempty"`
+
+	// OutputSchema carries the original dynamic output schema to the
+	// worker so the native ctx.output_format renderer can run at the
+	// dynamic BuildRequest seam under BAML_REST_USE_DEBAML. The worker
+	// installs it on the adapter via SetDeBAMLOutputSchema. Only the
+	// dynamic call/stream path sets it (DynamicInput.ToWorkerInput);
+	// it is harmlessly absent everywhere else, and unused entirely when
+	// the de-BAML flag is off.
+	OutputSchema *DynamicOutputSchema `json:"output_schema,omitempty"`
 }
 
 // RetryConfig provides explicit retry configuration for the BuildRequest path.

@@ -165,6 +165,17 @@ func emitFrameworkAdapter(out *jen.File, opts Options) {
 		jen.Comment("in the same process can carry distinct configurations."),
 		jen.Id("buildRequestConfig").Qual(bamlutilsPkg, "BuildRequestConfig"),
 		jen.Line(),
+		jen.Comment("deBAMLConfig carries the per-handler BAML_REST_USE_DEBAML"),
+		jen.Comment("umbrella switch. The generated dynamic BuildRequest seam reads"),
+		jen.Comment("it via DeBAMLConfig() to decide whether to render"),
+		jen.Comment("ctx.output_format natively instead of letting BAML render it."),
+		jen.Id("deBAMLConfig").Qual(bamlutilsPkg, "DeBAMLConfig"),
+		jen.Line(),
+		jen.Comment("deBAMLOutputSchema carries the original dynamic output schema"),
+		jen.Comment("from __baml_options__ so the native renderer can lower and"),
+		jen.Comment("render it at the BuildRequest seam. nil when none installed."),
+		jen.Id("deBAMLOutputSchema").Op("*").Qual(bamlutilsPkg, "DynamicOutputSchema"),
+		jen.Line(),
 		jen.Comment("rrAdvancer is the per-request round-robin Advancer installed by the"),
 		jen.Comment("worker; nil falls back to the introspected Coordinator."),
 		jen.Id("rrAdvancer").Qual(bamlutilsPkg, "RoundRobinAdvancer"),
@@ -196,6 +207,7 @@ func emitFrameworkAdapter(out *jen.File, opts Options) {
 	emitFrameworkAdapterMediaConstructors(out, bamlutilsPkg)
 	emitFrameworkAdapterHTTPClient(out, opts, llmhttpPkg)
 	emitFrameworkAdapterBuildRequestConfig(out, bamlutilsPkg)
+	emitFrameworkAdapterDeBAML(out, bamlutilsPkg)
 	emitFrameworkAdapterRoundRobinAdvancer(out, bamlutilsPkg)
 
 	// Compile-time interface conformance check. Catches drift if the
@@ -522,6 +534,38 @@ func emitFrameworkAdapterBuildRequestConfig(out *jen.File, bamlutilsPkg string) 
 		Id("BuildRequestConfig").Params().Qual(bamlutilsPkg, "BuildRequestConfig").
 		Block(
 			jen.Return(jen.Id("b").Dot("buildRequestConfig")),
+		)
+}
+
+// emitFrameworkAdapterDeBAML emits the per-handler DeBAMLConfig and
+// the carried dynamic-output-schema setter/getter pairs. The generated
+// dynamic BuildRequest seam consults DeBAMLConfig().Enabled and
+// DeBAMLOutputSchema() to drive the native ctx.output_format renderer;
+// the worker installs both (config from env/option, schema from
+// __baml_options__).
+func emitFrameworkAdapterDeBAML(out *jen.File, bamlutilsPkg string) {
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("SetDeBAMLConfig").Params(jen.Id("cfg").Qual(bamlutilsPkg, "DeBAMLConfig")).
+		Block(
+			jen.Id("b").Dot("deBAMLConfig").Op("=").Id("cfg"),
+		)
+
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("DeBAMLConfig").Params().Qual(bamlutilsPkg, "DeBAMLConfig").
+		Block(
+			jen.Return(jen.Id("b").Dot("deBAMLConfig")),
+		)
+
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("SetDeBAMLOutputSchema").Params(jen.Id("schema").Op("*").Qual(bamlutilsPkg, "DynamicOutputSchema")).
+		Block(
+			jen.Id("b").Dot("deBAMLOutputSchema").Op("=").Id("schema"),
+		)
+
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("DeBAMLOutputSchema").Params().Op("*").Qual(bamlutilsPkg, "DynamicOutputSchema").
+		Block(
+			jen.Return(jen.Id("b").Dot("deBAMLOutputSchema")),
 		)
 }
 

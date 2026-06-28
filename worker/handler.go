@@ -53,6 +53,13 @@ type Config struct {
 	BuildRequest    bamlutils.BuildRequestConfig
 	BaseURLRewrites []urlrewrite.Rule
 	HTTPClient      *llmhttp.Client
+
+	// DeBAML mirrors BAML_REST_USE_DEBAML — the umbrella switch for
+	// native de-BAML behaviour (the native ctx.output_format renderer on
+	// the dynamic BuildRequest route today). Zero value (disabled) keeps
+	// the dynamic path BAML-as-today. Resolved once at startup like
+	// BuildRequest and installed on every adapter via configureAdapter.
+	DeBAML bamlutils.DeBAMLConfig
 }
 
 // ErrRuntimeRequired is returned by New when Config.Runtime is nil.
@@ -76,6 +83,7 @@ type Handler struct {
 	buildRequest    bamlutils.BuildRequestConfig
 	baseURLRewrites []urlrewrite.Rule
 	httpClient      *llmhttp.Client
+	deBAML          bamlutils.DeBAMLConfig
 
 	sharedStateHook hookStorage
 
@@ -106,6 +114,7 @@ func New(cfg Config) (*Handler, error) {
 		buildRequest:    cfg.BuildRequest,
 		baseURLRewrites: cfg.BaseURLRewrites,
 		httpClient:      cfg.HTTPClient,
+		deBAML:          cfg.DeBAML,
 	}
 	if cfg.SharedState != nil {
 		h.SetSharedStateHook(cfg.SharedState)
@@ -121,6 +130,7 @@ func New(cfg Config) (*Handler, error) {
 func (h *Handler) configureAdapter(adapter bamlutils.Adapter) {
 	adapter.SetBuildRequestConfig(h.buildRequest)
 	adapter.SetHTTPClient(h.httpClient)
+	adapter.SetDeBAMLConfig(h.deBAML)
 }
 
 // CallStream executes a streaming BAML method and bridges its results

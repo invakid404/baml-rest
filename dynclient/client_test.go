@@ -34,6 +34,8 @@ type fakeAdapter struct {
 	roundRobinAdvancer     bamlutils.RoundRobinAdvancer
 	httpClient             *llmhttp.Client
 	buildRequestConfig     bamlutils.BuildRequestConfig
+	deBAMLConfig           bamlutils.DeBAMLConfig
+	deBAMLOutputSchema     *bamlutils.DynamicOutputSchema
 
 	setBuildRequestConfigCalls int
 	setHTTPClientCalls         int
@@ -79,6 +81,14 @@ func (a *fakeAdapter) SetRoundRobinAdvancer(adv bamlutils.RoundRobinAdvancer) {
 	a.roundRobinAdvancer = adv
 }
 func (a *fakeAdapter) RoundRobinAdvancer() bamlutils.RoundRobinAdvancer { return a.roundRobinAdvancer }
+func (a *fakeAdapter) SetDeBAMLConfig(c bamlutils.DeBAMLConfig)         { a.deBAMLConfig = c }
+func (a *fakeAdapter) DeBAMLConfig() bamlutils.DeBAMLConfig             { return a.deBAMLConfig }
+func (a *fakeAdapter) SetDeBAMLOutputSchema(s *bamlutils.DynamicOutputSchema) {
+	a.deBAMLOutputSchema = s
+}
+func (a *fakeAdapter) DeBAMLOutputSchema() *bamlutils.DynamicOutputSchema {
+	return a.deBAMLOutputSchema
+}
 
 // fakeRuntime is the per-test stand-in for the dynamic BAML runtime.
 // Tests populate streamingImpl / parseImpl to control the produced
@@ -215,6 +225,7 @@ func TestNewAppliesOptions(t *testing.T) {
 	c := newClient(t, rt,
 		WithUseBuildRequest(true),
 		WithDisableCallBuildRequest(true),
+		WithDeBAML(true),
 		WithLogger(logger),
 		WithMetricsRegistry(metrics),
 		WithBaseURLRewrites(rewrites),
@@ -240,6 +251,12 @@ func TestNewAppliesOptions(t *testing.T) {
 	}
 	if got := captured.BuildRequestConfig(); got.UseBuildRequest != true || got.DisableCallBuildRequest != true {
 		t.Errorf("BuildRequestConfig = %#v, want both flags true", got)
+	}
+	if !captured.DeBAMLConfig().Enabled {
+		t.Errorf("DeBAMLConfig = %#v, want Enabled=true (WithDeBAML wiring)", captured.DeBAMLConfig())
+	}
+	if s := captured.DeBAMLOutputSchema(); s == nil || !s.Properties.Has("answer") {
+		t.Errorf("carried output schema not installed on the adapter: %#v", s)
 	}
 	if captured.HTTPClient() == nil {
 		t.Error("expected HTTPClient to be installed on the adapter")
@@ -920,11 +937,11 @@ func TestBackendOptions_ConflictingCombinations(t *testing.T) {
 	fastOpts := llmhttp.FastHTTPClientOptions{MaxConns: 64}
 
 	cases := []struct {
-		name       string
-		opts       []Option
-		mustNameA  string
-		mustNameB  string
-		mustNameC  string // optional
+		name        string
+		opts        []Option
+		mustNameA   string
+		mustNameB   string
+		mustNameC   string // optional
 		invalidEnum bool
 	}{
 		{

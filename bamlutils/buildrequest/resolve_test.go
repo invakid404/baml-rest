@@ -52,7 +52,11 @@ func (m *mockAdapter) OriginalClientRegistry() *bamlutils.ClientRegistry {
 func (m *mockAdapter) SetRoundRobinAdvancer(a bamlutils.RoundRobinAdvancer) {
 	m.roundRobinAdvancer = a
 }
-func (m *mockAdapter) RoundRobinAdvancer() bamlutils.RoundRobinAdvancer { return m.roundRobinAdvancer }
+func (m *mockAdapter) RoundRobinAdvancer() bamlutils.RoundRobinAdvancer     { return m.roundRobinAdvancer }
+func (m *mockAdapter) SetDeBAMLConfig(bamlutils.DeBAMLConfig)               {}
+func (m *mockAdapter) DeBAMLConfig() bamlutils.DeBAMLConfig                 { return bamlutils.DeBAMLConfig{} }
+func (m *mockAdapter) SetDeBAMLOutputSchema(*bamlutils.DynamicOutputSchema) {}
+func (m *mockAdapter) DeBAMLOutputSchema() *bamlutils.DynamicOutputSchema   { return nil }
 
 // ============================================================================
 // ResolveProvider tests

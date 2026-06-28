@@ -741,6 +741,10 @@ func (a *fakeAdapter) BuildRequestConfig() bamlutils.BuildRequestConfig {
 }
 func (a *fakeAdapter) SetRoundRobinAdvancer(bamlutils.RoundRobinAdvancer)   {}
 func (a *fakeAdapter) RoundRobinAdvancer() bamlutils.RoundRobinAdvancer     { return nil }
+func (a *fakeAdapter) SetDeBAMLConfig(bamlutils.DeBAMLConfig)               {}
+func (a *fakeAdapter) DeBAMLConfig() bamlutils.DeBAMLConfig                 { return bamlutils.DeBAMLConfig{} }
+func (a *fakeAdapter) SetDeBAMLOutputSchema(*bamlutils.DynamicOutputSchema) {}
+func (a *fakeAdapter) DeBAMLOutputSchema() *bamlutils.DynamicOutputSchema   { return nil }
 
 // TestPoolLifecycle drives the sync cell table.
 func TestPoolLifecycle(t *testing.T) {

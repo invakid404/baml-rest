@@ -183,6 +183,19 @@ type Options struct {
 	// observations to a running test.
 	EmitPoolAuditHooks bool
 
+	// DeBAMLDynamicMethod names the BAML method whose dynamic
+	// BuildRequest closures emit the native ctx.output_format
+	// pre-substitution call (maybeApplyDeBAMLOutputFormat on the
+	// converted message slice, gated at runtime on the de-BAML flag).
+	// Empty (default) emits nothing, so generic/customer adapters never
+	// depend on the baml-rest dynamic helper. baml-rest's dynclient
+	// genadapter sets it to bamlutils.DynamicMethodName
+	// ("Baml_Rest_Dynamic"); the helper lives in a hand-written file in
+	// the dynclient generated package. Only the streaming + non-streaming
+	// BuildRequest closures are touched — the legacy CallStream path is
+	// intentionally left BAML-as-today (route coupling tracked in #537).
+	DeBAMLDynamicMethod string
+
 	// Test-only regression seeds — DO NOT use in production codegen.
 	// Each seed reintroduces one bug class the slice-pool lifecycle
 	// harness is designed to catch. The harness flips them one at a

@@ -7,8 +7,8 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/invakid404/baml-rest/worker"
 	"github.com/invakid404/baml-rest/pool"
+	"github.com/invakid404/baml-rest/worker"
 	"github.com/invakid404/baml-rest/workerplugin"
 )
 
@@ -61,6 +61,7 @@ func configureWorkerMode(logger zerolog.Logger, cfg *pool.Config, runtimeCfg wor
 			ClientDefaults:  clientDefaults,
 			SharedState:     hook,
 			BuildRequest:    runtimeCfg.BuildRequest,
+			DeBAML:          runtimeCfg.DeBAML,
 			BaseURLRewrites: runtimeCfg.BaseURLRewrites,
 			HTTPClient:      runtimeCfg.HTTPClient,
 		})
