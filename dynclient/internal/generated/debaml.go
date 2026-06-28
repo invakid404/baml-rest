@@ -37,69 +37,84 @@ import (
 // same token so string-content messages match BAML's behaviour.
 const outputFormatPlaceholder = "{output_format}"
 
-// maybeApplyDeBAMLOutputFormat rewrites the output-format insertion
-// markers in msgs into the natively-rendered output-format block, in
-// place, when the de-BAML flag is on. It is a no-op when the flag is
-// off, when no schema was carried, or when native lowering/rendering
-// fails (in which case the original markers survive and BAML renders
-// ctx.output_format as today).
+// maybeApplyDeBAMLOutputFormat returns the message slice the dynamic
+// BuildRequest closures should hand to BAML's Request/StreamRequest. When
+// the de-BAML flag is on and the carried schema renders, it returns a
+// COPY of msgs with the output-format markers replaced by the natively-
+// rendered block; otherwise it returns msgs unchanged.
 //
-// msgs is the converted []types.Baml_Rest_Message the generated dynamic
-// BuildRequest closures are about to hand to BAML's BuildRequest. The
-// closures share this slice, so the in-place rewrite is visible to every
-// build attempt. Only the output_format markers change; roles, media
-// parts, cache-control metadata, and all other content are untouched.
-func maybeApplyDeBAMLOutputFormat(adapter bamlutils.Adapter, msgs []types.Baml_Rest_Message) {
+// It NEVER mutates the input slice or its backing parts/content. The
+// caller keeps the original slice for the legacy fallback children
+// (legacyStreamChildFn / legacyCallChildFn), which must stay BAML-as-
+// today — the native seam lives on the BuildRequest route only (route
+// coupling tracked in #537). Returning the input unchanged when nothing
+// is rewritten avoids any allocation on the flag-off / no-schema / render-
+// error paths.
+//
+// Fallback is render-first / return-after: a genuine native lowering or
+// rendering error returns the original msgs so BAML renders
+// ctx.output_format as today.
+func maybeApplyDeBAMLOutputFormat(adapter bamlutils.Adapter, msgs []types.Baml_Rest_Message) []types.Baml_Rest_Message {
 	if !adapter.DeBAMLConfig().Enabled {
-		return
+		return msgs
 	}
 	outputSchema := adapter.DeBAMLOutputSchema()
 	if outputSchema == nil {
 		// No schema carried (e.g. a caller that bypassed
 		// DynamicInput.ToWorkerInput). Leave BAML to render.
-		return
+		return msgs
 	}
 
 	bundle, err := schema.FromDynamicOutputSchema(outputSchema, schema.BuildOptions{})
 	if err != nil {
 		logDeBAMLFallback(adapter, "lower dynamic output schema", err)
-		return
+		return msgs
 	}
 	// Zero-value Options == BAML RenderOptions::default, matching the
 	// dynamic template's bare `ctx.output_format` (no kwargs).
 	block, err := outputformat.Render(bundle, outputformat.Options{})
 	if err != nil {
 		logDeBAMLFallback(adapter, "render native output_format", err)
-		return
+		return msgs
 	}
 
-	// Rewrite only after a successful render so a fallback never leaves
-	// half-substituted messages.
-	applyOutputFormatBlock(msgs, block)
+	// Rewrite into a copy only after a successful render so a fallback
+	// never leaves half-substituted messages and the original slice the
+	// legacy children share is never touched.
+	return rewriteOutputFormat(msgs, block)
 }
 
-// applyOutputFormatBlock substitutes the rendered block for every
-// output-format marker in msgs, mirroring the two insertion forms the
-// dynamic BAML template supports:
+// rewriteOutputFormat returns a copy of msgs with every output-format
+// marker replaced by block, mirroring the two insertion forms the dynamic
+// BAML template supports:
 //
 //   - a structured output_format content part becomes a plain text part
 //     carrying the block (BAML then renders {{ p.text }} instead of
 //     {{ ctx.output_format }});
-//   - a literal "{output_format}" token inside string content is
-//     replaced by the block (BAML's own replace() over the rewritten
-//     content is then a no-op).
+//   - a literal "{output_format}" token inside string content is replaced
+//     by the block (BAML's own replace() over the rewritten content is
+//     then a no-op).
 //
 // Every occurrence is replaced — multiple parts, multiple messages, and
 // multiple placeholders within one string all match — because BAML's
-// template renders ctx.output_format at each occurrence.
-func applyOutputFormatBlock(msgs []types.Baml_Rest_Message, block string) {
-	for i := range msgs {
-		m := &msgs[i]
+// template renders ctx.output_format at each occurrence. The input slice
+// and its backing parts/content are never mutated: only-touched messages
+// get a fresh parts slice / content pointer in the returned copy, while
+// untouched messages share the original (read-only) pointers.
+func rewriteOutputFormat(msgs []types.Baml_Rest_Message, block string) []types.Baml_Rest_Message {
+	out := make([]types.Baml_Rest_Message, len(msgs))
+	copy(out, msgs)
+	for i := range out {
+		m := &out[i]
 		switch {
 		case m.Parts != nil:
-			parts := *m.Parts
-			for j := range parts {
-				p := &parts[j]
+			if !hasOutputFormatPart(*m.Parts) {
+				continue
+			}
+			newParts := make([]types.Baml_Rest_ContentPart, len(*m.Parts))
+			copy(newParts, *m.Parts)
+			for j := range newParts {
+				p := &newParts[j]
 				if p.Output_format != nil && *p.Output_format {
 					// Distinct backing string per part so the *string
 					// pointers never alias.
@@ -108,6 +123,7 @@ func applyOutputFormatBlock(msgs []types.Baml_Rest_Message, block string) {
 					p.Output_format = nil
 				}
 			}
+			m.Parts = &newParts
 		case m.Content != nil:
 			if strings.Contains(*m.Content, outputFormatPlaceholder) {
 				replaced := strings.ReplaceAll(*m.Content, outputFormatPlaceholder, block)
@@ -115,6 +131,17 @@ func applyOutputFormatBlock(msgs []types.Baml_Rest_Message, block string) {
 			}
 		}
 	}
+	return out
+}
+
+// hasOutputFormatPart reports whether any part is an output_format marker.
+func hasOutputFormatPart(parts []types.Baml_Rest_ContentPart) bool {
+	for i := range parts {
+		if parts[i].Output_format != nil && *parts[i].Output_format {
+			return true
+		}
+	}
+	return false
 }
 
 // logDeBAMLFallback records a native-render fallback so the BAML-as-today

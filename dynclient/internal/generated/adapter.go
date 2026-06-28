@@ -604,13 +604,13 @@ func bamlRestDynamicBuildRequest(adapter bamlutils.Adapter, rawInput any, out ch
 		}
 		__struct_messages[__i] = __converted
 	}
-	maybeApplyDeBAMLOutputFormat(adapter, __struct_messages)
+	__debaml_messages := maybeApplyDeBAMLOutputFormat(adapter, __struct_messages)
 	buildRequestFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 		callOpts := options
 		if clientOverride != "" {
 			callOpts = append(slices.Clone(options), bamlclient.WithClient(clientOverride))
 		}
-		httpReq, err := bamlclient.StreamRequest.Baml_Rest_Dynamic(ctx, __struct_messages, callOpts...)
+		httpReq, err := bamlclient.StreamRequest.Baml_Rest_Dynamic(ctx, __debaml_messages, callOpts...)
 		if err != nil {
 			return nil, err
 		}
@@ -647,7 +647,7 @@ func bamlRestDynamicBuildRequest(adapter bamlutils.Adapter, rawInput any, out ch
 		if clientOverride != "" {
 			callOpts = append(slices.Clone(options), bamlclient.WithClient(clientOverride))
 		}
-		httpReq, err := bamlclient.Request.Baml_Rest_Dynamic(ctx, __struct_messages, callOpts...)
+		httpReq, err := bamlclient.Request.Baml_Rest_Dynamic(ctx, __debaml_messages, callOpts...)
 		if err != nil {
 			return nil, err
 		}
@@ -846,13 +846,13 @@ func bamlRestDynamicBuildCallRequest(adapter bamlutils.Adapter, rawInput any, ou
 		}
 		__struct_messages[__i] = __converted
 	}
-	maybeApplyDeBAMLOutputFormat(adapter, __struct_messages)
+	__debaml_messages := maybeApplyDeBAMLOutputFormat(adapter, __struct_messages)
 	buildRequestFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
 		callOpts := options
 		if clientOverride != "" {
 			callOpts = append(slices.Clone(options), bamlclient.WithClient(clientOverride))
 		}
-		httpReq, err := bamlclient.Request.Baml_Rest_Dynamic(ctx, __struct_messages, callOpts...)
+		httpReq, err := bamlclient.Request.Baml_Rest_Dynamic(ctx, __debaml_messages, callOpts...)
 		if err != nil {
 			return nil, err
 		}

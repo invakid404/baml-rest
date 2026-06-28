@@ -42,16 +42,28 @@ func newTestAdapter(enabled bool, s *bamlutils.DynamicOutputSchema) bamlutils.Ad
 	return a
 }
 
-// TestApplyOutputFormatBlock pins the pure rewrite: output_format parts
-// become plain text parts carrying the block, literal {output_format}
-// tokens in string content are replaced, and every other part / message
-// is left untouched.
-func TestApplyOutputFormatBlock(t *testing.T) {
+// assertMarkerIntact fails if the first message's first part is no longer
+// an untouched output_format marker.
+func assertMarkerIntact(t *testing.T, msgs []types.Baml_Rest_Message, ctx string) {
+	t.Helper()
+	if p := (*msgs[0].Parts)[0]; p.Text != nil || p.Output_format == nil || !*p.Output_format {
+		t.Errorf("%s: marker mutated: text=%v of=%v", ctx, p.Text, p.Output_format)
+	}
+}
+
+// TestRewriteOutputFormat pins the pure rewrite: it returns a COPY where
+// output_format parts become plain text parts carrying the block and
+// literal {output_format} tokens in string content are replaced, while
+// the INPUT slice (and its parts/content) are never mutated — the
+// BuildRequest-only-copy contract that keeps legacy children on the
+// original (#537).
+func TestRewriteOutputFormat(t *testing.T) {
 	const block = "<<BLOCK>>"
-	imgURL := "http://x/y.png"
+	origParts := &[]types.Baml_Rest_ContentPart{{Output_format: bp(true)}}
+	origContent := "before {output_format} after {output_format} end"
 	msgs := []types.Baml_Rest_Message{
-		{Role: "system", Parts: &[]types.Baml_Rest_ContentPart{{Output_format: bp(true)}}},
-		{Role: "user", Content: sp("before {output_format} after {output_format} end")},
+		{Role: "system", Parts: origParts},
+		{Role: "user", Content: sp(origContent)},
 		{Role: "user", Parts: &[]types.Baml_Rest_ContentPart{
 			{Text: sp("keep me")},
 			{Output_format: bp(true)},
@@ -59,35 +71,32 @@ func TestApplyOutputFormatBlock(t *testing.T) {
 		// A part whose output_format is explicitly false must be left alone.
 		{Role: "user", Parts: &[]types.Baml_Rest_ContentPart{{Output_format: bp(false)}}},
 	}
-	_ = imgURL
 
-	applyOutputFormatBlock(msgs, block)
+	out := rewriteOutputFormat(msgs, block)
 
-	// msg0: output_format part rewritten to text.
-	p0 := (*msgs[0].Parts)[0]
-	if p0.Output_format != nil {
-		t.Errorf("msg0: Output_format not cleared: %v", *p0.Output_format)
+	// --- input must be completely untouched ---
+	if msgs[0].Parts != origParts || (*origParts)[0].Output_format == nil || !*(*origParts)[0].Output_format || (*origParts)[0].Text != nil {
+		t.Errorf("input msg0 was mutated: %#v", (*msgs[0].Parts)[0])
 	}
-	if p0.Text == nil || *p0.Text != block {
-		t.Errorf("msg0: Text = %v, want %q", p0.Text, block)
+	if msgs[1].Content == nil || *msgs[1].Content != origContent {
+		t.Errorf("input msg1 content was mutated: %v", msgs[1].Content)
 	}
 
-	// msg1: both placeholders replaced.
-	if msgs[1].Content == nil || *msgs[1].Content != "before "+block+" after "+block+" end" {
-		t.Errorf("msg1: Content = %v", msgs[1].Content)
+	// --- copy must be rewritten ---
+	if p := (*out[0].Parts)[0]; p.Output_format != nil || p.Text == nil || *p.Text != block {
+		t.Errorf("out msg0: part not rewritten: of=%v text=%v", p.Output_format, p.Text)
 	}
-
-	// msg2: text part untouched, output_format part rewritten.
-	if got := (*msgs[2].Parts)[0]; got.Text == nil || *got.Text != "keep me" {
-		t.Errorf("msg2 part0 mutated: %v", got.Text)
+	if out[1].Content == nil || *out[1].Content != "before "+block+" after "+block+" end" {
+		t.Errorf("out msg1: placeholders not replaced: %v", out[1].Content)
 	}
-	if got := (*msgs[2].Parts)[1]; got.Output_format != nil || got.Text == nil || *got.Text != block {
-		t.Errorf("msg2 part1 not rewritten: of=%v text=%v", got.Output_format, got.Text)
+	if got := (*out[2].Parts)[0]; got.Text == nil || *got.Text != "keep me" {
+		t.Errorf("out msg2 part0 changed: %v", got.Text)
 	}
-
-	// msg3: output_format=false is not a marker — untouched.
-	if got := (*msgs[3].Parts)[0]; got.Text != nil || got.Output_format == nil || *got.Output_format {
-		t.Errorf("msg3 part0 should be untouched: %v / %v", got.Text, got.Output_format)
+	if got := (*out[2].Parts)[1]; got.Output_format != nil || got.Text == nil || *got.Text != block {
+		t.Errorf("out msg2 part1 not rewritten: of=%v text=%v", got.Output_format, got.Text)
+	}
+	if got := (*out[3].Parts)[0]; got.Text != nil || got.Output_format == nil || *got.Output_format {
+		t.Errorf("out msg3 part0 should be untouched (of=false is not a marker): %v / %v", got.Text, got.Output_format)
 	}
 }
 
@@ -95,20 +104,18 @@ func TestMaybeApplyDeBAMLOutputFormat_FlagOff(t *testing.T) {
 	msgs := []types.Baml_Rest_Message{
 		{Role: "system", Parts: &[]types.Baml_Rest_ContentPart{{Output_format: bp(true)}}},
 	}
-	maybeApplyDeBAMLOutputFormat(newTestAdapter(false, simpleSchema()), msgs)
-	if p := (*msgs[0].Parts)[0]; p.Text != nil || p.Output_format == nil || !*p.Output_format {
-		t.Errorf("flag off must leave the marker untouched: text=%v of=%v", p.Text, p.Output_format)
-	}
+	out := maybeApplyDeBAMLOutputFormat(newTestAdapter(false, simpleSchema()), msgs)
+	assertMarkerIntact(t, out, "flag off (returned)")
+	assertMarkerIntact(t, msgs, "flag off (input)")
 }
 
 func TestMaybeApplyDeBAMLOutputFormat_NilSchema(t *testing.T) {
 	msgs := []types.Baml_Rest_Message{
 		{Role: "system", Parts: &[]types.Baml_Rest_ContentPart{{Output_format: bp(true)}}},
 	}
-	maybeApplyDeBAMLOutputFormat(newTestAdapter(true, nil), msgs)
-	if p := (*msgs[0].Parts)[0]; p.Text != nil || p.Output_format == nil || !*p.Output_format {
-		t.Errorf("nil schema must leave the marker untouched: text=%v of=%v", p.Text, p.Output_format)
-	}
+	out := maybeApplyDeBAMLOutputFormat(newTestAdapter(true, nil), msgs)
+	assertMarkerIntact(t, out, "nil schema (returned)")
+	assertMarkerIntact(t, msgs, "nil schema (input)")
 }
 
 func TestMaybeApplyDeBAMLOutputFormat_Enabled(t *testing.T) {
@@ -117,19 +124,24 @@ func TestMaybeApplyDeBAMLOutputFormat_Enabled(t *testing.T) {
 		{Role: "system", Parts: &[]types.Baml_Rest_ContentPart{{Output_format: bp(true)}}},
 		{Role: "user", Content: sp("see {output_format} here")},
 	}
-	maybeApplyDeBAMLOutputFormat(newTestAdapter(true, simpleSchema()), msgs)
+	out := maybeApplyDeBAMLOutputFormat(newTestAdapter(true, simpleSchema()), msgs)
 
-	if p := (*msgs[0].Parts)[0]; p.Output_format != nil || p.Text == nil || *p.Text != want {
+	if p := (*out[0].Parts)[0]; p.Output_format != nil || p.Text == nil || *p.Text != want {
 		t.Errorf("enabled: part not rewritten to rendered block:\n got=%v\nwant=%q", p.Text, want)
 	}
-	if msgs[1].Content == nil || *msgs[1].Content != "see "+want+" here" {
-		t.Errorf("enabled: string placeholder not substituted: %v", msgs[1].Content)
+	if out[1].Content == nil || *out[1].Content != "see "+want+" here" {
+		t.Errorf("enabled: string placeholder not substituted: %v", out[1].Content)
+	}
+	// The input (shared with legacy children) must remain untouched.
+	assertMarkerIntact(t, msgs, "enabled (input)")
+	if msgs[1].Content == nil || *msgs[1].Content != "see {output_format} here" {
+		t.Errorf("enabled: input content mutated: %v", msgs[1].Content)
 	}
 }
 
 // TestMaybeApplyDeBAMLOutputFormat_RenderErrorFallback covers the
 // render-first / rewrite-after contract: a schema that fails native
-// lowering (unresolved reference) leaves the messages untouched so BAML
+// lowering (unresolved reference) returns the messages unchanged so BAML
 // renders ctx.output_format as today.
 func TestMaybeApplyDeBAMLOutputFormat_RenderErrorFallback(t *testing.T) {
 	bad := &bamlutils.DynamicOutputSchema{
@@ -145,8 +157,7 @@ func TestMaybeApplyDeBAMLOutputFormat_RenderErrorFallback(t *testing.T) {
 	msgs := []types.Baml_Rest_Message{
 		{Role: "system", Parts: &[]types.Baml_Rest_ContentPart{{Output_format: bp(true)}}},
 	}
-	maybeApplyDeBAMLOutputFormat(newTestAdapter(true, bad), msgs)
-	if p := (*msgs[0].Parts)[0]; p.Text != nil || p.Output_format == nil || !*p.Output_format {
-		t.Errorf("render error must fall back (marker untouched): text=%v of=%v", p.Text, p.Output_format)
-	}
+	out := maybeApplyDeBAMLOutputFormat(newTestAdapter(true, bad), msgs)
+	assertMarkerIntact(t, out, "render error (returned)")
+	assertMarkerIntact(t, msgs, "render error (input)")
 }

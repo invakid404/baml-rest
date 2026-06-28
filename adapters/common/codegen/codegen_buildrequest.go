@@ -260,33 +260,62 @@ func buildLegacyChildCallParams(args []string, argCallParam func(string) jen.Cod
 	return out
 }
 
+// isDeBAMLMethod reports whether this method is the configured dynamic
+// method that the native ctx.output_format pre-substitution wires into.
+// Returns false (so nothing is emitted) when DeBAMLDynamicMethod is unset
+// — keeping generic and customer adapters free of any dependency on the
+// baml-rest dynamic helper.
+func (me *methodEmitter) isDeBAMLMethod() bool {
+	return me.g.opts.DeBAMLDynamicMethod != "" &&
+		me.methodName == me.g.opts.DeBAMLDynamicMethod &&
+		len(me.structMediaParams) > 0
+}
+
+// deBAMLConvertedVar is the converted message slice (__struct_<param>) the
+// legacy fallback children keep using unchanged.
+func (me *methodEmitter) deBAMLConvertedVar() string {
+	return "__struct_" + me.structMediaParams[0].paramName
+}
+
+// deBAMLMessagesVar is the BuildRequest-only slice (__debaml_<param>) the
+// Request/StreamRequest/Bedrock closures use: maybeApplyDeBAMLOutputFormat
+// returns a rewritten COPY here, never mutating the converted slice the
+// legacy children share.
+func (me *methodEmitter) deBAMLMessagesVar() string {
+	return "__debaml_" + me.structMediaParams[0].paramName
+}
+
 // deBAMLOutputFormatStmts returns the native ctx.output_format
-// pre-substitution call to splice in after the BuildRequest preamble,
+// pre-substitution binding to splice in after the BuildRequest preamble,
 // or nil when this method is not the configured dynamic method. The
-// emitted statement hands the converted message slice
-// (__struct_<param>) and the adapter to maybeApplyDeBAMLOutputFormat,
-// a hand-written helper in the dynclient generated package. That helper
-// no-ops unless adapter.DeBAMLConfig().Enabled, and on a genuine
-// lowering/rendering error leaves the messages untouched so BAML
-// renders ctx.output_format as today (render-first, rewrite-after).
-//
-// Emitting nothing when DeBAMLDynamicMethod is unset keeps generic and
-// customer adapters free of any dependency on the baml-rest dynamic
-// helper.
+// emitted statement binds __debaml_<param> to a (possibly rewritten) copy
+// of the converted slice via maybeApplyDeBAMLOutputFormat, a hand-written
+// helper in the dynclient generated package. That helper returns the
+// input unchanged unless adapter.DeBAMLConfig().Enabled, and on a genuine
+// lowering/rendering error (render-first, rewrite-after). Only the
+// BuildRequest closures consume __debaml_<param>; the legacy children
+// keep the original __struct_<param>, so the native seam stays on the
+// BuildRequest route (route coupling tracked in #537).
 func (me *methodEmitter) deBAMLOutputFormatStmts() []jen.Code {
-	want := me.g.opts.DeBAMLDynamicMethod
-	if want == "" || me.methodName != want {
+	if !me.isDeBAMLMethod() {
 		return nil
 	}
-	// The dynamic function's message slice is its sole struct-with-media
-	// param; its converted slice is __struct_<paramName>.
-	if len(me.structMediaParams) == 0 {
-		return nil
-	}
-	convertedVar := "__struct_" + me.structMediaParams[0].paramName
 	return []jen.Code{
-		jen.Id("maybeApplyDeBAMLOutputFormat").Call(jen.Id("adapter"), jen.Id(convertedVar)),
+		jen.Id(me.deBAMLMessagesVar()).Op(":=").
+			Id("maybeApplyDeBAMLOutputFormat").Call(jen.Id("adapter"), jen.Id(me.deBAMLConvertedVar())),
 	}
+}
+
+// buildRequestArgCallParam resolves a BAML call argument for the
+// Request/StreamRequest/Bedrock closures. For the de-BAML dynamic
+// method's message param it routes to the BuildRequest-only rewritten
+// copy (__debaml_<param>); every other arg (and every legacy-child call
+// site) resolves through the normal argCallParam.
+func (me *methodEmitter) buildRequestArgCallParam(arg string) jen.Code {
+	if me.isDeBAMLMethod() && arg == me.structMediaParams[0].paramName {
+		return jen.Id(me.deBAMLMessagesVar())
+	}
+	return me.argCallParam(arg)
 }
 
 // emitBuildRequest emits the streaming BuildRequest impl for this
@@ -312,11 +341,13 @@ func (me *methodEmitter) emitBuildRequest() {
 	streamResultInterface := jen.Qual(g.pkgs.InterfacesPkg, "StreamResult")
 
 	// Build the StreamRequest call params using callOpts (which may
-	// include a WithClient override for fallback chains).
+	// include a WithClient override for fallback chains). For the de-BAML
+	// dynamic method the message arg routes to the BuildRequest-only
+	// rewritten copy; legacy children below keep the original.
 	var buildRequestCallParams []jen.Code
 	buildRequestCallParams = append(buildRequestCallParams, jen.Id("ctx"))
 	for _, arg := range me.args {
-		buildRequestCallParams = append(buildRequestCallParams, me.argCallParam(arg))
+		buildRequestCallParams = append(buildRequestCallParams, me.buildRequestArgCallParam(arg))
 	}
 	buildRequestCallParams = append(buildRequestCallParams, jen.Id("callOpts").Op("..."))
 
@@ -328,7 +359,7 @@ func (me *methodEmitter) emitBuildRequest() {
 	var bedrockStreamCallParams []jen.Code
 	bedrockStreamCallParams = append(bedrockStreamCallParams, jen.Id("ctx"))
 	for _, arg := range me.args {
-		bedrockStreamCallParams = append(bedrockStreamCallParams, me.argCallParam(arg))
+		bedrockStreamCallParams = append(bedrockStreamCallParams, me.buildRequestArgCallParam(arg))
 	}
 	bedrockStreamCallParams = append(bedrockStreamCallParams, jen.Id("callOpts").Op("..."))
 
@@ -723,11 +754,13 @@ func (me *methodEmitter) emitBuildCallRequest() {
 	streamResultInterface := jen.Qual(g.pkgs.InterfacesPkg, "StreamResult")
 
 	// Build the Request call params using callOpts (which may
-	// include a WithClient override for fallback chains).
+	// include a WithClient override for fallback chains). For the de-BAML
+	// dynamic method the message arg routes to the BuildRequest-only
+	// rewritten copy; the legacy child below keeps the original.
 	var callRequestCallParams []jen.Code
 	callRequestCallParams = append(callRequestCallParams, jen.Id("ctx"))
 	for _, arg := range me.args {
-		callRequestCallParams = append(callRequestCallParams, me.argCallParam(arg))
+		callRequestCallParams = append(callRequestCallParams, me.buildRequestArgCallParam(arg))
 	}
 	callRequestCallParams = append(callRequestCallParams, jen.Id("callOpts").Op("..."))
 
