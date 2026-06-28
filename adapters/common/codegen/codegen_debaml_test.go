@@ -1,11 +1,80 @@
 package codegen
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestValidateDeBAMLEmission pins the guard logic: de-BAML configured AND
+// emitted is the happy path (no error); configured-but-not-emitted is the
+// silent-inert case that must error; not-configured is always fine.
+func TestValidateDeBAMLEmission(t *testing.T) {
+	cases := []struct {
+		name    string
+		method  string
+		emitted bool
+		wantErr bool
+	}{
+		{"not configured, not emitted", "", false, false},
+		{"not configured, emitted (impossible but safe)", "", true, false},
+		{"configured and emitted (happy path)", "Baml_Rest_Dynamic", true, false},
+		{"configured but not emitted (silent-inert)", "Baml_Rest_Dynamic", false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateDeBAMLEmission(tc.method, tc.emitted)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for method=%q emitted=%v, got nil", tc.method, tc.emitted)
+				}
+				if !strings.Contains(err.Error(), tc.method) {
+					t.Errorf("error should name the configured method %q: %v", tc.method, err)
+				}
+			} else if err != nil {
+				t.Errorf("unexpected error for method=%q emitted=%v: %v", tc.method, tc.emitted, err)
+			}
+		})
+	}
+}
+
+// TestGenerate_FailsWhenDeBAMLConfiguredButNotEmitted pins the generate()
+// integration: a configured DeBAMLDynamicMethod that matches no emitted
+// method (the stub root introspection emits no methods, so nothing sets
+// emittedDeBAMLCall) must panic rather than silently shipping a
+// de-BAML-inert build. This also verifies the emittedDeBAMLCall flag is
+// genuinely threaded from emission into the guard: if it weren't, every
+// build would trip this — but the dynclient genadapter (a real matching
+// method) generates cleanly, proving the other direction.
+func TestGenerate_FailsWhenDeBAMLConfiguredButNotEmitted(t *testing.T) {
+	pkgs := DefaultPackageConfig()
+	// Redirect output into a temp dir so a regression that lets generation
+	// reach Save can't pollute the codegen package directory.
+	pkgs.OutputPath = filepath.Join(t.TempDir(), "adapter.go")
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic: DeBAMLDynamicMethod configured but no closure emitted the call")
+		}
+		msg := fmt.Sprint(r)
+		if !strings.Contains(msg, "no BuildRequest closure emitted") {
+			t.Errorf("panic message missing the de-BAML emission guard text: %q", msg)
+		}
+		if !strings.Contains(msg, "Baml_Rest_Dynamic_NoSuchMethod") {
+			t.Errorf("panic message should name the configured method: %q", msg)
+		}
+	}()
+
+	generate(Options{
+		SelfPkg:             "github.com/invakid404/baml-rest/adapters/test_debaml_guard",
+		SupportsWithClient:  false, // stub introspection has nil Request/StreamRequest
+		DeBAMLDynamicMethod: "Baml_Rest_Dynamic_NoSuchMethod",
+		Packages:            pkgs,
+	})
+}
 
 // TestMaybeWriteDeBAMLHelper_WritesWhenEmitted pins that the helper is
 // written next to adapter.go (package + import paths parameterized) when a
