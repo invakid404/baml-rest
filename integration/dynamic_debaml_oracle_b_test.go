@@ -184,15 +184,27 @@ func TestDeBAMLOracleB_MetadataDivergence(t *testing.T) {
 
 	// Class aliases are NOT a divergence: BAML static ctx.output_format
 	// never renders them (canonical class names only). The schema sets a
-	// class alias "PostalAddress"; it must be absent from BOTH blocks, and
-	// the canonical class name path ("addr: {") present, proving the
-	// native renderer's canonical-name behaviour is correct.
+	// class alias "PostalAddress"; it must be absent from BOTH blocks.
 	for _, tok := range []string{"PostalAddress"} {
 		if strings.Contains(onBlock, tok) {
 			t.Errorf("flag-ON block unexpectedly contains class alias %q (class aliases are not prompt-visible)\n--- ON ---\n%s", tok, onBlock)
 		}
 		if strings.Contains(offBlock, tok) {
 			t.Errorf("flag-OFF block unexpectedly contains class alias %q\n--- OFF ---\n%s", tok, offBlock)
+		}
+	}
+
+	// ...and the canonical class reference IS rendered in BOTH blocks, so
+	// the absence check above can't pass vacuously by the whole Address
+	// reference being dropped or rewritten. The "addr" field renders the
+	// Address class inline ("addr: {"), and "city" is an un-aliased field
+	// of Address, so both are canonical tokens present under ON and OFF.
+	for _, tok := range []string{"addr: {", "city:"} {
+		if !strings.Contains(onBlock, tok) {
+			t.Errorf("flag-ON block missing canonical class token %q (class reference dropped/rewritten?)\n--- ON ---\n%s", tok, onBlock)
+		}
+		if !strings.Contains(offBlock, tok) {
+			t.Errorf("flag-OFF block missing canonical class token %q (class reference dropped/rewritten?)\n--- OFF ---\n%s", tok, offBlock)
 		}
 	}
 }
