@@ -108,46 +108,65 @@ func TestDeBAMLRest_MetadataAppearsOnProductionPath(t *testing.T) {
 
 	onBlock := restCaptureBlock(t, onClient, onMock, env.MockLLMInternal, onScenario)
 
-	// --- flag-OFF: shared TestEnv (no BAML_REST_USE_DEBAML) ---
-	offScenario := "test-debaml-rest-off"
-	registerDeBAMLRestScenario(t, MockClient, offScenario)
-	offBlock := restCaptureBlock(t, BAMLClient, MockClient, TestEnv.MockLLMInternal, offScenario)
-
-	// ON must carry the native metadata BAML-dynamic drops; OFF must not.
-	for _, tok := range []struct{ what, token string }{
+	// flag-ON must carry the native metadata BAML-dynamic drops, plus the
+	// canonical class reference (so the metadata check can't be satisfied
+	// vacuously by the Address ref being dropped) and never the class
+	// alias. These hold regardless of CI leg: the dedicated ON container
+	// always runs BuildRequest + de-BAML, and BAML-dynamic cannot produce
+	// this metadata on any route — so their presence alone proves de-BAML
+	// is live on the REST production path.
+	nativeMetadata := []struct{ what, token string }{
 		{"field description", "The headline."},
 		{"field alias", "headline:"},
 		{"class description", "A postal address."},
 		{"field-of-class alias", "line1:"},
 		{"enum alias (hoisted header)", "State\n----"},
-	} {
+	}
+	for _, tok := range nativeMetadata {
 		if !strings.Contains(onBlock, tok.token) {
 			t.Errorf("flag-ON REST block missing %s %q — de-BAML not active on the production path\n--- ON ---\n%s", tok.what, tok.token, onBlock)
 		}
-		if strings.Contains(offBlock, tok.token) {
-			t.Errorf("flag-OFF REST block unexpectedly contains %s %q\n--- OFF ---\n%s", tok.what, tok.token, offBlock)
-		}
 	}
-
-	if onBlock == offBlock {
-		t.Fatalf("flag-ON and flag-OFF REST blocks were identical for a metadata-bearing schema:\n%q", onBlock)
-	}
-
-	// Canonical class reference rendered in BOTH (so the absence checks
-	// above can't pass by the Address reference being dropped), and the
-	// class alias never appears (canonical-name behaviour).
 	for _, tok := range []string{"addr: {", "city:"} {
 		if !strings.Contains(onBlock, tok) {
 			t.Errorf("flag-ON REST block missing canonical token %q\n--- ON ---\n%s", tok, onBlock)
 		}
+	}
+	if strings.Contains(onBlock, "PostalAddress") {
+		t.Errorf("flag-ON REST block unexpectedly contains class alias %q (canonical names only)\n--- ON ---\n%s", "PostalAddress", onBlock)
+	}
+
+	// flag-OFF differential — only run when the shared TestEnv is on the
+	// SAME BuildRequest route as the dedicated ON container, so the
+	// comparison isolates exactly BAML_REST_USE_DEBAML and never the
+	// route. On the legacy matrix leg the shared env uses a different
+	// route, so skip it there (the route-independent ON assertions above
+	// already prove de-BAML is active). The ON container forces
+	// UseBuildRequest=true; ActuallyBuildRequest() reports whether the
+	// shared env does too.
+	if !ActuallyBuildRequest() {
+		t.Log("flag-OFF differential skipped: shared TestEnv is on the legacy route this leg; ON-only assertions cover the production proof")
+		return
+	}
+	offScenario := "test-debaml-rest-off"
+	registerDeBAMLRestScenario(t, MockClient, offScenario)
+	offBlock := restCaptureBlock(t, BAMLClient, MockClient, TestEnv.MockLLMInternal, offScenario)
+
+	for _, tok := range nativeMetadata {
+		if strings.Contains(offBlock, tok.token) {
+			t.Errorf("flag-OFF REST block unexpectedly contains %s %q\n--- OFF ---\n%s", tok.what, tok.token, offBlock)
+		}
+	}
+	if onBlock == offBlock {
+		t.Fatalf("flag-ON and flag-OFF REST blocks were identical for a metadata-bearing schema:\n%q", onBlock)
+	}
+	for _, tok := range []string{"addr: {", "city:"} {
 		if !strings.Contains(offBlock, tok) {
 			t.Errorf("flag-OFF REST block missing canonical token %q\n--- OFF ---\n%s", tok, offBlock)
 		}
 	}
-	for _, block := range []struct{ name, text string }{{"ON", onBlock}, {"OFF", offBlock}} {
-		if strings.Contains(block.text, "PostalAddress") {
-			t.Errorf("%s REST block unexpectedly contains class alias %q\n%s", block.name, "PostalAddress", block.text)
-		}
+	if strings.Contains(offBlock, "PostalAddress") {
+		t.Errorf("flag-OFF REST block unexpectedly contains class alias %q\n--- OFF ---\n%s", "PostalAddress", offBlock)
 	}
 }
 

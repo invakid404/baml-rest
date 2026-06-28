@@ -168,7 +168,18 @@ func deBAMLHelperPath(adapterOutputPath string) string {
 // g.emittedDeBAMLCall). It is a no-op otherwise, so generic / customer
 // adapters that don't wire the de-BAML method carry no helper.
 func (g *generator) maybeWriteDeBAMLHelper() {
+	helperPath := deBAMLHelperPath(g.pkgs.OutputPath)
 	if !g.emittedDeBAMLCall {
+		// No de-BAML call was emitted, so remove any helper a previous
+		// generation left in this directory. Without this, disabling
+		// de-BAML (unsetting DeBAMLDynamicMethod, dropping the dynamic
+		// method) or reusing an output dir across adapter versions would
+		// leave an orphaned debaml.go behind. os.Remove is a no-op when
+		// the file is absent (the common case for every non-de-BAML
+		// generator).
+		if err := os.Remove(helperPath); err != nil && !os.IsNotExist(err) {
+			panic(fmt.Sprintf("codegen: remove stale de-BAML helper: %v", err))
+		}
 		return
 	}
 	tmpl, err := template.New("debaml").Parse(deBAMLHelperTemplate)
@@ -187,7 +198,7 @@ func (g *generator) maybeWriteDeBAMLHelper() {
 	if err != nil {
 		panic(fmt.Sprintf("codegen: gofmt de-BAML helper: %v\n%s", err, buf.String()))
 	}
-	if err := os.WriteFile(deBAMLHelperPath(g.pkgs.OutputPath), formatted, 0o644); err != nil {
+	if err := os.WriteFile(helperPath, formatted, 0o644); err != nil {
 		panic(fmt.Sprintf("codegen: write de-BAML helper: %v", err))
 	}
 }
