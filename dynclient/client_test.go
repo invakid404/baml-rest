@@ -36,6 +36,7 @@ type fakeAdapter struct {
 	buildRequestConfig     bamlutils.BuildRequestConfig
 	deBAMLConfig           bamlutils.DeBAMLConfig
 	deBAMLOutputSchema     *bamlutils.DynamicOutputSchema
+	deBAMLRenderer         bamlutils.DeBAMLRenderFunc
 
 	setBuildRequestConfigCalls int
 	setHTTPClientCalls         int
@@ -89,6 +90,8 @@ func (a *fakeAdapter) SetDeBAMLOutputSchema(s *bamlutils.DynamicOutputSchema) {
 func (a *fakeAdapter) DeBAMLOutputSchema() *bamlutils.DynamicOutputSchema {
 	return a.deBAMLOutputSchema
 }
+func (a *fakeAdapter) SetDeBAMLRenderer(fn bamlutils.DeBAMLRenderFunc) { a.deBAMLRenderer = fn }
+func (a *fakeAdapter) DeBAMLRenderer() bamlutils.DeBAMLRenderFunc      { return a.deBAMLRenderer }
 
 // fakeRuntime is the per-test stand-in for the dynamic BAML runtime.
 // Tests populate streamingImpl / parseImpl to control the produced
@@ -226,6 +229,7 @@ func TestNewAppliesOptions(t *testing.T) {
 		WithUseBuildRequest(true),
 		WithDisableCallBuildRequest(true),
 		WithDeBAML(true),
+		WithDeBAMLRenderer(func(*bamlutils.DynamicOutputSchema) (string, error) { return "block", nil }),
 		WithLogger(logger),
 		WithMetricsRegistry(metrics),
 		WithBaseURLRewrites(rewrites),
@@ -257,6 +261,9 @@ func TestNewAppliesOptions(t *testing.T) {
 	}
 	if s := captured.DeBAMLOutputSchema(); s == nil || !s.Properties.Has("answer") {
 		t.Errorf("carried output schema not installed on the adapter: %#v", s)
+	}
+	if captured.deBAMLRenderer == nil {
+		t.Error("WithDeBAMLRenderer callback not installed on the adapter")
 	}
 	if captured.HTTPClient() == nil {
 		t.Error("expected HTTPClient to be installed on the adapter")

@@ -33,6 +33,7 @@ type Option func(*config) error
 type config struct {
 	buildRequest    bamlutils.BuildRequestConfig
 	deBAML          bamlutils.DeBAMLConfig
+	deBAMLRender    bamlutils.DeBAMLRenderFunc
 	baseURLRewrites []urlrewrite.Rule
 	logger          bamlutils.Logger
 	metrics         *prometheus.Registry
@@ -90,6 +91,20 @@ func WithDisableCallBuildRequest(disabled bool) Option {
 func WithDeBAML(enabled bool) Option {
 	return func(c *config) error {
 		c.deBAML.Enabled = enabled
+		return nil
+	}
+}
+
+// WithDeBAMLRenderer injects the native ctx.output_format render callback.
+// dynclient lives in a separate Go module and cannot import baml-rest's
+// root internal/schema + outputformat packages, so a caller in the root
+// module supplies the renderer (e.g. internal/debaml.Render). Without it,
+// WithDeBAML has no renderer wired and the dynamic path stays
+// BAML-as-today. Pairs with WithDeBAML (the enable switch) and
+// WithUseBuildRequest (the native seam only exists on that route, #537).
+func WithDeBAMLRenderer(render bamlutils.DeBAMLRenderFunc) Option {
+	return func(c *config) error {
+		c.deBAMLRender = render
 		return nil
 	}
 }

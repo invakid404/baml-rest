@@ -88,6 +88,9 @@ func field(name string, t schema.Type) schema.ClassField {
 func fieldDesc(name string, t schema.Type, desc string) schema.ClassField {
 	return schema.ClassField{Name: schema.Name{Name: name}, Type: t, Description: sp(desc)}
 }
+func fieldAlias(name, alias string, t schema.Type) schema.ClassField {
+	return schema.ClassField{Name: schema.Name{Name: name, Alias: sp(alias)}, Type: t}
+}
 
 func class(name string, fields ...schema.ClassField) schema.ClassDef {
 	return schema.ClassDef{Name: schema.Name{Name: name}, Mode: schema.NonStreaming, Fields: fields}
@@ -242,6 +245,25 @@ func goldenCases() []goldenCase {
 					fieldDesc("age", pInt(), "The person's age"))},
 				nil, nil),
 			want: "Answer in JSON using this schema:\n{\n  // The person's name\n  name: string,\n  // The person's age\n  age: int,\n}",
+		},
+		{
+			// class_with_field_alias is the independent BAML-static anchor
+			// for the field-ALIAS divergence. Without it, Oracle B's
+			// field-alias claim (#536) would be circular — proven only
+			// against the native renderer. The want is derived from BAML's
+			// render_class test format (types.rs, commit
+			// e803afa246837a6bd38a15beb4aa403f7e3970e5) with the documented
+			// Name::new_with_alias / Name::rendered_name substitution
+			// (types.rs:21-29): an aliased field renders its alias in place
+			// of the canonical name (description, when present, is
+			// independent). Authored from BAML source, NOT the Go renderer.
+			name: "class_with_field_alias",
+			bundle: mkBundle(classRef("Person"), nil,
+				[]schema.ClassDef{class("Person",
+					fieldAlias("name", "full_name", pString()),
+					field("age", pInt()))},
+				nil, nil),
+			want: "Answer in JSON using this schema:\n{\n  full_name: string,\n  age: int,\n}",
 		},
 		{
 			name: "class_with_block_description",

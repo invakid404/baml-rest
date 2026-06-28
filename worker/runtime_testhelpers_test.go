@@ -58,11 +58,13 @@ type fakeAdapter struct {
 	buildRequestConfig     bamlutils.BuildRequestConfig
 	deBAMLConfig           bamlutils.DeBAMLConfig
 	deBAMLOutputSchema     *bamlutils.DynamicOutputSchema
+	deBAMLRenderer         bamlutils.DeBAMLRenderFunc
 
 	setBuildRequestConfigCalls int
 	setHTTPClientCalls         int
 	setDeBAMLConfigCalls       int
 	setDeBAMLOutputSchemaCalls int
+	setDeBAMLRendererCalls     int
 }
 
 func newFakeAdapter(ctx context.Context) *fakeAdapter {
@@ -117,6 +119,13 @@ func (a *fakeAdapter) SetDeBAMLOutputSchema(s *bamlutils.DynamicOutputSchema) {
 }
 func (a *fakeAdapter) DeBAMLOutputSchema() *bamlutils.DynamicOutputSchema {
 	return a.deBAMLOutputSchema
+}
+
+// SetDeBAMLRenderer satisfies the worker's narrow deBAMLRendererSetter
+// optional interface so configureAdapter installs the callback here.
+func (a *fakeAdapter) SetDeBAMLRenderer(fn bamlutils.DeBAMLRenderFunc) {
+	a.setDeBAMLRendererCalls++
+	a.deBAMLRenderer = fn
 }
 
 // newTestHandler constructs a Handler with a fake runtime as the

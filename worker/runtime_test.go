@@ -202,7 +202,12 @@ func TestHandlerDeBAMLConfigAndSchemaWiring(t *testing.T) {
 			},
 		},
 	}}
-	h := newTestHandler(t, Config{Runtime: rt, DeBAML: bamlutils.DeBAMLConfig{Enabled: true}})
+	renderCalls := 0
+	render := func(*bamlutils.DynamicOutputSchema) (string, error) {
+		renderCalls++
+		return "block", nil
+	}
+	h := newTestHandler(t, Config{Runtime: rt, DeBAML: bamlutils.DeBAMLConfig{Enabled: true}, DeBAMLRender: render})
 
 	body := []byte(`{"__baml_options__":{"output_schema":{"properties":{"answer":{"type":"string"}}}}}`)
 	out, err := h.CallStream(context.Background(), "x", body, bamlutils.StreamModeCall)
@@ -227,6 +232,15 @@ func TestHandlerDeBAMLConfigAndSchemaWiring(t *testing.T) {
 	schema := captured.DeBAMLOutputSchema()
 	if schema == nil || !schema.Properties.Has("answer") {
 		t.Errorf("carried output schema not installed from __baml_options__: %#v", schema)
+	}
+	if captured.setDeBAMLRendererCalls != 1 {
+		t.Errorf("SetDeBAMLRenderer called %d times, want 1", captured.setDeBAMLRendererCalls)
+	}
+	if captured.deBAMLRenderer == nil {
+		t.Fatal("render callback not installed on the adapter")
+	}
+	if _, err := captured.deBAMLRenderer(schema); err != nil || renderCalls != 1 {
+		t.Errorf("installed renderer not the one wired in: err=%v calls=%d", err, renderCalls)
 	}
 }
 

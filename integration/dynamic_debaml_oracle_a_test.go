@@ -10,6 +10,7 @@ import (
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/dynclient"
+	"github.com/invakid404/baml-rest/internal/debaml"
 )
 
 // De-BAML production wiring, GitHub #536 — Oracle A.
@@ -39,11 +40,18 @@ func debamlGate(t *testing.T) {
 }
 
 // newDeBAMLClients returns two in-process dynclients on the BuildRequest
-// route: one with de-BAML off (BAML-as-today) and one with de-BAML on.
+// route: one with de-BAML off (BAML-as-today) and one with de-BAML on. The
+// ON client is wired with the real native renderer (internal/debaml.Render)
+// via WithDeBAMLRenderer — dynclient is a separate module and cannot import
+// the renderer itself, so a root-module caller supplies it.
 func newDeBAMLClients(t *testing.T) (off, on *dynclient.Client) {
 	t.Helper()
 	off = newDynclient(t, dynclient.WithUseBuildRequest(true))
-	on = newDynclient(t, dynclient.WithUseBuildRequest(true), dynclient.WithDeBAML(true))
+	on = newDynclient(t,
+		dynclient.WithUseBuildRequest(true),
+		dynclient.WithDeBAML(true),
+		dynclient.WithDeBAMLRenderer(debaml.Render),
+	)
 	return off, on
 }
 
@@ -248,8 +256,11 @@ func TestDeBAMLOracleA_BuildRequestFlagSeparation(t *testing.T) {
 	// Both clients leave BuildRequest OFF (the dynclient default); one
 	// still asks for de-BAML. The legacy route has no native seam, so the
 	// bodies must match even though the schema carries divergent metadata.
+	// The ON client has de-BAML fully enabled AND the renderer wired, so
+	// the no-op is attributable to the route (BuildRequest off), not a
+	// missing renderer.
 	legacyOff := newDynclient(t)
-	legacyOnButNoBuildRequest := newDynclient(t, dynclient.WithDeBAML(true))
+	legacyOnButNoBuildRequest := newDynclient(t, dynclient.WithDeBAML(true), dynclient.WithDeBAMLRenderer(debaml.Render))
 
 	offBody := captureCallBody(t, ctx, legacyOff, scenarioID, dynclient.Request{
 		Messages:       []dynclient.Message{{Role: "system", PartsContent: []dynclient.ContentPart{{Type: "output_format"}}}, {Role: "user", TextContent: strPtr("Go.")}},

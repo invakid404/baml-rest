@@ -1,0 +1,5 @@
+Answer in JSON using this schema:
+{
+  full_name: string,
+  age: int,
+}

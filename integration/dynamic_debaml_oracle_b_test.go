@@ -17,26 +17,39 @@ import (
 // De-BAML production wiring, GitHub #536 — Oracle B.
 //
 // For schemas that DO carry metadata BAML's dynamic TypeBuilder drops
-// (class/field descriptions, field aliases, enum-level aliases), flag-ON
-// intentionally differs from flag-OFF: native ON renders BAML's
-// static/correct output-format semantics, which include that metadata.
+// (class descriptions, field descriptions, field aliases, enum-level
+// aliases), flag-ON intentionally differs from flag-OFF: native ON
+// renders BAML's static/correct output-format semantics, which include
+// that metadata.
+//
+// Class-level ALIASES are deliberately NOT in this divergence set: BAML's
+// static ctx.output_format does not render class aliases (class bodies,
+// refs, and hoisted-definition headers all use canonical names; only
+// fields and enums use rendered aliases). The native renderer's use of
+// canonical class names is therefore correct, and this test asserts a
+// class alias is absent from BOTH ON and OFF rather than treating it as a
+// divergence.
 //
 // The oracle for ON is BAML's STATIC render. We use the native renderer
 // (internal/schema/outputformat) as that oracle: it is pinned byte-for-
 // byte against BAML's own static render-output goldens by the
-// outputformat package's golden tests (40+ cases copied from BAML), and
-// it builds the same synthetic target class name (Baml_Rest_DynamicOutput)
-// the production dynamic path uses, so the byte comparison holds even when
-// definitions are hoisted — without needing a live static-BAML function in
-// the integration harness. The complementary differential — that ON drops
-// nothing OFF keeps and adds exactly the metadata OFF lacks — is pinned by
-// the explicit present/absent token assertions below.
+// outputformat package's golden tests, and it builds the same synthetic
+// target class name (Baml_Rest_DynamicOutput) the production dynamic path
+// uses, so the byte comparison holds even when definitions are hoisted —
+// without needing a live static-BAML function in the integration harness.
+// (The field-ALIAS divergence is independently anchored by the
+// class_field_alias / class_with_field_alias golden in the outputformat
+// corpus — a BAML-static-derived `want`, not the Go renderer's output —
+// so this oracle is not circular for it.) The complementary differential — that ON drops nothing OFF keeps
+// and adds exactly the metadata OFF lacks — is pinned by the explicit
+// present/absent token assertions below.
 
-// oracleBSchema carries every #536 divergence-set field: a field-level
-// description + alias, a class-level description + alias, and an
-// enum-level alias (with a value description so the enum hoists and its
-// rendered header — alias under ON, canonical name under OFF — is
-// observable in the bare ctx.output_format block).
+// oracleBSchema carries the #536 divergence-set fields: a field-level
+// description + alias, a class-level description, and an enum-level alias
+// (with a value description so the enum hoists and its rendered header —
+// alias under ON, canonical name under OFF — is observable in the bare
+// ctx.output_format block). It also sets a class-level alias to assert it
+// is NOT prompt-visible (canonical-name behaviour) under either flag.
 func oracleBSchema() *bamlutils.DynamicOutputSchema {
 	return &bamlutils.DynamicOutputSchema{
 		Properties: dProps(
@@ -51,7 +64,9 @@ func oracleBSchema() *bamlutils.DynamicOutputSchema {
 		Classes: dClasses(
 			dClass("Address", &bamlutils.DynamicClass{
 				Description: "A postal address.",
-				Alias:       "PostalAddress",
+				// Class alias is intentionally set but NOT a divergence:
+				// asserted absent from both ON and OFF below.
+				Alias: "PostalAddress",
 				Properties: dProps(
 					dProp("street", &bamlutils.DynamicProperty{
 						Type:        "string",
@@ -164,6 +179,20 @@ func TestDeBAMLOracleB_MetadataDivergence(t *testing.T) {
 	for _, tok := range []string{"title:", "Status\n----"} {
 		if !strings.Contains(offBlock, tok) {
 			t.Errorf("flag-OFF block missing expected canonical token %q\n--- OFF ---\n%s", tok, offBlock)
+		}
+	}
+
+	// Class aliases are NOT a divergence: BAML static ctx.output_format
+	// never renders them (canonical class names only). The schema sets a
+	// class alias "PostalAddress"; it must be absent from BOTH blocks, and
+	// the canonical class name path ("addr: {") present, proving the
+	// native renderer's canonical-name behaviour is correct.
+	for _, tok := range []string{"PostalAddress"} {
+		if strings.Contains(onBlock, tok) {
+			t.Errorf("flag-ON block unexpectedly contains class alias %q (class aliases are not prompt-visible)\n--- ON ---\n%s", tok, onBlock)
+		}
+		if strings.Contains(offBlock, tok) {
+			t.Errorf("flag-OFF block unexpectedly contains class alias %q\n--- OFF ---\n%s", tok, offBlock)
 		}
 	}
 }

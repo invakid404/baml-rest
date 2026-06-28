@@ -35,6 +35,12 @@ type workerModeRuntimeConfig struct {
 	// renderer.
 	DeBAML bamlutils.DeBAMLConfig
 
+	// DeBAMLRender is the native render callback the in-process worker
+	// installs on every adapter. Wired to internal/debaml.Render at
+	// startup (the root module owns the renderer; worker cannot import
+	// it across the module boundary).
+	DeBAMLRender bamlutils.DeBAMLRenderFunc
+
 	// BaseURLRewrites is the URL rewrite ruleset the worker applies
 	// before SetClientRegistry. Outbound HTTP rewrites go through
 	// HTTPClient's per-client rules below — populated from the same

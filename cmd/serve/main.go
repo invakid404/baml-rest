@@ -31,6 +31,7 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
 	"github.com/invakid404/baml-rest/internal/apierror"
+	"github.com/invakid404/baml-rest/internal/debaml"
 	"github.com/invakid404/baml-rest/internal/memlimit"
 	"github.com/invakid404/baml-rest/internal/rootruntime"
 	"github.com/invakid404/baml-rest/introspected"
@@ -253,6 +254,7 @@ var serveCmd = &cobra.Command{
 			Runtime:         rootruntime.Runtime{},
 			BuildRequest:    buildRequestConfig,
 			DeBAML:          deBAMLConfig,
+			DeBAMLRender:    debaml.Render,
 			BaseURLRewrites: baseURLRewrites,
 			HTTPClient:      httpClient,
 		}

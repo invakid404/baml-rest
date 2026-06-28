@@ -176,6 +176,12 @@ func emitFrameworkAdapter(out *jen.File, opts Options) {
 		jen.Comment("render it at the BuildRequest seam. nil when none installed."),
 		jen.Id("deBAMLOutputSchema").Op("*").Qual(bamlutilsPkg, "DynamicOutputSchema"),
 		jen.Line(),
+		jen.Comment("deBAMLRenderer is the native ctx.output_format render callback,"),
+		jen.Comment("injected by the root module (the dynclient module cannot import"),
+		jen.Comment("baml-rest's internal/schema + outputformat). nil means the"),
+		jen.Comment("BuildRequest seam falls back to BAML-as-today."),
+		jen.Id("deBAMLRenderer").Qual(bamlutilsPkg, "DeBAMLRenderFunc"),
+		jen.Line(),
 		jen.Comment("rrAdvancer is the per-request round-robin Advancer installed by the"),
 		jen.Comment("worker; nil falls back to the introspected Coordinator."),
 		jen.Id("rrAdvancer").Qual(bamlutilsPkg, "RoundRobinAdvancer"),
@@ -566,6 +572,23 @@ func emitFrameworkAdapterDeBAML(out *jen.File, bamlutilsPkg string) {
 		Id("DeBAMLOutputSchema").Params().Op("*").Qual(bamlutilsPkg, "DynamicOutputSchema").
 		Block(
 			jen.Return(jen.Id("b").Dot("deBAMLOutputSchema")),
+		)
+
+	// SetDeBAMLRenderer / DeBAMLRenderer satisfy the narrow optional
+	// interfaces the worker and the generated dynamic seam use to install
+	// and read the native render callback. Kept off the bamlutils.Adapter
+	// interface so test doubles and non-dynamic adapters need not
+	// implement them.
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("SetDeBAMLRenderer").Params(jen.Id("fn").Qual(bamlutilsPkg, "DeBAMLRenderFunc")).
+		Block(
+			jen.Id("b").Dot("deBAMLRenderer").Op("=").Id("fn"),
+		)
+
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("DeBAMLRenderer").Params().Qual(bamlutilsPkg, "DeBAMLRenderFunc").
+		Block(
+			jen.Return(jen.Id("b").Dot("deBAMLRenderer")),
 		)
 }
 

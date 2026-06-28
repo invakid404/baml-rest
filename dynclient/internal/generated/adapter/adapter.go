@@ -78,6 +78,12 @@ type BamlAdapter struct {
 	// render it at the BuildRequest seam. nil when none installed.
 	deBAMLOutputSchema *bamlutils.DynamicOutputSchema
 
+	// deBAMLRenderer is the native ctx.output_format render callback,
+	// injected by the root module (the dynclient module cannot import
+	// baml-rest's internal/schema + outputformat). nil means the
+	// BuildRequest seam falls back to BAML-as-today.
+	deBAMLRenderer bamlutils.DeBAMLRenderFunc
+
 	// rrAdvancer is the per-request round-robin Advancer installed by the
 	// worker; nil falls back to the introspected Coordinator.
 	rrAdvancer bamlutils.RoundRobinAdvancer
@@ -237,6 +243,12 @@ func (b *BamlAdapter) SetDeBAMLOutputSchema(schema *bamlutils.DynamicOutputSchem
 }
 func (b *BamlAdapter) DeBAMLOutputSchema() *bamlutils.DynamicOutputSchema {
 	return b.deBAMLOutputSchema
+}
+func (b *BamlAdapter) SetDeBAMLRenderer(fn bamlutils.DeBAMLRenderFunc) {
+	b.deBAMLRenderer = fn
+}
+func (b *BamlAdapter) DeBAMLRenderer() bamlutils.DeBAMLRenderFunc {
+	return b.deBAMLRenderer
 }
 func (b *BamlAdapter) SetRoundRobinAdvancer(advancer bamlutils.RoundRobinAdvancer) {
 	b.rrAdvancer = advancer

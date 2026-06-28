@@ -1015,6 +1015,15 @@ type DeBAMLConfig struct {
 	Enabled bool
 }
 
+// DeBAMLRenderFunc renders the native ctx.output_format block for a
+// dynamic output schema. It is the seam that lets the generated dynclient
+// adapter (a separate Go module that cannot import baml-rest's root
+// internal/schema + outputformat packages) drive the native renderer:
+// the root module wires a concrete implementation in, the generated code
+// only ever calls this public-typed callback. A nil func, or one that
+// returns an error, means "fall back to BAML-as-today" for that request.
+type DeBAMLRenderFunc func(schema *DynamicOutputSchema) (string, error)
+
 // EnvUseDeBAML is the umbrella env var that enables native de-BAML
 // behaviour. Distinct from BAML_REST_USE_BUILD_REQUEST: that selects the
 // transport route, this selects whether native de-BAML paths run on
@@ -1027,10 +1036,16 @@ const EnvUseDeBAML = "BAML_REST_USE_DEBAML"
 // BuildRequest env contract (1/true/yes/on, case-insensitive, no
 // whitespace trimming); every other value (including empty) is disabled.
 func DeBAMLConfigFromEnv() DeBAMLConfig {
-	return DeBAMLConfig{Enabled: parseTruthyDeBAMLEnv(os.Getenv(EnvUseDeBAML))}
+	return DeBAMLConfig{Enabled: IsTruthyEnvValue(os.Getenv(EnvUseDeBAML))}
 }
 
-func parseTruthyDeBAMLEnv(v string) bool {
+// IsTruthyEnvValue is the single truthy-env contract shared across
+// baml-rest's boolean env vars (BAML_REST_USE_BUILD_REQUEST,
+// BAML_REST_DISABLE_CALL_BUILD_REQUEST, BAML_REST_USE_DEBAML, and the
+// serve-host preserve-order default). Exactly 1/true/yes/on
+// (case-insensitive) are true; every other value — including the empty
+// string and whitespace-padded variants (no trimming) — is false.
+func IsTruthyEnvValue(v string) bool {
 	switch strings.ToLower(v) {
 	case "1", "true", "yes", "on":
 		return true

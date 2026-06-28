@@ -1,45 +1,44 @@
 package generated
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/dynclient/internal/generated/adapter"
 	types "github.com/invakid404/baml-rest/dynclient/internal/generated/baml_client/types"
-	"github.com/invakid404/baml-rest/internal/schema"
-	"github.com/invakid404/baml-rest/internal/schema/outputformat"
 )
 
 func sp(s string) *string { return &s }
 func bp(b bool) *bool     { return &b }
 
+// fakeBlock is the stand-in for the native render output. The real
+// renderer lives in the root module (internal/schema + outputformat) and
+// is byte-pinned to BAML elsewhere; these tests inject it as a callback so
+// they exercise the rewrite/gating/fallback logic without the cross-module
+// internal dependency.
+const fakeBlock = "<<NATIVE-BLOCK>>"
+
 func simpleSchema() *bamlutils.DynamicOutputSchema {
 	return &bamlutils.DynamicOutputSchema{
 		Properties: bamlutils.MustOrderedMap(
 			bamlutils.OrderedKV("answer", &bamlutils.DynamicProperty{Type: "string"}),
-			bamlutils.OrderedKV("count", &bamlutils.DynamicProperty{Type: "int"}),
 		),
 	}
 }
 
-func renderSimple(t *testing.T) string {
-	t.Helper()
-	bundle, err := schema.FromDynamicOutputSchema(simpleSchema(), schema.BuildOptions{})
-	if err != nil {
-		t.Fatalf("FromDynamicOutputSchema: %v", err)
-	}
-	block, err := outputformat.Render(bundle, outputformat.Options{})
-	if err != nil {
-		t.Fatalf("Render: %v", err)
-	}
-	return block
-}
-
-func newTestAdapter(enabled bool, s *bamlutils.DynamicOutputSchema) bamlutils.Adapter {
+// newTestAdapter builds a real framework adapter with the de-BAML config,
+// carried schema, and (optionally) the native render callback installed.
+func newTestAdapter(enabled bool, s *bamlutils.DynamicOutputSchema, render bamlutils.DeBAMLRenderFunc) bamlutils.Adapter {
 	a := &adapter.BamlAdapter{}
 	a.SetDeBAMLConfig(bamlutils.DeBAMLConfig{Enabled: enabled})
 	a.SetDeBAMLOutputSchema(s)
+	a.SetDeBAMLRenderer(render)
 	return a
+}
+
+func okRenderer(block string) bamlutils.DeBAMLRenderFunc {
+	return func(*bamlutils.DynamicOutputSchema) (string, error) { return block, nil }
 }
 
 // assertMarkerIntact fails if the first message's first part is no longer
@@ -104,7 +103,7 @@ func TestMaybeApplyDeBAMLOutputFormat_FlagOff(t *testing.T) {
 	msgs := []types.Baml_Rest_Message{
 		{Role: "system", Parts: &[]types.Baml_Rest_ContentPart{{Output_format: bp(true)}}},
 	}
-	out := maybeApplyDeBAMLOutputFormat(newTestAdapter(false, simpleSchema()), msgs)
+	out := maybeApplyDeBAMLOutputFormat(newTestAdapter(false, simpleSchema(), okRenderer(fakeBlock)), msgs)
 	assertMarkerIntact(t, out, "flag off (returned)")
 	assertMarkerIntact(t, msgs, "flag off (input)")
 }
@@ -113,23 +112,34 @@ func TestMaybeApplyDeBAMLOutputFormat_NilSchema(t *testing.T) {
 	msgs := []types.Baml_Rest_Message{
 		{Role: "system", Parts: &[]types.Baml_Rest_ContentPart{{Output_format: bp(true)}}},
 	}
-	out := maybeApplyDeBAMLOutputFormat(newTestAdapter(true, nil), msgs)
+	out := maybeApplyDeBAMLOutputFormat(newTestAdapter(true, nil, okRenderer(fakeBlock)), msgs)
 	assertMarkerIntact(t, out, "nil schema (returned)")
 	assertMarkerIntact(t, msgs, "nil schema (input)")
 }
 
+// TestMaybeApplyDeBAMLOutputFormat_NilRenderer pins the F1 decoupling
+// fallback: enabled + schema present but no render callback wired (the
+// dynclient module has no internal renderer of its own) → BAML-as-today.
+func TestMaybeApplyDeBAMLOutputFormat_NilRenderer(t *testing.T) {
+	msgs := []types.Baml_Rest_Message{
+		{Role: "system", Parts: &[]types.Baml_Rest_ContentPart{{Output_format: bp(true)}}},
+	}
+	out := maybeApplyDeBAMLOutputFormat(newTestAdapter(true, simpleSchema(), nil), msgs)
+	assertMarkerIntact(t, out, "nil renderer (returned)")
+	assertMarkerIntact(t, msgs, "nil renderer (input)")
+}
+
 func TestMaybeApplyDeBAMLOutputFormat_Enabled(t *testing.T) {
-	want := renderSimple(t)
 	msgs := []types.Baml_Rest_Message{
 		{Role: "system", Parts: &[]types.Baml_Rest_ContentPart{{Output_format: bp(true)}}},
 		{Role: "user", Content: sp("see {output_format} here")},
 	}
-	out := maybeApplyDeBAMLOutputFormat(newTestAdapter(true, simpleSchema()), msgs)
+	out := maybeApplyDeBAMLOutputFormat(newTestAdapter(true, simpleSchema(), okRenderer(fakeBlock)), msgs)
 
-	if p := (*out[0].Parts)[0]; p.Output_format != nil || p.Text == nil || *p.Text != want {
-		t.Errorf("enabled: part not rewritten to rendered block:\n got=%v\nwant=%q", p.Text, want)
+	if p := (*out[0].Parts)[0]; p.Output_format != nil || p.Text == nil || *p.Text != fakeBlock {
+		t.Errorf("enabled: part not rewritten to rendered block:\n got=%v\nwant=%q", p.Text, fakeBlock)
 	}
-	if out[1].Content == nil || *out[1].Content != "see "+want+" here" {
+	if out[1].Content == nil || *out[1].Content != "see "+fakeBlock+" here" {
 		t.Errorf("enabled: string placeholder not substituted: %v", out[1].Content)
 	}
 	// The input (shared with legacy children) must remain untouched.
@@ -139,25 +149,45 @@ func TestMaybeApplyDeBAMLOutputFormat_Enabled(t *testing.T) {
 	}
 }
 
-// TestMaybeApplyDeBAMLOutputFormat_RenderErrorFallback covers the
-// render-first / rewrite-after contract: a schema that fails native
-// lowering (unresolved reference) returns the messages unchanged so BAML
-// renders ctx.output_format as today.
-func TestMaybeApplyDeBAMLOutputFormat_RenderErrorFallback(t *testing.T) {
-	bad := &bamlutils.DynamicOutputSchema{
-		Properties: bamlutils.MustOrderedMap(
-			bamlutils.OrderedKV("x", &bamlutils.DynamicProperty{Ref: "DoesNotExist"}),
-		),
+// TestMaybeApplyDeBAMLOutputFormat_LegacyChildSeesOriginal is the F-V1
+// regression: the value returned for the BuildRequest closures must be a
+// SEPARATE rewritten slice, while the input slice — the one the generated
+// dispatcher keeps passing to the legacy fallback children
+// (legacyStreamChildFn / legacyCallChildFn) — must still carry the
+// ORIGINAL output_format marker, so a mixed-mode fallback to a legacy
+// child stays BAML-as-today even with de-BAML on (#537). The integration
+// harness has no mockable unsupported provider to force a real legacy
+// child, so this pins the contract at the seam where the bug lived.
+func TestMaybeApplyDeBAMLOutputFormat_LegacyChildSeesOriginal(t *testing.T) {
+	legacyMsgs := []types.Baml_Rest_Message{
+		{Role: "system", Parts: &[]types.Baml_Rest_ContentPart{{Output_format: bp(true)}}},
 	}
-	// Sanity: this really is a lowering error.
-	if _, err := schema.FromDynamicOutputSchema(bad, schema.BuildOptions{}); err == nil {
-		t.Fatal("expected FromDynamicOutputSchema to fail on unresolved ref")
-	}
+	brMsgs := maybeApplyDeBAMLOutputFormat(newTestAdapter(true, simpleSchema(), okRenderer(fakeBlock)), legacyMsgs)
 
+	// BuildRequest copy is rewritten...
+	if p := (*brMsgs[0].Parts)[0]; p.Output_format != nil || p.Text == nil || *p.Text != fakeBlock {
+		t.Errorf("BuildRequest slice not rewritten: of=%v text=%v", p.Output_format, p.Text)
+	}
+	// ...but the legacy slice still has the original marker (BAML-as-today).
+	assertMarkerIntact(t, legacyMsgs, "legacy child")
+	// They must be distinct backing slices (the rewrite copied, not aliased).
+	if &brMsgs[0] == &legacyMsgs[0] {
+		t.Error("BuildRequest and legacy slices must not share backing storage")
+	}
+}
+
+// TestMaybeApplyDeBAMLOutputFormat_RenderErrorFallback covers the
+// render-first / rewrite-after contract: a render callback that returns an
+// error returns the messages unchanged so BAML renders ctx.output_format
+// as today.
+func TestMaybeApplyDeBAMLOutputFormat_RenderErrorFallback(t *testing.T) {
+	failing := func(*bamlutils.DynamicOutputSchema) (string, error) {
+		return "", errors.New("boom")
+	}
 	msgs := []types.Baml_Rest_Message{
 		{Role: "system", Parts: &[]types.Baml_Rest_ContentPart{{Output_format: bp(true)}}},
 	}
-	out := maybeApplyDeBAMLOutputFormat(newTestAdapter(true, bad), msgs)
+	out := maybeApplyDeBAMLOutputFormat(newTestAdapter(true, simpleSchema(), failing), msgs)
 	assertMarkerIntact(t, out, "render error (returned)")
 	assertMarkerIntact(t, msgs, "render error (input)")
 }
