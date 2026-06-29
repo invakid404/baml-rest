@@ -32,8 +32,9 @@ import (
 //   - SharedState nil: the handler logs the existing once-per-process
 //     warning the first time a request tries to use round-robin shared
 //     state, then falls back to the in-process Coordinator.
-//   - BuildRequest: zero value disables the BuildRequest path on this
-//     handler and propagates to the generated router via the adapter's
+//   - BuildRequest: zero value leaves the BuildRequest route on (it is
+//     unconditional as of #537) with DisableCallBuildRequest off. The
+//     config propagates to the generated router via the adapter's
 //     BuildRequestConfig() accessor.
 //   - BaseURLRewrites nil: no per-handler URL rewrites — the worker
 //     skips the rewrite pass before SetClientRegistry; the per-handler

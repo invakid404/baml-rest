@@ -226,7 +226,6 @@ func TestNewAppliesOptions(t *testing.T) {
 	t.Cleanup(store.Close)
 
 	c := newClient(t, rt,
-		WithUseBuildRequest(true),
 		WithDisableCallBuildRequest(true),
 		WithDeBAML(true),
 		WithDeBAMLRenderer(func(*bamlutils.DynamicOutputSchema) (string, error) { return "block", nil }),
@@ -253,8 +252,8 @@ func TestNewAppliesOptions(t *testing.T) {
 	if captured == nil {
 		t.Fatal("expected adapter to be captured")
 	}
-	if got := captured.BuildRequestConfig(); got.UseBuildRequest != true || got.DisableCallBuildRequest != true {
-		t.Errorf("BuildRequestConfig = %#v, want both flags true", got)
+	if got := captured.BuildRequestConfig(); got.DisableCallBuildRequest != true {
+		t.Errorf("BuildRequestConfig = %#v, want DisableCallBuildRequest=true", got)
 	}
 	if !captured.DeBAMLConfig().Enabled {
 		t.Errorf("DeBAMLConfig = %#v, want Enabled=true (WithDeBAML wiring)", captured.DeBAMLConfig())

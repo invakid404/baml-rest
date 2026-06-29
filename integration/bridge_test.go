@@ -32,12 +32,11 @@ import (
 // The bridge only makes sense with BuildRequest on, so the test skips on the
 // legacy leg where the flag would no-op.
 func TestCallBridge_ForcesStreamRequest(t *testing.T) {
-	if !ActuallyBuildRequest() {
+	if !HasBuildRequestSurface() {
 		t.Skip("bridge requires BuildRequest path; skipping on legacy or pre-0.219 runtimes")
 	}
 
 	opts := matrixSetupOptions()
-	opts.UseBuildRequest = true
 	opts.RuntimeEnv = map[string]string{
 		// Forces IsCallProviderSupported to return false for every
 		// provider, routing /call{,-with-raw} through the stream-
@@ -261,12 +260,11 @@ func TestCallBridge_ForcesStreamRequest(t *testing.T) {
 // Requires the debug build tag (see cmd/build/build.sh), which the
 // integration testcontainer already enables.
 func TestCallBridge_MixedChainFallsThrough(t *testing.T) {
-	if !ActuallyBuildRequest() {
+	if !HasBuildRequestSurface() {
 		t.Skip("bridge requires BuildRequest path; skipping on legacy or pre-0.219 runtimes")
 	}
 
 	opts := matrixSetupOptions()
-	opts.UseBuildRequest = true
 	opts.RuntimeEnv = map[string]string{
 		// Mark openai-generic as call-unsupported (but still stream-
 		// supported). Debug-tag only — no effect on release builds.

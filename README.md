@@ -86,14 +86,21 @@ env var only; dynclient stays explicit-only and never reads it.
 
 baml-rest reads the following environment variables at startup:
 
-- `BAML_REST_USE_BUILD_REQUEST` — toggle the BuildRequest/StreamRequest code
-  path. `1`/`true`/`yes`/`on` enables it; any other value (including empty)
-  falls back to the legacy CallStream+OnTick path. This is a full rollback:
-  on BAML 0.219+ adapters, baml-rest's centralised round-robin (resolver,
-  in-process coordinator, and worker SharedState broker / RemoteAdvancer)
-  is also disengaged, and BAML's own runtime handles strategy rotation
-  per-worker. Use this flag as an incident-response kill switch when
-  anything in the new request path regresses.
+- BuildRequest is attempted by default whenever supported — the
+  BuildRequest/StreamRequest route is taken automatically when the
+  generated BAML client exposes those surfaces (BAML 0.219+). Older BAML
+  versions without Request/StreamRequest, and unsupported/empty providers,
+  use the legacy CallStream+OnTick path. The retired
+  `BAML_REST_USE_BUILD_REQUEST` env var is ignored; if it is still set,
+  baml-rest logs a one-time startup deprecation warning. There is no
+  full-route rollback flag — use `BAML_REST_DISABLE_CALL_BUILD_REQUEST`
+  (below) for the narrower /call hatch, or roll back the deployment.
+- `BAML_REST_DISABLE_CALL_BUILD_REQUEST` — when truthy, the non-streaming
+  Request API is treated as unsupported for every provider, so
+  `/call{,-with-raw}` fall through to the stream-accumulation bridge (when
+  StreamRequest is available) or legacy. This is a narrower operational
+  hatch for the non-streaming Request API only; it does not disable the
+  broader BuildRequest route.
 - `BAML_REST_BASE_URL_REWRITES` — semicolon-separated URL rewrite rules
   applied to LLM provider base URLs, both at build time and at runtime.
   Format: `from1=to1;from2=to2`. See
@@ -233,10 +240,11 @@ tolerance for losing in-flight requests when the process crashes.
 
 Recommended version: **v0.223.0**
 
-The BuildRequest code path (`BAML_REST_USE_BUILD_REQUEST=true`) requires
-BAML **v0.219.0** or newer. Older BAML versions remain functional via the
-CallStream+OnTick path, but baml-rest logs a warning at startup when no
-BuildRequest API is detected in the generated client.
+The BuildRequest code path requires BAML **v0.219.0** or newer and is taken
+automatically when the generated client exposes the Request/StreamRequest
+surfaces. Older BAML versions remain functional via the CallStream+OnTick
+path, but baml-rest logs a warning at startup when no BuildRequest API is
+detected in the generated client.
 
 - **v0.215.0**: Type builder is fully broken and panics the entire application
   when used ([issue](https://github.com/BoundaryML/baml/issues/2862))

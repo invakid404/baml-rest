@@ -149,11 +149,9 @@ func TestDynclientCacheControlMessageMetadataRoundTrip(t *testing.T) {
 				},
 			}
 
-			// Pin the BuildRequest path — the issue reporter ran into
-			// the bug with WithUseBuildRequest(true) explicitly. Don't
-			// rely on the global ActuallyBuildRequest() flag for this
-			// regression.
-			client := newDynclient(t, dynclient.WithUseBuildRequest(true))
+			// The BuildRequest route is unconditional (#537), so a plain
+			// dynclient drives this regression on capable BAML versions.
+			client := newDynclient(t)
 
 			resp, err := client.DynamicCall(ctx, libReq)
 			if err != nil {

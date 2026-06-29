@@ -7,6 +7,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/invakid404/baml-rest/introspected"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/invakid404/baml-rest/worker"
 	"github.com/invakid404/baml-rest/workerplugin"
@@ -37,10 +38,22 @@ func configureWorkerMode(logger zerolog.Logger, cfg *pool.Config, runtimeCfg wor
 	if err != nil {
 		return fmt.Errorf("invalid BAML_REST_CLIENT_DEFAULTS: %w", err)
 	}
-	if clientDefaults.HasKey("allowed_role_metadata") && runtimeCfg.BuildRequest.UseBuildRequest {
+	// Gate on the effective BuildRequest route: the advisory only applies
+	// when a BuildRequest serializer is actually in the request path.
+	// StreamRequest is always BuildRequest (streaming, plus the /call
+	// bridge, which ignores DisableCallBuildRequest); the non-streaming
+	// Request path is taken only when Request exists AND
+	// DisableCallBuildRequest is off. When neither holds, all traffic is
+	// legacy and the serializer caveat is irrelevant. Note this is NOT
+	// `(Request|StreamRequest) && !DisableCallBuildRequest`: that would
+	// wrongly suppress the advisory when StreamRequest still routes
+	// streaming + bridged-/call traffic through BuildRequest.
+	buildRequestInUse := introspected.StreamRequest != nil ||
+		(introspected.Request != nil && !runtimeCfg.BuildRequest.DisableCallBuildRequest)
+	if clientDefaults.HasKey("allowed_role_metadata") && buildRequestInUse {
 		logger.Warn().Msg(
-			"BAML_REST_CLIENT_DEFAULTS sets allowed_role_metadata and " +
-				"BAML_REST_USE_BUILD_REQUEST=true; older BAML BuildRequest " +
+			"BAML_REST_CLIENT_DEFAULTS sets allowed_role_metadata and the " +
+				"BuildRequest route is on by default; older BAML BuildRequest " +
 				"serializers may drop message-level metadata (e.g. cache_control). " +
 				"Keep this covered by integration tests when changing supported " +
 				"BAML versions.")

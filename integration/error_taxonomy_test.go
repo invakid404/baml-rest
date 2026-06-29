@@ -19,24 +19,24 @@ import (
 // These tests pin the legacy CallStream+OnTick path's conservative
 // string-prefix classifier end-to-end. The classifier itself is a
 // fall-through inside cmd/worker.classifyBAMLError that only fires
-// when no typed BuildRequest surface matched — so on the
-// BuildRequest-mode CI leg these tests would silently validate PR 2's
-// typed branch instead of the new prefix arms. forcing legacy mode via
-// BAML_REST_USE_BUILD_REQUEST=false (consumed by TestMain into the
-// shared TestEnv) is the only way to actually exercise the new code.
+// when no typed BuildRequest surface matched. The BuildRequest route is
+// unconditional as of #537, so the legacy classifier is only reachable on
+// BAML versions that expose no Request/StreamRequest surface (pre-0.219) —
+// those are the cells where these tests exercise the new prefix arms.
 //
 // The unit tests in cmd/worker/error_classify_test.go cover the prefix
 // matrix in isolation; these integration tests verify the wiring from
 // BAML's FFI string through the worker bridge to the HTTP envelope's
 // code / details fields.
 
-// requireLegacyMode skips the calling test when the shared TestEnv is
-// running BuildRequest. Mirrors the existing TestLegacyMode_* pattern
-// in roundrobin_overrides_test.go.
+// requireLegacyMode skips the calling test on BAML versions that DO expose
+// a BuildRequest surface — there the route is taken unconditionally (#537)
+// and the legacy classifier is unreachable. The legacy prefix classifier
+// is only exercised on no-surface (pre-0.219) BAML versions.
 func requireLegacyMode(t *testing.T) {
 	t.Helper()
-	if ActuallyBuildRequest() {
-		t.Skip("legacy classifier test; requires BAML_REST_USE_BUILD_REQUEST=false")
+	if HasBuildRequestSurface() {
+		t.Skip("legacy classifier test; requires a BAML version with no BuildRequest surface (pre-0.219)")
 	}
 }
 
@@ -272,15 +272,17 @@ func TestLegacyClassification_ParseEndpointGarbage(t *testing.T) {
 	})
 }
 
-// requireBuildRequestMode skips the calling test when the shared
-// TestEnv is NOT running BuildRequest. Inverse of requireLegacyMode —
-// pairs the legacy classifier coverage above with BuildRequest-path
-// coverage so the details.raw contract (#256) has end-to-end pinning
-// on both orchestrators.
+// requireBuildRequestMode skips the calling test on BAML versions that
+// expose no BuildRequest surface (pre-0.219), where dispatch falls through
+// to legacy. Inverse of requireLegacyMode — pairs the legacy classifier
+// coverage above with BuildRequest-path coverage so the details.raw
+// contract (#256) has end-to-end pinning on both orchestrators. The
+// BuildRequest route is unconditional as of #537, so this runs in every
+// modern matrix cell.
 func requireBuildRequestMode(t *testing.T) {
 	t.Helper()
-	if !ActuallyBuildRequest() {
-		t.Skip("BuildRequest classifier test; requires BAML_REST_USE_BUILD_REQUEST=true on BAML >= 0.219")
+	if !HasBuildRequestSurface() {
+		t.Skip("BuildRequest classifier test; requires a BuildRequest surface (BAML >= 0.219)")
 	}
 }
 
@@ -404,8 +406,8 @@ func TestBuildRequestClassification_ParseErrorFromProseStreamWithRaw(t *testing.
 	// `{"error":..., "code":..., "details":...}` (see
 	// SSEStreamWriterPublisher.PublishError / NDJSONEvent).
 	var payload struct {
-		Error   string          `json:"error"`
-		Code    string          `json:"code"`
+		Error   string             `json:"error"`
+		Code    string             `json:"code"`
 		Details stdjson.RawMessage `json:"details"`
 	}
 	if err := sonic.Unmarshal(errEvent.Data, &payload); err != nil {

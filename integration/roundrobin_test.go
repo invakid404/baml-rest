@@ -108,17 +108,20 @@ func assertBalanced(t *testing.T, ids []string, total int) {
 	}
 }
 
-// skipIfNoBuildRequest skips the calling test when the container is
-// running the legacy dispatch path. The centralised round-robin wiring
-// (SharedState, RemoteAdvancer, pool-level request_id) only matters on
-// the BuildRequest path; the legacy path delegates rotation to BAML's
-// runtime and doesn't guarantee the planned-metadata headers or per-
-// child hit counts these tests assert. Hoisted out of the per-test
-// inline Skip so the four RR tests stay DRY.
+// skipIfNoBuildRequest skips the calling test on BAML versions that expose
+// no BuildRequest surface (pre-0.219), where dispatch falls through to the
+// legacy path. The centralised round-robin wiring (SharedState,
+// RemoteAdvancer, pool-level request_id) only matters on the BuildRequest
+// path; the legacy path delegates rotation to BAML's runtime and doesn't
+// guarantee the planned-metadata headers or per-child hit counts these
+// tests assert. The BuildRequest route itself is unconditional as of #537,
+// so this now gates purely on BAML capability and runs in every modern
+// matrix cell. Hoisted out of the per-test inline Skip so the four RR
+// tests stay DRY.
 func skipIfNoBuildRequest(t *testing.T) {
 	t.Helper()
-	if !ActuallyBuildRequest() {
-		t.Skip("Skipping: baml-roundrobin BuildRequest-path tests require BAML >= 0.219.0 AND BAML_REST_USE_BUILD_REQUEST=true")
+	if !HasBuildRequestSurface() {
+		t.Skip("Skipping: baml-roundrobin BuildRequest-path tests require a BuildRequest surface (BAML >= 0.219.0)")
 	}
 }
 

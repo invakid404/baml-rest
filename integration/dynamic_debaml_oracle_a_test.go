@@ -28,9 +28,8 @@ import (
 // is the output_format text, which for these fixtures must not.
 
 // debamlGate restricts the de-BAML wiring tests to a BAML version whose
-// BuildRequest API exposes the native seam. The dynclient clients below
-// force WithUseBuildRequest(true) regardless of the suite's container
-// mode, so this gates on the BAML version only.
+// BuildRequest API exposes the native seam. The BuildRequest route is
+// unconditional as of #537, so this gates on the BAML version only.
 func debamlGate(t *testing.T) {
 	t.Helper()
 	dynclientCallGate(t)
@@ -40,15 +39,15 @@ func debamlGate(t *testing.T) {
 }
 
 // newDeBAMLClients returns two in-process dynclients on the BuildRequest
-// route: one with de-BAML off (BAML-as-today) and one with de-BAML on. The
-// ON client is wired with the real native renderer (internal/debaml.Render)
-// via WithDeBAMLRenderer — dynclient is a separate module and cannot import
-// the renderer itself, so a root-module caller supplies it.
+// route (unconditional as of #537): one with de-BAML off (BAML-as-today)
+// and one with de-BAML on. The ON client is wired with the real native
+// renderer (internal/debaml.Render) via WithDeBAMLRenderer — dynclient is a
+// separate module and cannot import the renderer itself, so a root-module
+// caller supplies it.
 func newDeBAMLClients(t *testing.T) (off, on *dynclient.Client) {
 	t.Helper()
-	off = newDynclient(t, dynclient.WithUseBuildRequest(true))
+	off = newDynclient(t)
 	on = newDynclient(t,
-		dynclient.WithUseBuildRequest(true),
 		dynclient.WithDeBAML(true),
 		dynclient.WithDeBAMLRenderer(debaml.Render),
 	)
@@ -237,41 +236,40 @@ func TestDeBAMLOracleA_Streaming(t *testing.T) {
 	}
 }
 
-// TestDeBAMLOracleA_BuildRequestFlagSeparation pins the accepted route
-// coupling (#537): with BAML_REST_USE_BUILD_REQUEST off, the request stays
-// on the legacy BAML path and the de-BAML flag is a no-op, so flag-ON ==
-// flag-OFF even for a metadata-bearing schema (the seam is never reached).
-// This also proves the two flags are independent: WithDeBAML does not
-// implicitly enable BuildRequest.
-func TestDeBAMLOracleA_BuildRequestFlagSeparation(t *testing.T) {
+// TestDeBAMLOracleA_DeBAMLReachesSeamWithoutRouteOpt pins the post-#537
+// behaviour: the BuildRequest route is unconditional, so WithDeBAML(true)
+// reaches the native output_format seam WITHOUT any route opt-in. For a
+// metadata-bearing schema the native renderer surfaces metadata the
+// BAML-dynamic path drops, so flag-ON must DIFFER from flag-OFF even though
+// neither client passes a route option. This is the inverse of the
+// pre-#537 flag-separation contract, which expected a no-op because the
+// legacy route had no seam.
+func TestDeBAMLOracleA_DeBAMLReachesSeamWithoutRouteOpt(t *testing.T) {
 	debamlGate(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	scenarioID := "test-debaml-a-flagsep"
-	opts := setupNonStreamingScenario(t, scenarioID, oracleAMock)
+	opts := setupNonStreamingScenario(t, scenarioID, oracleBMock)
 	reg := dynRegistry(opts.ClientRegistry)
 
-	// Both clients leave BuildRequest OFF (the dynclient default); one
-	// still asks for de-BAML. The legacy route has no native seam, so the
-	// bodies must match even though the schema carries divergent metadata.
-	// The ON client has de-BAML fully enabled AND the renderer wired, so
-	// the no-op is attributable to the route (BuildRequest off), not a
-	// missing renderer.
-	legacyOff := newDynclient(t)
-	legacyOnButNoBuildRequest := newDynclient(t, dynclient.WithDeBAML(true), dynclient.WithDeBAMLRenderer(debaml.Render))
+	// Neither client passes any route option — the BuildRequest route is
+	// on by default (#537). Only the de-BAML flag differs, so a divergence
+	// proves WithDeBAML reaches the native seam on the unconditional route.
+	off := newDynclient(t)
+	on := newDynclient(t, dynclient.WithDeBAML(true), dynclient.WithDeBAMLRenderer(debaml.Render))
 
-	offBody := captureCallBody(t, ctx, legacyOff, scenarioID, dynclient.Request{
+	offBody := captureCallBody(t, ctx, off, scenarioID, dynclient.Request{
 		Messages:       []dynclient.Message{{Role: "system", PartsContent: []dynclient.ContentPart{{Type: "output_format"}}}, {Role: "user", TextContent: strPtr("Go.")}},
 		ClientRegistry: reg, OutputSchema: oracleBSchema(),
 	})
-	onBody := captureCallBody(t, ctx, legacyOnButNoBuildRequest, scenarioID, dynclient.Request{
+	onBody := captureCallBody(t, ctx, on, scenarioID, dynclient.Request{
 		Messages:       []dynclient.Message{{Role: "system", PartsContent: []dynclient.ContentPart{{Type: "output_format"}}}, {Role: "user", TextContent: strPtr("Go.")}},
 		ClientRegistry: reg, OutputSchema: oracleBSchema(),
 	})
 
-	if !bytes.Equal(offBody, onBody) {
-		t.Errorf("de-BAML must be a no-op off the BuildRequest route (accepted #537 coupling), but bodies differed\n--- OFF ---\n%s\n--- ON ---\n%s", offBody, onBody)
+	if bytes.Equal(offBody, onBody) {
+		t.Errorf("WithDeBAML must reach the native seam on the unconditional BuildRequest route (#537), but flag-ON == flag-OFF\n--- OFF ---\n%s\n--- ON ---\n%s", offBody, onBody)
 	}
 }

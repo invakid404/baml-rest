@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
-	"strconv"
 	"strings"
 	"text/template"
 	"time"
@@ -122,12 +121,6 @@ type SetupOptions struct {
 
 	// UnaryServer enables the opt-in chi/net-http unary server on port 8081.
 	UnaryServer bool
-
-	// UseBuildRequest enables the BuildRequest/StreamRequest path inside
-	// the container. When false the container uses the legacy
-	// CallStream+OnTick path. This must be forwarded from the host env
-	// so that the CI matrix leg actually toggles the code path under test.
-	UseBuildRequest bool
 
 	// InProcess builds the baml-rest binary without the `subprocess`
 	// build tag so the server and worker handler share one OS process.
@@ -665,7 +658,8 @@ const HTTPClientSelectorEnvVar = "BAML_REST_HTTP_CLIENT"
 
 // buildContainerEnv returns the env map passed to the baml-rest container.
 // Entries in opts.RuntimeEnv take precedence over the shared defaults, so a
-// test can override BAML_LOG or BAML_REST_USE_BUILD_REQUEST if it needs to.
+// test can override BAML_LOG or BAML_REST_DISABLE_CALL_BUILD_REQUEST if it
+// needs to.
 //
 // This is the single chokepoint where every baml-rest container's env is
 // built — matrix and dedicated tests alike — so the host BAML_REST_HTTP_CLIENT
@@ -676,10 +670,13 @@ const HTTPClientSelectorEnvVar = "BAML_REST_HTTP_CLIENT"
 // preserving precedence: an explicit opts.RuntimeEnv[BAML_REST_HTTP_CLIENT]
 // pin is applied last and wins, so a test that deliberately pins a backend is
 // never overridden by the host env.
+//
+// Note: the BuildRequest route is unconditional as of #537, so there is no
+// BAML_REST_USE_BUILD_REQUEST forwarding here — the route is always attempted
+// when the BAML version exposes a Request/StreamRequest surface.
 func buildContainerEnv(opts SetupOptions) map[string]string {
 	env := map[string]string{
-		"BAML_LOG":                    "debug",
-		"BAML_REST_USE_BUILD_REQUEST": strconv.FormatBool(opts.UseBuildRequest),
+		"BAML_LOG": "debug",
 	}
 	// Forward the host http-client selector when set (non-empty). Set before
 	// the RuntimeEnv loop so an explicit RuntimeEnv pin overrides it; left

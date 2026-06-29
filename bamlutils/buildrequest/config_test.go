@@ -36,21 +36,17 @@ func TestIsCallProviderSupportedWithConfig_DisableIsPerCall(t *testing.T) {
 	}
 }
 
-// TestBuildLegacyMetadataPlanForClientWithConfig_UseBuildRequestFalse
-// pins the load-bearing classification: a legacy-path plan built with
-// UseBuildRequest=false MUST surface PathReasonBuildRequestDisabled
-// regardless of process-level env. The plan-builder's tail-rule reads
-// cfg.UseBuildRequest directly; if it ever reverts to the env-cached
-// helper, the per-handler classification would silently follow the
-// env instead of this handler's config.
-func TestBuildLegacyMetadataPlanForClientWithConfig_UseBuildRequestFalse(t *testing.T) {
+// TestBuildLegacyMetadataPlanForClient_SupportedSingleProviderNoRetiredReason
+// pins that the BuildRequest route gate is gone (#537): a legacy-path
+// plan for a supported single provider with no other classification
+// reason MUST leave PathReason empty and never synthesize the retired
+// PathReasonBuildRequestDisabled. A regression that re-introduced the
+// route gate would surface here as a stray "buildrequest-disabled"
+// reason on a perfectly valid handler.
+func TestBuildLegacyMetadataPlanForClient_SupportedSingleProviderNoRetiredReason(t *testing.T) {
 	t.Parallel()
 
-	cfg := bamlutils.BuildRequestConfig{UseBuildRequest: false}
-	// Supported provider on the legacy path with no other reason to
-	// classify — the only thing left for PathReason is the
-	// BuildRequest-disabled tail.
-	plan := BuildLegacyMetadataPlanForClientWithConfig(
+	plan := BuildLegacyMetadataPlanForClient(
 		nil,        // no runtime registry
 		"MyClient", // effective client name
 		"openai",   // introspected provider (call-supported)
@@ -58,50 +54,27 @@ func TestBuildLegacyMetadataPlanForClientWithConfig_UseBuildRequestFalse(t *test
 		nil,        // no introspected providers
 		IsProviderSupported,
 		nil, // no retry policy
-		cfg,
-	)
-	if plan == nil {
-		t.Fatal("expected plan")
-	}
-	if plan.PathReason != PathReasonBuildRequestDisabled {
-		t.Errorf("expected PathReason=%q, got %q", PathReasonBuildRequestDisabled, plan.PathReason)
-	}
-}
-
-// TestBuildLegacyMetadataPlanForClientWithConfig_UseBuildRequestTrue
-// is the inverse pin: when the handler's config has UseBuildRequest
-// set, the tail rule must leave PathReason empty for a legacy-path
-// plan that has no other classification reason. A regression that
-// inverted the conditional would surface here as a stray
-// "buildrequest-disabled" reason on a perfectly valid handler.
-func TestBuildLegacyMetadataPlanForClientWithConfig_UseBuildRequestTrue(t *testing.T) {
-	t.Parallel()
-
-	cfg := bamlutils.BuildRequestConfig{UseBuildRequest: true}
-	plan := BuildLegacyMetadataPlanForClientWithConfig(
-		nil, "MyClient", "openai", nil, nil, IsProviderSupported, nil, cfg,
 	)
 	if plan == nil {
 		t.Fatal("expected plan")
 	}
 	if plan.PathReason != "" {
-		t.Errorf("expected empty PathReason on UseBuildRequest=true with no other reason, got %q", plan.PathReason)
+		t.Errorf("expected empty PathReason for a supported single provider, got %q", plan.PathReason)
+	}
+	if plan.PathReason == PathReasonBuildRequestDisabled {
+		t.Errorf("retired PathReasonBuildRequestDisabled must never be emitted")
 	}
 }
 
-// TestEnvConfigMatchesEnvHelpers proves the convenience wrapper
-// preserves the same env contract every existing caller already
-// depends on. A regression that diverged the two paths would silently
-// drift server behaviour between the env-cached helper and the new
-// per-instance plumbing.
-func TestEnvConfigMatchesEnvHelpers(t *testing.T) {
+// TestEnvConfig_OnlyDisableCallBuildRequestIsEnvDriven proves EnvConfig
+// reads only the surviving env-driven field. After #537 the
+// BuildRequest route gate is retired, so EnvConfig carries just
+// DisableCallBuildRequest, sourced from the same env-cached helper every
+// caller depends on.
+func TestEnvConfig_OnlyDisableCallBuildRequestIsEnvDriven(t *testing.T) {
 	t.Parallel()
 
 	got := EnvConfig()
-	if got.UseBuildRequest != UseBuildRequest() {
-		t.Errorf("EnvConfig.UseBuildRequest = %v, UseBuildRequest() = %v",
-			got.UseBuildRequest, UseBuildRequest())
-	}
 	if got.DisableCallBuildRequest != disableCallBuildRequest() {
 		t.Errorf("EnvConfig.DisableCallBuildRequest = %v, disableCallBuildRequest() = %v",
 			got.DisableCallBuildRequest, disableCallBuildRequest())

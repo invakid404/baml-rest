@@ -16,6 +16,7 @@ import (
 	"github.com/invakid404/baml-rest/internal/debaml"
 	"github.com/invakid404/baml-rest/internal/memlimit"
 	"github.com/invakid404/baml-rest/internal/rootruntime"
+	"github.com/invakid404/baml-rest/introspected"
 	"github.com/invakid404/baml-rest/worker"
 	"github.com/invakid404/baml-rest/workerplugin"
 	pb "github.com/invakid404/baml-rest/workerplugin/proto"
@@ -43,6 +44,11 @@ func main() {
 	// boundary; library-mode callers wire their own config inside the
 	// host process instead.
 	buildRequestConfig := buildrequest.EnvConfig()
+	// Note: the retired-BAML_REST_USE_BUILD_REQUEST deprecation warning is
+	// emitted once by the host (cmd/serve), which runs at startup in both
+	// subprocess and in-process modes. Emitting it here too would duplicate
+	// the message once per pooled worker subprocess, so the worker stays
+	// silent on it.
 	deBAMLConfig := bamlutils.DeBAMLConfigFromEnv()
 	baseURLRewrites := urlrewrite.LoadDefaultRules()
 	streamIdleTimeout := llmhttp.StreamIdleTimeoutFromEnv()
@@ -67,10 +73,22 @@ func main() {
 		logger.Error("invalid BAML_REST_CLIENT_DEFAULTS", "err", err.Error())
 		os.Exit(1)
 	}
-	if clientDefaults.HasKey("allowed_role_metadata") && buildRequestConfig.UseBuildRequest {
+	// Gate on the effective BuildRequest route: the advisory only applies
+	// when a BuildRequest serializer is actually in the request path.
+	// StreamRequest is always BuildRequest (streaming, plus the /call
+	// bridge, which ignores DisableCallBuildRequest); the non-streaming
+	// Request path is taken only when Request exists AND
+	// DisableCallBuildRequest is off. When neither holds, all traffic is
+	// legacy and the serializer caveat is irrelevant. Note this is NOT
+	// `(Request|StreamRequest) && !DisableCallBuildRequest`: that would
+	// wrongly suppress the advisory when StreamRequest still routes
+	// streaming + bridged-/call traffic through BuildRequest.
+	buildRequestInUse := introspected.StreamRequest != nil ||
+		(introspected.Request != nil && !buildRequestConfig.DisableCallBuildRequest)
+	if clientDefaults.HasKey("allowed_role_metadata") && buildRequestInUse {
 		logger.Warn(
-			"BAML_REST_CLIENT_DEFAULTS sets allowed_role_metadata and " +
-				"BAML_REST_USE_BUILD_REQUEST=true; older BAML BuildRequest " +
+			"BAML_REST_CLIENT_DEFAULTS sets allowed_role_metadata and the " +
+				"BuildRequest route is on by default; older BAML BuildRequest " +
 				"serializers may drop message-level metadata (e.g. cache_control). " +
 				"Keep this covered by integration tests when changing supported " +
 				"BAML versions.")

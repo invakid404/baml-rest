@@ -46,10 +46,6 @@ var BAMLSourcePath string
 // local runs, which keep building the cffi lib from source.
 var PrebuiltCffiDir string
 
-// UseBuildRequest is true when the test container runs the BuildRequest path.
-// Set in TestMain from the BAML_REST_USE_BUILD_REQUEST env var.
-var UseBuildRequest bool
-
 // Matrix-derived setup inputs populated by TestMain before m.Run. Dedicated
 // tests read these via matrixSetupOptions so a new axis added to TestMain
 // propagates without each callsite needing to be updated.
@@ -75,18 +71,19 @@ func matrixSetupOptions() testutil.SetupOptions {
 		BAMLSource:      BAMLSourcePath,
 		PrebuiltCffiDir: PrebuiltCffiDir,
 		UnaryServer:     unaryServer,
-		UseBuildRequest: UseBuildRequest,
 		InProcess:       inProcessBuild,
 	}
 }
 
-// ActuallyBuildRequest reports whether a request is genuinely routed through
-// the BuildRequest orchestrator given both the runtime env gate and the BAML
-// runtime version. BuildRequest requires the Request / StreamRequest APIs
-// which only exist from BAML 0.219.0; older runtimes fall through to the
-// legacy path even when BAML_REST_USE_BUILD_REQUEST=true.
-func ActuallyBuildRequest() bool {
-	return UseBuildRequest && bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0")
+// HasBuildRequestSurface reports whether the BAML runtime exposes the
+// BuildRequest surface — i.e. the Request / StreamRequest APIs the route
+// depends on, which first exist in BAML 0.219.0. This is a runtime
+// capability check, not a routing decision: the BuildRequest route is
+// unconditional as of #537, so on a runtime that exposes the surface every
+// supported request takes it; older runtimes expose no surface and fall
+// through to the legacy path.
+func HasBuildRequestSurface() bool {
+	return bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0")
 }
 
 // skipIfInProcess short-circuits a test that depends on subprocess-only
@@ -98,18 +95,6 @@ func skipIfInProcess(t *testing.T, reason string) {
 	t.Helper()
 	if inProcessBuild {
 		t.Skipf("in-process build: %s", reason)
-	}
-}
-
-// parseBoolEnv parses a boolean environment variable using the same accepted
-// literals as the server's UseBuildRequest parser: 1/true/yes/on → true,
-// everything else (including empty) → false.
-func parseBoolEnv(value string) bool {
-	switch strings.ToLower(value) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
 	}
 }
 
@@ -474,8 +459,6 @@ func TestMain(m *testing.M) {
 			os.Exit(1)
 		}
 	}
-	UseBuildRequest = parseBoolEnv(os.Getenv("BAML_REST_USE_BUILD_REQUEST"))
-
 	// The overall setup budget is mode-aware and centralized in testutil
 	// (#424): baml-source builds the Rust cffi stage and need the larger
 	// budget, the light jobs a smaller one. This ctx is NOT covered by
@@ -496,7 +479,6 @@ func TestMain(m *testing.M) {
 	println("  Mock LLM Internal URL:", TestEnv.MockLLMInternal)
 	println("  BAML REST URL:", TestEnv.BAMLRestURL)
 	println("  Unary URL:", TestEnv.BAMLRestUnaryURL)
-	println("  UseBuildRequest:", strconv.FormatBool(UseBuildRequest))
 	println("  InProcess:", strconv.FormatBool(inProcessBuild))
 
 	// Create clients

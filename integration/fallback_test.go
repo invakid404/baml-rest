@@ -182,7 +182,7 @@ func TestFallbackCall(t *testing.T) {
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerClient, "FallbackSecondary")
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
 			testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
-			if ActuallyBuildRequest() {
+			if HasBuildRequestSurface() {
 				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLBamlCallCount)
 			} else {
 				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLRetryCount)
@@ -259,7 +259,7 @@ func TestFallbackCall(t *testing.T) {
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerClient, "FallbackTertiary")
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
 			testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
-			if ActuallyBuildRequest() {
+			if HasBuildRequestSurface() {
 				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLBamlCallCount)
 			} else {
 				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLRetryCount)
@@ -419,7 +419,7 @@ func TestFallbackCallWithRaw(t *testing.T) {
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerClient, "FallbackSecondary")
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
 			testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
-			if ActuallyBuildRequest() {
+			if HasBuildRequestSurface() {
 				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLBamlCallCount)
 			} else {
 				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLRetryCount)
@@ -486,8 +486,9 @@ func TestFallbackStream(t *testing.T) {
 		// BAML < 0.219.0 uses the legacy streaming fallback path, which may
 		// contact the secondary child even when the primary succeeds. Unary does
 		// not share that behavior, so only assert the exact streaming hit counts
-		// on versions that use the BuildRequest fallback orchestrator.
-		if bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0") && UseBuildRequest {
+		// on versions that use the BuildRequest fallback orchestrator (the
+		// BuildRequest route is unconditional as of #537).
+		if HasBuildRequestSurface() {
 			assertHitCounts(t, map[string]int{"fallback-primary": 1, "fallback-secondary": 0})
 		}
 	})
@@ -566,7 +567,7 @@ func TestFallbackStream(t *testing.T) {
 			t.Errorf("planned.RetryMax: got %v, want 3", tracker.planned.RetryMax)
 		}
 		wantChain := []string{"FallbackPrimary", "FallbackSecondary"}
-		if ActuallyBuildRequest() {
+		if HasBuildRequestSurface() {
 			if !equalSliceStrings(tracker.planned.Chain, wantChain) {
 				t.Errorf("planned.Chain: got %v, want %v", tracker.planned.Chain, wantChain)
 			}

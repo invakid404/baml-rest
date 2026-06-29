@@ -61,10 +61,10 @@ type BamlAdapter struct {
 	httpClient *llmhttp.Client
 
 	// buildRequestConfig carries the per-handler BuildRequest knobs
-	// (UseBuildRequest, DisableCallBuildRequest). The generated
-	// router reads this via BuildRequestConfig() instead of the
-	// env-cached buildrequest.UseBuildRequest helper so two handlers
-	// in the same process can carry distinct configurations.
+	// (DisableCallBuildRequest). The generated router reads this via
+	// BuildRequestConfig() instead of the env-cached buildrequest
+	// helper so two handlers in the same process can carry distinct
+	// configurations.
 	buildRequestConfig bamlutils.BuildRequestConfig
 
 	// deBAMLConfig carries the per-handler BAML_REST_USE_DEBAML

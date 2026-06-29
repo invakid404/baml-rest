@@ -13,8 +13,8 @@ import (
 )
 
 // callUnsupportedProvidersOnce caches the parsed set so
-// debugFilterCallSupported stays hot on the request path. Same rationale
-// as useBuildRequestOnce — os.Getenv takes a lock each call.
+// debugFilterCallSupported stays hot on the request path — os.Getenv
+// takes a lock each call.
 var callUnsupportedProvidersOnce sync.Once
 var callUnsupportedProvidersCached map[string]bool
 

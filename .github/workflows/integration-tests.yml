@@ -24,20 +24,18 @@ jobs:
       - name: Build version matrix
         id: set-matrix
         run: |
-          # Build the matrix from baml_versions.json with two cross-cutting
-          # exclusions:
+          # Build the matrix from baml_versions.json. The BuildRequest
+          # route is unconditional as of #537 (no use-build-request axis):
+          # it is taken automatically when the BAML version exposes the
+          # Request/StreamRequest surfaces (>= 0.219).
           #
-          #   1. http-client has no effect on the legacy CallStream path
-          #      (BAML_REST_HTTP_CLIENT is only read by the BuildRequest
-          #      path through llmhttp). Pin the !buildrequest cells to
-          #      nethttp only so auto/fasthttp don't duplicate cycles.
-          #
-          #   2. BAML versions below 0.219.0 have no BuildRequest API at
-          #      all — the adapter gate routes those requests through
-          #      CallStream regardless of BAML_REST_USE_BUILD_REQUEST.
-          #      Running their buildrequest=true row would just redo the
-          #      buildrequest=false work three times (once per
-          #      http-client value).
+          # Cross-cutting exclusion: http-client has no effect on the legacy
+          # CallStream path (BAML_REST_HTTP_CLIENT is only read by the
+          # BuildRequest path through llmhttp). BAML versions below 0.219.0
+          # have no BuildRequest API at all, so every request routes through
+          # CallStream — pin those (non-supportsBuildRequest) versions to
+          # nethttp only so auto/fasthttp don't duplicate cycles. Modern
+          # versions keep the full http-client spread.
           #
           # The "auto" value exercises the default dispatch path (ALPN
           # probe on HTTPS, fasthttp short-circuit on plain http). mockllm
@@ -57,12 +55,10 @@ jobs:
             | {
                 "baml-version": $versions,
                 "unary-server": [false, true],
-                "use-build-request": [false, true],
                 "http-client": ["auto", "nethttp", "fasthttp"],
                 "exclude": (
-                  ($versions | map({"baml-version": ., "use-build-request": false, "http-client": "auto"}))
-                  + ($versions | map({"baml-version": ., "use-build-request": false, "http-client": "fasthttp"}))
-                  + ($versions | map(select(supportsBuildRequest | not)) | map({"baml-version": ., "use-build-request": true}))
+                  ($versions | map(select(supportsBuildRequest | not)) | map({"baml-version": ., "http-client": "auto"}))
+                  + ($versions | map(select(supportsBuildRequest | not)) | map({"baml-version": ., "http-client": "fasthttp"}))
                 )
               }
           ' integration/baml_versions.json)
@@ -339,7 +335,7 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Run Integration Tests (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }}, build-request=${{ matrix.use-build-request }}, http-client=${{ matrix.http-client }})
+      - name: Run Integration Tests (BAML ${{ matrix.baml-version }}, unary=${{ matrix.unary-server }}, http-client=${{ matrix.http-client }})
         # Step timeout (45m) and the watchdog (42m) share the SAME origin
         # (go-test start), so the watchdog provably fires 3m before this
         # step is killed regardless of how long the pre-test steps took.
@@ -349,7 +345,6 @@ jobs:
         env:
           BAML_VERSION: ${{ matrix.baml-version }}
           UNARY_SERVER: ${{ matrix.unary-server }}
-          BAML_REST_USE_BUILD_REQUEST: ${{ matrix.use-build-request }}
           BAML_REST_HTTP_CLIENT: ${{ matrix.http-client }}
           # Step timeout (45m) minus 3m margin.
           BAML_REST_SUITE_WATCHDOG: 42m
@@ -411,11 +406,11 @@ jobs:
       fail-fast: false
       matrix:
         # Bounded in-process matrix: latest BAML only, both unary-server
-        # values and both use-build-request values. http-client stays at
-        # `auto` because the subprocess job already covers the full
-        # http-client spread and in-process does not change request dispatch.
+        # values. The BuildRequest route is unconditional (#537), so there
+        # is no use-build-request axis. http-client stays at `auto` because
+        # the subprocess job already covers the full http-client spread and
+        # in-process does not change request dispatch.
         unary-server: [false, true]
-        use-build-request: [false, true]
 
     steps:
       - name: Checkout Repository
@@ -458,14 +453,13 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Run Integration Tests (in-process, BAML ${{ needs.get-latest-version.outputs.latest }}, unary=${{ matrix.unary-server }}, build-request=${{ matrix.use-build-request }})
+      - name: Run Integration Tests (in-process, BAML ${{ needs.get-latest-version.outputs.latest }}, unary=${{ matrix.unary-server }})
         # Step timeout (45m) and watchdog (42m) share the go-test origin;
         # watchdog fires 3m before the step is killed. #420
         timeout-minutes: 45
         env:
           BAML_VERSION: ${{ needs.get-latest-version.outputs.latest }}
           UNARY_SERVER: ${{ matrix.unary-server }}
-          BAML_REST_USE_BUILD_REQUEST: ${{ matrix.use-build-request }}
           BAML_REST_HTTP_CLIENT: auto
           # Step timeout (45m) minus 3m margin.
           BAML_REST_SUITE_WATCHDOG: 42m
@@ -675,18 +669,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # The BuildRequest route is unconditional (#537), so there is no
+        # use-build-request axis. BAML-from-source is always a modern
+        # (>= 0.219) BuildRequest-capable runtime, so the full http-client
+        # spread is meaningful and needs no legacy-leg exclusions.
         unary-server: [false, true]
-        use-build-request: [false, true]
         http-client: [auto, nethttp, fasthttp]
-        exclude:
-          # See the matrix comment on the versioned job — http-client has
-          # no effect on the legacy path, so the auto × !buildrequest and
-          # fasthttp × !buildrequest cells would just duplicate the
-          # nethttp × !buildrequest cell.
-          - use-build-request: false
-            http-client: auto
-          - use-build-request: false
-            http-client: fasthttp
 
     steps:
       - name: Checkout Repository
@@ -741,7 +729,7 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Run Integration Tests (BAML Source, unary=${{ matrix.unary-server }}, build-request=${{ matrix.use-build-request }}, http-client=${{ matrix.http-client }})
+      - name: Run Integration Tests (BAML Source, unary=${{ matrix.unary-server }}, http-client=${{ matrix.http-client }})
         # Step timeout (70m) and the watchdog (67m) share the SAME origin
         # (go-test start), so the watchdog fires 3m before the step is
         # killed regardless of pre-test step duration — the gap the bare
@@ -755,7 +743,6 @@ jobs:
           # instead of running the in-image cargo build (testutil/container.go).
           BAML_PREBUILT_CFFI_DIR: ${{ github.workspace }}/prebuilt-cffi
           UNARY_SERVER: ${{ matrix.unary-server }}
-          BAML_REST_USE_BUILD_REQUEST: ${{ matrix.use-build-request }}
           BAML_REST_HTTP_CLIENT: ${{ matrix.http-client }}
           # Step timeout (70m) minus 3m margin. Larger than the 45m-cap
           # jobs because a healthy baml-source m.Run runs 38-45m and must

@@ -2,44 +2,20 @@ package buildrequest
 
 import (
 	"context"
-	"sync"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 )
 
-// setBuildRequestForTest forces UseBuildRequest() to return a fixed value for
-// the duration of the test. The production cache is a sync.Once + bool pair;
-// we replace the Once with a fresh one and pre-fire it so the cached bool is
-// authoritative without re-running parseBuildRequestEnv. Cleanup resets the
-// Once to a fresh one (never copies a used Once — sync.Once's contract
-// forbids that) so neighbouring tests re-run parseBuildRequestEnv on first
-// UseBuildRequest() call.
-//
-// Tests that call this helper must NOT use t.Parallel — they share the
-// process-global cache.
-func setBuildRequestForTest(t *testing.T, v bool) {
-	t.Helper()
-	prevCached := useBuildRequestCached
-	useBuildRequestOnce = sync.Once{}
-	useBuildRequestCached = v
-	useBuildRequestOnce.Do(func() {})
-	t.Cleanup(func() {
-		// Reset to a fresh Once so the next UseBuildRequest() call
-		// re-reads the env var. Do NOT assign back a copy of a prior
-		// Once — sync.Once must not be copied after first use.
-		useBuildRequestOnce = sync.Once{}
-		useBuildRequestCached = prevCached
-	})
-}
-
-// TestBuildLegacyMetadataPlan_ValidChainBuildRequestDisabled exercises Bug 1.
-// When the request goes legacy because BuildRequest is disabled (not because
-// the chain is malformed), PathReason must NOT be PathReasonFallbackEmptyChain.
-// That value is a placeholder seeded by ResolveProviderWithReason and should
-// be overwritten by the real classification.
-func TestBuildLegacyMetadataPlan_ValidChainBuildRequestDisabled(t *testing.T) {
-	setBuildRequestForTest(t, false)
+// TestBuildLegacyMetadataPlan_ValidChainNotMisclassifiedAsEmpty exercises
+// Bug 1: when BuildLegacyMetadataPlan classifies a request with a valid,
+// fully-enumerable fallback chain, PathReason must NOT be
+// PathReasonFallbackEmptyChain. That value is a placeholder seeded by
+// ResolveProviderWithReason and must be overwritten by the real
+// classification. It must also never be the retired
+// PathReasonBuildRequestDisabled (the route gate was removed in #537).
+func TestBuildLegacyMetadataPlan_ValidChainNotMisclassifiedAsEmpty(t *testing.T) {
+	t.Parallel()
 
 	adapter := &mockAdapter{Context: context.Background()}
 	chains := map[string][]string{
@@ -54,10 +30,10 @@ func TestBuildLegacyMetadataPlan_ValidChainBuildRequestDisabled(t *testing.T) {
 	plan := BuildLegacyMetadataPlan(adapter, "Strategy", "baml-fallback", chains, providers, IsProviderSupported, nil)
 
 	if plan.PathReason == PathReasonFallbackEmptyChain {
-		t.Fatalf("BUG 1: valid chain with BuildRequest disabled reports fallback-empty-chain; want buildrequest-disabled. plan=%+v", plan)
+		t.Fatalf("BUG 1: valid chain reports fallback-empty-chain. plan=%+v", plan)
 	}
-	if plan.PathReason != PathReasonBuildRequestDisabled {
-		t.Errorf("PathReason: got %q, want %q", plan.PathReason, PathReasonBuildRequestDisabled)
+	if plan.PathReason == PathReasonBuildRequestDisabled {
+		t.Errorf("retired PathReasonBuildRequestDisabled must never be emitted; plan=%+v", plan)
 	}
 	// The chain should still be enumerated for observability.
 	if got, want := plan.Chain, []string{"Primary", "Backup"}; !equalStringSlice(got, want) {

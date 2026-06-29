@@ -7,10 +7,10 @@ import (
 )
 
 // TestParseTruthyEnvBool pins the env-parser contract: 1/true/yes/on
-// (case-insensitive) are the only truthy tokens. Mirrors the
-// parseBuildRequestEnv accept list in bamlutils/buildrequest so the two
-// server env flags share a single truthiness convention — diverging
-// would surprise operators who set both vars together.
+// (case-insensitive) are the only truthy tokens. Mirrors the shared
+// bamlutils.IsTruthyEnvValue accept list so baml-rest's server env flags
+// share a single truthiness convention — diverging would surprise
+// operators who set multiple vars together.
 func TestParseTruthyEnvBool(t *testing.T) {
 	t.Parallel()
 
@@ -30,7 +30,7 @@ func TestParseTruthyEnvBool(t *testing.T) {
 		{"false", false},
 		{"off", false},
 		{"no", false},
-		{" true ", false}, // no whitespace trimming — mirrors parseBuildRequestEnv
+		{" true ", false}, // no whitespace trimming — mirrors IsTruthyEnvValue
 		{"truthy", false},
 		{"2", false},
 	}

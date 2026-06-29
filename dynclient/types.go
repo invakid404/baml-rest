@@ -112,9 +112,9 @@ type MetadataPhase = bamlutils.MetadataPhase
 type RoundRobinInfo = bamlutils.RoundRobinInfo
 
 // BuildRequestConfig carries the per-client BuildRequest toggles. Public
-// callers configure these through WithUseBuildRequest /
-// WithDisableCallBuildRequest rather than constructing this struct
-// directly.
+// callers configure these through WithDisableCallBuildRequest rather than
+// constructing this struct directly. The BuildRequest route itself is
+// unconditional as of #537.
 type BuildRequestConfig = bamlutils.BuildRequestConfig
 
 // Logger is the minimal logger interface accepted by WithLogger; the

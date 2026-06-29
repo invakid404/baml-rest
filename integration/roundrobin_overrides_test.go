@@ -466,20 +466,21 @@ func TestInvalidRuntimeRoundRobinStartReturnsLegacyError(t *testing.T) {
 }
 
 // TestLegacyModeHonorsRuntimeFallbackStrategyOverride pins that when
-// a request falls through to legacy (UseBuildRequest=false, or BR-
-// unsupported children), the legacy registry view preserves explicit
-// fallback-parent overrides. BAML must execute the runtime chain and
-// the static children are NEVER hit. We swap the parent's strategy
-// to point at a fully-dynamic child (RuntimePrimary, defined here in
-// the registry only) pointing at the tertiary mock scenario, so a
-// hit on tertiary proves the runtime override was honoured end-to-end.
+// a request falls through to legacy (a BAML version with no BuildRequest
+// surface, or BR-unsupported children), the legacy registry view
+// preserves explicit fallback-parent overrides. BAML must execute the
+// runtime chain and the static children are NEVER hit. We swap the
+// parent's strategy to point at a fully-dynamic child (RuntimePrimary,
+// defined here in the registry only) pointing at the tertiary mock
+// scenario, so a hit on tertiary proves the runtime override was honoured
+// end-to-end.
 //
-// Skipped on the BuildRequest-mode CI leg because this test
-// specifically exercises legacy dispatch — it relies on the existing
-// TestEnv being legacy-mode.
+// The BuildRequest route is unconditional as of #537, so legacy dispatch
+// is only reachable on no-surface (pre-0.219) BAML versions — this test
+// runs there.
 func TestLegacyModeHonorsRuntimeFallbackStrategyOverride(t *testing.T) {
-	if ActuallyBuildRequest() {
-		t.Skip("legacy-mode regression test; relies on TestEnv being UseBuildRequest=false")
+	if HasBuildRequestSurface() {
+		t.Skip("legacy-mode regression test; requires a BAML version with no BuildRequest surface (pre-0.219)")
 	}
 	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
 		waitForHealthy(t, 30*time.Second)
@@ -576,10 +577,12 @@ func TestLegacyModeHonorsRuntimeFallbackStrategyOverride(t *testing.T) {
 // pointing at FallbackPrimary, with Primary set to the parent name —
 // BAML resolves the primary, walks the chain, hits FallbackPrimary.
 //
-// Skipped on the BuildRequest-mode CI leg.
+// The BuildRequest route is unconditional as of #537, so legacy dispatch
+// is only reachable on no-surface (pre-0.219) BAML versions — this test
+// runs there.
 func TestLegacyModeSupportsDynamicFallbackPrimary(t *testing.T) {
-	if ActuallyBuildRequest() {
-		t.Skip("legacy-mode regression test; relies on TestEnv being UseBuildRequest=false")
+	if HasBuildRequestSurface() {
+		t.Skip("legacy-mode regression test; requires a BAML version with no BuildRequest surface (pre-0.219)")
 	}
 	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
 		waitForHealthy(t, 30*time.Second)
@@ -634,58 +637,12 @@ func TestLegacyModeSupportsDynamicFallbackPrimary(t *testing.T) {
 	})
 }
 
-// TestLegacyMode_RR_NoCentralization pins that with
-// BAML_REST_USE_BUILD_REQUEST=false on a 0.219+ adapter, the flag
-// is a full kill switch — baml-rest's centralised RR (resolver,
-// in-process coordinator, RemoteAdvancer) must NOT engage, and
-// BAML's per-worker runtime rotation owns the strategy. The
-// observable contract: the request still succeeds, but the
-// X-BAML-RoundRobin-* headers are absent because no baml-rest RR
-// resolution happened. ResolveEffectiveClient is gated on
-// `supportsWithClient && __useBuildRequest`, so with the flag off
-// __rrInfo never gets populated and no RR headers leak.
-//
-// Skipped on the BuildRequest-mode CI leg — this tests the
-// flag-off semantics specifically.
-func TestLegacyMode_RR_NoCentralization(t *testing.T) {
-	if ActuallyBuildRequest() {
-		t.Skip("legacy-mode regression test; relies on TestEnv being UseBuildRequest=false")
-	}
-	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
-		waitForHealthy(t, 30*time.Second)
-		clearRoundRobinScenarios(t)
-		registerAllGreetingScenarios(t, []string{"fallback-primary", "fallback-secondary"})
-
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		resp, err := client.Call(ctx, testutil.CallRequest{
-			Method: "GetGreetingRoundRobinPair",
-			Input:  map[string]any{"name": "World"},
-		})
-		if err != nil {
-			t.Fatalf("Call failed: %v", err)
-		}
-		if resp.StatusCode != 200 {
-			t.Fatalf("expected 200 (BAML's per-worker RR should still serve the request); got %d body=%s err=%s", resp.StatusCode, string(resp.Body), resp.Error)
-		}
-		// The smoking-gun assertion: when the flag is off, baml-rest
-		// must NOT have populated __rrInfo, so the X-BAML-RoundRobin-*
-		// header set is absent. BAML's runtime rotation on each
-		// worker handled the request, but its rotation is per-worker
-		// and not surfaced through baml-rest's planned metadata.
-		for _, name := range []string{
-			testutil.HeaderBAMLRoundRobinName,
-			testutil.HeaderBAMLRoundRobinSelected,
-			testutil.HeaderBAMLRoundRobinIndex,
-		} {
-			if got := resp.Headers.Get(name); got != "" {
-				t.Errorf("flag-off path leaked %s=%q — baml-rest RR engaged when it should be reverted to BAML runtime", name, got)
-			}
-		}
-		testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPath, "legacy")
-	})
-}
+// Note: the former TestLegacyMode_RR_NoCentralization was removed in #537.
+// It pinned the retired BAML_REST_USE_BUILD_REQUEST=false kill switch
+// (centralised RR must not engage on a 0.219+ adapter when the flag was
+// off). The BuildRequest route is now unconditional, so that operator-
+// facing behaviour intentionally no longer exists and there is nothing to
+// assert.
 
 // TestNestedStrategyOverrides_ValidRRChildHonoured pins the runtime-
 // override path end-to-end for a fallback whose nested RR child has a

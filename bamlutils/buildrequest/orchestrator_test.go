@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -426,35 +425,6 @@ func TestRunStreamOrchestration_ContextCancellation(t *testing.T) {
 	}
 	if count == 0 {
 		t.Error("expected at least some results before context cancellation")
-	}
-}
-
-func TestParseBuildRequestEnv(t *testing.T) {
-	tests := []struct {
-		env      string
-		expected bool
-	}{
-		{"", false},
-		{"0", false},
-		{"false", false},
-		{"no", false},
-		{"1", true},
-		{"true", true},
-		{"yes", true},
-		{"on", true},
-		{"TRUE", true},
-		{"True", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.env, func(t *testing.T) {
-			os.Setenv("BAML_REST_USE_BUILD_REQUEST", tt.env)
-			defer os.Unsetenv("BAML_REST_USE_BUILD_REQUEST")
-
-			if got := parseBuildRequestEnv(); got != tt.expected {
-				t.Errorf("parseBuildRequestEnv() with env=%q: got %v, want %v", tt.env, got, tt.expected)
-			}
-		})
 	}
 }
 
