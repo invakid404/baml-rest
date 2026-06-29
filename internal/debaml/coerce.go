@@ -39,37 +39,48 @@ func coerce(b *schema.Bundle, t schema.Type, input value) (json.RawMessage, erro
 	}
 }
 
+// coercePrimitive coerces a value to a primitive target. Native primitive
+// matching is intentionally STRICT (exact JSON type, integer-exact ints),
+// whereas BAML's primitive coercers are lenient: they stringify non-string
+// JSON, parse numeric strings, round float→int, and so on. A strict native
+// failure is therefore exactly where BAML would still succeed, so every
+// mismatch / non-exact value DECLINES (ErrDeBAMLParseUnsupported → fall
+// back to BAML) rather than claiming a hard error BAML would not produce.
+// Porting BAML's full lenient numeric/string coercer is a later milestone;
+// declining keeps parity in the meantime (BAML yields the correct coerced
+// value via fallback).
 func coercePrimitive(p schema.PrimitiveKind, input value) (json.RawMessage, error) {
 	switch p {
 	case schema.PrimitiveString:
 		if input.kind != valString {
-			return nil, typeMismatch("string", input)
+			return nil, declineCoerce("string target", input)
 		}
 		return marshalJSON(input.strV)
 	case schema.PrimitiveInt:
 		if input.kind != valNumber {
-			return nil, typeMismatch("int", input)
+			return nil, declineCoerce("int target", input)
 		}
 		if _, err := input.numV.Int64(); err != nil {
-			return nil, fmt.Errorf("debaml: %s is not an integer", input.numV.String())
+			// Fractional, out-of-range, or exponent forms BAML rounds/parses.
+			return nil, unsupported(fmt.Sprintf("int target: %s not an exact integer", input.numV.String()))
 		}
 		return json.RawMessage(input.numV.String()), nil
 	case schema.PrimitiveFloat:
 		if input.kind != valNumber {
-			return nil, typeMismatch("float", input)
+			return nil, declineCoerce("float target", input)
 		}
 		if _, err := input.numV.Float64(); err != nil {
-			return nil, fmt.Errorf("debaml: %s is not a number", input.numV.String())
+			return nil, unsupported(fmt.Sprintf("float target: %s not representable", input.numV.String()))
 		}
 		return json.RawMessage(input.numV.String()), nil
 	case schema.PrimitiveBool:
 		if input.kind != valBool {
-			return nil, typeMismatch("bool", input)
+			return nil, declineCoerce("bool target", input)
 		}
 		return marshalJSON(input.boolV)
 	case schema.PrimitiveNull:
 		if input.kind != valNull {
-			return nil, typeMismatch("null", input)
+			return nil, declineCoerce("null target", input)
 		}
 		return json.RawMessage("null"), nil
 	default:
@@ -77,6 +88,13 @@ func coercePrimitive(p schema.PrimitiveKind, input value) (json.RawMessage, erro
 	}
 }
 
+// coerceLiteral coerces a value to a literal target. Native matching is
+// EXACT, whereas BAML's literal coercion routes string literals through the
+// fuzzy match_string helper (trim / strip-punctuation / case-insensitive /
+// substring) and rounds/parses for int and bool literals. A non-exact
+// native match is therefore where BAML's lenient matcher would still
+// succeed, so any mismatch DECLINES (fall back to BAML) rather than
+// claiming an error BAML would not produce.
 func coerceLiteral(lit *schema.LiteralValue, input value) (json.RawMessage, error) {
 	if lit == nil {
 		return nil, fmt.Errorf("debaml: literal type missing value")
@@ -84,21 +102,21 @@ func coerceLiteral(lit *schema.LiteralValue, input value) (json.RawMessage, erro
 	switch lit.Kind {
 	case schema.LiteralString:
 		if input.kind != valString || input.strV != lit.String {
-			return nil, fmt.Errorf("debaml: expected literal string %q", lit.String)
+			return nil, unsupported(fmt.Sprintf("literal string %q: no exact match (BAML fuzzy-matches)", lit.String))
 		}
 		return marshalJSON(input.strV)
 	case schema.LiteralInt:
 		if input.kind != valNumber {
-			return nil, typeMismatch("literal int", input)
+			return nil, declineCoerce("literal int", input)
 		}
 		n, err := input.numV.Int64()
 		if err != nil || n != lit.Int {
-			return nil, fmt.Errorf("debaml: expected literal int %d", lit.Int)
+			return nil, unsupported(fmt.Sprintf("literal int %d: no exact match (BAML rounds/parses)", lit.Int))
 		}
 		return json.RawMessage(input.numV.String()), nil
 	case schema.LiteralBool:
 		if input.kind != valBool || input.boolV != lit.Bool {
-			return nil, fmt.Errorf("debaml: expected literal bool %v", lit.Bool)
+			return nil, unsupported(fmt.Sprintf("literal bool %v: no exact match", lit.Bool))
 		}
 		return marshalJSON(input.boolV)
 	default:
@@ -106,9 +124,17 @@ func coerceLiteral(lit *schema.LiteralValue, input value) (json.RawMessage, erro
 	}
 }
 
+// coerceEnum coerces a value to an enum target by EXACT rendered-name (or
+// alias) match. BAML's enum coercion routes through the fuzzy match_string
+// helper (trim / strip-punctuation / case-insensitive / accent-removal /
+// substring), so a value with no exact native match may still match in
+// BAML. To avoid claiming a mismatch BAML would not produce, a non-string
+// input or a no-exact-match value DECLINES (fall back to BAML). An enum
+// referenced but absent from the lowered bundle is a broken schema, kept as
+// a claimed error.
 func coerceEnum(b *schema.Bundle, name string, input value) (json.RawMessage, error) {
 	if input.kind != valString {
-		return nil, typeMismatch("enum", input)
+		return nil, declineCoerce("enum target", input)
 	}
 	e, ok := b.FindEnum(name)
 	if !ok {
@@ -116,7 +142,7 @@ func coerceEnum(b *schema.Bundle, name string, input value) (json.RawMessage, er
 	}
 	v, ok := e.ValueByRenderedName(input.strV)
 	if !ok {
-		return nil, fmt.Errorf("debaml: %q is not a value of enum %q", input.strV, name)
+		return nil, unsupported(fmt.Sprintf("enum %q: %q not an exact value (BAML fuzzy-matches)", name, input.strV))
 	}
 	// Emit the canonical enum value name, matching BAML's enum coercion.
 	return marshalJSON(v.Name.Name)
@@ -171,7 +197,10 @@ func coerceList(b *schema.Bundle, elem *schema.Type, input value) (json.RawMessa
 		return nil, fmt.Errorf("debaml: list type missing element")
 	}
 	if input.kind != valArray {
-		return nil, typeMismatch("array", input)
+		// BAML wraps a non-array value into a one-element array; native is
+		// stricter, so decline rather than claim a mismatch BAML would not
+		// produce.
+		return nil, declineCoerce("list target", input)
 	}
 	var buf bytes.Buffer
 	buf.WriteByte('[')
@@ -252,7 +281,19 @@ func marshalJSON(v any) (json.RawMessage, error) {
 	return json.RawMessage(bytes.TrimRight(buf.Bytes(), "\n")), nil
 }
 
-// typeMismatch reports a conservative JSON-type mismatch for a coercion.
+// typeMismatch reports a conservative JSON-type mismatch as a CLAIMED
+// coercion error. Used where BAML would also fail (e.g. a scalar/array
+// where a class object is required), so the differential checks error
+// parity rather than masking it behind a fallback.
 func typeMismatch(want string, input value) error {
 	return fmt.Errorf("debaml: expected %s, got %s", want, input.kind.String())
+}
+
+// declineCoerce reports a coercion mismatch as a DECLINE
+// (ErrDeBAMLParseUnsupported → fall back to BAML), for the cases where
+// native's strict matching is narrower than BAML's lenient coercers, so a
+// native "failure" is exactly where BAML would still succeed. Distinct from
+// typeMismatch, which claims an error BAML would also produce.
+func declineCoerce(target string, input value) error {
+	return unsupported(fmt.Sprintf("%s: got %s (native stricter than BAML)", target, input.kind.String()))
 }
