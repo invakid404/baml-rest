@@ -77,6 +77,12 @@ type BamlAdapter struct {
 	// BuildRequest seam falls back to BAML-as-today.
 	deBAMLRenderer bamlutils.DeBAMLRenderFunc
 
+	// deBAMLParser is the native response-parser callback, injected by
+	// the root module for the same module-boundary reason as
+	// deBAMLRenderer. nil means the final-parse seam falls back to
+	// BAML-as-today.
+	deBAMLParser bamlutils.DeBAMLParseFunc
+
 	// rrAdvancer is the per-request round-robin Advancer installed by the
 	// worker; nil falls back to the introspected Coordinator.
 	rrAdvancer bamlutils.RoundRobinAdvancer
@@ -236,6 +242,12 @@ func (b *BamlAdapter) SetDeBAMLRenderer(fn bamlutils.DeBAMLRenderFunc) {
 }
 func (b *BamlAdapter) DeBAMLRenderer() bamlutils.DeBAMLRenderFunc {
 	return b.deBAMLRenderer
+}
+func (b *BamlAdapter) SetDeBAMLParser(fn bamlutils.DeBAMLParseFunc) {
+	b.deBAMLParser = fn
+}
+func (b *BamlAdapter) DeBAMLParser() bamlutils.DeBAMLParseFunc {
+	return b.deBAMLParser
 }
 func (b *BamlAdapter) SetRoundRobinAdvancer(advancer bamlutils.RoundRobinAdvancer) {
 	b.rrAdvancer = advancer
