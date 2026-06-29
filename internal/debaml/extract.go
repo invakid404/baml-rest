@@ -114,37 +114,27 @@ func extractFenceContent(raw string) (string, bool) {
 }
 
 // extractBalancedSpan returns the first balanced JSON object or array span
-// in raw — from the first '{' or '[' to its matching close — skipping
-// braces/brackets that appear inside double-quoted strings (honouring
-// backslash escapes). The second return is false when no opening bracket
-// is found or the structure never closes (a truncated response), which the
-// caller treats as "no candidate".
+// in raw — from the first '{' or '[' that appears OUTSIDE double-quoted
+// content to its matching close — skipping braces/brackets that appear
+// inside double-quoted strings (honouring backslash escapes). The second
+// return is false when no opening bracket is found or the structure never
+// closes (a truncated response), which the caller treats as "no candidate".
+//
+// The opening-bracket search itself honours quote/escape state, so prose
+// like `the literal "{}" then {"name":"Ada"}` anchors on the real object,
+// not the quoted braces. A single pass tracks string state for both the
+// anchor search (before start is set) and the depth count (after).
 //
 // Only the outer bracket type is depth-counted; inner brackets of the
 // other type are balanced by construction in any candidate that later
 // strict-parses, and a malformed nesting is caught by the strict parse.
 func extractBalancedSpan(raw string) (string, bool) {
 	start := -1
-	var open, closing byte
-	for i := 0; i < len(raw); i++ {
-		switch raw[i] {
-		case '{':
-			start, open, closing = i, '{', '}'
-		case '[':
-			start, open, closing = i, '[', ']'
-		}
-		if start >= 0 {
-			break
-		}
-	}
-	if start < 0 {
-		return "", false
-	}
-
 	depth := 0
+	var open, closing byte
 	inString := false
 	escaped := false
-	for i := start; i < len(raw); i++ {
+	for i := 0; i < len(raw); i++ {
 		c := raw[i]
 		if inString {
 			switch {
@@ -157,9 +147,21 @@ func extractBalancedSpan(raw string) (string, bool) {
 			}
 			continue
 		}
-		switch c {
-		case '"':
+		if c == '"' {
 			inString = true
+			continue
+		}
+		if start < 0 {
+			// Anchor on the first opening bracket outside quoted content.
+			switch c {
+			case '{':
+				start, open, closing, depth = i, '{', '}', 1
+			case '[':
+				start, open, closing, depth = i, '[', ']', 1
+			}
+			continue
+		}
+		switch c {
 		case open:
 			depth++
 		case closing:

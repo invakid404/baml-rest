@@ -4,6 +4,7 @@ package generated
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
 	bamlutils "github.com/invakid404/baml-rest/bamlutils"
@@ -169,10 +170,13 @@ func maybeParseDeBAMLFinal(adapter bamlutils.Adapter, raw string, stage string) 
 	}
 	out, werr := wrapDeBAMLDynamicOutput(res.JSON)
 	if werr != nil {
-		// A native success we cannot wrap is a wiring bug, not a model
-		// problem: fall back to BAML rather than fail the request.
-		logDeBAMLParseFallback(adapter, stage, werr)
-		return zero, false, nil
+		// The native parser CLAIMED a success (nil error) but produced JSON
+		// we cannot wrap into the dynamic-output envelope (malformed,
+		// non-object, or scalar). Per the seam contract only
+		// ErrDeBAMLParseUnsupported falls back to BAML; every other failure
+		// on a claimed result propagates, so a parser/callback bug surfaces
+		// instead of being hidden behind a BAML parse.
+		return zero, false, fmt.Errorf("wrap native de-BAML parse result: %w", werr)
 	}
 	return out, true, nil
 }

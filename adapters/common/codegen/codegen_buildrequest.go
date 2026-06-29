@@ -332,6 +332,13 @@ func (me *methodEmitter) buildRequestArgCallParam(arg string) jen.Code {
 // adapter.DeBAMLConfig().Enabled, a carried schema, and a wired parser, so
 // emitting the call is inert until BAML_REST_USE_DEBAML is on and a parser
 // is installed.
+//
+// Gating uses the PARSE-side g.isDeBAMLDynamicMethod (matching the parse-only
+// generator in codegen_methods.go), NOT the render-side methodEmitter
+// isDeBAMLMethod: the parse seam consumes only the raw text, so it needs no
+// struct-media-param check. A de-BAML dynamic method without struct media
+// params must still get the native branch in BuildRequest/CallRequest final
+// parse, just as it does in direct Parse.
 func (me *methodEmitter) parseFinalFnBody(textVar string) []jen.Code {
 	g := me.g
 	bamlCall := jen.Return(
@@ -341,7 +348,7 @@ func (me *methodEmitter) parseFinalFnBody(textVar string) []jen.Code {
 			jen.Id("options").Op("..."),
 		),
 	)
-	if !me.isDeBAMLMethod() {
+	if !g.isDeBAMLDynamicMethod(me.methodName) {
 		return []jen.Code{bamlCall}
 	}
 	// A native parse call is emitted -> ensure generate() writes debaml.go
