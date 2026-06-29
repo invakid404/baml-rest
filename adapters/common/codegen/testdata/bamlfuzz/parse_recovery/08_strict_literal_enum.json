@@ -1,0 +1,25 @@
+{
+  "name": "strict_literal_enum",
+  "description": "Strict whole-input JSON exercising a literal_string and an enum_ref (matched by value, emitted as the canonical name). M1-native-claimed: no fixing required. want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "kind", "type": {"kind": "literal", "literal": {"kind": "string", "string": "alpha"}}},
+          {"name": "color", "type": {"kind": "enum_ref", "ref": "Shade"}}
+        ]
+      }
+    ],
+    "enums": [
+      {"name": "Shade", "values": ["LIGHT", "DARK"]}
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"kind\":\"alpha\",\"color\":\"DARK\"}",
+  "want": {
+    "status": "success",
+    "json": {"kind": "alpha", "color": "DARK"}
+  }
+}

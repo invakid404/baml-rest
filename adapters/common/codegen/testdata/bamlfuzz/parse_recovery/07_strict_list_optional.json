@@ -1,0 +1,22 @@
+{
+  "name": "strict_list_optional",
+  "description": "Strict whole-input JSON exercising a list<string> and an optional<int> (present). M1-native-claimed: no fixing required. want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "tags", "type": {"kind": "list", "inner": {"kind": "string"}}},
+          {"name": "age", "type": {"kind": "optional", "inner": {"kind": "int"}}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"tags\":[\"x\",\"y\"],\"age\":7}",
+  "want": {
+    "status": "success",
+    "json": {"tags": ["x", "y"], "age": 7}
+  }
+}

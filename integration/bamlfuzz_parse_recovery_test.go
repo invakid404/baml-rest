@@ -16,6 +16,7 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/dynclient"
 	"github.com/invakid404/baml-rest/integration/testutil"
+	"github.com/invakid404/baml-rest/internal/debaml"
 )
 
 // parseRecoveryCorpusDir is the in-tree JSONish recovery corpus. The
@@ -65,6 +66,100 @@ func (p bamlDynamicParser) Parse(ctx context.Context, req bamlfuzz.ParseRequest)
 	return bamlfuzz.ParseResult{JSON: append(json.RawMessage(nil), resp.Data...)}, nil
 }
 
+// nativeDeBAMLParser adapts the bounded native de-BAML parser
+// (internal/debaml.Parse) to the bamlfuzz.Parser interface so the
+// differential harness can diff the native candidate against the BAML
+// oracle. It lowers the FuzzSchema with the SAME LowerToDynamicSchema
+// helper the BAML leg uses, calls the native parser, maps
+// ErrDeBAMLParseUnsupported to ErrParserUnavailable (so the comparator
+// records a fallback skip rather than spurious drift), and runs the
+// identical absent-optional-injection + order/sort normalization
+// dynclient's parse-only path applies after a (already-flattened) parse —
+// so a CLAIMED native result is directly comparable to BAML's. A claimed
+// native parse ERROR is surfaced unchanged so the comparator checks
+// error parity.
+type nativeDeBAMLParser struct{}
+
+// Name identifies the native candidate leg in diff output and envelopes.
+func (nativeDeBAMLParser) Name() string { return "native_debaml" }
+
+// Parse drives internal/debaml.Parse for a final parse and normalizes its
+// flattened output exactly like dynclient's parse-only path.
+func (nativeDeBAMLParser) Parse(ctx context.Context, req bamlfuzz.ParseRequest) (bamlfuzz.ParseResult, error) {
+	lowered, err := bamlfuzz.LowerToDynamicSchema(req.Schema)
+	if err != nil {
+		// A schema bamlfuzz cannot lower onto the dynamic path is out of the
+		// native parser's scope; decline so the comparator falls back rather
+		// than flag spurious drift (the BAML leg lowers via the same helper,
+		// so it declines/errors symmetrically).
+		return bamlfuzz.ParseResult{}, bamlfuzz.ErrParserUnavailable
+	}
+	res, err := debaml.Parse(ctx, bamlutils.DeBAMLParseRequest{
+		Raw:          req.Raw,
+		OutputSchema: &lowered,
+		Stream:       req.Stream,
+	})
+	if err != nil {
+		if errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+			// Native declined -> comparator skips the native leg (fallback).
+			return bamlfuzz.ParseResult{}, bamlfuzz.ErrParserUnavailable
+		}
+		// Claimed native parse failure -> surfaced so the comparator checks
+		// success/error parity against BAML.
+		return bamlfuzz.ParseResult{}, err
+	}
+
+	// Post-process the already-flattened native JSON exactly like
+	// dynclient.DynamicParse does after FlattenDynamicOutput (which is a
+	// no-op here — the native parser never emits a DynamicProperties
+	// envelope): inject absent optionals, then order by schema (preserve)
+	// or sort alphabetically.
+	out := append(json.RawMessage(nil), res.JSON...)
+	out, err = bamlutils.InjectAbsentOptionals(out, &lowered)
+	if err != nil {
+		return bamlfuzz.ParseResult{}, err
+	}
+	if req.PreserveSchemaOrder {
+		out, err = bamlutils.ReorderDynamicOutputBySchema(out, &lowered)
+	} else {
+		out, err = bamlutils.SortDynamicOutput(out)
+	}
+	if err != nil {
+		return bamlfuzz.ParseResult{}, err
+	}
+	return bamlfuzz.ParseResult{JSON: out}, nil
+}
+
+// parseRecoveryNativeClaim pins the M1 native-parser cut-line per corpus
+// case (by Name): true means the native parser is expected to CLAIM the
+// final parse — produce JSON, or a claimed parse error that matches BAML's
+// error — and false means it FALLS BACK to BAML (ErrDeBAMLParseUnsupported
+// -> SkippedNative). Strict / markdown-fenced / prose-extracted strict JSON
+// is claimed; fixing-parser syntax (trailing commas, unquoted keys, single
+// quotes, mixed jsonish) falls back. Cases absent from the map (the
+// streaming-only ones) carry no final leg and are not asserted.
+var parseRecoveryNativeClaim = map[string]bool{
+	"markdown_fence_object":   true,
+	"prose_before_after_json": true,
+	"truncated_final_error":   true,
+	"strict_list_optional":    true,
+	"strict_literal_enum":     true,
+	"trailing_commas":         false,
+	"unquoted_keys":           false,
+	"single_quotes":           false,
+	"mixed_jsonish":           false,
+}
+
+// parseRecoveryStats tallies how many final-parse cases the native parser
+// claimed vs fell back on, logged as a summary so a shift in the native
+// cut-line is visible even when every case still passes. The harness runs
+// the per-case subtests sequentially (no t.Parallel), so a plain
+// pointer-shared counter needs no locking.
+type parseRecoveryStats struct {
+	claimed  int
+	fallback int
+}
+
 // TestBamlfuzzParseRecovery characterizes BAML's JSONish final-parse
 // recovery behavior against the checked-in corpus and, when a native
 // parser is registered, diffs native against BAML. BAML is the oracle:
@@ -101,21 +196,28 @@ func TestBamlfuzzParseRecovery(t *testing.T) {
 		t.Fatalf("NewDynclient: %v", err)
 	}
 	baml := bamlDynamicParser{dyn: dyn}
+	// Register the bounded M1 native parser as the differential candidate so
+	// DiffParsers diffs it against BAML; restore the prior (no-op) parser
+	// when the test ends.
+	restore := bamlfuzz.RegisterNativeParser(nativeDeBAMLParser{})
+	defer restore()
 	native := bamlfuzz.RegisteredNativeParser()
 	capture := os.Getenv("BAMLFUZZ_PARSE_CAPTURE") == "1"
 
+	stats := &parseRecoveryStats{}
 	for i, c := range corpus {
 		i := i
 		c := c
 		t.Run(c.Name, func(t *testing.T) {
-			runParseRecoveryCase(t, baml, native, c, i, capture)
+			runParseRecoveryCase(t, baml, native, c, i, capture, stats)
 		})
 	}
+	t.Logf("native de-BAML final-parse dispositions: %d claimed, %d fell back to BAML", stats.claimed, stats.fallback)
 }
 
 // runParseRecoveryCase drives the final and/or streaming legs of one
 // recovery case.
-func runParseRecoveryCase(t *testing.T, baml, native bamlfuzz.Parser, c bamlfuzz.ParseRecoveryCase, idx int, capture bool) {
+func runParseRecoveryCase(t *testing.T, baml, native bamlfuzz.Parser, c bamlfuzz.ParseRecoveryCase, idx int, capture bool, stats *parseRecoveryStats) {
 	t.Helper()
 
 	if c.HasFinal() {
@@ -141,6 +243,28 @@ func runParseRecoveryCase(t *testing.T, baml, native bamlfuzz.Parser, c bamlfuzz
 			res := bamlfuzz.DiffParsers(ctx, baml, native, req, nil)
 			if !res.SkippedNative && len(res.Failures) > 0 {
 				dumpParseDiffAndFail(t, parseRecoveryArtifactDir, parseDiffEnvelope(c, idx, -1, "", c.Raw, false, res), strings.Join(res.Failures, "; "))
+			}
+
+			// Record and assert the native parser's disposition (claimed vs
+			// fallback). SkippedNative means it returned ErrParserUnavailable
+			// (mapped from ErrDeBAMLParseUnsupported) and the BAML leg stands
+			// alone; otherwise it claimed the parse and the diff above held it
+			// to BAML. The expected disposition pins the M1 cut-line per case.
+			claimed := !res.SkippedNative
+			if claimed {
+				stats.claimed++
+			} else {
+				stats.fallback++
+			}
+			if want, ok := parseRecoveryNativeClaim[c.Name]; ok {
+				if claimed {
+					t.Logf("native CLAIMED final parse for %q", c.Name)
+				} else {
+					t.Logf("native FELL BACK to BAML for %q", c.Name)
+				}
+				if claimed != want {
+					t.Errorf("native disposition for %q: got claimed=%v, want claimed=%v (M1 cut-line drift)", c.Name, claimed, want)
+				}
 			}
 		})
 	}
