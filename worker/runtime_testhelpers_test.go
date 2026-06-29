@@ -55,12 +55,10 @@ type fakeAdapter struct {
 	clientRegistryProvider string
 	roundRobinAdvancer     bamlutils.RoundRobinAdvancer
 	httpClient             *llmhttp.Client
-	buildRequestConfig     bamlutils.BuildRequestConfig
 	deBAMLConfig           bamlutils.DeBAMLConfig
 	deBAMLOutputSchema     *bamlutils.DynamicOutputSchema
 	deBAMLRenderer         bamlutils.DeBAMLRenderFunc
 
-	setBuildRequestConfigCalls int
 	setHTTPClientCalls         int
 	setDeBAMLConfigCalls       int
 	setDeBAMLOutputSchemaCalls int
@@ -99,11 +97,6 @@ func (a *fakeAdapter) SetHTTPClient(c *llmhttp.Client) {
 	a.setHTTPClientCalls++
 	a.httpClient = c
 }
-func (a *fakeAdapter) SetBuildRequestConfig(c bamlutils.BuildRequestConfig) {
-	a.setBuildRequestConfigCalls++
-	a.buildRequestConfig = c
-}
-func (a *fakeAdapter) BuildRequestConfig() bamlutils.BuildRequestConfig { return a.buildRequestConfig }
 func (a *fakeAdapter) SetRoundRobinAdvancer(adv bamlutils.RoundRobinAdvancer) {
 	a.roundRobinAdvancer = adv
 }

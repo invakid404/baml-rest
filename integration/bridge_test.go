@@ -18,10 +18,18 @@ import (
 //
 // Production divergence between callSupportedProviders and supportedProviders
 // doesn't exist today (both sets are identical), so the test forces the
-// bridge by setting BAML_REST_DISABLE_CALL_BUILD_REQUEST=true in a dedicated
-// container. Under that flag IsCallProviderSupported returns false for every
-// provider — block 1 of the router declines, block 2 (stream modes only) is
-// skipped, and the bridge block takes over for call modes.
+// bridge with the debug-only BAML_REST_CALL_UNSUPPORTED_PROVIDERS hook,
+// marking openai call-unsupported (while leaving it stream-supported) in a
+// dedicated container. Every client in this test uses openai, so
+// IsCallProviderSupported returns false for all of them — block 1 of the
+// router declines, block 2 (stream modes only) is skipped, and the bridge
+// block takes over for call modes. The retired public flag
+// BAML_REST_DISABLE_CALL_BUILD_REQUEST is intentionally NOT used: it was
+// removed in #539, and the debug hook reproduces the same Request-unavailable
+// routing without a production knob.
+//
+// Requires the debug build tag (see cmd/build/build.sh), which the
+// integration testcontainer already enables.
 //
 // Checks:
 //   - /call returns the parsed data
@@ -30,7 +38,7 @@ import (
 //   - Outcome metadata fields (RetryCount, UpstreamDuration) are present
 //
 // The bridge only makes sense with BuildRequest on, so the test skips on the
-// legacy leg where the flag would no-op.
+// legacy leg where the hook would no-op.
 func TestCallBridge_ForcesStreamRequest(t *testing.T) {
 	if !HasBuildRequestSurface() {
 		t.Skip("bridge requires BuildRequest path; skipping on legacy or pre-0.219 runtimes")
@@ -38,10 +46,11 @@ func TestCallBridge_ForcesStreamRequest(t *testing.T) {
 
 	opts := matrixSetupOptions()
 	opts.RuntimeEnv = map[string]string{
-		// Forces IsCallProviderSupported to return false for every
-		// provider, routing /call{,-with-raw} through the stream-
-		// accumulation bridge.
-		"BAML_REST_DISABLE_CALL_BUILD_REQUEST": "true",
+		// Mark openai call-unsupported (but still stream-supported) so
+		// IsCallProviderSupported returns false for every client in this
+		// test, routing /call{,-with-raw} through the stream-accumulation
+		// bridge. Debug-tag only — no effect on release builds.
+		"BAML_REST_CALL_UNSUPPORTED_PROVIDERS": "openai",
 	}
 
 	// Centralized, mode-aware setup budget (#424).
@@ -168,14 +177,14 @@ func TestCallBridge_ForcesStreamRequest(t *testing.T) {
 		testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
 	})
 
-	// Fallback-chain /call under the disable flag: call-side
-	// ResolveFallbackChain sees every child as legacy-under-call and
-	// returns nil (all-legacy short circuit), so the call block declines;
-	// the bridge block re-resolves with IsProviderSupported, accepts the
-	// chain with all children as BuildRequest-driven, and the stream
-	// orchestrator walks the strategy. Covers the new mixed-chain guard's
-	// fall-through composition: call-side refuses → bridge accepts → chain
-	// succeeds end-to-end.
+	// Fallback-chain /call with openai call-unsupported: both children are
+	// openai, so call-side ResolveFallbackChain sees every child as
+	// legacy-under-call and returns nil (all-legacy short circuit), so the
+	// call block declines; the bridge block re-resolves with
+	// IsProviderSupported, accepts the chain with all children as
+	// BuildRequest-driven, and the stream orchestrator walks the strategy.
+	// Covers the mixed-chain guard's fall-through composition: call-side
+	// refuses → bridge accepts → chain succeeds end-to-end.
 	t.Run("fallback_chain_call_bridges_to_streamrequest", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -236,11 +245,12 @@ func TestCallBridge_ForcesStreamRequest(t *testing.T) {
 // bridge can re-resolve with IsProviderSupported and drive those children
 // through StreamRequest rather than legacyCallChildFn.
 //
-// The previous test used BAML_REST_DISABLE_CALL_BUILD_REQUEST to force every
-// provider call-unsupported, which short-circuits ResolveFallbackChain to
-// a nil chain (all-legacy path). That proves the bridge's fallback branch
-// works, but does not exercise the new gate — the gate fires specifically
-// on mixed chains, i.e. chain != nil with legacyChildren non-empty.
+// The sibling TestCallBridge_ForcesStreamRequest marks openai — every
+// client's provider there — call-unsupported, which short-circuits
+// ResolveFallbackChain to a nil chain (all-legacy path). That proves the
+// bridge's fallback branch works, but does not exercise the gate — the gate
+// fires specifically on mixed chains, i.e. chain != nil with legacyChildren
+// non-empty.
 //
 // This test uses the debug-build BAML_REST_CALL_UNSUPPORTED_PROVIDERS hook
 // to mark a single provider (openai-generic) as call-unsupported while

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -41,6 +42,70 @@ func TestParseTruthyEnvBool(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPresentRetiredEnvWarnings pins the warn-and-ignore contract for the
+// retired BuildRequest env vars (BAML_REST_USE_BUILD_REQUEST from #537,
+// BAML_REST_DISABLE_CALL_BUILD_REQUEST from #539): presence — not
+// truthiness — gates the warning, any value warns, and absent vars stay
+// silent. The helper is pure (lookup is injected) so the contract is
+// testable without capturing log output or mutating the process env.
+func TestPresentRetiredEnvWarnings(t *testing.T) {
+	t.Parallel()
+
+	lookupFrom := func(present map[string]string) func(string) (string, bool) {
+		return func(name string) (string, bool) {
+			v, ok := present[name]
+			return v, ok
+		}
+	}
+
+	t.Run("no retired vars set -> no warnings", func(t *testing.T) {
+		got := presentRetiredEnvWarnings(lookupFrom(map[string]string{
+			"BAML_REST_HTTP_CLIENT": "auto",
+		}))
+		if len(got) != 0 {
+			t.Errorf("expected no warnings, got %v", got)
+		}
+	})
+
+	t.Run("disable-call var present (truthy) warns", func(t *testing.T) {
+		got := presentRetiredEnvWarnings(lookupFrom(map[string]string{
+			"BAML_REST_DISABLE_CALL_BUILD_REQUEST": "true",
+		}))
+		if len(got) != 1 {
+			t.Fatalf("expected exactly 1 warning, got %d: %v", len(got), got)
+		}
+		if !strings.Contains(got[0], "BAML_REST_DISABLE_CALL_BUILD_REQUEST") ||
+			!strings.Contains(got[0], "retired and ignored") {
+			t.Errorf("warning text unexpected: %q", got[0])
+		}
+	})
+
+	t.Run("presence not truthiness: empty value still warns", func(t *testing.T) {
+		got := presentRetiredEnvWarnings(lookupFrom(map[string]string{
+			"BAML_REST_DISABLE_CALL_BUILD_REQUEST": "",
+		}))
+		if len(got) != 1 {
+			t.Fatalf("expected empty-value var to warn (presence-based), got %d: %v", len(got), got)
+		}
+	})
+
+	t.Run("both retired vars present -> both warn in declaration order", func(t *testing.T) {
+		got := presentRetiredEnvWarnings(lookupFrom(map[string]string{
+			"BAML_REST_USE_BUILD_REQUEST":          "1",
+			"BAML_REST_DISABLE_CALL_BUILD_REQUEST": "no",
+		}))
+		if len(got) != 2 {
+			t.Fatalf("expected 2 warnings, got %d: %v", len(got), got)
+		}
+		if !strings.Contains(got[0], "BAML_REST_USE_BUILD_REQUEST") {
+			t.Errorf("first warning should be for BAML_REST_USE_BUILD_REQUEST, got %q", got[0])
+		}
+		if !strings.Contains(got[1], "BAML_REST_DISABLE_CALL_BUILD_REQUEST") {
+			t.Errorf("second warning should be for BAML_REST_DISABLE_CALL_BUILD_REQUEST, got %q", got[1])
+		}
+	})
 }
 
 // TestApplyPreserveSchemaOrderDefault_PreservesExplicitPerRequestChoice

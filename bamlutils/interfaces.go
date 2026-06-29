@@ -968,31 +968,6 @@ type RoundRobinAdvancer interface {
 	Advance(clientName string, childCount int) (int, error)
 }
 
-// BuildRequestConfig carries the per-handler settings that drive the
-// codegen-emitted BuildRequest gates. Adapters expose the typed shape
-// so generated routers can read `adapter.BuildRequestConfig()` instead
-// of reaching into the buildrequest package's env-cached globals — every
-// handler in a single process can carry a distinct configuration without
-// leaking through process-wide state.
-//
-// As of #537 the BuildRequest route is unconditional: it is attempted
-// whenever the generated BAML client exposes Request/StreamRequest
-// surfaces. The retired BAML_REST_USE_BUILD_REQUEST route gate no longer
-// has a field here; only the narrower DisableCallBuildRequest hatch
-// remains.
-//
-// The remaining DisableCallBuildRequest value is still resolved once at
-// startup (by cmd/serve and cmd/worker) and installed uniformly across
-// every handler in the pool.
-type BuildRequestConfig struct {
-	// DisableCallBuildRequest mirrors BAML_REST_DISABLE_CALL_BUILD_REQUEST.
-	// When true, the non-streaming Request API is treated as unsupported
-	// for every provider on this handler — /call{,-with-raw} fall through
-	// to the stream-accumulation bridge (when StreamRequest is available)
-	// or to legacy.
-	DisableCallBuildRequest bool
-}
-
 // DeBAMLConfig is the single umbrella switch for baml-rest's native
 // "de-BAML" behaviour: Go-native ports of pieces BAML currently owns at
 // request time (the ctx.output_format renderer first; a native parser
@@ -1001,10 +976,10 @@ type BuildRequestConfig struct {
 //
 // One flag, all-on-or-all-off. There is intentionally no per-feature
 // switch: every implemented native path is gated on Enabled together so
-// operators flip a single, observable rollout control. It is distinct
-// from BuildRequestConfig — BuildRequestConfig selects the transport/
-// request-construction route, while DeBAMLConfig selects whether native
-// de-BAML behaviour is active on routes that expose a native seam.
+// operators flip a single, observable rollout control. It selects only
+// whether native de-BAML behaviour is active on routes that expose a
+// native seam — it does not select a transport/request-construction
+// route (the BuildRequest route is unconditional as of #537).
 //
 // Default (zero value) is disabled: the dynamic request path renders
 // ctx.output_format through BAML exactly as it does today.
@@ -1040,11 +1015,10 @@ func DeBAMLConfigFromEnv() DeBAMLConfig {
 }
 
 // IsTruthyEnvValue is the single truthy-env contract shared across
-// baml-rest's boolean env vars (BAML_REST_DISABLE_CALL_BUILD_REQUEST,
-// BAML_REST_USE_DEBAML, and the serve-host preserve-order default).
-// Exactly 1/true/yes/on (case-insensitive) are true; every other value —
-// including the empty string and whitespace-padded variants (no
-// trimming) — is false.
+// baml-rest's boolean env vars (BAML_REST_USE_DEBAML and the serve-host
+// preserve-order default). Exactly 1/true/yes/on (case-insensitive) are
+// true; every other value — including the empty string and
+// whitespace-padded variants (no trimming) — is false.
 func IsTruthyEnvValue(v string) bool {
 	switch strings.ToLower(v) {
 	case "1", "true", "yes", "on":
@@ -1104,15 +1078,6 @@ type Adapter interface {
 	// setter so the worker's construction-time wiring can call this
 	// unconditionally regardless of adapter version.
 	SetHTTPClient(*llmhttp.Client)
-	// SetBuildRequestConfig stores the per-handler BuildRequestConfig.
-	// The generated router consults BuildRequestConfig() for the
-	// per-request DisableCallBuildRequest decision rather than the
-	// buildrequest package's env-cached helper.
-	SetBuildRequestConfig(BuildRequestConfig)
-	// BuildRequestConfig returns the per-handler BuildRequestConfig
-	// installed via SetBuildRequestConfig. Zero value when unset —
-	// the codegen-emitted router treats DisableCallBuildRequest as false.
-	BuildRequestConfig() BuildRequestConfig
 	// SetDeBAMLConfig stores the per-handler DeBAMLConfig (the
 	// BAML_REST_USE_DEBAML umbrella switch). cmd/serve and cmd/worker
 	// resolve the env once at startup and install it next to the

@@ -31,7 +31,6 @@ type Option func(*config) error
 // configurations like "forced net/http with fasthttp tuning" even when
 // the tuning value would otherwise look like a zero value.
 type config struct {
-	buildRequest    bamlutils.BuildRequestConfig
 	deBAML          bamlutils.DeBAMLConfig
 	deBAMLRender    bamlutils.DeBAMLRenderFunc
 	baseURLRewrites []urlrewrite.Rule
@@ -56,17 +55,6 @@ type config struct {
 	// flips it back to false for callers who prefer alphabetical sort.
 	// Per-request non-nil pointers always win over this default.
 	preserveSchemaOrderDefault bool
-}
-
-// WithDisableCallBuildRequest mirrors BAML_REST_DISABLE_CALL_BUILD_REQUEST.
-// When true, the non-streaming Request API is treated as unsupported and
-// /call{,-with-raw} fall through to the stream-accumulation bridge or
-// legacy path.
-func WithDisableCallBuildRequest(disabled bool) Option {
-	return func(c *config) error {
-		c.buildRequest.DisableCallBuildRequest = disabled
-		return nil
-	}
 }
 
 // WithDeBAML mirrors the BAML_REST_USE_DEBAML umbrella switch for a

@@ -158,13 +158,6 @@ func emitFrameworkAdapter(out *jen.File, opts Options) {
 
 	structFields = append(structFields,
 		jen.Line(),
-		jen.Comment("buildRequestConfig carries the per-handler BuildRequest knobs"),
-		jen.Comment("(DisableCallBuildRequest). The generated router reads this via"),
-		jen.Comment("BuildRequestConfig() instead of the env-cached buildrequest"),
-		jen.Comment("helper so two handlers in the same process can carry distinct"),
-		jen.Comment("configurations."),
-		jen.Id("buildRequestConfig").Qual(bamlutilsPkg, "BuildRequestConfig"),
-		jen.Line(),
 		jen.Comment("deBAMLConfig carries the per-handler BAML_REST_USE_DEBAML"),
 		jen.Comment("umbrella switch. The generated dynamic BuildRequest seam reads"),
 		jen.Comment("it via DeBAMLConfig() to decide whether to render"),
@@ -212,7 +205,6 @@ func emitFrameworkAdapter(out *jen.File, opts Options) {
 	emitFrameworkAdapterStreamModeAndLogger(out, bamlutilsPkg)
 	emitFrameworkAdapterMediaConstructors(out, bamlutilsPkg)
 	emitFrameworkAdapterHTTPClient(out, opts, llmhttpPkg)
-	emitFrameworkAdapterBuildRequestConfig(out, bamlutilsPkg)
 	emitFrameworkAdapterDeBAML(out, bamlutilsPkg)
 	emitFrameworkAdapterRoundRobinAdvancer(out, bamlutilsPkg)
 
@@ -523,23 +515,6 @@ func emitFrameworkAdapterHTTPClient(out *jen.File, opts Options, llmhttpPkg stri
 		Id("HTTPClient").Params().Op("*").Qual(llmhttpPkg, "Client").
 		Block(
 			jen.Return(jen.Nil()),
-		)
-}
-
-// emitFrameworkAdapterBuildRequestConfig emits the per-handler
-// BuildRequestConfig setter/getter pair the generated router consults
-// instead of the buildrequest package's env-cached globals.
-func emitFrameworkAdapterBuildRequestConfig(out *jen.File, bamlutilsPkg string) {
-	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
-		Id("SetBuildRequestConfig").Params(jen.Id("cfg").Qual(bamlutilsPkg, "BuildRequestConfig")).
-		Block(
-			jen.Id("b").Dot("buildRequestConfig").Op("=").Id("cfg"),
-		)
-
-	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
-		Id("BuildRequestConfig").Params().Qual(bamlutilsPkg, "BuildRequestConfig").
-		Block(
-			jen.Return(jen.Id("b").Dot("buildRequestConfig")),
 		)
 }
 

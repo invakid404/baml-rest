@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 )
 
@@ -33,23 +32,14 @@ func TestRuntimeWiring(t *testing.T) {
 }
 
 // TestRuntimeMakeAdapter constructs the framework adapter and round-
-// trips the per-handler BuildRequestConfig and HTTPClient knobs.
-// Confirms the codegen-emitted MakeAdapter wired the setters/getters
-// the worker pool relies on, without touching any BAML runtime that
-// requires the native library.
+// trips the per-handler HTTPClient knob. Confirms the codegen-emitted
+// MakeAdapter wired the setter/getter the worker pool relies on, without
+// touching any BAML runtime that requires the native library.
 func TestRuntimeMakeAdapter(t *testing.T) {
 	rt := Runtime{}
 	adapter := rt.MakeAdapter(context.Background())
 	if adapter == nil {
 		t.Fatal("Runtime.MakeAdapter returned nil")
-	}
-
-	wantBR := bamlutils.BuildRequestConfig{
-		DisableCallBuildRequest: true,
-	}
-	adapter.SetBuildRequestConfig(wantBR)
-	if got := adapter.BuildRequestConfig(); got != wantBR {
-		t.Fatalf("BuildRequestConfig round-trip mismatch: got %+v, want %+v", got, wantBR)
 	}
 
 	httpClient := llmhttp.NewClient(&http.Client{})

@@ -735,10 +735,6 @@ func (a *fakeAdapter) ClientRegistryProvider() string                       { re
 func (a *fakeAdapter) OriginalClientRegistry() *bamlutils.ClientRegistry    { return nil }
 func (a *fakeAdapter) HTTPClient() *llmhttp.Client                          { return nil }
 func (a *fakeAdapter) SetHTTPClient(*llmhttp.Client)                        {}
-func (a *fakeAdapter) SetBuildRequestConfig(bamlutils.BuildRequestConfig)   {}
-func (a *fakeAdapter) BuildRequestConfig() bamlutils.BuildRequestConfig {
-	return bamlutils.BuildRequestConfig{}
-}
 func (a *fakeAdapter) SetRoundRobinAdvancer(bamlutils.RoundRobinAdvancer)   {}
 func (a *fakeAdapter) RoundRobinAdvancer() bamlutils.RoundRobinAdvancer     { return nil }
 func (a *fakeAdapter) SetDeBAMLConfig(bamlutils.DeBAMLConfig)               {}

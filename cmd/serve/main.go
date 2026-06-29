@@ -27,7 +27,6 @@ import (
 	fiberrequestid "github.com/gofiber/fiber/v3/middleware/requestid"
 	"github.com/gregwebs/go-recovery"
 	"github.com/invakid404/baml-rest/bamlutils"
-	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
 	"github.com/invakid404/baml-rest/internal/apierror"
@@ -238,15 +237,15 @@ var serveCmd = &cobra.Command{
 		// factory so every handler in the pool observes the same
 		// configuration the subprocess build's cmd/worker would
 		// produce on its own at process startup.
-		buildRequestConfig := buildrequest.EnvConfig()
-		// BAML_REST_USE_BUILD_REQUEST was retired in #537: the BuildRequest
-		// route is now unconditional. Warn (do not error) if a stale
-		// deployment still sets it so operators get a clean migration
-		// signal without an outage. This host startup path runs in both
-		// subprocess and in-process modes, so it is the single emission
-		// point — the worker subprocess deliberately does not repeat it.
-		if _, present := os.LookupEnv("BAML_REST_USE_BUILD_REQUEST"); present {
-			logger.Warn().Msg("BAML_REST_USE_BUILD_REQUEST is retired and ignored: the BuildRequest route is attempted whenever the generated BAML client exposes Request or StreamRequest. Remove the variable from your configuration.")
+		//
+		// BAML_REST_USE_BUILD_REQUEST (#537) and
+		// BAML_REST_DISABLE_CALL_BUILD_REQUEST (#539) are both retired:
+		// the BuildRequest route is unconditional and /call always uses
+		// the non-streaming Request API when the provider supports it.
+		// Warn (do not error) if a stale deployment still sets either so
+		// operators get a clean migration signal without an outage.
+		for _, msg := range presentRetiredEnvWarnings(os.LookupEnv) {
+			logger.Warn().Msg(msg)
 		}
 		deBAMLConfig := bamlutils.DeBAMLConfigFromEnv()
 		preserveSchemaOrderDefault := preserveSchemaOrderDefaultFromEnv()
@@ -261,7 +260,6 @@ var serveCmd = &cobra.Command{
 		})
 		runtimeCfg := workerModeRuntimeConfig{
 			Runtime:         rootruntime.Runtime{},
-			BuildRequest:    buildRequestConfig,
 			DeBAML:          deBAMLConfig,
 			DeBAMLRender:    debaml.Render,
 			BaseURLRewrites: baseURLRewrites,

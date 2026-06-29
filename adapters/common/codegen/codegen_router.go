@@ -55,23 +55,6 @@ func (me *methodEmitter) emitRouter() {
 		jen.Var().Id("__rrInfo").Op("*").Qual(g.pkgs.InterfacesPkg, "RoundRobinInfo"),
 	)
 	if g.supportsWithClient {
-		// Per-handler BuildRequest config. As of #537 the BuildRequest
-		// route is unconditional, so __brCfg no longer carries a route
-		// gate — its only remaining use is DisableCallBuildRequest,
-		// threaded into the call-side support predicate
-		// (IsCallProviderSupportedWithConfig). Emit the declaration only
-		// when a consumer actually exists: the non-streaming call block
-		// (hasCallBuildRequest) or the final legacy call-side predicate
-		// override (emitted only when there is no stream bridge, i.e.
-		// !hasBuildRequest). A streaming-only modern adapter
-		// (StreamRequest set, Request nil) has neither consumer, so
-		// declaring __brCfg there would emit "declared and not used".
-		if hasCallBuildRequest || !hasBuildRequest {
-			routerBody = append(routerBody,
-				jen.Id("__brCfg").Op(":=").Id("adapter").Dot("BuildRequestConfig").Call(),
-			)
-		}
-
 		// Full RR resolution upgrade: apply the runtime primary
 		// override, unwrap baml-roundrobin wrappers, and advance the
 		// coordinator (or the worker-installed RemoteAdvancer) for the
@@ -169,7 +152,7 @@ func (me *methodEmitter) emitRouter() {
 				jen.Id("__effective"),
 				jen.Qual(g.pkgs.IntrospectedPkg, "ClientProvider"),
 			),
-			jen.If(jen.Id("provider").Op("!=").Lit("").Op("&&").Qual(g.pkgs.BuildRequestPkg, "IsCallProviderSupportedWithConfig").Call(jen.Id("provider"), jen.Id("__brCfg"))).Block(
+			jen.If(jen.Id("provider").Op("!=").Lit("").Op("&&").Qual(g.pkgs.BuildRequestPkg, "IsCallProviderSupported").Call(jen.Id("provider"))).Block(
 				resolveRetryPolicy(),
 				jen.Id("__planned").Op(":=").Qual(g.pkgs.BuildRequestPkg, "BuildSingleProviderPlanForClient").Call(
 					jen.Id("__effective"),
@@ -212,9 +195,7 @@ func (me *methodEmitter) emitRouter() {
 					jen.Id("__effective"),
 					jen.Qual(g.pkgs.IntrospectedPkg, "FallbackChains"),
 					jen.Qual(g.pkgs.IntrospectedPkg, "ClientProvider"),
-					jen.Func().Params(jen.Id("p").String()).Bool().Block(
-						jen.Return(jen.Qual(g.pkgs.BuildRequestPkg, "IsCallProviderSupportedWithConfig").Call(jen.Id("p"), jen.Id("__brCfg"))),
-					),
+					jen.Qual(g.pkgs.BuildRequestPkg, "IsCallProviderSupported"),
 					jen.Qual(g.pkgs.BuildRequestPkg, "PreferAdvancer").Call(
 						jen.Id("adapter"),
 						jen.Qual(g.pkgs.IntrospectedPkg, "RoundRobinCoordinator"),
@@ -502,8 +483,7 @@ func (me *methodEmitter) emitRouter() {
 		// When a stream bridge exists (hasBuildRequest=true) every
 		// call-mode fallthrough was already gated on
 		// IsProviderSupported — a provider that is stream-supported
-		// but call-only-unsupported (e.g. under
-		// BAML_REST_DISABLE_CALL_BUILD_REQUEST or the debug
+		// but call-only-unsupported (e.g. under the debug
 		// BAML_REST_CALL_UNSUPPORTED_PROVIDERS hook) bridges and
 		// never reaches here — so the stream predicate is the
 		// correct one and no call-side override is emitted.
@@ -511,9 +491,9 @@ func (me *methodEmitter) emitRouter() {
 		// When there is no stream bridge (hasBuildRequest=false) a
 		// call mode the non-streaming Request path declined falls
 		// straight to legacy, so the metadata reason must reflect
-		// the call-side classification; otherwise those flags would
-		// produce a too-optimistic PathReason. Stream modes always
-		// use the stream predicate.
+		// the call-side classification; otherwise it would produce a
+		// too-optimistic PathReason. Stream modes always use the
+		// stream predicate.
 		jen.Id("__legacyPredicate").Op(":=").Qual(g.pkgs.BuildRequestPkg, "IsProviderSupported"),
 		func() jen.Code {
 			if hasBuildRequest {
@@ -523,30 +503,18 @@ func (me *methodEmitter) emitRouter() {
 			}
 			callModeCond := jen.Id("mode").Op("==").Qual(g.pkgs.InterfacesPkg, "StreamModeCall").
 				Op("||").Id("mode").Op("==").Qual(g.pkgs.InterfacesPkg, "StreamModeCallWithRaw")
-			// callPredicate names the call-side predicate the legacy
-			// classification swaps in for call-mode requests. On
-			// supportsWithClient adapters (where __brCfg is in scope)
-			// it threads the per-handler config so the metadata reason
-			// reflects this handler's DisableCallBuildRequest knob;
-			// older adapters keep the env-cached IsCallProviderSupported
-			// because they have no BR runtime to honour the override.
-			var callPredicate jen.Code
-			if g.supportsWithClient {
-				callPredicate = jen.Func().Params(jen.Id("p").String()).Bool().Block(
-					jen.Return(jen.Qual(g.pkgs.BuildRequestPkg, "IsCallProviderSupportedWithConfig").Call(jen.Id("p"), jen.Id("__brCfg"))),
-				)
-			} else {
-				callPredicate = jen.Qual(g.pkgs.BuildRequestPkg, "IsCallProviderSupported")
-			}
+			// For call modes the legacy classification swaps in the
+			// call-side support predicate so the metadata reason
+			// reflects call-side support — a provider that is
+			// stream-supported but call-unsupported reaches legacy
+			// here only when there is no bridge.
 			return jen.If(callModeCond).Block(
-				jen.Id("__legacyPredicate").Op("=").Add(callPredicate),
+				jen.Id("__legacyPredicate").Op("=").Qual(g.pkgs.BuildRequestPkg, "IsCallProviderSupported"),
 			)
 		}(),
 		// BuildLegacyMetadataPlanForClient classifies the legacy
 		// route's PathReason. The BuildRequest route is unconditional
-		// (#537), so there is no longer a buildrequest-disabled reason
-		// to thread per-handler config in for; the call-side
-		// DisableCallBuildRequest knob is already folded into
+		// (#537), and the call-side support knob is already folded into
 		// __legacyPredicate above.
 		jen.Id("__plannedLegacy").Op(":=").Qual(g.pkgs.BuildRequestPkg, "BuildLegacyMetadataPlanForClient").Call(
 			jen.Id("__reg"),

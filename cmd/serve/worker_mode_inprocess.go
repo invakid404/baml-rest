@@ -27,8 +27,8 @@ import (
 // server startup.
 //
 // runtimeCfg carries the env-resolved runtime values cmd/serve's main
-// resolves once at startup: the rootruntime wrapper, BuildRequest
-// config, base-URL rewrites, and the per-handler llmhttp.Client. Every
+// resolves once at startup: the rootruntime wrapper, de-BAML config,
+// base-URL rewrites, and the per-handler llmhttp.Client. Every
 // in-process handler is constructed with the same values so behaviour
 // across the pool is identical to the subprocess build.
 func configureWorkerMode(logger zerolog.Logger, cfg *pool.Config, runtimeCfg workerModeRuntimeConfig) error {
@@ -39,17 +39,12 @@ func configureWorkerMode(logger zerolog.Logger, cfg *pool.Config, runtimeCfg wor
 		return fmt.Errorf("invalid BAML_REST_CLIENT_DEFAULTS: %w", err)
 	}
 	// Gate on the effective BuildRequest route: the advisory only applies
-	// when a BuildRequest serializer is actually in the request path.
-	// StreamRequest is always BuildRequest (streaming, plus the /call
-	// bridge, which ignores DisableCallBuildRequest); the non-streaming
-	// Request path is taken only when Request exists AND
-	// DisableCallBuildRequest is off. When neither holds, all traffic is
-	// legacy and the serializer caveat is irrelevant. Note this is NOT
-	// `(Request|StreamRequest) && !DisableCallBuildRequest`: that would
-	// wrongly suppress the advisory when StreamRequest still routes
-	// streaming + bridged-/call traffic through BuildRequest.
-	buildRequestInUse := introspected.StreamRequest != nil ||
-		(introspected.Request != nil && !runtimeCfg.BuildRequest.DisableCallBuildRequest)
+	// when a BuildRequest serializer is actually in the request path. A
+	// BuildRequest surface — StreamRequest (streaming, plus the /call
+	// bridge) or the non-streaming Request path for /call — puts a
+	// BuildRequest serializer in the path. When neither surface exists,
+	// all traffic is legacy and the serializer caveat is irrelevant.
+	buildRequestInUse := introspected.StreamRequest != nil || introspected.Request != nil
 	if clientDefaults.HasKey("allowed_role_metadata") && buildRequestInUse {
 		logger.Warn().Msg(
 			"BAML_REST_CLIENT_DEFAULTS sets allowed_role_metadata and the " +
@@ -73,7 +68,6 @@ func configureWorkerMode(logger zerolog.Logger, cfg *pool.Config, runtimeCfg wor
 			Metrics:         worker.NewMetricsRegistry(),
 			ClientDefaults:  clientDefaults,
 			SharedState:     hook,
-			BuildRequest:    runtimeCfg.BuildRequest,
 			DeBAML:          runtimeCfg.DeBAML,
 			DeBAMLRender:    runtimeCfg.DeBAMLRender,
 			BaseURLRewrites: runtimeCfg.BaseURLRewrites,
