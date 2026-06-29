@@ -183,8 +183,21 @@ func TestFallbackCall(t *testing.T) {
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
 			testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
 			if HasBuildRequestSurface() {
+				// #543: a /call fallback chain whose every provider is
+				// call-supported (both children are openai here) dispatches
+				// via the non-streaming Request API, not the StreamRequest
+				// bridge. The bridge resolves the chain once and, because no
+				// child is call-legacy and openai is call-supported, prefers
+				// the Request dispatch — so BuildRequestAPI is "request", the
+				// same value single-provider /call reports. A "streamrequest"
+				// here would mean the chain needlessly bridged through SSE
+				// accumulation (the pre-#543 behaviour).
+				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLBuildRequestAPI, "request")
 				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLBamlCallCount)
 			} else {
+				// Legacy path sets no BuildRequestAPI header (omitempty drops
+				// the empty value).
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLBuildRequestAPI)
 				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLRetryCount)
 				// Two children walked (primary failed, secondary succeeded);
 				// hit-count assertion above pins this at 2 calls total, so
@@ -260,8 +273,12 @@ func TestFallbackCall(t *testing.T) {
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
 			testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
 			if HasBuildRequestSurface() {
+				// #543: all three children are openai (call-supported), so the
+				// chain dispatches via the Request API rather than bridging.
+				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLBuildRequestAPI, "request")
 				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLBamlCallCount)
 			} else {
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLBuildRequestAPI)
 				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLRetryCount)
 				// Three children walked (primary + secondary failed, tertiary
 				// succeeded); hit-count assertion above pins this at 3 calls
@@ -420,8 +437,12 @@ func TestFallbackCallWithRaw(t *testing.T) {
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLWinnerProvider, "openai")
 			testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLUpstreamDuration)
 			if HasBuildRequestSurface() {
+				// #543: /call-with-raw shares the routing path with /call, so a
+				// fully call-supported chain reports BuildRequestAPI "request".
+				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLBuildRequestAPI, "request")
 				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLBamlCallCount)
 			} else {
+				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLBuildRequestAPI)
 				testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLRetryCount)
 				// Two children walked (primary failed, secondary succeeded);
 				// hit-count assertion above pins this at 2 calls total, so
