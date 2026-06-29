@@ -60,13 +60,6 @@ type BamlAdapter struct {
 	// When nil, llmhttp.DefaultClient is used.
 	httpClient *llmhttp.Client
 
-	// buildRequestConfig carries the per-handler BuildRequest knobs
-	// (DisableCallBuildRequest). The generated router reads this via
-	// BuildRequestConfig() instead of the env-cached buildrequest
-	// helper so two handlers in the same process can carry distinct
-	// configurations.
-	buildRequestConfig bamlutils.BuildRequestConfig
-
 	// deBAMLConfig carries the per-handler BAML_REST_USE_DEBAML
 	// umbrella switch. The generated dynamic BuildRequest seam reads
 	// it via DeBAMLConfig() to decide whether to render
@@ -225,12 +218,6 @@ func (b *BamlAdapter) SetHTTPClient(c *llmhttp.Client) {
 }
 func (b *BamlAdapter) HTTPClient() *llmhttp.Client {
 	return b.httpClient
-}
-func (b *BamlAdapter) SetBuildRequestConfig(cfg bamlutils.BuildRequestConfig) {
-	b.buildRequestConfig = cfg
-}
-func (b *BamlAdapter) BuildRequestConfig() bamlutils.BuildRequestConfig {
-	return b.buildRequestConfig
 }
 func (b *BamlAdapter) SetDeBAMLConfig(cfg bamlutils.DeBAMLConfig) {
 	b.deBAMLConfig = cfg

@@ -10,7 +10,6 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/invakid404/baml-rest/bamlutils"
-	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
 	"github.com/invakid404/baml-rest/internal/debaml"
@@ -43,12 +42,14 @@ func main() {
 	// the host does not ship programmatic config across the go-plugin
 	// boundary; library-mode callers wire their own config inside the
 	// host process instead.
-	buildRequestConfig := buildrequest.EnvConfig()
-	// Note: the retired-BAML_REST_USE_BUILD_REQUEST deprecation warning is
+	//
+	// Note: the retired-env deprecation warnings (BAML_REST_USE_BUILD_REQUEST
+	// from #537 and BAML_REST_DISABLE_CALL_BUILD_REQUEST from #539) are
 	// emitted once by the host (cmd/serve), which runs at startup in both
-	// subprocess and in-process modes. Emitting it here too would duplicate
-	// the message once per pooled worker subprocess, so the worker stays
-	// silent on it.
+	// subprocess and in-process modes. Emitting them here too would
+	// duplicate the messages once per pooled worker subprocess, so the
+	// worker stays silent on both. Neither var affects routing, so the
+	// worker has nothing to resolve from them.
 	deBAMLConfig := bamlutils.DeBAMLConfigFromEnv()
 	baseURLRewrites := urlrewrite.LoadDefaultRules()
 	streamIdleTimeout := llmhttp.StreamIdleTimeoutFromEnv()
@@ -74,17 +75,12 @@ func main() {
 		os.Exit(1)
 	}
 	// Gate on the effective BuildRequest route: the advisory only applies
-	// when a BuildRequest serializer is actually in the request path.
-	// StreamRequest is always BuildRequest (streaming, plus the /call
-	// bridge, which ignores DisableCallBuildRequest); the non-streaming
-	// Request path is taken only when Request exists AND
-	// DisableCallBuildRequest is off. When neither holds, all traffic is
-	// legacy and the serializer caveat is irrelevant. Note this is NOT
-	// `(Request|StreamRequest) && !DisableCallBuildRequest`: that would
-	// wrongly suppress the advisory when StreamRequest still routes
-	// streaming + bridged-/call traffic through BuildRequest.
-	buildRequestInUse := introspected.StreamRequest != nil ||
-		(introspected.Request != nil && !buildRequestConfig.DisableCallBuildRequest)
+	// when a BuildRequest serializer is actually in the request path. A
+	// BuildRequest surface — StreamRequest (streaming, plus the /call
+	// bridge) or the non-streaming Request path for /call — puts a
+	// BuildRequest serializer in the path. When neither surface exists,
+	// all traffic is legacy and the serializer caveat is irrelevant.
+	buildRequestInUse := introspected.StreamRequest != nil || introspected.Request != nil
 	if clientDefaults.HasKey("allowed_role_metadata") && buildRequestInUse {
 		logger.Warn(
 			"BAML_REST_CLIENT_DEFAULTS sets allowed_role_metadata and the " +
@@ -124,7 +120,6 @@ func main() {
 		Logger:          logger,
 		Metrics:         worker.NewMetricsRegistry(),
 		ClientDefaults:  clientDefaults,
-		BuildRequest:    buildRequestConfig,
 		BaseURLRewrites: baseURLRewrites,
 		HTTPClient:      httpClient,
 		DeBAML:          deBAMLConfig,

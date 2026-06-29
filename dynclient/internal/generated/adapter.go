@@ -969,7 +969,6 @@ func bamlRestDynamicBuildCallRequest(adapter bamlutils.Adapter, rawInput any, ou
 		})
 	}
 	callConfig := &buildrequest.CallConfig{
-		BuildRequestConfig: adapter.BuildRequestConfig(),
 		ClientOverride:     clientOverride,
 		ClientProviders:    clientProviders,
 		FallbackChain:      fallbackChain,
@@ -1013,7 +1012,6 @@ func Baml_Rest_Dynamic(adapter bamlutils.Adapter, rawInput any) (<-chan bamlutil
 	__retryClient := buildrequest.ResolvePrimaryClient(adapter, introspected.FunctionClient["Baml_Rest_Dynamic"])
 	__effective := __retryClient
 	var __rrInfo *bamlutils.RoundRobinInfo
-	__brCfg := adapter.BuildRequestConfig()
 	__rrEffective, __rrInfoUpgrade, __rrErr := buildrequest.ResolveEffectiveClient(adapter, introspected.FunctionClient["Baml_Rest_Dynamic"], introspected.FallbackChains, introspected.ClientProvider, introspected.RoundRobinCoordinator)
 	if __rrErr != nil {
 		return nil, __rrErr
@@ -1024,7 +1022,7 @@ func Baml_Rest_Dynamic(adapter bamlutils.Adapter, rawInput any) (<-chan bamlutil
 	// Try non-streaming BuildRequest path for /call and /call-with-raw
 	if introspected.Request != nil && (mode == bamlutils.StreamModeCall || mode == bamlutils.StreamModeCallWithRaw) {
 		provider := buildrequest.ResolveClientProvider(__reg, __effective, introspected.ClientProvider)
-		if provider != "" && buildrequest.IsCallProviderSupportedWithConfig(provider, __brCfg) {
+		if provider != "" && buildrequest.IsCallProviderSupported(provider) {
 			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
 			__planned := buildrequest.BuildSingleProviderPlanForClient(__effective, provider, retryPolicy, buildrequest.BuildRequestAPIRequest)
 			__planned.RoundRobin = __rrInfo

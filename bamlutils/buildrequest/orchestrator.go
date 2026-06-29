@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,37 +24,6 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/sse"
 	"github.com/invakid404/baml-rest/bamlutils/sseclient"
 )
-
-// parseDisableCallBuildRequestEnv reads BAML_REST_DISABLE_CALL_BUILD_REQUEST
-// and returns its boolean interpretation. Extracted so the test can verify
-// parsing logic independently of the cache.
-func parseDisableCallBuildRequestEnv() bool {
-	return bamlutils.IsTruthyEnvValue(os.Getenv("BAML_REST_DISABLE_CALL_BUILD_REQUEST"))
-}
-
-// disableCallBuildRequestOnce caches the result of the env lookup so
-// IsCallProviderSupported stays hot — os.Getenv takes a lock each call.
-var disableCallBuildRequestOnce sync.Once
-var disableCallBuildRequestCached bool
-
-// disableCallBuildRequest returns true when BAML_REST_DISABLE_CALL_BUILD_REQUEST
-// is set, forcing the non-streaming Request API off for all providers. The
-// call-mode router block then declines and /call{,-with-raw} fall through to
-// the stream-accumulation bridge (when StreamRequest is available) or legacy.
-//
-// Primary uses:
-//
-//   - Exercising the bridge path in integration tests without relying on an
-//     organic divergence between callSupportedProviders and supportedProviders.
-//   - An operational escape hatch if the non-streaming Request API regresses
-//     for a provider; flipping this forces bridging at a latency cost while a
-//     fix ships.
-func disableCallBuildRequest() bool {
-	disableCallBuildRequestOnce.Do(func() {
-		disableCallBuildRequestCached = parseDisableCallBuildRequestEnv()
-	})
-	return disableCallBuildRequestCached
-}
 
 // supportedProviders is the set of providers whose streaming transport
 // is handled by the BuildRequest orchestrator. Providers absent from
@@ -137,9 +105,13 @@ var callSupportedProviders = map[string]bool{
 // supports BAML's Request API. Unknown providers fall back to the legacy
 // CallStream+OnTick path.
 //
-// Returns false for every provider when BAML_REST_DISABLE_CALL_BUILD_REQUEST
-// is set, which routes /call{,-with-raw} through the stream-accumulation
-// bridge (or legacy, if StreamRequest is unavailable).
+// This is the single call-side support predicate: static membership in
+// callSupportedProviders, refined only by the debug-only
+// BAML_REST_CALL_UNSUPPORTED_PROVIDERS filter. /call{,-with-raw} always
+// take the non-streaming Request path when the provider is call-supported;
+// the StreamRequest bridge remains the automatic fallback when Request is
+// unavailable for the request shape. There is no public knob to force the
+// bridge — BAML_REST_DISABLE_CALL_BUILD_REQUEST was retired in #539.
 //
 // Debug builds (-tags debug) additionally honour
 // BAML_REST_CALL_UNSUPPORTED_PROVIDERS, a comma-separated list that marks
@@ -148,44 +120,7 @@ var callSupportedProviders = map[string]bool{
 // fall-through gate to fire without waiting for callSupportedProviders and
 // supportedProviders to diverge organically. See debugFilterCallSupported
 // in call_support_debug.go / call_support_stub.go.
-//
-// The env-cached helper remains as a compatibility wrapper for callers
-// that haven't migrated to the config-aware IsCallProviderSupportedWithConfig.
-// Per-handler dispatch paths read from EnvConfig() through the same path
-// so behaviour is identical for env-driven setups.
 func IsCallProviderSupported(provider string) bool {
-	return IsCallProviderSupportedWithConfig(provider, EnvConfig())
-}
-
-// EnvConfig returns the BuildRequestConfig parsed from the process env.
-// The values are read through the sync.Once-backed disableCallBuildRequest
-// cache so this helper costs the same as a direct env read on the hot path.
-//
-// BuildRequest is always attempted whenever the generated BAML client
-// exposes Request/StreamRequest surfaces — the legacy BAML_REST_USE_BUILD_REQUEST
-// route gate was retired in #537, so only DisableCallBuildRequest (the
-// narrower /call Request-API hatch) is env-driven here.
-//
-// Used by cmd/worker and cmd/serve at startup to populate per-handler
-// worker.Config.BuildRequest; programmatic callers can supply a literal
-// bamlutils.BuildRequestConfig instead.
-func EnvConfig() bamlutils.BuildRequestConfig {
-	return bamlutils.BuildRequestConfig{
-		DisableCallBuildRequest: disableCallBuildRequest(),
-	}
-}
-
-// IsCallProviderSupportedWithConfig is the config-aware variant of
-// IsCallProviderSupported. It consults the supplied per-handler config
-// for DisableCallBuildRequest rather than the process-global env cache.
-//
-// The debug-only BAML_REST_CALL_UNSUPPORTED_PROVIDERS filter stays
-// process-global — it's integration-test infrastructure, not a per-
-// instance knob.
-func IsCallProviderSupportedWithConfig(provider string, cfg bamlutils.BuildRequestConfig) bool {
-	if cfg.DisableCallBuildRequest {
-		return false
-	}
 	return debugFilterCallSupported(provider, callSupportedProviders[provider])
 }
 

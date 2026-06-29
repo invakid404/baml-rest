@@ -32,10 +32,6 @@ import (
 //   - SharedState nil: the handler logs the existing once-per-process
 //     warning the first time a request tries to use round-robin shared
 //     state, then falls back to the in-process Coordinator.
-//   - BuildRequest: zero value leaves the BuildRequest route on (it is
-//     unconditional as of #537) with DisableCallBuildRequest off. The
-//     config propagates to the generated router via the adapter's
-//     BuildRequestConfig() accessor.
 //   - BaseURLRewrites nil: no per-handler URL rewrites — the worker
 //     skips the rewrite pass before SetClientRegistry; the per-handler
 //     HTTPClient still owns outbound rewrites if it was constructed
@@ -51,15 +47,15 @@ type Config struct {
 	ClientDefaults *clientdefaults.Config
 	SharedState    SharedStateHook
 
-	BuildRequest    bamlutils.BuildRequestConfig
 	BaseURLRewrites []urlrewrite.Rule
 	HTTPClient      *llmhttp.Client
 
 	// DeBAML mirrors BAML_REST_USE_DEBAML — the umbrella switch for
 	// native de-BAML behaviour (the native ctx.output_format renderer on
 	// the dynamic BuildRequest route today). Zero value (disabled) keeps
-	// the dynamic path BAML-as-today. Resolved once at startup like
-	// BuildRequest and installed on every adapter via configureAdapter.
+	// the dynamic path BAML-as-today. Server and worker entrypoints
+	// resolve it once at startup; dynclient supplies it explicitly, and
+	// configureAdapter installs it on every adapter.
 	DeBAML bamlutils.DeBAMLConfig
 
 	// DeBAMLRender injects the native ctx.output_format renderer as a
@@ -98,7 +94,6 @@ type Handler struct {
 	metricsReg     *prometheus.Registry
 	clientDefaults *clientdefaults.Config
 
-	buildRequest    bamlutils.BuildRequestConfig
 	baseURLRewrites []urlrewrite.Rule
 	httpClient      *llmhttp.Client
 	deBAML          bamlutils.DeBAMLConfig
@@ -130,7 +125,6 @@ func New(cfg Config) (*Handler, error) {
 		logger:          cfg.Logger,
 		metricsReg:      metricsReg,
 		clientDefaults:  cfg.ClientDefaults,
-		buildRequest:    cfg.BuildRequest,
 		baseURLRewrites: cfg.BaseURLRewrites,
 		httpClient:      cfg.HTTPClient,
 		deBAML:          cfg.DeBAML,
@@ -142,17 +136,16 @@ func New(cfg Config) (*Handler, error) {
 	return h, nil
 }
 
-// configureAdapter installs the per-handler BuildRequest config, HTTP
-// client, and de-BAML config on a freshly-minted adapter. All three
-// setters are part of the bamlutils.Adapter interface and are no-ops on
-// adapter versions that don't honour them (HasHTTPClient=false in codegen
-// options emits a no-op SetHTTPClient). The native render callback is
-// installed through the narrow deBAMLRendererSetter optional interface so
-// only adapters that implement it (the generated dynclient adapter) carry
-// it; the callback may be nil, in which case the dynamic BuildRequest seam
-// falls back to BAML-as-today.
+// configureAdapter installs the per-handler HTTP client and de-BAML
+// config on a freshly-minted adapter. Both setters are part of the
+// bamlutils.Adapter interface and are no-ops on adapter versions that
+// don't honour them (HasHTTPClient=false in codegen options emits a
+// no-op SetHTTPClient). The native render callback is installed through
+// the narrow deBAMLRendererSetter optional interface so only adapters
+// that implement it (the generated dynclient adapter) carry it; the
+// callback may be nil, in which case the dynamic BuildRequest seam falls
+// back to BAML-as-today.
 func (h *Handler) configureAdapter(adapter bamlutils.Adapter) {
-	adapter.SetBuildRequestConfig(h.buildRequest)
 	adapter.SetHTTPClient(h.httpClient)
 	adapter.SetDeBAMLConfig(h.deBAML)
 	if setter, ok := adapter.(deBAMLRendererSetter); ok {

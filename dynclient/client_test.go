@@ -33,15 +33,13 @@ type fakeAdapter struct {
 	clientRegistryProvider string
 	roundRobinAdvancer     bamlutils.RoundRobinAdvancer
 	httpClient             *llmhttp.Client
-	buildRequestConfig     bamlutils.BuildRequestConfig
 	deBAMLConfig           bamlutils.DeBAMLConfig
 	deBAMLOutputSchema     *bamlutils.DynamicOutputSchema
 	deBAMLRenderer         bamlutils.DeBAMLRenderFunc
 
-	setBuildRequestConfigCalls int
-	setHTTPClientCalls         int
-	setLoggerCalls             int
-	setClientRegistryCalls     int
+	setHTTPClientCalls     int
+	setLoggerCalls         int
+	setClientRegistryCalls int
 }
 
 func (a *fakeAdapter) SetClientRegistry(r *bamlutils.ClientRegistry) error {
@@ -73,11 +71,6 @@ func (a *fakeAdapter) SetHTTPClient(c *llmhttp.Client) {
 	a.setHTTPClientCalls++
 	a.httpClient = c
 }
-func (a *fakeAdapter) SetBuildRequestConfig(c bamlutils.BuildRequestConfig) {
-	a.setBuildRequestConfigCalls++
-	a.buildRequestConfig = c
-}
-func (a *fakeAdapter) BuildRequestConfig() bamlutils.BuildRequestConfig { return a.buildRequestConfig }
 func (a *fakeAdapter) SetRoundRobinAdvancer(adv bamlutils.RoundRobinAdvancer) {
 	a.roundRobinAdvancer = adv
 }
@@ -226,7 +219,6 @@ func TestNewAppliesOptions(t *testing.T) {
 	t.Cleanup(store.Close)
 
 	c := newClient(t, rt,
-		WithDisableCallBuildRequest(true),
 		WithDeBAML(true),
 		WithDeBAMLRenderer(func(*bamlutils.DynamicOutputSchema) (string, error) { return "block", nil }),
 		WithLogger(logger),
@@ -251,9 +243,6 @@ func TestNewAppliesOptions(t *testing.T) {
 	captured := rt.capturedAdapter.Load()
 	if captured == nil {
 		t.Fatal("expected adapter to be captured")
-	}
-	if got := captured.BuildRequestConfig(); got.DisableCallBuildRequest != true {
-		t.Errorf("BuildRequestConfig = %#v, want DisableCallBuildRequest=true", got)
 	}
 	if !captured.DeBAMLConfig().Enabled {
 		t.Errorf("DeBAMLConfig = %#v, want Enabled=true (WithDeBAML wiring)", captured.DeBAMLConfig())

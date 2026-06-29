@@ -445,46 +445,6 @@ func TestDynclientNestedDynamicTypesUnwrapped(t *testing.T) {
 	}
 }
 
-// TestDynclientBuildRequestOptionsSmoke verifies that the surviving
-// WithDisableCallBuildRequest option threads through to the worker handler
-// — the call must succeed against the mock LLM with the option enabled
-// (the /call request bridges through StreamRequest instead of the
-// non-streaming Request API). The BuildRequest route itself is
-// unconditional as of #537, so there is no route-selection option to
-// exercise; this only validates that the surviving option doesn't break
-// the happy path.
-func TestDynclientBuildRequestOptionsSmoke(t *testing.T) {
-	dynclientCallGate(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	opts := setupNonStreamingScenario(t, "test-dynclient-buildrequest", `{"answer": "4"}`)
-	_, libSchema := simpleAnswerSchema()
-
-	hello := "What is 2+2?"
-	libReq := dynclient.Request{
-		Messages:       []dynclient.Message{{Role: "user", TextContent: &hello}},
-		ClientRegistry: dynRegistry(opts.ClientRegistry),
-		OutputSchema:   libSchema,
-	}
-
-	client := newDynclient(t,
-		dynclient.WithDisableCallBuildRequest(true),
-	)
-	libResp, err := client.DynamicCall(ctx, libReq)
-	if err != nil {
-		t.Fatalf("Library DynamicCall with disable-call-build-request option: %v", err)
-	}
-	var decoded map[string]any
-	if err := sonic.Unmarshal(libResp.Data, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if decoded["answer"] != "4" {
-		t.Errorf("answer = %v, want %q", decoded["answer"], "4")
-	}
-}
-
 // TestDynclientSharedStateRoundRobinSmoke is a thin sanity check that
 // a SharedStateStore-equipped client can issue back-to-back dynamic
 // calls without tripping the missing-request-id warning path or leaking

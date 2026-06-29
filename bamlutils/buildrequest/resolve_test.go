@@ -18,7 +18,6 @@ type mockAdapter struct {
 	originalRegistry       *bamlutils.ClientRegistry
 	roundRobinAdvancer     bamlutils.RoundRobinAdvancer
 	httpClient             *llmhttp.Client
-	buildRequestConfig     bamlutils.BuildRequestConfig
 }
 
 func (m *mockAdapter) SetClientRegistry(_ *bamlutils.ClientRegistry) error { return nil }
@@ -40,12 +39,6 @@ func (m *mockAdapter) IncludeReasoning() bool                   { return m.inclu
 func (m *mockAdapter) ClientRegistryProvider() string           { return m.clientRegistryProvider }
 func (m *mockAdapter) HTTPClient() *llmhttp.Client              { return m.httpClient }
 func (m *mockAdapter) SetHTTPClient(c *llmhttp.Client)          { m.httpClient = c }
-func (m *mockAdapter) SetBuildRequestConfig(c bamlutils.BuildRequestConfig) {
-	m.buildRequestConfig = c
-}
-func (m *mockAdapter) BuildRequestConfig() bamlutils.BuildRequestConfig {
-	return m.buildRequestConfig
-}
 func (m *mockAdapter) OriginalClientRegistry() *bamlutils.ClientRegistry {
 	return m.originalRegistry
 }

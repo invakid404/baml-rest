@@ -90,17 +90,14 @@ baml-rest reads the following environment variables at startup:
   BuildRequest/StreamRequest route is taken automatically when the
   generated BAML client exposes those surfaces (BAML 0.219+). Older BAML
   versions without Request/StreamRequest, and unsupported/empty providers,
-  use the legacy CallStream+OnTick path. The retired
-  `BAML_REST_USE_BUILD_REQUEST` env var is ignored; if it is still set,
-  baml-rest logs a one-time startup deprecation warning. There is no
-  full-route rollback flag — use `BAML_REST_DISABLE_CALL_BUILD_REQUEST`
-  (below) for the narrower /call hatch, or roll back the deployment.
-- `BAML_REST_DISABLE_CALL_BUILD_REQUEST` — when truthy, the non-streaming
-  Request API is treated as unsupported for every provider, so
-  `/call{,-with-raw}` fall through to the stream-accumulation bridge (when
-  StreamRequest is available) or legacy. This is a narrower operational
-  hatch for the non-streaming Request API only; it does not disable the
-  broader BuildRequest route.
+  use the legacy CallStream+OnTick path. `/call{,-with-raw}` use the
+  non-streaming Request API whenever the generated client exposes Request
+  and the provider supports it; the StreamRequest bridge is the automatic
+  fallback when Request is unavailable for the request shape. The retired
+  `BAML_REST_USE_BUILD_REQUEST` and `BAML_REST_DISABLE_CALL_BUILD_REQUEST`
+  env vars are ignored; if either is still set, baml-rest logs a one-time
+  startup deprecation warning. There is no rollback flag for the
+  non-streaming Request path — roll back the deployment instead.
 - `BAML_REST_BASE_URL_REWRITES` — semicolon-separated URL rewrite rules
   applied to LLM provider base URLs, both at build time and at runtime.
   Format: `from1=to1;from2=to2`. See

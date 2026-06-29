@@ -24,13 +24,6 @@ type workerModeRuntimeConfig struct {
 	// internal/rootruntime.Runtime{}.
 	Runtime worker.Runtime
 
-	// BuildRequest mirrors the BAML_REST_DISABLE_CALL_BUILD_REQUEST env
-	// as a typed config the generated router reads through
-	// adapter.BuildRequestConfig(). The BuildRequest route itself is
-	// unconditional as of #537; only the narrower call-side hatch
-	// remains env-driven.
-	BuildRequest bamlutils.BuildRequestConfig
-
 	// DeBAML mirrors BAML_REST_USE_DEBAML — the umbrella switch the
 	// generated dynamic BuildRequest seam reads through
 	// adapter.DeBAMLConfig() to drive the native ctx.output_format

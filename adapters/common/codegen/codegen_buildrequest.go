@@ -945,11 +945,6 @@ func (me *methodEmitter) emitBuildCallRequest() {
 			jen.Id("FallbackRoundRobin"): jen.Id("fallbackRoundRobin"),
 			jen.Id("LegacyCallChild"):    jen.Id("legacyCallChildFn"),
 			jen.Id("MetadataPlan"):       jen.Id("plannedMetadata"),
-			// BuildRequestConfig threads this handler's per-instance
-			// settings through so the orchestrator's pre-attempt
-			// validation honours DisableCallBuildRequest without
-			// going through the env-cached global.
-			jen.Id("BuildRequestConfig"): jen.Id("adapter").Dot("BuildRequestConfig").Call(),
 			jen.Id("NewMetadataResult"): jen.Func().Params(
 				jen.Id("md").Op("*").Qual(g.pkgs.InterfacesPkg, "Metadata"),
 			).Qual(g.pkgs.InterfacesPkg, "StreamResult").Block(

@@ -129,58 +129,6 @@ func TestHandlerParseMissingMethod(t *testing.T) {
 	}
 }
 
-// TestHandlerPerInstanceBuildRequestConfig pins that two handlers with
-// the same runtime but different BuildRequest configs install the
-// matching value on their adapters — no leakage through a shared
-// global. This is the load-bearing assertion for the dynclient seam:
-// generated routers read `adapter.BuildRequestConfig().DisableCallBuildRequest`,
-// and that value MUST be the per-handler choice rather than a process-
-// wide env cache. (The BuildRequest route itself is unconditional as of
-// #537 — DisableCallBuildRequest is the only remaining per-handler knob.)
-func TestHandlerPerInstanceBuildRequestConfig(t *testing.T) {
-	t.Parallel()
-
-	cfgA := bamlutils.BuildRequestConfig{DisableCallBuildRequest: false}
-	cfgB := bamlutils.BuildRequestConfig{DisableCallBuildRequest: true}
-
-	makeMethod := func(captured **fakeAdapter) bamlutils.StreamingMethod {
-		return bamlutils.StreamingMethod{
-			MakeInput: func() any { return &map[string]any{} },
-			Impl: func(adapter bamlutils.Adapter, _ any) (<-chan bamlutils.StreamResult, error) {
-				*captured = adapter.(*fakeAdapter)
-				ch := make(chan bamlutils.StreamResult)
-				close(ch)
-				return ch, nil
-			},
-		}
-	}
-
-	var capA, capB *fakeAdapter
-	rtA := &fakeRuntime{methods: map[string]bamlutils.StreamingMethod{"x": makeMethod(&capA)}}
-	rtB := &fakeRuntime{methods: map[string]bamlutils.StreamingMethod{"x": makeMethod(&capB)}}
-	hA := newTestHandler(t, Config{Runtime: rtA, BuildRequest: cfgA})
-	hB := newTestHandler(t, Config{Runtime: rtB, BuildRequest: cfgB})
-
-	for _, h := range []*Handler{hA, hB} {
-		out, err := h.CallStream(context.Background(), "x", []byte(`{}`), bamlutils.StreamModeCall)
-		if err != nil {
-			t.Fatalf("CallStream: %v", err)
-		}
-		for range out {
-		}
-	}
-
-	if capA == nil || capB == nil {
-		t.Fatal("expected both handlers to install adapters via the fake runtime")
-	}
-	if capA.BuildRequestConfig() != cfgA {
-		t.Errorf("handler A: BuildRequestConfig = %#v, want %#v", capA.BuildRequestConfig(), cfgA)
-	}
-	if capB.BuildRequestConfig() != cfgB {
-		t.Errorf("handler B: BuildRequestConfig = %#v, want %#v", capB.BuildRequestConfig(), cfgB)
-	}
-}
-
 // TestHandlerDeBAMLConfigAndSchemaWiring pins that the de-BAML umbrella
 // switch is installed per-handler via configureAdapter (alongside
 // BuildRequest) and that the carried output schema from
@@ -339,8 +287,5 @@ func TestHandlerInstallsHTTPClient(t *testing.T) {
 	}
 	if captured.HTTPClient() != client {
 		t.Errorf("expected adapter.HTTPClient() to equal the injected client pointer")
-	}
-	if captured.setBuildRequestConfigCalls != 1 {
-		t.Errorf("expected SetBuildRequestConfig to be called exactly once, got %d", captured.setBuildRequestConfigCalls)
 	}
 }

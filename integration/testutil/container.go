@@ -658,8 +658,8 @@ const HTTPClientSelectorEnvVar = "BAML_REST_HTTP_CLIENT"
 
 // buildContainerEnv returns the env map passed to the baml-rest container.
 // Entries in opts.RuntimeEnv take precedence over the shared defaults, so a
-// test can override BAML_LOG or BAML_REST_DISABLE_CALL_BUILD_REQUEST if it
-// needs to.
+// test can override BAML_LOG, or set a debug-only hook like
+// BAML_REST_CALL_UNSUPPORTED_PROVIDERS, if it needs to.
 //
 // This is the single chokepoint where every baml-rest container's env is
 // built — matrix and dedicated tests alike — so the host BAML_REST_HTTP_CLIENT
