@@ -316,3 +316,31 @@ func TestParse_TopLevelArrayIsClaimedError(t *testing.T) {
 	// to coerce — a claimed error, not a fallback.
 	requireClaimedError(t, personSchema(), `[1,2,3]`)
 }
+
+func TestParse_AliasedFieldMatchesRenderedNameOnly(t *testing.T) {
+	// Field `name` is rendered as alias `full_name`. BAML's jsonish class
+	// coercer matches the rendered (alias) key ONLY; the canonical key
+	// `name` is an extra key and the rendered field is missing. Native must
+	// agree to stay drift-free.
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(
+			kv("name", &bamlutils.DynamicProperty{Type: "string", Alias: "full_name"}),
+			kv("age", intProp()),
+		),
+	}
+	// Alias present -> claimed; emitted under the canonical field name.
+	mustParse(t, s, `{"full_name":"Ada","age":36}`, `{"name":"Ada","age":36}`)
+	// Canonical name present instead of the alias -> required rendered field
+	// missing -> claimed coercion error (BAML errors here too, NOT a false
+	// success).
+	requireClaimedError(t, s, `{"name":"Ada","age":36}`)
+}
+
+func TestParse_FencedJSONWithInlineBackticks(t *testing.T) {
+	// A ``` sequence inside the fenced JSON string body must NOT be treated
+	// as the closing fence (fences are line-anchored), so the strict JSON is
+	// claimed natively rather than truncated into a fallback.
+	s := &bamlutils.DynamicOutputSchema{Properties: props(kv("msg", strProp()))}
+	raw := "```json\n{\"msg\":\"contains ``` inside\"}\n```"
+	mustParse(t, s, raw, "{\"msg\":\"contains ``` inside\"}")
+}

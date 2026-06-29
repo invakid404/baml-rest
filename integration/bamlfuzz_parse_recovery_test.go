@@ -139,16 +139,17 @@ func (nativeDeBAMLParser) Parse(ctx context.Context, req bamlfuzz.ParseRequest) 
 // quotes, mixed jsonish) falls back. Cases absent from the map (the
 // streaming-only ones) carry no final leg and are not asserted.
 var parseRecoveryNativeClaim = map[string]bool{
-	"markdown_fence_object":   true,
-	"prose_before_after_json": true,
-	"quoted_brace_prose":      true,
-	"truncated_final_error":   true,
-	"strict_list_optional":    true,
-	"strict_literal_enum":     true,
-	"trailing_commas":         false,
-	"unquoted_keys":           false,
-	"single_quotes":           false,
-	"mixed_jsonish":           false,
+	"markdown_fence_object":    true,
+	"prose_before_after_json":  true,
+	"quoted_brace_prose":       true,
+	"fenced_backticks_in_json": true,
+	"truncated_final_error":    true,
+	"strict_list_optional":     true,
+	"strict_literal_enum":      true,
+	"trailing_commas":          false,
+	"unquoted_keys":            false,
+	"single_quotes":            false,
+	"mixed_jsonish":            false,
 }
 
 // parseRecoveryStats tallies how many final-parse cases the native parser

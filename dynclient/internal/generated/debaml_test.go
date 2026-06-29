@@ -223,6 +223,7 @@ func parserReturning(json string, err error) bamlutils.DeBAMLParseFunc {
 func TestMaybeParseDeBAMLFinal_WrapFailurePropagates(t *testing.T) {
 	for _, badJSON := range []string{`123`, `"scalar"`, `[1,2,3]`, `{not json`} {
 		_, ok, err := maybeParseDeBAMLFinal(
+			context.Background(),
 			newParserTestAdapter(true, simpleSchema(), parserReturning(badJSON, nil)),
 			"raw", "final",
 		)
@@ -243,6 +244,7 @@ func TestMaybeParseDeBAMLFinal_WrapFailurePropagates(t *testing.T) {
 // dynamic-output envelope.
 func TestMaybeParseDeBAMLFinal_ClaimsValidObject(t *testing.T) {
 	out, ok, err := maybeParseDeBAMLFinal(
+		context.Background(),
 		newParserTestAdapter(true, simpleSchema(), parserReturning(`{"answer":"hi"}`, nil)),
 		"raw", "final",
 	)
@@ -259,6 +261,7 @@ func TestMaybeParseDeBAMLFinal_ClaimsValidObject(t *testing.T) {
 // to BAML.
 func TestMaybeParseDeBAMLFinal_UnsupportedFallsBack(t *testing.T) {
 	_, ok, err := maybeParseDeBAMLFinal(
+		context.Background(),
 		newParserTestAdapter(true, simpleSchema(), parserReturning("", bamlutils.ErrDeBAMLParseUnsupported)),
 		"raw", "final",
 	)
@@ -272,7 +275,7 @@ func TestMaybeParseDeBAMLFinal_UnsupportedFallsBack(t *testing.T) {
 func TestMaybeParseDeBAMLFinal_DeclinesWhenOff(t *testing.T) {
 	mustDecline := func(name string, a bamlutils.Adapter) {
 		t.Helper()
-		if _, ok, err := maybeParseDeBAMLFinal(a, "raw", "final"); ok || err != nil {
+		if _, ok, err := maybeParseDeBAMLFinal(context.Background(), a, "raw", "final"); ok || err != nil {
 			t.Errorf("%s: expected decline (ok=false, err=nil), got ok=%v err=%v", name, ok, err)
 		}
 	}

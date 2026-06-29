@@ -1,0 +1,21 @@
+{
+  "name": "fenced_backticks_in_json",
+  "description": "Markdown-fenced strict JSON whose string body itself contains a ``` sequence. The closing fence is line-anchored, so the inline backticks are not mistaken for the close. M1-native-claimed: strict JSON inside the fence, no fixing required. want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "msg", "type": {"kind": "string"}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "```json\n{\"msg\":\"contains ``` inside\"}\n```",
+  "want": {
+    "status": "success",
+    "json": {"msg": "contains ``` inside"}
+  }
+}

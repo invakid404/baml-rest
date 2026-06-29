@@ -40,6 +40,34 @@ func TestValidateDeBAMLEmission(t *testing.T) {
 	}
 }
 
+// TestValidateDeBAMLRenderEmission_KeyedOnRenderBit pins CU2: the render
+// guard is satisfied ONLY by the render-injection bit
+// (emittedDeBAMLRenderCall), never by the broader helper-needed bit
+// (emittedDeBAMLCall) that a native-parse emission also sets. A generator
+// that emitted a parse-side native call but NOT the render injection must
+// still FAIL, so a render-side-inert de-BAML build cannot ship green.
+func TestValidateDeBAMLRenderEmission_KeyedOnRenderBit(t *testing.T) {
+	// Parse helper emitted, render injection NOT emitted -> must fail.
+	g := &generator{
+		opts:                    Options{DeBAMLDynamicMethod: "Baml_Rest_Dynamic"},
+		emittedDeBAMLCall:       true,  // a native-parse call set this
+		emittedDeBAMLRenderCall: false, // but the render injection never emitted
+	}
+	if err := g.validateDeBAMLRenderEmission(); err == nil {
+		t.Fatal("guard must fail when only the parse call emitted (render injection missing)")
+	}
+	// Render injection emitted -> ok.
+	g.emittedDeBAMLRenderCall = true
+	if err := g.validateDeBAMLRenderEmission(); err != nil {
+		t.Fatalf("guard must pass once the render injection is emitted: %v", err)
+	}
+	// Not configured -> always ok regardless of bits.
+	unconfigured := &generator{opts: Options{}, emittedDeBAMLCall: true}
+	if err := unconfigured.validateDeBAMLRenderEmission(); err != nil {
+		t.Fatalf("unconfigured de-BAML must never error: %v", err)
+	}
+}
+
 // TestGenerate_FailsWhenDeBAMLConfiguredButNotEmitted pins the generate()
 // integration: a configured DeBAMLDynamicMethod that matches no emitted
 // method (the stub root introspection emits no methods, so nothing sets
