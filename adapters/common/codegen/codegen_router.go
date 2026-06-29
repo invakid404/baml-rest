@@ -117,26 +117,70 @@ func (me *methodEmitter) emitRouter() {
 			Op("&&").Len(jen.Id("__resolution").Dot("Chain")).Op(">").Lit(0)
 	}
 
+	// callFallbackDispatch emits the non-streaming Request dispatch for an
+	// already-resolved fallback chain: build the plan with
+	// BuildRequestAPIRequest, copy the top-level RR metadata, and forward to
+	// the call-request impl with the resolver's per-child Chain / Providers /
+	// LegacyChildren / Targets / NestedRoundRobin threaded through. Assumes
+	// retryPolicy and __resolution are already in scope. Shared by the
+	// no-bridge call block (the sole-landing-spot case) and the bridge's
+	// call-supported preference branch (#543); both consume a SINGLE
+	// __resolution, so centralized RR is selected exactly once and never
+	// double-advances the advancer.
+	callFallbackDispatch := func() []jen.Code {
+		return []jen.Code{
+			jen.Id("__planned").Op(":=").Qual(g.pkgs.BuildRequestPkg, "BuildFallbackChainPlanFromResolution").Call(
+				jen.Id("__effective"),
+				jen.Id("__resolution"),
+				jen.Id("retryPolicy"),
+				jen.Qual(g.pkgs.BuildRequestPkg, "BuildRequestAPIRequest"),
+			),
+			jen.Id("__planned").Dot("RoundRobin").Op("=").Id("__rrInfo"),
+			jen.Id("err").Op("=").Id(me.buildCallRequestMethodName).Call(
+				jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
+				jen.Lit(""), jen.Id("retryPolicy"),
+				jen.Id("__resolution").Dot("Chain"),
+				jen.Id("__resolution").Dot("Providers"),
+				jen.Id("__resolution").Dot("LegacyChildren"),
+				jen.Id("__resolution").Dot("Targets"),
+				jen.Id("__resolution").Dot("NestedRoundRobin"),
+				jen.Id("__planned"),
+				jen.Lit(""),
+			),
+			jen.If(jen.Id("err").Op("!=").Nil()).Block(
+				jen.Return(jen.Nil(), jen.Id("err")),
+			),
+			jen.Return(jen.Id("out"), jen.Nil()),
+		}
+	}
+
 	// Non-streaming BuildRequest path for /call and /call-with-raw.
 	// Uses Request (not StreamRequest) to build non-streaming HTTP requests.
 	// Checked before the streaming path since it's more efficient for call modes.
 	//
 	// When the StreamRequest bridge exists (hasBuildRequest=true) the
-	// call block emits only the single-provider arm and the bridge below
-	// owns ALL fallback-chain resolution for call modes. Two reasons:
+	// call block emits only the single-provider arm; the bridge below owns
+	// the SOLE call-mode fallback-chain resolution and, from that one
+	// resolution, dispatches the chain via the non-streaming Request API
+	// when every provider is call-supported, otherwise via the StreamRequest
+	// bridge (#543). Two reasons the single resolver lives in the bridge:
 	//
-	//   1. Single resolver per request. If both blocks called the typed
-	//      resolver, a mixed chain (centralised RR child plus any
-	//      call-legacy sibling) would advance the SharedState advancer
-	//      in the call block and again in the bridge after falling
+	//   1. Single resolver per request. If both the call block and the
+	//      bridge called the typed resolver, a mixed chain (centralised RR
+	//      child plus any call-legacy sibling) would advance the SharedState
+	//      advancer in the call block and again in the bridge after falling
 	//      through — burning two idempotency-cache slots and skewing
-	//      rotation for that request shape.
+	//      rotation for that request shape. Choosing Request vs StreamRequest
+	//      from the already-resolved __resolution (its LegacyChildren +
+	//      Providers) reuses that single resolution — including its
+	//      centralised RR Targets / NestedRoundRobin — so RR is never
+	//      selected a second time.
 	//   2. Stream-side support is a superset of call-side support
-	//      (IsProviderSupported ⊇ IsCallProviderSupported), so the
-	//      bridge's stream-side classification covers every chain the
-	//      call block could have driven directly; the trade-off is SSE
-	//      accumulation overhead vs a unary HTTP attempt, which is
-	//      acceptable next to LLM call latency.
+	//      (IsProviderSupported ⊇ IsCallProviderSupported), so the bridge's
+	//      stream-side resolver accepts every chain the call block could have
+	//      driven directly PLUS call-unsupported chains the Request API must
+	//      decline. The call-supported subset dispatches unary via Request;
+	//      the remainder bridges through StreamRequest with SSE accumulation.
 	//
 	// When no bridge exists (hasBuildRequest=false) the call block is
 	// the sole BuildRequest landing spot for call modes and emits the
@@ -205,29 +249,7 @@ func (me *methodEmitter) emitRouter() {
 					jen.Return(jen.Nil(), jen.Id("__fbErr")),
 				),
 				jen.If(fallbackChainConsumeCond()).Block(
-					resolveRetryPolicy(),
-					jen.Id("__planned").Op(":=").Qual(g.pkgs.BuildRequestPkg, "BuildFallbackChainPlanFromResolution").Call(
-						jen.Id("__effective"),
-						jen.Id("__resolution"),
-						jen.Id("retryPolicy"),
-						jen.Qual(g.pkgs.BuildRequestPkg, "BuildRequestAPIRequest"),
-					),
-					jen.Id("__planned").Dot("RoundRobin").Op("=").Id("__rrInfo"),
-					jen.Id("err").Op("=").Id(me.buildCallRequestMethodName).Call(
-						jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
-						jen.Lit(""), jen.Id("retryPolicy"),
-						jen.Id("__resolution").Dot("Chain"),
-						jen.Id("__resolution").Dot("Providers"),
-						jen.Id("__resolution").Dot("LegacyChildren"),
-						jen.Id("__resolution").Dot("Targets"),
-						jen.Id("__resolution").Dot("NestedRoundRobin"),
-						jen.Id("__planned"),
-						jen.Lit(""),
-					),
-					jen.If(jen.Id("err").Op("!=").Nil()).Block(
-						jen.Return(jen.Nil(), jen.Id("err")),
-					),
-					jen.Return(jen.Id("out"), jen.Nil()),
+					append([]jen.Code{resolveRetryPolicy()}, callFallbackDispatch()...)...,
 				),
 			)
 		}
@@ -335,16 +357,75 @@ func (me *methodEmitter) emitRouter() {
 		)
 	}
 
-	// Bridge: /call and /call-with-raw that the non-streaming block
-	// declined fall through to the streaming BuildRequest path, which
-	// accumulates SSE deltas into a unary response. Triggered when the
-	// non-streaming Request API is unavailable (g.intro.Request==nil
-	// or the call-side support gate rejected the provider/chain) but the
-	// StreamRequest API can drive it. StreamMode is StreamModeCall or
+	// Bridge: /call and /call-with-raw that the single-provider non-
+	// streaming arm declined fall through here. This block also owns the
+	// SOLE call-mode fallback-chain resolution (see the call-block comment
+	// above): it runs one typed resolver, then for fallback chains prefers
+	// the non-streaming Request dispatch when a Request surface exists and
+	// the resolved chain is fully call-supported (#543); otherwise it
+	// accumulates SSE deltas into a unary response via StreamRequest. The
+	// StreamRequest bridge is reached when the non-streaming Request API is
+	// unavailable (g.intro.Request==nil) or the call-side support gate
+	// rejected the provider/chain. StreamMode is StreamModeCall or
 	// StreamModeCallWithRaw, so NeedsPartials is false inside the
-	// orchestrator and no partials ever reach the output channel — the
-	// pool sees the same shape as the non-streaming call path.
+	// orchestrator and no partials ever reach the output channel — the pool
+	// sees the same shape as the non-streaming call path.
 	if hasBuildRequest {
+		// Build the bridge's fallback-chain consume body. resolveRetryPolicy
+		// runs once; then, when a Request surface exists, a fully
+		// call-supported resolved chain dispatches unary via Request (#543)
+		// before the StreamRequest bridge dispatch. Both arms consume the
+		// SAME __resolution above — the choice is read off the resolved
+		// chain, so there is no second resolve and no second RR advance.
+		bridgeFallbackConsume := []jen.Code{resolveRetryPolicy()}
+		if hasCallBuildRequest {
+			// __callChainSupported is true only when the resolved chain has
+			// no legacy children AND every resolved provider is call-
+			// supported. Computed from __resolution (not a second resolve),
+			// and emitted only when a Request surface exists so stream-only
+			// routers never reference IsCallProviderSupported here.
+			bridgeFallbackConsume = append(bridgeFallbackConsume,
+				jen.Id("__callChainSupported").Op(":=").Len(jen.Id("__resolution").Dot("LegacyChildren")).Op("==").Lit(0),
+				jen.If(jen.Id("__callChainSupported")).Block(
+					jen.For(
+						jen.List(jen.Id("_"), jen.Id("__provider")).Op(":=").Range().Id("__resolution").Dot("Providers"),
+					).Block(
+						jen.If(jen.Op("!").Qual(g.pkgs.BuildRequestPkg, "IsCallProviderSupported").Call(jen.Id("__provider"))).Block(
+							jen.Id("__callChainSupported").Op("=").False(),
+							jen.Break(),
+						),
+					),
+				),
+				jen.If(jen.Id("__callChainSupported")).Block(
+					callFallbackDispatch()...,
+				),
+			)
+		}
+		bridgeFallbackConsume = append(bridgeFallbackConsume,
+			jen.Id("__planned").Op(":=").Qual(g.pkgs.BuildRequestPkg, "BuildFallbackChainPlanFromResolution").Call(
+				jen.Id("__effective"),
+				jen.Id("__resolution"),
+				jen.Id("retryPolicy"),
+				jen.Qual(g.pkgs.BuildRequestPkg, "BuildRequestAPIStreamRequest"),
+			),
+			jen.Id("__planned").Dot("RoundRobin").Op("=").Id("__rrInfo"),
+			jen.Id("err").Op("=").Id(me.buildRequestMethodName).Call(
+				jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
+				jen.Lit(""), jen.Id("retryPolicy"),
+				jen.Id("__resolution").Dot("Chain"),
+				jen.Id("__resolution").Dot("Providers"),
+				jen.Id("__resolution").Dot("LegacyChildren"),
+				jen.Id("__resolution").Dot("Targets"),
+				jen.Id("__resolution").Dot("NestedRoundRobin"),
+				jen.Id("__planned"),
+				jen.Lit(""),
+			),
+			jen.If(jen.Id("err").Op("!=").Nil()).Block(
+				jen.Return(jen.Nil(), jen.Id("err")),
+			),
+			jen.Return(jen.Id("out"), jen.Nil()),
+		)
+
 		routerBody = append(routerBody,
 			jen.Comment("Bridge: /call and /call-with-raw via StreamRequest when Request is unavailable"),
 			jen.If(
@@ -381,13 +462,19 @@ func (me *methodEmitter) emitRouter() {
 					),
 					jen.Return(jen.Id("out"), jen.Nil()),
 				),
-				// Fallback chain path (bridge). Uses IsProviderSupported
-				// (stream side) because the whole point of the bridge is
-				// to accept chains that IsCallProviderSupported rejected.
-				// Threads the typed resolver's per-child Targets +
-				// NestedRoundRobin through to orchestrator dispatch so
-				// centralized RR fallback children rotate cross-worker
-				// even on the bridge path.
+				// Fallback chain path — the sole call-mode resolver.
+				// Resolves with IsProviderSupported (stream side, the
+				// superset predicate) so this one resolution covers every
+				// chain: those fully call-supported AND those that need the
+				// bridge. The dispatch API is then chosen off that single
+				// resolution (no second resolve, no second RR advance):
+				// when a Request surface exists and the resolved chain has
+				// no legacy children and every provider is call-supported,
+				// dispatch unary via BuildRequestAPIRequest (#543);
+				// otherwise bridge via BuildRequestAPIStreamRequest. Either
+				// way the typed resolver's per-child Targets +
+				// NestedRoundRobin thread through so centralized RR fallback
+				// children rotate cross-worker.
 				jen.List(jen.Id("__resolution"), jen.Id("__fbErr")).Op(":=").Qual(g.pkgs.BuildRequestPkg, "ResolveFallbackChainPlanForClient").Call(
 					jen.Id("__reg"),
 					jen.Id("__effective"),
@@ -403,29 +490,7 @@ func (me *methodEmitter) emitRouter() {
 					jen.Return(jen.Nil(), jen.Id("__fbErr")),
 				),
 				jen.If(fallbackChainConsumeCond()).Block(
-					resolveRetryPolicy(),
-					jen.Id("__planned").Op(":=").Qual(g.pkgs.BuildRequestPkg, "BuildFallbackChainPlanFromResolution").Call(
-						jen.Id("__effective"),
-						jen.Id("__resolution"),
-						jen.Id("retryPolicy"),
-						jen.Qual(g.pkgs.BuildRequestPkg, "BuildRequestAPIStreamRequest"),
-					),
-					jen.Id("__planned").Dot("RoundRobin").Op("=").Id("__rrInfo"),
-					jen.Id("err").Op("=").Id(me.buildRequestMethodName).Call(
-						jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
-						jen.Lit(""), jen.Id("retryPolicy"),
-						jen.Id("__resolution").Dot("Chain"),
-						jen.Id("__resolution").Dot("Providers"),
-						jen.Id("__resolution").Dot("LegacyChildren"),
-						jen.Id("__resolution").Dot("Targets"),
-						jen.Id("__resolution").Dot("NestedRoundRobin"),
-						jen.Id("__planned"),
-						jen.Lit(""),
-					),
-					jen.If(jen.Id("err").Op("!=").Nil()).Block(
-						jen.Return(jen.Nil(), jen.Id("err")),
-					),
-					jen.Return(jen.Id("out"), jen.Nil()),
+					bridgeFallbackConsume...,
 				),
 			),
 		)
