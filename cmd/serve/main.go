@@ -262,6 +262,7 @@ var serveCmd = &cobra.Command{
 			Runtime:         rootruntime.Runtime{},
 			DeBAML:          deBAMLConfig,
 			DeBAMLRender:    debaml.Render,
+			DeBAMLParse:     debaml.Parse,
 			BaseURLRewrites: baseURLRewrites,
 			HTTPClient:      httpClient,
 		}

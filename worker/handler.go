@@ -66,6 +66,14 @@ type Config struct {
 	// implementation. nil means the dynamic BuildRequest seam has no
 	// renderer and falls back to BAML-as-today even when DeBAML.Enabled.
 	DeBAMLRender bamlutils.DeBAMLRenderFunc
+
+	// DeBAMLParse injects the native response parser as a public-typed
+	// callback, the parser-side twin of DeBAMLRender. Same module-boundary
+	// reason: the root module (or a dynclient caller via
+	// dynclient.WithDeBAMLParser) supplies internal/debaml.Parse. nil means
+	// the dynamic final-parse seam has no native parser and stays
+	// BAML-as-today even when DeBAML.Enabled.
+	DeBAMLParse bamlutils.DeBAMLParseFunc
 }
 
 // deBAMLRendererSetter is the narrow optional interface the adapter
@@ -74,6 +82,14 @@ type Config struct {
 // need not implement it; the generated dynclient adapter does.
 type deBAMLRendererSetter interface {
 	SetDeBAMLRenderer(bamlutils.DeBAMLRenderFunc)
+}
+
+// deBAMLParserSetter is the parser-side twin of deBAMLRendererSetter: the
+// narrow optional interface the adapter implements to receive the native
+// response-parser callback. Same rationale for keeping it off
+// bamlutils.Adapter.
+type deBAMLParserSetter interface {
+	SetDeBAMLParser(bamlutils.DeBAMLParseFunc)
 }
 
 // ErrRuntimeRequired is returned by New when Config.Runtime is nil.
@@ -98,6 +114,7 @@ type Handler struct {
 	httpClient      *llmhttp.Client
 	deBAML          bamlutils.DeBAMLConfig
 	deBAMLRender    bamlutils.DeBAMLRenderFunc
+	deBAMLParse     bamlutils.DeBAMLParseFunc
 
 	sharedStateHook hookStorage
 
@@ -129,6 +146,7 @@ func New(cfg Config) (*Handler, error) {
 		httpClient:      cfg.HTTPClient,
 		deBAML:          cfg.DeBAML,
 		deBAMLRender:    cfg.DeBAMLRender,
+		deBAMLParse:     cfg.DeBAMLParse,
 	}
 	if cfg.SharedState != nil {
 		h.SetSharedStateHook(cfg.SharedState)
@@ -144,12 +162,16 @@ func New(cfg Config) (*Handler, error) {
 // the narrow deBAMLRendererSetter optional interface so only adapters
 // that implement it (the generated dynclient adapter) carry it; the
 // callback may be nil, in which case the dynamic BuildRequest seam falls
-// back to BAML-as-today.
+// back to BAML-as-today. The native parser callback is installed the same
+// way through the deBAMLParserSetter optional interface.
 func (h *Handler) configureAdapter(adapter bamlutils.Adapter) {
 	adapter.SetHTTPClient(h.httpClient)
 	adapter.SetDeBAMLConfig(h.deBAML)
 	if setter, ok := adapter.(deBAMLRendererSetter); ok {
 		setter.SetDeBAMLRenderer(h.deBAMLRender)
+	}
+	if setter, ok := adapter.(deBAMLParserSetter); ok {
+		setter.SetDeBAMLParser(h.deBAMLParse)
 	}
 }
 

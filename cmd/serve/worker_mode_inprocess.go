@@ -70,6 +70,7 @@ func configureWorkerMode(logger zerolog.Logger, cfg *pool.Config, runtimeCfg wor
 			SharedState:     hook,
 			DeBAML:          runtimeCfg.DeBAML,
 			DeBAMLRender:    runtimeCfg.DeBAMLRender,
+			DeBAMLParse:     runtimeCfg.DeBAMLParse,
 			BaseURLRewrites: runtimeCfg.BaseURLRewrites,
 			HTTPClient:      runtimeCfg.HTTPClient,
 		})

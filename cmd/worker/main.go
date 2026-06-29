@@ -124,6 +124,7 @@ func main() {
 		HTTPClient:      httpClient,
 		DeBAML:          deBAMLConfig,
 		DeBAMLRender:    debaml.Render,
+		DeBAMLParse:     debaml.Parse,
 	})
 	if err != nil {
 		logger.Error("failed to construct worker handler", "err", err.Error())
