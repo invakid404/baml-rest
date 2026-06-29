@@ -20,6 +20,23 @@ import (
 // FlattenDynamicOutput / InjectAbsentOptionals / ReorderDynamicOutputBySchema
 // pipeline keys on. Class fields are emitted in schema declaration order so
 // that order pass remains the authority.
+//
+// Coercion cut-line (DELIBERATE, M2a): native matches types STRICTLY, while
+// BAML's coercers are lenient (parse numeric strings, round float→int,
+// stringify non-strings, fuzzy-match enums/literals via match_string, wrap
+// singletons into arrays, absorb a scalar into a single-field class). Where
+// native's strict match fails but BAML may leniently SUCCEED — or where
+// native cannot determine BAML's exact success/failure — coercion DECLINES
+// (ErrDeBAMLParseUnsupported → fall back to BAML), so native is never "more
+// capable" than BAML. Native CLAIMS a coercion error only for mismatches
+// BAML also hard-rejects: a non-object where a MULTI-field class is required,
+// or a missing required field. A consequence is that native also declines
+// some inputs BAML would itself reject (e.g. {color:"MAUVE"} with no enum
+// match, {version:3} for literal 2, a non-integer for an int) — behavior is
+// identical via fallback, and precise claim-parity for those (porting BAML's
+// match_string + numeric coercers) is deferred to a later coercion-focused
+// milestone. See coercePrimitive / coerceList / coerceEnum / coerceLiteral /
+// coerceClass for the per-kind boundary.
 func coerce(b *schema.Bundle, t schema.Type, input value) (json.RawMessage, error) {
 	switch t.Kind {
 	case schema.TypePrimitive:
@@ -148,13 +165,35 @@ func coerceEnum(b *schema.Bundle, name string, input value) (json.RawMessage, er
 	return marshalJSON(v.Name.Name)
 }
 
+// coerceClass coerces an object value into a class, emitting fields in
+// schema declaration order. A multi-field class hard-fails in BAML on a
+// non-object input or a missing required field (coerce_class.rs), so native
+// CLAIMS those mismatches (typeMismatch / missing-field) to catch drift.
+//
+// A SINGLE-field class is special: BAML's class coercer absorbs a
+// scalar/non-object — or an object whose lone field key is absent — directly
+// into the one field via its implied-key / inferred-object path
+// (coerce_class.rs:224/295/300), so BAML often SUCCEEDS where native's strict
+// object/key match fails. Native cannot replicate that, so for a single-field
+// class it DECLINES (ErrDeBAMLParseUnsupported → fall back to BAML) on a
+// non-object input or an object missing the lone field's key, rather than
+// claim a mismatch BAML would not produce.
 func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input value) (json.RawMessage, error) {
-	if input.kind != valObject {
-		return nil, typeMismatch("object", input)
-	}
 	cls, ok := b.FindClass(name, mode)
 	if !ok {
 		return nil, fmt.Errorf("debaml: unknown class %q", name)
+	}
+	singleField := len(cls.Fields) == 1
+	if input.kind != valObject {
+		if singleField {
+			return nil, declineCoerce("single-field class (BAML implied-key)", input)
+		}
+		return nil, typeMismatch("object", input)
+	}
+	if singleField {
+		if _, present := lookupField(input.objV, cls.Fields[0].Name); !present {
+			return nil, unsupported(fmt.Sprintf("debaml: single-field class %q: lone field absent (BAML implied-key may coerce the object)", name))
+		}
 	}
 
 	var buf bytes.Buffer

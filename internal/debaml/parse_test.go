@@ -316,6 +316,28 @@ func TestParse_UnsupportedGeneralUnion(t *testing.T) {
 	requireUnsupported(t, s, `{"u":"x"}`)
 }
 
+func TestParse_SingleFieldClassImpliedKeyDeclines(t *testing.T) {
+	// A single-field class: BAML absorbs a scalar/non-object — or an object
+	// whose lone field key is absent — directly into the one field via its
+	// implied-key / inferred-object coercion, so it often SUCCEEDS where
+	// native's strict object/key match fails. Native must DECLINE, not claim.
+	oneField := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("value", intProp())),
+	}
+	// Non-object input -> BAML implied-key {value: 42}; native declines.
+	requireUnsupported(t, oneField, `42`)
+	// Object with no matching key -> BAML implied path; native declines.
+	requireUnsupported(t, oneField, `{"other":5}`)
+	// The lone field present -> normal claim (no implied-key needed).
+	mustParse(t, oneField, `{"value":5}`, `{"value":5}`)
+
+	// A MULTI-field class with a non-object input / missing required field
+	// stays CLAIMED — BAML hard-fails there too, so the differential checks
+	// error parity rather than masking it.
+	requireClaimedError(t, personSchema(), `[1,2,3]`)        // non-object
+	requireClaimedError(t, personSchema(), `{"name":"Ada"}`) // missing required age
+}
+
 func TestParse_FixingTrailingCommas(t *testing.T) {
 	// Trailing comma in an object.
 	mustParse(t, personSchema(), `{"name":"Ada","age":36,}`, `{"name":"Ada","age":36}`)
