@@ -725,7 +725,7 @@ func bamlRestDynamicBuildRequest(adapter bamlutils.Adapter, rawInput any, out ch
 	parseFinalFn := func(ctx context.Context, accumulated string) (any, error) {
 		// Native de-BAML final parse first; ok==false && err==nil means
 		// declined/unsupported, so fall through to BAML-as-today.
-		if result, ok, err := maybeParseDeBAMLFinal(adapter, accumulated, "final"); ok || err != nil {
+		if result, ok, err := maybeParseDeBAMLFinal(ctx, adapter, accumulated, "final"); ok || err != nil {
 			return result, err
 		}
 		return bamlclient.Parse.Baml_Rest_Dynamic(ctx, accumulated, options...)
@@ -927,7 +927,7 @@ func bamlRestDynamicBuildCallRequest(adapter bamlutils.Adapter, rawInput any, ou
 	parseFinalFn := func(ctx context.Context, text string) (any, error) {
 		// Native de-BAML final parse first; ok==false && err==nil means
 		// declined/unsupported, so fall through to BAML-as-today.
-		if result, ok, err := maybeParseDeBAMLFinal(adapter, text, "final"); ok || err != nil {
+		if result, ok, err := maybeParseDeBAMLFinal(ctx, adapter, text, "final"); ok || err != nil {
 			return result, err
 		}
 		return bamlclient.Parse.Baml_Rest_Dynamic(ctx, text, options...)
@@ -1156,7 +1156,7 @@ var Methods = map[string]bamlutils.StreamingMethod{"Baml_Rest_Dynamic": {
 }}
 
 func parseBamlRestDynamic(adapter bamlutils.Adapter, raw string) (any, error) {
-	if result, ok, err := maybeParseDeBAMLFinal(adapter, raw, "parse_only"); ok || err != nil {
+	if result, ok, err := maybeParseDeBAMLFinal(adapter, adapter, raw, "parse_only"); ok || err != nil {
 		if err != nil {
 			return nil, err
 		}

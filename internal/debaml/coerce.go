@@ -221,21 +221,17 @@ func coerceUnion(b *schema.Bundle, u *schema.UnionType, input any) (json.RawMess
 }
 
 // lookupField returns the input value for a class field, matched by the
-// rendered name the model is shown (the alias when present, else the
-// canonical name). When the field carries an alias it also falls back to
-// the canonical name, since the dynamic render path may not surface
-// aliases. The comma-ok form distinguishes an absent key from a present
+// rendered name ONLY (the alias when present, else the canonical name) —
+// the same key BAML's jsonish class coercer matches against
+// (name.rendered_name()). An aliased field is therefore NOT matched by its
+// canonical name: BAML treats the canonical key as an extra field and the
+// rendered key as missing, and the native path must agree to stay
+// drift-free. For a field with no alias, RenderedName()==Name, so this is
+// unchanged. The comma-ok form distinguishes an absent key from a present
 // null value.
 func lookupField(obj map[string]any, name schema.Name) (any, bool) {
-	if v, ok := obj[name.RenderedName()]; ok {
-		return v, true
-	}
-	if name.Alias != nil {
-		if v, ok := obj[name.Name]; ok {
-			return v, true
-		}
-	}
-	return nil, false
+	v, ok := obj[name.RenderedName()]
+	return v, ok
 }
 
 // isOptional reports whether t is an optional (a nullable union), the only

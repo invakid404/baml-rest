@@ -87,30 +87,36 @@ func strictUnmarshal(s string) (any, error) {
 }
 
 // extractFenceContent returns the body of the first ``` markdown fence in
-// raw, stripping an optional info string (e.g. ```json) on the opening
-// line. The body is everything up to the next ```; the second return is
-// false when no opening fence, or no closing fence, is present.
+// raw, where BOTH the opening and closing fences are anchored to the start
+// of a line (after optional leading whitespace) — matching BAML's markdown
+// parser, which line-anchors fences. The opening line's info string (e.g.
+// ```json) is dropped. The body is every line between the opening and
+// closing fence lines, joined by "\n".
+//
+// Line-anchoring the close is what lets a fenced JSON body itself contain
+// ``` inside a string (e.g. {"msg":"x ``` y"}) without being truncated at
+// the inline backticks: an inline fence is not at a line start, so it is
+// not treated as the close. The second return is false when no opening
+// fence line, or no later closing fence line, is present.
 func extractFenceContent(raw string) (string, bool) {
 	const fence = "```"
-	start := strings.Index(raw, fence)
-	if start < 0 {
-		return "", false
-	}
-	rest := raw[start+len(fence):]
-	// Strip an optional info string on the opening fence's own line
-	// (```json\n…). Only treat the first line as an info string when it
-	// does not itself contain the closing fence (so an inline
-	// ```{...}``` keeps its body intact).
-	if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
-		if firstLine := rest[:nl]; !strings.Contains(firstLine, fence) {
-			rest = rest[nl+1:]
+	lines := strings.Split(raw, "\n")
+	open := -1
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimLeft(line, " \t"), fence) {
+			open = i
+			break
 		}
 	}
-	end := strings.Index(rest, fence)
-	if end < 0 {
+	if open < 0 {
 		return "", false
 	}
-	return rest[:end], true
+	for j := open + 1; j < len(lines); j++ {
+		if strings.HasPrefix(strings.TrimLeft(lines[j], " \t"), fence) {
+			return strings.Join(lines[open+1:j], "\n"), true
+		}
+	}
+	return "", false
 }
 
 // extractBalancedSpan returns the first balanced JSON object or array span

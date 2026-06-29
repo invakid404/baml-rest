@@ -302,7 +302,11 @@ func (me *methodEmitter) deBAMLOutputFormatStmts() []jen.Code {
 	}
 	// Record that the call was emitted so generate() writes the matching
 	// debaml.go helper into this package (the call resolves to it).
+	// emittedDeBAMLRenderCall additionally marks the RENDER injection
+	// specifically, which validateDeBAMLEmission keys on — a native-parse
+	// call must not be mistaken for proof of render injection.
 	me.g.emittedDeBAMLCall = true
+	me.g.emittedDeBAMLRenderCall = true
 	return []jen.Code{
 		jen.Id(me.deBAMLMessagesVar()).Op(":=").
 			Id("maybeApplyDeBAMLOutputFormat").Call(jen.Id("adapter"), jen.Id(me.deBAMLConvertedVar())),
@@ -359,7 +363,7 @@ func (me *methodEmitter) parseFinalFnBody(textVar string) []jen.Code {
 		jen.Comment("declined/unsupported, so fall through to BAML-as-today."),
 		jen.If(
 			jen.List(jen.Id("result"), jen.Id("ok"), jen.Id("err")).Op(":=").
-				Id("maybeParseDeBAMLFinal").Call(jen.Id("adapter"), jen.Id(textVar), jen.Lit("final")),
+				Id("maybeParseDeBAMLFinal").Call(jen.Id("ctx"), jen.Id("adapter"), jen.Id(textVar), jen.Lit("final")),
 			jen.Id("ok").Op("||").Id("err").Op("!=").Nil(),
 		).Block(
 			jen.Return(jen.Id("result"), jen.Id("err")),

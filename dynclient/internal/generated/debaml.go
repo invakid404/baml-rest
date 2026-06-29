@@ -3,6 +3,7 @@
 package generated
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -141,9 +142,12 @@ type deBAMLParserGetter interface {
 //     propagates it so the native-vs-BAML differential catches drift
 //     rather than masking it behind a silent fallback.
 //
-// The adapter doubles as the context.Context handed to the parser, mirroring
-// how the generated Parse call passes the adapter as ctx.
-func maybeParseDeBAMLFinal(adapter bamlutils.Adapter, raw string, stage string) (types.Baml_Rest_DynamicOutput, bool, error) {
+// ctx is the caller's request context: the streaming/call closures thread
+// their per-attempt ctx through so a native parser observes the same
+// cancellation/deadline the BAML fallback would; the parse-only path passes
+// the adapter (which is itself a context.Context) since it has no separate
+// request context.
+func maybeParseDeBAMLFinal(ctx context.Context, adapter bamlutils.Adapter, raw string, stage string) (types.Baml_Rest_DynamicOutput, bool, error) {
 	var zero types.Baml_Rest_DynamicOutput
 	if !adapter.DeBAMLConfig().Enabled {
 		return zero, false, nil
@@ -160,7 +164,7 @@ func maybeParseDeBAMLFinal(adapter bamlutils.Adapter, raw string, stage string) 
 	if parse == nil {
 		return zero, false, nil
 	}
-	res, err := parse(adapter, bamlutils.DeBAMLParseRequest{Raw: raw, OutputSchema: outputSchema})
+	res, err := parse(ctx, bamlutils.DeBAMLParseRequest{Raw: raw, OutputSchema: outputSchema})
 	if err != nil {
 		if errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
 			logDeBAMLParseFallback(adapter, stage, err)

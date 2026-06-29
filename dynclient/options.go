@@ -91,9 +91,9 @@ func WithDeBAMLRenderer(render bamlutils.DeBAMLRenderFunc) Option {
 // parser-side twin of WithDeBAMLRenderer. dynclient lives in a separate Go
 // module and cannot import baml-rest's root internal/schema package, so a
 // caller in the root module supplies the parser (e.g. internal/debaml.Parse).
-// Without it, WithDeBAMLParser has no parser wired and the dynamic
-// final-parse path stays BAML-as-today. Pairs with WithDeBAML (the enable
-// switch).
+// Without it, the dynamic final-parse path has no native parser wired and
+// stays BAML-as-today even with WithDeBAML enabled. Pairs with WithDeBAML
+// (the enable switch).
 func WithDeBAMLParser(parse bamlutils.DeBAMLParseFunc) Option {
 	return func(c *config) error {
 		c.deBAMLParse = parse

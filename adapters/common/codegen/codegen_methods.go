@@ -1041,6 +1041,10 @@ func (g *generator) emitParseMethods() []parseMethodOut {
 		// fall through to BAML-as-today below. Gated at runtime inside
 		// maybeParseDeBAMLFinal on the de-BAML flag, a carried schema, and a
 		// wired parser, so it is inert until BAML_REST_USE_DEBAML is on.
+		//
+		// The parse-only entrypoint has no separate request context, so it
+		// passes the adapter (itself a context.Context) as ctx — the same
+		// value it hands BAML's Parse below.
 		if isDynamic && g.isDeBAMLDynamicMethod(methodName) {
 			// A native parse call is emitted -> ensure generate() writes
 			// debaml.go (which holds maybeParseDeBAMLFinal) into this package.
@@ -1048,7 +1052,7 @@ func (g *generator) emitParseMethods() []parseMethodOut {
 			parseBody = append(parseBody,
 				jen.If(
 					jen.List(jen.Id("result"), jen.Id("ok"), jen.Id("err")).Op(":=").
-						Id("maybeParseDeBAMLFinal").Call(jen.Id("adapter"), jen.Id("raw"), jen.Lit("parse_only")),
+						Id("maybeParseDeBAMLFinal").Call(jen.Id("adapter"), jen.Id("adapter"), jen.Id("raw"), jen.Lit("parse_only")),
 					jen.Id("ok").Op("||").Id("err").Op("!=").Nil(),
 				).Block(
 					jen.If(jen.Id("err").Op("!=").Nil()).Block(
