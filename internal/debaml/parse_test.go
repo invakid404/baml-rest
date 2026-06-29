@@ -2,7 +2,9 @@ package debaml
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -31,15 +33,48 @@ func parse(t *testing.T, s *bamlutils.DynamicOutputSchema, raw string) (string, 
 	return string(res.JSON), nil
 }
 
+// mustParse asserts the parser succeeds and its output is SEMANTICALLY
+// equal to want (decode both, compare values) — tolerant of harmless
+// marshaling/key-order differences. Use mustParseExact when emitted byte
+// order is the property under test.
 func mustParse(t *testing.T, s *bamlutils.DynamicOutputSchema, raw, want string) {
 	t.Helper()
 	got, err := parse(t, s, raw)
 	if err != nil {
 		t.Fatalf("Parse(%q) unexpected error: %v", raw, err)
 	}
-	if got != want {
+	if !jsonValueEqual(t, got, want) {
 		t.Errorf("Parse(%q):\n got %s\nwant %s", raw, got, want)
 	}
+}
+
+// mustParseExact asserts the parser succeeds and its output matches want
+// BYTE-FOR-BYTE. Reserved for tests that specifically assert emitted field
+// order (the schema-order contract), where semantic equality would mask a
+// reordering regression.
+func mustParseExact(t *testing.T, s *bamlutils.DynamicOutputSchema, raw, want string) {
+	t.Helper()
+	got, err := parse(t, s, raw)
+	if err != nil {
+		t.Fatalf("Parse(%q) unexpected error: %v", raw, err)
+	}
+	if got != want {
+		t.Errorf("Parse(%q): byte-exact mismatch\n got %s\nwant %s", raw, got, want)
+	}
+}
+
+// jsonValueEqual reports whether a and b decode to structurally equal JSON
+// values (object key order ignored; numbers compared as float64).
+func jsonValueEqual(t *testing.T, a, b string) bool {
+	t.Helper()
+	var av, bv any
+	if err := json.Unmarshal([]byte(a), &av); err != nil {
+		t.Fatalf("decode got %q: %v", a, err)
+	}
+	if err := json.Unmarshal([]byte(b), &bv); err != nil {
+		t.Fatalf("decode want %q: %v", b, err)
+	}
+	return reflect.DeepEqual(av, bv)
 }
 
 // requireUnsupported asserts the parser fell back (sentinel), not claimed.
@@ -89,7 +124,21 @@ func TestParse_ProseExtraction(t *testing.T) {
 
 func TestParse_FieldOrderFollowsSchema(t *testing.T) {
 	// Input order differs from schema order; output follows schema order.
-	mustParse(t, personSchema(), `{"age":36,"name":"Ada"}`, `{"name":"Ada","age":36}`)
+	// Byte-exact on purpose: this is the schema-order emission contract.
+	mustParseExact(t, personSchema(), `{"age":36,"name":"Ada"}`, `{"name":"Ada","age":36}`)
+}
+
+func TestParse_ProseExtractionSkipsQuotedBrace(t *testing.T) {
+	// A quoted brace appears in prose before the real JSON object. The
+	// balanced-span scanner must anchor on the real object (outside quotes),
+	// not the quoted "{}", which would otherwise strict-parse to {} and then
+	// fail coercion with a missing-required-field error — a parity break vs
+	// BAML, which finds the real answer.
+	raw := `The literal "{}" appears before the answer. {"name":"Ada","age":36}`
+	mustParse(t, personSchema(), raw, `{"name":"Ada","age":36}`)
+	// Also when the quoted brace is an opening one with no close.
+	raw2 := `Use "{ to denote ... " then: {"name":"Ada","age":36}`
+	mustParse(t, personSchema(), raw2, `{"name":"Ada","age":36}`)
 }
 
 func TestParse_PrimitivesAndBool(t *testing.T) {

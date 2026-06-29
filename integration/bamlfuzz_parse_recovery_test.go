@@ -141,6 +141,7 @@ func (nativeDeBAMLParser) Parse(ctx context.Context, req bamlfuzz.ParseRequest) 
 var parseRecoveryNativeClaim = map[string]bool{
 	"markdown_fence_object":   true,
 	"prose_before_after_json": true,
+	"quoted_brace_prose":      true,
 	"truncated_final_error":   true,
 	"strict_list_optional":    true,
 	"strict_literal_enum":     true,
@@ -256,15 +257,19 @@ func runParseRecoveryCase(t *testing.T, baml, native bamlfuzz.Parser, c bamlfuzz
 			} else {
 				stats.fallback++
 			}
-			if want, ok := parseRecoveryNativeClaim[c.Name]; ok {
-				if claimed {
-					t.Logf("native CLAIMED final parse for %q", c.Name)
-				} else {
-					t.Logf("native FELL BACK to BAML for %q", c.Name)
-				}
-				if claimed != want {
-					t.Errorf("native disposition for %q: got claimed=%v, want claimed=%v (M1 cut-line drift)", c.Name, claimed, want)
-				}
+			// Every final-parse fixture MUST pin an expected disposition, so a
+			// new corpus case can't silently skip the cut-line assertion.
+			want, ok := parseRecoveryNativeClaim[c.Name]
+			if !ok {
+				t.Fatalf("final-parse case %q has no pinned native disposition; add it to parseRecoveryNativeClaim (true=claimed, false=fallback)", c.Name)
+			}
+			if claimed {
+				t.Logf("native CLAIMED final parse for %q", c.Name)
+			} else {
+				t.Logf("native FELL BACK to BAML for %q", c.Name)
+			}
+			if claimed != want {
+				t.Errorf("native disposition for %q: got claimed=%v, want claimed=%v (M1 cut-line drift)", c.Name, claimed, want)
 			}
 		})
 	}
