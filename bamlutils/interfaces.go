@@ -1080,8 +1080,8 @@ type Adapter interface {
 	SetHTTPClient(*llmhttp.Client)
 	// SetDeBAMLConfig stores the per-handler DeBAMLConfig (the
 	// BAML_REST_USE_DEBAML umbrella switch). cmd/serve and cmd/worker
-	// resolve the env once at startup and install it next to the
-	// BuildRequest config; dynclient installs it from an explicit option.
+	// resolve the env once at startup and install the value on each
+	// handler's adapters; dynclient installs it from an explicit option.
 	SetDeBAMLConfig(DeBAMLConfig)
 	// DeBAMLConfig returns the per-handler DeBAMLConfig installed via
 	// SetDeBAMLConfig. Zero value (disabled) when unset — the generated

@@ -53,8 +53,9 @@ type Config struct {
 	// DeBAML mirrors BAML_REST_USE_DEBAML — the umbrella switch for
 	// native de-BAML behaviour (the native ctx.output_format renderer on
 	// the dynamic BuildRequest route today). Zero value (disabled) keeps
-	// the dynamic path BAML-as-today. Resolved once at startup like
-	// BuildRequest and installed on every adapter via configureAdapter.
+	// the dynamic path BAML-as-today. Server and worker entrypoints
+	// resolve it once at startup; dynclient supplies it explicitly, and
+	// configureAdapter installs it on every adapter.
 	DeBAML bamlutils.DeBAMLConfig
 
 	// DeBAMLRender injects the native ctx.output_format renderer as a
