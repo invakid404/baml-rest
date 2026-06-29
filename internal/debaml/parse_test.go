@@ -293,14 +293,75 @@ func TestParse_UnsupportedGeneralUnion(t *testing.T) {
 	requireUnsupported(t, s, `{"u":"x"}`)
 }
 
-func TestParse_UnsupportedFixingSyntax(t *testing.T) {
-	// Trailing commas, unquoted keys, single quotes: a candidate exists but
-	// is not strict JSON, so the parser falls back to BAML's fixing parser.
-	requireUnsupported(t, personSchema(), `{"name":"Ada","age":36,}`)
-	requireUnsupported(t, personSchema(), `{name:"Ada",age:36}`)
-	requireUnsupported(t, personSchema(), `{'name':'Ada','age':36}`)
-	// Fenced non-strict content also falls back.
-	requireUnsupported(t, personSchema(), "```json\n{name:'Ada',age:36}\n```")
+func TestParse_FixingTrailingCommas(t *testing.T) {
+	// Trailing comma in an object.
+	mustParse(t, personSchema(), `{"name":"Ada","age":36,}`, `{"name":"Ada","age":36}`)
+	// Trailing commas in a nested object and array, plus a top-level
+	// trailing comma — all tolerated.
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(
+			kv("name", strProp()),
+			kv("tags", &bamlutils.DynamicProperty{Type: "list", Items: &bamlutils.DynamicTypeSpec{Type: "string"}}),
+		),
+	}
+	mustParse(t, s, `{"name":"Ada","tags":["x","y",],}`, `{"name":"Ada","tags":["x","y"]}`)
+}
+
+func TestParse_FixingUnquotedKeys(t *testing.T) {
+	mustParse(t, personSchema(), `{name: "Ada", age: 36}`, `{"name":"Ada","age":36}`)
+	// Unquoted keys with bool / null / number values.
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(
+			kv("flag", boolProp()),
+			kv("count", intProp()),
+			kv("maybe", &bamlutils.DynamicProperty{Type: "optional", Inner: &bamlutils.DynamicTypeSpec{Type: "string"}}),
+		),
+	}
+	mustParse(t, s, `{flag: true, count: 5, maybe: null}`, `{"flag":true,"count":5,"maybe":null}`)
+}
+
+func TestParse_FixingSingleQuotes(t *testing.T) {
+	mustParse(t, personSchema(), `{'name': 'Ada', 'age': 36}`, `{"name":"Ada","age":36}`)
+	// Single-quoted keys/values inside a nested object.
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("outer", &bamlutils.DynamicProperty{Ref: "Inner"})),
+		Classes: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("Inner", &bamlutils.DynamicClass{Properties: props(kv("inner", strProp()))}),
+		),
+	}
+	mustParse(t, s, `{'outer': {'inner': 'val'}}`, `{"outer":{"inner":"val"}}`)
+}
+
+func TestParse_FixingProseJSONish(t *testing.T) {
+	// Prose around a JSONish object (unquoted key + single-quoted value):
+	// the balanced span is selected, then fixed.
+	raw := "Here you go: {name: 'Ada', age: 36} — that's the record."
+	mustParse(t, personSchema(), raw, `{"name":"Ada","age":36}`)
+}
+
+func TestParse_FixingFencedJSONish(t *testing.T) {
+	// Fenced JSONish (unquoted key + single-quoted value): BAML recurses
+	// into the fence with fixes enabled, and so does the native path.
+	raw := "Here:\n```json\n{name: 'Ada', age: 36}\n```\nDone."
+	mustParse(t, personSchema(), raw, `{"name":"Ada","age":36}`)
+}
+
+func TestParse_FixingDeferredFallsBack(t *testing.T) {
+	// Repairs outside the conservative M2a subset must still fall back to
+	// BAML (ErrDeBAMLParseUnsupported), preserving differential parity.
+	//
+	// Comments.
+	requireUnsupported(t, personSchema(), `{"name":"Ada","age":36 /* note */}`)
+	requireUnsupported(t, personSchema(), "{\"name\":\"Ada\", // note\n\"age\":36}")
+	// Missing comma between fields.
+	requireUnsupported(t, personSchema(), `{"name":"Ada" "age":36}`)
+	// Escapes inside a double-quoted string (BAML's escape fixing deferred).
+	requireUnsupported(t, personSchema(), `{name:"A\nda",age:36}`)
+	// Bareword (non bool/null/number) unquoted value.
+	requireUnsupported(t, personSchema(), `{name: Ada, age: 36}`)
+	// Backtick-quoted value.
+	s := &bamlutils.DynamicOutputSchema{Properties: props(kv("msg", strProp()))}
+	requireUnsupported(t, s, "{msg: `hi`}")
 }
 
 func TestParse_ClaimedErrorNoCandidate(t *testing.T) {

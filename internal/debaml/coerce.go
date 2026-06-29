@@ -8,19 +8,19 @@ import (
 	"github.com/invakid404/baml-rest/internal/schema"
 )
 
-// coerce converts a strict-parsed JSON value (decoded with json.Number for
-// numbers) into the flattened dynamic output JSON for type t, returning a
-// json.RawMessage. checkSupported has already rejected every out-of-scope
-// kind, so coerce only handles the M1 cut-line; an unexpected kind is a
-// claimed coercion error.
+// coerce converts an ordered value (decoded strict, or via the
+// conservative fixing pass) into the flattened dynamic output JSON for
+// type t, returning a json.RawMessage. checkSupported has already rejected
+// every out-of-scope kind, so coerce only handles the M2a cut-line; an
+// unexpected kind is a claimed coercion error.
 //
 // Field and enum-value names follow BAML's rendered/canonical split: input
 // keys are matched by rendered name (the alias the model is shown), and
 // output keys use the canonical name — the form the downstream
 // FlattenDynamicOutput / InjectAbsentOptionals / ReorderDynamicOutputBySchema
-// pipeline keys on. Fields are emitted in schema declaration order so that
-// order pass remains the authority.
-func coerce(b *schema.Bundle, t schema.Type, input any) (json.RawMessage, error) {
+// pipeline keys on. Class fields are emitted in schema declaration order so
+// that order pass remains the authority.
+func coerce(b *schema.Bundle, t schema.Type, input value) (json.RawMessage, error) {
 	switch t.Kind {
 	case schema.TypePrimitive:
 		return coercePrimitive(t.Primitive, input)
@@ -39,40 +39,36 @@ func coerce(b *schema.Bundle, t schema.Type, input any) (json.RawMessage, error)
 	}
 }
 
-func coercePrimitive(p schema.PrimitiveKind, input any) (json.RawMessage, error) {
+func coercePrimitive(p schema.PrimitiveKind, input value) (json.RawMessage, error) {
 	switch p {
 	case schema.PrimitiveString:
-		s, ok := input.(string)
-		if !ok {
+		if input.kind != valString {
 			return nil, typeMismatch("string", input)
 		}
-		return marshalJSON(s)
+		return marshalJSON(input.strV)
 	case schema.PrimitiveInt:
-		num, ok := input.(json.Number)
-		if !ok {
+		if input.kind != valNumber {
 			return nil, typeMismatch("int", input)
 		}
-		if _, err := num.Int64(); err != nil {
-			return nil, fmt.Errorf("debaml: %s is not an integer", num.String())
+		if _, err := input.numV.Int64(); err != nil {
+			return nil, fmt.Errorf("debaml: %s is not an integer", input.numV.String())
 		}
-		return json.RawMessage(num.String()), nil
+		return json.RawMessage(input.numV.String()), nil
 	case schema.PrimitiveFloat:
-		num, ok := input.(json.Number)
-		if !ok {
+		if input.kind != valNumber {
 			return nil, typeMismatch("float", input)
 		}
-		if _, err := num.Float64(); err != nil {
-			return nil, fmt.Errorf("debaml: %s is not a number", num.String())
+		if _, err := input.numV.Float64(); err != nil {
+			return nil, fmt.Errorf("debaml: %s is not a number", input.numV.String())
 		}
-		return json.RawMessage(num.String()), nil
+		return json.RawMessage(input.numV.String()), nil
 	case schema.PrimitiveBool:
-		v, ok := input.(bool)
-		if !ok {
+		if input.kind != valBool {
 			return nil, typeMismatch("bool", input)
 		}
-		return marshalJSON(v)
+		return marshalJSON(input.boolV)
 	case schema.PrimitiveNull:
-		if input != nil {
+		if input.kind != valNull {
 			return nil, typeMismatch("null", input)
 		}
 		return json.RawMessage("null"), nil
@@ -81,58 +77,53 @@ func coercePrimitive(p schema.PrimitiveKind, input any) (json.RawMessage, error)
 	}
 }
 
-func coerceLiteral(lit *schema.LiteralValue, input any) (json.RawMessage, error) {
+func coerceLiteral(lit *schema.LiteralValue, input value) (json.RawMessage, error) {
 	if lit == nil {
 		return nil, fmt.Errorf("debaml: literal type missing value")
 	}
 	switch lit.Kind {
 	case schema.LiteralString:
-		s, ok := input.(string)
-		if !ok || s != lit.String {
+		if input.kind != valString || input.strV != lit.String {
 			return nil, fmt.Errorf("debaml: expected literal string %q", lit.String)
 		}
-		return marshalJSON(s)
+		return marshalJSON(input.strV)
 	case schema.LiteralInt:
-		num, ok := input.(json.Number)
-		if !ok {
+		if input.kind != valNumber {
 			return nil, typeMismatch("literal int", input)
 		}
-		n, err := num.Int64()
+		n, err := input.numV.Int64()
 		if err != nil || n != lit.Int {
 			return nil, fmt.Errorf("debaml: expected literal int %d", lit.Int)
 		}
-		return json.RawMessage(num.String()), nil
+		return json.RawMessage(input.numV.String()), nil
 	case schema.LiteralBool:
-		v, ok := input.(bool)
-		if !ok || v != lit.Bool {
+		if input.kind != valBool || input.boolV != lit.Bool {
 			return nil, fmt.Errorf("debaml: expected literal bool %v", lit.Bool)
 		}
-		return marshalJSON(v)
+		return marshalJSON(input.boolV)
 	default:
 		return nil, fmt.Errorf("debaml: unknown literal kind %q", lit.Kind)
 	}
 }
 
-func coerceEnum(b *schema.Bundle, name string, input any) (json.RawMessage, error) {
-	s, ok := input.(string)
-	if !ok {
+func coerceEnum(b *schema.Bundle, name string, input value) (json.RawMessage, error) {
+	if input.kind != valString {
 		return nil, typeMismatch("enum", input)
 	}
 	e, ok := b.FindEnum(name)
 	if !ok {
 		return nil, fmt.Errorf("debaml: unknown enum %q", name)
 	}
-	v, ok := e.ValueByRenderedName(s)
+	v, ok := e.ValueByRenderedName(input.strV)
 	if !ok {
-		return nil, fmt.Errorf("debaml: %q is not a value of enum %q", s, name)
+		return nil, fmt.Errorf("debaml: %q is not a value of enum %q", input.strV, name)
 	}
 	// Emit the canonical enum value name, matching BAML's enum coercion.
 	return marshalJSON(v.Name.Name)
 }
 
-func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input any) (json.RawMessage, error) {
-	obj, ok := input.(map[string]any)
-	if !ok {
+func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input value) (json.RawMessage, error) {
+	if input.kind != valObject {
 		return nil, typeMismatch("object", input)
 	}
 	cls, ok := b.FindClass(name, mode)
@@ -145,7 +136,7 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 	first := true
 	for i := range cls.Fields {
 		f := &cls.Fields[i]
-		val, present := lookupField(obj, f.Name)
+		val, present := lookupField(input.objV, f.Name)
 		if !present {
 			if isOptional(f.Type) {
 				// Absent optional: omit it. The downstream
@@ -175,18 +166,17 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 	return buf.Bytes(), nil
 }
 
-func coerceList(b *schema.Bundle, elem *schema.Type, input any) (json.RawMessage, error) {
+func coerceList(b *schema.Bundle, elem *schema.Type, input value) (json.RawMessage, error) {
 	if elem == nil {
 		return nil, fmt.Errorf("debaml: list type missing element")
 	}
-	arr, ok := input.([]any)
-	if !ok {
+	if input.kind != valArray {
 		return nil, typeMismatch("array", input)
 	}
 	var buf bytes.Buffer
 	buf.WriteByte('[')
-	for i, item := range arr {
-		child, err := coerce(b, *elem, item)
+	for i := range input.arrV {
+		child, err := coerce(b, *elem, input.arrV[i])
 		if err != nil {
 			return nil, err
 		}
@@ -199,16 +189,16 @@ func coerceList(b *schema.Bundle, elem *schema.Type, input any) (json.RawMessage
 	return buf.Bytes(), nil
 }
 
-// coerceUnion handles the only union shape M1 supports: an optional — a
-// nullable union with exactly one non-null variant. A JSON null becomes
+// coerceUnion handles the only union shape M1/M2a supports: an optional —
+// a nullable union with exactly one non-null variant. A JSON null becomes
 // null; anything else coerces against the lone variant. checkSupported has
 // already rejected every other union, so this is reached only for
 // optionals.
-func coerceUnion(b *schema.Bundle, u *schema.UnionType, input any) (json.RawMessage, error) {
+func coerceUnion(b *schema.Bundle, u *schema.UnionType, input value) (json.RawMessage, error) {
 	if u == nil {
 		return nil, fmt.Errorf("debaml: union type missing payload")
 	}
-	if input == nil {
+	if input.kind == valNull {
 		if !u.Nullable {
 			return nil, typeMismatch("non-nullable union", input)
 		}
@@ -227,11 +217,20 @@ func coerceUnion(b *schema.Bundle, u *schema.UnionType, input any) (json.RawMess
 // canonical name: BAML treats the canonical key as an extra field and the
 // rendered key as missing, and the native path must agree to stay
 // drift-free. For a field with no alias, RenderedName()==Name, so this is
-// unchanged. The comma-ok form distinguishes an absent key from a present
-// null value.
-func lookupField(obj map[string]any, name schema.Name) (any, bool) {
-	v, ok := obj[name.RenderedName()]
-	return v, ok
+// unchanged. Duplicate input keys resolve last-wins, matching the
+// encoding/json map decode the M1 path used. The comma-ok form
+// distinguishes an absent key from a present null value.
+func lookupField(obj []field, name schema.Name) (value, bool) {
+	rendered := name.RenderedName()
+	var found value
+	ok := false
+	for i := range obj {
+		if obj[i].key == rendered {
+			found = obj[i].val
+			ok = true
+		}
+	}
+	return found, ok
 }
 
 // isOptional reports whether t is an optional (a nullable union), the only
@@ -254,27 +253,6 @@ func marshalJSON(v any) (json.RawMessage, error) {
 }
 
 // typeMismatch reports a conservative JSON-type mismatch for a coercion.
-func typeMismatch(want string, input any) error {
-	return fmt.Errorf("debaml: expected %s, got %s", want, jsonTypeName(input))
-}
-
-// jsonTypeName names the JSON type of a json.Number-decoded value for
-// diagnostics.
-func jsonTypeName(v any) string {
-	switch v.(type) {
-	case nil:
-		return "null"
-	case bool:
-		return "bool"
-	case json.Number:
-		return "number"
-	case string:
-		return "string"
-	case []any:
-		return "array"
-	case map[string]any:
-		return "object"
-	default:
-		return fmt.Sprintf("%T", v)
-	}
+func typeMismatch(want string, input value) error {
+	return fmt.Errorf("debaml: expected %s, got %s", want, input.kind.String())
 }
