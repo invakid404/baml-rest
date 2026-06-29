@@ -137,17 +137,23 @@ func (nativeDeBAMLParser) Parse(ctx context.Context, req bamlfuzz.ParseRequest) 
 // SkippedNative). Strict / markdown-fenced / prose-extracted JSON is
 // claimed; the conservative M2a fixing subset (trailing commas, unquoted
 // keys, single quotes, mixed jsonish, and the nested/literal/prose variants)
-// is now also claimed. Repairs outside that subset — e.g. comments — stay
-// fallback. Cases absent from the map (the streaming-only ones) carry no
-// final leg and are not asserted.
+// is now also claimed. Cases the native parser DECLINES — repairs outside
+// the fixing subset (comments), and "couldn't find/complete a candidate"
+// (an unterminated/truncated structure, which BAML recovers but M2a defers)
+// — stay fallback. Cases absent from the map (the streaming-only ones)
+// carry no final leg and are not asserted.
 var parseRecoveryNativeClaim = map[string]bool{
 	"markdown_fence_object":    true,
 	"prose_before_after_json":  true,
 	"quoted_brace_prose":       true,
 	"fenced_backticks_in_json": true,
-	"truncated_final_error":    true,
 	"strict_list_optional":     true,
 	"strict_literal_enum":      true,
+	// Truncated mid-value: an opening brace that never closes. Native finds
+	// no cleanly-claimable candidate and DECLINES (BAML closes it at EOF and
+	// recovers a partial value, which M2a defers) — so it falls back, not a
+	// claimed error.
+	"truncated_final_error": false,
 	// M2a fixing-parser subset: now native-claimed and diff-green vs BAML.
 	"trailing_commas": true,
 	"unquoted_keys":   true,
