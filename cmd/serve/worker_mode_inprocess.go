@@ -7,6 +7,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/invakid404/baml-rest/introspected"
 	"github.com/invakid404/baml-rest/pool"
 	"github.com/invakid404/baml-rest/worker"
 	"github.com/invakid404/baml-rest/workerplugin"
@@ -37,7 +38,11 @@ func configureWorkerMode(logger zerolog.Logger, cfg *pool.Config, runtimeCfg wor
 	if err != nil {
 		return fmt.Errorf("invalid BAML_REST_CLIENT_DEFAULTS: %w", err)
 	}
-	if clientDefaults.HasKey("allowed_role_metadata") {
+	// Gate on BuildRequest surface availability: the advisory only applies
+	// when traffic actually takes the BuildRequest route. On BAML versions
+	// that expose neither Request nor StreamRequest, all traffic is legacy
+	// and the BuildRequest serializer caveat is irrelevant.
+	if clientDefaults.HasKey("allowed_role_metadata") && (introspected.Request != nil || introspected.StreamRequest != nil) {
 		logger.Warn().Msg(
 			"BAML_REST_CLIENT_DEFAULTS sets allowed_role_metadata and the " +
 				"BuildRequest route is on by default; older BAML BuildRequest " +

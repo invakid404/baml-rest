@@ -16,6 +16,7 @@ import (
 	"github.com/invakid404/baml-rest/internal/debaml"
 	"github.com/invakid404/baml-rest/internal/memlimit"
 	"github.com/invakid404/baml-rest/internal/rootruntime"
+	"github.com/invakid404/baml-rest/introspected"
 	"github.com/invakid404/baml-rest/worker"
 	"github.com/invakid404/baml-rest/workerplugin"
 	pb "github.com/invakid404/baml-rest/workerplugin/proto"
@@ -74,7 +75,11 @@ func main() {
 		logger.Error("invalid BAML_REST_CLIENT_DEFAULTS", "err", err.Error())
 		os.Exit(1)
 	}
-	if clientDefaults.HasKey("allowed_role_metadata") {
+	// Gate on BuildRequest surface availability: the advisory only applies
+	// when traffic actually takes the BuildRequest route. On BAML versions
+	// that expose neither Request nor StreamRequest, all traffic is legacy
+	// and the BuildRequest serializer caveat is irrelevant.
+	if clientDefaults.HasKey("allowed_role_metadata") && (introspected.Request != nil || introspected.StreamRequest != nil) {
 		logger.Warn(
 			"BAML_REST_CLIENT_DEFAULTS sets allowed_role_metadata and the " +
 				"BuildRequest route is on by default; older BAML BuildRequest " +

@@ -406,8 +406,8 @@ func TestBuildRequestClassification_ParseErrorFromProseStreamWithRaw(t *testing.
 	// `{"error":..., "code":..., "details":...}` (see
 	// SSEStreamWriterPublisher.PublishError / NDJSONEvent).
 	var payload struct {
-		Error   string          `json:"error"`
-		Code    string          `json:"code"`
+		Error   string             `json:"error"`
+		Code    string             `json:"code"`
 		Details stdjson.RawMessage `json:"details"`
 	}
 	if err := sonic.Unmarshal(errEvent.Data, &payload); err != nil {

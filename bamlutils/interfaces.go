@@ -981,9 +981,9 @@ type RoundRobinAdvancer interface {
 // has a field here; only the narrower DisableCallBuildRequest hatch
 // remains.
 //
-// Operators running the standard cmd/serve binaries see no behaviour
-// change: cmd/worker and cmd/serve resolve the env var once at startup
-// and populate this struct identically across every handler in the pool.
+// The remaining DisableCallBuildRequest value is still resolved once at
+// startup (by cmd/serve and cmd/worker) and installed uniformly across
+// every handler in the pool.
 type BuildRequestConfig struct {
 	// DisableCallBuildRequest mirrors BAML_REST_DISABLE_CALL_BUILD_REQUEST.
 	// When true, the non-streaming Request API is treated as unsupported
