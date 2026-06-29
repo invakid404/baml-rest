@@ -1,0 +1,28 @@
+{
+  "name": "single_quotes_nested",
+  "description": "Single-quoted keys and string values inside a nested object; BAML's JSONish parser normalizes them. Native fixing parser claims it (nested object key order follows schema). want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "outer", "type": {"kind": "class_ref", "ref": "Inner"}}
+        ]
+      },
+      {
+        "name": "Inner",
+        "properties": [
+          {"name": "inner", "type": {"kind": "string"}},
+          {"name": "tag", "type": {"kind": "string"}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{'outer': {'inner': 'val', 'tag': 'x'}}",
+  "want": {
+    "status": "success",
+    "json": {"outer": {"inner": "val", "tag": "x"}}
+  }
+}

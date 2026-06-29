@@ -130,14 +130,16 @@ func (nativeDeBAMLParser) Parse(ctx context.Context, req bamlfuzz.ParseRequest) 
 	return bamlfuzz.ParseResult{JSON: out}, nil
 }
 
-// parseRecoveryNativeClaim pins the M1 native-parser cut-line per corpus
-// case (by Name): true means the native parser is expected to CLAIM the
-// final parse — produce JSON, or a claimed parse error that matches BAML's
-// error — and false means it FALLS BACK to BAML (ErrDeBAMLParseUnsupported
-// -> SkippedNative). Strict / markdown-fenced / prose-extracted strict JSON
-// is claimed; fixing-parser syntax (trailing commas, unquoted keys, single
-// quotes, mixed jsonish) falls back. Cases absent from the map (the
-// streaming-only ones) carry no final leg and are not asserted.
+// parseRecoveryNativeClaim pins the native-parser cut-line per corpus case
+// (by Name): true means the native parser is expected to CLAIM the final
+// parse — produce JSON, or a claimed parse error that matches BAML's error
+// — and false means it FALLS BACK to BAML (ErrDeBAMLParseUnsupported ->
+// SkippedNative). Strict / markdown-fenced / prose-extracted JSON is
+// claimed; the conservative M2a fixing subset (trailing commas, unquoted
+// keys, single quotes, mixed jsonish, and the nested/literal/prose variants)
+// is now also claimed. Repairs outside that subset — e.g. comments — stay
+// fallback. Cases absent from the map (the streaming-only ones) carry no
+// final leg and are not asserted.
 var parseRecoveryNativeClaim = map[string]bool{
 	"markdown_fence_object":    true,
 	"prose_before_after_json":  true,
@@ -146,10 +148,18 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"truncated_final_error":    true,
 	"strict_list_optional":     true,
 	"strict_literal_enum":      true,
-	"trailing_commas":          false,
-	"unquoted_keys":            false,
-	"single_quotes":            false,
-	"mixed_jsonish":            false,
+	// M2a fixing-parser subset: now native-claimed and diff-green vs BAML.
+	"trailing_commas": true,
+	"unquoted_keys":   true,
+	"single_quotes":   true,
+	"mixed_jsonish":   true,
+	// M2a differential-guarded additions.
+	"trailing_commas_nested_object_array": true,
+	"unquoted_keys_literals":              true,
+	"single_quotes_nested":                true,
+	"prose_jsonish_unquoted_single":       true,
+	// Deferred repair (comments) — pinned fallback until claimed.
+	"comments_fallback": false,
 }
 
 // parseRecoveryStats tallies how many final-parse cases the native parser

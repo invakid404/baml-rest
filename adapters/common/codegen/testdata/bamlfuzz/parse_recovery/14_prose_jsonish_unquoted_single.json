@@ -1,0 +1,22 @@
+{
+  "name": "prose_jsonish_unquoted_single",
+  "description": "Prose surrounds a JSONish object that itself needs fixing (unquoted key + single-quoted values); BAML greps the balanced span and fixes inside it. Native selects the same balanced span, then fixes it. want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "name", "type": {"kind": "string"}},
+          {"name": "age", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "Here is the person you asked for: {name: 'Ada', age: 36} — let me know if you need more.",
+  "want": {
+    "status": "success",
+    "json": {"name": "Ada", "age": 36}
+  }
+}
