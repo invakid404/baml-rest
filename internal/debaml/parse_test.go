@@ -339,10 +339,8 @@ func TestParse_SingleFieldClassImpliedKeyDeclines(t *testing.T) {
 }
 
 func TestParse_FixingTrailingCommas(t *testing.T) {
-	// Trailing comma in an object.
-	mustParse(t, personSchema(), `{"name":"Ada","age":36,}`, `{"name":"Ada","age":36}`)
-	// Trailing commas in a nested object and array, plus a top-level
-	// trailing comma — all tolerated.
+	// Trailing comma after a quoted string value and after an array value
+	// (and a top-level trailing comma) — all parity-safe and claimed.
 	s := &bamlutils.DynamicOutputSchema{
 		Properties: props(
 			kv("name", strProp()),
@@ -350,6 +348,13 @@ func TestParse_FixingTrailingCommas(t *testing.T) {
 		),
 	}
 	mustParse(t, s, `{"name":"Ada","tags":["x","y",],}`, `{"name":"Ada","tags":["x","y"]}`)
+
+	// A trailing comma right after an UNQUOTED NUMBER object value DECLINES:
+	// BAML's fixing parser consumes the comma (the byte after it is '}', not
+	// space/newline) and reads greedily, producing the string "36," — which
+	// then fails int coercion, so BAML errors. Native must not claim a clean
+	// 36 where BAML errors, so it declines.
+	requireUnsupported(t, personSchema(), `{"name":"Ada","age":36,}`)
 }
 
 func TestParse_FixingLeadingAndRepeatedCommas(t *testing.T) {

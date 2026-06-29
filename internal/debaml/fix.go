@@ -278,6 +278,18 @@ const scalarBailBytes = "{}[]:\"'`"
 // comma like `36 x` declines). Only true / false / null and strict JSON
 // numbers are claimed; a bareword string is declined to BAML, whose
 // unquoted-string boundary rules are broader than this subset.
+//
+// Parity guard for BAML's greedy unquoted-OBJECT-value tokenization: BAML's
+// fixing parser closes an unquoted object value at a ',' only when the very
+// next byte is a space or newline (json_parse_state.rs InObjectValue); for
+// ANY other following byte — another field, a digit, a tab, or a '}' (a
+// trailing comma) — it CONSUMES the comma and keeps reading, yielding a
+// longer string value than native's clean split (e.g. `{"x":1,"y":2,}` ->
+// BAML reads x as the string `1,"y":2,`, which then fails int coercion).
+// Native cannot reproduce that greedy scan, so when an unquoted object value
+// is followed by ',' + (not space/newline) it DECLINES. Arrays have no such
+// behavior — InArray closes at ',' / ']' directly — so the guard is scoped
+// to object-value context.
 func (p *fixer) parseUnquotedScalar(term string) (value, error) {
 	start := p.pos
 	for !p.eof() {
@@ -301,6 +313,13 @@ func (p *fixer) parseUnquotedScalar(term string) (value, error) {
 	if p.eof() || strings.IndexByte(term, p.s[p.pos]) < 0 {
 		// Unterminated, or followed by a non-terminator (missing comma).
 		return value{}, errFixUnsupported
+	}
+	if term == objectValueTerm && p.s[p.pos] == ',' {
+		next := p.pos + 1
+		if next >= len(p.s) || (p.s[next] != ' ' && p.s[next] != '\n') {
+			// BAML would consume this comma and read greedily — decline.
+			return value{}, errFixUnsupported
+		}
 	}
 	return classifyScalar(raw)
 }

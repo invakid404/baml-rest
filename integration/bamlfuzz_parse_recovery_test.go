@@ -160,10 +160,15 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"single_quotes":   true,
 	"mixed_jsonish":   true,
 	// M2a differential-guarded additions.
-	"trailing_commas_nested_object_array": true,
-	"unquoted_keys_literals":              true,
-	"single_quotes_nested":                true,
-	"prose_jsonish_unquoted_single":       true,
+	"unquoted_keys_literals":        true,
+	"single_quotes_nested":          true,
+	"prose_jsonish_unquoted_single": true,
+	// Nested trailing commas with QUOTED values — parity-safe, claimed.
+	"nested_trailing_commas_quoted": true,
+	// Nested trailing commas around UNQUOTED NUMBER values: BAML greedily
+	// consumes the comma and errors on coercion; native declines (fallback)
+	// rather than claim a cleanly-parsed object it can't match.
+	"trailing_commas_nested_object_array": false,
 	// Leading / repeated / stray commas — also part of the claimed subset
 	// (BAML's object/array states ignore stray commas while waiting for
 	// content), so native claims them too.
