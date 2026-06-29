@@ -143,6 +143,11 @@ func TestFallbackRoundRobinComposition_CentralizedAcrossWorkers(t *testing.T) {
 			// exactly once per REST request (the leaf-balance invariant below
 			// would break on a double-advance).
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLBuildRequestAPI, "request")
+			// The non-streaming Request orchestrator never sets BamlCallCount
+			// (it has no BAML-internal FunctionLog call count to surface), and
+			// the header is emitted only when non-nil — so it must be absent on
+			// the Request path, matching the other fallback Request-path tests.
+			testutil.AssertHeaderAbsent(t, resp.Headers, testutil.HeaderBAMLBamlCallCount)
 
 			// Winner-Client is the served openai leaf, not the RR
 			// wrapper or fallback strategy parent — the centralised

@@ -845,7 +845,15 @@ func TestEmitRouter_CallModeFallbackPrefersRequestViaSingleResolver(t *testing.T
 			t.Fatalf("expected at least one ResolveFallbackChainPlanForClient call site; rendered:\n%s", rendered)
 		}
 		secondIdx := firstIdx + strings.Index(rendered[firstIdx+1:], resolverFn) + 1
-		argsRegion := rendered[firstIdx : secondIdx+len(resolverFn)+200]
+		// Confine the check to the FIRST resolver site only: everything
+		// from the first resolver call up to (but NOT including) the second
+		// (bridge) resolver. Extending past secondIdx would reach the
+		// bridge's call-support gate, whose valid
+		// `buildrequest.IsCallProviderSupported(__provider)` output would
+		// trip this first-resolver assertion. The streaming block between
+		// the two resolvers uses only IsProviderSupported, so this region
+		// must contain zero IsCallProviderSupported references.
+		argsRegion := rendered[firstIdx:secondIdx]
 		if strings.Count(argsRegion, "buildrequest.IsCallProviderSupported") > 0 {
 			t.Errorf("first resolver call site contains IsCallProviderSupported, suggesting the call block re-introduced a fallback resolver; rendered region:\n%s", argsRegion)
 		}
@@ -875,12 +883,24 @@ func TestEmitRouter_CallModeFallbackPrefersRequestViaSingleResolver(t *testing.T
 			t.Errorf("bridge Request fallback dispatch must be emitted BEFORE the StreamRequest fallback dispatch (preferred when call-supported); callIdx=%d streamIdx=%d\nbridge region:\n%s",
 				callDispatchIdx, streamDispatchIdx, bridgeRegion)
 		}
-		// The Request dispatch must sit behind the __callChainSupported
-		// gate, i.e. the gate is computed before the call dispatch.
-		gateIdx := strings.Index(bridgeRegion, "if __callChainSupported {")
-		if gateIdx < 0 || (callDispatchIdx >= 0 && gateIdx >= callDispatchIdx) {
-			t.Errorf("bridge Request fallback dispatch must be guarded by the __callChainSupported gate; gateIdx=%d callIdx=%d\nbridge region:\n%s",
-				gateIdx, callDispatchIdx, bridgeRegion)
+		// The Request dispatch must sit inside ITS OWN __callChainSupported
+		// gate, not merely somewhere after the earlier provider-loop gate.
+		// The generated shape has TWO `if __callChainSupported {` gates: the
+		// provider-loop gate first, then the Request-dispatch gate. A check
+		// that only requires the dispatch to follow *some* gate would pass
+		// even if greetUser_buildCallRequest escaped its block (as long as it
+		// stayed after the provider-loop gate). So locate the gate that most
+		// closely precedes the dispatch and assert no block closes between
+		// that gate's opening brace and the dispatch — i.e. the dispatch's
+		// nearest enclosing gate is the Request-dispatch gate.
+		const gate = "if __callChainSupported {"
+		if callDispatchIdx >= 0 {
+			gateBeforeDispatch := strings.LastIndex(bridgeRegion[:callDispatchIdx], gate)
+			if gateBeforeDispatch < 0 {
+				t.Errorf("bridge Request fallback dispatch must be guarded by an __callChainSupported gate; none precedes greetUser_buildCallRequest\nbridge region:\n%s", bridgeRegion)
+			} else if between := bridgeRegion[gateBeforeDispatch+len(gate) : callDispatchIdx]; strings.Contains(between, "}") {
+				t.Errorf("bridge Request fallback dispatch escaped its __callChainSupported gate: a block closed between the nearest gate and the dispatch.\nbetween:\n%s\nbridge region:\n%s", between, bridgeRegion)
+			}
 		}
 	})
 
