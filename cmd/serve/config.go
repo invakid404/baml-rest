@@ -13,17 +13,17 @@ import (
 const envPreserveSchemaOrderDefault = "BAML_REST_PRESERVE_SCHEMA_ORDER_DEFAULT"
 
 // preserveSchemaOrderDefaultFromEnv resolves BAML_REST_PRESERVE_SCHEMA_ORDER_DEFAULT
-// at server startup. Truthy parsing intentionally matches the
-// parseBuildRequestEnv contract over in bamlutils/buildrequest so the
-// two env vars behave identically — 1/true/yes/on (case-insensitive)
-// enable the default; every other value disables it.
+// at server startup. Truthy parsing intentionally matches the shared
+// bamlutils.IsTruthyEnvValue contract so baml-rest's boolean env vars
+// behave identically — 1/true/yes/on (case-insensitive) enable the
+// default; every other value disables it.
 func preserveSchemaOrderDefaultFromEnv() bool {
 	return parseTruthyEnvBool(os.Getenv(envPreserveSchemaOrderDefault))
 }
 
-// parseTruthyEnvBool mirrors parseBuildRequestEnv: 1/true/yes/on after
-// lowercasing count as truthy, anything else (including empty string,
-// whitespace-padded variants, and unrecognized tokens) is falsy.
+// parseTruthyEnvBool mirrors bamlutils.IsTruthyEnvValue: 1/true/yes/on
+// after lowercasing count as truthy, anything else (including empty
+// string, whitespace-padded variants, and unrecognized tokens) is falsy.
 func parseTruthyEnvBool(v string) bool {
 	switch strings.ToLower(v) {
 	case "1", "true", "yes", "on":

@@ -36,12 +36,12 @@ func TestClientDefaults_AllowedRoleMetadata(t *testing.T) {
 		// Older BAML BuildRequest serializers dropped message-level
 		// metadata for some providers. BAML v0.222 preserves
 		// cache_control for the dynamic template shape used here after
-		// the class-free literal alias-bypass landed for #304, so this
-		// leg runs against both runtime paths. If a future supported
-		// BAML version regresses, narrow the skip to that version
-		// rather than reinstating a blanket UseBuildRequest skip — the
-		// blanket form would mask the openai-generic BuildRequest path
-		// the user originally reported on.
+		// the class-free literal alias-bypass landed for #304. The
+		// BuildRequest route is unconditional (#537), so this runs on the
+		// BuildRequest path whenever the BAML version exposes it. If a
+		// future supported BAML version regresses, narrow the skip to
+		// that version — the openai-generic BuildRequest path the user
+		// originally reported on must stay covered.
 
 		opts := matrixSetupOptions()
 		opts.RuntimeEnv = map[string]string{

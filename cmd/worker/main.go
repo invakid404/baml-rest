@@ -43,6 +43,13 @@ func main() {
 	// boundary; library-mode callers wire their own config inside the
 	// host process instead.
 	buildRequestConfig := buildrequest.EnvConfig()
+	// BAML_REST_USE_BUILD_REQUEST was retired in #537: the BuildRequest
+	// route is now unconditional. Warn (do not error) if a stale
+	// deployment still sets it so operators get a clean migration signal
+	// without an outage.
+	if _, present := os.LookupEnv("BAML_REST_USE_BUILD_REQUEST"); present {
+		logger.Warn("BAML_REST_USE_BUILD_REQUEST is retired and ignored: the BuildRequest route is attempted whenever the generated BAML client exposes Request or StreamRequest. Remove the variable from your configuration.")
+	}
 	deBAMLConfig := bamlutils.DeBAMLConfigFromEnv()
 	baseURLRewrites := urlrewrite.LoadDefaultRules()
 	streamIdleTimeout := llmhttp.StreamIdleTimeoutFromEnv()
@@ -67,10 +74,10 @@ func main() {
 		logger.Error("invalid BAML_REST_CLIENT_DEFAULTS", "err", err.Error())
 		os.Exit(1)
 	}
-	if clientDefaults.HasKey("allowed_role_metadata") && buildRequestConfig.UseBuildRequest {
+	if clientDefaults.HasKey("allowed_role_metadata") {
 		logger.Warn(
-			"BAML_REST_CLIENT_DEFAULTS sets allowed_role_metadata and " +
-				"BAML_REST_USE_BUILD_REQUEST=true; older BAML BuildRequest " +
+			"BAML_REST_CLIENT_DEFAULTS sets allowed_role_metadata and the " +
+				"BuildRequest route is on by default; older BAML BuildRequest " +
 				"serializers may drop message-level metadata (e.g. cache_control). " +
 				"Keep this covered by integration tests when changing supported " +
 				"BAML versions.")

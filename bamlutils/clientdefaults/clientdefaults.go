@@ -56,8 +56,8 @@
 // re-run those tests to confirm the current runtime still preserves
 // message-level metadata through BuildRequest. The worker emits a
 // startup advisory when BAML_REST_CLIENT_DEFAULTS sets
-// allowed_role_metadata and BAML_REST_USE_BUILD_REQUEST=true so
-// operators have a pointer to those tests.
+// allowed_role_metadata (the BuildRequest route is on by default as of
+// #537) so operators have a pointer to those tests.
 package clientdefaults
 
 import (

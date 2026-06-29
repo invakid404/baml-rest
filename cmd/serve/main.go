@@ -239,6 +239,13 @@ var serveCmd = &cobra.Command{
 		// configuration the subprocess build's cmd/worker would
 		// produce on its own at process startup.
 		buildRequestConfig := buildrequest.EnvConfig()
+		// BAML_REST_USE_BUILD_REQUEST was retired in #537: the BuildRequest
+		// route is now unconditional. Warn (do not error) if a stale
+		// deployment still sets it so operators get a clean migration
+		// signal without an outage.
+		if _, present := os.LookupEnv("BAML_REST_USE_BUILD_REQUEST"); present {
+			logger.Warn().Msg("BAML_REST_USE_BUILD_REQUEST is retired and ignored: the BuildRequest route is attempted whenever the generated BAML client exposes Request or StreamRequest. Remove the variable from your configuration.")
+		}
 		deBAMLConfig := bamlutils.DeBAMLConfigFromEnv()
 		preserveSchemaOrderDefault := preserveSchemaOrderDefaultFromEnv()
 		baseURLRewrites := urlrewrite.LoadDefaultRules()
@@ -280,19 +287,12 @@ var serveCmd = &cobra.Command{
 		// `start N` values; unseeded clients get a random offset on first
 		// touch, matching the legacy single-process Coordinator behaviour.
 		//
-		// Gated on UseBuildRequest: with the kill-switch off, baml-rest's
-		// RR resolver isn't engaged on the request path (the codegen
-		// upgrade gate at adapters/common/codegen/codegen.go skips
-		// ResolveEffectiveClient and the worker's per-request
-		// SetRoundRobinAdvancer feeds an unread advancer), so the broker
-		// channel and the AttachSharedState handshake would be pure dead
-		// weight. Skipping seeds collapses the kill-switch contract
-		// end-to-end: no host-side store, no SharedStateImpl in the
-		// plugin map, no reverse-broker dial, and BAML's per-worker
-		// runtime owns rotation exactly as it did pre-PR.
-		// Gate on BuildRequest enabled AND at least one BuildRequest
-		// surface (Request or StreamRequest) actually exposed by the
-		// generated codegen. Streaming-only BAML emits
+		// Gate on at least one BuildRequest surface (Request or
+		// StreamRequest) actually exposed by the generated codegen. The
+		// BuildRequest route is unconditional as of #537, so baml-rest's
+		// RR resolver is always engaged on the request path for modern
+		// adapters — the only remaining reason to skip seeding is a BAML
+		// version that exposes neither surface. Streaming-only BAML emits
 		// `var Request any` / `var StreamRequest any` for the absent
 		// surface (cmd/introspect/main.go); the codegen distinguishes
 		// the two surfaces (codegen.go non-stream vs stream emission)
@@ -300,7 +300,7 @@ var serveCmd = &cobra.Command{
 		// Request is nil. Only when neither surface exists does the
 		// BuildRequest path become unexercisable — wiring SharedState
 		// in that case would be pure dead weight.
-		if buildRequestConfig.UseBuildRequest && (introspected.Request != nil || introspected.StreamRequest != nil) {
+		if introspected.Request != nil || introspected.StreamRequest != nil {
 			poolConfig.SharedStateSeeds = introspected.RoundRobinStart
 		}
 

@@ -52,15 +52,14 @@ const (
 	// the request reached the legacy metadata-plan builder unresolved.
 	// In modern adapters (BAML >= 0.219.0 with SupportsWithClient) top-
 	// level RR is normally unwrapped by ResolveEffectiveClient before
-	// dispatch. This reason fires on three paths:
+	// dispatch (the codegen gate invokes ResolveEffectiveClient whenever
+	// supportsWithClient is true — the BuildRequest route is unconditional
+	// as of #537). This reason fires on two paths:
 	//
-	//   - Older adapters that lack the WithClient CallOption.
-	//   - BAML_REST_USE_BUILD_REQUEST=false: the codegen gate (in
-	//     adapters/common/codegen/codegen.go) only invokes
-	//     ResolveEffectiveClient when supportsWithClient &&
-	//     __useBuildRequest, so flipping the flag off leaves a
-	//     top-level RR client unresolved even on a SupportsWithClient
-	//     adapter, and the legacy plan surfaces this reason.
+	//   - Older adapters that lack the WithClient CallOption (no
+	//     SupportsWithClient), where the codegen gate skips
+	//     ResolveEffectiveClient and the top-level RR client reaches the
+	//     legacy plan builder unresolved.
 	//   - Defensive path when RR resolution failed (cycle / empty
 	//     chain) and the caller fell through with the unresolved
 	//     client name.
@@ -94,8 +93,11 @@ const (
 	// callback (deferred shapes, unsupported leaves, invalid
 	// `options.strategy` / `options.start` overrides).
 	PathReasonFallbackRoundRobinChildBuildRequest = "fallback-roundrobin-child-buildrequest"
-	// PathReasonBuildRequestDisabled: BAML_REST_USE_BUILD_REQUEST is off.
-	// Deliberate configuration — no operator alert.
+	// PathReasonBuildRequestDisabled: historical. Reported when the
+	// retired BAML_REST_USE_BUILD_REQUEST route gate was off. As of #537
+	// the BuildRequest route is unconditional and this reason is never
+	// emitted; the constant is retained only for backward compatibility
+	// with metrics/dashboards that key off the string.
 	PathReasonBuildRequestDisabled = "buildrequest-disabled"
 	// PathReasonInvalidStrategyOverride: a runtime client_registry entry
 	// supplied an `options.strategy` value that ParseStrategyOption could
@@ -519,19 +521,15 @@ func BuildFallbackChainPlanForClient(
 //
 // The plan's Path is always "legacy" (this helper is only invoked on the
 // legacy side). PathReason reflects whichever of the following applied:
-//   - feature-flag off (PathReasonBuildRequestDisabled)
 //   - unsupported or empty provider
 //   - fallback strategy not routable (empty chain, empty child provider,
 //     or all-legacy chain)
 //   - fallback chain contains a baml-roundrobin child whose rotation is
 //     left to BAML's per-worker runtime (PathReasonFallbackRoundRobinChildLegacy)
 //   - an unresolved baml-roundrobin top-level client — fires on
-//     older adapters without SupportsWithClient, when
-//     BAML_REST_USE_BUILD_REQUEST=false (the codegen ResolveEffective-
-//     Client gate is `supportsWithClient && __useBuildRequest`, so the
-//     flag-off path leaves top-level RR unresolved even on modern
-//     adapters), or defensively if RR resolution reached this builder
-//     without being unwrapped upstream (PathReasonRoundRobin)
+//     older adapters without SupportsWithClient, or defensively if RR
+//     resolution reached this builder without being unwrapped upstream
+//     (PathReasonRoundRobin)
 //
 // The plan includes retry policy information when a policy resolves, and
 // chain/legacyChildren information for strategy clients.
@@ -543,32 +541,6 @@ func BuildLegacyMetadataPlan(
 	clientProviders map[string]string,
 	isProviderSupported func(string) bool,
 	retryPolicy *retry.Policy,
-) *bamlutils.Metadata {
-	return BuildLegacyMetadataPlanWithConfig(
-		adapter, defaultClientName, introspectedProvider,
-		fallbackChains, clientProviders, isProviderSupported, retryPolicy,
-		EnvConfig(),
-	)
-}
-
-// BuildLegacyMetadataPlanWithConfig is the config-aware sibling of
-// BuildLegacyMetadataPlan. cfg.UseBuildRequest drives the
-// PathReasonBuildRequestDisabled classification at the bottom of the
-// plan-building flow — when false (and no earlier reason fired) the
-// plan reports the kill-switch as the legacy-path reason.
-//
-// Generated routers pass the per-handler config so per-request
-// metadata reflects this handler's settings rather than process-wide
-// env state.
-func BuildLegacyMetadataPlanWithConfig(
-	adapter bamlutils.Adapter,
-	defaultClientName string,
-	introspectedProvider string,
-	fallbackChains map[string][]string,
-	clientProviders map[string]string,
-	isProviderSupported func(string) bool,
-	retryPolicy *retry.Policy,
-	cfg bamlutils.BuildRequestConfig,
 ) *bamlutils.Metadata {
 	resolution := ResolveProviderWithReason(adapter, defaultClientName, introspectedProvider, isProviderSupported)
 
@@ -631,13 +603,6 @@ func BuildLegacyMetadataPlanWithConfig(
 		}
 	}
 
-	// BAML_REST_USE_BUILD_REQUEST being off is never surfaced by the per-
-	// request resolution helpers; encode it here since a legacy-path
-	// execution with a supported single provider otherwise looks empty.
-	if plan.PathReason == "" && !cfg.UseBuildRequest {
-		plan.PathReason = PathReasonBuildRequestDisabled
-	}
-
 	return plan
 }
 
@@ -658,27 +623,6 @@ func BuildLegacyMetadataPlanForClient(
 	clientProviders map[string]string,
 	isProviderSupported func(string) bool,
 	retryPolicy *retry.Policy,
-) *bamlutils.Metadata {
-	return BuildLegacyMetadataPlanForClientWithConfig(
-		reg, clientName, introspectedProvider,
-		fallbackChains, clientProviders, isProviderSupported, retryPolicy,
-		EnvConfig(),
-	)
-}
-
-// BuildLegacyMetadataPlanForClientWithConfig is the config-aware
-// sibling of BuildLegacyMetadataPlanForClient. cfg.UseBuildRequest
-// drives the PathReasonBuildRequestDisabled classification — see
-// BuildLegacyMetadataPlanWithConfig for the broader contract.
-func BuildLegacyMetadataPlanForClientWithConfig(
-	reg *bamlutils.ClientRegistry,
-	clientName string,
-	introspectedProvider string,
-	fallbackChains map[string][]string,
-	clientProviders map[string]string,
-	isProviderSupported func(string) bool,
-	retryPolicy *retry.Policy,
-	cfg bamlutils.BuildRequestConfig,
 ) *bamlutils.Metadata {
 	provider := ResolveClientProvider(reg, clientName, clientProviders)
 	// ResolveClientProvider returns "" both for "no provider configured"
@@ -756,10 +700,6 @@ func BuildLegacyMetadataPlanForClientWithConfig(
 		//     gate skips ResolveEffectiveClient entirely; the
 		//     unresolved RR client lands here and surfaces
 		//     PathReasonRoundRobin.
-		//   - BAML_REST_USE_BUILD_REQUEST=false: the codegen gate is
-		//     `supportsWithClient && __useBuildRequest`, so flipping
-		//     the flag off also skips the unwrap on a modern adapter.
-		//     PathReasonRoundRobin surfaces here too.
 		plan.Strategy = "baml-roundrobin"
 		if _, present, valid := roundrobin.InspectStrategyOverride(reg, clientName); present && !valid {
 			plan.PathReason = PathReasonInvalidStrategyOverride
@@ -782,10 +722,6 @@ func BuildLegacyMetadataPlanForClientWithConfig(
 		if isProviderSupported != nil && !isProviderSupported(provider) {
 			plan.PathReason = PathReasonUnsupportedProvider
 		}
-	}
-
-	if plan.PathReason == "" && !cfg.UseBuildRequest {
-		plan.PathReason = PathReasonBuildRequestDisabled
 	}
 
 	return plan

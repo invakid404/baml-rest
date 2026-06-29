@@ -1014,18 +1014,15 @@ func Baml_Rest_Dynamic(adapter bamlutils.Adapter, rawInput any) (<-chan bamlutil
 	__effective := __retryClient
 	var __rrInfo *bamlutils.RoundRobinInfo
 	__brCfg := adapter.BuildRequestConfig()
-	__useBuildRequest := __brCfg.UseBuildRequest
-	if __useBuildRequest {
-		__rrEffective, __rrInfoUpgrade, __rrErr := buildrequest.ResolveEffectiveClient(adapter, introspected.FunctionClient["Baml_Rest_Dynamic"], introspected.FallbackChains, introspected.ClientProvider, introspected.RoundRobinCoordinator)
-		if __rrErr != nil {
-			return nil, __rrErr
-		}
-		__effective = __rrEffective
-		__rrInfo = __rrInfoUpgrade
+	__rrEffective, __rrInfoUpgrade, __rrErr := buildrequest.ResolveEffectiveClient(adapter, introspected.FunctionClient["Baml_Rest_Dynamic"], introspected.FallbackChains, introspected.ClientProvider, introspected.RoundRobinCoordinator)
+	if __rrErr != nil {
+		return nil, __rrErr
 	}
+	__effective = __rrEffective
+	__rrInfo = __rrInfoUpgrade
 	__reg := adapter.OriginalClientRegistry()
 	// Try non-streaming BuildRequest path for /call and /call-with-raw
-	if __useBuildRequest && introspected.Request != nil && (mode == bamlutils.StreamModeCall || mode == bamlutils.StreamModeCallWithRaw) {
+	if introspected.Request != nil && (mode == bamlutils.StreamModeCall || mode == bamlutils.StreamModeCallWithRaw) {
 		provider := buildrequest.ResolveClientProvider(__reg, __effective, introspected.ClientProvider)
 		if provider != "" && buildrequest.IsCallProviderSupportedWithConfig(provider, __brCfg) {
 			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
@@ -1039,7 +1036,7 @@ func Baml_Rest_Dynamic(adapter bamlutils.Adapter, rawInput any) (<-chan bamlutil
 		}
 	}
 	// Try streaming BuildRequest path for /stream and /stream-with-raw
-	if __useBuildRequest && introspected.StreamRequest != nil && (mode == bamlutils.StreamModeStream || mode == bamlutils.StreamModeStreamWithRaw) {
+	if introspected.StreamRequest != nil && (mode == bamlutils.StreamModeStream || mode == bamlutils.StreamModeStreamWithRaw) {
 		provider := buildrequest.ResolveClientProvider(__reg, __effective, introspected.ClientProvider)
 		if provider != "" && buildrequest.IsProviderSupported(provider) {
 			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
@@ -1067,7 +1064,7 @@ func Baml_Rest_Dynamic(adapter bamlutils.Adapter, rawInput any) (<-chan bamlutil
 		}
 	}
 	// Bridge: /call and /call-with-raw via StreamRequest when Request is unavailable
-	if __useBuildRequest && introspected.StreamRequest != nil && (mode == bamlutils.StreamModeCall || mode == bamlutils.StreamModeCallWithRaw) {
+	if introspected.StreamRequest != nil && (mode == bamlutils.StreamModeCall || mode == bamlutils.StreamModeCallWithRaw) {
 		provider := buildrequest.ResolveClientProvider(__reg, __effective, introspected.ClientProvider)
 		if provider != "" && buildrequest.IsProviderSupported(provider) {
 			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
@@ -1094,15 +1091,10 @@ func Baml_Rest_Dynamic(adapter bamlutils.Adapter, rawInput any) (<-chan bamlutil
 			return out, nil
 		}
 	}
-	// Legacy path: CallStream + OnTick (for unsupported providers or when BuildRequest is disabled)
+	// Legacy path: CallStream + OnTick (for unsupported/empty providers or BAML versions without a BuildRequest surface)
 	__legacyRetryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
 	__legacyPredicate := buildrequest.IsProviderSupported
-	if (mode == bamlutils.StreamModeCall || mode == bamlutils.StreamModeCallWithRaw) && !__useBuildRequest {
-		__legacyPredicate = func(p string) bool {
-			return buildrequest.IsCallProviderSupportedWithConfig(p, __brCfg)
-		}
-	}
-	__plannedLegacy := buildrequest.BuildLegacyMetadataPlanForClientWithConfig(__reg, __effective, introspected.ClientProvider[__effective], introspected.FallbackChains, introspected.ClientProvider, __legacyPredicate, __legacyRetryPolicy, __brCfg)
+	__plannedLegacy := buildrequest.BuildLegacyMetadataPlanForClient(__reg, __effective, introspected.ClientProvider[__effective], introspected.FallbackChains, introspected.ClientProvider, __legacyPredicate, __legacyRetryPolicy)
 	__plannedLegacy.RoundRobin = __rrInfo
 	__legacyClientOverride := __effective
 	buildrequest.LogLegacyClassification(adapter, "Baml_Rest_Dynamic", __plannedLegacy)

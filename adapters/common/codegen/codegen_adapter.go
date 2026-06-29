@@ -159,10 +159,10 @@ func emitFrameworkAdapter(out *jen.File, opts Options) {
 	structFields = append(structFields,
 		jen.Line(),
 		jen.Comment("buildRequestConfig carries the per-handler BuildRequest knobs"),
-		jen.Comment("(UseBuildRequest, DisableCallBuildRequest). The generated"),
-		jen.Comment("router reads this via BuildRequestConfig() instead of the"),
-		jen.Comment("env-cached buildrequest.UseBuildRequest helper so two handlers"),
-		jen.Comment("in the same process can carry distinct configurations."),
+		jen.Comment("(DisableCallBuildRequest). The generated router reads this via"),
+		jen.Comment("BuildRequestConfig() instead of the env-cached buildrequest"),
+		jen.Comment("helper so two handlers in the same process can carry distinct"),
+		jen.Comment("configurations."),
 		jen.Id("buildRequestConfig").Qual(bamlutilsPkg, "BuildRequestConfig"),
 		jen.Line(),
 		jen.Comment("deBAMLConfig carries the per-handler BAML_REST_USE_DEBAML"),
@@ -528,7 +528,7 @@ func emitFrameworkAdapterHTTPClient(out *jen.File, opts Options, llmhttpPkg stri
 
 // emitFrameworkAdapterBuildRequestConfig emits the per-handler
 // BuildRequestConfig setter/getter pair the generated router consults
-// instead of buildrequest.UseBuildRequest() globals.
+// instead of the buildrequest package's env-cached globals.
 func emitFrameworkAdapterBuildRequestConfig(out *jen.File, bamlutilsPkg string) {
 	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
 		Id("SetBuildRequestConfig").Params(jen.Id("cfg").Qual(bamlutilsPkg, "BuildRequestConfig")).

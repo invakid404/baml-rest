@@ -968,23 +968,23 @@ type RoundRobinAdvancer interface {
 	Advance(clientName string, childCount int) (int, error)
 }
 
-// BuildRequestConfig carries the per-handler settings that drove the
+// BuildRequestConfig carries the per-handler settings that drive the
 // codegen-emitted BuildRequest gates. Adapters expose the typed shape
-// so generated routers can read `adapter.BuildRequestConfig().UseBuildRequest`
-// instead of reaching into the buildrequest package's env-cached
-// globals — every handler in a single process can carry a distinct
-// configuration without leaking through process-wide state.
+// so generated routers can read `adapter.BuildRequestConfig()` instead
+// of reaching into the buildrequest package's env-cached globals — every
+// handler in a single process can carry a distinct configuration without
+// leaking through process-wide state.
+//
+// As of #537 the BuildRequest route is unconditional: it is attempted
+// whenever the generated BAML client exposes Request/StreamRequest
+// surfaces. The retired BAML_REST_USE_BUILD_REQUEST route gate no longer
+// has a field here; only the narrower DisableCallBuildRequest hatch
+// remains.
 //
 // Operators running the standard cmd/serve binaries see no behaviour
-// change: cmd/worker and cmd/serve resolve the env vars once at
-// startup and populate this struct identically across every handler
-// in the pool.
+// change: cmd/worker and cmd/serve resolve the env var once at startup
+// and populate this struct identically across every handler in the pool.
 type BuildRequestConfig struct {
-	// UseBuildRequest mirrors BAML_REST_USE_BUILD_REQUEST. When false,
-	// every BuildRequest landing gate in the generated router declines
-	// and dispatch falls through to the legacy CallStream+OnTick path.
-	UseBuildRequest bool
-
 	// DisableCallBuildRequest mirrors BAML_REST_DISABLE_CALL_BUILD_REQUEST.
 	// When true, the non-streaming Request API is treated as unsupported
 	// for every provider on this handler — /call{,-with-raw} fall through
@@ -1025,9 +1025,9 @@ type DeBAMLConfig struct {
 type DeBAMLRenderFunc func(schema *DynamicOutputSchema) (string, error)
 
 // EnvUseDeBAML is the umbrella env var that enables native de-BAML
-// behaviour. Distinct from BAML_REST_USE_BUILD_REQUEST: that selects the
-// transport route, this selects whether native de-BAML paths run on
-// routes that expose a native seam.
+// behaviour. It selects whether native de-BAML paths run on routes that
+// expose a native seam — independent of transport-route selection (the
+// BuildRequest route is unconditional as of #537).
 const EnvUseDeBAML = "BAML_REST_USE_DEBAML"
 
 // DeBAMLConfigFromEnv resolves BAML_REST_USE_DEBAML into a DeBAMLConfig.
@@ -1040,11 +1040,11 @@ func DeBAMLConfigFromEnv() DeBAMLConfig {
 }
 
 // IsTruthyEnvValue is the single truthy-env contract shared across
-// baml-rest's boolean env vars (BAML_REST_USE_BUILD_REQUEST,
-// BAML_REST_DISABLE_CALL_BUILD_REQUEST, BAML_REST_USE_DEBAML, and the
-// serve-host preserve-order default). Exactly 1/true/yes/on
-// (case-insensitive) are true; every other value — including the empty
-// string and whitespace-padded variants (no trimming) — is false.
+// baml-rest's boolean env vars (BAML_REST_DISABLE_CALL_BUILD_REQUEST,
+// BAML_REST_USE_DEBAML, and the serve-host preserve-order default).
+// Exactly 1/true/yes/on (case-insensitive) are true; every other value —
+// including the empty string and whitespace-padded variants (no
+// trimming) — is false.
 func IsTruthyEnvValue(v string) bool {
 	switch strings.ToLower(v) {
 	case "1", "true", "yes", "on":
@@ -1106,12 +1106,12 @@ type Adapter interface {
 	SetHTTPClient(*llmhttp.Client)
 	// SetBuildRequestConfig stores the per-handler BuildRequestConfig.
 	// The generated router consults BuildRequestConfig() for the
-	// per-request UseBuildRequest / DisableCallBuildRequest decision
-	// rather than the buildrequest package's env-cached helpers.
+	// per-request DisableCallBuildRequest decision rather than the
+	// buildrequest package's env-cached helper.
 	SetBuildRequestConfig(BuildRequestConfig)
 	// BuildRequestConfig returns the per-handler BuildRequestConfig
 	// installed via SetBuildRequestConfig. Zero value when unset —
-	// the codegen-emitted router treats both fields as false.
+	// the codegen-emitted router treats DisableCallBuildRequest as false.
 	BuildRequestConfig() BuildRequestConfig
 	// SetDeBAMLConfig stores the per-handler DeBAMLConfig (the
 	// BAML_REST_USE_DEBAML umbrella switch). cmd/serve and cmd/worker

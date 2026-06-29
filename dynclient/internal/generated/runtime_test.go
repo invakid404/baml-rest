@@ -45,7 +45,6 @@ func TestRuntimeMakeAdapter(t *testing.T) {
 	}
 
 	wantBR := bamlutils.BuildRequestConfig{
-		UseBuildRequest:         true,
 		DisableCallBuildRequest: true,
 	}
 	adapter.SetBuildRequestConfig(wantBR)

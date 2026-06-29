@@ -58,16 +58,6 @@ type config struct {
 	preserveSchemaOrderDefault bool
 }
 
-// WithUseBuildRequest mirrors the BAML_REST_USE_BUILD_REQUEST gate for a
-// single client. When enabled, the BuildRequest path drives dispatch for
-// supported providers.
-func WithUseBuildRequest(enabled bool) Option {
-	return func(c *config) error {
-		c.buildRequest.UseBuildRequest = enabled
-		return nil
-	}
-}
-
 // WithDisableCallBuildRequest mirrors BAML_REST_DISABLE_CALL_BUILD_REQUEST.
 // When true, the non-streaming Request API is treated as unsupported and
 // /call{,-with-raw} fall through to the stream-accumulation bridge or
@@ -83,11 +73,10 @@ func WithDisableCallBuildRequest(disabled bool) Option {
 // single client. When enabled, native de-BAML behaviour runs on routes
 // that expose a native seam — today, the native ctx.output_format
 // renderer on the dynamic BuildRequest route. dynclient never reads the
-// env var; callers opt in explicitly here. Distinct from
-// WithUseBuildRequest: the native output_format seam only exists on the
-// BuildRequest route, so enabling de-BAML without
-// WithUseBuildRequest leaves the request on the legacy BAML path for
-// this cut (route coupling tracked in #537).
+// env var; callers opt in explicitly here. The native output_format seam
+// lives on the BuildRequest route, which is unconditional as of #537, so
+// de-BAML reaches the native seam on capable BAML versions without any
+// route opt-in.
 func WithDeBAML(enabled bool) Option {
 	return func(c *config) error {
 		c.deBAML.Enabled = enabled
@@ -100,8 +89,8 @@ func WithDeBAML(enabled bool) Option {
 // root internal/schema + outputformat packages, so a caller in the root
 // module supplies the renderer (e.g. internal/debaml.Render). Without it,
 // WithDeBAML has no renderer wired and the dynamic path stays
-// BAML-as-today. Pairs with WithDeBAML (the enable switch) and
-// WithUseBuildRequest (the native seam only exists on that route, #537).
+// BAML-as-today. Pairs with WithDeBAML (the enable switch); the native
+// seam lives on the BuildRequest route, which is unconditional as of #537.
 func WithDeBAMLRenderer(render bamlutils.DeBAMLRenderFunc) Option {
 	return func(c *config) error {
 		c.deBAMLRender = render

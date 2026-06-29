@@ -26,54 +26,6 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/sseclient"
 )
 
-// parseBuildRequestEnv reads BAML_REST_USE_BUILD_REQUEST and returns its
-// boolean interpretation. Extracted so the test can verify parsing logic
-// independently of the cache.
-func parseBuildRequestEnv() bool {
-	return bamlutils.IsTruthyEnvValue(os.Getenv("BAML_REST_USE_BUILD_REQUEST"))
-}
-
-// useBuildRequestOnce caches the result of parseBuildRequestEnv. The env var
-// is read once on first call and the result is reused for all subsequent
-// calls. This avoids repeated os.Getenv (which acquires a lock) on every
-// request dispatch — the generated router reads the cached value once at
-// router entry and threads it into every gate (BuildRequest landing,
-// legacy predicate, and the supportsWithClient ResolveEffectiveClient
-// upgrade) so the same boolean drives every decision in a request.
-var useBuildRequestOnce sync.Once
-var useBuildRequestCached bool
-
-// UseBuildRequest returns true if the BuildRequest/StreamRequest paths are enabled.
-// Controlled by the BAML_REST_USE_BUILD_REQUEST environment variable.
-//
-// When false, the flag is a full rollback to the legacy CallStream+OnTick
-// path: the BuildRequest transport is skipped, baml-rest's RR resolver
-// and coordinator are NOT engaged on supportsWithClient adapters, and
-// BAML's own runtime owns strategy rotation per-worker. This is the
-// kill-switch contract — flipping the flag off should remove every new
-// failure surface this PR added (RemoteAdvancer, SharedState broker,
-// in-process coordinator) from the request path so operators can revert
-// to legacy semantics during incident response.
-//
-// Scope: the flag is read by both the request-path gates (codegen
-// upgrade in adapters/common/codegen, ResolveEffectiveClient consumers)
-// and the host startup wiring in cmd/serve. cmd/serve only seeds
-// SharedStateSeeds when the flag is on; with it off, the host doesn't
-// host a SharedStateStore, the plugin map ships without
-// SharedStateImpl, no reverse broker is accepted, and the worker's
-// AttachSharedState handshake never runs. That keeps the kill-switch
-// rollback genuinely surface-free: the broker, store, and remote
-// advancer are all skipped end-to-end rather than constructed and
-// merely unused.
-//
-// The environment variable is read once and cached for the process lifetime.
-func UseBuildRequest() bool {
-	useBuildRequestOnce.Do(func() {
-		useBuildRequestCached = parseBuildRequestEnv()
-	})
-	return useBuildRequestCached
-}
-
 // parseDisableCallBuildRequestEnv reads BAML_REST_DISABLE_CALL_BUILD_REQUEST
 // and returns its boolean interpretation. Extracted so the test can verify
 // parsing logic independently of the cache.
@@ -82,7 +34,7 @@ func parseDisableCallBuildRequestEnv() bool {
 }
 
 // disableCallBuildRequestOnce caches the result of the env lookup so
-// IsCallProviderSupported stays hot. Same rationale as useBuildRequestOnce.
+// IsCallProviderSupported stays hot — os.Getenv takes a lock each call.
 var disableCallBuildRequestOnce sync.Once
 var disableCallBuildRequestCached bool
 
@@ -206,16 +158,19 @@ func IsCallProviderSupported(provider string) bool {
 }
 
 // EnvConfig returns the BuildRequestConfig parsed from the process env.
-// The values are read through the same sync.Once-backed caches as the
-// legacy helpers (UseBuildRequest / disableCallBuildRequest) so this
-// helper costs the same as the older form on the hot path.
+// The values are read through the sync.Once-backed disableCallBuildRequest
+// cache so this helper costs the same as a direct env read on the hot path.
+//
+// BuildRequest is always attempted whenever the generated BAML client
+// exposes Request/StreamRequest surfaces — the legacy BAML_REST_USE_BUILD_REQUEST
+// route gate was retired in #537, so only DisableCallBuildRequest (the
+// narrower /call Request-API hatch) is env-driven here.
 //
 // Used by cmd/worker and cmd/serve at startup to populate per-handler
 // worker.Config.BuildRequest; programmatic callers can supply a literal
 // bamlutils.BuildRequestConfig instead.
 func EnvConfig() bamlutils.BuildRequestConfig {
 	return bamlutils.BuildRequestConfig{
-		UseBuildRequest:         UseBuildRequest(),
 		DisableCallBuildRequest: disableCallBuildRequest(),
 	}
 }

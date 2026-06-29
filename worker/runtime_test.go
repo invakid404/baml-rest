@@ -133,14 +133,15 @@ func TestHandlerParseMissingMethod(t *testing.T) {
 // the same runtime but different BuildRequest configs install the
 // matching value on their adapters — no leakage through a shared
 // global. This is the load-bearing assertion for the dynclient seam:
-// generated routers read `adapter.BuildRequestConfig().UseBuildRequest`,
+// generated routers read `adapter.BuildRequestConfig().DisableCallBuildRequest`,
 // and that value MUST be the per-handler choice rather than a process-
-// wide env cache.
+// wide env cache. (The BuildRequest route itself is unconditional as of
+// #537 — DisableCallBuildRequest is the only remaining per-handler knob.)
 func TestHandlerPerInstanceBuildRequestConfig(t *testing.T) {
 	t.Parallel()
 
-	cfgA := bamlutils.BuildRequestConfig{UseBuildRequest: true, DisableCallBuildRequest: false}
-	cfgB := bamlutils.BuildRequestConfig{UseBuildRequest: false, DisableCallBuildRequest: true}
+	cfgA := bamlutils.BuildRequestConfig{DisableCallBuildRequest: false}
+	cfgB := bamlutils.BuildRequestConfig{DisableCallBuildRequest: true}
 
 	makeMethod := func(captured **fakeAdapter) bamlutils.StreamingMethod {
 		return bamlutils.StreamingMethod{

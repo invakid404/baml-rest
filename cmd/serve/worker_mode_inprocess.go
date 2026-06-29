@@ -37,10 +37,10 @@ func configureWorkerMode(logger zerolog.Logger, cfg *pool.Config, runtimeCfg wor
 	if err != nil {
 		return fmt.Errorf("invalid BAML_REST_CLIENT_DEFAULTS: %w", err)
 	}
-	if clientDefaults.HasKey("allowed_role_metadata") && runtimeCfg.BuildRequest.UseBuildRequest {
+	if clientDefaults.HasKey("allowed_role_metadata") {
 		logger.Warn().Msg(
-			"BAML_REST_CLIENT_DEFAULTS sets allowed_role_metadata and " +
-				"BAML_REST_USE_BUILD_REQUEST=true; older BAML BuildRequest " +
+			"BAML_REST_CLIENT_DEFAULTS sets allowed_role_metadata and the " +
+				"BuildRequest route is on by default; older BAML BuildRequest " +
 				"serializers may drop message-level metadata (e.g. cache_control). " +
 				"Keep this covered by integration tests when changing supported " +
 				"BAML versions.")
