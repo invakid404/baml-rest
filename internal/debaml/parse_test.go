@@ -367,17 +367,19 @@ func TestParse_FixingSingleQuotes(t *testing.T) {
 	mustParse(t, s, `{'outer': {'inner': 'val'}}`, `{"outer":{"inner":"val"}}`)
 }
 
-func TestParse_FixingSingleQuotedValueWithDelimiter(t *testing.T) {
-	// A single-quoted string VALUE containing a structural '}' must not
-	// mis-slice the balanced span: the span scanner treats single-quoted
-	// content as opaque once a structure is anchored, so the full object is
-	// selected and fixed. BAML models the single-quoted string as a real
-	// string state and agrees.
-	mustParse(t, personSchema(), `{name:'Ada } Lovelace', age:36}`, `{"name":"Ada } Lovelace","age":36}`)
-	// Same, embedded in prose (the apostrophe-free prefix still anchors on
-	// the real object; the inner '}' stays inside the single-quoted value).
-	mustParse(t, personSchema(), `Here: {name:'Ada } Lovelace', age:36} done.`, `{"name":"Ada } Lovelace","age":36}`)
-	// A bracket inside the single-quoted value, too.
+func TestParse_SingleQuotedValueWithDelimiter(t *testing.T) {
+	// Span detection is single-quote-BLIND (matching BAML's quote-blind
+	// multi-json/prose grep). A structural '}' inside a single-quoted value
+	// therefore terminates the span early: `{name:'Ada } Lovelace', age:36}`
+	// slices to `{name:'Ada }`, which the fixing pass rejects as an
+	// unterminated single-quoted string and DECLINES. That is parity-safe:
+	// BAML greps the same prefix as one of several scored candidates, and
+	// native must not claim the wider object on its own.
+	requireUnsupported(t, personSchema(), `{name:'Ada } Lovelace', age:36}`)
+	requireUnsupported(t, personSchema(), `Here: {name:'Ada } Lovelace', age:36} done.`)
+	// When the brackets inside the single-quoted value happen to be balanced,
+	// quote-blind slicing yields the whole object — exactly the span BAML's
+	// (also quote-blind) grep produces — so native claims it and matches.
 	s := &bamlutils.DynamicOutputSchema{Properties: props(kv("note", strProp()))}
 	mustParse(t, s, `{note:'see [1] and {x}'}`, `{"note":"see [1] and {x}"}`)
 }
