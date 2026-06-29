@@ -970,9 +970,9 @@ type RoundRobinAdvancer interface {
 
 // DeBAMLConfig is the single umbrella switch for baml-rest's native
 // "de-BAML" behaviour: Go-native ports of pieces BAML currently owns at
-// request time (the ctx.output_format renderer first; a native parser
-// and other native paths later attach to this same flag). It mirrors
-// BAML_REST_USE_DEBAML.
+// request time (the ctx.output_format renderer and the native response
+// parser both attach to this same flag; other native paths attach here
+// later). It mirrors BAML_REST_USE_DEBAML.
 //
 // One flag, all-on-or-all-off. There is intentionally no per-feature
 // switch: every implemented native path is gated on Enabled together so
@@ -998,6 +998,62 @@ type DeBAMLConfig struct {
 // only ever calls this public-typed callback. A nil func, or one that
 // returns an error, means "fall back to BAML-as-today" for that request.
 type DeBAMLRenderFunc func(schema *DynamicOutputSchema) (string, error)
+
+// ErrDeBAMLParseUnsupported is the sentinel a native de-BAML parser
+// returns when it cannot service a parse request — the schema shape or
+// the raw syntax falls outside the bounded set the native parser claims.
+// It means "fall back to BAML and parse this final response there",
+// logged/metered once per final parse. It is distinct from a genuine
+// parse error: a non-sentinel error from a native parser is a CLAIMED
+// parse failure that propagates unchanged, so the native-vs-BAML
+// differential catches semantic drift rather than masking it behind a
+// silent fallback.
+var ErrDeBAMLParseUnsupported = errors.New("bamlutils: de-BAML parser unsupported")
+
+// DeBAMLParseRequest is the input to a native de-BAML parse callback: the
+// raw model text, the dynamic output schema the text is parsed against,
+// and the parse-mode flag. It is the parser-side twin of the renderer
+// seam — the request the generated adapter hands the native parser.
+type DeBAMLParseRequest struct {
+	// Raw is the exact model response text to parse.
+	Raw string
+	// OutputSchema is the dynamic output schema the raw text is coerced
+	// against. Nil is unsupported — the native parser needs a schema.
+	OutputSchema *DynamicOutputSchema
+	// Stream selects parse-stream (partial) semantics. The M1 native
+	// parser returns ErrDeBAMLParseUnsupported for Stream=true; the field
+	// exists now so the seam is not redesigned when native streaming
+	// lands.
+	Stream bool
+}
+
+// DeBAMLParseResult is a native de-BAML parser's successful output.
+type DeBAMLParseResult struct {
+	// JSON is the flattened dynamic output JSON, with NO DynamicProperties
+	// envelope — the same flattened shape FlattenDynamicOutput produces.
+	// Generated adapters wrap it into a Baml_Rest_DynamicOutput envelope
+	// before the downstream FlattenDynamicOutput / InjectAbsentOptionals /
+	// ordering code runs, so the native path rejoins the existing pipeline
+	// with no special-casing.
+	JSON stdjson.RawMessage
+}
+
+// DeBAMLParseFunc parses a raw model response against a dynamic output
+// schema and returns the flattened dynamic output JSON. It is the
+// parser-side twin of DeBAMLRenderFunc: the root module (which owns
+// internal/schema + the native parser) wires a concrete implementation
+// in, and the generated dynclient adapter — a separate module that
+// cannot import those root internal packages — drives it through this
+// public-typed callback only.
+//
+// Contract:
+//   - ErrDeBAMLParseUnsupported means "fall back to BAML for this final
+//     parse" (logged once); a nil func is treated the same way.
+//   - Any other error is a CLAIMED native parse failure and propagates
+//     unchanged — it is NOT a fallback trigger, so the differential can
+//     catch native-vs-BAML drift.
+//   - A nil error returns the flattened native parse result.
+type DeBAMLParseFunc func(ctx context.Context, req DeBAMLParseRequest) (DeBAMLParseResult, error)
 
 // EnvUseDeBAML is the umbrella env var that enables native de-BAML
 // behaviour. It selects whether native de-BAML paths run on routes that

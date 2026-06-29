@@ -1,6 +1,7 @@
 package generated
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -190,4 +191,96 @@ func TestMaybeApplyDeBAMLOutputFormat_RenderErrorFallback(t *testing.T) {
 	out := maybeApplyDeBAMLOutputFormat(newTestAdapter(true, simpleSchema(), failing), msgs)
 	assertMarkerIntact(t, out, "render error (returned)")
 	assertMarkerIntact(t, msgs, "render error (input)")
+}
+
+// newParserTestAdapter builds a real framework adapter with the de-BAML
+// config, carried schema, and (optionally) the native parse callback
+// installed — the parser-side twin of newTestAdapter.
+func newParserTestAdapter(enabled bool, s *bamlutils.DynamicOutputSchema, parse bamlutils.DeBAMLParseFunc) bamlutils.Adapter {
+	a := &adapter.BamlAdapter{}
+	a.SetDeBAMLConfig(bamlutils.DeBAMLConfig{Enabled: enabled})
+	a.SetDeBAMLOutputSchema(s)
+	a.SetDeBAMLParser(parse)
+	return a
+}
+
+// parserReturning is an injected native parse callback that returns a fixed
+// JSON payload and error, so the wrapper's claim/decline/propagate logic can
+// be exercised without the root-module parser.
+func parserReturning(json string, err error) bamlutils.DeBAMLParseFunc {
+	return func(context.Context, bamlutils.DeBAMLParseRequest) (bamlutils.DeBAMLParseResult, error) {
+		return bamlutils.DeBAMLParseResult{JSON: []byte(json)}, err
+	}
+}
+
+// TestMaybeParseDeBAMLFinal_WrapFailurePropagates is the R1 regression: when
+// the native parser CLAIMS success (nil error) but returns JSON that cannot
+// wrap into the dynamic-output envelope (scalar / non-object / malformed),
+// the wrapper must PROPAGATE the failure as a native error rather than
+// silently fall back to BAML. Per the seam contract only
+// ErrDeBAMLParseUnsupported falls back; any other failure on a claimed
+// result surfaces, so a parser/callback bug can't hide behind a BAML parse.
+func TestMaybeParseDeBAMLFinal_WrapFailurePropagates(t *testing.T) {
+	for _, badJSON := range []string{`123`, `"scalar"`, `[1,2,3]`, `{not json`} {
+		_, ok, err := maybeParseDeBAMLFinal(
+			context.Background(),
+			newParserTestAdapter(true, simpleSchema(), parserReturning(badJSON, nil)),
+			"raw", "final",
+		)
+		if ok {
+			t.Errorf("%q: expected ok=false on wrap failure, got ok=true", badJSON)
+		}
+		if err == nil {
+			t.Errorf("%q: expected wrap failure to PROPAGATE, got nil (silent BAML fallback)", badJSON)
+		}
+		if errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+			t.Errorf("%q: wrap failure must NOT be the unsupported sentinel (would fall back): %v", badJSON, err)
+		}
+	}
+}
+
+// TestMaybeParseDeBAMLFinal_ClaimsValidObject pins the success path: a native
+// parser returning a flattened JSON object is claimed and wrapped into the
+// dynamic-output envelope.
+func TestMaybeParseDeBAMLFinal_ClaimsValidObject(t *testing.T) {
+	out, ok, err := maybeParseDeBAMLFinal(
+		context.Background(),
+		newParserTestAdapter(true, simpleSchema(), parserReturning(`{"answer":"hi"}`, nil)),
+		"raw", "final",
+	)
+	if err != nil || !ok {
+		t.Fatalf("expected claimed success, got ok=%v err=%v", ok, err)
+	}
+	if v, present := out.DynamicProperties.Get("answer"); !present || v != "hi" {
+		t.Errorf("envelope DynamicProperties.answer = %v (present=%v), want %q", v, present, "hi")
+	}
+}
+
+// TestMaybeParseDeBAMLFinal_UnsupportedFallsBack pins that the sentinel — and
+// only the sentinel — declines (ok=false, err=nil) so the caller falls back
+// to BAML.
+func TestMaybeParseDeBAMLFinal_UnsupportedFallsBack(t *testing.T) {
+	_, ok, err := maybeParseDeBAMLFinal(
+		context.Background(),
+		newParserTestAdapter(true, simpleSchema(), parserReturning("", bamlutils.ErrDeBAMLParseUnsupported)),
+		"raw", "final",
+	)
+	if ok || err != nil {
+		t.Fatalf("unsupported must decline (ok=false, err=nil), got ok=%v err=%v", ok, err)
+	}
+}
+
+// TestMaybeParseDeBAMLFinal_DeclinesWhenOff pins the runtime gates: flag off,
+// nil schema, and nil parser all decline without invoking the callback.
+func TestMaybeParseDeBAMLFinal_DeclinesWhenOff(t *testing.T) {
+	mustDecline := func(name string, a bamlutils.Adapter) {
+		t.Helper()
+		if _, ok, err := maybeParseDeBAMLFinal(context.Background(), a, "raw", "final"); ok || err != nil {
+			t.Errorf("%s: expected decline (ok=false, err=nil), got ok=%v err=%v", name, ok, err)
+		}
+	}
+	claim := parserReturning(`{"answer":"hi"}`, nil)
+	mustDecline("flag off", newParserTestAdapter(false, simpleSchema(), claim))
+	mustDecline("nil schema", newParserTestAdapter(true, nil, claim))
+	mustDecline("nil parser", newParserTestAdapter(true, simpleSchema(), nil))
 }

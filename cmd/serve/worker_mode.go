@@ -36,6 +36,12 @@ type workerModeRuntimeConfig struct {
 	// it across the module boundary).
 	DeBAMLRender bamlutils.DeBAMLRenderFunc
 
+	// DeBAMLParse is the native response-parser callback the in-process
+	// worker installs on every adapter, the parser-side twin of
+	// DeBAMLRender. Wired to internal/debaml.Parse at startup for the same
+	// module-boundary reason.
+	DeBAMLParse bamlutils.DeBAMLParseFunc
+
 	// BaseURLRewrites is the URL rewrite ruleset the worker applies
 	// before SetClientRegistry. Outbound HTTP rewrites go through
 	// HTTPClient's per-client rules below — populated from the same

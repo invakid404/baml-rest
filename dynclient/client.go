@@ -122,6 +122,7 @@ func newWithRuntime(rt worker.Runtime, init func(), opts ...Option) (*Client, er
 		ClientDefaults:  cfg.clientDefaults,
 		DeBAML:          cfg.deBAML,
 		DeBAMLRender:    cfg.deBAMLRender,
+		DeBAMLParse:     cfg.deBAMLParse,
 		BaseURLRewrites: cfg.baseURLRewrites,
 		HTTPClient:      httpClient,
 	}

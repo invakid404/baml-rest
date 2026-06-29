@@ -250,11 +250,21 @@ type generator struct {
 	supportsWithClient   bool
 	mirrors              *mirrorStructTracker
 	emittedUnwrapHelpers map[string]bool
-	// emittedDeBAMLCall records whether a BuildRequest closure emitted
-	// the maybeApplyDeBAMLOutputFormat call for the de-BAML dynamic
-	// method. When true, generate() writes the matching debaml.go helper
-	// next to adapter.go so the call resolves in this package.
+	// emittedDeBAMLCall records whether ANY de-BAML helper call was emitted
+	// for the dynamic method — the render injection
+	// (maybeApplyDeBAMLOutputFormat) OR a native-parse call
+	// (maybeParseDeBAMLFinal, in BuildRequest final parse or parse-only).
+	// When true, generate() writes the matching debaml.go helper next to
+	// adapter.go so those calls resolve in this package. It is the
+	// "helper-needed" bit, NOT proof of render injection — use
+	// emittedDeBAMLRenderCall for that.
 	emittedDeBAMLCall bool
+	// emittedDeBAMLRenderCall records whether the BuildRequest RENDER
+	// injection (maybeApplyDeBAMLOutputFormat) was emitted specifically.
+	// validateDeBAMLEmission keys on this — never on emittedDeBAMLCall —
+	// so a method that only emitted a native-PARSE call cannot satisfy the
+	// render-injection guard and ship a render-side-inert build.
+	emittedDeBAMLRenderCall bool
 	// slicePools dedupes pooled-slice helper emission across all method
 	// preambles + nested struct conversions. Lifetime is per-file: every
 	// pooled inner type encountered during emission lazily lands one
@@ -399,13 +409,15 @@ func generate(opts Options) {
 	generateStreamHelpers(g.out, g.pkgs)
 
 	// Fail loudly when a de-BAML dynamic method was configured but no
-	// BuildRequest closure actually emitted the injection call. Without
-	// this, method-name drift / a missing struct-media param / the method
-	// not being in the emitted set would silently ship a de-BAML-inert
-	// build — the exact production-inert regression #536 P1 fixed. Done
-	// after emitMethods (which sets emittedDeBAMLCall) and before Save so
-	// no misleading inert adapter.go is written.
-	if err := validateDeBAMLEmission(g.opts.DeBAMLDynamicMethod, g.emittedDeBAMLCall); err != nil {
+	// BuildRequest closure actually emitted the RENDER injection call.
+	// Without this, method-name drift / a missing struct-media param / the
+	// method not being in the emitted set would silently ship a render-side
+	// de-BAML-inert build — the exact production-inert regression #536 P1
+	// fixed. Keyed on emittedDeBAMLRenderCall (NOT emittedDeBAMLCall), so a
+	// native-parse-only emission can't satisfy the render guard. Done after
+	// emitMethods/emitParseMethods and before Save so no misleading inert
+	// adapter.go is written.
+	if err := g.validateDeBAMLRenderEmission(); err != nil {
 		panic(err.Error())
 	}
 
@@ -419,16 +431,29 @@ func generate(opts Options) {
 	g.maybeWriteDeBAMLHelper()
 }
 
+// validateDeBAMLRenderEmission is the generator-bound guard: it keys
+// validateDeBAMLEmission on emittedDeBAMLRenderCall (the RENDER injection
+// bit) so a method that emitted only a native-parse call cannot pass the
+// render-injection guard. Extracted as a method so the split can be
+// unit-tested against a generator with controlled emission bits.
+func (g *generator) validateDeBAMLRenderEmission() error {
+	return validateDeBAMLEmission(g.opts.DeBAMLDynamicMethod, g.emittedDeBAMLRenderCall)
+}
+
 // validateDeBAMLEmission enforces that a configured de-BAML dynamic method
-// actually produced an injection call. It returns nil when de-BAML is not
-// configured (empty method) or when the call was emitted; it returns a
-// descriptive error when the method is configured but no BuildRequest
-// closure matched it — method-name drift, a missing struct/media param, or
-// the method being absent from the emitted set — so a silently
-// de-BAML-inert build becomes a generation-time failure instead.
-func validateDeBAMLEmission(deBAMLMethod string, emitted bool) error {
-	if deBAMLMethod == "" || emitted {
+// actually produced the RENDER injection call. It returns nil when de-BAML
+// is not configured (empty method) or when the render injection was emitted;
+// it returns a descriptive error when the method is configured but no
+// BuildRequest closure rendered it — method-name drift, a missing
+// struct/media param, or the method being absent from the emitted set — so a
+// silently render-inert de-BAML build becomes a generation-time failure
+// instead. renderEmitted MUST be the render-specific bit
+// (emittedDeBAMLRenderCall): the broader helper-needed bit
+// (emittedDeBAMLCall) is also set by native-parse emission and would mask a
+// missing render injection.
+func validateDeBAMLEmission(deBAMLMethod string, renderEmitted bool) error {
+	if deBAMLMethod == "" || renderEmitted {
 		return nil
 	}
-	return fmt.Errorf("codegen: de-BAML dynamic method %q configured but no BuildRequest closure emitted the injection call (method-name drift, missing struct/media param, or the method is not in the emitted set)", deBAMLMethod)
+	return fmt.Errorf("codegen: de-BAML dynamic method %q configured but no BuildRequest closure emitted the render injection call (method-name drift, missing struct/media param, or the method is not in the emitted set)", deBAMLMethod)
 }

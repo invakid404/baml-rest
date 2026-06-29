@@ -3,6 +3,9 @@
 package generated
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"strings"
 
 	bamlutils "github.com/invakid404/baml-rest/bamlutils"
@@ -115,5 +118,91 @@ func hasOutputFormatPart(parts []types.Baml_Rest_ContentPart) bool {
 func logDeBAMLFallback(adapter bamlutils.Adapter, stage string, err error) {
 	if logger := adapter.Logger(); logger != nil {
 		logger.Warn("de-BAML output_format fallback to BAML render", "stage", stage, "err", err.Error())
+	}
+}
+
+// deBAMLParserGetter is the narrow optional interface the adapter
+// implements to expose the native response-parser callback. Like
+// deBAMLRendererGetter it keeps the generated package free of any
+// internal/schema dependency: the root module wires the parser in and the
+// generated code drives it only through this public-typed seam.
+type deBAMLParserGetter interface {
+	DeBAMLParser() bamlutils.DeBAMLParseFunc
+}
+
+// maybeParseDeBAMLFinal attempts the native de-BAML final parse for the
+// dynamic method, returning the generated dynamic-output envelope on
+// success. The boolean reports whether the native parser CLAIMED a result:
+//
+//   - (envelope, true, nil): native produced the result; use it.
+//   - (zero, false, nil): native declined — de-BAML off, no carried
+//     schema, no parser wired, or bamlutils.ErrDeBAMLParseUnsupported — so
+//     the caller falls back to BAML for this final parse (logged once).
+//   - (zero, false, err): native CLAIMED a parse failure; the caller
+//     propagates it so the native-vs-BAML differential catches drift
+//     rather than masking it behind a silent fallback.
+//
+// ctx is the caller's request context: the streaming/call closures thread
+// their per-attempt ctx through so a native parser observes the same
+// cancellation/deadline the BAML fallback would; the parse-only path passes
+// the adapter (which is itself a context.Context) since it has no separate
+// request context.
+func maybeParseDeBAMLFinal(ctx context.Context, adapter bamlutils.Adapter, raw string, stage string) (types.Baml_Rest_DynamicOutput, bool, error) {
+	var zero types.Baml_Rest_DynamicOutput
+	if !adapter.DeBAMLConfig().Enabled {
+		return zero, false, nil
+	}
+	outputSchema := adapter.DeBAMLOutputSchema()
+	if outputSchema == nil {
+		return zero, false, nil
+	}
+	getter, ok := adapter.(deBAMLParserGetter)
+	if !ok {
+		return zero, false, nil
+	}
+	parse := getter.DeBAMLParser()
+	if parse == nil {
+		return zero, false, nil
+	}
+	res, err := parse(ctx, bamlutils.DeBAMLParseRequest{Raw: raw, OutputSchema: outputSchema})
+	if err != nil {
+		if errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+			logDeBAMLParseFallback(adapter, stage, err)
+			return zero, false, nil
+		}
+		return zero, false, err
+	}
+	out, werr := wrapDeBAMLDynamicOutput(res.JSON)
+	if werr != nil {
+		// The native parser CLAIMED a success (nil error) but produced JSON
+		// we cannot wrap into the dynamic-output envelope (malformed,
+		// non-object, or scalar). Per the seam contract only
+		// ErrDeBAMLParseUnsupported falls back to BAML; every other failure
+		// on a claimed result propagates, so a parser/callback bug surfaces
+		// instead of being hidden behind a BAML parse.
+		return zero, false, fmt.Errorf("wrap native de-BAML parse result: %w", werr)
+	}
+	return out, true, nil
+}
+
+// wrapDeBAMLDynamicOutput wraps the flattened native parse JSON into the
+// generated dynamic-output envelope so the existing newResultFn /
+// FlattenDynamicOutput / InjectAbsentOptionals / ordering pipeline runs
+// unchanged. DynamicProperties decodes in wire order; the downstream
+// reorder/sort pass remains the order authority.
+func wrapDeBAMLDynamicOutput(flat []byte) (types.Baml_Rest_DynamicOutput, error) {
+	var out types.Baml_Rest_DynamicOutput
+	if err := out.DynamicProperties.UnmarshalJSON(flat); err != nil {
+		return types.Baml_Rest_DynamicOutput{}, err
+	}
+	return out, nil
+}
+
+// logDeBAMLParseFallback records a native-parse fallback so the BAML-parse
+// path stays observable without a user-facing flag. Best-effort: no logger
+// installed means no line, never an error to the caller.
+func logDeBAMLParseFallback(adapter bamlutils.Adapter, stage string, err error) {
+	if logger := adapter.Logger(); logger != nil {
+		logger.Warn("de-BAML parse fallback to BAML parse", "stage", stage, "err", err.Error())
 	}
 }

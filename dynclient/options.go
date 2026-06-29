@@ -33,6 +33,7 @@ type Option func(*config) error
 type config struct {
 	deBAML          bamlutils.DeBAMLConfig
 	deBAMLRender    bamlutils.DeBAMLRenderFunc
+	deBAMLParse     bamlutils.DeBAMLParseFunc
 	baseURLRewrites []urlrewrite.Rule
 	logger          bamlutils.Logger
 	metrics         *prometheus.Registry
@@ -82,6 +83,20 @@ func WithDeBAML(enabled bool) Option {
 func WithDeBAMLRenderer(render bamlutils.DeBAMLRenderFunc) Option {
 	return func(c *config) error {
 		c.deBAMLRender = render
+		return nil
+	}
+}
+
+// WithDeBAMLParser injects the native response-parser callback, the
+// parser-side twin of WithDeBAMLRenderer. dynclient lives in a separate Go
+// module and cannot import baml-rest's root internal/schema package, so a
+// caller in the root module supplies the parser (e.g. internal/debaml.Parse).
+// Without it, the dynamic final-parse path has no native parser wired and
+// stays BAML-as-today even with WithDeBAML enabled. Pairs with WithDeBAML
+// (the enable switch).
+func WithDeBAMLParser(parse bamlutils.DeBAMLParseFunc) Option {
+	return func(c *config) error {
+		c.deBAMLParse = parse
 		return nil
 	}
 }

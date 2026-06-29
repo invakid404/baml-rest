@@ -175,6 +175,12 @@ func emitFrameworkAdapter(out *jen.File, opts Options) {
 		jen.Comment("BuildRequest seam falls back to BAML-as-today."),
 		jen.Id("deBAMLRenderer").Qual(bamlutilsPkg, "DeBAMLRenderFunc"),
 		jen.Line(),
+		jen.Comment("deBAMLParser is the native response-parser callback, injected by"),
+		jen.Comment("the root module for the same module-boundary reason as"),
+		jen.Comment("deBAMLRenderer. nil means the final-parse seam falls back to"),
+		jen.Comment("BAML-as-today."),
+		jen.Id("deBAMLParser").Qual(bamlutilsPkg, "DeBAMLParseFunc"),
+		jen.Line(),
 		jen.Comment("rrAdvancer is the per-request round-robin Advancer installed by the"),
 		jen.Comment("worker; nil falls back to the introspected Coordinator."),
 		jen.Id("rrAdvancer").Qual(bamlutilsPkg, "RoundRobinAdvancer"),
@@ -564,6 +570,22 @@ func emitFrameworkAdapterDeBAML(out *jen.File, bamlutilsPkg string) {
 		Id("DeBAMLRenderer").Params().Qual(bamlutilsPkg, "DeBAMLRenderFunc").
 		Block(
 			jen.Return(jen.Id("b").Dot("deBAMLRenderer")),
+		)
+
+	// SetDeBAMLParser / DeBAMLParser are the parser-side twins of the
+	// renderer accessors, satisfying the worker's deBAMLParserSetter and the
+	// generated parse seam's deBAMLParserGetter narrow optional interfaces.
+	// Kept off the bamlutils.Adapter interface for the same reason.
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("SetDeBAMLParser").Params(jen.Id("fn").Qual(bamlutilsPkg, "DeBAMLParseFunc")).
+		Block(
+			jen.Id("b").Dot("deBAMLParser").Op("=").Id("fn"),
+		)
+
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("DeBAMLParser").Params().Qual(bamlutilsPkg, "DeBAMLParseFunc").
+		Block(
+			jen.Return(jen.Id("b").Dot("deBAMLParser")),
 		)
 }
 

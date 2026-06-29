@@ -302,7 +302,11 @@ func (me *methodEmitter) deBAMLOutputFormatStmts() []jen.Code {
 	}
 	// Record that the call was emitted so generate() writes the matching
 	// debaml.go helper into this package (the call resolves to it).
+	// emittedDeBAMLRenderCall additionally marks the RENDER injection
+	// specifically, which validateDeBAMLEmission keys on — a native-parse
+	// call must not be mistaken for proof of render injection.
 	me.g.emittedDeBAMLCall = true
+	me.g.emittedDeBAMLRenderCall = true
 	return []jen.Code{
 		jen.Id(me.deBAMLMessagesVar()).Op(":=").
 			Id("maybeApplyDeBAMLOutputFormat").Call(jen.Id("adapter"), jen.Id(me.deBAMLConvertedVar())),
@@ -319,6 +323,53 @@ func (me *methodEmitter) buildRequestArgCallParam(arg string) jen.Code {
 		return jen.Id(me.deBAMLMessagesVar())
 	}
 	return me.argCallParam(arg)
+}
+
+// parseFinalFnBody returns the statements for a parseFinalFn closure. For
+// the de-BAML dynamic method it attempts the native final parser first and
+// falls through to BAML on a declined/unsupported result (ok==false &&
+// err==nil); a CLAIMED native parse error (err!=nil) propagates. For every
+// other method it is the plain BAML Parse call exactly as before. textVar
+// is the closure's raw-text parameter name ("accumulated" or "text").
+//
+// The native attempt is gated at runtime inside maybeParseDeBAMLFinal on
+// adapter.DeBAMLConfig().Enabled, a carried schema, and a wired parser, so
+// emitting the call is inert until BAML_REST_USE_DEBAML is on and a parser
+// is installed.
+//
+// Gating uses the PARSE-side g.isDeBAMLDynamicMethod (matching the parse-only
+// generator in codegen_methods.go), NOT the render-side methodEmitter
+// isDeBAMLMethod: the parse seam consumes only the raw text, so it needs no
+// struct-media-param check. A de-BAML dynamic method without struct media
+// params must still get the native branch in BuildRequest/CallRequest final
+// parse, just as it does in direct Parse.
+func (me *methodEmitter) parseFinalFnBody(textVar string) []jen.Code {
+	g := me.g
+	bamlCall := jen.Return(
+		jen.Qual(g.pkgs.GeneratedClientPkg, "Parse").Dot(me.methodName).Call(
+			jen.Id("ctx"),
+			jen.Id(textVar),
+			jen.Id("options").Op("..."),
+		),
+	)
+	if !g.isDeBAMLDynamicMethod(me.methodName) {
+		return []jen.Code{bamlCall}
+	}
+	// A native parse call is emitted -> ensure generate() writes debaml.go
+	// (which holds maybeParseDeBAMLFinal) into this package.
+	g.emittedDeBAMLCall = true
+	return []jen.Code{
+		jen.Comment("Native de-BAML final parse first; ok==false && err==nil means"),
+		jen.Comment("declined/unsupported, so fall through to BAML-as-today."),
+		jen.If(
+			jen.List(jen.Id("result"), jen.Id("ok"), jen.Id("err")).Op(":=").
+				Id("maybeParseDeBAMLFinal").Call(jen.Id("ctx"), jen.Id("adapter"), jen.Id(textVar), jen.Lit("final")),
+			jen.Id("ok").Op("||").Id("err").Op("!=").Nil(),
+		).Block(
+			jen.Return(jen.Id("result"), jen.Id("err")),
+		),
+		bamlCall,
+	}
 }
 
 // emitBuildRequest emits the streaming BuildRequest impl for this
@@ -462,19 +513,14 @@ func (me *methodEmitter) emitBuildRequest() {
 			),
 		),
 
-		// parseFinalFn: calls Parse.Method(ctx, accumulated, opts...)
+		// parseFinalFn: calls Parse.Method(ctx, accumulated, opts...), with a
+		// native de-BAML final-parse attempt first for the dynamic method.
 		// The context_fix hack adds ctx as first param to Parse methods.
 		jen.Id("parseFinalFn").Op(":=").Func().Params(
 			jen.Id("ctx").Qual("context", "Context"),
 			jen.Id("accumulated").String(),
 		).Params(jen.Any(), jen.Error()).Block(
-			jen.Return(
-				jen.Qual(g.pkgs.GeneratedClientPkg, "Parse").Dot(me.methodName).Call(
-					jen.Id("ctx"),
-					jen.Id("accumulated"),
-					jen.Id("options").Op("..."),
-				),
-			),
+			me.parseFinalFnBody("accumulated")...,
 		),
 
 		// newResultFn: creates a pooled StreamResult.
@@ -810,18 +856,13 @@ func (me *methodEmitter) emitBuildCallRequest() {
 			emitBAMLHTTPRequestConversion(jg, g.pkgs, emitBedrockAuthDispatchFor(me.methodName, g.pkgs))
 		}),
 
-		// parseFinalFn: calls Parse.Method(ctx, text, opts...)
+		// parseFinalFn: calls Parse.Method(ctx, text, opts...), with a native
+		// de-BAML final-parse attempt first for the dynamic method.
 		jen.Id("parseFinalFn").Op(":=").Func().Params(
 			jen.Id("ctx").Qual("context", "Context"),
 			jen.Id("text").String(),
 		).Params(jen.Any(), jen.Error()).Block(
-			jen.Return(
-				jen.Qual(g.pkgs.GeneratedClientPkg, "Parse").Dot(me.methodName).Call(
-					jen.Id("ctx"),
-					jen.Id("text"),
-					jen.Id("options").Op("..."),
-				),
-			),
+			me.parseFinalFnBody("text")...,
 		),
 
 		// newResultFn: creates a pooled StreamResult. The signature matches

@@ -963,6 +963,15 @@ type parseMethodOut struct {
 	outputStructQual jen.Code
 }
 
+// isDeBAMLDynamicMethod reports whether methodName is the configured
+// de-BAML dynamic method (the one whose final type is the dynamic-output
+// envelope). The parse-only native de-BAML wrapping keys off this; unlike
+// the render-side methodEmitter.isDeBAMLMethod it needs no media-param
+// check because the parse path takes only the raw string.
+func (g *generator) isDeBAMLDynamicMethod(methodName string) bool {
+	return g.opts.DeBAMLDynamicMethod != "" && methodName == g.opts.DeBAMLDynamicMethod
+}
+
 // emitParseMethods walks introspected.ParseMethods, emits the
 // parse_<Method> wrapper for each method whose SyncFuncs entry has
 // a usable reflect signature, and returns the per-method
@@ -1009,7 +1018,53 @@ func (g *generator) emitParseMethods() []parseMethodOut {
 			jen.Id("options").Op("..."),
 		)
 
-		parseBody := []jen.Code{
+		// Resolve the DynamicProperties unwrap helper up front so both the
+		// native de-BAML branch and the BAML branch can call it. For
+		// streaming methods the helper was already emitted by the streaming
+		// loop; for parse-only methods it is emitted here.
+		var parseUnwrapName string
+		if isDynamic {
+			parseUnwrapName = strcase.LowerCamelCase(fmt.Sprintf("unwrapDynamic%sFinal", strcase.UpperCamelCase(fmt.Sprintf("%sOutput", methodName))))
+			if !g.emittedUnwrapHelpers[parseUnwrapName] {
+				finalTypeForParse := parseReflectType(syncFuncType.Out(0))
+				finalTypePtrForParse := jen.Op("*").Add(finalTypeForParse.statement.Clone())
+				g.emitDynamicUnwrapFunc(parseUnwrapName, finalTypePtrForParse)
+				g.emittedUnwrapHelpers[parseUnwrapName] = true
+			}
+		}
+
+		var parseBody []jen.Code
+
+		// Native de-BAML final parse first, for the dynamic method only. On a
+		// claimed result, unwrap and return it; on a claimed parse error,
+		// propagate; ok==false && err==nil means declined/unsupported, so
+		// fall through to BAML-as-today below. Gated at runtime inside
+		// maybeParseDeBAMLFinal on the de-BAML flag, a carried schema, and a
+		// wired parser, so it is inert until BAML_REST_USE_DEBAML is on.
+		//
+		// The parse-only entrypoint has no separate request context, so it
+		// passes the adapter (itself a context.Context) as ctx — the same
+		// value it hands BAML's Parse below.
+		if isDynamic && g.isDeBAMLDynamicMethod(methodName) {
+			// A native parse call is emitted -> ensure generate() writes
+			// debaml.go (which holds maybeParseDeBAMLFinal) into this package.
+			g.emittedDeBAMLCall = true
+			parseBody = append(parseBody,
+				jen.If(
+					jen.List(jen.Id("result"), jen.Id("ok"), jen.Id("err")).Op(":=").
+						Id("maybeParseDeBAMLFinal").Call(jen.Id("adapter"), jen.Id("adapter"), jen.Id("raw"), jen.Lit("parse_only")),
+					jen.Id("ok").Op("||").Id("err").Op("!=").Nil(),
+				).Block(
+					jen.If(jen.Id("err").Op("!=").Nil()).Block(
+						jen.Return(jen.Nil(), jen.Id("err")),
+					),
+					jen.Id(parseUnwrapName).Call(jen.Op("&").Id("result")),
+					jen.Return(jen.Id("result"), jen.Nil()),
+				),
+			)
+		}
+
+		parseBody = append(parseBody,
 			jen.List(jen.Id("options"), jen.Id("err")).Op(":=").Id("makeOptionsFromAdapter").Call(jen.Id("adapter")),
 			jen.If(jen.Id("err").Op("!=").Nil()).Block(
 				jen.Return(jen.Nil(), jen.Id("err")),
@@ -1019,19 +1074,10 @@ func (g *generator) emitParseMethods() []parseMethodOut {
 			jen.If(jen.Id("parseErr").Op("!=").Nil()).Block(
 				jen.Return(jen.Nil(), jen.Id("parseErr")),
 			),
-		}
+		)
 
-		// Unwrap DynamicProperties at parse time.
-		// For streaming methods the helper was already emitted by the streaming loop.
-		// For parse-only methods we must emit it here.
+		// Unwrap DynamicProperties at parse time for the BAML branch.
 		if isDynamic {
-			parseUnwrapName := strcase.LowerCamelCase(fmt.Sprintf("unwrapDynamic%sFinal", strcase.UpperCamelCase(fmt.Sprintf("%sOutput", methodName))))
-			if !g.emittedUnwrapHelpers[parseUnwrapName] {
-				finalTypeForParse := parseReflectType(syncFuncType.Out(0))
-				finalTypePtrForParse := jen.Op("*").Add(finalTypeForParse.statement.Clone())
-				g.emitDynamicUnwrapFunc(parseUnwrapName, finalTypePtrForParse)
-				g.emittedUnwrapHelpers[parseUnwrapName] = true
-			}
 			parseBody = append(parseBody,
 				jen.Id(parseUnwrapName).Call(jen.Op("&").Id("result")),
 			)
