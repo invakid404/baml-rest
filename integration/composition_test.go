@@ -129,6 +129,21 @@ func TestFallbackRoundRobinComposition_CentralizedAcrossWorkers(t *testing.T) {
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPathReason, "fallback-roundrobin-child-buildrequest")
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLClient, "TestFallbackRoundRobinPair")
 
+			// #543: the composition fallback[rr[openai,openai], openai] is
+			// fully call-supported — every RR leaf and the fallback sibling
+			// are openai, and the centralized RR child is recorded in the
+			// resolution with its SELECTED-LEAF provider (openai), not
+			// "baml-roundrobin", and is absent from LegacyChildren. So the
+			// bridge's single resolution is fully call-supported and
+			// dispatches via the non-streaming Request API. A "streamrequest"
+			// here would mean this all-call-supported RR-child shape
+			// needlessly bridged through SSE accumulation. The single
+			// resolution is reused for both the Request-preference decision
+			// and the centralized RR dispatch, so rotation still advances
+			// exactly once per REST request (the leaf-balance invariant below
+			// would break on a double-advance).
+			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLBuildRequestAPI, "request")
+
 			// Winner-Client is the served openai leaf, not the RR
 			// wrapper or fallback strategy parent — the centralised
 			// dispatch surfaces the leaf on outcome metadata so the

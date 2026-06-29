@@ -744,34 +744,40 @@ func TestEmitRouter_RetryResolutionUsesStrategyAwareHelper(t *testing.T) {
 	}
 }
 
-// TestEmitRouter_CallModeFallbackDefersToBridgeWhenAvailable pins the
+// TestEmitRouter_CallModeFallbackPrefersRequestViaSingleResolver pins the
 // single-resolver-per-request invariant for call-mode requests when a
 // StreamRequest bridge is available: the call block emits ONLY the
-// single-provider arm and the bridge owns the sole typed fallback
-// resolution. A regression that emits ResolveFallbackChainPlanForClient
-// in both the call and bridge blocks would double-advance the
-// SharedState advancer on a mixed chain — the call block's old
-// consume gate (no-call-legacy-children) would decline a centralised-
-// RR-plus-call-legacy-sibling chain after the resolver already
-// committed an RR advance, the chain would fall through to the bridge,
-// and the bridge's own ResolveFallbackChainPlanForClient call would
-// advance a second time. One request → two cross-worker RR slots
-// burned, rotation skewed for that shape.
+// single-provider arm and the bridge runs the sole typed fallback
+// resolution. From that ONE resolution the bridge chooses its dispatch API
+// — the non-streaming Request dispatch when the resolved chain is fully
+// call-supported (#543), otherwise the StreamRequest bridge dispatch.
+//
+// A regression that emits ResolveFallbackChainPlanForClient in both the
+// call and bridge blocks would double-advance the SharedState advancer on a
+// mixed chain (the call block resolves + advances, then the chain falls
+// through to the bridge, which resolves + advances again). The fix keeps a
+// single resolver and reads the Request-vs-StreamRequest decision off the
+// already-resolved __resolution (its LegacyChildren + Providers), so RR is
+// selected exactly once. One request → one cross-worker RR slot.
 //
 // When the bridge does not exist (introspected.StreamRequest == nil),
 // the call block IS the sole BuildRequest landing spot for call modes
-// and must emit its own fallback resolver.
+// and must emit its own fallback resolver (still call-side predicate).
 //
-// Counts ResolveFallbackChainPlanForClient occurrences positionally:
+// Asserted shape:
 //
-//   - Request + StreamRequest both non-nil: exactly 2 occurrences,
-//     one in the streaming block (for stream modes) and one in the
-//     bridge block (the sole call-mode resolver).
-//   - Request only: exactly 1 occurrence, inside the call block (call
-//     block is the only landing spot — no bridge, no stream block).
-//   - StreamRequest only: exactly 1 occurrence, inside the streaming
-//     block (no call block, bridge serves call modes alongside).
-func TestEmitRouter_CallModeFallbackDefersToBridgeWhenAvailable(t *testing.T) {
+//   - Request + StreamRequest both non-nil: exactly 2 resolver call sites
+//     (streaming block + bridge block — the sole call-mode resolver). The
+//     bridge emits a Request dispatch (BuildRequestAPIRequest +
+//     buildCallRequest) gated on __callChainSupported, ordered BEFORE the
+//     StreamRequest fallback dispatch.
+//   - Request only: exactly 1 resolver call site, inside the call block,
+//     using the call-side IsCallProviderSupported predicate.
+//   - StreamRequest only: exactly 2 resolver call sites (streaming +
+//     bridge) and ZERO IsCallProviderSupported references — the bridge's
+//     call-support check is gated on a Request surface existing, so a
+//     stream-only router never emits it (no unused-symbol risk).
+func TestEmitRouter_CallModeFallbackPrefersRequestViaSingleResolver(t *testing.T) {
 	// Save + restore the introspected BuildRequest singletons across
 	// sub-tests so each scenario can pin a specific (Request,
 	// StreamRequest) presence combination.
@@ -811,44 +817,70 @@ func TestEmitRouter_CallModeFallbackDefersToBridgeWhenAvailable(t *testing.T) {
 	// alongside the bridge.
 	const resolverFn = "buildrequest.ResolveFallbackChainPlanForClient("
 
-	t.Run("call-bridge-both-available-bridge-owns-fallback", func(t *testing.T) {
-		// Both APIs non-nil — the bridge exists. Call block emits
-		// only the single-provider arm; the bridge owns fallback for
-		// call modes. Total resolver calls in the router: 2 (stream
-		// block + bridge block).
+	t.Run("call-bridge-both-available-single-resolver-prefers-request", func(t *testing.T) {
+		// Both APIs non-nil — the bridge exists. Call block emits only
+		// the single-provider arm; the bridge runs the sole call-mode
+		// fallback resolver and then prefers the Request dispatch when
+		// the resolved chain is fully call-supported. Total resolver
+		// calls in the router: 2 (stream block + bridge block).
 		introspected.Request = struct{}{}
 		introspected.StreamRequest = struct{}{}
 		rendered := renderRouter(t)
 		got := strings.Count(rendered, resolverFn)
 		if got != 2 {
 			t.Errorf("with Request + StreamRequest non-nil, expected exactly 2 ResolveFallbackChainPlanForClient call sites "+
-				"(streaming block + bridge block; the call block must defer to the bridge to avoid double-advance), got %d.\nrendered:\n%s",
+				"(streaming block + bridge block; the call block must defer to the single bridge resolver to avoid double-advance), got %d.\nrendered:\n%s",
 				got, rendered)
 		}
-		// Positional pin: the bridge call site is gated by StreamMode-
-		// Call / StreamModeCallWithRaw. If the call block re-introduced
-		// the fallback resolver, it would also be gated on call modes
-		// — and a second resolver call would appear before the
-		// streaming block's gate. Pin that the FIRST resolver call site
-		// is the streaming block, identified by IsProviderSupported
-		// being the support predicate. The call-block fallback path
-		// uses IsCallProviderSupported, so a regression where the call
-		// block re-emits the resolver would surface IsCallProviderSupp-
-		// orted as the first predicate AND increase the count above 2.
+		// Positional pin: the FIRST resolver call site is the streaming
+		// block, which uses the stream-side predicate. The bridge's
+		// call-support gate (IsCallProviderSupported) is emitted only
+		// AFTER the bridge resolver, never inside the first (streaming)
+		// resolver's argument list. A regression where the call block
+		// re-emits its own fallback resolver first would surface
+		// IsCallProviderSupported as the first predicate AND push the
+		// count above 2.
 		firstIdx := strings.Index(rendered, resolverFn)
 		if firstIdx < 0 {
 			t.Fatalf("expected at least one ResolveFallbackChainPlanForClient call site; rendered:\n%s", rendered)
 		}
 		secondIdx := firstIdx + strings.Index(rendered[firstIdx+1:], resolverFn) + 1
-		// IsCallProviderSupported must not appear inside the first
-		// resolver invocation's argument list — that's the streaming
-		// block's resolver and it uses the stream-side predicate. The
-		// only path that could put IsCallProviderSupported in the
-		// first invocation is a regression where the call block emits
-		// its own fallback resolver first.
 		argsRegion := rendered[firstIdx : secondIdx+len(resolverFn)+200]
 		if strings.Count(argsRegion, "buildrequest.IsCallProviderSupported") > 0 {
 			t.Errorf("first resolver call site contains IsCallProviderSupported, suggesting the call block re-introduced a fallback resolver; rendered region:\n%s", argsRegion)
+		}
+
+		// The bridge resolution is the SECOND resolver call site. Pin the
+		// #543 behaviour by inspecting the region after it: the bridge
+		// must (a) compute the call-support gate from the resolved chain,
+		// (b) dispatch a Request fallback (BuildRequestAPIRequest +
+		// buildCallRequest) BEFORE (c) the StreamRequest fallback dispatch
+		// (BuildRequestAPIStreamRequest + buildRequest).
+		bridgeRegion := rendered[secondIdx:]
+		if !strings.Contains(bridgeRegion, "__callChainSupported := len(__resolution.LegacyChildren) == 0") {
+			t.Errorf("bridge must compute __callChainSupported from the already-resolved chain (no second resolve); bridge region:\n%s", bridgeRegion)
+		}
+		if !strings.Contains(bridgeRegion, "buildrequest.IsCallProviderSupported(__provider)") {
+			t.Errorf("bridge call-support gate must test each resolved provider via IsCallProviderSupported; bridge region:\n%s", bridgeRegion)
+		}
+		callDispatchIdx := strings.Index(bridgeRegion, "greetUser_buildCallRequest(")
+		streamDispatchIdx := strings.Index(bridgeRegion, "greetUser_buildRequest(")
+		if callDispatchIdx < 0 {
+			t.Errorf("bridge must emit a Request fallback dispatch (greetUser_buildCallRequest) for call-supported chains; bridge region:\n%s", bridgeRegion)
+		}
+		if streamDispatchIdx < 0 {
+			t.Errorf("bridge must still emit the StreamRequest fallback dispatch (greetUser_buildRequest); bridge region:\n%s", bridgeRegion)
+		}
+		if callDispatchIdx >= 0 && streamDispatchIdx >= 0 && callDispatchIdx >= streamDispatchIdx {
+			t.Errorf("bridge Request fallback dispatch must be emitted BEFORE the StreamRequest fallback dispatch (preferred when call-supported); callIdx=%d streamIdx=%d\nbridge region:\n%s",
+				callDispatchIdx, streamDispatchIdx, bridgeRegion)
+		}
+		// The Request dispatch must sit behind the __callChainSupported
+		// gate, i.e. the gate is computed before the call dispatch.
+		gateIdx := strings.Index(bridgeRegion, "if __callChainSupported {")
+		if gateIdx < 0 || (callDispatchIdx >= 0 && gateIdx >= callDispatchIdx) {
+			t.Errorf("bridge Request fallback dispatch must be guarded by the __callChainSupported gate; gateIdx=%d callIdx=%d\nbridge region:\n%s",
+				gateIdx, callDispatchIdx, bridgeRegion)
 		}
 	})
 
@@ -888,6 +920,16 @@ func TestEmitRouter_CallModeFallbackDefersToBridgeWhenAvailable(t *testing.T) {
 			t.Errorf("with StreamRequest-only adapter, expected exactly 2 ResolveFallbackChainPlanForClient call sites "+
 				"(streaming block + bridge block), got %d.\nrendered:\n%s",
 				got, rendered)
+		}
+		// A stream-only router has no Request surface, so the bridge's
+		// call-support preference branch is elided entirely. There must
+		// be ZERO IsCallProviderSupported references anywhere in the
+		// generated router — emitting one would reference a call-support
+		// gate the router never needs and (historically, with a
+		// conditional __brCfg declaration) risk an unused symbol.
+		if n := strings.Count(rendered, "buildrequest.IsCallProviderSupported"); n != 0 {
+			t.Errorf("stream-only adapter must not reference IsCallProviderSupported (the bridge call-support gate is gated on a Request surface), got %d references.\nrendered:\n%s",
+				n, rendered)
 		}
 	})
 }
