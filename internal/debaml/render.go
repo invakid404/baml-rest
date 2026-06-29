@@ -4,12 +4,17 @@
 // which the separate worker/ and dynclient/ modules cannot import across
 // the module boundary.
 //
-// The single export, Render, has the public-typed signature
-// bamlutils.DeBAMLRenderFunc. The root-module binaries (cmd/serve,
-// cmd/worker) and root-module callers of dynclient (e.g. integration
-// tests) pass it as a callback into worker.Config / dynclient so the
-// generated dynclient adapter can drive the native ctx.output_format
-// renderer without importing internal/schema itself.
+// It exports two public-typed callbacks that the root-module binaries
+// (cmd/serve, cmd/worker) and root-module callers of dynclient (e.g.
+// integration tests) pass into worker.Config / dynclient so the generated
+// dynclient adapter can drive the native paths without importing
+// internal/schema itself:
+//
+//   - Render (bamlutils.DeBAMLRenderFunc) renders the native
+//     ctx.output_format block for a dynamic output schema.
+//   - Parse (bamlutils.DeBAMLParseFunc) parses a raw model response
+//     against a dynamic output schema, returning the flattened dynamic
+//     output JSON. See parse.go for the bounded M1 cut-line.
 package debaml
 
 import (
