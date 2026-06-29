@@ -136,18 +136,24 @@ func extractFenceContent(raw string) (string, bool) {
 }
 
 // extractBalancedSpan returns the first balanced JSON object or array span
-// in raw — from the first '{' or '[' that appears OUTSIDE double-quoted
-// content to its matching close — skipping braces/brackets that appear
-// inside double-quoted strings (honouring backslash escapes). It also
-// returns the index just past the closing bracket so the caller can scan
-// the remainder for further top-level candidates. The ok return is false
-// when no opening bracket is found or the structure never closes (a
-// truncated response), which the caller treats as "no candidate".
+// in raw — from the first '{' or '[' that appears OUTSIDE quoted content to
+// its matching close — skipping braces/brackets that appear inside string
+// values. It also returns the index just past the closing bracket so the
+// caller can scan the remainder for further top-level candidates. The ok
+// return is false when no opening bracket is found or the structure never
+// closes (a truncated response), which the caller treats as "no candidate".
 //
-// The opening-bracket search itself honours quote/escape state, so prose
-// like `the literal "{}" then {"name":"Ada"}` anchors on the real object,
-// not the quoted braces. A single pass tracks string state for both the
-// anchor search (before start is set) and the depth count (after).
+// String-awareness has two phases. Before a structure is anchored, only
+// DOUBLE-quoted content is opaque, so prose like `the literal "{}" then
+// {"name":"Ada"}` anchors on the real object, not the quoted braces — and a
+// bare apostrophe in prose ("Here's the answer: {...}") does NOT start a
+// string and swallow the object. Once anchored, SINGLE-quoted values are
+// opaque too: a single-quoted string value is part of the M2a claim
+// (fix.go), and a structural delimiter inside it (e.g. `{name:'Ada }
+// Lovelace'}`) must not mis-slice the span — matching BAML, which models a
+// single-quoted string as a real string state. Double-quoted strings honour
+// backslash escapes; single-quoted strings carry none in BAML, so they
+// close on the first quote. The two states are mutually exclusive.
 //
 // Only the outer bracket type is depth-counted; inner brackets of the
 // other type are balanced by construction in any candidate that later
@@ -158,27 +164,38 @@ func extractBalancedSpan(raw string) (span string, end int, ok bool) {
 	start := -1
 	depth := 0
 	var open, closing byte
-	inString := false
+	inDouble := false
+	inSingle := false
 	escaped := false
 	for i := 0; i < len(raw); i++ {
 		c := raw[i]
-		if inString {
+		if inDouble {
 			switch {
 			case escaped:
 				escaped = false
 			case c == '\\':
 				escaped = true
 			case c == '"':
-				inString = false
+				inDouble = false
+			}
+			continue
+		}
+		if inSingle {
+			// BAML single-quoted strings carry no escapes: close on the first
+			// quote; every other byte (including braces) is opaque content.
+			if c == '\'' {
+				inSingle = false
 			}
 			continue
 		}
 		if c == '"' {
-			inString = true
+			inDouble = true
 			continue
 		}
 		if start < 0 {
-			// Anchor on the first opening bracket outside quoted content.
+			// Anchor on the first opening bracket. Single quotes are NOT
+			// string delimiters here (a prose apostrophe must not swallow the
+			// object), only double-quoted content is skipped.
 			switch c {
 			case '{':
 				start, open, closing, depth = i, '{', '}', 1
@@ -188,6 +205,9 @@ func extractBalancedSpan(raw string) (span string, end int, ok bool) {
 			continue
 		}
 		switch c {
+		case '\'':
+			// Inside the structure a single-quoted value is opaque.
+			inSingle = true
 		case open:
 			depth++
 		case closing:

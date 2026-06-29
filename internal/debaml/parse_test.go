@@ -355,6 +355,21 @@ func TestParse_FixingSingleQuotes(t *testing.T) {
 	mustParse(t, s, `{'outer': {'inner': 'val'}}`, `{"outer":{"inner":"val"}}`)
 }
 
+func TestParse_FixingSingleQuotedValueWithDelimiter(t *testing.T) {
+	// A single-quoted string VALUE containing a structural '}' must not
+	// mis-slice the balanced span: the span scanner treats single-quoted
+	// content as opaque once a structure is anchored, so the full object is
+	// selected and fixed. BAML models the single-quoted string as a real
+	// string state and agrees.
+	mustParse(t, personSchema(), `{name:'Ada } Lovelace', age:36}`, `{"name":"Ada } Lovelace","age":36}`)
+	// Same, embedded in prose (the apostrophe-free prefix still anchors on
+	// the real object; the inner '}' stays inside the single-quoted value).
+	mustParse(t, personSchema(), `Here: {name:'Ada } Lovelace', age:36} done.`, `{"name":"Ada } Lovelace","age":36}`)
+	// A bracket inside the single-quoted value, too.
+	s := &bamlutils.DynamicOutputSchema{Properties: props(kv("note", strProp()))}
+	mustParse(t, s, `{note:'see [1] and {x}'}`, `{"note":"see [1] and {x}"}`)
+}
+
 func TestParse_FixingProseJSONish(t *testing.T) {
 	// Prose around a JSONish object (unquoted key + single-quoted value):
 	// the balanced span is selected, then fixed.
