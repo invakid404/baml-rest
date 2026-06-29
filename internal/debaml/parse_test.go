@@ -330,6 +330,18 @@ func TestParse_FixingTrailingCommas(t *testing.T) {
 	mustParse(t, s, `{"name":"Ada","tags":["x","y",],}`, `{"name":"Ada","tags":["x","y"]}`)
 }
 
+func TestParse_FixingLeadingAndRepeatedCommas(t *testing.T) {
+	// Leading and repeated/stray commas in objects (BAML's object state
+	// ignores stray commas while waiting for content).
+	mustParse(t, personSchema(), `{,"name":"Ada","age":36}`, `{"name":"Ada","age":36}`)
+	mustParse(t, personSchema(), `{"name":"Ada",,"age":36}`, `{"name":"Ada","age":36}`)
+	// Leading, repeated, and trailing commas in an array.
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("nums", &bamlutils.DynamicProperty{Type: "list", Items: &bamlutils.DynamicTypeSpec{Type: "int"}})),
+	}
+	mustParse(t, s, `{"nums":[,1,,2,]}`, `{"nums":[1,2]}`)
+}
+
 func TestParse_FixingUnquotedKeys(t *testing.T) {
 	mustParse(t, personSchema(), `{name: "Ada", age: 36}`, `{"name":"Ada","age":36}`)
 	// Unquoted keys with bool / null / number values.

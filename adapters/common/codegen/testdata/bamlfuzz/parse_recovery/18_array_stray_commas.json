@@ -1,0 +1,21 @@
+{
+  "name": "array_stray_commas",
+  "description": "Leading, repeated, and trailing commas in an array; BAML's array state ignores stray commas while waiting for content. Native fixing parser claims it. want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "nums", "type": {"kind": "list", "inner": {"kind": "int"}}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"nums\":[,1,,2,]}",
+  "want": {
+    "status": "success",
+    "json": {"nums": [1, 2]}
+  }
+}

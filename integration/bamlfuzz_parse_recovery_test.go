@@ -164,6 +164,12 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"unquoted_keys_literals":              true,
 	"single_quotes_nested":                true,
 	"prose_jsonish_unquoted_single":       true,
+	// Leading / repeated / stray commas — also part of the claimed subset
+	// (BAML's object/array states ignore stray commas while waiting for
+	// content), so native claims them too.
+	"leading_comma_object":   true,
+	"repeated_commas_object": true,
+	"array_stray_commas":     true,
 	// Deferred repair (comments) — pinned fallback until claimed.
 	"comments_fallback": false,
 }
