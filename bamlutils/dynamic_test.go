@@ -1167,3 +1167,52 @@ func TestDynamicInput_ToWorkerInput_IncludeReasoning(t *testing.T) {
 		t.Errorf("flag-on worker payload missing include_reasoning:true:\n%s", on)
 	}
 }
+
+// TestDynamicParseInput_ToWorkerInput_CarriesOutputSchema pins that the
+// parse-only worker payload carries the original dynamic output schema in
+// __baml_options__.output_schema. The native de-BAML parser seam reads it
+// from the adapter (installed via SetDeBAMLOutputSchema in worker option
+// application) to parse the raw response natively; without this, the
+// parse-only path would have no schema to drive native coercion. Mirrors
+// how DynamicInput.ToWorkerInput already carries it for the render seam.
+func TestDynamicParseInput_ToWorkerInput_CarriesOutputSchema(t *testing.T) {
+	t.Parallel()
+	in := &DynamicParseInput{
+		Raw: `{"answer":"42"}`,
+		OutputSchema: &DynamicOutputSchema{
+			Properties: MustOrderedMap(
+				OrderedKV("answer", &DynamicProperty{Type: "string"}),
+				OrderedKV("score", &DynamicProperty{Type: "int"}),
+			),
+		},
+	}
+	if err := in.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	data, err := in.ToWorkerInput()
+	if err != nil {
+		t.Fatalf("ToWorkerInput: %v", err)
+	}
+
+	type payload struct {
+		Opts *BamlOptions `json:"__baml_options__"`
+	}
+	var decoded payload
+	if err := sonic.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal worker payload: %v\n%s", err, data)
+	}
+	if decoded.Opts == nil || decoded.Opts.OutputSchema == nil {
+		t.Fatalf("parse-only worker payload missing __baml_options__.output_schema:\n%s", data)
+	}
+	got := decoded.Opts.OutputSchema.Properties.Keys()
+	want := []string{"answer", "score"}
+	if !equalStrings(got, want) {
+		t.Errorf("output_schema.properties keys: got %v want %v", got, want)
+	}
+	// Guard the raw wire key too: the adapter installs the schema from the
+	// JSON `output_schema` field (omitempty), so its literal presence is
+	// the contract the worker option-application path depends on.
+	if !bytes.Contains(data, []byte(`"output_schema"`)) {
+		t.Errorf("parse-only worker payload missing literal output_schema key:\n%s", data)
+	}
+}

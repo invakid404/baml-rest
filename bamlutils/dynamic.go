@@ -788,6 +788,14 @@ func (d *DynamicParseInput) ToWorkerInput() (b []byte, err error) {
 			TypeBuilder: &TypeBuilder{
 				DynamicTypes: dynamicTypes,
 			},
+			// Carry the original output schema so the worker can drive the
+			// native de-BAML parser at the parse-only seam under
+			// BAML_REST_USE_DEBAML, mirroring how DynamicInput.ToWorkerInput
+			// carries it for the call/stream render seam. Always carried;
+			// only consumed when the de-BAML flag is on and a native parser
+			// is installed, otherwise stored and ignored (BAML parses the
+			// raw text exactly as today).
+			OutputSchema: d.OutputSchema,
 		},
 	}
 	return sonic.Marshal(internal)
