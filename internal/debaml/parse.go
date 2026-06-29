@@ -56,23 +56,23 @@ func Parse(ctx context.Context, req bamlutils.DeBAMLParseRequest) (bamlutils.DeB
 		return bamlutils.DeBAMLParseResult{}, err
 	}
 
-	parsed, outcome := extractCandidate(req.Raw)
-	switch outcome {
-	case extractNeedsFixing:
-		// A JSON-looking candidate exists but needs a repair outside the
-		// conservative M2a fixing subset; recovering it stays BAML's job.
-		return bamlutils.DeBAMLParseResult{}, unsupported("non-strict JSON syntax outside fixing subset")
-	case extractNotFound:
-		// No JSON candidate in the response (e.g. truncated mid-value).
-		// This is a CLAIMED parse failure — BAML errors here too, so the
-		// differential checks error parity rather than masking it.
-		return bamlutils.DeBAMLParseResult{}, fmt.Errorf("debaml: no parseable JSON value found in response")
+	parsed, ok := extractCandidate(req.Raw)
+	if !ok {
+		// No cleanly-claimable JSON candidate: no JSON-looking content, a
+		// repair outside the conservative M2a fixing subset, an unterminated
+		// structure, or multiple top-level values. BAML may still recover any
+		// of these, so DECLINE (fall back) rather than claim a parse error —
+		// "could not find / complete a candidate" is never a claim.
+		return bamlutils.DeBAMLParseResult{}, unsupported("no cleanly-claimable JSON candidate")
 	}
 
 	out, err := coerce(bundle, bundle.Target, parsed)
 	if err != nil {
-		// Decoded but un-coercible against the schema: a claimed parse
-		// failure (BAML's jsonish also rejects it), propagated.
+		// A candidate was decoded but does not coerce against the schema.
+		// coerce returns ErrDeBAMLParseUnsupported where the failure is only
+		// native being stricter than BAML's lenient coercers (so the caller
+		// falls back); any other error is a CLAIMED parse failure BAML would
+		// also hit (e.g. missing required field), propagated for parity.
 		return bamlutils.DeBAMLParseResult{}, err
 	}
 	return bamlutils.DeBAMLParseResult{JSON: out}, nil

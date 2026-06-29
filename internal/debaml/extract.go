@@ -4,25 +4,6 @@ import (
 	"strings"
 )
 
-// extractOutcome classifies the result of locating a JSON candidate in a
-// raw model response.
-type extractOutcome int
-
-const (
-	// extractParsed: a candidate was found and decoded (strict, or via the
-	// conservative fixing pass); the value is returned.
-	extractParsed extractOutcome = iota
-	// extractNeedsFixing: a JSON-looking candidate was found but neither
-	// strict decoding nor the conservative fixing subset could claim it
-	// (e.g. comments, escapes, missing commas, unterminated structures).
-	// The caller falls back to BAML's full fixing parser.
-	extractNeedsFixing
-	// extractNotFound: no JSON candidate is present at all (e.g. truncated
-	// mid-value, or pure prose). The caller claims a parse error — BAML
-	// errors here too.
-	extractNotFound
-)
-
 // extractCandidate finds the JSON candidate in raw and decodes it, in
 // BAML-recovery priority order: the whole input, then a markdown fenced
 // block, then the first balanced object/array embedded in prose. Each
@@ -31,18 +12,21 @@ const (
 // whose markdown and multi-json/prose stages recurse into the selected
 // span with fixes enabled.
 //
-// The first stage that yields a JSON-looking candidate decides the
-// outcome: if that candidate decodes (strict or fixed) it is returned
-// (extractParsed); if it is JSON-looking but neither strict nor fixable
-// within the M2a subset the result is extractNeedsFixing (fall back to
-// BAML). Extraction does NOT keep trying later, weaker stages once a
-// candidate is found. Only when no stage finds any candidate is the result
-// extractNotFound.
-func extractCandidate(raw string) (value, extractOutcome) {
+// The second return is false (DECLINE) whenever no candidate can be
+// cleanly claimed — caller maps it to ErrDeBAMLParseUnsupported (fall back
+// to BAML). That covers: no JSON-looking content at all; a candidate that
+// needs a repair outside the conservative M2a fixing subset; an opening
+// bracket that never closes (unterminated — BAML closes it at EOF and
+// recovers, which M2a defers); and multiple top-level values (BAML wraps
+// them and scores, which M2a defers). Extraction NEVER claims a parse
+// error: a claim only happens when a candidate is found AND coercion
+// against the schema then fails in a way BAML would also fail (handled by
+// the caller after this returns true).
+func extractCandidate(raw string) (value, bool) {
 	// 1. Strict whole-input parse.
 	if trimmed := strings.TrimSpace(raw); trimmed != "" {
 		if v, err := strictDecode(trimmed); err == nil {
-			return v, extractParsed
+			return v, true
 		}
 	}
 
@@ -55,26 +39,67 @@ func extractCandidate(raw string) (value, extractOutcome) {
 	// 3. First balanced JSON object/array embedded in prose: strict, then
 	//    conservative fix, on the span (BAML's multi-json grep recurses
 	//    into the span with fixes enabled).
-	if span, ok := extractBalancedSpan(raw); ok {
+	if span, end, ok := extractBalancedSpan(raw); ok {
+		// If another top-level structure follows the first span, this is
+		// BAML's multiple-values / inferred-array case (it collects ALL
+		// balanced objects and scores them, so a later one can win). M2a
+		// defers that, so decline rather than claim the first span — which
+		// would otherwise propagate a spurious mismatch.
+		if containsUnquotedBracket(raw[end:]) {
+			return value{}, false
+		}
 		return decodeSpan(span)
 	}
 
-	return value{}, extractNotFound
+	return value{}, false
 }
 
 // decodeSpan decodes a single selected candidate span: strict first, then
-// the conservative fixing pass. A span the fixing subset declines yields
-// extractNeedsFixing (fall back to BAML), never a claimed error — a span
-// that merely needs an out-of-subset repair is exactly the fixing-parser
-// case M2a defers.
-func decodeSpan(span string) (value, extractOutcome) {
+// the conservative fixing pass. A span the fixing subset declines returns
+// false (fall back to BAML), never a claimed error — a span that merely
+// needs an out-of-subset repair is exactly the fixing-parser case M2a
+// defers.
+func decodeSpan(span string) (value, bool) {
 	if v, err := strictDecode(span); err == nil {
-		return v, extractParsed
+		return v, true
 	}
 	if v, err := fixParse(span); err == nil {
-		return v, extractParsed
+		return v, true
 	}
-	return value{}, extractNeedsFixing
+	return value{}, false
+}
+
+// containsUnquotedBracket reports whether s contains a '{' or '[' outside
+// double-quoted content (honouring backslash escapes). It is the
+// second-top-level-candidate detector for extractCandidate: a bracket in
+// the input remaining after the first balanced span means BAML would grep
+// more than one structure, which M2a declines. Quote-awareness keeps a
+// brace that only appears inside a string value from forcing a false
+// decline.
+func containsUnquotedBracket(s string) bool {
+	inString := false
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{', '[':
+			return true
+		}
+	}
+	return false
 }
 
 // extractFenceContent returns the body of the first ``` markdown fence in
@@ -113,9 +138,11 @@ func extractFenceContent(raw string) (string, bool) {
 // extractBalancedSpan returns the first balanced JSON object or array span
 // in raw — from the first '{' or '[' that appears OUTSIDE double-quoted
 // content to its matching close — skipping braces/brackets that appear
-// inside double-quoted strings (honouring backslash escapes). The second
-// return is false when no opening bracket is found or the structure never
-// closes (a truncated response), which the caller treats as "no candidate".
+// inside double-quoted strings (honouring backslash escapes). It also
+// returns the index just past the closing bracket so the caller can scan
+// the remainder for further top-level candidates. The ok return is false
+// when no opening bracket is found or the structure never closes (a
+// truncated response), which the caller treats as "no candidate".
 //
 // The opening-bracket search itself honours quote/escape state, so prose
 // like `the literal "{}" then {"name":"Ada"}` anchors on the real object,
@@ -127,7 +154,7 @@ func extractFenceContent(raw string) (string, bool) {
 // decodes, and a malformed nesting is caught by the decode step. Span
 // selection stays free of repair logic so the same candidate decoder
 // (strict then fix) serves the whole, markdown, and prose paths.
-func extractBalancedSpan(raw string) (string, bool) {
+func extractBalancedSpan(raw string) (span string, end int, ok bool) {
 	start := -1
 	depth := 0
 	var open, closing byte
@@ -166,9 +193,9 @@ func extractBalancedSpan(raw string) (string, bool) {
 		case closing:
 			depth--
 			if depth == 0 {
-				return raw[start : i+1], true
+				return raw[start : i+1], i + 1, true
 			}
 		}
 	}
-	return "", false
+	return "", 0, false
 }
