@@ -38,11 +38,19 @@ func configureWorkerMode(logger zerolog.Logger, cfg *pool.Config, runtimeCfg wor
 	if err != nil {
 		return fmt.Errorf("invalid BAML_REST_CLIENT_DEFAULTS: %w", err)
 	}
-	// Gate on BuildRequest surface availability: the advisory only applies
-	// when traffic actually takes the BuildRequest route. On BAML versions
-	// that expose neither Request nor StreamRequest, all traffic is legacy
-	// and the BuildRequest serializer caveat is irrelevant.
-	if clientDefaults.HasKey("allowed_role_metadata") && (introspected.Request != nil || introspected.StreamRequest != nil) {
+	// Gate on the effective BuildRequest route: the advisory only applies
+	// when a BuildRequest serializer is actually in the request path.
+	// StreamRequest is always BuildRequest (streaming, plus the /call
+	// bridge, which ignores DisableCallBuildRequest); the non-streaming
+	// Request path is taken only when Request exists AND
+	// DisableCallBuildRequest is off. When neither holds, all traffic is
+	// legacy and the serializer caveat is irrelevant. Note this is NOT
+	// `(Request|StreamRequest) && !DisableCallBuildRequest`: that would
+	// wrongly suppress the advisory when StreamRequest still routes
+	// streaming + bridged-/call traffic through BuildRequest.
+	buildRequestInUse := introspected.StreamRequest != nil ||
+		(introspected.Request != nil && !runtimeCfg.BuildRequest.DisableCallBuildRequest)
+	if clientDefaults.HasKey("allowed_role_metadata") && buildRequestInUse {
 		logger.Warn().Msg(
 			"BAML_REST_CLIENT_DEFAULTS sets allowed_role_metadata and the " +
 				"BuildRequest route is on by default; older BAML BuildRequest " +
