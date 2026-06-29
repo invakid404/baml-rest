@@ -98,7 +98,7 @@ func TestStreamEndpoint(t *testing.T) {
 		// derivation, RetryCount vs BamlCallCount, etc.) are checked by
 		// the appropriate tracker assertion below.
 		assertFirstSemanticEventIsMetadata(t, firstSemanticEvent)
-		if ActuallyBuildRequest() {
+		if HasBuildRequestSurface() {
 			tracker.assertBuildRequestInvariants()
 		} else {
 			tracker.assertLegacyInvariants()
@@ -289,7 +289,7 @@ func TestStreamMidStreamFailure(t *testing.T) {
 		// own Rust loop on the legacy path), so the server-side assertion is
 		// skipped there and the legacy client-bounded shape is exercised
 		// instead.
-		serverSideIdle := inProcessBuild && ActuallyBuildRequest()
+		serverSideIdle := inProcessBuild && HasBuildRequestSurface()
 
 		// Generous client ctx so that, when serverSideIdle is true, the
 		// SERVER-side idle timeout — not the client deadline — is what ends
@@ -1056,7 +1056,7 @@ func TestStreamNDJSONEndpoint(t *testing.T) {
 
 		// NDJSON metadata parity with the SSE path.
 		assertFirstSemanticEventIsMetadata(t, firstSemanticEvent)
-		if ActuallyBuildRequest() {
+		if HasBuildRequestSurface() {
 			tracker.assertBuildRequestInvariants()
 		} else {
 			tracker.assertLegacyInvariants()
@@ -1390,7 +1390,7 @@ func TestStreamWithRawNDJSONEndpoint(t *testing.T) {
 		// with the correct ordering, and planned must arrive BEFORE any
 		// raw/data event so clients see routing info first.
 		assertFirstSemanticEventIsMetadata(t, firstSemanticEvent)
-		if ActuallyBuildRequest() {
+		if HasBuildRequestSurface() {
 			tracker.assertBuildRequestInvariants()
 		} else {
 			tracker.assertLegacyInvariants()
@@ -1834,7 +1834,7 @@ func TestStreamWithRawEndpoint(t *testing.T) {
 		// with the correct ordering, and planned must arrive BEFORE any
 		// raw/data event so clients see routing info first.
 		assertFirstSemanticEventIsMetadata(t, firstSemanticEvent)
-		if ActuallyBuildRequest() {
+		if HasBuildRequestSurface() {
 			tracker.assertBuildRequestInvariants()
 		} else {
 			tracker.assertLegacyInvariants()

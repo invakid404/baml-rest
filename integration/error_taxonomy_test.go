@@ -35,7 +35,7 @@ import (
 // is only exercised on no-surface (pre-0.219) BAML versions.
 func requireLegacyMode(t *testing.T) {
 	t.Helper()
-	if ActuallyBuildRequest() {
+	if HasBuildRequestSurface() {
 		t.Skip("legacy classifier test; requires a BAML version with no BuildRequest surface (pre-0.219)")
 	}
 }
@@ -281,7 +281,7 @@ func TestLegacyClassification_ParseEndpointGarbage(t *testing.T) {
 // modern matrix cell.
 func requireBuildRequestMode(t *testing.T) {
 	t.Helper()
-	if !ActuallyBuildRequest() {
+	if !HasBuildRequestSurface() {
 		t.Skip("BuildRequest classifier test; requires a BuildRequest surface (BAML >= 0.219)")
 	}
 }

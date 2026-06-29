@@ -49,7 +49,7 @@ func TestCallEndpoint(t *testing.T) {
 			// retries, which the legacy path does not perform.
 			testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLPath)
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLClient, "TestClient")
-			if ActuallyBuildRequest() {
+			if HasBuildRequestSurface() {
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPath, "buildrequest")
 				// Non-streaming /call on a BuildRequest-capable provider
 				// uses the Request API (block 1 wins before the stream-bridge
@@ -402,7 +402,7 @@ func TestCallWithRawEndpoint(t *testing.T) {
 			// shares the same header-emission path.
 			testutil.AssertHeaderPresent(t, resp.Headers, testutil.HeaderBAMLPath)
 			testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLClient, "TestClient")
-			if ActuallyBuildRequest() {
+			if HasBuildRequestSurface() {
 				testutil.AssertHeaderEquals(t, resp.Headers, testutil.HeaderBAMLPath, "buildrequest")
 				// /call-with-raw on a BuildRequest-capable provider uses the
 				// Request API; the stream-bridge would report "streamrequest".

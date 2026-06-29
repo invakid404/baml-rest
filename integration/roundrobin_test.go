@@ -120,7 +120,7 @@ func assertBalanced(t *testing.T, ids []string, total int) {
 // tests stay DRY.
 func skipIfNoBuildRequest(t *testing.T) {
 	t.Helper()
-	if !ActuallyBuildRequest() {
+	if !HasBuildRequestSurface() {
 		t.Skip("Skipping: baml-roundrobin BuildRequest-path tests require a BuildRequest surface (BAML >= 0.219.0)")
 	}
 }

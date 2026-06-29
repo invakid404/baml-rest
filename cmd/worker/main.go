@@ -44,13 +44,11 @@ func main() {
 	// boundary; library-mode callers wire their own config inside the
 	// host process instead.
 	buildRequestConfig := buildrequest.EnvConfig()
-	// BAML_REST_USE_BUILD_REQUEST was retired in #537: the BuildRequest
-	// route is now unconditional. Warn (do not error) if a stale
-	// deployment still sets it so operators get a clean migration signal
-	// without an outage.
-	if _, present := os.LookupEnv("BAML_REST_USE_BUILD_REQUEST"); present {
-		logger.Warn("BAML_REST_USE_BUILD_REQUEST is retired and ignored: the BuildRequest route is attempted whenever the generated BAML client exposes Request or StreamRequest. Remove the variable from your configuration.")
-	}
+	// Note: the retired-BAML_REST_USE_BUILD_REQUEST deprecation warning is
+	// emitted once by the host (cmd/serve), which runs at startup in both
+	// subprocess and in-process modes. Emitting it here too would duplicate
+	// the message once per pooled worker subprocess, so the worker stays
+	// silent on it.
 	deBAMLConfig := bamlutils.DeBAMLConfigFromEnv()
 	baseURLRewrites := urlrewrite.LoadDefaultRules()
 	streamIdleTimeout := llmhttp.StreamIdleTimeoutFromEnv()

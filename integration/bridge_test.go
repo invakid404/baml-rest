@@ -32,7 +32,7 @@ import (
 // The bridge only makes sense with BuildRequest on, so the test skips on the
 // legacy leg where the flag would no-op.
 func TestCallBridge_ForcesStreamRequest(t *testing.T) {
-	if !ActuallyBuildRequest() {
+	if !HasBuildRequestSurface() {
 		t.Skip("bridge requires BuildRequest path; skipping on legacy or pre-0.219 runtimes")
 	}
 
@@ -260,7 +260,7 @@ func TestCallBridge_ForcesStreamRequest(t *testing.T) {
 // Requires the debug build tag (see cmd/build/build.sh), which the
 // integration testcontainer already enables.
 func TestCallBridge_MixedChainFallsThrough(t *testing.T) {
-	if !ActuallyBuildRequest() {
+	if !HasBuildRequestSurface() {
 		t.Skip("bridge requires BuildRequest path; skipping on legacy or pre-0.219 runtimes")
 	}
 

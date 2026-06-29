@@ -35,7 +35,7 @@ import (
 // trust the mock's self-signed cert). The versioned matrix only runs the
 // auto/fasthttp arms on BuildRequest cells anyway.
 func TestHTTPClientALPNSelection(t *testing.T) {
-	if !ActuallyBuildRequest() {
+	if !HasBuildRequestSurface() {
 		t.Skip("http-client selection only applies to the BuildRequest path (llmhttp); skipping on legacy CallStream")
 	}
 	if TestEnv.MockLLMInternalTLS == "" {

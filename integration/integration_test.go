@@ -75,13 +75,14 @@ func matrixSetupOptions() testutil.SetupOptions {
 	}
 }
 
-// ActuallyBuildRequest reports whether a request is genuinely routed through
-// the BuildRequest orchestrator. The BuildRequest route is unconditional as
-// of #537, so the only remaining gate is BAML runtime capability: the
-// Request / StreamRequest APIs the route depends on first exist in BAML
-// 0.219.0. Older runtimes expose no BuildRequest surface and fall through to
-// the legacy path.
-func ActuallyBuildRequest() bool {
+// HasBuildRequestSurface reports whether the BAML runtime exposes the
+// BuildRequest surface — i.e. the Request / StreamRequest APIs the route
+// depends on, which first exist in BAML 0.219.0. This is a runtime
+// capability check, not a routing decision: the BuildRequest route is
+// unconditional as of #537, so on a runtime that exposes the surface every
+// supported request takes it; older runtimes expose no surface and fall
+// through to the legacy path.
+func HasBuildRequestSurface() bool {
 	return bamlutils.IsVersionAtLeast(BAMLVersion, "0.219.0")
 }
 

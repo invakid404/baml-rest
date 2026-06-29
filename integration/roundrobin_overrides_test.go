@@ -479,7 +479,7 @@ func TestInvalidRuntimeRoundRobinStartReturnsLegacyError(t *testing.T) {
 // is only reachable on no-surface (pre-0.219) BAML versions — this test
 // runs there.
 func TestLegacyModeHonorsRuntimeFallbackStrategyOverride(t *testing.T) {
-	if ActuallyBuildRequest() {
+	if HasBuildRequestSurface() {
 		t.Skip("legacy-mode regression test; requires a BAML version with no BuildRequest surface (pre-0.219)")
 	}
 	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {
@@ -581,7 +581,7 @@ func TestLegacyModeHonorsRuntimeFallbackStrategyOverride(t *testing.T) {
 // is only reachable on no-surface (pre-0.219) BAML versions — this test
 // runs there.
 func TestLegacyModeSupportsDynamicFallbackPrimary(t *testing.T) {
-	if ActuallyBuildRequest() {
+	if HasBuildRequestSurface() {
 		t.Skip("legacy-mode regression test; requires a BAML version with no BuildRequest surface (pre-0.219)")
 	}
 	forEachUnaryClient(t, func(t *testing.T, client *testutil.BAMLRestClient) {

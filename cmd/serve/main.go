@@ -242,7 +242,9 @@ var serveCmd = &cobra.Command{
 		// BAML_REST_USE_BUILD_REQUEST was retired in #537: the BuildRequest
 		// route is now unconditional. Warn (do not error) if a stale
 		// deployment still sets it so operators get a clean migration
-		// signal without an outage.
+		// signal without an outage. This host startup path runs in both
+		// subprocess and in-process modes, so it is the single emission
+		// point — the worker subprocess deliberately does not repeat it.
 		if _, present := os.LookupEnv("BAML_REST_USE_BUILD_REQUEST"); present {
 			logger.Warn().Msg("BAML_REST_USE_BUILD_REQUEST is retired and ignored: the BuildRequest route is attempted whenever the generated BAML client exposes Request or StreamRequest. Remove the variable from your configuration.")
 		}
