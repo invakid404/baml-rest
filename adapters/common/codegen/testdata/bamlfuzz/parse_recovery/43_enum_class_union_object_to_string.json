@@ -1,6 +1,6 @@
 {
   "name": "enum_class_union_object_to_string",
-  "description": "M2c FALLBACK: mixed enum-vs-class union (Color | Detail{a,b}). BAML's enum coercion uses match_string (incl. object-to-string for single-key objects) and the class arm can carry extra/implied flags, so a 2nd arm can succeed -> scoring. Native declines at the gate (mixed family). want captured from BAML final parse.",
+  "description": "M2c FALLBACK: mixed enum-vs-class union (Color | Detail{a,b}) with an object carrying BOTH the class fields AND an enum token. The enum arm matches RED from the stringified object (match_string object-to-string) while the class arm parses a/b and flags the extra \"color\" key, so BOTH arms succeed and compete -> pick_best scoring. Native declines at the gate (mixed enum/class family). want captured from BAML final parse.",
   "preserve_schema_order": false,
   "schema": {
     "classes": [
@@ -33,9 +33,9 @@
     "root_class": "Root",
     "has_union": true
   },
-  "raw": "{\"u\":\"RED\"}",
+  "raw": "{\"u\":{\"a\":1,\"b\":2,\"color\":\"RED\"}}",
   "want": {
     "status": "success",
-    "json": {"u": "RED"}
+    "json": {"u": {"a": 1, "b": 2}}
   }
 }

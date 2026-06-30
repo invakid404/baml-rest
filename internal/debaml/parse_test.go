@@ -739,14 +739,20 @@ func TestParse_UnsupportedPrimitiveUnion(t *testing.T) {
 }
 
 func TestParse_UnsupportedNestedUnionVariant(t *testing.T) {
-	// A union containing a list variant (general union with a non-leaf arm)
-	// declines: list/single-to-array leniency is scored.
+	// A genuinely nested union ((string | int) | bool): BAML flattens it to a
+	// bare-primitive multi-union (string|int|bool) whose scored pick_best
+	// native cannot reproduce, so native declines at the gate. (This mirrors
+	// the nested_union parse-recovery fallback fixture.)
 	s := unionSchema(
-		litStr("a"),
-		&bamlutils.DynamicTypeSpec{Type: "list", Items: &bamlutils.DynamicTypeSpec{Type: "string"}},
+		&bamlutils.DynamicTypeSpec{Type: "union", OneOf: []*bamlutils.DynamicTypeSpec{
+			{Type: "string"},
+			{Type: "int"},
+		}},
+		&bamlutils.DynamicTypeSpec{Type: "bool"},
 	)
+	requireUnsupported(t, s, `{"u":123}`)
 	requireUnsupported(t, s, `{"u":"a"}`)
-	requireUnsupported(t, s, `{"u":["a","b"]}`)
+	requireUnsupported(t, s, `{"u":true}`)
 }
 
 func TestParse_SingleFieldClassImpliedKeyDeclines(t *testing.T) {
