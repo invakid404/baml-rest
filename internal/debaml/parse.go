@@ -20,8 +20,11 @@ import (
 // caller falls back to BAML for that final parse:
 //
 //   - Stream parses (req.Stream==true) — native stream semantics are M4.
-//   - Schemas that cannot be lowered/validated, or that use maps, general
-//     (multi-variant) unions, constraints, or recursive aliases.
+//   - Schemas that cannot be lowered/validated, or that use general
+//     (multi-variant) unions, constraints, recursive aliases, or a map
+//     whose key/value falls outside the clean M2b map subset (see
+//     checkSupportedMapKey and coerceMap). Clean maps — object input,
+//     exact key match, in-scope value — are claimed in input key order.
 //   - Raw text whose JSON-looking candidate needs a repair outside the
 //     conservative M2a fixing subset — comments, escapes, missing commas,
 //     unterminated structures, multiple top-level values, … — which stays
@@ -151,12 +154,86 @@ func checkSupportedType(t schema.Type) error {
 		}
 		return checkSupportedType(t.Union.Variants[0])
 	case schema.TypeMap:
-		return unsupported("map")
+		// M2b CLAIMS clean maps: a JSON-object input coerced under a
+		// map-key-safe key type and a value type that itself passes the
+		// cut-line. The key must be checked SPECIALLY — not via the general
+		// checkSupportedType, which rejects every union — because a
+		// non-nullable union of string literals is a legal map key while
+		// being an out-of-scope union everywhere else.
+		if t.Key == nil || t.Value == nil {
+			return unsupported("map without key or value")
+		}
+		if err := checkSupportedMapKey(*t.Key); err != nil {
+			return err
+		}
+		return checkSupportedType(*t.Value)
 	case schema.TypeRecursiveAlias:
 		return unsupported("recursive alias")
 	default:
 		return unsupported(fmt.Sprintf("type kind %q", t.Kind))
 	}
+}
+
+// checkSupportedMapKey reports whether t is a map key shape M2b coerces by
+// EXACT match: a string primitive, an enum, a string literal, or a
+// non-nullable union whose recursively-flattened members are all string
+// literals. This mirrors BAML's allowed map-key set (coerce_map.rs) and the
+// repo's own isValidMapKey schema gate, kept separate from
+// checkSupportedType so the legal union-of-string-literals key is not
+// caught by the general-union rejection. A constrained key is out of scope.
+func checkSupportedMapKey(t schema.Type) error {
+	if len(t.Meta.Constraints) > 0 {
+		return unsupported("map key constraints")
+	}
+	switch t.Kind {
+	case schema.TypePrimitive:
+		if t.Primitive == schema.PrimitiveString {
+			return nil
+		}
+		return unsupported(fmt.Sprintf("map key primitive %q (only string)", t.Primitive))
+	case schema.TypeEnum:
+		return nil
+	case schema.TypeLiteral:
+		if t.Literal != nil && t.Literal.Kind == schema.LiteralString {
+			return nil
+		}
+		return unsupported("map key literal must be a string literal")
+	case schema.TypeUnion:
+		if isStringLiteralUnionType(t) {
+			return nil
+		}
+		return unsupported("map key union must be a non-nullable union of string literals")
+	default:
+		return unsupported(fmt.Sprintf("map key kind %q", t.Kind))
+	}
+}
+
+// isStringLiteralUnionType reports whether t is a non-nullable union every
+// member of which is a string literal or a nested non-nullable union of
+// string literals — the only union shape BAML (and M2b) accept as a map
+// key. It mirrors schema.isStringLiteralUnion: the non-nullable requirement
+// reproduces jsonish rejecting the null iter_include_null() appends for an
+// optional union.
+func isStringLiteralUnionType(t schema.Type) bool {
+	if t.Union == nil || t.Union.Nullable || len(t.Union.Variants) == 0 {
+		return false
+	}
+	for i := range t.Union.Variants {
+		v := &t.Union.Variants[i]
+		switch v.Kind {
+		case schema.TypeLiteral:
+			if v.Literal == nil || v.Literal.Kind != schema.LiteralString {
+				return false
+			}
+		case schema.TypeUnion:
+			if !isStringLiteralUnionType(*v) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // unsupported wraps bamlutils.ErrDeBAMLParseUnsupported with a reason so
