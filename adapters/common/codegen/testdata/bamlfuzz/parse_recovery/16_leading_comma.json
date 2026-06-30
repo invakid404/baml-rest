@@ -1,0 +1,22 @@
+{
+  "name": "leading_comma_object",
+  "description": "A leading comma right after '{'; BAML's object state ignores stray commas while waiting for content. Native fixing parser claims it. want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "name", "type": {"kind": "string"}},
+          {"name": "age", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{,\"name\":\"Ada\",\"age\":36}",
+  "want": {
+    "status": "success",
+    "json": {"name": "Ada", "age": 36}
+  }
+}

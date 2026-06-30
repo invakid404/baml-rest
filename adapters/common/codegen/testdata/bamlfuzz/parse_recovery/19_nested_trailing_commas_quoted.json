@@ -1,0 +1,29 @@
+{
+  "name": "nested_trailing_commas_quoted",
+  "description": "Trailing commas in a nested object and array whose values are QUOTED strings (and a top-level trailing comma). Quoted values close on their closing quote (BAML's should_close_string), so there is no greedy-comma divergence — BAML and native both drop the trailing commas. Native claims it. want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "inner", "type": {"kind": "class_ref", "ref": "Inner"}},
+          {"name": "list", "type": {"kind": "list", "inner": {"kind": "string"}}}
+        ]
+      },
+      {
+        "name": "Inner",
+        "properties": [
+          {"name": "a", "type": {"kind": "string"}},
+          {"name": "b", "type": {"kind": "string"}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"inner\":{\"a\":\"x\",\"b\":\"y\",},\"list\":[\"p\",\"q\",],}",
+  "want": {
+    "status": "success",
+    "json": {"inner": {"a": "x", "b": "y"}, "list": ["p", "q"]}
+  }
+}

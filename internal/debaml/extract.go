@@ -1,89 +1,105 @@
 package debaml
 
 import (
-	"encoding/json"
-	"fmt"
-	"io"
 	"strings"
 )
 
-// extractOutcome classifies the result of locating a JSON candidate in a
-// raw model response.
-type extractOutcome int
-
-const (
-	// extractParsed: a candidate was found and strict-parsed; the decoded
-	// value is returned.
-	extractParsed extractOutcome = iota
-	// extractNeedsFixing: a JSON-looking candidate was found but is not
-	// strict JSON (trailing commas, unquoted keys, single quotes, …). The
-	// fixing parser is BAML's job in M1, so the caller falls back.
-	extractNeedsFixing
-	// extractNotFound: no complete JSON value is present (e.g. truncated
-	// mid-value). The caller claims a parse error — BAML errors here too.
-	extractNotFound
-)
-
-// extractCandidate finds the M1 JSON candidate in raw and strict-parses
-// it, in BAML-recovery priority order: the whole input, then a markdown
-// fenced block, then the first balanced object/array embedded in prose.
+// extractCandidate finds the JSON candidate in raw and decodes it, in
+// BAML-recovery priority order: the whole input, then a markdown fenced
+// block, then the first balanced object/array embedded in prose. Each
+// stage runs a strict decode first and then, only if that fails, the
+// conservative fixing pass on the SAME candidate span — mirroring BAML,
+// whose markdown and multi-json/prose stages recurse into the selected
+// span with fixes enabled.
 //
-// The first stage that yields a JSON-looking candidate decides the
-// outcome: if that candidate strict-parses it is returned (extractParsed);
-// if it is JSON-looking but not strict JSON the result is
-// extractNeedsFixing (fall back to BAML's fixing parser) — extraction does
-// NOT keep trying later, weaker stages, because a present-but-unfixed
-// candidate is exactly the fixing-parser case M1 defers. Only when no
-// stage finds any candidate is the result extractNotFound.
-func extractCandidate(raw string) (any, extractOutcome) {
+// The second return is false (DECLINE) whenever no candidate can be
+// cleanly claimed — caller maps it to ErrDeBAMLParseUnsupported (fall back
+// to BAML). That covers: no JSON-looking content at all; a candidate that
+// needs a repair outside the conservative M2a fixing subset; an opening
+// bracket that never closes (unterminated — BAML closes it at EOF and
+// recovers, which M2a defers); and multiple top-level values (BAML wraps
+// them and scores, which M2a defers). Extraction NEVER claims a parse
+// error: a claim only happens when a candidate is found AND coercion
+// against the schema then fails in a way BAML would also fail (handled by
+// the caller after this returns true).
+func extractCandidate(raw string) (value, bool) {
 	// 1. Strict whole-input parse.
 	if trimmed := strings.TrimSpace(raw); trimmed != "" {
-		if v, err := strictUnmarshal(trimmed); err == nil {
-			return v, extractParsed
+		if v, err := strictDecode(trimmed); err == nil {
+			return v, true
 		}
 	}
 
-	// 2. Markdown fenced block: strict JSON inside the fence.
+	// 2. Markdown fenced block: strict, then conservative fix, on the fence
+	//    content (BAML recurses into the fence with fixes enabled).
 	if fence, ok := extractFenceContent(raw); ok {
-		if v, err := strictUnmarshal(strings.TrimSpace(fence)); err == nil {
-			return v, extractParsed
-		}
-		return nil, extractNeedsFixing
+		return decodeSpan(strings.TrimSpace(fence))
 	}
 
-	// 3. First balanced JSON object/array embedded in prose.
-	if span, ok := extractBalancedSpan(raw); ok {
-		if v, err := strictUnmarshal(span); err == nil {
-			return v, extractParsed
+	// 3. First balanced JSON object/array embedded in prose: strict, then
+	//    conservative fix, on the span (BAML's multi-json grep recurses
+	//    into the span with fixes enabled).
+	if span, end, ok := extractBalancedSpan(raw); ok {
+		// If another top-level structure follows the first span, this is
+		// BAML's multiple-values / inferred-array case (it collects ALL
+		// balanced objects and scores them, so a later one can win). M2a
+		// defers that, so decline rather than claim the first span — which
+		// would otherwise propagate a spurious mismatch.
+		if containsUnquotedBracket(raw[end:]) {
+			return value{}, false
 		}
-		return nil, extractNeedsFixing
+		return decodeSpan(span)
 	}
 
-	return nil, extractNotFound
+	return value{}, false
 }
 
-// strictUnmarshal decodes s as a single strict JSON value using
-// encoding/json, which rejects exactly the fixing-parser syntax M1 defers
-// (trailing commas, unquoted keys, single quotes). UseNumber preserves the
-// distinction between integers and floats so coercion can enforce
-// conservative JSON-type matching. Trailing non-whitespace after the value
-// is rejected so a "value + junk" string does not pass as strict JSON.
-func strictUnmarshal(s string) (any, error) {
-	dec := json.NewDecoder(strings.NewReader(s))
-	dec.UseNumber()
-	var v any
-	if err := dec.Decode(&v); err != nil {
-		return nil, err
+// decodeSpan decodes a single selected candidate span: strict first, then
+// the conservative fixing pass. A span the fixing subset declines returns
+// false (fall back to BAML), never a claimed error — a span that merely
+// needs an out-of-subset repair is exactly the fixing-parser case M2a
+// defers.
+func decodeSpan(span string) (value, bool) {
+	if v, err := strictDecode(span); err == nil {
+		return v, true
 	}
-	// A second Decode must hit EOF: any remaining token is trailing data.
-	var rest any
-	if err := dec.Decode(&rest); err != io.EOF {
-		if err == nil {
-			return nil, fmt.Errorf("unexpected trailing data after JSON value")
+	if v, err := fixParse(span); err == nil {
+		return v, true
+	}
+	return value{}, false
+}
+
+// containsUnquotedBracket reports whether s contains a '{' or '[' outside
+// double-quoted content (honouring backslash escapes). It is the
+// second-top-level-candidate detector for extractCandidate: a bracket in
+// the input remaining after the first balanced span means BAML would grep
+// more than one structure, which M2a declines. Quote-awareness keeps a
+// brace that only appears inside a string value from forcing a false
+// decline.
+func containsUnquotedBracket(s string) bool {
+	inString := false
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			}
+			continue
 		}
-		return nil, fmt.Errorf("unexpected trailing data after JSON value: %w", err)
+		switch c {
+		case '"':
+			inString = true
+		case '{', '[':
+			return true
+		}
 	}
-	return v, nil
+	return false
 }
 
 // extractFenceContent returns the body of the first ``` markdown fence in
@@ -122,19 +138,31 @@ func extractFenceContent(raw string) (string, bool) {
 // extractBalancedSpan returns the first balanced JSON object or array span
 // in raw — from the first '{' or '[' that appears OUTSIDE double-quoted
 // content to its matching close — skipping braces/brackets that appear
-// inside double-quoted strings (honouring backslash escapes). The second
-// return is false when no opening bracket is found or the structure never
-// closes (a truncated response), which the caller treats as "no candidate".
+// inside double-quoted strings (honouring backslash escapes). It also
+// returns the index just past the closing bracket so the caller can scan
+// the remainder for further top-level candidates. The ok return is false
+// when no opening bracket is found or the structure never closes (a
+// truncated response), which the caller treats as "no candidate".
 //
-// The opening-bracket search itself honours quote/escape state, so prose
-// like `the literal "{}" then {"name":"Ada"}` anchors on the real object,
-// not the quoted braces. A single pass tracks string state for both the
-// anchor search (before start is set) and the depth count (after).
+// Single quotes are deliberately NOT treated as string delimiters — span
+// detection is single-quote-BLIND, matching BAML's multi-json/prose grep,
+// which has no string-state tracking and closes purely on { } [ ] counting
+// (it runs BEFORE the fixing parser). So `{name:'Ada } Lovelace', age:36}`
+// slices to `{name:'Ada }`, which the fixing pass then rejects as an
+// unterminated single-quoted string and declines — the parity-safe outcome,
+// since BAML greps that same prefix as one of several scored candidates and
+// native must not claim the wider object on its own. A bare apostrophe in
+// prose ("Here's the answer: {...}") is harmless under quote-blindness (an
+// apostrophe is not a bracket).
 //
-// Only the outer bracket type is depth-counted; inner brackets of the
-// other type are balanced by construction in any candidate that later
-// strict-parses, and a malformed nesting is caught by the strict parse.
-func extractBalancedSpan(raw string) (string, bool) {
+// Double-quoted content stays opaque so the anchor search skips a literal
+// `"{}"` in prose, and a quoted brace inside a value does not change depth.
+// Only the outer bracket type is depth-counted; inner brackets of the other
+// type are balanced by construction in any candidate that later decodes, and
+// a malformed nesting is caught by the decode step. Span selection stays
+// free of repair logic so the same candidate decoder (strict then fix)
+// serves the whole, markdown, and prose paths.
+func extractBalancedSpan(raw string) (span string, end int, ok bool) {
 	start := -1
 	depth := 0
 	var open, closing byte
@@ -158,7 +186,7 @@ func extractBalancedSpan(raw string) (string, bool) {
 			continue
 		}
 		if start < 0 {
-			// Anchor on the first opening bracket outside quoted content.
+			// Anchor on the first opening bracket outside double-quoted content.
 			switch c {
 			case '{':
 				start, open, closing, depth = i, '{', '}', 1
@@ -173,9 +201,9 @@ func extractBalancedSpan(raw string) (string, bool) {
 		case closing:
 			depth--
 			if depth == 0 {
-				return raw[start : i+1], true
+				return raw[start : i+1], i + 1, true
 			}
 		}
 	}
-	return "", false
+	return "", 0, false
 }

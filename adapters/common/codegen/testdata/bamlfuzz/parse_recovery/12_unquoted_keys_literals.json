@@ -1,0 +1,23 @@
+{
+  "name": "unquoted_keys_literals",
+  "description": "Unquoted object keys with bool / number / null values; BAML's JSONish parser resolves the bare tokens to true, an int, and null. Native fixing parser claims it. want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "flag", "type": {"kind": "bool"}},
+          {"name": "count", "type": {"kind": "int"}},
+          {"name": "maybe", "type": {"kind": "optional", "inner": {"kind": "string"}}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{flag: true, count: 5, maybe: null}",
+  "want": {
+    "status": "success",
+    "json": {"flag": true, "count": 5, "maybe": null}
+  }
+}

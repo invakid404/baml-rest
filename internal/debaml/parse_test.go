@@ -153,12 +153,25 @@ func TestParse_PrimitivesAndBool(t *testing.T) {
 	mustParse(t, s, `{"s":"x","i":7,"f":1.5,"b":true}`, `{"s":"x","i":7,"f":1.5,"b":true}`)
 }
 
-func TestParse_ConservativeTypeMatch(t *testing.T) {
-	// A JSON string where an int is required is a claimed coercion error,
-	// not a silent string->int fix.
-	requireClaimedError(t, personSchema(), `{"name":"Ada","age":"36"}`)
-	// A float where an int is required is rejected too.
-	requireClaimedError(t, personSchema(), `{"name":"Ada","age":36.5}`)
+func TestParse_ConservativeTypeMatchDeclines(t *testing.T) {
+	// Native primitive matching is strict, but BAML's primitive coercers are
+	// lenient (parse numeric strings, round float->int). A strict native
+	// failure is exactly where BAML would still succeed, so these DECLINE
+	// (fall back to BAML) rather than claim an error BAML would not produce.
+	//
+	// String where an int is required: BAML parses "36"->36.
+	requireUnsupported(t, personSchema(), `{"name":"Ada","age":"36"}`)
+	// Float where an int is required (strict JSON): BAML rounds 36.5->37.
+	// (Latent M1 case — was a claimed error, must be a fallback.)
+	requireUnsupported(t, personSchema(), `{"name":"Ada","age":36.5}`)
+	// Same via the fixing parser (single-quoted name forces the fix path),
+	// the new M2a exposure: native now CLAIMS the fix, so the non-integer
+	// coercion must DECLINE, not propagate a claimed error.
+	requireUnsupported(t, personSchema(), `{name:'Ada', age:36.5}`)
+	requireUnsupported(t, personSchema(), `{name:'Ada', age:'36'}`)
+	// Number where a string is required: BAML stringifies 36->"36".
+	s := &bamlutils.DynamicOutputSchema{Properties: props(kv("v", strProp()))}
+	requireUnsupported(t, s, `{"v":36}`)
 }
 
 func TestParse_List(t *testing.T) {
@@ -169,8 +182,12 @@ func TestParse_List(t *testing.T) {
 		})),
 	}
 	mustParse(t, s, `{"tags":["x","y","z"]}`, `{"tags":["x","y","z"]}`)
-	// Wrong element type is a claimed error.
-	requireClaimedError(t, s, `{"tags":["x",2]}`)
+	// Wrong element type DECLINES: BAML stringifies 2->"2" in a string list,
+	// so native (strict) declines rather than claiming a mismatch.
+	requireUnsupported(t, s, `{"tags":["x",2]}`)
+	// A non-array where a list is required DECLINES: BAML wraps a singleton
+	// into a one-element array, so native declines rather than claiming.
+	requireUnsupported(t, s, `{"tags":"x"}`)
 }
 
 func TestParse_OptionalPresentAndAbsent(t *testing.T) {
@@ -189,8 +206,13 @@ func TestParse_OptionalPresentAndAbsent(t *testing.T) {
 	mustParse(t, s, `{"name":"Ada"}`, `{"name":"Ada"}`)
 }
 
-func TestParse_RequiredFieldMissing(t *testing.T) {
-	requireClaimedError(t, personSchema(), `{"name":"Ada"}`)
+func TestParse_RequiredFieldMissingDeclines(t *testing.T) {
+	// A required field with no EXACT key match DECLINES (not a claimed
+	// error): BAML matches field keys fuzzily, so native cannot tell whether
+	// BAML would fuzzy-match some other key to the missing field or hard-fail
+	// — so it falls back. (Here "age" is genuinely absent and BAML hard-fails
+	// too, but native must decline because it cannot know that in general.)
+	requireUnsupported(t, personSchema(), `{"name":"Ada"}`)
 }
 
 func TestParse_NestedClassRef(t *testing.T) {
@@ -217,9 +239,12 @@ func TestParse_Literals(t *testing.T) {
 		),
 	}
 	mustParse(t, s, `{"status":"active","version":2,"ok":true}`, `{"status":"active","version":2,"ok":true}`)
-	// Wrong literal value is a claimed error.
-	requireClaimedError(t, s, `{"status":"inactive","version":2,"ok":true}`)
-	requireClaimedError(t, s, `{"status":"active","version":3,"ok":true}`)
+	// A non-exact literal value DECLINES: BAML's literal coercion is fuzzy
+	// (case/punctuation/substring for strings, rounds/parses for ints), so
+	// native (exact) declines rather than claiming a mismatch BAML might
+	// still match.
+	requireUnsupported(t, s, `{"status":"inactive","version":2,"ok":true}`)
+	requireUnsupported(t, s, `{"status":"active","version":3,"ok":true}`)
 }
 
 func enumSchema() *bamlutils.DynamicOutputSchema {
@@ -235,8 +260,11 @@ func enumSchema() *bamlutils.DynamicOutputSchema {
 
 func TestParse_EnumByRenderedValue(t *testing.T) {
 	mustParse(t, enumSchema(), `{"color":"GREEN"}`, `{"color":"GREEN"}`)
-	// Unknown enum value is a claimed error.
-	requireClaimedError(t, enumSchema(), `{"color":"MAUVE"}`)
+	// A value with no EXACT enum match DECLINES: BAML's enum coercion is
+	// fuzzy (case/punctuation/substring/accent via match_string), so native
+	// (exact) declines rather than claiming a mismatch BAML might still
+	// match (e.g. "green" -> GREEN).
+	requireUnsupported(t, enumSchema(), `{"color":"MAUVE"}`)
 }
 
 func TestParse_EnumByAlias(t *testing.T) {
@@ -293,22 +321,182 @@ func TestParse_UnsupportedGeneralUnion(t *testing.T) {
 	requireUnsupported(t, s, `{"u":"x"}`)
 }
 
-func TestParse_UnsupportedFixingSyntax(t *testing.T) {
-	// Trailing commas, unquoted keys, single quotes: a candidate exists but
-	// is not strict JSON, so the parser falls back to BAML's fixing parser.
-	requireUnsupported(t, personSchema(), `{"name":"Ada","age":36,}`)
-	requireUnsupported(t, personSchema(), `{name:"Ada",age:36}`)
-	requireUnsupported(t, personSchema(), `{'name':'Ada','age':36}`)
-	// Fenced non-strict content also falls back.
-	requireUnsupported(t, personSchema(), "```json\n{name:'Ada',age:36}\n```")
+func TestParse_SingleFieldClassImpliedKeyDeclines(t *testing.T) {
+	// A single-field class: BAML absorbs a scalar/non-object — or an object
+	// whose lone field key is absent — directly into the one field via its
+	// implied-key / inferred-object coercion, so it often SUCCEEDS where
+	// native's strict object/key match fails. Native must DECLINE, not claim.
+	oneField := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("value", intProp())),
+	}
+	// Non-object input -> BAML implied-key {value: 42}; native declines.
+	requireUnsupported(t, oneField, `42`)
+	// Object with no matching key -> BAML implied path; native declines.
+	requireUnsupported(t, oneField, `{"other":5}`)
+	// The lone field present -> normal claim (no implied-key needed).
+	mustParse(t, oneField, `{"value":5}`, `{"value":5}`)
+
+	// A MULTI-field class with a NON-OBJECT input stays CLAIMED — BAML
+	// hard-fails turning a scalar/array into a multi-field object too, so the
+	// differential checks error parity rather than masking it.
+	requireClaimedError(t, personSchema(), `[1,2,3]`)
 }
 
-func TestParse_ClaimedErrorNoCandidate(t *testing.T) {
-	// Truncated mid-value: no complete JSON value, so the parser CLAIMS a
-	// parse error (BAML errors here too) rather than falling back.
-	requireClaimedError(t, personSchema(), `{"name":"Ada","age":`)
-	// Pure prose with no JSON at all.
-	requireClaimedError(t, personSchema(), `I could not produce a record.`)
+func TestParse_MultiFieldFuzzyKeyDeclines(t *testing.T) {
+	// A required field with no EXACT key match DECLINES: BAML matches field
+	// keys fuzzily (match_string), so a differently-cased key like "Name"
+	// matches `name` in BAML and SUCCEEDS — native must not claim a wrong
+	// missing-required error. Native declines and falls back.
+	requireUnsupported(t, personSchema(), `{"Name":"Ada","age":36}`)
+	// All required fields matched by EXACT key -> native is confident it
+	// matches BAML's structure -> CLAIM.
+	mustParse(t, personSchema(), `{"name":"Ada","age":36}`, `{"name":"Ada","age":36}`)
+	// Extra/unknown keys are ignored on both sides when all required fields
+	// are present by exact key -> still CLAIM.
+	mustParse(t, personSchema(), `{"name":"Ada","age":36,"extra":true}`, `{"name":"Ada","age":36}`)
+}
+
+func TestParse_FixingTrailingCommas(t *testing.T) {
+	// Trailing comma after a quoted string value and after an array value
+	// (and a top-level trailing comma) — all parity-safe and claimed.
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(
+			kv("name", strProp()),
+			kv("tags", &bamlutils.DynamicProperty{Type: "list", Items: &bamlutils.DynamicTypeSpec{Type: "string"}}),
+		),
+	}
+	mustParse(t, s, `{"name":"Ada","tags":["x","y",],}`, `{"name":"Ada","tags":["x","y"]}`)
+
+	// A trailing comma right after an UNQUOTED NUMBER object value DECLINES:
+	// BAML's fixing parser consumes the comma (the byte after it is '}', not
+	// space/newline) and reads greedily, producing the string "36," — which
+	// then fails int coercion, so BAML errors. Native must not claim a clean
+	// 36 where BAML errors, so it declines.
+	requireUnsupported(t, personSchema(), `{"name":"Ada","age":36,}`)
+}
+
+func TestParse_FixingLeadingAndRepeatedCommas(t *testing.T) {
+	// Leading and repeated/stray commas in objects (BAML's object state
+	// ignores stray commas while waiting for content).
+	mustParse(t, personSchema(), `{,"name":"Ada","age":36}`, `{"name":"Ada","age":36}`)
+	mustParse(t, personSchema(), `{"name":"Ada",,"age":36}`, `{"name":"Ada","age":36}`)
+	// Leading, repeated, and trailing commas in an array.
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("nums", &bamlutils.DynamicProperty{Type: "list", Items: &bamlutils.DynamicTypeSpec{Type: "int"}})),
+	}
+	mustParse(t, s, `{"nums":[,1,,2,]}`, `{"nums":[1,2]}`)
+}
+
+func TestParse_FixingUnquotedKeys(t *testing.T) {
+	mustParse(t, personSchema(), `{name: "Ada", age: 36}`, `{"name":"Ada","age":36}`)
+	// Unquoted keys with bool / null / number values.
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(
+			kv("flag", boolProp()),
+			kv("count", intProp()),
+			kv("maybe", &bamlutils.DynamicProperty{Type: "optional", Inner: &bamlutils.DynamicTypeSpec{Type: "string"}}),
+		),
+	}
+	mustParse(t, s, `{flag: true, count: 5, maybe: null}`, `{"flag":true,"count":5,"maybe":null}`)
+}
+
+func TestParse_FixingSingleQuotes(t *testing.T) {
+	mustParse(t, personSchema(), `{'name': 'Ada', 'age': 36}`, `{"name":"Ada","age":36}`)
+	// Single-quoted keys/values inside a nested object.
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("outer", &bamlutils.DynamicProperty{Ref: "Inner"})),
+		Classes: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("Inner", &bamlutils.DynamicClass{Properties: props(kv("inner", strProp()))}),
+		),
+	}
+	mustParse(t, s, `{'outer': {'inner': 'val'}}`, `{"outer":{"inner":"val"}}`)
+}
+
+func TestParse_SingleQuotedValueWithDelimiter(t *testing.T) {
+	// Span detection is single-quote-BLIND (matching BAML's quote-blind
+	// multi-json/prose grep). A structural '}' inside a single-quoted value
+	// therefore terminates the span early: `{name:'Ada } Lovelace', age:36}`
+	// slices to `{name:'Ada }`, which the fixing pass rejects as an
+	// unterminated single-quoted string and DECLINES. That is parity-safe:
+	// BAML greps the same prefix as one of several scored candidates, and
+	// native must not claim the wider object on its own.
+	requireUnsupported(t, personSchema(), `{name:'Ada } Lovelace', age:36}`)
+	requireUnsupported(t, personSchema(), `Here: {name:'Ada } Lovelace', age:36} done.`)
+	// When the brackets inside the single-quoted value happen to be balanced,
+	// quote-blind slicing yields the whole object — exactly the span BAML's
+	// (also quote-blind) grep produces — so native claims it and matches.
+	s := &bamlutils.DynamicOutputSchema{Properties: props(kv("note", strProp()))}
+	mustParse(t, s, `{note:'see [1] and {x}'}`, `{"note":"see [1] and {x}"}`)
+}
+
+func TestParse_FixingProseJSONish(t *testing.T) {
+	// Prose around a JSONish object (unquoted key + single-quoted value):
+	// the balanced span is selected, then fixed.
+	raw := "Here you go: {name: 'Ada', age: 36} — that's the record."
+	mustParse(t, personSchema(), raw, `{"name":"Ada","age":36}`)
+}
+
+func TestParse_FixingFencedJSONish(t *testing.T) {
+	// Fenced JSONish (unquoted key + single-quoted value): BAML recurses
+	// into the fence with fixes enabled, and so does the native path.
+	raw := "Here:\n```json\n{name: 'Ada', age: 36}\n```\nDone."
+	mustParse(t, personSchema(), raw, `{"name":"Ada","age":36}`)
+}
+
+func TestParse_FixingDeferredFallsBack(t *testing.T) {
+	// Repairs outside the conservative M2a subset must still fall back to
+	// BAML (ErrDeBAMLParseUnsupported), preserving differential parity.
+	//
+	// Comments.
+	requireUnsupported(t, personSchema(), `{"name":"Ada","age":36 /* note */}`)
+	requireUnsupported(t, personSchema(), "{\"name\":\"Ada\", // note\n\"age\":36}")
+	// Missing comma between fields.
+	requireUnsupported(t, personSchema(), `{"name":"Ada" "age":36}`)
+	// Escapes inside a double-quoted string (BAML's escape fixing deferred).
+	requireUnsupported(t, personSchema(), `{name:"A\nda",age:36}`)
+	// Bareword (non bool/null/number) unquoted value.
+	requireUnsupported(t, personSchema(), `{name: Ada, age: 36}`)
+	// Backtick-quoted value.
+	s := &bamlutils.DynamicOutputSchema{Properties: props(kv("msg", strProp()))}
+	requireUnsupported(t, s, "{msg: `hi`}")
+}
+
+func TestParse_NoCandidateDeclines(t *testing.T) {
+	// "Couldn't find / complete a candidate" is a DECLINE, never a claim:
+	// BAML may still recover any of these, so native falls back rather than
+	// claiming a parse error that would diverge if BAML succeeds.
+	//
+	// Truncated mid-value (unterminated object): BAML's fixing parser closes
+	// open collections at EOF and recovers a (partial) value.
+	requireUnsupported(t, personSchema(), `{"name":"Ada","age":`)
+	// Unterminated object with a complete prior field — still no closing
+	// brace, so no balanced span; decline (M2a defers unterminated).
+	requireUnsupported(t, personSchema(), `{"name":"Ada","age":36`)
+	// Unterminated array.
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("tags", &bamlutils.DynamicProperty{Type: "list", Items: &bamlutils.DynamicTypeSpec{Type: "string"}})),
+	}
+	requireUnsupported(t, s, `{"tags":["x","y"`)
+	// Pure prose with no JSON candidate at all: BAML falls to a top-level
+	// string, which then can't coerce to the object schema — but native
+	// declines rather than claiming, since it found no candidate.
+	requireUnsupported(t, personSchema(), `I could not produce a record.`)
+}
+
+func TestParse_MultipleTopLevelValuesDeclines(t *testing.T) {
+	// Two top-level objects: BAML greps ALL balanced objects and scores them
+	// (a later one can win), which M2a defers. Native must DECLINE rather
+	// than claim the first span (which would propagate a spurious
+	// missing-field error here).
+	requireUnsupported(t, personSchema(), `{"name":"Ada"} {"name":"Bob","age":40}`)
+	// A trailing bracketed structure after a valid object also declines.
+	requireUnsupported(t, personSchema(), `{"name":"Ada","age":36} [1,2,3]`)
+	// But a single object with trailing PROSE (no further brackets) is still
+	// cleanly claimed — the strict whole-input fails on the trailing text,
+	// and the balanced span has no second candidate after it.
+	mustParse(t, personSchema(), `{"name":"Ada","age":36} that's all.`, `{"name":"Ada","age":36}`)
+	// A quoted brace in the trailing prose is NOT a second candidate.
+	mustParse(t, personSchema(), `{"name":"Ada","age":36} see "{}".`, `{"name":"Ada","age":36}`)
 }
 
 func TestParse_TopLevelArrayIsClaimedError(t *testing.T) {
@@ -328,12 +516,13 @@ func TestParse_AliasedFieldMatchesRenderedNameOnly(t *testing.T) {
 			kv("age", intProp()),
 		),
 	}
-	// Alias present -> claimed; emitted under the canonical field name.
+	// Alias present (exact) -> claimed; emitted under the canonical field name.
 	mustParse(t, s, `{"full_name":"Ada","age":36}`, `{"name":"Ada","age":36}`)
-	// Canonical name present instead of the alias -> required rendered field
-	// missing -> claimed coercion error (BAML errors here too, NOT a false
-	// success).
-	requireClaimedError(t, s, `{"name":"Ada","age":36}`)
+	// Canonical name present instead of the rendered alias -> the rendered
+	// field `full_name` has no EXACT key match -> DECLINE. (BAML may even
+	// fuzzy-match "name" as a substring of "full_name" and succeed, so native
+	// must not claim a missing-required error.)
+	requireUnsupported(t, s, `{"name":"Ada","age":36}`)
 }
 
 func TestParse_FencedJSONWithInlineBackticks(t *testing.T) {

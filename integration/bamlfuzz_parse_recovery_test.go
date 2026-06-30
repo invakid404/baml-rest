@@ -130,26 +130,53 @@ func (nativeDeBAMLParser) Parse(ctx context.Context, req bamlfuzz.ParseRequest) 
 	return bamlfuzz.ParseResult{JSON: out}, nil
 }
 
-// parseRecoveryNativeClaim pins the M1 native-parser cut-line per corpus
-// case (by Name): true means the native parser is expected to CLAIM the
-// final parse — produce JSON, or a claimed parse error that matches BAML's
-// error — and false means it FALLS BACK to BAML (ErrDeBAMLParseUnsupported
-// -> SkippedNative). Strict / markdown-fenced / prose-extracted strict JSON
-// is claimed; fixing-parser syntax (trailing commas, unquoted keys, single
-// quotes, mixed jsonish) falls back. Cases absent from the map (the
-// streaming-only ones) carry no final leg and are not asserted.
+// parseRecoveryNativeClaim pins the native-parser cut-line per corpus case
+// (by Name): true means the native parser is expected to CLAIM the final
+// parse — produce JSON, or a claimed parse error that matches BAML's error
+// — and false means it FALLS BACK to BAML (ErrDeBAMLParseUnsupported ->
+// SkippedNative). Strict / markdown-fenced / prose-extracted JSON is
+// claimed; the conservative M2a fixing subset (trailing commas, unquoted
+// keys, single quotes, mixed jsonish, and the nested/literal/prose variants)
+// is now also claimed. Cases the native parser DECLINES — repairs outside
+// the fixing subset (comments), and "couldn't find/complete a candidate"
+// (an unterminated/truncated structure, which BAML recovers but M2a defers)
+// — stay fallback. Cases absent from the map (the streaming-only ones)
+// carry no final leg and are not asserted.
 var parseRecoveryNativeClaim = map[string]bool{
 	"markdown_fence_object":    true,
 	"prose_before_after_json":  true,
 	"quoted_brace_prose":       true,
 	"fenced_backticks_in_json": true,
-	"truncated_final_error":    true,
 	"strict_list_optional":     true,
 	"strict_literal_enum":      true,
-	"trailing_commas":          false,
-	"unquoted_keys":            false,
-	"single_quotes":            false,
-	"mixed_jsonish":            false,
+	// Truncated mid-value: an opening brace that never closes. Native finds
+	// no cleanly-claimable candidate and DECLINES (BAML closes it at EOF and
+	// recovers a partial value, which M2a defers) — so it falls back, not a
+	// claimed error.
+	"truncated_final_error": false,
+	// M2a fixing-parser subset: now native-claimed and diff-green vs BAML.
+	"trailing_commas": true,
+	"unquoted_keys":   true,
+	"single_quotes":   true,
+	"mixed_jsonish":   true,
+	// M2a differential-guarded additions.
+	"unquoted_keys_literals":        true,
+	"single_quotes_nested":          true,
+	"prose_jsonish_unquoted_single": true,
+	// Nested trailing commas with QUOTED values — parity-safe, claimed.
+	"nested_trailing_commas_quoted": true,
+	// Nested trailing commas around UNQUOTED NUMBER values: BAML greedily
+	// consumes the comma and errors on coercion; native declines (fallback)
+	// rather than claim a cleanly-parsed object it can't match.
+	"trailing_commas_nested_object_array": false,
+	// Leading / repeated / stray commas — also part of the claimed subset
+	// (BAML's object/array states ignore stray commas while waiting for
+	// content), so native claims them too.
+	"leading_comma_object":   true,
+	"repeated_commas_object": true,
+	"array_stray_commas":     true,
+	// Deferred repair (comments) — pinned fallback until claimed.
+	"comments_fallback": false,
 }
 
 // parseRecoveryStats tallies how many final-parse cases the native parser

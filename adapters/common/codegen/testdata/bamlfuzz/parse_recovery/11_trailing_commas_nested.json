@@ -1,0 +1,28 @@
+{
+  "name": "trailing_commas_nested_object_array",
+  "description": "Compact (space-free) commas around UNQUOTED NUMBER object values. BAML's fixing parser greedily consumes the comma after an unquoted value when the next byte is not a space/newline (json_parse_state.rs InObjectValue), so it reads inner.x as the string \"1,\\\"y\\\":2,\" and ERRORS on int coercion. Native cannot reproduce that greedy scan, so it DECLINES (fallback) rather than claim a cleanly-parsed object — preserving parity with BAML's error. Pinned native disposition: fallback. want captured from BAML final parse (error).",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "inner", "type": {"kind": "class_ref", "ref": "Inner"}},
+          {"name": "list", "type": {"kind": "list", "inner": {"kind": "int"}}}
+        ]
+      },
+      {
+        "name": "Inner",
+        "properties": [
+          {"name": "x", "type": {"kind": "int"}},
+          {"name": "y", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"inner\":{\"x\":1,\"y\":2,},\"list\":[3,4,],}",
+  "want": {
+    "status": "error"
+  }
+}
