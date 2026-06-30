@@ -34,9 +34,10 @@ import (
 // some inputs BAML would itself reject (e.g. {color:"MAUVE"} with no enum
 // match, {version:3} for literal 2, a non-integer for an int) — behavior is
 // identical via fallback, and precise claim-parity for those (porting BAML's
-// match_string + numeric coercers) is deferred to a later coercion-focused
-// milestone. See coercePrimitive / coerceList / coerceEnum / coerceLiteral /
-// coerceClass for the per-kind boundary.
+// match_string for keys/enums/literals + lenient numeric/structural coercion)
+// is deferred to the Mcoerce milestone (#546). See coercePrimitive /
+// coerceList / coerceEnum / coerceLiteral / coerceClass for the per-kind
+// boundary.
 func coerce(b *schema.Bundle, t schema.Type, input value) (json.RawMessage, error) {
 	switch t.Kind {
 	case schema.TypePrimitive:

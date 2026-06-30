@@ -290,6 +290,14 @@ const scalarBailBytes = "{}[]:\"'`"
 // is followed by ',' + (not space/newline) it DECLINES. Arrays have no such
 // behavior — InArray closes at ',' / ']' directly — so the guard is scoped
 // to object-value context.
+//
+// DELIBERATE over-decline (deferred to Mcoerce, #546): this also declines
+// the common flat `{"name":"Ada","age":36,}` (trailing comma, no space),
+// where BAML actually SUCCEEDS — it greedily reads age as the string "36,"
+// then its int coercer TRIMS the trailing comma back to 36
+// (coerce_primitive.rs). Native declining is correctness-safe (fallback →
+// BAML → 36); matching it natively needs BAML's greedy-read + trim-coercion,
+// which belongs to the coercion-leniency milestone, not M2a.
 func (p *fixer) parseUnquotedScalar(term string) (value, error) {
 	start := p.pos
 	for !p.eof() {
