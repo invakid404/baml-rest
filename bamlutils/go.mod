@@ -10,7 +10,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.24
 	github.com/bytedance/sonic v1.15.2
 	github.com/cloudwego/gjson v0.1.1
-	github.com/valyala/fasthttp v1.71.0
+	github.com/valyala/fasthttp v1.72.0
 	golang.org/x/mod v0.37.0
 	golang.org/x/net v0.56.0
 	golang.org/x/sync v0.21.0
