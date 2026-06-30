@@ -11,17 +11,26 @@ import (
 	"github.com/invakid404/baml-rest/internal/schema"
 )
 
-// coerceFlags accumulates whether a coercion produced ANY BAML score-bearing
-// condition native CLAIMS (and is therefore NOT a zero-score "clean" success):
-// a SubstringMatch (enum/literal/map-key substring, cost 2), an ExtraKey
-// (unmatched class input key, cost 1 each), or an ObjectToMap (every object→map,
-// cost 1). It is threaded only where cleanliness matters — the NULLABLE-union
-// claim, where BAML's null arm competes by scoring (DefaultButHadValue, cost
-// 110): only a clean (score-0) non-null arm provably beats null without native
-// having to compute scores. A nil receiver means "don't track" (the top-level
-// and non-nullable paths), so threading it adds no overhead there.
+// coerceFlags accumulates two signals a union claim needs:
+//
+//   - flagged: a BAML score-bearing condition native CLAIMS (and is therefore
+//     NOT a zero-score "clean" success): a SubstringMatch (enum/literal/map-key
+//     substring, cost 2), an ExtraKey (unmatched class input key, cost 1 each),
+//     or an ObjectToMap (every object→map, cost 1). Used by the NULLABLE-union
+//     claim, where BAML's null arm competes by scoring (DefaultButHadValue,
+//     cost 110): only a clean (score-0) non-null arm provably beats null
+//     without native computing scores.
+//   - uncertain: the match verdict depended on a non-ASCII case fold native
+//     cannot prove equals Rust's str::to_lowercase (caseFoldUncertain). Used by
+//     EVERY union claim: if any arm's verdict was uncertain, native cannot
+//     trust its per-arm count (a false-rejected leaf would let it claim the
+//     wrong arm), so it declines.
+//
+// A nil receiver means "don't track" (top-level / non-nullable / standalone),
+// so threading it is free there.
 type coerceFlags struct {
-	flagged bool
+	flagged   bool
+	uncertain bool
 }
 
 // flag marks the coercion as non-clean. Nil-safe so untracked paths are free.
@@ -31,8 +40,18 @@ func (f *coerceFlags) flag() {
 	}
 }
 
+// markUncertain records a non-ASCII case-fold native cannot prove matches BAML.
+func (f *coerceFlags) markUncertain() {
+	if f != nil {
+		f.uncertain = true
+	}
+}
+
 // isFlagged reports whether any score-bearing condition was recorded.
 func (f *coerceFlags) isFlagged() bool { return f != nil && f.flagged }
+
+// isUncertain reports whether a non-ASCII case-fold uncertainty was recorded.
+func (f *coerceFlags) isUncertain() bool { return f != nil && f.uncertain }
 
 // coerce converts an ordered value (decoded strict, or via the
 // conservative fixing pass) into the flattened dynamic output JSON for
@@ -163,7 +182,11 @@ func coerceLiteral(lit *schema.LiteralValue, input value, f *coerceFlags) (json.
 		if input.kind != valString {
 			return nil, declineCoerce("literal string", input)
 		}
-		matched, outcome, viaSub := matchString(input.strV, []matchCandidate{{name: lit.String, validValues: []string{lit.String}}}, true)
+		matched, outcome, viaSub, uncertain := matchString(input.strV, []matchCandidate{{name: lit.String, validValues: []string{lit.String}}}, true)
+		if uncertain {
+			f.markUncertain()
+			return nil, unsupported(fmt.Sprintf("literal string %q: non-ASCII case-fold uncertainty for %q (cannot prove match equals BAML)", lit.String, input.strV))
+		}
 		switch outcome {
 		case matchOne:
 			if viaSub {
@@ -215,7 +238,14 @@ func coerceEnum(b *schema.Bundle, name string, input value, f *coerceFlags) (jso
 	if !ok {
 		return nil, fmt.Errorf("debaml: unknown enum %q", name)
 	}
-	matched, outcome, viaSub := matchString(input.strV, enumMatchCandidates(e), true)
+	matched, outcome, viaSub, uncertain := matchString(input.strV, enumMatchCandidates(e), true)
+	if uncertain {
+		// The verdict hinged on a non-ASCII case fold native cannot prove
+		// equals BAML's. Mark it (so a union counter declines the whole union)
+		// and DECLINE rather than claim a match/no-match that might diverge.
+		f.markUncertain()
+		return nil, unsupported(fmt.Sprintf("enum %q: non-ASCII case-fold uncertainty for %q (cannot prove match equals BAML)", name, input.strV))
+	}
 	switch outcome {
 	case matchOne:
 		if viaSub {
@@ -306,11 +336,20 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 	present := make([]bool, len(cls.Fields))
 	foundAny := false
 	hasExtra := false
+	keyUncertain := false
 	for i := range input.objV {
 		key := input.objV[i].key
 		matchedField := -1
 		for j := range cls.Fields {
-			if matchesStringToString(key, cls.Fields[j].Name.RenderedName()) {
+			m, unc := matchesStringToString(key, cls.Fields[j].Name.RenderedName())
+			if unc {
+				// This key-vs-field comparison hinged on a non-ASCII case fold
+				// native cannot prove equals BAML's, so the assignment is
+				// untrustworthy.
+				keyUncertain = true
+				cf.markUncertain()
+			}
+			if m {
 				matchedField = j
 				break
 			}
@@ -325,6 +364,12 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 			present[matchedField] = true
 			foundAny = true
 		}
+	}
+	if keyUncertain {
+		// A field-key match/no-match could diverge from BAML; DECLINE rather
+		// than claim a (possibly wrong) assignment. cf is already marked so an
+		// enclosing union counter declines the whole union.
+		return nil, unsupported(fmt.Sprintf("class %q: non-ASCII case-fold uncertainty in a field key (cannot prove assignment equals BAML)", name))
 	}
 	if singleField && !foundAny {
 		// No input key matched the lone field: BAML tries implied-key /
@@ -531,8 +576,14 @@ func matchMapKey(b *schema.Bundle, keyT schema.Type, key string) error {
 		}
 		// The key's own match flags do not propagate to the map score (BAML
 		// discards the coerced key, inserting the original string), so ignore
-		// the substring bit — only success/failure matters.
-		if _, outcome, _ := matchString(key, enumMatchCandidates(e), true); outcome == matchOne {
+		// the substring bit — only success/failure matters. But a non-ASCII
+		// case-fold uncertainty means the key inclusion could diverge, so
+		// DECLINE the whole map (Mcoerce stays conservative on uncertainty).
+		_, outcome, _, uncertain := matchString(key, enumMatchCandidates(e), true)
+		if uncertain {
+			return unsupported(fmt.Sprintf("map key %q: non-ASCII case-fold uncertainty against enum %q", key, keyT.Name))
+		}
+		if outcome == matchOne {
 			return nil
 		}
 		return unsupported(fmt.Sprintf("map key %q: no clean enum %q match (BAML skips via MapKeyParseError)", key, keyT.Name))
@@ -540,7 +591,11 @@ func matchMapKey(b *schema.Bundle, keyT schema.Type, key string) error {
 		if keyT.Literal == nil || keyT.Literal.Kind != schema.LiteralString {
 			return unsupported("map key literal must be a string literal")
 		}
-		if _, outcome, _ := matchString(key, []matchCandidate{{name: keyT.Literal.String, validValues: []string{keyT.Literal.String}}}, true); outcome == matchOne {
+		_, outcome, _, uncertain := matchString(key, []matchCandidate{{name: keyT.Literal.String, validValues: []string{keyT.Literal.String}}}, true)
+		if uncertain {
+			return unsupported(fmt.Sprintf("map key %q: non-ASCII case-fold uncertainty against literal %q", key, keyT.Literal.String))
+		}
+		if outcome == matchOne {
 			return nil
 		}
 		return unsupported(fmt.Sprintf("map key %q: no clean literal %q match (BAML skips via MapKeyParseError)", key, keyT.Literal.String))
@@ -548,10 +603,18 @@ func matchMapKey(b *schema.Bundle, keyT schema.Type, key string) error {
 		// A union-of-string-literals key coerces through the union coercer,
 		// which succeeds when ANY literal arm matches; the map then inserts the
 		// original key, so the winning arm is irrelevant.
+		accepted := false
 		for _, lit := range flattenStringLiterals(keyT) {
-			if _, outcome, _ := matchString(key, []matchCandidate{{name: lit, validValues: []string{lit}}}, true); outcome == matchOne {
-				return nil
+			_, outcome, _, uncertain := matchString(key, []matchCandidate{{name: lit, validValues: []string{lit}}}, true)
+			if uncertain {
+				return unsupported(fmt.Sprintf("map key %q: non-ASCII case-fold uncertainty against string-literal-union arm %q", key, lit))
 			}
+			if outcome == matchOne {
+				accepted = true
+			}
+		}
+		if accepted {
+			return nil
 		}
 		return unsupported(fmt.Sprintf("map key %q: matches no string-literal-union arm (BAML skips via MapKeyParseError)", key))
 	default:
@@ -638,6 +701,12 @@ func coerceUnionSafe(b *schema.Bundle, u *schema.UnionType, input value, cf *coe
 			}
 			return nil, unsupported(fmt.Sprintf("optional single-arm union: non-null arm did not cleanly succeed (BAML may null-default): %v", err))
 		}
+		if arm.isUncertain() {
+			// The arm matched, but its verdict hinged on a non-ASCII case fold
+			// native cannot prove equals BAML — decline rather than risk a
+			// claim BAML would resolve differently (to the arm, or to null).
+			return nil, unsupported("optional single-arm union: non-ASCII case-fold uncertainty in the non-null arm")
+		}
 		if arm.isFlagged() {
 			return nil, unsupported("optional single-arm union: non-null arm is not a clean zero-score match (null arm competes by scoring → M3)")
 		}
@@ -695,8 +764,9 @@ func resolveArmFlags(requireClean bool, arm, cf *coerceFlags) error {
 func coerceLiteralUnion(variants []schema.Type, input value, requireClean bool, cf *coerceFlags) (json.RawMessage, error) {
 	matched := -1
 	count := 0
+	unc := &coerceFlags{}
 	for i := range variants {
-		_, err := coerceLiteral(variants[i].Literal, input, nil)
+		_, err := coerceLiteral(variants[i].Literal, input, unc)
 		switch {
 		case err == nil:
 			matched = i
@@ -705,6 +775,12 @@ func coerceLiteralUnion(variants []schema.Type, input value, requireClean bool, 
 			return nil, err // hard/invariant failure in an arm: propagate.
 		}
 		// A declinable error just means this arm did not match; keep counting.
+	}
+	if unc.isUncertain() {
+		// Some arm's match verdict hinged on a non-ASCII case fold native
+		// cannot prove equals BAML; a false-rejected arm would let native claim
+		// the wrong lone winner, so DECLINE the whole union.
+		return nil, unsupported("literal union: non-ASCII case-fold uncertainty in an arm (cannot prove verdict equals BAML)")
 	}
 	if count != 1 {
 		return nil, unsupported(fmt.Sprintf("literal union: %d lenient matches for %s input (need exactly 1; 2+ is BAML pick_best = M3)", count, input.kind.String()))
@@ -744,8 +820,9 @@ func coerceFlatClassUnion(b *schema.Bundle, variants []schema.Type, input value,
 	}
 	matched := -1
 	count := 0
+	unc := &coerceFlags{}
 	for i := range variants {
-		_, err := coerceClass(b, variants[i].Name, variants[i].Mode, input, nil)
+		_, err := coerceClass(b, variants[i].Name, variants[i].Mode, input, unc)
 		switch {
 		case err == nil:
 			matched = i
@@ -754,6 +831,12 @@ func coerceFlatClassUnion(b *schema.Bundle, variants []schema.Type, input value,
 			return nil, err // hard/invariant failure in an arm: propagate.
 		}
 		// A declinable error just means this arm did not match; keep counting.
+	}
+	if unc.isUncertain() {
+		// Some arm's field-key or leaf match hinged on a non-ASCII case fold
+		// native cannot prove equals BAML; a false-rejected arm would let native
+		// claim the wrong lone winner, so DECLINE the whole union.
+		return nil, unsupported("class union: non-ASCII case-fold uncertainty in an arm (cannot prove verdict equals BAML)")
 	}
 	if count != 1 {
 		return nil, unsupported(fmt.Sprintf("class union: %d variant classes coerce cleanly (need exactly 1; 2+ is BAML pick_best = M3)", count))

@@ -685,6 +685,61 @@ func TestParse_NullableClassUnionRequiresCleanArm(t *testing.T) {
 	requireUnsupported(t, s, `{"u":{"title":"Go","pages":300,"x":1}}`)
 }
 
+func TestParse_NonASCIICaseFoldUnionDeclines(t *testing.T) {
+	// P2: native's case fold (cases.Lower) is not byte-identical to Rust's
+	// str::to_lowercase for every rune, so any match whose verdict hinges on
+	// lowercasing a non-ASCII rune Go can't prove is lowercase-stable is
+	// UNCERTAIN. A|B with A{a: literal "é"(U+00E9), aa, aaa} | B{b, bb}: arm A's
+	// literal only matches the input "É"(U+00C9) via the case-fold attempt
+	// (NFKD leaves the accent so it is not connected at the accent-fold stage),
+	// and 'É' is non-ASCII and not IsLower → uncertain. Native must DECLINE THE
+	// UNION rather than false-reject A and claim B as the lone winner.
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("u", &bamlutils.DynamicProperty{
+			Type:  "union",
+			OneOf: []*bamlutils.DynamicTypeSpec{{Ref: "A"}, {Ref: "B"}},
+		})),
+		Classes: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("A", &bamlutils.DynamicClass{
+				Properties: props(
+					kv("a", &bamlutils.DynamicProperty{Type: "literal_string", Value: "é"}),
+					kv("aa", intProp()),
+					kv("aaa", intProp()),
+				),
+			}),
+			bamlutils.OrderedKV("B", &bamlutils.DynamicClass{
+				Properties: props(kv("b", strProp()), kv("bb", intProp())),
+			}),
+		),
+	}
+	requireUnsupported(t, s, "{\"u\":{\"a\":\"É\",\"aa\":1,\"aaa\":1,\"b\":\"x\",\"bb\":2}}")
+}
+
+func TestParse_NonASCIICaseFoldStandaloneFallsBack(t *testing.T) {
+	// Standalone (non-union) literal/enum under the same uncertainty: native
+	// falls back rather than risk a claim that diverges from BAML.
+	lit := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("k", &bamlutils.DynamicProperty{Type: "literal_string", Value: "é"})),
+	}
+	// "É"(U+00C9) only matches "é" via the uncertain case fold -> decline.
+	requireUnsupported(t, lit, "{\"k\":\"É\"}")
+	// Exact "é" needs no case fold -> certain -> claimed (the canonical literal).
+	mustParse(t, lit, "{\"k\":\"é\"}", "{\"k\":\"é\"}")
+
+	enum := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("c", &bamlutils.DynamicProperty{Ref: "Acc"})),
+		Enums: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("Acc", &bamlutils.DynamicEnum{
+				Values: []*bamlutils.DynamicEnumValue{{Name: "É"}},
+			}),
+		),
+	}
+	requireUnsupported(t, enum, "{\"c\":\"é\"}")
+
+	// ASCII case folding is UNAFFECTED — it stays certain and is claimed.
+	mustParse(t, personSchema(), `{"Name":"Ada","age":36}`, `{"name":"Ada","age":36}`)
+}
+
 func TestParse_OptionalArmRequiresCleanArm(t *testing.T) {
 	// F1 on the single-arm optional path: c is Color? (Color enum | null).
 	s := &bamlutils.DynamicOutputSchema{

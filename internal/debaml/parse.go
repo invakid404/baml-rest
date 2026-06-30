@@ -7,6 +7,8 @@ import (
 	"strings"
 	"unicode"
 
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -549,21 +551,51 @@ type matchCandidate struct {
 	validValues []string
 }
 
+// undLowerCaser builds a fresh full-Unicode lowercaser. BAML's match_string
+// case-fold uses Rust str::to_lowercase (full SpecialCasing — e.g. İ ->
+// i+U+0307), which Go's strings.ToLower (simple per-rune mapping) does NOT
+// reproduce; golang.org/x/text/cases.Lower(language.Und) does. A cases.Caser is
+// NOT safe for concurrent use, so callers build a local one per matchString
+// call (only when the case-fold attempt is actually reached).
+func undLowerCaser() cases.Caser { return cases.Lower(language.Und) }
+
+// caseFoldUncertain reports whether lowercasing s could DIVERGE from Rust's
+// str::to_lowercase. cases.Lower is not byte-identical to Rust for every rune
+// (e.g. x/text v0.38 leaves U+A7DC 'Ƛ' unchanged while Rust lowercases it to
+// 'ƛ'; Go's own case tables don't even classify U+A7DC as uppercase). The
+// robust, conservative test that native CAN prove: a rune is lowercase-stable
+// iff it is ASCII or Go reports it IsLower (a genuinely lowercase letter, whose
+// lowercasing is the identity on both Go and Rust — this keeps 'é'/'ß'/'ü'
+// certain so accented inputs like "Résumé" still match). Any OTHER non-ASCII
+// rune (uppercase, titlecase, or a cased letter Go's tables don't recognize)
+// is treated as uncertain. The corpus is ASCII, so this never fires there.
+func caseFoldUncertain(s string) bool {
+	for _, r := range s {
+		if r > unicode.MaxASCII && !unicode.IsLower(r) {
+			return true
+		}
+	}
+	return false
+}
+
 // matchString ports match_string.rs::match_string. It trims the input, then
 // runs the case-sensitive / accent-folded / punctuation-stripped /
 // case-insensitive / substring strategies in BAML's exact order, returning the
-// matched candidate name, an outcome, and whether the match came from the
-// SUBSTRING strategy (BAML's SubstringMatch flag, cost 2 — the exact/fold
-// strategies are score 0). allowSubstring mirrors match_string's
-// allow_substring_match: class field keys pass false (via
-// matchesStringToString); enum / string-literal / map-key coercion pass true.
-func matchString(input string, candidates []matchCandidate, allowSubstring bool) (string, matchOutcome, bool) {
+// matched candidate name, an outcome, whether the match came from the SUBSTRING
+// strategy (BAML's SubstringMatch flag, cost 2 — the exact/fold strategies are
+// score 0), and whether the case-fold attempt involved a non-ASCII rune whose
+// lowercasing native cannot prove equals Rust's (uncertain — see
+// caseFoldUncertain). uncertain is false whenever a match is found before the
+// case-fold attempt. allowSubstring mirrors match_string's allow_substring_match:
+// class field keys pass false (via matchesStringToString); enum / string-literal
+// / map-key coercion pass true.
+func matchString(input string, candidates []matchCandidate, allowSubstring bool) (string, matchOutcome, bool, bool) {
 	// Trim whitespace (no flag, score 0).
 	matchContext := strings.TrimSpace(input)
 
 	// Attempt 1: original (trimmed) candidates.
 	if name, outcome, sub, found := stringMatchStrategy(matchContext, candidates, allowSubstring); found {
-		return name, outcome, sub
+		return name, outcome, sub, false
 	}
 
 	// Strip punctuation from input and from every candidate value, then retry
@@ -582,34 +614,50 @@ func matchString(input string, candidates []matchCandidate, allowSubstring bool)
 	// repeat of this one over the SAME match_context/candidates — it can only
 	// return the same result — so it is intentionally omitted here.)
 	if name, outcome, sub, found := stringMatchStrategy(matchContext, stripped, allowSubstring); found {
-		return name, outcome, sub
+		return name, outcome, sub, false
 	}
 
-	// Attempt 4: case-insensitive over the stripped forms (no flag, score 0).
-	matchContext = strings.ToLower(matchContext)
+	// The case-fold attempt is now reached. Determine whether lowercasing any of
+	// the forms about to be lowered could diverge from Rust (uncertain).
+	uncertain := caseFoldUncertain(matchContext)
+	if !uncertain {
+		for i := range stripped {
+			for _, v := range stripped[i].validValues {
+				if caseFoldUncertain(v) {
+					uncertain = true
+				}
+			}
+		}
+	}
+
+	// Attempt 4: case-insensitive over the stripped forms (no flag, score 0),
+	// using full-Unicode lowercasing to match Rust's str::to_lowercase.
+	caser := undLowerCaser()
+	matchContext = caser.String(matchContext)
 	lowered := make([]matchCandidate, len(stripped))
 	for i := range stripped {
 		vals := make([]string, len(stripped[i].validValues))
 		for j, v := range stripped[i].validValues {
-			vals[j] = strings.ToLower(v)
+			vals[j] = caser.String(v)
 		}
 		lowered[i] = matchCandidate{name: stripped[i].name, validValues: vals}
 	}
 	if name, outcome, sub, found := stringMatchStrategy(matchContext, lowered, allowSubstring); found {
-		return name, outcome, sub
+		return name, outcome, sub, uncertain
 	}
 
-	return "", matchNone, false
+	return "", matchNone, false, uncertain
 }
 
 // matchesStringToString ports match_string.rs::matches_string_to_string: a
 // single-candidate, NO-substring match used for class object field keys
-// (coerce_class.rs:209). Returns whether input matches target. (The key match
-// adds no class flag in BAML, so its substring bit is irrelevant — substring
-// is disabled here anyway.)
-func matchesStringToString(input, target string) bool {
-	_, outcome, _ := matchString(input, []matchCandidate{{name: target, validValues: []string{target}}}, false)
-	return outcome == matchOne
+// (coerce_class.rs:209). Returns whether input matches target, plus whether the
+// verdict depended on a non-ASCII case fold native cannot prove equals BAML
+// (uncertain — caller declines on it). (The key match adds no class flag in
+// BAML, so the substring bit is irrelevant — substring is disabled here anyway.)
+func matchesStringToString(input, target string) (matched, uncertain bool) {
+	_, outcome, _, unc := matchString(input, []matchCandidate{{name: target, validValues: []string{target}}}, false)
+	return outcome == matchOne, unc
 }
 
 // stringMatchStrategy ports match_string.rs::string_match_strategy for one
