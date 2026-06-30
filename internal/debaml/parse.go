@@ -26,12 +26,16 @@ import (
 //     conservative M2a fixing subset — comments, escapes, missing commas,
 //     unterminated structures, multiple top-level values, … — which stays
 //     BAML's job (see fix.go for the exact claimed subset).
+//   - Raw text with no cleanly-claimable JSON candidate at all — no
+//     JSON-looking content, or only an unterminated/incomplete structure —
+//     which BAML may still recover, so native declines rather than claiming
+//     a parse error (extraction never claims; only coercion does).
 //
-// A non-sentinel error is a CLAIMED native parse failure and propagates:
-// the response carries no JSON candidate at all, or a decoded value fails
-// to coerce against the schema. The native-vs-BAML differential compares
-// these claims against BAML, so drift surfaces rather than being masked
-// behind a silent fallback.
+// A non-sentinel error is a CLAIMED native parse failure and propagates: a
+// decoded value fails to coerce against the schema in a way BAML also
+// rejects (e.g. a non-object where a multi-field class is required). The
+// native-vs-BAML differential compares these claims against BAML, so drift
+// surfaces rather than being masked behind a silent fallback.
 func Parse(ctx context.Context, req bamlutils.DeBAMLParseRequest) (bamlutils.DeBAMLParseResult, error) {
 	_ = ctx // M1 parsing is a local CPU operation; no cancellation points.
 
