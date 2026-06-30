@@ -87,6 +87,42 @@ func TestWrappersPropagateHardErrors(t *testing.T) {
 	})
 }
 
+// TestMatchMapKeyUncertaintyMarksFlags pins the CR-MAPKEY signal-propagation
+// fix: a non-ASCII case-fold-uncertain map key DECLINES the map AND marks
+// cf.uncertain (so a future union counter that admits a map arm would decline
+// the whole union), and the *coerceFlags parameter is nil-safe.
+func TestMatchMapKeyUncertaintyMarksFlags(t *testing.T) {
+	// String-literal map key "é"(U+00E9): the input key "É"(U+00C9) only matches
+	// via the uncertain case fold (NFKD leaves the accent, so it is not
+	// accent-fold-connected), and 'É' is non-ASCII and not IsLower -> uncertain.
+	litKey := schema.Type{
+		Kind:    schema.TypeLiteral,
+		Literal: &schema.LiteralValue{Kind: schema.LiteralString, String: "é"},
+	}
+
+	cf := &coerceFlags{}
+	if err := matchMapKey(nil, litKey, "É", cf); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+		t.Fatalf("uncertain map key: want ErrDeBAMLParseUnsupported, got %v", err)
+	}
+	if !cf.isUncertain() {
+		t.Error("uncertain map key did not mark cf.uncertain")
+	}
+
+	// Nil-safe: the same uncertain key with a nil accumulator must not panic.
+	if err := matchMapKey(nil, litKey, "É", nil); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+		t.Fatalf("nil cf: want ErrDeBAMLParseUnsupported, got %v", err)
+	}
+
+	// A CERTAIN (exact) key accepts and leaves cf.uncertain unset.
+	clean := &coerceFlags{}
+	if err := matchMapKey(nil, litKey, "é", clean); err != nil {
+		t.Fatalf("exact key: want accept (nil), got %v", err)
+	}
+	if clean.isUncertain() {
+		t.Error("exact key wrongly marked cf.uncertain")
+	}
+}
+
 // TestWrapperDeclinesValueVerdict confirms the no-regression side of CR1: a
 // VALUE-verdict child error (here typeMismatch — a scalar where a multi-field
 // class is required) still makes the wrapper DECLINE (fall back), so BAML's

@@ -504,7 +504,7 @@ func coerceMap(b *schema.Bundle, keyT, valT *schema.Type, input value, cf *coerc
 	first := true
 	for i := range input.objV {
 		f := &input.objV[i]
-		if err := matchMapKey(b, *keyT, f.key); err != nil {
+		if err := matchMapKey(b, *keyT, f.key, cf); err != nil {
 			return nil, err
 		}
 		if _, dup := seen[f.key]; dup {
@@ -562,7 +562,14 @@ func coerceMap(b *schema.Bundle, keyT, valT *schema.Type, input value, cf *coerc
 // entry and return a partial map, which native does not yet reproduce
 // (Mcoerce-c). The accepted key is NOT rewritten — coerceMap emits the
 // original input key string, matching BAML's insertion of the raw object key.
-func matchMapKey(b *schema.Bundle, keyT schema.Type, key string) error {
+//
+// A non-ASCII case-fold uncertainty on a key declines the map AND marks cf
+// (nil-safe), so that — should a map ever become reachable as a union arm —
+// the enclosing union counter makes the same conservative whole-union decline
+// rather than treating the rejected key as an ordinary non-match. Today no
+// claimable union admits a map arm (parse.go's safe families are literal/class
+// only), so this is purely defensive signal propagation, never an over-claim.
+func matchMapKey(b *schema.Bundle, keyT schema.Type, key string, cf *coerceFlags) error {
 	switch keyT.Kind {
 	case schema.TypePrimitive:
 		if keyT.Primitive == schema.PrimitiveString {
@@ -581,6 +588,7 @@ func matchMapKey(b *schema.Bundle, keyT schema.Type, key string) error {
 		// DECLINE the whole map (Mcoerce stays conservative on uncertainty).
 		_, outcome, _, uncertain := matchString(key, enumMatchCandidates(e), true)
 		if uncertain {
+			cf.markUncertain()
 			return unsupported(fmt.Sprintf("map key %q: non-ASCII case-fold uncertainty against enum %q", key, keyT.Name))
 		}
 		if outcome == matchOne {
@@ -593,6 +601,7 @@ func matchMapKey(b *schema.Bundle, keyT schema.Type, key string) error {
 		}
 		_, outcome, _, uncertain := matchString(key, []matchCandidate{{name: keyT.Literal.String, validValues: []string{keyT.Literal.String}}}, true)
 		if uncertain {
+			cf.markUncertain()
 			return unsupported(fmt.Sprintf("map key %q: non-ASCII case-fold uncertainty against literal %q", key, keyT.Literal.String))
 		}
 		if outcome == matchOne {
@@ -607,6 +616,7 @@ func matchMapKey(b *schema.Bundle, keyT schema.Type, key string) error {
 		for _, lit := range flattenStringLiterals(keyT) {
 			_, outcome, _, uncertain := matchString(key, []matchCandidate{{name: lit, validValues: []string{lit}}}, true)
 			if uncertain {
+				cf.markUncertain()
 				return unsupported(fmt.Sprintf("map key %q: non-ASCII case-fold uncertainty against string-literal-union arm %q", key, lit))
 			}
 			if outcome == matchOne {
