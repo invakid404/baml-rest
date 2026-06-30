@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/invakid404/baml-rest/internal/schema"
 )
@@ -21,27 +22,32 @@ import (
 // pipeline keys on. Class fields are emitted in schema declaration order so
 // that order pass remains the authority.
 //
-// Coercion cut-line (DELIBERATE, M2a): native matches types STRICTLY, while
-// BAML's coercers are lenient (parse numeric strings, round float→int,
-// stringify non-strings, fuzzy-match enums/literals via match_string, wrap
-// singletons into arrays, absorb a scalar into a single-field class). Where
-// native's strict match fails but BAML may leniently SUCCEED — or where
-// native cannot determine BAML's exact success/failure — coercion DECLINES
-// (ErrDeBAMLParseUnsupported → fall back to BAML), so native is never "more
-// capable" than BAML. Native CLAIMS a coercion error only for the mismatch
-// BAML also hard-rejects: a non-object where a MULTI-field class is required
-// (coerceClass). A required field with no EXACT key match instead DECLINES —
-// BAML may fuzzy-match the key via match_string or hard-fail, and native
-// cannot tell which apart (deferred to Mcoerce) — while a class whose every
-// required field is exact-matched is claimed. A consequence is that native
-// also declines some inputs BAML would itself reject (e.g. {color:"MAUVE"}
-// with no enum match, {version:3} for literal 2, a non-integer for an int,
-// or a genuinely-absent required field) — behavior is
-// identical via fallback, and precise claim-parity for those (porting BAML's
-// match_string for keys/enums/literals + lenient numeric/structural coercion)
-// is deferred to the Mcoerce milestone (#546). See coercePrimitive /
-// coerceList / coerceEnum / coerceLiteral / coerceClass for the per-kind
-// boundary.
+// Coercion cut-line (Mcoerce-a): native now matches enum values, string
+// literals, class field keys, and map keys through BAML's actual match_string
+// (trim / accent+ligature fold / punctuation strip / case-insensitive /
+// substring — see match_string.go), so fuzzy matches BAML accepts are CLAIMED
+// byte-exact. The remaining leniencies stay STRICT and DECLINE: numeric/bool
+// string parsing, float→int rounding, non-string stringification (ObjectToString
+// / JsonToString), single-to-array wrapping, single-field implied-key /
+// inferred-object absorption, partial list/map skips, and class default-fill —
+// all deferred to Mcoerce-b/c/d. Where native's match fails but BAML may
+// leniently SUCCEED (or null-default) — or where native cannot determine BAML's
+// exact success/failure — coercion DECLINES (ErrDeBAMLParseUnsupported → fall
+// back to BAML), so native is never "more capable" than BAML.
+//
+// Native CLAIMS a coercion error only where BAML also errors: a non-object
+// where a MULTI-field class is required (coerceClass typeMismatch), or a
+// match_string substring TIE (StrMatchOneFromMany — coerceEnum/coerceLiteral
+// ambiguousMatch). A required field still unmatched after fuzzy key matching
+// DECLINES — BAML may default-fill or hard-fail and native cannot tell which.
+// Union claims count LENIENT per-variant successes and claim only the lone
+// winner; two-plus successes are BAML pick_best (M3) and DECLINE. A consequence
+// is that native still declines some inputs BAML would itself reject (e.g. a
+// required field with no fuzzy key match, {version:3} for literal 2, a
+// non-integer for an int) — behavior is identical via fallback, and precise
+// claim-parity for those is deferred to the rest of the Mcoerce milestone
+// (#546). See coercePrimitive / coerceList / coerceEnum / coerceLiteral /
+// coerceClass for the per-kind boundary.
 func coerce(b *schema.Bundle, t schema.Type, input value) (json.RawMessage, error) {
 	switch t.Kind {
 	case schema.TypePrimitive:
@@ -112,23 +118,34 @@ func coercePrimitive(p schema.PrimitiveKind, input value) (json.RawMessage, erro
 	}
 }
 
-// coerceLiteral coerces a value to a literal target. Native matching is
-// EXACT, whereas BAML's literal coercion routes string literals through the
-// fuzzy match_string helper (trim / strip-punctuation / case-insensitive /
-// substring) and rounds/parses for int and bool literals. A non-exact
-// native match is therefore where BAML's lenient matcher would still
-// succeed, so any mismatch DECLINES (fall back to BAML) rather than
-// claiming an error BAML would not produce.
+// coerceLiteral coerces a value to a literal target. String literals route
+// through BAML's actual match_string (Mcoerce-a) — trim / fold / strip /
+// case-insensitive / substring — emitting the canonical literal (not the
+// fuzzy raw input); a substring tie is a CLAIMED error and a no-match
+// DECLINES. Int and bool literals still match EXACTLY: BAML rounds/parses
+// them (string→int, float→int), which is Mcoerce-b, so a non-exact int/bool
+// DECLINES rather than claiming a mismatch BAML would not produce. A
+// non-string input to a string literal also DECLINES (BAML's single-key
+// object ObjectToPrimitive extraction is Mcoerce-d).
 func coerceLiteral(lit *schema.LiteralValue, input value) (json.RawMessage, error) {
 	if lit == nil {
 		return nil, fmt.Errorf("debaml: literal type missing value")
 	}
 	switch lit.Kind {
 	case schema.LiteralString:
-		if input.kind != valString || input.strV != lit.String {
-			return nil, unsupported(fmt.Sprintf("literal string %q: no exact match (BAML fuzzy-matches)", lit.String))
+		if input.kind != valString {
+			return nil, declineCoerce("literal string", input)
 		}
-		return marshalJSON(input.strV)
+		matched, outcome := matchString(input.strV, []matchCandidate{{name: lit.String, validValues: []string{lit.String}}}, true)
+		switch outcome {
+		case matchOne:
+			return marshalJSON(matched)
+		case matchAmbiguous:
+			// A single candidate cannot tie; defensive.
+			return nil, ambiguousMatch(fmt.Sprintf("literal string %q", lit.String), input.strV)
+		default:
+			return nil, unsupported(fmt.Sprintf("literal string %q: %q matches no value (BAML errors or null-defaults)", lit.String, input.strV))
+		}
 	case schema.LiteralInt:
 		if input.kind != valNumber {
 			return nil, declineCoerce("literal int", input)
@@ -148,14 +165,18 @@ func coerceLiteral(lit *schema.LiteralValue, input value) (json.RawMessage, erro
 	}
 }
 
-// coerceEnum coerces a value to an enum target by EXACT rendered-name (or
-// alias) match. BAML's enum coercion routes through the fuzzy match_string
-// helper (trim / strip-punctuation / case-insensitive / accent-removal /
-// substring), so a value with no exact native match may still match in
-// BAML. To avoid claiming a mismatch BAML would not produce, a non-string
-// input or a no-exact-match value DECLINES (fall back to BAML). An enum
-// referenced but absent from the lowered bundle is a broken schema, kept as
-// a claimed error.
+// coerceEnum coerces a string value to an enum target via BAML's actual
+// match_string (Mcoerce-a): trim / accent+ligature fold / punctuation strip
+// / case-insensitive / substring, against each value's rendered name,
+// description, and "rendered: description" form (enumMatchCandidates). The
+// canonical real name of the matched value is emitted. A substring TIE is a
+// CLAIMED error (StrMatchOneFromMany — BAML errors before emitting), while a
+// no-match DECLINES: BAML errors in a required position but null-defaults in
+// an optional one (DefaultButHadValue), and native cannot tell which apart
+// without scoring, so it falls back. A non-string input also DECLINES — BAML
+// stringifies it via jsonish Value Display (ObjectToString), whose exact
+// reproduction is Mcoerce-b/d. An enum absent from the lowered bundle is a
+// broken schema, kept as a claimed error.
 func coerceEnum(b *schema.Bundle, name string, input value) (json.RawMessage, error) {
 	if input.kind != valString {
 		return nil, declineCoerce("enum target", input)
@@ -164,33 +185,66 @@ func coerceEnum(b *schema.Bundle, name string, input value) (json.RawMessage, er
 	if !ok {
 		return nil, fmt.Errorf("debaml: unknown enum %q", name)
 	}
-	v, ok := e.ValueByRenderedName(input.strV)
-	if !ok {
-		return nil, unsupported(fmt.Sprintf("enum %q: %q not an exact value (BAML fuzzy-matches)", name, input.strV))
+	matched, outcome := matchString(input.strV, enumMatchCandidates(e), true)
+	switch outcome {
+	case matchOne:
+		// matched is the candidate name = the value's canonical real name.
+		return marshalJSON(matched)
+	case matchAmbiguous:
+		return nil, ambiguousMatch(fmt.Sprintf("enum %q", name), input.strV)
+	default:
+		return nil, unsupported(fmt.Sprintf("enum %q: %q matches no value (BAML errors or null-defaults)", name, input.strV))
 	}
-	// Emit the canonical enum value name, matching BAML's enum coercion.
-	return marshalJSON(v.Name.Name)
+}
+
+// enumMatchCandidates builds the (real_name, valid_values) candidate set
+// BAML's enum coercer matches against (coerce_enum.rs:14): each value's
+// rendered name, plus — when it has a non-empty trimmed description — that
+// description and the "rendered: description" form. The candidate NAME is
+// the canonical real name, which match_string returns and coerceEnum emits.
+func enumMatchCandidates(e *schema.EnumDef) []matchCandidate {
+	cands := make([]matchCandidate, 0, len(e.Values))
+	for i := range e.Values {
+		v := &e.Values[i]
+		rendered := v.Name.RenderedName()
+		var vals []string
+		if v.Description != nil {
+			if d := strings.TrimSpace(*v.Description); d != "" {
+				vals = []string{rendered, d, rendered + ": " + d}
+			}
+		}
+		if vals == nil {
+			vals = []string{rendered}
+		}
+		cands = append(cands, matchCandidate{name: v.Name.Name, validValues: vals})
+	}
+	return cands
 }
 
 // coerceClass coerces an object value into a class, emitting fields in
-// schema declaration order. It CLAIMS only when native is confident it
-// matches BAML's structure: the input is an object and every required field
-// is matched by an EXACT key. Otherwise it DECLINES, because BAML's class
-// coercer is leniently broader than native's strict matching and native
-// cannot tell whether BAML would succeed:
+// schema declaration order. Input keys are matched to fields by BAML's
+// actual no-substring match_string (Mcoerce-a, via matchesStringToString),
+// reproducing coerce_class.rs: each input key is assigned to the FIRST field
+// whose rendered name it matches (case-insensitive / punctuation-stripped /
+// accent-folded — but NOT substring); duplicate matches resolve last-wins,
+// extra/unknown keys are ignored (ExtraKey, not emitted). It CLAIMS when the
+// input is an object and every required field is matched and coerces;
+// otherwise it DECLINES, because BAML's class coercer is leniently broader
+// than native and native cannot tell whether BAML would succeed:
 //
-//   - A required field with no EXACT key match → DECLINE: BAML matches field
-//     keys fuzzily (coerce_class.rs → match_string: case-insensitive /
-//     punctuation-stripped / substring), so {"Name":...} may match `name`.
-//   - A SINGLE-field class with a non-object input, or an object whose lone
-//     field key is absent → DECLINE: BAML absorbs the value into the one
-//     field via implied-key / inferred-object (coerce_class.rs:224/295/300).
+//   - A required field still unmatched after fuzzy key matching → DECLINE:
+//     BAML may fill a type default (list/map/null/union) or hard-fail
+//     (coerce_class.rs:342/field_type.rs:288), which native cannot reproduce.
+//   - A SINGLE-field class with a non-object input, or an object NONE of
+//     whose keys match the lone field → DECLINE: BAML absorbs the value into
+//     the one field via implied-key / inferred-object, or fills a default
+//     for an empty object (coerce_class.rs:224/295/313) — all Mcoerce-d.
 //
 // A MULTI-field class with a NON-OBJECT input stays CLAIMED (typeMismatch):
 // BAML hard-fails turning a scalar into a multi-field object too, so the
-// differential checks error parity. Extra/unknown input keys are ignored on
-// both sides (native iterates only schema fields). Precise key-matching and
-// lenient structural coercion are deferred to the Mcoerce milestone (#546).
+// differential checks error parity. A claimed child error (e.g. an enum
+// substring tie) propagates so the differential checks error parity; lenient
+// structural coercion (defaults, implied keys) is deferred to Mcoerce-d.
 func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input value) (json.RawMessage, error) {
 	cls, ok := b.FindClass(name, mode)
 	if !ok {
@@ -203,10 +257,33 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 		}
 		return nil, typeMismatch("object", input)
 	}
-	if singleField {
-		if _, present := lookupField(input.objV, cls.Fields[0].Name); !present {
-			return nil, unsupported(fmt.Sprintf("debaml: single-field class %q: lone field absent (BAML implied-key may coerce the object)", name))
+
+	// Assign input keys to fields the way BAML does: iterate input keys in
+	// order, and for each map it to the FIRST field whose rendered name it
+	// fuzzily matches (no substring). Later matches overwrite earlier ones for
+	// the same field (last-wins, matching update_map). Unmatched input keys are
+	// extras (ignored). This input-key-first order — rather than scanning
+	// fields for a matching key — is what makes one key resolve to a single
+	// field, avoiding a key being assigned to two fold-equal fields at once.
+	assigned := make([]value, len(cls.Fields))
+	present := make([]bool, len(cls.Fields))
+	foundAny := false
+	for i := range input.objV {
+		key := input.objV[i].key
+		for j := range cls.Fields {
+			if matchesStringToString(key, cls.Fields[j].Name.RenderedName()) {
+				assigned[j] = input.objV[i].val
+				present[j] = true
+				foundAny = true
+				break
+			}
 		}
+	}
+	if singleField && !foundAny {
+		// No input key matched the lone field: BAML tries implied-key /
+		// inferred-object on the whole object, or fills a default for an empty
+		// object — native cannot reproduce either, so DECLINE (Mcoerce-d).
+		return nil, unsupported(fmt.Sprintf("single-field class %q: lone field unmatched (BAML implied-key/default)", name))
 	}
 
 	var buf bytes.Buffer
@@ -214,26 +291,21 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 	first := true
 	for i := range cls.Fields {
 		f := &cls.Fields[i]
-		val, present := lookupField(input.objV, f.Name)
-		if !present {
+		if !present[i] {
 			if isOptional(f.Type) {
 				// Absent optional: omit it. The downstream
 				// InjectAbsentOptionals pass inserts the null, identically
 				// for the native and BAML paths.
 				continue
 			}
-			// A required field with no EXACT key match: BAML matches field
-			// keys fuzzily (coerce_class.rs → match_string: case-insensitive
-			// / punctuation-stripped / substring), so it may coerce a
-			// differently-cased or near key that native's exact lookup misses
-			// (e.g. {"Name":...} → name) — or it may truly hard-fail. Native
-			// cannot tell which without match_string, so it DECLINES (fall
-			// back to BAML) rather than claim a missing-required error that
-			// would be WRONG when BAML fuzzy-matches. Precise key-matching
-			// parity is deferred to the Mcoerce milestone (#546).
-			return nil, unsupported(fmt.Sprintf("class %q: required field %q has no exact key match (BAML may fuzzy-match keys)", name, f.Name.RenderedName()))
+			// A required field with no key match even after fuzzy matching:
+			// BAML may fill a type default (field_type.rs:288) or hard-fail,
+			// and native cannot tell which, so it DECLINES (fall back to BAML)
+			// rather than claim a missing-required error that would be WRONG
+			// when BAML defaults. Default-filling parity is Mcoerce-d.
+			return nil, unsupported(fmt.Sprintf("class %q: required field %q has no key match (BAML may default/error)", name, f.Name.RenderedName()))
 		}
-		child, err := coerce(b, f.Type, val)
+		child, err := coerce(b, f.Type, assigned[i])
 		if err != nil {
 			return nil, err
 		}
@@ -268,7 +340,14 @@ func coerceList(b *schema.Bundle, elem *schema.Type, input value) (json.RawMessa
 	for i := range input.arrV {
 		child, err := coerce(b, *elem, input.arrV[i])
 		if err != nil {
-			return nil, err
+			// A bad element: BAML records ArrayItemParseError and SKIPS it,
+			// returning a partial list that still succeeds — native cannot
+			// reproduce that partial result, so it DECLINES the whole list
+			// rather than propagate the element's verdict (a CLAIMED child
+			// error such as an enum substring tie must NOT become a claimed
+			// list error where BAML would just drop the element). Partial-list
+			// parity is Mcoerce-c.
+			return nil, unsupported(fmt.Sprintf("list element %d: %v (BAML skips bad items via ArrayItemParseError)", i, err))
 		}
 		if i > 0 {
 			buf.WriteByte(',')
@@ -355,20 +434,27 @@ func coerceMap(b *schema.Bundle, keyT, valT *schema.Type, input value) (json.Raw
 }
 
 // matchMapKey validates an input object key string against the declared map
-// key type by EXACT match only, returning nil on a clean accept and a
-// DECLINE sentinel otherwise. checkSupportedMapKey has already restricted
-// the key type to the four legal shapes, so the default arm is defensive.
+// key type via BAML's actual match_string (Mcoerce-a), returning nil on a
+// clean accept and a DECLINE sentinel otherwise. checkSupportedMapKey has
+// already restricted the key type to the four legal shapes, so the default
+// arm is defensive. BAML coerces the key with the key type's coercer
+// (coerce_map.rs:163) and, on success, inserts the entry under the ORIGINAL
+// input key string — so the accepted key is never rewritten, and the only
+// thing that matters here is whether the key coercion SUCCEEDS:
 //
 //   - string primitive: accept any key verbatim.
-//   - enum: require an EXACT rendered-name/alias match (the same exact path
-//     coerceEnum uses); BAML's full enum key coercion is fuzzy (match_string)
-//     so a non-exact key is Mcoerce, not a native claim.
-//   - string literal: require exact string equality.
-//   - union of string literals: require EXACTLY ONE flattened literal equal
-//     to the key (no match, or a duplicate-literal ambiguity, declines).
+//   - enum: accept on a clean match_string match (substring enabled); a
+//     no-match or substring TIE declines (BAML skips the entry via
+//     MapKeyParseError, returning a partial map — Mcoerce-c).
+//   - string literal: accept on a clean match_string match (substring enabled).
+//   - union of string literals: accept when AT LEAST ONE arm matches. The
+//     map output is the original key regardless of which arm BAML's union
+//     pick_best selects, so multiple matches do not need scoring here.
 //
-// The accepted key is NOT rewritten — coerceMap emits the original input key
-// string, matching BAML's insertion of the raw object key.
+// Any non-clean key DECLINES the whole map, because BAML would skip just that
+// entry and return a partial map, which native does not yet reproduce
+// (Mcoerce-c). The accepted key is NOT rewritten — coerceMap emits the
+// original input key string, matching BAML's insertion of the raw object key.
 func matchMapKey(b *schema.Bundle, keyT schema.Type, key string) error {
 	switch keyT.Kind {
 	case schema.TypePrimitive:
@@ -381,29 +467,28 @@ func matchMapKey(b *schema.Bundle, keyT schema.Type, key string) error {
 		if !ok {
 			return fmt.Errorf("debaml: unknown enum %q", keyT.Name)
 		}
-		if _, ok := e.ValueByRenderedName(key); !ok {
-			return unsupported(fmt.Sprintf("map key %q: no exact enum %q match (BAML fuzzy-matches)", key, keyT.Name))
+		if _, outcome := matchString(key, enumMatchCandidates(e), true); outcome == matchOne {
+			return nil
 		}
-		return nil
+		return unsupported(fmt.Sprintf("map key %q: no clean enum %q match (BAML skips via MapKeyParseError)", key, keyT.Name))
 	case schema.TypeLiteral:
 		if keyT.Literal == nil || keyT.Literal.Kind != schema.LiteralString {
 			return unsupported("map key literal must be a string literal")
 		}
-		if key != keyT.Literal.String {
-			return unsupported(fmt.Sprintf("map key %q: no exact literal %q match (BAML fuzzy-matches)", key, keyT.Literal.String))
+		if _, outcome := matchString(key, []matchCandidate{{name: keyT.Literal.String, validValues: []string{keyT.Literal.String}}}, true); outcome == matchOne {
+			return nil
 		}
-		return nil
+		return unsupported(fmt.Sprintf("map key %q: no clean literal %q match (BAML skips via MapKeyParseError)", key, keyT.Literal.String))
 	case schema.TypeUnion:
-		matches := 0
+		// A union-of-string-literals key coerces through the union coercer,
+		// which succeeds when ANY literal arm matches; the map then inserts the
+		// original key, so the winning arm is irrelevant.
 		for _, lit := range flattenStringLiterals(keyT) {
-			if lit == key {
-				matches++
+			if _, outcome := matchString(key, []matchCandidate{{name: lit, validValues: []string{lit}}}, true); outcome == matchOne {
+				return nil
 			}
 		}
-		if matches != 1 {
-			return unsupported(fmt.Sprintf("map key %q: %d exact string-literal-union matches (need exactly 1; BAML fuzzy-matches)", key, matches))
-		}
-		return nil
+		return unsupported(fmt.Sprintf("map key %q: matches no string-literal-union arm (BAML skips via MapKeyParseError)", key))
 	default:
 		return unsupported(fmt.Sprintf("map key kind %q", keyT.Kind))
 	}
@@ -468,11 +553,21 @@ func coerceUnionSafe(b *schema.Bundle, u *schema.UnionType, input value) (json.R
 		}
 		return json.RawMessage("null"), nil
 	}
-	// Case 2: M1 optional — a single non-null variant. (Non-nullable single
+	// Case 2: optional — a single non-null variant. (Non-nullable single
 	// variants collapse to the bare type in simplifyUnion, so this is reached
-	// only for the nullable optional shape; the behavior is unchanged.)
+	// only for the nullable optional shape.) A non-null input coerces through
+	// the lone arm; but once coercion is lenient (Mcoerce-a), the arm FAILING
+	// no longer means the union fails — BAML falls back to the null arm
+	// (coerce_primitive null → DefaultButHadValue, a non-zero score) and
+	// returns null. Native cannot reproduce that scored null default, so any
+	// arm failure (a DECLINE, or a CLAIMED error such as an enum substring
+	// tie) becomes a union DECLINE rather than propagating the arm's verdict.
 	if len(u.Variants) == 1 {
-		return coerce(b, u.Variants[0], input)
+		out, err := coerce(b, u.Variants[0], input)
+		if err != nil {
+			return nil, unsupported(fmt.Sprintf("optional single-arm union: non-null arm did not cleanly succeed (BAML may null-default): %v", err))
+		}
+		return out, nil
 	}
 	// Case 3: non-null input against a multi-variant union. Re-prove the
 	// non-null arm set is a safe family (this also rejects non-null input to a
@@ -494,64 +589,45 @@ func coerceUnionSafeMulti(b *schema.Bundle, variants []schema.Type, input value)
 	return coerceFlatClassUnion(b, variants, input)
 }
 
-// coerceLiteralUnion claims a homogeneous exact-literal union when EXACTLY
-// one literal exactly matches the input (and the input's JSON kind matches
-// the literal kind). For string literals the variant set was proven pairwise
-// match-disjoint by checkSupportedUnionShape, so an exact match on one arm
-// guarantees BAML cannot fuzzy-match another; for int/bool no two distinct
-// literals can equal the same value. Zero or (impossibly, after dedup) >1
-// exact matches decline. The matched literal is emitted through coerceLiteral
-// so the output form matches the single-literal path exactly.
+// coerceLiteralUnion claims a homogeneous literal union when EXACTLY one
+// variant leniently coerces (Mcoerce-a's no-over-claim rule). It counts
+// per-variant successes through coerceLiteral itself — so string literals
+// are evaluated with the actual match_string (a fuzzy/substring hit counts),
+// while int/bool literals stay exact (their lenient numeric coercion is
+// Mcoerce-b). Two-plus lenient successes mean BAML would run scored pick_best
+// — e.g. input "foobar" substring-matching both "foo" and "bar" arms even
+// though the literal VALUES were proven match-disjoint at the gate — so
+// native DECLINES (M3). Zero successes decline too. The single winner is
+// re-coerced through coerceLiteral so the emitted form matches the
+// single-literal path exactly.
 func coerceLiteralUnion(variants []schema.Type, input value) (json.RawMessage, error) {
 	matched := -1
 	count := 0
 	for i := range variants {
-		if literalExactMatches(variants[i].Literal, input) {
+		if _, err := coerceLiteral(variants[i].Literal, input); err == nil {
 			matched = i
 			count++
 		}
 	}
 	if count != 1 {
-		return nil, unsupported(fmt.Sprintf("literal union: %d exact matches for %s input (need exactly 1; BAML may fuzzy/parse-match)", count, input.kind.String()))
+		return nil, unsupported(fmt.Sprintf("literal union: %d lenient matches for %s input (need exactly 1; 2+ is BAML pick_best = M3)", count, input.kind.String()))
 	}
 	return coerceLiteral(variants[matched].Literal, input)
 }
 
-// literalExactMatches reports whether input EXACTLY matches lit by JSON kind
-// and value: a JSON bool equal to a bool literal, an exact JSON integer token
-// equal to an int literal, or a JSON string equal to a string literal. Any
-// leniency (numeric strings, float rounding, fuzzy string match) is BAML's
-// job and is deliberately NOT reproduced here.
-func literalExactMatches(lit *schema.LiteralValue, input value) bool {
-	if lit == nil {
-		return false
-	}
-	switch lit.Kind {
-	case schema.LiteralBool:
-		return input.kind == valBool && input.boolV == lit.Bool
-	case schema.LiteralInt:
-		if input.kind != valNumber {
-			return false
-		}
-		n, err := input.numV.Int64()
-		return err == nil && n == lit.Int
-	case schema.LiteralString:
-		return input.kind == valString && input.strV == lit.String
-	default:
-		return false
-	}
-}
-
-// coerceFlatClassUnion claims a flat disjoint-key class union when the input
-// is an object whose EXACT key set equals exactly one variant class's full
-// rendered field set (no extras, no missing, no duplicate keys) and that
-// class then coerces cleanly through the strict child coercers. The variant
-// classes were proven flat / >=2-required-field / disjoint-key by
-// checkSupportedUnionShape, so a full-key-set match on one arm guarantees
-// BAML cannot fuzzy-match the input keys onto another arm (every other arm is
-// missing >=2 required fields it cannot fill). Any extra/duplicate/missing
-// key, no match, or child coercion error (sentinel OR claimed) declines —
-// BAML may still resolve those via leniency/scoring.
+// coerceFlatClassUnion claims a flat disjoint-key class union when EXACTLY
+// one variant class leniently coerces (Mcoerce-a's no-over-claim rule). It
+// counts per-variant successes through coerceClass itself — which now matches
+// field keys fuzzily and ignores extra keys — so a class succeeds when all
+// its required fields are matched and coerce, regardless of extras. The
+// variant classes were proven flat / >=2-required-field / disjoint-key by
+// checkSupportedUnionShape, so an input carrying one class's full field set
+// cannot satisfy another (every other arm is missing >=2 disjoint required
+// fields it cannot fill) — unless the input ALSO carries a second arm's full
+// field set, which makes BOTH succeed and forces BAML's scored pick_best, so
+// native DECLINES (M3). Zero successes decline too. A child coercion error
+// (sentinel OR claimed) just means that variant did not succeed and is
+// swallowed by the count; only the lone clean winner is emitted.
 func coerceFlatClassUnion(b *schema.Bundle, variants []schema.Type, input value) (json.RawMessage, error) {
 	if input.kind != valObject {
 		// BAML can infer a single-field class from a scalar / imply a key;
@@ -559,76 +635,18 @@ func coerceFlatClassUnion(b *schema.Bundle, variants []schema.Type, input value)
 		// but it is not a hard type error either, so decline.
 		return nil, declineCoerce("class union", input)
 	}
-	keySet := make(map[string]struct{}, len(input.objV))
-	for i := range input.objV {
-		k := input.objV[i].key
-		if _, dup := keySet[k]; dup {
-			return nil, unsupported(fmt.Sprintf("class union: duplicate input key %q", k))
-		}
-		keySet[k] = struct{}{}
-	}
 	matched := -1
+	count := 0
 	for i := range variants {
-		cls, ok := b.FindClass(variants[i].Name, variants[i].Mode)
-		if !ok {
-			return nil, fmt.Errorf("debaml: unknown class %q", variants[i].Name)
-		}
-		if renderedFieldSetEquals(cls, keySet) {
+		if _, err := coerceClass(b, variants[i].Name, variants[i].Mode, input); err == nil {
 			matched = i
-			break // disjoint field sets ⇒ at most one variant can match.
+			count++
 		}
 	}
-	if matched < 0 {
-		return nil, unsupported("class union: input key set matches no variant's full field set (extras/missing decline)")
+	if count != 1 {
+		return nil, unsupported(fmt.Sprintf("class union: %d variant classes coerce cleanly (need exactly 1; 2+ is BAML pick_best = M3)", count))
 	}
-	out, err := coerceClass(b, variants[matched].Name, variants[matched].Mode, input)
-	if err != nil {
-		// A child sentinel decline OR a claimed child error both decline the
-		// union: BAML may coerce the field leniently (with a flag) and still
-		// resolve to this arm, or score a different one, so native must not
-		// claim a clean object where BAML's result could differ.
-		return nil, unsupported(fmt.Sprintf("class union: winning class %q child coercion not clean: %v", variants[matched].Name, err))
-	}
-	return out, nil
-}
-
-// renderedFieldSetEquals reports whether the rendered field-name set of cls
-// equals keySet exactly (same size, same members). checkSupportedUnionShape
-// has proven cls's rendered names are distinct, so size equality plus
-// membership is a true set equality.
-func renderedFieldSetEquals(cls *schema.ClassDef, keySet map[string]struct{}) bool {
-	if len(cls.Fields) != len(keySet) {
-		return false
-	}
-	for i := range cls.Fields {
-		if _, ok := keySet[cls.Fields[i].Name.RenderedName()]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
-// lookupField returns the input value for a class field, matched by the
-// rendered name ONLY (the alias when present, else the canonical name) —
-// the same key BAML's jsonish class coercer matches against
-// (name.rendered_name()). An aliased field is therefore NOT matched by its
-// canonical name: BAML treats the canonical key as an extra field and the
-// rendered key as missing, and the native path must agree to stay
-// drift-free. For a field with no alias, RenderedName()==Name, so this is
-// unchanged. Duplicate input keys resolve last-wins, matching the
-// encoding/json map decode the M1 path used. The comma-ok form
-// distinguishes an absent key from a present null value.
-func lookupField(obj []field, name schema.Name) (value, bool) {
-	rendered := name.RenderedName()
-	var found value
-	ok := false
-	for i := range obj {
-		if obj[i].key == rendered {
-			found = obj[i].val
-			ok = true
-		}
-	}
-	return found, ok
+	return coerceClass(b, variants[matched].Name, variants[matched].Mode, input)
 }
 
 // isOptional reports whether t is an optional (a nullable union), the only
@@ -656,6 +674,17 @@ func marshalJSON(v any) (json.RawMessage, error) {
 // parity rather than masking it behind a fallback.
 func typeMismatch(want string, input value) error {
 	return fmt.Errorf("debaml: expected %s, got %s", want, input.kind.String())
+}
+
+// ambiguousMatch reports a match_string substring TIE (StrMatchOneFromMany)
+// as a CLAIMED coercion error: BAML's matcher errors before emitting any of
+// the tied variants, so native claims the same error rather than arbitrarily
+// picking one. Distinct from declineCoerce — the differential checks BAML
+// also errors here (error parity), so this must NOT be the fallback sentinel.
+// Safe to claim only outside an optional arm; coerceUnionSafe's case 2
+// converts it to a DECLINE where BAML would null-default instead.
+func ambiguousMatch(target, input string) error {
+	return fmt.Errorf("debaml: %s: %q ambiguously substring-matches multiple candidates (BAML StrMatchOneFromMany)", target, input)
 }
 
 // declineCoerce reports a coercion mismatch as a DECLINE

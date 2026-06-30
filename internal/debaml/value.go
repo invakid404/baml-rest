@@ -63,8 +63,9 @@ type value struct {
 
 // field is one ordered object entry. Duplicate keys are allowed (the
 // strict decoder and fixing parser both preserve them in input order);
-// lookupField resolves duplicates last-wins to match encoding/json's
-// map-decode semantics the M1 path relied on.
+// coerceClass's input-key-first field assignment resolves duplicates
+// last-wins, matching BAML's update_map overwrite (and the encoding/json
+// map-decode semantics the M1 path relied on).
 type field struct {
 	key string
 	val value
