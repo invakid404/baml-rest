@@ -1,6 +1,6 @@
 {
   "name": "map_fuzzy_enum_key",
-  "description": "map<Key,string> with a case-variant key (\"a\" for enum value A). BAML's enum key coercion fuzzy-matches via match_string and SUCCEEDS, inserting the ORIGINAL key string \"a\". Native exact match misses, so it DECLINES (fuzzy keys are Mcoerce) — pinned native disposition: fallback. want captured from BAML final parse.",
+  "description": "Mcoerce-a: map<Key,string> with a case-variant key (\"a\" for enum value A). BAML's enum key coercion fuzzy-matches via match_string and SUCCEEDS, inserting the ORIGINAL key string \"a\" (not the canonical enum name). Native now reproduces match_string and CLAIMS this byte-exact — pinned native disposition: claimed. want captured from BAML final parse.",
   "preserve_schema_order": true,
   "schema": {
     "classes": [

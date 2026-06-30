@@ -239,11 +239,15 @@ func TestParse_Literals(t *testing.T) {
 		),
 	}
 	mustParse(t, s, `{"status":"active","version":2,"ok":true}`, `{"status":"active","version":2,"ok":true}`)
-	// A non-exact literal value DECLINES: BAML's literal coercion is fuzzy
-	// (case/punctuation/substring for strings, rounds/parses for ints), so
-	// native (exact) declines rather than claiming a mismatch BAML might
-	// still match.
-	requireUnsupported(t, s, `{"status":"inactive","version":2,"ok":true}`)
+	// Mcoerce-a: a string literal now matches fuzzily via match_string. A
+	// case variant matches and the CANONICAL literal is emitted (not the raw
+	// input).
+	mustParse(t, s, `{"status":"ACTIVE","version":2,"ok":true}`, `{"status":"active","version":2,"ok":true}`)
+	// A string with no fuzzy match still DECLINES (no exact/fold/substring
+	// hit): BAML errors in this required position, but native falls back.
+	requireUnsupported(t, s, `{"status":"paused","version":2,"ok":true}`)
+	// An int literal stays EXACT: BAML rounds/parses (string→int, float→int),
+	// which is Mcoerce-b, so a non-equal int value DECLINES.
 	requireUnsupported(t, s, `{"status":"active","version":3,"ok":true}`)
 }
 
@@ -376,12 +380,11 @@ func TestParse_MapBadEnumKeyDeclines(t *testing.T) {
 	requireUnsupported(t, mapEnumKeySchema(), `{"labels":{"A":"one","C":"two"}}`)
 }
 
-func TestParse_MapFuzzyEnumKeyDeclines(t *testing.T) {
-	// A case/fuzzy variant ("a" for enum value A): BAML's enum key coercion
-	// fuzzy-matches via match_string and SUCCEEDS (emitting the original key
-	// "a"); native's exact match misses, so it declines (fuzzy keys are
-	// Mcoerce). Native must NOT claim a missing/clean result.
-	requireUnsupported(t, mapEnumKeySchema(), `{"labels":{"a":"one"}}`)
+func TestParse_MapFuzzyEnumKeyClaimed(t *testing.T) {
+	// Mcoerce-a: a case/fuzzy variant ("a" for enum value A) now fuzzy-matches
+	// via match_string and is CLAIMED. The emitted key is the ORIGINAL input
+	// string "a" (maps insert the raw object key), not the canonical enum name.
+	mustParseExact(t, mapEnumKeySchema(), `{"labels":{"a":"one"}}`, `{"labels":{"a":"one"}}`)
 }
 
 func TestParse_MapEnumKeyAlias(t *testing.T) {
@@ -621,14 +624,14 @@ func TestParse_ClassUnionFlatDisjointClaimed(t *testing.T) {
 	mustParse(t, s, `{"u":{"brand":"Audi","wheels":4}}`, `{"u":{"brand":"Audi","wheels":4}}`)
 	// Class fields re-emitted in SCHEMA order even when input is out of order.
 	mustParse(t, s, `{"u":{"pages":300,"title":"Go"}}`, `{"u":{"title":"Go","pages":300}}`)
+	// Mcoerce-a: an EXTRA key beyond a variant's full field set is ignored
+	// (ExtraKey) and the arm still wins — exactly one variant succeeds, so it
+	// is CLAIMED (the extra "x" does not fuzzy-match Car's disjoint fields).
+	mustParse(t, s, `{"u":{"title":"Go","pages":300,"x":1}}`, `{"u":{"title":"Go","pages":300}}`)
 }
 
 func TestParse_ClassUnionDeclines(t *testing.T) {
 	s := classUnionSchema()
-	// Extra key beyond a variant's full field set → DECLINE (BAML ignores
-	// extras and could still match, or fuzzy-match the extra onto the other
-	// arm).
-	requireUnsupported(t, s, `{"u":{"title":"Go","pages":300,"x":1}}`)
 	// Missing a required field → DECLINE (BAML may fuzzy-match/fill).
 	requireUnsupported(t, s, `{"u":{"title":"Go"}}`)
 	// Key set matches no variant → DECLINE.
@@ -804,17 +807,15 @@ func TestParse_SingleFieldClassImpliedKeyDeclines(t *testing.T) {
 	requireClaimedError(t, personSchema(), `[1,2,3]`)
 }
 
-func TestParse_MultiFieldFuzzyKeyDeclines(t *testing.T) {
-	// A required field with no EXACT key match DECLINES: BAML matches field
-	// keys fuzzily (match_string), so a differently-cased key like "Name"
-	// matches `name` in BAML and SUCCEEDS — native must not claim a wrong
-	// missing-required error. Native declines and falls back.
-	requireUnsupported(t, personSchema(), `{"Name":"Ada","age":36}`)
-	// All required fields matched by EXACT key -> native is confident it
-	// matches BAML's structure -> CLAIM.
+func TestParse_MultiFieldFuzzyKey(t *testing.T) {
+	// Mcoerce-a: a required field key now matches fuzzily via match_string
+	// (no substring). A differently-cased key "Name" matches `name`, so the
+	// class is CLAIMED with the CANONICAL field name emitted.
+	mustParse(t, personSchema(), `{"Name":"Ada","age":36}`, `{"name":"Ada","age":36}`)
+	// All required fields matched by EXACT key -> CLAIM.
 	mustParse(t, personSchema(), `{"name":"Ada","age":36}`, `{"name":"Ada","age":36}`)
 	// Extra/unknown keys are ignored on both sides when all required fields
-	// are present by exact key -> still CLAIM.
+	// are present -> still CLAIM.
 	mustParse(t, personSchema(), `{"name":"Ada","age":36,"extra":true}`, `{"name":"Ada","age":36}`)
 }
 
