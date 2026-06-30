@@ -1,0 +1,35 @@
+{
+  "name": "literal_union_string_exact",
+  "description": "M2c CLAIMED: homogeneous string-literal union with pairwise BAML-match-disjoint values (\"small\" | \"large\"); input exactly equals one arm. Native claims because disjointness proves BAML cannot fuzzy-match a 2nd arm. want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "literal", "literal": {"kind": "string", "string": "small"}},
+                {"kind": "literal", "literal": {"kind": "string", "string": "large"}}
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":\"small\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": "small"}
+  },
+  "union_choices": {
+    ".u": {"index": 0, "kind": "literal", "variant_count": 2}
+  }
+}

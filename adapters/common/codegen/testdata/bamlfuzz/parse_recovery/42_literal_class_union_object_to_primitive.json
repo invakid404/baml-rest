@@ -1,0 +1,38 @@
+{
+  "name": "literal_class_union_object_to_primitive",
+  "description": "M2c FALLBACK: mixed literal-vs-class union (\"active\" | Status{tag}) with a SINGLE-KEY OBJECT input. The literal arm extracts the inner primitive via object-to-primitive (coerce_literal single-key object) and matches \"active\", while the class arm matches Status{tag:\"active\"} directly, so BOTH arms succeed and compete -> pick_best scoring. Native declines at the gate (mixed literal/class family). want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "literal", "literal": {"kind": "string", "string": "active"}},
+                {"kind": "class_ref", "ref": "Status"}
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "Status",
+        "properties": [
+          {"name": "tag", "type": {"kind": "string"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":{\"tag\":\"active\"}}",
+  "want": {
+    "status": "success",
+    "json": {"u": {"tag": "active"}}
+  }
+}

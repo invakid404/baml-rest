@@ -1,0 +1,41 @@
+{
+  "name": "enum_class_union_object_to_string",
+  "description": "M2c FALLBACK: mixed enum-vs-class union (Color | Detail{a,b}) with an object carrying BOTH the class fields AND an enum token. The enum arm matches RED from the stringified object (match_string object-to-string) while the class arm parses a/b and flags the extra \"color\" key, so BOTH arms succeed and compete -> pick_best scoring. Native declines at the gate (mixed enum/class family). want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "enum_ref", "ref": "Color"},
+                {"kind": "class_ref", "ref": "Detail"}
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "Detail",
+        "properties": [
+          {"name": "a", "type": {"kind": "int"}},
+          {"name": "b", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "enums": [
+      {"name": "Color", "values": ["RED", "GREEN", "BLUE"]}
+    ],
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":{\"a\":1,\"b\":2,\"color\":\"RED\"}}",
+  "want": {
+    "status": "success",
+    "json": {"u": {"a": 1, "b": 2}}
+  }
+}

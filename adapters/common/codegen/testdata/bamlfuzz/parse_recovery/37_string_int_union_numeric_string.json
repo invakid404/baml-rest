@@ -1,0 +1,32 @@
+{
+  "name": "string_int_union_numeric_string",
+  "description": "M2c FALLBACK: bare-primitive union (string | int) with a numeric-string input. BAML stringifies/parses across kinds, so a 2nd arm can succeed -> pick_best scoring. Native declines (bare primitive variant). want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "string"},
+                {"kind": "int"}
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":\"123\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": "123"}
+  }
+}

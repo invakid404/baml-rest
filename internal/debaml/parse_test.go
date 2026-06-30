@@ -515,17 +515,272 @@ func TestParse_UnsupportedMapUnionValue(t *testing.T) {
 	requireUnsupported(t, s, `{"m":{"a":"x"}}`)
 }
 
-func TestParse_UnsupportedGeneralUnion(t *testing.T) {
+// unionSchema wraps a single union property `u` with the given variants.
+func unionSchema(variants ...*bamlutils.DynamicTypeSpec) *bamlutils.DynamicOutputSchema {
+	return &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("u", &bamlutils.DynamicProperty{
+			Type:  "union",
+			OneOf: variants,
+		})),
+	}
+}
+
+func litStr(v string) *bamlutils.DynamicTypeSpec {
+	return &bamlutils.DynamicTypeSpec{Type: "literal_string", Value: v}
+}
+
+func TestParse_LiteralUnionStringExactClaimed(t *testing.T) {
+	// Homogeneous string-literal union with pairwise BAML-match-disjoint
+	// values: native CLAIMS the arm that EXACTLY equals the input, because
+	// disjointness proves BAML cannot fuzzy-match a second arm.
+	s := unionSchema(litStr("small"), litStr("large"))
+	mustParse(t, s, `{"u":"small"}`, `{"u":"small"}`)
+	mustParse(t, s, `{"u":"large"}`, `{"u":"large"}`)
+	// No exact literal match → DECLINE (BAML may fuzzy-match one arm).
+	requireUnsupported(t, s, `{"u":"medium"}`)
+	// Non-string input → DECLINE (BAML may stringify/coerce it).
+	requireUnsupported(t, s, `{"u":5}`)
+}
+
+func TestParse_LiteralUnionFuzzyStringDeclinedAtGate(t *testing.T) {
+	// "on" is a substring of "only" under the conservative match_string
+	// superset, so the set is NOT provably disjoint: BAML could fuzzy-match
+	// the input "on" against the "only" arm too → scoring → native must
+	// never claim. The whole schema is rejected at the gate (fall back).
+	s := unionSchema(litStr("on"), litStr("only"))
+	requireUnsupported(t, s, `{"u":"on"}`)
+	requireUnsupported(t, s, `{"u":"only"}`)
+	// Case/punctuation-only variants are also non-disjoint under the fold.
+	s2 := unionSchema(litStr("Yes"), litStr("yes!"))
+	requireUnsupported(t, s2, `{"u":"Yes"}`)
+}
+
+func TestParse_LiteralUnionBoolExactClaimed(t *testing.T) {
+	s := unionSchema(
+		&bamlutils.DynamicTypeSpec{Type: "literal_bool", Value: true},
+		&bamlutils.DynamicTypeSpec{Type: "literal_bool", Value: false},
+	)
+	mustParse(t, s, `{"u":true}`, `{"u":true}`)
+	mustParse(t, s, `{"u":false}`, `{"u":false}`)
+	// Non-bool input → DECLINE (BAML accepts fuzzy/string bool).
+	requireUnsupported(t, s, `{"u":"true"}`)
+	requireUnsupported(t, s, `{"u":1}`)
+}
+
+func TestParse_LiteralUnionIntExactClaimed(t *testing.T) {
+	s := unionSchema(
+		&bamlutils.DynamicTypeSpec{Type: "literal_int", Value: int64(1)},
+		&bamlutils.DynamicTypeSpec{Type: "literal_int", Value: int64(2)},
+	)
+	mustParse(t, s, `{"u":1}`, `{"u":1}`)
+	mustParse(t, s, `{"u":2}`, `{"u":2}`)
+	// No literal equals the (exact-integer) input → DECLINE.
+	requireUnsupported(t, s, `{"u":3}`)
+	// Non-integer JSON number token → DECLINE (BAML rounds/parses).
+	requireUnsupported(t, s, `{"u":2.0}`)
+	requireUnsupported(t, s, `{"u":1.5}`)
+	// Numeric string → DECLINE (BAML parses "2"→2).
+	requireUnsupported(t, s, `{"u":"2"}`)
+}
+
+func TestParse_LiteralUnionMixedKindDeclinedAtGate(t *testing.T) {
+	// Mixed literal kinds (string vs int): BAML can string-coerce/parse across
+	// kinds, so a second arm could succeed → decline at the gate.
+	s := unionSchema(litStr("1"), &bamlutils.DynamicTypeSpec{Type: "literal_int", Value: int64(1)})
+	requireUnsupported(t, s, `{"u":"1"}`)
+	requireUnsupported(t, s, `{"u":1}`)
+}
+
+// classUnionSchema wraps a single union property `u` over two flat classes
+// Book{title,pages} and Car{brand,wheels} with disjoint field-name sets.
+func classUnionSchema() *bamlutils.DynamicOutputSchema {
+	return &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("u", &bamlutils.DynamicProperty{
+			Type: "union",
+			OneOf: []*bamlutils.DynamicTypeSpec{
+				{Ref: "Book"},
+				{Ref: "Car"},
+			},
+		})),
+		Classes: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("Book", &bamlutils.DynamicClass{
+				Properties: props(kv("title", strProp()), kv("pages", intProp())),
+			}),
+			bamlutils.OrderedKV("Car", &bamlutils.DynamicClass{
+				Properties: props(kv("brand", strProp()), kv("wheels", intProp())),
+			}),
+		),
+	}
+}
+
+func TestParse_ClassUnionFlatDisjointClaimed(t *testing.T) {
+	s := classUnionSchema()
+	// Input key set == exactly one variant's full field set → CLAIM, emitted
+	// in that class's schema order.
+	mustParse(t, s, `{"u":{"title":"Go","pages":300}}`, `{"u":{"title":"Go","pages":300}}`)
+	mustParse(t, s, `{"u":{"brand":"Audi","wheels":4}}`, `{"u":{"brand":"Audi","wheels":4}}`)
+	// Class fields re-emitted in SCHEMA order even when input is out of order.
+	mustParse(t, s, `{"u":{"pages":300,"title":"Go"}}`, `{"u":{"title":"Go","pages":300}}`)
+}
+
+func TestParse_ClassUnionDeclines(t *testing.T) {
+	s := classUnionSchema()
+	// Extra key beyond a variant's full field set → DECLINE (BAML ignores
+	// extras and could still match, or fuzzy-match the extra onto the other
+	// arm).
+	requireUnsupported(t, s, `{"u":{"title":"Go","pages":300,"x":1}}`)
+	// Missing a required field → DECLINE (BAML may fuzzy-match/fill).
+	requireUnsupported(t, s, `{"u":{"title":"Go"}}`)
+	// Key set matches no variant → DECLINE.
+	requireUnsupported(t, s, `{"u":{"foo":1,"bar":2}}`)
+	// Winning class's child does not coerce cleanly (pages is a string) →
+	// DECLINE (BAML coerces "300"→300 with a flag and may still resolve here).
+	requireUnsupported(t, s, `{"u":{"title":"Go","pages":"300"}}`)
+	// Non-object input → DECLINE (BAML can infer/imply a class from a scalar).
+	requireUnsupported(t, s, `{"u":5}`)
+	requireUnsupported(t, s, `{"u":"Go"}`)
+}
+
+func TestParse_ClassUnionOverlappingKeysDeclinedAtGate(t *testing.T) {
+	// Two classes sharing a field name (id) are NOT disjoint: BAML could
+	// partially match either arm → scoring → decline the whole schema.
 	s := &bamlutils.DynamicOutputSchema{
 		Properties: props(kv("u", &bamlutils.DynamicProperty{
 			Type: "union",
 			OneOf: []*bamlutils.DynamicTypeSpec{
-				{Type: "string"},
-				{Type: "int"},
+				{Ref: "A"},
+				{Ref: "B"},
+			},
+		})),
+		Classes: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("A", &bamlutils.DynamicClass{
+				Properties: props(kv("id", intProp()), kv("name", strProp())),
+			}),
+			bamlutils.OrderedKV("B", &bamlutils.DynamicClass{
+				Properties: props(kv("id", intProp()), kv("label", strProp())),
+			}),
+		),
+	}
+	requireUnsupported(t, s, `{"u":{"id":1,"name":"x"}}`)
+}
+
+func TestParse_ClassUnionSingleFieldDeclinedAtGate(t *testing.T) {
+	// A single-field class arm is implied-key risk → decline at the gate even
+	// though the field names are disjoint.
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("u", &bamlutils.DynamicProperty{
+			Type: "union",
+			OneOf: []*bamlutils.DynamicTypeSpec{
+				{Ref: "A"},
+				{Ref: "B"},
+			},
+		})),
+		Classes: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("A", &bamlutils.DynamicClass{
+				Properties: props(kv("only", intProp())),
+			}),
+			bamlutils.OrderedKV("B", &bamlutils.DynamicClass{
+				Properties: props(kv("solo", strProp())),
+			}),
+		),
+	}
+	requireUnsupported(t, s, `{"u":{"only":1}}`)
+}
+
+func TestParse_ClassUnionNonFlatFieldDeclinedAtGate(t *testing.T) {
+	// A class-union arm with a non-flat-leaf field (a list) is out of scope:
+	// BAML's single-to-array leniency could make a second arm succeed.
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("u", &bamlutils.DynamicProperty{
+			Type: "union",
+			OneOf: []*bamlutils.DynamicTypeSpec{
+				{Ref: "A"},
+				{Ref: "B"},
+			},
+		})),
+		Classes: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("A", &bamlutils.DynamicClass{
+				Properties: props(kv("title", strProp()), kv("tags", &bamlutils.DynamicProperty{
+					Type: "list", Items: &bamlutils.DynamicTypeSpec{Type: "string"},
+				})),
+			}),
+			bamlutils.OrderedKV("B", &bamlutils.DynamicClass{
+				Properties: props(kv("brand", strProp()), kv("wheels", intProp())),
+			}),
+		),
+	}
+	requireUnsupported(t, s, `{"u":{"title":"Go","tags":["a"]}}`)
+}
+
+func TestParse_NullableMultiUnionNullClaimed(t *testing.T) {
+	// A nullable multi-union with UNSAFE non-null arms (bare string/int):
+	// native CLAIMS the null fast path for JSON-null input, but DECLINES every
+	// non-null input (the non-null arm set is not a safe family).
+	s := unionSchema(
+		&bamlutils.DynamicTypeSpec{Type: "string"},
+		&bamlutils.DynamicTypeSpec{Type: "int"},
+		&bamlutils.DynamicTypeSpec{Type: "null"},
+	)
+	mustParse(t, s, `{"u":null}`, `{"u":null}`)
+	// Non-null input → DECLINE (string/int arms are lenient/scored).
+	requireUnsupported(t, s, `{"u":"x"}`)
+	requireUnsupported(t, s, `{"u":5}`)
+}
+
+func TestParse_NullableSingleArmUnsupportedArmClaimsNull(t *testing.T) {
+	// A nullable single-arm union T | null where T is UNSUPPORTED (here T is a
+	// map whose value is a general string|int union — out of scope). The null
+	// fast path must CLAIM null regardless of the unsupported arm (mirroring
+	// BAML's null arm), consistently with nullable MULTI unions. A NON-null
+	// input must DECLINE: coerceUnionSafe delegates to coerce on the lone arm,
+	// which falls back because the arm is unsupported.
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("u", &bamlutils.DynamicProperty{
+			Type: "optional",
+			Inner: &bamlutils.DynamicTypeSpec{
+				Type: "map",
+				Keys: &bamlutils.DynamicTypeSpec{Type: "string"},
+				Values: &bamlutils.DynamicTypeSpec{
+					Type:  "union",
+					OneOf: []*bamlutils.DynamicTypeSpec{{Type: "string"}, {Type: "int"}},
+				},
 			},
 		})),
 	}
+	// JSON null → CLAIM null (null fast path), even though the lone arm is
+	// unsupported. Before the gate fix this DECLINED (the len==1 recursion
+	// rejected the unsupported arm before the nullable check).
+	mustParse(t, s, `{"u":null}`, `{"u":null}`)
+	// Non-null → DECLINE (the lone map arm has a general-union value type).
+	requireUnsupported(t, s, `{"u":{"a":"x"}}`)
+}
+
+func TestParse_UnsupportedPrimitiveUnion(t *testing.T) {
+	// A bare-primitive multi-union (string|int) declines: BAML stringifies /
+	// parses across kinds, so a second arm could succeed → scoring.
+	s := unionSchema(
+		&bamlutils.DynamicTypeSpec{Type: "string"},
+		&bamlutils.DynamicTypeSpec{Type: "int"},
+	)
 	requireUnsupported(t, s, `{"u":"x"}`)
+	requireUnsupported(t, s, `{"u":5}`)
+}
+
+func TestParse_UnsupportedNestedUnionVariant(t *testing.T) {
+	// A genuinely nested union ((string | int) | bool): BAML flattens it to a
+	// bare-primitive multi-union (string|int|bool) whose scored pick_best
+	// native cannot reproduce, so native declines at the gate. (This mirrors
+	// the nested_union parse-recovery fallback fixture.)
+	s := unionSchema(
+		&bamlutils.DynamicTypeSpec{Type: "union", OneOf: []*bamlutils.DynamicTypeSpec{
+			{Type: "string"},
+			{Type: "int"},
+		}},
+		&bamlutils.DynamicTypeSpec{Type: "bool"},
+	)
+	requireUnsupported(t, s, `{"u":123}`)
+	requireUnsupported(t, s, `{"u":"a"}`)
+	requireUnsupported(t, s, `{"u":true}`)
 }
 
 func TestParse_SingleFieldClassImpliedKeyDeclines(t *testing.T) {

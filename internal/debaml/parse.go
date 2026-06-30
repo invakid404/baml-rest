@@ -3,6 +3,10 @@ package debaml
 import (
 	"context"
 	"fmt"
+	"strings"
+	"unicode"
+
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/internal/schema"
@@ -119,7 +123,7 @@ func checkSupported(b *schema.Bundle) error {
 			return unsupported("class constraints")
 		}
 		for j := range c.Fields {
-			if err := checkSupportedType(c.Fields[j].Type); err != nil {
+			if err := checkSupportedType(b, c.Fields[j].Type); err != nil {
 				return err
 			}
 		}
@@ -127,10 +131,12 @@ func checkSupported(b *schema.Bundle) error {
 	return nil
 }
 
-// checkSupportedType walks one type tree, rejecting the kinds M1 does not
-// coerce. Named class/enum references are leaves (their definitions are
-// validated via the bundle's class/enum slices).
-func checkSupportedType(t schema.Type) error {
+// checkSupportedType walks one type tree, rejecting the kinds native does
+// not coerce. Named class/enum references are leaves (their definitions are
+// validated via the bundle's class/enum slices). It needs the bundle so a
+// general union can be checked against the M2c safe-union families (which
+// inspect each class variant's fields).
+func checkSupportedType(b *schema.Bundle, t schema.Type) error {
 	if len(t.Meta.Constraints) > 0 {
 		return unsupported("type constraints")
 	}
@@ -141,18 +147,36 @@ func checkSupportedType(t schema.Type) error {
 		if t.Elem == nil {
 			return unsupported("list without element")
 		}
-		return checkSupportedType(*t.Elem)
+		return checkSupportedType(b, *t.Elem)
 	case schema.TypeUnion:
 		if t.Union == nil {
 			return unsupported("union without payload")
 		}
-		// Only an optional — a nullable union with exactly one non-null
-		// variant — is in scope. Any other union needs variant scoring,
-		// which is out of M1.
-		if !t.Union.Nullable || len(t.Union.Variants) != 1 {
-			return unsupported("general union")
+		u := t.Union
+		// A NULLABLE union always passes the gate for the null fast path: a
+		// JSON-null input coerces to null (coerceUnionSafe) regardless of the
+		// non-null arms — this must hold for ANY nullable union, including a
+		// single-arm optional whose lone non-null arm is itself unsupported
+		// (e.g. a nested/general-union arm or an out-of-scope map). Non-null
+		// input is still decided at coerce time and never over-claims: a
+		// single-non-null optional delegates to coerce on the lone arm (which
+		// declines if that arm is unsupported), and a nullable multi-union
+		// re-proves its non-null arm set is an M2c safe family. Checking
+		// Nullable BEFORE the len==1 recursion is what makes the null claim
+		// consistent across single-arm and multi-arm nullable unions.
+		if u.Nullable {
+			return nil
 		}
-		return checkSupportedType(t.Union.Variants[0])
+		// A NON-nullable single-variant union collapses to its lone arm in
+		// simplifyUnion, so this is effectively unreachable; recurse into the
+		// arm defensively to mirror that collapse.
+		if len(u.Variants) == 1 {
+			return checkSupportedType(b, u.Variants[0])
+		}
+		// A non-nullable multi-union is in scope only when its variants form
+		// one of the M2c safe families (homogeneous exact-literal union or
+		// flat disjoint-key class union); checkSupportedUnionShape proves it.
+		return checkSupportedUnionShape(b, u)
 	case schema.TypeMap:
 		// M2b CLAIMS clean maps: a JSON-object input coerced under a
 		// map-key-safe key type and a value type that itself passes the
@@ -166,7 +190,7 @@ func checkSupportedType(t schema.Type) error {
 		if err := checkSupportedMapKey(*t.Key); err != nil {
 			return err
 		}
-		return checkSupportedType(*t.Value)
+		return checkSupportedType(b, *t.Value)
 	case schema.TypeRecursiveAlias:
 		return unsupported("recursive alias")
 	default:
@@ -234,6 +258,254 @@ func isStringLiteralUnionType(t schema.Type) bool {
 		}
 	}
 	return true
+}
+
+// checkSupportedUnionShape reports whether the NON-NULL variant set of a
+// multi-variant union (len(Variants) >= 2) is one of the two M2c safe
+// families. It is the structural half of the M2c claim: it proves BAML
+// cannot leniently succeed on a SECOND arm (which would force BAML's scored
+// pick_best, where native's single pick may diverge). The value-level guard
+// in coerceUnionSafe then proves BAML sees exactly one clean winner for the
+// concrete input.
+//
+// The two safe families are:
+//
+//   - HOMOGENEOUS LITERAL-ONLY union: every variant is a literal of the SAME
+//     kind. For string literals the value set must be pairwise disjoint under
+//     a conservative match_string SUPERSET (matchStringMightMatch) — exact
+//     disjointness is not enough because BAML fuzzy-matches string literals.
+//     int/bool literals need no extra check: BAML matches them by value
+//     equality, which (after dedup) no two distinct literals can both satisfy.
+//   - HOMOGENEOUS FLAT CLASS union: every variant is a constraint-free class
+//     ref whose class has >= 2 fields, every field REQUIRED and a FLAT LEAF
+//     (primitive scalar / literal / enum — no union/map/list/optional/
+//     recursive-alias/nested-class), and whose rendered field-name sets are
+//     pairwise disjoint under the same conservative key-match superset.
+//
+// Every other shape — a bare primitive variant, a list/map variant, a nested
+// union, mixed literal kinds, literal-vs-class, enum-vs-anything, overlapping
+// or single-field classes — declines, because BAML could leniently succeed on
+// a second arm there.
+func checkSupportedUnionShape(b *schema.Bundle, u *schema.UnionType) error {
+	vs := u.Variants
+	if len(vs) < 2 {
+		return unsupported("union shape: needs >= 2 non-null variants")
+	}
+	switch {
+	case allLiteralVariants(vs):
+		return checkHomogeneousLiteralUnion(vs)
+	case allClassVariants(vs):
+		return checkFlatClassUnion(b, vs)
+	default:
+		// Bare primitive, list, map, nested union, or a mixed variant family:
+		// BAML's lenient coercers (stringify, string<->number, array-to-
+		// singular, fuzzy enum/literal, implied-key class, defaults) can make
+		// a second arm succeed, so native cannot prove a single winner.
+		return unsupported("union shape: not a homogeneous literal or flat class union")
+	}
+}
+
+// allLiteralVariants reports whether every variant is a constraint-free
+// literal — the precondition for the homogeneous-literal family.
+func allLiteralVariants(vs []schema.Type) bool {
+	for i := range vs {
+		v := &vs[i]
+		if v.Kind != schema.TypeLiteral || v.Literal == nil || len(v.Meta.Constraints) > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// allClassVariants reports whether every variant is a constraint-free class
+// ref — the precondition for the flat-class family.
+func allClassVariants(vs []schema.Type) bool {
+	for i := range vs {
+		v := &vs[i]
+		if v.Kind != schema.TypeClass || len(v.Meta.Constraints) > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// checkHomogeneousLiteralUnion validates a literal-only variant set: all the
+// same literal kind, and — for string literals — pairwise match-disjoint.
+func checkHomogeneousLiteralUnion(vs []schema.Type) error {
+	kind := vs[0].Literal.Kind
+	for i := range vs {
+		if vs[i].Literal.Kind != kind {
+			return unsupported("literal union: mixed literal kinds (BAML may coerce a 2nd arm)")
+		}
+	}
+	if kind == schema.LiteralString {
+		lits := make([]string, len(vs))
+		for i := range vs {
+			lits[i] = vs[i].Literal.String
+		}
+		if !stringsPairwiseDisjoint(lits) {
+			return unsupported("string-literal union: values not pairwise match-disjoint (BAML may fuzzy-match a 2nd arm)")
+		}
+	}
+	return nil
+}
+
+// checkFlatClassUnion validates a class-only variant set as a flat,
+// disjoint-key discriminated union: every variant class is constraint-free,
+// has >= 2 required FLAT-LEAF fields, has no duplicate rendered field names,
+// and the variants' rendered field-name sets are pairwise disjoint under the
+// conservative key-match superset.
+func checkFlatClassUnion(b *schema.Bundle, vs []schema.Type) error {
+	sets := make([][]string, len(vs))
+	for i := range vs {
+		v := &vs[i]
+		cls, ok := b.FindClass(v.Name, v.Mode)
+		if !ok {
+			return fmt.Errorf("debaml: unknown class %q", v.Name)
+		}
+		if len(cls.Constraints) > 0 {
+			return unsupported("class-union variant class has constraints")
+		}
+		if len(cls.Fields) < 2 {
+			// A single-field class is implied-key/inferred-object risk: BAML
+			// can absorb a scalar or a differently-keyed object into the lone
+			// field, succeeding where native's exact match fails.
+			return unsupported("class-union variant class has < 2 fields (BAML implied-key risk)")
+		}
+		names := make([]string, 0, len(cls.Fields))
+		seen := make(map[string]struct{}, len(cls.Fields))
+		for j := range cls.Fields {
+			f := &cls.Fields[j]
+			if !isFlatLeafField(f.Type) {
+				// Any optional/union/map/list/nested-class/recursive field opens
+				// BAML leniency (defaults, implied keys, partial maps, single-to-
+				// array), so the class is not a clean discriminated arm.
+				return unsupported("class-union variant has a non-flat-leaf or optional field")
+			}
+			rn := f.Name.RenderedName()
+			if _, dup := seen[rn]; dup {
+				return unsupported("class-union variant has duplicate rendered field names")
+			}
+			seen[rn] = struct{}{}
+			names = append(names, rn)
+		}
+		sets[i] = names
+	}
+	if !fieldNameSetsPairwiseDisjoint(sets) {
+		return unsupported("class-union field-name sets not pairwise match-disjoint (BAML may fuzzy-match keys to a 2nd arm)")
+	}
+	return nil
+}
+
+// isFlatLeafField reports whether t is a flat exact leaf field type usable in
+// an M2c class-union variant: a constraint-free primitive scalar (string /
+// int / float / bool), literal, or enum. Everything else — null/media
+// primitives, unions (incl. optionals), maps, lists, nested classes,
+// recursive aliases — is rejected, because each one introduces BAML leniency
+// native cannot prove away inside a union.
+func isFlatLeafField(t schema.Type) bool {
+	if len(t.Meta.Constraints) > 0 {
+		return false
+	}
+	switch t.Kind {
+	case schema.TypePrimitive:
+		switch t.Primitive {
+		case schema.PrimitiveString, schema.PrimitiveInt, schema.PrimitiveFloat, schema.PrimitiveBool:
+			return true
+		default:
+			return false
+		}
+	case schema.TypeLiteral, schema.TypeEnum:
+		return true
+	default:
+		return false
+	}
+}
+
+// stringsPairwiseDisjoint reports whether no two distinct strings in vals
+// could match under the conservative match_string superset.
+func stringsPairwiseDisjoint(vals []string) bool {
+	for i := 0; i < len(vals); i++ {
+		for j := i + 1; j < len(vals); j++ {
+			if matchStringMightMatch(vals[i], vals[j]) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// fieldNameSetsPairwiseDisjoint reports whether no field name in any set
+// could match a field name in any OTHER set under the conservative
+// match_string superset — the property that lets native prove BAML cannot
+// fuzzy-match the input keys of one class-union arm onto another arm.
+func fieldNameSetsPairwiseDisjoint(sets [][]string) bool {
+	for i := 0; i < len(sets); i++ {
+		for j := i + 1; j < len(sets); j++ {
+			for _, a := range sets[i] {
+				for _, b := range sets[j] {
+					if matchStringMightMatch(a, b) {
+						return false
+					}
+				}
+			}
+		}
+	}
+	return true
+}
+
+// matchStringMightMatch is a CONSERVATIVE SUPERSET of BAML's match_string: it
+// returns true whenever BAML could possibly match one of a/b against the
+// other, and only "wrongly" returns true in extra cases (which merely cause
+// native to DECLINE — always parity-safe). BAML's match_string normalizes
+// (trim, strip punctuation, fold case, fold accents) and then substring-
+// matches in both directions; this mirrors that and additionally treats any
+// non-ASCII residue conservatively (BAML may transliterate it in ways this
+// folder does not reproduce, e.g. ø->o, ß->ss), so a pair that still carries
+// non-ASCII letters after folding is treated as a possible match.
+func matchStringMightMatch(a, b string) bool {
+	na, asciiA := normalizeForMatchString(a)
+	nb, asciiB := normalizeForMatchString(b)
+	if !asciiA || !asciiB {
+		// Non-ASCII residue after accent folding could still transliterate-
+		// match in BAML; be conservative and treat as a possible match.
+		return true
+	}
+	if na == "" || nb == "" {
+		// An all-punctuation token normalizes empty and is a substring of
+		// everything under BAML's substring matching; treat as a match.
+		return true
+	}
+	if na == nb {
+		return true
+	}
+	return strings.Contains(na, nb) || strings.Contains(nb, na)
+}
+
+// normalizeForMatchString folds a string the way the conservative
+// match_string superset compares: NFD-decompose, drop combining marks (accent
+// fold), lowercase, and keep only letters and digits (trim + punctuation
+// strip). It also reports whether every kept rune is ASCII, so the caller can
+// treat unfoldable non-ASCII residue conservatively.
+func normalizeForMatchString(s string) (string, bool) {
+	d := norm.NFD.String(s)
+	var sb strings.Builder
+	allASCII := true
+	for _, r := range d {
+		if unicode.Is(unicode.Mn, r) {
+			// Combining mark left by NFD decomposition (the accent itself).
+			continue
+		}
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			continue
+		}
+		lr := unicode.ToLower(r)
+		if lr > unicode.MaxASCII {
+			allASCII = false
+		}
+		sb.WriteRune(lr)
+	}
+	return sb.String(), allASCII
 }
 
 // unsupported wraps bamlutils.ErrDeBAMLParseUnsupported with a reason so

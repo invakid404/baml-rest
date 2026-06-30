@@ -193,6 +193,33 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"map_bad_value_type":     false,
 	"map_fuzzy_enum_key":     false,
 	"map_partial_incomplete": false,
+	// M2c native SCORE-FREE SIMPLE UNIONS: claimed when native can PROVE BAML
+	// also resolves to exactly one clean zero-score winner.
+	//
+	// Claimed: homogeneous exact-literal unions (string arms proven pairwise
+	// match-disjoint; bool/int by value equality), a flat disjoint-key class
+	// union (input == one variant's full field set), and the nullable
+	// multi-union null fast path.
+	"literal_union_string_exact": true,
+	"literal_union_bool_exact":   true,
+	"literal_union_int_exact":    true,
+	"class_union_single_shape":   true,
+	"nullable_multi_union_null":  true,
+	// Fallback: every union where a 2nd BAML arm could leniently succeed and
+	// invoke scored pick_best — bare primitive variants, numeric overlap,
+	// overlapping/single-field classes, fuzzy (non-disjoint) string literals,
+	// literal/enum-vs-class, list/single-to-array, map partials, nested
+	// unions. Native declines (fallback) rather than risk a scored divergence.
+	"string_int_union_numeric_string":         false,
+	"int_float_union_number":                  false,
+	"class_union_overlapping_keys":            false,
+	"single_field_class_union_implied_key":    false,
+	"literal_union_fuzzy_string":              false,
+	"literal_class_union_object_to_primitive": false,
+	"enum_class_union_object_to_string":       false,
+	"union_list_singleton_ambiguity":          false,
+	"union_map_value_partial":                 false,
+	"nested_union":                            false,
 }
 
 // parseRecoveryStats tallies how many final-parse cases the native parser
@@ -283,9 +310,11 @@ func runParseRecoveryCase(t *testing.T, baml, native bamlfuzz.Parser, c bamlfuzz
 				characterizeFinal(t, c, idx, bamlRes, bamlErr)
 			}
 
-			// Native-vs-BAML differential. choices is nil: recovery
-			// schemas carry no unions, so the order check needs none.
-			res := bamlfuzz.DiffParsers(ctx, baml, native, req, nil)
+			// Native-vs-BAML differential. choices carries the case's
+			// union-arm metadata so the schema-order check can descend into
+			// the exercised arm (it fails closed on a union path otherwise);
+			// it is nil for the union-free majority of cases.
+			res := bamlfuzz.DiffParsers(ctx, baml, native, req, c.UnionChoices)
 			if !res.SkippedNative && len(res.Failures) > 0 {
 				dumpParseDiffAndFail(t, parseRecoveryArtifactDir, parseDiffEnvelope(c, idx, -1, "", c.Raw, false, res), strings.Join(res.Failures, "; "))
 			}
@@ -360,7 +389,8 @@ func characterizeFinal(t *testing.T, c bamlfuzz.ParseRecoveryCase, idx int, res 
 		env := &bamlfuzz.ParseDiffFailureEnvelope{
 			CaseIndex: idx, CaseName: c.Name, OracleMode: bamlfuzz.OracleParseDiff,
 			PreserveSchemaOrder: c.PreserveSchemaOrder, Schema: c.Schema,
-			PrefixIndex: -1, Raw: c.Raw,
+			UnionChoices: c.UnionChoices,
+			PrefixIndex:  -1, Raw: c.Raw,
 			ExpectedStatus: c.Want.Status, Expected: c.Want.JSON,
 			BAML:     outcome,
 			Failures: []string{fmt.Sprintf("status parity: want %q, BAML produced %q", c.Want.Status, observed)},
@@ -382,7 +412,7 @@ func characterizeFinal(t *testing.T, c bamlfuzz.ParseRecoveryCase, idx int, res 
 	}
 	var orderDiff []bamlfuzz.SchemaOrderDiffEntry
 	if c.PreserveSchemaOrder {
-		od, oerr := bamlfuzz.SchemaOrderDiff("want_vs_baml", c.Schema, c.Want.JSON, res.JSON)
+		od, oerr := bamlfuzz.SchemaOrderDiffWithChoices("want_vs_baml", c.Schema, c.Want.JSON, res.JSON, c.UnionChoices)
 		if oerr != nil {
 			failures = append(failures, fmt.Sprintf("schema order: %v", oerr))
 		} else if len(od) > 0 {
@@ -396,7 +426,8 @@ func characterizeFinal(t *testing.T, c bamlfuzz.ParseRecoveryCase, idx int, res 
 	env := &bamlfuzz.ParseDiffFailureEnvelope{
 		CaseIndex: idx, CaseName: c.Name, OracleMode: bamlfuzz.OracleParseDiff,
 		PreserveSchemaOrder: c.PreserveSchemaOrder, Schema: c.Schema,
-		PrefixIndex: -1, Raw: c.Raw,
+		UnionChoices: c.UnionChoices,
+		PrefixIndex:  -1, Raw: c.Raw,
 		ExpectedStatus: c.Want.Status, Expected: c.Want.JSON,
 		BAML:         bamlfuzz.ParseOutcome{Parser: "baml_dynamic", JSON: res.JSON},
 		SemanticDiff: diff,
@@ -518,7 +549,8 @@ func parseDiffEnvelope(c bamlfuzz.ParseRecoveryCase, idx, prefixIdx int, prefixN
 	return &bamlfuzz.ParseDiffFailureEnvelope{
 		CaseIndex: idx, CaseName: c.Name, OracleMode: bamlfuzz.OracleParseDiff,
 		PreserveSchemaOrder: c.PreserveSchemaOrder, Schema: c.Schema,
-		Stream: stream, PrefixIndex: prefixIdx, PrefixName: prefixName, Raw: raw,
+		UnionChoices: c.UnionChoices,
+		Stream:       stream, PrefixIndex: prefixIdx, PrefixName: prefixName, Raw: raw,
 		SkippedNative: res.SkippedNative,
 		BAML:          res.BAML,
 		Native:        res.NativeOutcome(),

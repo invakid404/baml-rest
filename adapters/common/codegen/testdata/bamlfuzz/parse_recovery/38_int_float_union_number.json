@@ -1,0 +1,32 @@
+{
+  "name": "int_float_union_number",
+  "description": "M2c FALLBACK: bare-primitive union (int | float) with a numeric input both arms can accept -> numeric overlap / pick_best scoring. Native declines (bare primitive variant). want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "int"},
+                {"kind": "float"}
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":5}",
+  "want": {
+    "status": "success",
+    "json": {"u": 5}
+  }
+}

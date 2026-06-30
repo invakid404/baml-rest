@@ -1,0 +1,49 @@
+{
+  "name": "class_union_single_shape",
+  "description": "M2c CLAIMED: flat disjoint-key class union (Book{title,pages} | Car{brand,wheels}); input key set equals exactly one variant's full field set, every field a required flat leaf. Native claims the matched class, emitted in schema order. want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "class_ref", "ref": "Book"},
+                {"kind": "class_ref", "ref": "Car"}
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "Book",
+        "properties": [
+          {"name": "title", "type": {"kind": "string"}},
+          {"name": "pages", "type": {"kind": "int"}}
+        ]
+      },
+      {
+        "name": "Car",
+        "properties": [
+          {"name": "brand", "type": {"kind": "string"}},
+          {"name": "wheels", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":{\"title\":\"Go\",\"pages\":300}}",
+  "want": {
+    "status": "success",
+    "json": {"u": {"title": "Go", "pages": 300}}
+  },
+  "union_choices": {
+    ".u": {"index": 0, "kind": "class_ref", "ref": "Book", "variant_count": 2}
+  }
+}
