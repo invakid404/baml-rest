@@ -177,6 +177,22 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"array_stray_commas":     true,
 	// Deferred repair (comments) — pinned fallback until claimed.
 	"comments_fallback": false,
+	// M2b native MAPS: clean maps are claimed and diff-green vs BAML —
+	// object input, exact key match (string / enum / string-literal /
+	// string-literal-union), in-scope values, emitted in INPUT key order.
+	"strict_map_string_int":        true,
+	"map_enum_keys":                true,
+	"map_string_class_values":      true,
+	"map_literal_union_keys_exact": true,
+	// M2b decline set: every map BAML would return as partial/scored — a
+	// skipped bad key/value (MapKeyParseError / MapValueParseError), a fuzzy
+	// match_string key (Mcoerce), or an unterminated/incomplete map (M2a
+	// defers). Native declines (fallback) rather than claim a clean result
+	// where BAML carries flags or skips entries.
+	"map_bad_enum_key":       false,
+	"map_bad_value_type":     false,
+	"map_fuzzy_enum_key":     false,
+	"map_partial_incomplete": false,
 }
 
 // parseRecoveryStats tallies how many final-parse cases the native parser

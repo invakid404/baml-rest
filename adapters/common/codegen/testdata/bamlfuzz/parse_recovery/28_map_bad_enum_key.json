@@ -1,0 +1,24 @@
+{
+  "name": "map_bad_enum_key",
+  "description": "map<Key,string> where one key (\"C\") is not in enum Key {A,B}. BAML records MapKeyParseError and SKIPS that entry, returning a partial map {\"A\":\"one\"}. Native cannot reproduce a partial map, so it DECLINES (pinned native disposition: fallback). want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "labels", "type": {"kind": "map", "key": {"kind": "enum_ref", "ref": "Key"}, "inner": {"kind": "string"}}}
+        ]
+      }
+    ],
+    "enums": [
+      {"name": "Key", "values": ["A", "B"]}
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"labels\":{\"A\":\"one\",\"C\":\"two\"}}",
+  "want": {
+    "status": "success",
+    "json": {"labels": {"A": "one"}}
+  }
+}

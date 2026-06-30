@@ -1,0 +1,21 @@
+{
+  "name": "map_partial_incomplete",
+  "description": "Unterminated map<string,int>: the object is cut off with no closing braces, but both entries have complete values. BAML's JSONish parser closes the open collections at EOF and recovers the partial map. Native finds no balanced span and DECLINES (M2a defers unterminated structures) — pinned native disposition: fallback. want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "scores", "type": {"kind": "map", "key": {"kind": "string"}, "inner": {"kind": "int"}}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"scores\":{\"a\":1,\"b\":2",
+  "want": {
+    "status": "success",
+    "json": {"scores": {"a": 1, "b": 2}}
+  }
+}
