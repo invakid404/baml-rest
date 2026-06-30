@@ -3,9 +3,11 @@ package debaml
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/internal/schema"
 )
 
@@ -391,13 +393,14 @@ func coerceList(b *schema.Bundle, elem *schema.Type, input value, cf *coerceFlag
 		// require all elements clean.
 		child, err := coerce(b, *elem, input.arrV[i], cf)
 		if err != nil {
-			// A bad element: BAML records ArrayItemParseError and SKIPS it,
-			// returning a partial list that still succeeds — native cannot
-			// reproduce that partial result, so it DECLINES the whole list
-			// rather than propagate the element's verdict (a CLAIMED child
-			// error such as an enum substring tie must NOT become a claimed
-			// list error where BAML would just drop the element). Partial-list
-			// parity is Mcoerce-c.
+			if !declinableChildError(err) {
+				return nil, err // hard/invariant failure: propagate, never mask.
+			}
+			// A bad element (decline sentinel or value-verdict mismatch): BAML
+			// records ArrayItemParseError and SKIPS it, returning a partial list
+			// that still succeeds — native cannot reproduce that partial result,
+			// so it DECLINES the whole list rather than claim a list error where
+			// BAML would just drop the element. Partial-list parity is Mcoerce-c.
 			return nil, unsupported(fmt.Sprintf("list element %d: %v (BAML skips bad items via ArrayItemParseError)", i, err))
 		}
 		if i > 0 {
@@ -466,10 +469,13 @@ func coerceMap(b *schema.Bundle, keyT, valT *schema.Type, input value, cf *coerc
 
 		child, err := coerce(b, *valT, f.val, nil)
 		if err != nil {
-			// A bad value: BAML records MapValueParseError and SKIPS this
-			// entry, returning a partial map — native cannot reproduce that, so
-			// decline the whole map (regardless of whether the child error was
-			// a sentinel decline or a claimed mismatch).
+			if !declinableChildError(err) {
+				return nil, err // hard/invariant failure: propagate, never mask.
+			}
+			// A bad value (decline sentinel or value-verdict mismatch): BAML
+			// records MapValueParseError and SKIPS this entry, returning a
+			// partial map — native cannot reproduce that, so decline the whole
+			// map. Partial-map parity is Mcoerce-c.
 			return nil, unsupported(fmt.Sprintf("map value for key %q: %v (BAML skips bad entries via MapValueParseError)", f.key, err))
 		}
 
@@ -627,6 +633,9 @@ func coerceUnionSafe(b *schema.Bundle, u *schema.UnionType, input value, cf *coe
 		arm := &coerceFlags{}
 		out, err := coerce(b, u.Variants[0], input, arm)
 		if err != nil {
+			if !declinableChildError(err) {
+				return nil, err // hard/invariant failure: propagate, never mask.
+			}
 			return nil, unsupported(fmt.Sprintf("optional single-arm union: non-null arm did not cleanly succeed (BAML may null-default): %v", err))
 		}
 		if arm.isFlagged() {
@@ -687,10 +696,15 @@ func coerceLiteralUnion(variants []schema.Type, input value, requireClean bool, 
 	matched := -1
 	count := 0
 	for i := range variants {
-		if _, err := coerceLiteral(variants[i].Literal, input, nil); err == nil {
+		_, err := coerceLiteral(variants[i].Literal, input, nil)
+		switch {
+		case err == nil:
 			matched = i
 			count++
+		case !declinableChildError(err):
+			return nil, err // hard/invariant failure in an arm: propagate.
 		}
+		// A declinable error just means this arm did not match; keep counting.
 	}
 	if count != 1 {
 		return nil, unsupported(fmt.Sprintf("literal union: %d lenient matches for %s input (need exactly 1; 2+ is BAML pick_best = M3)", count, input.kind.String()))
@@ -731,10 +745,15 @@ func coerceFlatClassUnion(b *schema.Bundle, variants []schema.Type, input value,
 	matched := -1
 	count := 0
 	for i := range variants {
-		if _, err := coerceClass(b, variants[i].Name, variants[i].Mode, input, nil); err == nil {
+		_, err := coerceClass(b, variants[i].Name, variants[i].Mode, input, nil)
+		switch {
+		case err == nil:
 			matched = i
 			count++
+		case !declinableChildError(err):
+			return nil, err // hard/invariant failure in an arm: propagate.
 		}
+		// A declinable error just means this arm did not match; keep counting.
 	}
 	if count != 1 {
 		return nil, unsupported(fmt.Sprintf("class union: %d variant classes coerce cleanly (need exactly 1; 2+ is BAML pick_best = M3)", count))
@@ -769,12 +788,43 @@ func marshalJSON(v any) (json.RawMessage, error) {
 	return json.RawMessage(bytes.TrimRight(buf.Bytes(), "\n")), nil
 }
 
+// mismatchError marks a CLAIMED value-level coercion verdict — a hard JSON-type
+// mismatch (typeMismatch) or a match_string substring tie (ambiguousMatch) —
+// for which BAML produces a comparable error on the SAME value. At the top
+// level it propagates as a claimed parse failure (the differential checks BAML
+// also errors); but inside a container/union child-wrapper it is DECLINABLE,
+// because BAML would skip the entry (partial list/map) or score it (union),
+// which native does not reproduce, so the wrapper falls back instead. It is
+// deliberately NOT the ErrDeBAMLParseUnsupported sentinel, so it stays a claim
+// at the seam (declinableChildError identifies it for the wrappers).
+type mismatchError struct{ msg string }
+
+func (e *mismatchError) Error() string { return e.msg }
+
+// declinableChildError reports whether a child coercion error should make a
+// container/union wrapper DECLINE (fall back) rather than propagate. Only two
+// classes decline: the ErrDeBAMLParseUnsupported fallback sentinel (native
+// stricter than BAML, so BAML may still succeed/skip/score), and a value-verdict
+// mismatchError (BAML skips the entry or scores the value). EVERY OTHER error is
+// a HARD failure — an unknown enum/class ref, a missing type payload, a marshal
+// failure, an unexpected kind: a native bug or schema-invariant violation that
+// must PROPAGATE so the native-vs-BAML differential surfaces it (per the seam
+// contract: anything but ErrDeBAMLParseUnsupported is a claimed error), rather
+// than being silently masked as a BAML fallback.
+func declinableChildError(err error) bool {
+	if errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+		return true
+	}
+	var me *mismatchError
+	return errors.As(err, &me)
+}
+
 // typeMismatch reports a conservative JSON-type mismatch as a CLAIMED
 // coercion error. Used where BAML would also fail (e.g. a scalar/array
 // where a class object is required), so the differential checks error
 // parity rather than masking it behind a fallback.
 func typeMismatch(want string, input value) error {
-	return fmt.Errorf("debaml: expected %s, got %s", want, input.kind.String())
+	return &mismatchError{msg: fmt.Sprintf("debaml: expected %s, got %s", want, input.kind.String())}
 }
 
 // ambiguousMatch reports a match_string substring TIE (StrMatchOneFromMany)
@@ -785,7 +835,7 @@ func typeMismatch(want string, input value) error {
 // Safe to claim only outside an optional arm; coerceUnionSafe's case 2
 // converts it to a DECLINE where BAML would null-default instead.
 func ambiguousMatch(target, input string) error {
-	return fmt.Errorf("debaml: %s: %q ambiguously substring-matches multiple candidates (BAML StrMatchOneFromMany)", target, input)
+	return &mismatchError{msg: fmt.Sprintf("debaml: %s: %q ambiguously substring-matches multiple candidates (BAML StrMatchOneFromMany)", target, input)}
 }
 
 // declineCoerce reports a coercion mismatch as a DECLINE
