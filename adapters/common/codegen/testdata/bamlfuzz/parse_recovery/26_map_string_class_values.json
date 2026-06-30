@@ -1,0 +1,28 @@
+{
+  "name": "map_string_class_values",
+  "description": "map<string, Item> with map keys out of lexical order AND each Item value's fields out of schema order. The two ordering policies coexist: map keys stay INPUT-ordered while Item fields are re-emitted in SCHEMA order. M2b-native-claimed. want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "by_id", "type": {"kind": "map", "key": {"kind": "string"}, "inner": {"kind": "class_ref", "ref": "Item"}}}
+        ]
+      },
+      {
+        "name": "Item",
+        "properties": [
+          {"name": "id", "type": {"kind": "string"}},
+          {"name": "label", "type": {"kind": "string"}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"by_id\":{\"z\":{\"label\":\"zed\",\"id\":\"3\"},\"a\":{\"label\":\"ay\",\"id\":\"1\"}}}",
+  "want": {
+    "status": "success",
+    "json": {"by_id": {"z": {"id": "3", "label": "zed"}, "a": {"id": "1", "label": "ay"}}}
+  }
+}

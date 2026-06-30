@@ -1,0 +1,21 @@
+{
+  "name": "map_bad_value_type",
+  "description": "map<string,int> where one value (\"b\") is an object, which cannot coerce to int. BAML records MapValueParseError and SKIPS that entry, returning a partial map {\"a\":1}. Native declines the WHOLE map (a child value error means BAML returned a partial result native cannot claim) — pinned native disposition: fallback. want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "scores", "type": {"kind": "map", "key": {"kind": "string"}, "inner": {"kind": "int"}}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"scores\":{\"a\":1,\"b\":{\"x\":1}}}",
+  "want": {
+    "status": "success",
+    "json": {"scores": {"a": 1}}
+  }
+}

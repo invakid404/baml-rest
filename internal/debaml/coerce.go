@@ -54,6 +54,8 @@ func coerce(b *schema.Bundle, t schema.Type, input value) (json.RawMessage, erro
 		return coerceClass(b, t.Name, t.Mode, input)
 	case schema.TypeList:
 		return coerceList(b, t.Elem, input)
+	case schema.TypeMap:
+		return coerceMap(b, t.Key, t.Value, input)
 	case schema.TypeUnion:
 		return coerceUnion(b, t.Union, input)
 	default:
@@ -275,6 +277,160 @@ func coerceList(b *schema.Bundle, elem *schema.Type, input value) (json.RawMessa
 	}
 	buf.WriteByte(']')
 	return buf.Bytes(), nil
+}
+
+// coerceMap coerces a JSON object into a map, emitting entries in INPUT key
+// order (the opposite of coerceClass's schema order: a map's keys are data,
+// a class's fields are the schema). It CLAIMS only the clean-map subset and
+// DECLINES everything BAML would represent as a partial/scored map — because
+// BAML's map coercer does NOT hard-fail on a bad entry: it records a
+// score-bearing MapKeyParseError / MapValueParseError and SKIPS that entry,
+// returning a partial map. Native cannot reproduce that partial result, and
+// must never claim a clean map where BAML would return a flagged/partial
+// one, so any uncertainty DECLINES (ErrDeBAMLParseUnsupported → fall back):
+//
+//   - Non-object input → DECLINE: BAML has object/map coercion + scoring
+//     outside this clean subset (it is not a hard type error).
+//   - A key with no EXACT match (matchMapKey) → DECLINE: BAML's enum/literal
+//     key coercion is fuzzy (match_string), and a no-match key is skipped
+//     with a flag rather than failing the map. Fuzzy key matching is Mcoerce.
+//   - ANY value coercion error (sentinel OR claimed) → DECLINE the WHOLE
+//     map: BAML attaches MapValueParseError and skips just that entry, so a
+//     native hard-claim here would diverge from BAML's partial success.
+//   - A duplicate output key → DECLINE: BAML's IndexMap insert/overwrite
+//     ordering for duplicates is unproven, so native does not claim it.
+//
+// Accepted entries are keyed by the ORIGINAL input key string (never the
+// canonical enum/literal form, matching coerce_map.rs:165-174), and an empty
+// object is a clean empty map. A class value is emitted by coerceClass in
+// schema order, nested inside the input-ordered map.
+func coerceMap(b *schema.Bundle, keyT, valT *schema.Type, input value) (json.RawMessage, error) {
+	if keyT == nil || valT == nil {
+		return nil, fmt.Errorf("debaml: map type missing key or value")
+	}
+	if input.kind != valObject {
+		// Not a hard type error: BAML's object/map coercion + scoring can
+		// still produce a (partial/flagged) map from a non-object, so decline
+		// rather than claim a mismatch BAML would not produce.
+		return nil, declineCoerce("map target", input)
+	}
+
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	seen := make(map[string]struct{}, len(input.objV))
+	first := true
+	for i := range input.objV {
+		f := &input.objV[i]
+		if err := matchMapKey(b, *keyT, f.key); err != nil {
+			return nil, err
+		}
+		if _, dup := seen[f.key]; dup {
+			return nil, unsupported(fmt.Sprintf("map duplicate key %q (BAML duplicate insert/overwrite ordering unproven)", f.key))
+		}
+		seen[f.key] = struct{}{}
+
+		child, err := coerce(b, *valT, f.val)
+		if err != nil {
+			// A bad value: BAML records MapValueParseError and SKIPS this
+			// entry, returning a partial map — native cannot reproduce that, so
+			// decline the whole map (regardless of whether the child error was
+			// a sentinel decline or a claimed mismatch).
+			return nil, unsupported(fmt.Sprintf("map value for key %q: %v (BAML skips bad entries via MapValueParseError)", f.key, err))
+		}
+
+		if !first {
+			buf.WriteByte(',')
+		}
+		first = false
+		key, err := marshalJSON(f.key)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(key)
+		buf.WriteByte(':')
+		buf.Write(child)
+	}
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
+}
+
+// matchMapKey validates an input object key string against the declared map
+// key type by EXACT match only, returning nil on a clean accept and a
+// DECLINE sentinel otherwise. checkSupportedMapKey has already restricted
+// the key type to the four legal shapes, so the default arm is defensive.
+//
+//   - string primitive: accept any key verbatim.
+//   - enum: require an EXACT rendered-name/alias match (the same exact path
+//     coerceEnum uses); BAML's full enum key coercion is fuzzy (match_string)
+//     so a non-exact key is Mcoerce, not a native claim.
+//   - string literal: require exact string equality.
+//   - union of string literals: require EXACTLY ONE flattened literal equal
+//     to the key (no match, or a duplicate-literal ambiguity, declines).
+//
+// The accepted key is NOT rewritten — coerceMap emits the original input key
+// string, matching BAML's insertion of the raw object key.
+func matchMapKey(b *schema.Bundle, keyT schema.Type, key string) error {
+	switch keyT.Kind {
+	case schema.TypePrimitive:
+		if keyT.Primitive == schema.PrimitiveString {
+			return nil
+		}
+		return unsupported(fmt.Sprintf("map key primitive %q", keyT.Primitive))
+	case schema.TypeEnum:
+		e, ok := b.FindEnum(keyT.Name)
+		if !ok {
+			return fmt.Errorf("debaml: unknown enum %q", keyT.Name)
+		}
+		if _, ok := e.ValueByRenderedName(key); !ok {
+			return unsupported(fmt.Sprintf("map key %q: no exact enum %q match (BAML fuzzy-matches)", key, keyT.Name))
+		}
+		return nil
+	case schema.TypeLiteral:
+		if keyT.Literal == nil || keyT.Literal.Kind != schema.LiteralString {
+			return unsupported("map key literal must be a string literal")
+		}
+		if key != keyT.Literal.String {
+			return unsupported(fmt.Sprintf("map key %q: no exact literal %q match (BAML fuzzy-matches)", key, keyT.Literal.String))
+		}
+		return nil
+	case schema.TypeUnion:
+		matches := 0
+		for _, lit := range flattenStringLiterals(keyT) {
+			if lit == key {
+				matches++
+			}
+		}
+		if matches != 1 {
+			return unsupported(fmt.Sprintf("map key %q: %d exact string-literal-union matches (need exactly 1; BAML fuzzy-matches)", key, matches))
+		}
+		return nil
+	default:
+		return unsupported(fmt.Sprintf("map key kind %q", keyT.Kind))
+	}
+}
+
+// flattenStringLiterals collects, in declaration order, every string-literal
+// value reachable from a (recursively nested) union — the candidate set a
+// union-of-string-literals map key is matched against. checkSupportedMapKey
+// has already proven t is a string-literal union, so non-literal/non-union
+// members are not expected and are skipped defensively.
+func flattenStringLiterals(t schema.Type) []string {
+	if t.Union == nil {
+		return nil
+	}
+	var out []string
+	for i := range t.Union.Variants {
+		v := &t.Union.Variants[i]
+		switch v.Kind {
+		case schema.TypeLiteral:
+			if v.Literal != nil && v.Literal.Kind == schema.LiteralString {
+				out = append(out, v.Literal.String)
+			}
+		case schema.TypeUnion:
+			out = append(out, flattenStringLiterals(*v)...)
+		}
+	}
+	return out
 }
 
 // coerceUnion handles the only union shape M1/M2a supports: an optional —

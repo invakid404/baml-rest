@@ -1,0 +1,24 @@
+{
+  "name": "map_enum_keys",
+  "description": "map<Key,string> with enum keys matched EXACTLY by rendered name. The emitted map key is the ORIGINAL input string (here identical to the canonical name), in input key order. M2b-native-claimed. want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "labels", "type": {"kind": "map", "key": {"kind": "enum_ref", "ref": "Key"}, "inner": {"kind": "string"}}}
+        ]
+      }
+    ],
+    "enums": [
+      {"name": "Key", "values": ["A", "B"]}
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"labels\":{\"A\":\"one\",\"B\":\"two\"}}",
+  "want": {
+    "status": "success",
+    "json": {"labels": {"A": "one", "B": "two"}}
+  }
+}

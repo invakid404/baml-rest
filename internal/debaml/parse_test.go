@@ -297,15 +297,222 @@ func TestParse_UnsupportedNilSchema(t *testing.T) {
 	}
 }
 
-func TestParse_UnsupportedMap(t *testing.T) {
-	s := &bamlutils.DynamicOutputSchema{
-		Properties: props(kv("m", &bamlutils.DynamicProperty{
+// mapStringIntSchema is a root class with one map<string,int> field.
+func mapStringIntSchema() *bamlutils.DynamicOutputSchema {
+	return &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("scores", &bamlutils.DynamicProperty{
 			Type:   "map",
 			Keys:   &bamlutils.DynamicTypeSpec{Type: "string"},
 			Values: &bamlutils.DynamicTypeSpec{Type: "int"},
 		})),
 	}
-	requireUnsupported(t, s, `{"m":{"a":1}}`)
+}
+
+func TestParse_MapStringInt(t *testing.T) {
+	// Clean map<string,int>: object input, string keys, in-scope int values.
+	// Byte-exact on purpose — map output MUST preserve INPUT key order (the
+	// keys here are deliberately out of lexical order), the M2b contract.
+	mustParseExact(t, mapStringIntSchema(),
+		`{"scores":{"z":1,"a":2,"m":3}}`,
+		`{"scores":{"z":1,"a":2,"m":3}}`)
+	// Empty object is a clean empty map.
+	mustParseExact(t, mapStringIntSchema(), `{"scores":{}}`, `{"scores":{}}`)
+}
+
+func TestParse_MapNonObjectDeclines(t *testing.T) {
+	// A non-object where a map is required is NOT a hard error: BAML's
+	// object/map coercion + scoring can still produce a (partial) map, so
+	// native declines rather than claiming a mismatch.
+	requireUnsupported(t, mapStringIntSchema(), `{"scores":[1,2,3]}`)
+	requireUnsupported(t, mapStringIntSchema(), `{"scores":"x"}`)
+}
+
+func TestParse_MapBadValueDeclines(t *testing.T) {
+	// A value that fails native clean coercion DECLINES the WHOLE map: BAML
+	// records MapValueParseError and SKIPS just that entry, returning a
+	// partial map — native cannot claim a different/partial result.
+	// String where int required (BAML parses "x"->skip or number-extracts).
+	requireUnsupported(t, mapStringIntSchema(), `{"scores":{"a":1,"b":"x"}}`)
+	// Float where int required (BAML rounds; native is exact -> child declines).
+	requireUnsupported(t, mapStringIntSchema(), `{"scores":{"a":1,"b":2.5}}`)
+}
+
+func TestParse_MapDuplicateKeyDeclines(t *testing.T) {
+	// A duplicate input key would collapse to one output key; BAML's
+	// duplicate insert/overwrite ordering is unproven here, so native
+	// declines rather than claim it.
+	requireUnsupported(t, mapStringIntSchema(), `{"scores":{"a":1,"a":2}}`)
+}
+
+// mapEnumKeySchema is a root class with one map<Key,string> field where Key
+// is an enum {A,B}.
+func mapEnumKeySchema() *bamlutils.DynamicOutputSchema {
+	return &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("labels", &bamlutils.DynamicProperty{
+			Type:   "map",
+			Keys:   &bamlutils.DynamicTypeSpec{Ref: "Key"},
+			Values: &bamlutils.DynamicTypeSpec{Type: "string"},
+		})),
+		Enums: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("Key", &bamlutils.DynamicEnum{
+				Values: []*bamlutils.DynamicEnumValue{{Name: "A"}, {Name: "B"}},
+			}),
+		),
+	}
+}
+
+func TestParse_MapEnumKeysExact(t *testing.T) {
+	// Enum keys matched EXACTLY by rendered name; the emitted key is the
+	// ORIGINAL input string (here identical to the canonical name), in input
+	// key order.
+	mustParseExact(t, mapEnumKeySchema(),
+		`{"labels":{"A":"one","B":"two"}}`,
+		`{"labels":{"A":"one","B":"two"}}`)
+}
+
+func TestParse_MapBadEnumKeyDeclines(t *testing.T) {
+	// A key not exactly in the enum: BAML records MapKeyParseError and skips
+	// it (partial map). Native declines the whole map.
+	requireUnsupported(t, mapEnumKeySchema(), `{"labels":{"A":"one","C":"two"}}`)
+}
+
+func TestParse_MapFuzzyEnumKeyDeclines(t *testing.T) {
+	// A case/fuzzy variant ("a" for enum value A): BAML's enum key coercion
+	// fuzzy-matches via match_string and SUCCEEDS (emitting the original key
+	// "a"); native's exact match misses, so it declines (fuzzy keys are
+	// Mcoerce). Native must NOT claim a missing/clean result.
+	requireUnsupported(t, mapEnumKeySchema(), `{"labels":{"a":"one"}}`)
+}
+
+func TestParse_MapEnumKeyAlias(t *testing.T) {
+	// The model is shown the alias; an exact alias match is accepted and the
+	// emitted key is the ORIGINAL input string (the alias), NOT the canonical
+	// enum name — maps insert the raw object key.
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("labels", &bamlutils.DynamicProperty{
+			Type:   "map",
+			Keys:   &bamlutils.DynamicTypeSpec{Ref: "Key"},
+			Values: &bamlutils.DynamicTypeSpec{Type: "string"},
+		})),
+		Enums: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("Key", &bamlutils.DynamicEnum{
+				Values: []*bamlutils.DynamicEnumValue{{Name: "GREEN", Alias: "Verde"}},
+			}),
+		),
+	}
+	mustParseExact(t, s, `{"labels":{"Verde":"x"}}`, `{"labels":{"Verde":"x"}}`)
+}
+
+func TestParse_MapLiteralUnionKeysExact(t *testing.T) {
+	// map<"A"|"B", string>: a non-nullable union of string literals as the
+	// key, matched EXACTLY (exactly one flattened literal equal to the key).
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("m", &bamlutils.DynamicProperty{
+			Type: "map",
+			Keys: &bamlutils.DynamicTypeSpec{
+				Type: "union",
+				OneOf: []*bamlutils.DynamicTypeSpec{
+					{Type: "literal_string", Value: "A"},
+					{Type: "literal_string", Value: "B"},
+				},
+			},
+			Values: &bamlutils.DynamicTypeSpec{Type: "string"},
+		})),
+	}
+	mustParseExact(t, s, `{"m":{"A":"x","B":"y"}}`, `{"m":{"A":"x","B":"y"}}`)
+	// A key not among the literals declines (BAML fuzzy-matches/skips).
+	requireUnsupported(t, s, `{"m":{"A":"x","C":"z"}}`)
+}
+
+// mapStringItemSchema is a root class with one map<string, Item> field; Item
+// has fields {id, label} in that schema order.
+func mapStringItemSchema() *bamlutils.DynamicOutputSchema {
+	return &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("by_id", &bamlutils.DynamicProperty{
+			Type:   "map",
+			Keys:   &bamlutils.DynamicTypeSpec{Type: "string"},
+			Values: &bamlutils.DynamicTypeSpec{Ref: "Item"},
+		})),
+		Classes: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("Item", &bamlutils.DynamicClass{
+				Properties: props(kv("id", strProp()), kv("label", strProp())),
+			}),
+		),
+	}
+}
+
+func TestParse_MapStringClassValues(t *testing.T) {
+	// Map keys are out of lexical order AND each Item value has its fields out
+	// of schema order in the input. The two ordering policies must coexist:
+	// map keys stay in INPUT order while class fields are re-emitted in SCHEMA
+	// order. Byte-exact on purpose — this is the dual-ordering contract.
+	mustParseExact(t, mapStringItemSchema(),
+		`{"by_id":{"z":{"label":"zed","id":"3"},"a":{"label":"ay","id":"1"}}}`,
+		`{"by_id":{"z":{"id":"3","label":"zed"},"a":{"id":"1","label":"ay"}}}`)
+	// A map-to-class entry missing a required field DECLINES the whole map:
+	// BAML skips the bad entry (MapValueParseError), native cannot claim it.
+	requireUnsupported(t, mapStringItemSchema(),
+		`{"by_id":{"a":{"id":"1","label":"ay"},"b":{"id":"2"}}}`)
+}
+
+func TestParse_MapNestedMap(t *testing.T) {
+	// map<string, map<string,int>>: nested maps under the same M2b rules,
+	// both levels preserving input key order.
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("grid", &bamlutils.DynamicProperty{
+			Type: "map",
+			Keys: &bamlutils.DynamicTypeSpec{Type: "string"},
+			Values: &bamlutils.DynamicTypeSpec{
+				Type:   "map",
+				Keys:   &bamlutils.DynamicTypeSpec{Type: "string"},
+				Values: &bamlutils.DynamicTypeSpec{Type: "int"},
+			},
+		})),
+	}
+	mustParseExact(t, s,
+		`{"grid":{"r2":{"c1":1,"c0":2},"r1":{"c9":3}}}`,
+		`{"grid":{"r2":{"c1":1,"c0":2},"r1":{"c9":3}}}`)
+}
+
+func TestParse_MapIncompleteDeclines(t *testing.T) {
+	// An unterminated map has no balanced span; native finds no
+	// cleanly-claimable candidate and DECLINES (BAML closes/recovers at EOF,
+	// which M2a defers) — never a claimed error.
+	requireUnsupported(t, mapStringIntSchema(), `{"scores":{"a":1,"b":`)
+	requireUnsupported(t, mapStringIntSchema(), `{"scores":{"a":1,"b":2`)
+}
+
+func TestParse_UnsupportedMapIntKey(t *testing.T) {
+	// A map key outside the legal set (int) is rejected upstream by schema
+	// validation; the parser falls back rather than claiming.
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("m", &bamlutils.DynamicProperty{
+			Type:   "map",
+			Keys:   &bamlutils.DynamicTypeSpec{Type: "int"},
+			Values: &bamlutils.DynamicTypeSpec{Type: "int"},
+		})),
+	}
+	requireUnsupported(t, s, `{"m":{"1":1}}`)
+}
+
+func TestParse_UnsupportedMapUnionValue(t *testing.T) {
+	// A map value that is a general (multi-variant) union is out of scope:
+	// checkSupportedType rejects it via the value recursion, so the parser
+	// falls back.
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("m", &bamlutils.DynamicProperty{
+			Type: "map",
+			Keys: &bamlutils.DynamicTypeSpec{Type: "string"},
+			Values: &bamlutils.DynamicTypeSpec{
+				Type: "union",
+				OneOf: []*bamlutils.DynamicTypeSpec{
+					{Type: "string"},
+					{Type: "int"},
+				},
+			},
+		})),
+	}
+	requireUnsupported(t, s, `{"m":{"a":"x"}}`)
 }
 
 func TestParse_UnsupportedGeneralUnion(t *testing.T) {

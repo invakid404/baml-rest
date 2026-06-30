@@ -1,0 +1,21 @@
+{
+  "name": "strict_map_string_int",
+  "description": "Clean map<string,int>: object input, string keys, in-scope int values. M2b-native-claimed. Map output MUST preserve INPUT key order (keys here are out of lexical order). want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "scores", "type": {"kind": "map", "key": {"kind": "string"}, "inner": {"kind": "int"}}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"scores\":{\"z\":1,\"a\":2,\"m\":3}}",
+  "want": {
+    "status": "success",
+    "json": {"scores": {"z": 1, "a": 2, "m": 3}}
+  }
+}
