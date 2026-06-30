@@ -57,7 +57,7 @@ func coerce(b *schema.Bundle, t schema.Type, input value) (json.RawMessage, erro
 	case schema.TypeMap:
 		return coerceMap(b, t.Key, t.Value, input)
 	case schema.TypeUnion:
-		return coerceUnion(b, t.Union, input)
+		return coerceUnionSafe(b, t.Union, input)
 	default:
 		return nil, fmt.Errorf("debaml: cannot coerce type kind %q", t.Kind)
 	}
@@ -433,25 +433,179 @@ func flattenStringLiterals(t schema.Type) []string {
 	return out
 }
 
-// coerceUnion handles the only union shape M1/M2a supports: an optional —
-// a nullable union with exactly one non-null variant. A JSON null becomes
-// null; anything else coerces against the lone variant. checkSupported has
-// already rejected every other union, so this is reached only for
-// optionals.
-func coerceUnion(b *schema.Bundle, u *schema.UnionType, input value) (json.RawMessage, error) {
+// coerceUnionSafe coerces a value against a union, claiming native JSON ONLY
+// where it can PROVE BAML also resolves to exactly one clean zero-score
+// winner — otherwise it DECLINES (ErrDeBAMLParseUnsupported → fall back). The
+// M2c trap is that native's STRICT per-variant verdicts do not mirror BAML's
+// LENIENT ones: "exactly one native variant matched" does NOT prove "exactly
+// one BAML variant matched", because BAML leniency (fuzzy enum/literal,
+// string<->number, stringification, array-to-singular, implied-key class,
+// defaults) could make a 2nd arm succeed → BAML runs pick_best SCORING →
+// native's single pick may differ from BAML's scored winner. The claim is
+// limited to three cases (see the package M2c notes):
+//
+//  1. JSON-null input + nullable union → null immediately. This is BAML's
+//     null fast path and covers ANY nullable union (incl. multi-variant),
+//     because BAML returns the zero-score null arm before scoring.
+//  2. nullable single-non-null union (the M1 optional shape) → non-null input
+//     coerces through the lone variant; preserved EXACTLY.
+//  3. non-null input + a multi-variant SAFE FAMILY (homogeneous exact-literal
+//     union or flat disjoint-key class union, proven by
+//     checkSupportedUnionShape) where the value-level guard finds exactly one
+//     winner.
+//
+// Everything else declines. checkSupportedType permits a nullable multi-union
+// at the gate purely for case 1; its non-null arms are re-proven here, so a
+// non-null input to a nullable-but-unsafe union still declines.
+func coerceUnionSafe(b *schema.Bundle, u *schema.UnionType, input value) (json.RawMessage, error) {
 	if u == nil {
 		return nil, fmt.Errorf("debaml: union type missing payload")
 	}
+	// Case 1: nullable null fast path (any nullable union).
 	if input.kind == valNull {
 		if !u.Nullable {
 			return nil, typeMismatch("non-nullable union", input)
 		}
 		return json.RawMessage("null"), nil
 	}
-	if len(u.Variants) != 1 {
-		return nil, fmt.Errorf("debaml: general union scoring is unsupported")
+	// Case 2: M1 optional — a single non-null variant. (Non-nullable single
+	// variants collapse to the bare type in simplifyUnion, so this is reached
+	// only for the nullable optional shape; the behavior is unchanged.)
+	if len(u.Variants) == 1 {
+		return coerce(b, u.Variants[0], input)
 	}
-	return coerce(b, u.Variants[0], input)
+	// Case 3: non-null input against a multi-variant union. Re-prove the
+	// non-null arm set is a safe family (this also rejects non-null input to a
+	// nullable-but-unsafe union, which the gate permitted only for case 1).
+	if err := checkSupportedUnionShape(b, u); err != nil {
+		return nil, err
+	}
+	return coerceUnionSafeMulti(b, u.Variants, input)
+}
+
+// coerceUnionSafeMulti dispatches a proven-safe multi-variant union to its
+// family's value-level guard. checkSupportedUnionShape has already proven the
+// variant set is one of the two homogeneous families, so the else branch is
+// the flat class union.
+func coerceUnionSafeMulti(b *schema.Bundle, variants []schema.Type, input value) (json.RawMessage, error) {
+	if allLiteralVariants(variants) {
+		return coerceLiteralUnion(variants, input)
+	}
+	return coerceFlatClassUnion(b, variants, input)
+}
+
+// coerceLiteralUnion claims a homogeneous exact-literal union when EXACTLY
+// one literal exactly matches the input (and the input's JSON kind matches
+// the literal kind). For string literals the variant set was proven pairwise
+// match-disjoint by checkSupportedUnionShape, so an exact match on one arm
+// guarantees BAML cannot fuzzy-match another; for int/bool no two distinct
+// literals can equal the same value. Zero or (impossibly, after dedup) >1
+// exact matches decline. The matched literal is emitted through coerceLiteral
+// so the output form matches the single-literal path exactly.
+func coerceLiteralUnion(variants []schema.Type, input value) (json.RawMessage, error) {
+	matched := -1
+	count := 0
+	for i := range variants {
+		if literalExactMatches(variants[i].Literal, input) {
+			matched = i
+			count++
+		}
+	}
+	if count != 1 {
+		return nil, unsupported(fmt.Sprintf("literal union: %d exact matches for %s input (need exactly 1; BAML may fuzzy/parse-match)", count, input.kind.String()))
+	}
+	return coerceLiteral(variants[matched].Literal, input)
+}
+
+// literalExactMatches reports whether input EXACTLY matches lit by JSON kind
+// and value: a JSON bool equal to a bool literal, an exact JSON integer token
+// equal to an int literal, or a JSON string equal to a string literal. Any
+// leniency (numeric strings, float rounding, fuzzy string match) is BAML's
+// job and is deliberately NOT reproduced here.
+func literalExactMatches(lit *schema.LiteralValue, input value) bool {
+	if lit == nil {
+		return false
+	}
+	switch lit.Kind {
+	case schema.LiteralBool:
+		return input.kind == valBool && input.boolV == lit.Bool
+	case schema.LiteralInt:
+		if input.kind != valNumber {
+			return false
+		}
+		n, err := input.numV.Int64()
+		return err == nil && n == lit.Int
+	case schema.LiteralString:
+		return input.kind == valString && input.strV == lit.String
+	default:
+		return false
+	}
+}
+
+// coerceFlatClassUnion claims a flat disjoint-key class union when the input
+// is an object whose EXACT key set equals exactly one variant class's full
+// rendered field set (no extras, no missing, no duplicate keys) and that
+// class then coerces cleanly through the strict child coercers. The variant
+// classes were proven flat / >=2-required-field / disjoint-key by
+// checkSupportedUnionShape, so a full-key-set match on one arm guarantees
+// BAML cannot fuzzy-match the input keys onto another arm (every other arm is
+// missing >=2 required fields it cannot fill). Any extra/duplicate/missing
+// key, no match, or child coercion error (sentinel OR claimed) declines —
+// BAML may still resolve those via leniency/scoring.
+func coerceFlatClassUnion(b *schema.Bundle, variants []schema.Type, input value) (json.RawMessage, error) {
+	if input.kind != valObject {
+		// BAML can infer a single-field class from a scalar / imply a key;
+		// these classes are multi-field so a non-object is never a clean arm,
+		// but it is not a hard type error either, so decline.
+		return nil, declineCoerce("class union", input)
+	}
+	keySet := make(map[string]struct{}, len(input.objV))
+	for i := range input.objV {
+		k := input.objV[i].key
+		if _, dup := keySet[k]; dup {
+			return nil, unsupported(fmt.Sprintf("class union: duplicate input key %q", k))
+		}
+		keySet[k] = struct{}{}
+	}
+	matched := -1
+	for i := range variants {
+		cls, ok := b.FindClass(variants[i].Name, variants[i].Mode)
+		if !ok {
+			return nil, fmt.Errorf("debaml: unknown class %q", variants[i].Name)
+		}
+		if renderedFieldSetEquals(cls, keySet) {
+			matched = i
+			break // disjoint field sets ⇒ at most one variant can match.
+		}
+	}
+	if matched < 0 {
+		return nil, unsupported("class union: input key set matches no variant's full field set (extras/missing decline)")
+	}
+	out, err := coerceClass(b, variants[matched].Name, variants[matched].Mode, input)
+	if err != nil {
+		// A child sentinel decline OR a claimed child error both decline the
+		// union: BAML may coerce the field leniently (with a flag) and still
+		// resolve to this arm, or score a different one, so native must not
+		// claim a clean object where BAML's result could differ.
+		return nil, unsupported(fmt.Sprintf("class union: winning class %q child coercion not clean: %v", variants[matched].Name, err))
+	}
+	return out, nil
+}
+
+// renderedFieldSetEquals reports whether the rendered field-name set of cls
+// equals keySet exactly (same size, same members). checkSupportedUnionShape
+// has proven cls's rendered names are distinct, so size equality plus
+// membership is a true set equality.
+func renderedFieldSetEquals(cls *schema.ClassDef, keySet map[string]struct{}) bool {
+	if len(cls.Fields) != len(keySet) {
+		return false
+	}
+	for i := range cls.Fields {
+		if _, ok := keySet[cls.Fields[i].Name.RenderedName()]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // lookupField returns the input value for a class field, matched by the
