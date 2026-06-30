@@ -28,11 +28,15 @@ import (
 // native's strict match fails but BAML may leniently SUCCEED — or where
 // native cannot determine BAML's exact success/failure — coercion DECLINES
 // (ErrDeBAMLParseUnsupported → fall back to BAML), so native is never "more
-// capable" than BAML. Native CLAIMS a coercion error only for mismatches
-// BAML also hard-rejects: a non-object where a MULTI-field class is required,
-// or a missing required field. A consequence is that native also declines
-// some inputs BAML would itself reject (e.g. {color:"MAUVE"} with no enum
-// match, {version:3} for literal 2, a non-integer for an int) — behavior is
+// capable" than BAML. Native CLAIMS a coercion error only for the mismatch
+// BAML also hard-rejects: a non-object where a MULTI-field class is required
+// (coerceClass). A required field with no EXACT key match instead DECLINES —
+// BAML may fuzzy-match the key via match_string or hard-fail, and native
+// cannot tell which apart (deferred to Mcoerce) — while a class whose every
+// required field is exact-matched is claimed. A consequence is that native
+// also declines some inputs BAML would itself reject (e.g. {color:"MAUVE"}
+// with no enum match, {version:3} for literal 2, a non-integer for an int,
+// or a genuinely-absent required field) — behavior is
 // identical via fallback, and precise claim-parity for those (porting BAML's
 // match_string for keys/enums/literals + lenient numeric/structural coercion)
 // is deferred to the Mcoerce milestone (#546). See coercePrimitive /
