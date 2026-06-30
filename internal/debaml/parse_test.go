@@ -727,6 +727,34 @@ func TestParse_NullableMultiUnionNullClaimed(t *testing.T) {
 	requireUnsupported(t, s, `{"u":5}`)
 }
 
+func TestParse_NullableSingleArmUnsupportedArmClaimsNull(t *testing.T) {
+	// A nullable single-arm union T | null where T is UNSUPPORTED (here T is a
+	// map whose value is a general string|int union — out of scope). The null
+	// fast path must CLAIM null regardless of the unsupported arm (mirroring
+	// BAML's null arm), consistently with nullable MULTI unions. A NON-null
+	// input must DECLINE: coerceUnionSafe delegates to coerce on the lone arm,
+	// which falls back because the arm is unsupported.
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("u", &bamlutils.DynamicProperty{
+			Type: "optional",
+			Inner: &bamlutils.DynamicTypeSpec{
+				Type: "map",
+				Keys: &bamlutils.DynamicTypeSpec{Type: "string"},
+				Values: &bamlutils.DynamicTypeSpec{
+					Type:  "union",
+					OneOf: []*bamlutils.DynamicTypeSpec{{Type: "string"}, {Type: "int"}},
+				},
+			},
+		})),
+	}
+	// JSON null → CLAIM null (null fast path), even though the lone arm is
+	// unsupported. Before the gate fix this DECLINED (the len==1 recursion
+	// rejected the unsupported arm before the nullable check).
+	mustParse(t, s, `{"u":null}`, `{"u":null}`)
+	// Non-null → DECLINE (the lone map arm has a general-union value type).
+	requireUnsupported(t, s, `{"u":{"a":"x"}}`)
+}
+
 func TestParse_UnsupportedPrimitiveUnion(t *testing.T) {
 	// A bare-primitive multi-union (string|int) declines: BAML stringifies /
 	// parses across kinds, so a second arm could succeed → scoring.

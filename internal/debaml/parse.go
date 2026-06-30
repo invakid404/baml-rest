@@ -153,18 +153,25 @@ func checkSupportedType(b *schema.Bundle, t schema.Type) error {
 			return unsupported("union without payload")
 		}
 		u := t.Union
-		// An optional — a nullable union with exactly one non-null variant —
-		// is the M1 shape: recurse into the lone arm.
-		if len(u.Variants) == 1 {
-			return checkSupportedType(b, u.Variants[0])
-		}
-		// A nullable multi-union is permitted at the gate for the null fast
-		// path: a JSON-null input always coerces to null (coerceUnionSafe),
-		// regardless of the non-null arms. Non-null input is decided at
-		// coerce time — it declines unless the non-null arm set is itself one
-		// of the M2c safe families, so permitting here never over-claims.
+		// A NULLABLE union always passes the gate for the null fast path: a
+		// JSON-null input coerces to null (coerceUnionSafe) regardless of the
+		// non-null arms — this must hold for ANY nullable union, including a
+		// single-arm optional whose lone non-null arm is itself unsupported
+		// (e.g. a nested/general-union arm or an out-of-scope map). Non-null
+		// input is still decided at coerce time and never over-claims: a
+		// single-non-null optional delegates to coerce on the lone arm (which
+		// declines if that arm is unsupported), and a nullable multi-union
+		// re-proves its non-null arm set is an M2c safe family. Checking
+		// Nullable BEFORE the len==1 recursion is what makes the null claim
+		// consistent across single-arm and multi-arm nullable unions.
 		if u.Nullable {
 			return nil
+		}
+		// A NON-nullable single-variant union collapses to its lone arm in
+		// simplifyUnion, so this is effectively unreachable; recurse into the
+		// arm defensively to mirror that collapse.
+		if len(u.Variants) == 1 {
+			return checkSupportedType(b, u.Variants[0])
 		}
 		// A non-nullable multi-union is in scope only when its variants form
 		// one of the M2c safe families (homogeneous exact-literal union or
