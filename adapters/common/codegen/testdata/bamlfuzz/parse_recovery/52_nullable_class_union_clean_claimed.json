@@ -1,0 +1,88 @@
+{
+  "name": "nullable_class_union_clean_claimed",
+  "description": "Mcoerce-a F1: nullable flat class union (Book | Car | null). A CLEAN non-null arm (exact keys, no extras, exact children) scores 0, beating BAML's null arm (DefaultButHadValue=110), so BAML and native both resolve to Book. Native-claimed and diff-green vs BAML. want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {
+                  "kind": "class_ref",
+                  "ref": "Book"
+                },
+                {
+                  "kind": "class_ref",
+                  "ref": "Car"
+                },
+                {
+                  "kind": "null"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "Book",
+        "properties": [
+          {
+            "name": "title",
+            "type": {
+              "kind": "string"
+            }
+          },
+          {
+            "name": "pages",
+            "type": {
+              "kind": "int"
+            }
+          }
+        ]
+      },
+      {
+        "name": "Car",
+        "properties": [
+          {
+            "name": "brand",
+            "type": {
+              "kind": "string"
+            }
+          },
+          {
+            "name": "wheels",
+            "type": {
+              "kind": "int"
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":{\"title\":\"Go\",\"pages\":300}}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": {
+        "title": "Go",
+        "pages": 300
+      }
+    }
+  },
+  "union_choices": {
+    ".u": {
+      "index": 0,
+      "kind": "class_ref",
+      "ref": "Book",
+      "variant_count": 3
+    }
+  }
+}

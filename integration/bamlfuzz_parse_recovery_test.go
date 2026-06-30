@@ -204,6 +204,12 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"class_fuzzy_field_key":                  true,
 	"map_fuzzy_literal_key":                  true,
 	"match_string_ambiguous_substring_error": true,
+	// Mcoerce-a F1: a NULLABLE flat class union scores its null arm
+	// (DefaultButHadValue=110) for non-null input, so native claims the
+	// non-null arm only when it is a CLEAN zero-score success. A clean arm
+	// claims; an arm carrying enough ExtraKey flags to lose to null declines.
+	"nullable_class_union_clean_claimed":   true,
+	"nullable_class_union_extra_keys_null": false,
 	// M2c native SCORE-FREE SIMPLE UNIONS: claimed when native can PROVE BAML
 	// also resolves to exactly one clean zero-score winner.
 	//

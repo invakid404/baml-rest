@@ -78,7 +78,9 @@ func Parse(ctx context.Context, req bamlutils.DeBAMLParseRequest) (bamlutils.DeB
 		return bamlutils.DeBAMLParseResult{}, unsupported("no cleanly-claimable JSON candidate")
 	}
 
-	out, err := coerce(bundle, bundle.Target, parsed)
+	// Top-level coercion needs no cleanliness tracking (nil accumulator): a
+	// nullable target's own null/clean decision is made inside coerceUnionSafe.
+	out, err := coerce(bundle, bundle.Target, parsed, nil)
 	if err != nil {
 		// A candidate was decoded but does not coerce against the schema.
 		// coerce returns ErrDeBAMLParseUnsupported where the failure is only
@@ -550,16 +552,18 @@ type matchCandidate struct {
 // matchString ports match_string.rs::match_string. It trims the input, then
 // runs the case-sensitive / accent-folded / punctuation-stripped /
 // case-insensitive / substring strategies in BAML's exact order, returning the
-// matched candidate name and an outcome. allowSubstring mirrors match_string's
+// matched candidate name, an outcome, and whether the match came from the
+// SUBSTRING strategy (BAML's SubstringMatch flag, cost 2 — the exact/fold
+// strategies are score 0). allowSubstring mirrors match_string's
 // allow_substring_match: class field keys pass false (via
 // matchesStringToString); enum / string-literal / map-key coercion pass true.
-func matchString(input string, candidates []matchCandidate, allowSubstring bool) (string, matchOutcome) {
+func matchString(input string, candidates []matchCandidate, allowSubstring bool) (string, matchOutcome, bool) {
 	// Trim whitespace (no flag, score 0).
 	matchContext := strings.TrimSpace(input)
 
 	// Attempt 1: original (trimmed) candidates.
-	if name, outcome, found := stringMatchStrategy(matchContext, candidates, allowSubstring); found {
-		return name, outcome
+	if name, outcome, sub, found := stringMatchStrategy(matchContext, candidates, allowSubstring); found {
+		return name, outcome, sub
 	}
 
 	// Strip punctuation from input and from every candidate value, then retry
@@ -577,8 +581,8 @@ func matchString(input string, candidates []matchCandidate, allowSubstring bool)
 	// Attempt 2: punctuation-stripped. (BAML's third attempt is a verbatim
 	// repeat of this one over the SAME match_context/candidates — it can only
 	// return the same result — so it is intentionally omitted here.)
-	if name, outcome, found := stringMatchStrategy(matchContext, stripped, allowSubstring); found {
-		return name, outcome
+	if name, outcome, sub, found := stringMatchStrategy(matchContext, stripped, allowSubstring); found {
+		return name, outcome, sub
 	}
 
 	// Attempt 4: case-insensitive over the stripped forms (no flag, score 0).
@@ -591,32 +595,35 @@ func matchString(input string, candidates []matchCandidate, allowSubstring bool)
 		}
 		lowered[i] = matchCandidate{name: stripped[i].name, validValues: vals}
 	}
-	if name, outcome, found := stringMatchStrategy(matchContext, lowered, allowSubstring); found {
-		return name, outcome
+	if name, outcome, sub, found := stringMatchStrategy(matchContext, lowered, allowSubstring); found {
+		return name, outcome, sub
 	}
 
-	return "", matchNone
+	return "", matchNone, false
 }
 
 // matchesStringToString ports match_string.rs::matches_string_to_string: a
 // single-candidate, NO-substring match used for class object field keys
-// (coerce_class.rs:209). Returns whether input matches target.
+// (coerce_class.rs:209). Returns whether input matches target. (The key match
+// adds no class flag in BAML, so its substring bit is irrelevant — substring
+// is disabled here anyway.)
 func matchesStringToString(input, target string) bool {
-	_, outcome := matchString(input, []matchCandidate{{name: target, validValues: []string{target}}}, false)
+	_, outcome, _ := matchString(input, []matchCandidate{{name: target, validValues: []string{target}}}, false)
 	return outcome == matchOne
 }
 
 // stringMatchStrategy ports match_string.rs::string_match_strategy for one
 // already-transformed pass: exact case-sensitive, then accent-folded
 // case-sensitive, then (if allowSubstring) non-overlapping substring counting.
-// found is true when this pass produced a verdict (matchOne or matchAmbiguous).
-func stringMatchStrategy(valueStr string, candidates []matchCandidate, allowSubstring bool) (string, matchOutcome, bool) {
+// found is true when this pass produced a verdict (matchOne or matchAmbiguous);
+// viaSubstring is true only when the verdict came from the substring section.
+func stringMatchStrategy(valueStr string, candidates []matchCandidate, allowSubstring bool) (string, matchOutcome, bool, bool) {
 	// Strategy 1: exact case-sensitive match. First candidate (in order) with
 	// any exactly-equal valid value wins.
 	for i := range candidates {
 		for _, v := range candidates[i].validValues {
 			if v == valueStr {
-				return candidates[i].name, matchOne, true
+				return candidates[i].name, matchOne, false, true
 			}
 		}
 	}
@@ -626,13 +633,13 @@ func stringMatchStrategy(valueStr string, candidates []matchCandidate, allowSubs
 	for i := range candidates {
 		for _, v := range candidates[i].validValues {
 			if removeAccents(v) == unaccentedValue {
-				return candidates[i].name, matchOne, true
+				return candidates[i].name, matchOne, false, true
 			}
 		}
 	}
 
 	if !allowSubstring {
-		return "", matchNone, false
+		return "", matchNone, false, false
 	}
 
 	// Substring matching: gather every occurrence of each candidate value
@@ -664,7 +671,7 @@ func stringMatchStrategy(valueStr string, candidates []matchCandidate, allowSubs
 	}
 
 	if len(all) == 0 {
-		return "", matchNone, false
+		return "", matchNone, false, false
 	}
 
 	// Sort by start ascending, then by end descending (longer first).
@@ -712,9 +719,9 @@ func stringMatchStrategy(valueStr string, candidates []matchCandidate, allowSubs
 	}
 	if atMax > 1 {
 		// Tie across variants -> StrMatchOneFromMany -> BAML errors.
-		return "", matchAmbiguous, true
+		return "", matchAmbiguous, true, true
 	}
-	return best, matchOne, true
+	return best, matchOne, true, true
 }
 
 // matchIndices returns the byte offsets of every non-overlapping occurrence

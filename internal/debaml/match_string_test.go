@@ -1,6 +1,9 @@
 package debaml
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestRemoveAccents mirrors match_string.rs's remove_accents unit tests
 // verbatim, locking the native fold to BAML's NFKD + ligature behavior.
@@ -56,8 +59,12 @@ func TestMatchStringOutcomes(t *testing.T) {
 		{"trim", "  GREEN  ", enumLike, true, "GREEN", matchOne},
 		{"case-insensitive", "green", enumLike, true, "GREEN", matchOne},
 		// '.' and '(' ')' are stripped (only '-'/'_' are kept), so "(GREEN)."
-		// folds to "GREEN".
-		{"punctuation", "(GREEN).", enumLike, true, "GREEN", matchOne},
+		// folds to "GREEN" via the strip-exact path (substring DISABLED here, so
+		// it's a clean score-0 match, not a SubstringMatch).
+		{"punctuation", "(GREEN).", enumLike, false, "GREEN", matchOne},
+		// With substring ENABLED the same input matches "GREEN" as a substring
+		// (SubstringMatch, cost 2) before the strip pass runs.
+		{"substring-punct", "(GREEN).", enumLike, true, "GREEN", matchOne},
 		{"no-match", "MAUVE", enumLike, true, "", matchNone},
 		{
 			"accent-fold",
@@ -111,10 +118,16 @@ func TestMatchStringOutcomes(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		name, outcome := matchString(c.input, c.candidates, c.allowSubstring)
+		name, outcome, viaSub := matchString(c.input, c.candidates, c.allowSubstring)
 		if outcome != c.wantOutcome || (outcome == matchOne && name != c.wantName) {
 			t.Errorf("%s: matchString(%q) = (%q, %v), want (%q, %v)",
 				c.name, c.input, name, outcome, c.wantName, c.wantOutcome)
+		}
+		// Only the substring-* cases should report a substring match (the
+		// SubstringMatch flag, cost 2); exact/fold matches are score 0.
+		wantSub := strings.HasPrefix(c.name, "substring") && c.wantOutcome != matchNone
+		if viaSub != wantSub {
+			t.Errorf("%s: matchString(%q) viaSubstring = %v, want %v", c.name, c.input, viaSub, wantSub)
 		}
 	}
 }

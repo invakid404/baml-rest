@@ -63,9 +63,8 @@ type value struct {
 
 // field is one ordered object entry. Duplicate keys are allowed (the
 // strict decoder and fixing parser both preserve them in input order);
-// coerceClass's input-key-first field assignment resolves duplicates
-// last-wins, matching BAML's update_map overwrite (and the encoding/json
-// map-decode semantics the M1 path relied on).
+// coerceClass's input-key-first field assignment resolves duplicate matches
+// FIRST-wins, matching BAML's update_map "keep first" (coerce_class.rs:548).
 type field struct {
 	key string
 	val value

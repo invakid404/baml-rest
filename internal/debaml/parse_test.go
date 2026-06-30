@@ -644,6 +644,68 @@ func TestParse_ClassUnionDeclines(t *testing.T) {
 	requireUnsupported(t, s, `{"u":"Go"}`)
 }
 
+// nullableClassUnionSchema is classUnionSchema's nullable sibling: Book | Car |
+// null. The null arm competes by scoring for non-null input (F1).
+func nullableClassUnionSchema() *bamlutils.DynamicOutputSchema {
+	return &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("u", &bamlutils.DynamicProperty{
+			Type: "union",
+			OneOf: []*bamlutils.DynamicTypeSpec{
+				{Ref: "Book"},
+				{Ref: "Car"},
+				{Type: "null"},
+			},
+		})),
+		Classes: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("Book", &bamlutils.DynamicClass{
+				Properties: props(kv("title", strProp()), kv("pages", intProp())),
+			}),
+			bamlutils.OrderedKV("Car", &bamlutils.DynamicClass{
+				Properties: props(kv("brand", strProp()), kv("wheels", intProp())),
+			}),
+		),
+	}
+}
+
+func TestParse_NullableClassUnionRequiresCleanArm(t *testing.T) {
+	// F1: for a NULLABLE union with non-null input, BAML scores the null arm
+	// too (any non-null value -> null with DefaultButHadValue cost 110). Native
+	// does not score, so it claims the non-null arm ONLY when that arm is a
+	// clean zero-score success (which trivially beats null's 110).
+	s := nullableClassUnionSchema()
+	// Null input -> null fast path.
+	mustParse(t, s, `{"u":null}`, `{"u":null}`)
+	// CLEAN winning arm (exact keys, no extras, exact children) -> CLAIM.
+	mustParse(t, s, `{"u":{"title":"Go","pages":300}}`, `{"u":{"title":"Go","pages":300}}`)
+	// FLAGGED winning arm: even ONE extra key adds an ExtraKey flag, so the
+	// null arm could outscore it (the cold-review probe used 111 extras to make
+	// BAML actually return null). Native cannot tell, so it DECLINES — whereas
+	// the SAME input on the NON-nullable Book|Car union is still claimed
+	// (TestParse_ClassUnionFlatDisjointClaimed), since no null arm competes.
+	requireUnsupported(t, s, `{"u":{"title":"Go","pages":300,"x":1}}`)
+}
+
+func TestParse_OptionalArmRequiresCleanArm(t *testing.T) {
+	// F1 on the single-arm optional path: c is Color? (Color enum | null).
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("c", &bamlutils.DynamicProperty{
+			Type:  "optional",
+			Inner: &bamlutils.DynamicTypeSpec{Ref: "Color"},
+		})),
+		Enums: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("Color", &bamlutils.DynamicEnum{
+				Values: []*bamlutils.DynamicEnumValue{{Name: "RED"}, {Name: "GREEN"}},
+			}),
+		),
+	}
+	// Exact and case-fold enum matches are score 0 (clean) -> CLAIM.
+	mustParse(t, s, `{"c":"GREEN"}`, `{"c":"GREEN"}`)
+	mustParse(t, s, `{"c":"green"}`, `{"c":"GREEN"}`)
+	// A SUBSTRING match adds SubstringMatch (cost 2): the null arm competes, so
+	// native DECLINES (over-declines vs BAML, which would still pick the enum).
+	requireUnsupported(t, s, `{"c":"the color green please"}`)
+}
+
 func TestParse_ClassUnionOverlappingKeysDeclinedAtGate(t *testing.T) {
 	// Two classes sharing a field name (id) are NOT disjoint: BAML could
 	// partially match either arm → scoring → decline the whole schema.
@@ -817,6 +879,16 @@ func TestParse_MultiFieldFuzzyKey(t *testing.T) {
 	// Extra/unknown keys are ignored on both sides when all required fields
 	// are present -> still CLAIM.
 	mustParse(t, personSchema(), `{"name":"Ada","age":36,"extra":true}`, `{"name":"Ada","age":36}`)
+}
+
+func TestParse_ClassFuzzyKeyFirstWins(t *testing.T) {
+	// F2: when two input keys fuzzy-match the SAME field, BAML's update_map
+	// keeps the FIRST matched value and ignores later duplicates
+	// (coerce_class.rs:548 "DO NOTHING (keep first value)"). "name" and "Name"
+	// both match field `name`; the FIRST ("Ada") wins, not the last.
+	mustParse(t, personSchema(), `{"name":"Ada","Name":"Grace","age":36}`, `{"name":"Ada","age":36}`)
+	// The first occurrence wins regardless of which case appears first.
+	mustParse(t, personSchema(), `{"Name":"Grace","name":"Ada","age":36}`, `{"name":"Grace","age":36}`)
 }
 
 func TestParse_FixingTrailingCommas(t *testing.T) {
