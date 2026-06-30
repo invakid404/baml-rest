@@ -1,0 +1,35 @@
+{
+  "name": "literal_union_int_exact",
+  "description": "M2c CLAIMED: homogeneous int-literal union (1 | 2); exact JSON integer token equals one arm. No two distinct int literals can equal the same value, so native claims. want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "literal", "literal": {"kind": "int", "int": 1}},
+                {"kind": "literal", "literal": {"kind": "int", "int": 2}}
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":2}",
+  "want": {
+    "status": "success",
+    "json": {"u": 2}
+  },
+  "union_choices": {
+    ".u": {"index": 1, "kind": "literal", "variant_count": 2}
+  }
+}

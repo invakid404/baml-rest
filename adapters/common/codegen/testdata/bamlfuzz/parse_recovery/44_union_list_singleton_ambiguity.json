@@ -1,0 +1,32 @@
+{
+  "name": "union_list_singleton_ambiguity",
+  "description": "M2c FALLBACK: union with a list variant (string | list<string>). BAML's single-to-array coercion wraps a scalar into a one-element list, so both arms can succeed on a singleton -> scoring. Native declines at the gate (list variant). want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "string"},
+                {"kind": "list", "inner": {"kind": "string"}}
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":\"a\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": "a"}
+  }
+}

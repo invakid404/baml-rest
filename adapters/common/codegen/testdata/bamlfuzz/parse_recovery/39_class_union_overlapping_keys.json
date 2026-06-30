@@ -1,0 +1,46 @@
+{
+  "name": "class_union_overlapping_keys",
+  "description": "M2c FALLBACK: class union whose variants share a field name (A{id,name} | B{id,label}). Shared keys are not match-disjoint, so BAML can partially match either arm -> scoring. Native declines at the gate. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "class_ref", "ref": "A"},
+                {"kind": "class_ref", "ref": "B"}
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "A",
+        "properties": [
+          {"name": "id", "type": {"kind": "int"}},
+          {"name": "name", "type": {"kind": "string"}}
+        ]
+      },
+      {
+        "name": "B",
+        "properties": [
+          {"name": "id", "type": {"kind": "int"}},
+          {"name": "label", "type": {"kind": "string"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":{\"id\":1,\"name\":\"x\"}}",
+  "want": {
+    "status": "success",
+    "json": {"u": {"id": 1, "name": "x"}}
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "name": "enum_class_union_object_to_string",
+  "description": "M2c FALLBACK: mixed enum-vs-class union (Color | Detail{a,b}). BAML's enum coercion uses match_string (incl. object-to-string for single-key objects) and the class arm can carry extra/implied flags, so a 2nd arm can succeed -> scoring. Native declines at the gate (mixed family). want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "enum_ref", "ref": "Color"},
+                {"kind": "class_ref", "ref": "Detail"}
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "Detail",
+        "properties": [
+          {"name": "a", "type": {"kind": "int"}},
+          {"name": "b", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "enums": [
+      {"name": "Color", "values": ["RED", "GREEN", "BLUE"]}
+    ],
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":\"RED\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": "RED"}
+  }
+}

@@ -32,6 +32,11 @@ type ParseDiffFailureEnvelope struct {
 	PreserveSchemaOrder bool       `json:"preserve_schema_order"`
 	Schema              FuzzSchema `json:"schema"`
 
+	// UnionChoices mirrors the case's union-arm metadata so a replay artifact
+	// carries enough context to reproduce the schema-order check (which fails
+	// closed on a union path without a matching UnionChoice).
+	UnionChoices map[string]UnionChoice `json:"union_choices,omitempty"`
+
 	// Stream is true when the leg was a parse-stream comparison over an
 	// accumulated prefix; false for a final parse.
 	Stream bool `json:"stream"`

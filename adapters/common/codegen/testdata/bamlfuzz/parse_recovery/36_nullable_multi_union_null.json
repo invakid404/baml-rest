@@ -1,0 +1,36 @@
+{
+  "name": "nullable_multi_union_null",
+  "description": "M2c CLAIMED: nullable multi-union (string | int | null) with UNSAFE non-null arms; JSON-null input takes BAML's null fast path. Native claims null even though it would DECLINE any non-null input. want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "string"},
+                {"kind": "int"},
+                {"kind": "null"}
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":null}",
+  "want": {
+    "status": "success",
+    "json": {"u": null}
+  },
+  "union_choices": {
+    ".u": {"index": 2, "kind": "null", "variant_count": 3}
+  }
+}

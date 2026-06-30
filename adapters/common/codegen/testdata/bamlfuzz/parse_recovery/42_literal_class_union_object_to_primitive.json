@@ -1,0 +1,39 @@
+{
+  "name": "literal_class_union_object_to_primitive",
+  "description": "M2c FALLBACK: mixed literal-vs-class union (\"active\" | Status{code,detail}). BAML's object-to-primitive extraction (single-key object) can feed the literal arm, so a 2nd arm can succeed -> scoring. Native declines at the gate (mixed family). want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "literal", "literal": {"kind": "string", "string": "active"}},
+                {"kind": "class_ref", "ref": "Status"}
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "Status",
+        "properties": [
+          {"name": "code", "type": {"kind": "int"}},
+          {"name": "detail", "type": {"kind": "string"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":\"active\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": "active"}
+  }
+}

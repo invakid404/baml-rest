@@ -1,0 +1,38 @@
+{
+  "name": "nested_union",
+  "description": "M2c FALLBACK: nested union ((string | int) | bool). BAML flattens it to string|int|bool, a bare-primitive multi-union whose scored pick_best native cannot reproduce; the nested-union metadata/scoring is deferred. Native declines at the gate. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {
+                  "kind": "union",
+                  "variants": [
+                    {"kind": "string"},
+                    {"kind": "int"}
+                  ]
+                },
+                {"kind": "bool"}
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":123}",
+  "want": {
+    "status": "success",
+    "json": {"u": 123}
+  }
+}

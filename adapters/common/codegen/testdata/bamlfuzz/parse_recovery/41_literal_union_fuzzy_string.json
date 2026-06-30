@@ -1,0 +1,32 @@
+{
+  "name": "literal_union_fuzzy_string",
+  "description": "M2c FALLBACK: string-literal union whose values are NOT match-disjoint (\"on\" | \"only\"): \"on\" is a substring of \"only\" under the conservative match_string superset, so BAML could fuzzy-match a 2nd arm -> scoring. Native declines at the gate. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "literal", "literal": {"kind": "string", "string": "on"}},
+                {"kind": "literal", "literal": {"kind": "string", "string": "only"}}
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":\"on\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": "on"}
+  }
+}

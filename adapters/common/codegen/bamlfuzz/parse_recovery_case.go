@@ -57,6 +57,14 @@ type ParseRecoveryCase struct {
 	Raw                 string                `json:"raw,omitempty"`
 	Want                ParseExpected         `json:"want,omitempty"`
 	Prefixes            []ParseRecoveryPrefix `json:"prefixes,omitempty"`
+	// UnionChoices mirrors CaseMetadata.UnionChoices: it maps a JSON-path key
+	// (e.g. ".u") to the union arm the recorded `want` exercised. Recovery
+	// schemas historically carried no unions; the M2c score-free-union cases
+	// add union fields, and the schema-order checker FAILS CLOSED on a union
+	// path without a matching UnionChoice, so any union fixture run with
+	// preserve_schema_order must provide one. Carried through DiffParsers and
+	// characterizeFinal's order check.
+	UnionChoices map[string]UnionChoice `json:"union_choices,omitempty"`
 }
 
 // HasFinal reports whether the case carries a final-parse leg (a Want

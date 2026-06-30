@@ -1,0 +1,44 @@
+{
+  "name": "single_field_class_union_implied_key",
+  "description": "M2c FALLBACK: class union of single-field classes (A{val} | B{num}). A one-field class is implied-key/inferred-object risk: BAML can absorb a scalar or differently-keyed object into the lone field -> a 2nd arm can succeed. Native declines at the gate. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "class_ref", "ref": "A"},
+                {"kind": "class_ref", "ref": "B"}
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "A",
+        "properties": [
+          {"name": "val", "type": {"kind": "int"}}
+        ]
+      },
+      {
+        "name": "B",
+        "properties": [
+          {"name": "num", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":{\"val\":5}}",
+  "want": {
+    "status": "success",
+    "json": {"u": {"val": 5}}
+  }
+}

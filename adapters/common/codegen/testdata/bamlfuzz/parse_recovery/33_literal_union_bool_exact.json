@@ -1,0 +1,35 @@
+{
+  "name": "literal_union_bool_exact",
+  "description": "M2c CLAIMED: homogeneous bool-literal union (true | false); JSON bool input exactly equals one arm. No two distinct bool literals can equal the same value, so native claims. want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "literal", "literal": {"kind": "bool", "bool": true}},
+                {"kind": "literal", "literal": {"kind": "bool", "bool": false}}
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":true}",
+  "want": {
+    "status": "success",
+    "json": {"u": true}
+  },
+  "union_choices": {
+    ".u": {"index": 0, "kind": "literal", "variant_count": 2}
+  }
+}
