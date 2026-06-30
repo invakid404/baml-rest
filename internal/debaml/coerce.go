@@ -166,18 +166,24 @@ func coerceEnum(b *schema.Bundle, name string, input value) (json.RawMessage, er
 }
 
 // coerceClass coerces an object value into a class, emitting fields in
-// schema declaration order. A multi-field class hard-fails in BAML on a
-// non-object input or a missing required field (coerce_class.rs), so native
-// CLAIMS those mismatches (typeMismatch / missing-field) to catch drift.
+// schema declaration order. It CLAIMS only when native is confident it
+// matches BAML's structure: the input is an object and every required field
+// is matched by an EXACT key. Otherwise it DECLINES, because BAML's class
+// coercer is leniently broader than native's strict matching and native
+// cannot tell whether BAML would succeed:
 //
-// A SINGLE-field class is special: BAML's class coercer absorbs a
-// scalar/non-object — or an object whose lone field key is absent — directly
-// into the one field via its implied-key / inferred-object path
-// (coerce_class.rs:224/295/300), so BAML often SUCCEEDS where native's strict
-// object/key match fails. Native cannot replicate that, so for a single-field
-// class it DECLINES (ErrDeBAMLParseUnsupported → fall back to BAML) on a
-// non-object input or an object missing the lone field's key, rather than
-// claim a mismatch BAML would not produce.
+//   - A required field with no EXACT key match → DECLINE: BAML matches field
+//     keys fuzzily (coerce_class.rs → match_string: case-insensitive /
+//     punctuation-stripped / substring), so {"Name":...} may match `name`.
+//   - A SINGLE-field class with a non-object input, or an object whose lone
+//     field key is absent → DECLINE: BAML absorbs the value into the one
+//     field via implied-key / inferred-object (coerce_class.rs:224/295/300).
+//
+// A MULTI-field class with a NON-OBJECT input stays CLAIMED (typeMismatch):
+// BAML hard-fails turning a scalar into a multi-field object too, so the
+// differential checks error parity. Extra/unknown input keys are ignored on
+// both sides (native iterates only schema fields). Precise key-matching and
+// lenient structural coercion are deferred to the Mcoerce milestone (#546).
 func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input value) (json.RawMessage, error) {
 	cls, ok := b.FindClass(name, mode)
 	if !ok {
@@ -209,7 +215,16 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 				// for the native and BAML paths.
 				continue
 			}
-			return nil, fmt.Errorf("debaml: class %q missing required field %q", name, f.Name.RenderedName())
+			// A required field with no EXACT key match: BAML matches field
+			// keys fuzzily (coerce_class.rs → match_string: case-insensitive
+			// / punctuation-stripped / substring), so it may coerce a
+			// differently-cased or near key that native's exact lookup misses
+			// (e.g. {"Name":...} → name) — or it may truly hard-fail. Native
+			// cannot tell which without match_string, so it DECLINES (fall
+			// back to BAML) rather than claim a missing-required error that
+			// would be WRONG when BAML fuzzy-matches. Precise key-matching
+			// parity is deferred to the Mcoerce milestone (#546).
+			return nil, unsupported(fmt.Sprintf("class %q: required field %q has no exact key match (BAML may fuzzy-match keys)", name, f.Name.RenderedName()))
 		}
 		child, err := coerce(b, f.Type, val)
 		if err != nil {

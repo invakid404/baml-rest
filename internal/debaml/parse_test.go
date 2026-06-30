@@ -206,8 +206,13 @@ func TestParse_OptionalPresentAndAbsent(t *testing.T) {
 	mustParse(t, s, `{"name":"Ada"}`, `{"name":"Ada"}`)
 }
 
-func TestParse_RequiredFieldMissing(t *testing.T) {
-	requireClaimedError(t, personSchema(), `{"name":"Ada"}`)
+func TestParse_RequiredFieldMissingDeclines(t *testing.T) {
+	// A required field with no EXACT key match DECLINES (not a claimed
+	// error): BAML matches field keys fuzzily, so native cannot tell whether
+	// BAML would fuzzy-match some other key to the missing field or hard-fail
+	// — so it falls back. (Here "age" is genuinely absent and BAML hard-fails
+	// too, but native must decline because it cannot know that in general.)
+	requireUnsupported(t, personSchema(), `{"name":"Ada"}`)
 }
 
 func TestParse_NestedClassRef(t *testing.T) {
@@ -331,11 +336,24 @@ func TestParse_SingleFieldClassImpliedKeyDeclines(t *testing.T) {
 	// The lone field present -> normal claim (no implied-key needed).
 	mustParse(t, oneField, `{"value":5}`, `{"value":5}`)
 
-	// A MULTI-field class with a non-object input / missing required field
-	// stays CLAIMED — BAML hard-fails there too, so the differential checks
-	// error parity rather than masking it.
-	requireClaimedError(t, personSchema(), `[1,2,3]`)        // non-object
-	requireClaimedError(t, personSchema(), `{"name":"Ada"}`) // missing required age
+	// A MULTI-field class with a NON-OBJECT input stays CLAIMED — BAML
+	// hard-fails turning a scalar/array into a multi-field object too, so the
+	// differential checks error parity rather than masking it.
+	requireClaimedError(t, personSchema(), `[1,2,3]`)
+}
+
+func TestParse_MultiFieldFuzzyKeyDeclines(t *testing.T) {
+	// A required field with no EXACT key match DECLINES: BAML matches field
+	// keys fuzzily (match_string), so a differently-cased key like "Name"
+	// matches `name` in BAML and SUCCEEDS — native must not claim a wrong
+	// missing-required error. Native declines and falls back.
+	requireUnsupported(t, personSchema(), `{"Name":"Ada","age":36}`)
+	// All required fields matched by EXACT key -> native is confident it
+	// matches BAML's structure -> CLAIM.
+	mustParse(t, personSchema(), `{"name":"Ada","age":36}`, `{"name":"Ada","age":36}`)
+	// Extra/unknown keys are ignored on both sides when all required fields
+	// are present by exact key -> still CLAIM.
+	mustParse(t, personSchema(), `{"name":"Ada","age":36,"extra":true}`, `{"name":"Ada","age":36}`)
 }
 
 func TestParse_FixingTrailingCommas(t *testing.T) {
@@ -498,12 +516,13 @@ func TestParse_AliasedFieldMatchesRenderedNameOnly(t *testing.T) {
 			kv("age", intProp()),
 		),
 	}
-	// Alias present -> claimed; emitted under the canonical field name.
+	// Alias present (exact) -> claimed; emitted under the canonical field name.
 	mustParse(t, s, `{"full_name":"Ada","age":36}`, `{"name":"Ada","age":36}`)
-	// Canonical name present instead of the alias -> required rendered field
-	// missing -> claimed coercion error (BAML errors here too, NOT a false
-	// success).
-	requireClaimedError(t, s, `{"name":"Ada","age":36}`)
+	// Canonical name present instead of the rendered alias -> the rendered
+	// field `full_name` has no EXACT key match -> DECLINE. (BAML may even
+	// fuzzy-match "name" as a substring of "full_name" and succeed, so native
+	// must not claim a missing-required error.)
+	requireUnsupported(t, s, `{"name":"Ada","age":36}`)
 }
 
 func TestParse_FencedJSONWithInlineBackticks(t *testing.T) {
