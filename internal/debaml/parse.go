@@ -3,9 +3,12 @@ package debaml
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"unicode"
 
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -77,7 +80,9 @@ func Parse(ctx context.Context, req bamlutils.DeBAMLParseRequest) (bamlutils.DeB
 		return bamlutils.DeBAMLParseResult{}, unsupported("no cleanly-claimable JSON candidate")
 	}
 
-	out, err := coerce(bundle, bundle.Target, parsed)
+	// Top-level coercion needs no cleanliness tracking (nil accumulator): a
+	// nullable target's own null/clean decision is made inside coerceUnionSafe.
+	out, err := coerce(bundle, bundle.Target, parsed, nil)
 	if err != nil {
 		// A candidate was decoded but does not coerce against the schema.
 		// coerce returns ErrDeBAMLParseUnsupported where the failure is only
@@ -506,6 +511,329 @@ func normalizeForMatchString(s string) (string, bool) {
 		sb.WriteRune(lr)
 	}
 	return sb.String(), allASCII
+}
+
+// The production matcher below ports BAML's deserializer/coercer/match_string.rs
+// — the fuzzy matcher enum, string-literal, class-field-key, and map-key
+// coercion route through (Mcoerce-a). It is deliberately distinct from the
+// conservative matchStringMightMatch SUPERSET above: that one only gates
+// union-shape disjointness (over-declining there is parity-safe), while this
+// one is the PRODUCTION matcher whose accept/reject/ambiguous verdict and
+// matched candidate native must reproduce BAML byte-exact (a fuzzy match
+// changes the emitted value). It lives here, beside the gate, rather than in a
+// separate file so the de-BAML embed source list stays unchanged.
+//
+// Null handling and non-string stringification (ObjectToString) are the
+// CALLER's job: matchString operates on an already-string input. Mcoerce-a only
+// coerces string inputs; non-string enum/literal inputs decline upstream (their
+// jsonish::Value Display reproduction is Mcoerce-b/d).
+
+// matchOutcome is the verdict of a matchString evaluation.
+type matchOutcome int
+
+const (
+	// matchNone: no candidate matched (BAML error_unexpected_type).
+	matchNone matchOutcome = iota
+	// matchOne: exactly one best candidate — a clean match.
+	matchOne
+	// matchAmbiguous: a substring tie across variants — BAML errors via
+	// StrMatchOneFromMany (try_match_only_once) BEFORE emitting, so native
+	// must never pick one of the tied variants.
+	matchAmbiguous
+)
+
+// matchCandidate is one (name, valid_values) tuple. name is the value
+// emitted on a match (enum real name, literal string, field rendered name);
+// validValues are the strings the input is matched against (the rendered
+// name, plus enum description forms).
+type matchCandidate struct {
+	name        string
+	validValues []string
+}
+
+// undLowerCaser builds a fresh full-Unicode lowercaser. BAML's match_string
+// case-fold uses Rust str::to_lowercase (full SpecialCasing — e.g. İ ->
+// i+U+0307), which Go's strings.ToLower (simple per-rune mapping) does NOT
+// reproduce; golang.org/x/text/cases.Lower(language.Und) does. A cases.Caser is
+// NOT safe for concurrent use, so callers build a local one per matchString
+// call (only when the case-fold attempt is actually reached).
+func undLowerCaser() cases.Caser { return cases.Lower(language.Und) }
+
+// caseFoldUncertain reports whether lowercasing s could DIVERGE from Rust's
+// str::to_lowercase. cases.Lower is not byte-identical to Rust for every rune
+// (e.g. x/text v0.38 leaves U+A7DC 'Ƛ' unchanged while Rust lowercases it to
+// 'ƛ'; Go's own case tables don't even classify U+A7DC as uppercase). The
+// robust, conservative test that native CAN prove: a rune is lowercase-stable
+// iff it is ASCII or Go reports it IsLower (a genuinely lowercase letter, whose
+// lowercasing is the identity on both Go and Rust — this keeps 'é'/'ß'/'ü'
+// certain so accented inputs like "Résumé" still match). Any OTHER non-ASCII
+// rune (uppercase, titlecase, or a cased letter Go's tables don't recognize)
+// is treated as uncertain. The corpus is ASCII, so this never fires there.
+func caseFoldUncertain(s string) bool {
+	for _, r := range s {
+		if r > unicode.MaxASCII && !unicode.IsLower(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchString ports match_string.rs::match_string. It trims the input, then
+// runs the case-sensitive / accent-folded / punctuation-stripped /
+// case-insensitive / substring strategies in BAML's exact order, returning the
+// matched candidate name, an outcome, whether the match came from the SUBSTRING
+// strategy (BAML's SubstringMatch flag, cost 2 — the exact/fold strategies are
+// score 0), and whether the case-fold attempt involved a non-ASCII rune whose
+// lowercasing native cannot prove equals Rust's (uncertain — see
+// caseFoldUncertain). uncertain is false whenever a match is found before the
+// case-fold attempt. allowSubstring mirrors match_string's allow_substring_match:
+// class field keys pass false (via matchesStringToString); enum / string-literal
+// / map-key coercion pass true.
+func matchString(input string, candidates []matchCandidate, allowSubstring bool) (string, matchOutcome, bool, bool) {
+	// Trim whitespace (no flag, score 0).
+	matchContext := strings.TrimSpace(input)
+
+	// Attempt 1: original (trimmed) candidates.
+	if name, outcome, sub, found := stringMatchStrategy(matchContext, candidates, allowSubstring); found {
+		return name, outcome, sub, false
+	}
+
+	// Strip punctuation from input and from every candidate value, then retry
+	// (no flag — BAML never adds StrippedNonAlphaNumeric despite the unused flag).
+	matchContext = stripPunctuation(matchContext)
+	stripped := make([]matchCandidate, len(candidates))
+	for i := range candidates {
+		vals := make([]string, len(candidates[i].validValues))
+		for j, v := range candidates[i].validValues {
+			vals[j] = stripPunctuation(v)
+		}
+		stripped[i] = matchCandidate{name: candidates[i].name, validValues: vals}
+	}
+
+	// Attempt 2: punctuation-stripped. (BAML's third attempt is a verbatim
+	// repeat of this one over the SAME match_context/candidates — it can only
+	// return the same result — so it is intentionally omitted here.)
+	if name, outcome, sub, found := stringMatchStrategy(matchContext, stripped, allowSubstring); found {
+		return name, outcome, sub, false
+	}
+
+	// The case-fold attempt is now reached. Determine whether lowercasing any of
+	// the forms about to be lowered could diverge from Rust (uncertain).
+	uncertain := caseFoldUncertain(matchContext)
+	if !uncertain {
+		for i := range stripped {
+			for _, v := range stripped[i].validValues {
+				if caseFoldUncertain(v) {
+					uncertain = true
+				}
+			}
+		}
+	}
+
+	// Attempt 4: case-insensitive over the stripped forms (no flag, score 0),
+	// using full-Unicode lowercasing to match Rust's str::to_lowercase.
+	caser := undLowerCaser()
+	matchContext = caser.String(matchContext)
+	lowered := make([]matchCandidate, len(stripped))
+	for i := range stripped {
+		vals := make([]string, len(stripped[i].validValues))
+		for j, v := range stripped[i].validValues {
+			vals[j] = caser.String(v)
+		}
+		lowered[i] = matchCandidate{name: stripped[i].name, validValues: vals}
+	}
+	if name, outcome, sub, found := stringMatchStrategy(matchContext, lowered, allowSubstring); found {
+		return name, outcome, sub, uncertain
+	}
+
+	return "", matchNone, false, uncertain
+}
+
+// matchesStringToString ports match_string.rs::matches_string_to_string: a
+// single-candidate, NO-substring match used for class object field keys
+// (coerce_class.rs:209). Returns whether input matches target, plus whether the
+// verdict depended on a non-ASCII case fold native cannot prove equals BAML
+// (uncertain — caller declines on it). (The key match adds no class flag in
+// BAML, so the substring bit is irrelevant — substring is disabled here anyway.)
+func matchesStringToString(input, target string) (matched, uncertain bool) {
+	_, outcome, _, unc := matchString(input, []matchCandidate{{name: target, validValues: []string{target}}}, false)
+	return outcome == matchOne, unc
+}
+
+// stringMatchStrategy ports match_string.rs::string_match_strategy for one
+// already-transformed pass: exact case-sensitive, then accent-folded
+// case-sensitive, then (if allowSubstring) non-overlapping substring counting.
+// found is true when this pass produced a verdict (matchOne or matchAmbiguous);
+// viaSubstring is true only when the verdict came from the substring section.
+func stringMatchStrategy(valueStr string, candidates []matchCandidate, allowSubstring bool) (string, matchOutcome, bool, bool) {
+	// Strategy 1: exact case-sensitive match. First candidate (in order) with
+	// any exactly-equal valid value wins.
+	for i := range candidates {
+		for _, v := range candidates[i].validValues {
+			if v == valueStr {
+				return candidates[i].name, matchOne, false, true
+			}
+		}
+	}
+
+	// Strategy 2: accent/ligature-folded case-sensitive match.
+	unaccentedValue := removeAccents(valueStr)
+	for i := range candidates {
+		for _, v := range candidates[i].validValues {
+			if removeAccents(v) == unaccentedValue {
+				return candidates[i].name, matchOne, false, true
+			}
+		}
+	}
+
+	if !allowSubstring {
+		return "", matchNone, false, false
+	}
+
+	// Substring matching: gather every occurrence of each candidate value
+	// within valueStr (variant = candidate name).
+	type span struct {
+		start, end int
+		variant    string
+	}
+	var all []span
+	for i := range candidates {
+		for _, valid := range candidates[i].validValues {
+			for _, start := range matchIndices(valueStr, valid) {
+				all = append(all, span{start: start, end: start + len(valid), variant: candidates[i].name})
+			}
+		}
+	}
+
+	// If nothing matched directly, retry against the accent-folded forms.
+	// BAML deliberately keeps end_idx = start + len(ORIGINAL valid_name).
+	if len(all) == 0 {
+		for i := range candidates {
+			for _, valid := range candidates[i].validValues {
+				unaccentedValid := removeAccents(valid)
+				for _, start := range matchIndices(unaccentedValue, unaccentedValid) {
+					all = append(all, span{start: start, end: start + len(valid), variant: candidates[i].name})
+				}
+			}
+		}
+	}
+
+	if len(all) == 0 {
+		return "", matchNone, false, false
+	}
+
+	// Sort by start ascending, then by end descending (longer first).
+	sort.SliceStable(all, func(a, b int) bool {
+		if all[a].start != all[b].start {
+			return all[a].start < all[b].start
+		}
+		return all[a].end > all[b].end
+	})
+
+	// Drop overlapping matches, keeping the earliest/longest at each position.
+	var filtered []span
+	lastEnd := 0
+	for _, s := range all {
+		if s.start >= lastEnd {
+			lastEnd = s.end
+			filtered = append(filtered, s)
+		}
+	}
+
+	// Count non-overlapping occurrences per variant, preserving first-seen
+	// order so the winner is deterministic on a unique max.
+	counts := make(map[string]int, len(filtered))
+	var order []string
+	for _, s := range filtered {
+		if _, seen := counts[s.variant]; !seen {
+			order = append(order, s.variant)
+		}
+		counts[s.variant]++
+	}
+
+	best := ""
+	max := 0
+	atMax := 0
+	for _, v := range order {
+		c := counts[v]
+		switch {
+		case c > max:
+			max = c
+			best = v
+			atMax = 1
+		case c == max:
+			atMax++
+		}
+	}
+	if atMax > 1 {
+		// Tie across variants -> StrMatchOneFromMany -> BAML errors.
+		return "", matchAmbiguous, true, true
+	}
+	return best, matchOne, true, true
+}
+
+// matchIndices returns the byte offsets of every non-overlapping occurrence
+// of needle in haystack, matching Rust's str::match_indices (left-to-right,
+// the next search resumes after a match). An empty needle matches at every
+// char boundary plus the end, reproducing Rust's empty-pattern behavior.
+func matchIndices(haystack, needle string) []int {
+	if needle == "" {
+		idx := make([]int, 0, len(haystack)+1)
+		for i := range haystack {
+			idx = append(idx, i)
+		}
+		return append(idx, len(haystack))
+	}
+	var idx []int
+	for start := 0; start <= len(haystack); {
+		rel := strings.Index(haystack[start:], needle)
+		if rel < 0 {
+			break
+		}
+		pos := start + rel
+		idx = append(idx, pos)
+		start = pos + len(needle)
+	}
+	return idx
+}
+
+// stripPunctuation ports match_string.rs::strip_punctuation: keep
+// alphanumeric runes plus '-' and '_', drop everything else.
+func stripPunctuation(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r == '-' || r == '_' || unicode.IsLetter(r) || unicode.IsNumber(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// ligatureFolder reproduces match_string.rs::remove_accents's pre-NFKD
+// ligature substitutions (ß/æ/Æ/ø/Ø/œ/Œ); the targets share no source rune,
+// so a single non-overlapping pass equals BAML's sequential .replace() calls.
+var ligatureFolder = strings.NewReplacer(
+	"ß", "ss",
+	"æ", "ae", "Æ", "AE",
+	"ø", "o", "Ø", "O",
+	"œ", "oe", "Œ", "OE",
+)
+
+// removeAccents ports match_string.rs::remove_accents: fold the ligatures
+// above, NFKD-decompose, then drop combining marks (General_Category=Mark).
+func removeAccents(s string) string {
+	s = ligatureFolder.Replace(s)
+	decomposed := norm.NFKD.String(s)
+	var b strings.Builder
+	b.Grow(len(decomposed))
+	for _, r := range decomposed {
+		if unicode.In(r, unicode.Mn, unicode.Mc, unicode.Me) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // unsupported wraps bamlutils.ErrDeBAMLParseUnsupported with a reason so

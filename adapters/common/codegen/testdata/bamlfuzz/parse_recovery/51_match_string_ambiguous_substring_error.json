@@ -1,0 +1,23 @@
+{
+  "name": "match_string_ambiguous_substring_error",
+  "description": "Mcoerce-a: a NON-union enum whose input substring-matches TWO variants with equal counts (\"cat dog\" -> CAT and DOG once each). BAML's match_string errors via StrMatchOneFromMany (try_match_only_once) before emitting, so the required field cannot resolve and the parse ERRORS. Native must CLAIM the same error, not arbitrarily pick a tied variant. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "animal", "type": {"kind": "enum_ref", "ref": "Animal"}}
+        ]
+      }
+    ],
+    "enums": [
+      {"name": "Animal", "values": ["CAT", "DOG"]}
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"animal\":\"cat dog\"}",
+  "want": {
+    "status": "error"
+  }
+}

@@ -1,0 +1,201 @@
+package debaml
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+
+	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/internal/schema"
+)
+
+// TestDeclinableChildError pins the seam-contract classification: only the
+// ErrDeBAMLParseUnsupported fallback sentinel and a value-verdict mismatchError
+// are DECLINABLE; every other error is a HARD failure that must propagate.
+func TestDeclinableChildError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"sentinel-unsupported", unsupported("x"), true},
+		{"sentinel-declineCoerce", declineCoerce("enum target", value{kind: valNumber}), true},
+		{"sentinel-wrapped", fmt.Errorf("outer: %w", unsupported("inner")), true},
+		{"verdict-typeMismatch", typeMismatch("object", value{kind: valString}), true},
+		{"verdict-ambiguous", ambiguousMatch("enum X", "cat dog"), true},
+		{"verdict-wrapped", fmt.Errorf("outer: %w", typeMismatch("object", value{kind: valString})), true},
+		{"hard-unknown-enum", fmt.Errorf("debaml: unknown enum %q", "Ghost"), false},
+		{"hard-plain", errors.New("boom"), false},
+	}
+	for _, c := range cases {
+		if got := declinableChildError(c.err); got != c.want {
+			t.Errorf("%s: declinableChildError(%v) = %v, want %v", c.name, c.err, got, c.want)
+		}
+	}
+}
+
+// TestWrappersPropagateHardErrors proves CR1: a HARD/invariant child error (an
+// unknown enum/class ref, a missing literal payload — none reachable through a
+// VALIDATED schema, hence exercised directly) PROPAGATES through every
+// container/union child-wrapper instead of being masked as the
+// ErrDeBAMLParseUnsupported fallback sentinel.
+func TestWrappersPropagateHardErrors(t *testing.T) {
+	// An empty bundle: FindEnum/FindClass always miss -> coerceEnum/coerceClass
+	// return their "unknown ..." hard errors.
+	b := &schema.Bundle{}
+	strKey := schema.Type{Kind: schema.TypePrimitive, Primitive: schema.PrimitiveString}
+	ghostEnum := schema.Type{Kind: schema.TypeEnum, Name: "Ghost"}
+	ghostClass := schema.Type{Kind: schema.TypeClass, Name: "Ghost"}
+	obj := value{kind: valObject, objV: []field{{key: "k", val: value{kind: valString, strV: "v"}}}}
+	arr := value{kind: valArray, arrV: []value{{kind: valString, strV: "x"}}}
+
+	run := func(name, wantSubstr string, fn func() (interface{}, error)) {
+		_, err := fn()
+		if err == nil {
+			t.Errorf("%s: expected propagated hard error, got nil", name)
+			return
+		}
+		if errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+			t.Errorf("%s: hard error MASKED as fallback sentinel: %v", name, err)
+			return
+		}
+		if !strings.Contains(err.Error(), wantSubstr) {
+			t.Errorf("%s: expected propagated %q, got %v", name, wantSubstr, err)
+		}
+	}
+
+	run("coerceList", "unknown enum", func() (interface{}, error) {
+		return coerceList(b, &ghostEnum, arr, nil)
+	})
+	run("coerceMap-value", "unknown enum", func() (interface{}, error) {
+		return coerceMap(b, &strKey, &ghostEnum, obj, nil)
+	})
+	run("coerceUnionSafe-optional-arm", "unknown enum", func() (interface{}, error) {
+		u := &schema.UnionType{Variants: []schema.Type{ghostEnum}, Nullable: true}
+		return coerceUnionSafe(b, u, value{kind: valString, strV: "x"}, nil)
+	})
+	run("coerceFlatClassUnion-counting", "unknown class", func() (interface{}, error) {
+		// Bypasses checkSupportedUnionShape (a unit-level wrapper probe): the
+		// counting loop hits FindClass and must propagate the hard error.
+		return coerceFlatClassUnion(b, []schema.Type{ghostClass, ghostClass}, obj, false, nil)
+	})
+	run("coerceLiteralUnion-counting", "literal type missing value", func() (interface{}, error) {
+		// A literal variant with a nil payload is a hard invariant failure.
+		bad := schema.Type{Kind: schema.TypeLiteral, Literal: nil}
+		return coerceLiteralUnion([]schema.Type{bad, bad}, value{kind: valString, strV: "x"}, false, nil)
+	})
+}
+
+// strLitType builds a string-literal schema type.
+func strLitType(s string) schema.Type {
+	return schema.Type{Kind: schema.TypeLiteral, Literal: &schema.LiteralValue{Kind: schema.LiteralString, String: s}}
+}
+
+// litUnionType builds a non-nullable union of the given string literals.
+func litUnionType(lits ...string) schema.Type {
+	vs := make([]schema.Type, len(lits))
+	for i, l := range lits {
+		vs[i] = strLitType(l)
+	}
+	return schema.Type{Kind: schema.TypeUnion, Union: &schema.UnionType{Variants: vs}}
+}
+
+// TestMatchMapKeyUncertaintyMarksFlags covers every matchMapKey uncertainty and
+// acceptance branch (string-literal, string-literal-union, enum), pinning:
+//   - CR-MAPKEY: an uncertain key DECLINES and marks cf.uncertain, nil-safely.
+//   - the string-literal-union ACCEPT-ANY-ARM fix: a clean arm accepts the key
+//     even if an EARLIER arm was uncertain (no over-decline, no spurious mark).
+//   - the mixed-union guard: a union with a non-string-literal arm declines
+//     (never treated as its string-literal subset).
+//
+// The runes are 'é'(U+00E9, IsLower -> certain) and 'É'(U+00C9, not IsLower ->
+// uncertain once it reaches the case-fold attempt).
+func TestMatchMapKeyUncertaintyMarksFlags(t *testing.T) {
+	// An indexed bundle with an (ASCII) enum key type — enum uncertainty is
+	// driven by the non-ASCII INPUT key, so the enum values stay ASCII.
+	enumB, err := schema.FromDynamicOutputSchema(mapEnumKeySchema(), schema.BuildOptions{})
+	if err != nil {
+		t.Fatalf("build enum bundle: %v", err)
+	}
+	enumKey := schema.Type{Kind: schema.TypeEnum, Name: enumB.Enums[0].Name.Name}
+
+	mixedUnion := schema.Type{Kind: schema.TypeUnion, Union: &schema.UnionType{Variants: []schema.Type{
+		strLitType("é"),
+		{Kind: schema.TypePrimitive, Primitive: schema.PrimitiveInt},
+	}}}
+
+	cases := []struct {
+		name          string
+		b             *schema.Bundle
+		keyT          schema.Type
+		key           string
+		wantAccept    bool // true = nil (accepted), false = unsupported decline
+		wantUncertain bool
+	}{
+		{"literal-uncertain", nil, strLitType("é"), "É", false, true},
+		{"literal-exact", nil, strLitType("é"), "é", true, false},
+		// UNCERTAIN-ONLY match: key "É" matches literal "é" only via the case-fold
+		// pass (matchString returns matchOne AND uncertain) -> must DECLINE and
+		// mark uncertain, NOT accept. (This case was wrongly accepted before the
+		// accepted = matchOne && !uncertain fix.)
+		{"union-uncertain-only-match", nil, litUnionType("é"), "É", false, true},
+		// No arm cleanly matches, but an arm's verdict was uncertain -> mark.
+		{"union-uncertain-no-clean", nil, litUnionType("abc", "def"), "É", false, true},
+		// ACCEPT-ANY-ARM rescue: arm "abc" is uncertain for "É", but arm "É"
+		// matches EXACTLY (before the case-fold attempt, so certain) -> accept,
+		// and DON'T mark uncertain.
+		{"union-accept-any-arm", nil, litUnionType("abc", "É"), "É", true, false},
+		// A later arm matches exactly with no uncertainty anywhere.
+		{"union-normal-accept", nil, litUnionType("é", "beta"), "beta", true, false},
+		// Mixed union (string literal | int): declined by the guard, no scan.
+		{"mixed-union-guard", nil, mixedUnion, "É", false, false},
+		// Enum: the non-ASCII input key drives the uncertainty (values are ASCII).
+		{"enum-uncertain", enumB, enumKey, "É", false, true},
+		{"enum-exact", enumB, enumKey, "A", true, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cf := &coerceFlags{}
+			err := matchMapKey(c.b, c.keyT, c.key, cf)
+			if c.wantAccept {
+				if err != nil {
+					t.Fatalf("want accept (nil), got %v", err)
+				}
+			} else {
+				if !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+					t.Fatalf("want ErrDeBAMLParseUnsupported decline, got %v", err)
+				}
+			}
+			if cf.isUncertain() != c.wantUncertain {
+				t.Errorf("cf.uncertain = %v, want %v", cf.isUncertain(), c.wantUncertain)
+			}
+		})
+	}
+
+	// Nil-safe: an uncertain key with a nil accumulator must not panic.
+	if err := matchMapKey(nil, strLitType("é"), "É", nil); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+		t.Fatalf("nil cf: want ErrDeBAMLParseUnsupported, got %v", err)
+	}
+}
+
+// TestWrapperDeclinesValueVerdict confirms the no-regression side of CR1: a
+// VALUE-verdict child error (here typeMismatch — a scalar where a multi-field
+// class is required) still makes the wrapper DECLINE (fall back), so BAML's
+// partial-list behavior is deferred, not claimed.
+func TestWrapperDeclinesValueVerdict(t *testing.T) {
+	// Root{ items: Pair[] }, Pair{ a, b }. A non-object list element makes
+	// coerceClass return typeMismatch (value-verdict) -> coerceList declines.
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("items", &bamlutils.DynamicProperty{
+			Type:  "list",
+			Items: &bamlutils.DynamicTypeSpec{Ref: "Pair"},
+		})),
+		Classes: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("Pair", &bamlutils.DynamicClass{
+				Properties: props(kv("a", strProp()), kv("b", strProp())),
+			}),
+		),
+	}
+	requireUnsupported(t, s, `{"items":[5]}`)
+}

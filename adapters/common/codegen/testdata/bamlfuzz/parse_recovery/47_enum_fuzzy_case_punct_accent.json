@@ -1,0 +1,24 @@
+{
+  "name": "enum_fuzzy_case_punct_accent",
+  "description": "Mcoerce-a: a non-union enum value matched fuzzily via match_string (case-fold + accent/ligature fold: \"Résumé\" -> RESUME). The canonical enum value name is emitted, not the raw input. Native-claimed and diff-green vs BAML. want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "status", "type": {"kind": "enum_ref", "ref": "Action"}}
+        ]
+      }
+    ],
+    "enums": [
+      {"name": "Action", "values": ["RESUME", "ARCHIVE"]}
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"status\":\"Résumé\"}",
+  "want": {
+    "status": "success",
+    "json": {"status": "RESUME"}
+  }
+}

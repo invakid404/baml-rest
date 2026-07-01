@@ -1,0 +1,24 @@
+{
+  "name": "map_fuzzy_literal_key",
+  "description": "Mcoerce-a: map<\"alpha\"|\"beta\", string> with a case-variant key (\"ALPHA\" for literal \"alpha\"). The string-literal-union key coercion fuzzy-matches via match_string and SUCCEEDS; the entry is inserted under the ORIGINAL input key \"ALPHA\", not the canonical literal. Native-claimed and diff-green vs BAML. want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "m", "type": {"kind": "map", "key": {"kind": "union", "variants": [
+            {"kind": "literal", "literal": {"kind": "string", "string": "alpha"}},
+            {"kind": "literal", "literal": {"kind": "string", "string": "beta"}}
+          ]}, "inner": {"kind": "string"}}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"m\":{\"ALPHA\":\"x\"}}",
+  "want": {
+    "status": "success",
+    "json": {"m": {"ALPHA": "x"}}
+  }
+}

@@ -239,11 +239,15 @@ func TestParse_Literals(t *testing.T) {
 		),
 	}
 	mustParse(t, s, `{"status":"active","version":2,"ok":true}`, `{"status":"active","version":2,"ok":true}`)
-	// A non-exact literal value DECLINES: BAML's literal coercion is fuzzy
-	// (case/punctuation/substring for strings, rounds/parses for ints), so
-	// native (exact) declines rather than claiming a mismatch BAML might
-	// still match.
-	requireUnsupported(t, s, `{"status":"inactive","version":2,"ok":true}`)
+	// Mcoerce-a: a string literal now matches fuzzily via match_string. A
+	// case variant matches and the CANONICAL literal is emitted (not the raw
+	// input).
+	mustParse(t, s, `{"status":"ACTIVE","version":2,"ok":true}`, `{"status":"active","version":2,"ok":true}`)
+	// A string with no fuzzy match still DECLINES (no exact/fold/substring
+	// hit): BAML errors in this required position, but native falls back.
+	requireUnsupported(t, s, `{"status":"paused","version":2,"ok":true}`)
+	// An int literal stays EXACT: BAML rounds/parses (string→int, float→int),
+	// which is Mcoerce-b, so a non-equal int value DECLINES.
 	requireUnsupported(t, s, `{"status":"active","version":3,"ok":true}`)
 }
 
@@ -376,12 +380,11 @@ func TestParse_MapBadEnumKeyDeclines(t *testing.T) {
 	requireUnsupported(t, mapEnumKeySchema(), `{"labels":{"A":"one","C":"two"}}`)
 }
 
-func TestParse_MapFuzzyEnumKeyDeclines(t *testing.T) {
-	// A case/fuzzy variant ("a" for enum value A): BAML's enum key coercion
-	// fuzzy-matches via match_string and SUCCEEDS (emitting the original key
-	// "a"); native's exact match misses, so it declines (fuzzy keys are
-	// Mcoerce). Native must NOT claim a missing/clean result.
-	requireUnsupported(t, mapEnumKeySchema(), `{"labels":{"a":"one"}}`)
+func TestParse_MapFuzzyEnumKeyClaimed(t *testing.T) {
+	// Mcoerce-a: a case/fuzzy variant ("a" for enum value A) now fuzzy-matches
+	// via match_string and is CLAIMED. The emitted key is the ORIGINAL input
+	// string "a" (maps insert the raw object key), not the canonical enum name.
+	mustParseExact(t, mapEnumKeySchema(), `{"labels":{"a":"one"}}`, `{"labels":{"a":"one"}}`)
 }
 
 func TestParse_MapEnumKeyAlias(t *testing.T) {
@@ -621,14 +624,14 @@ func TestParse_ClassUnionFlatDisjointClaimed(t *testing.T) {
 	mustParse(t, s, `{"u":{"brand":"Audi","wheels":4}}`, `{"u":{"brand":"Audi","wheels":4}}`)
 	// Class fields re-emitted in SCHEMA order even when input is out of order.
 	mustParse(t, s, `{"u":{"pages":300,"title":"Go"}}`, `{"u":{"title":"Go","pages":300}}`)
+	// Mcoerce-a: an EXTRA key beyond a variant's full field set is ignored
+	// (ExtraKey) and the arm still wins — exactly one variant succeeds, so it
+	// is CLAIMED (the extra "x" does not fuzzy-match Car's disjoint fields).
+	mustParse(t, s, `{"u":{"title":"Go","pages":300,"x":1}}`, `{"u":{"title":"Go","pages":300}}`)
 }
 
 func TestParse_ClassUnionDeclines(t *testing.T) {
 	s := classUnionSchema()
-	// Extra key beyond a variant's full field set → DECLINE (BAML ignores
-	// extras and could still match, or fuzzy-match the extra onto the other
-	// arm).
-	requireUnsupported(t, s, `{"u":{"title":"Go","pages":300,"x":1}}`)
 	// Missing a required field → DECLINE (BAML may fuzzy-match/fill).
 	requireUnsupported(t, s, `{"u":{"title":"Go"}}`)
 	// Key set matches no variant → DECLINE.
@@ -639,6 +642,123 @@ func TestParse_ClassUnionDeclines(t *testing.T) {
 	// Non-object input → DECLINE (BAML can infer/imply a class from a scalar).
 	requireUnsupported(t, s, `{"u":5}`)
 	requireUnsupported(t, s, `{"u":"Go"}`)
+}
+
+// nullableClassUnionSchema is classUnionSchema's nullable sibling: Book | Car |
+// null. The null arm competes by scoring for non-null input (F1).
+func nullableClassUnionSchema() *bamlutils.DynamicOutputSchema {
+	return &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("u", &bamlutils.DynamicProperty{
+			Type: "union",
+			OneOf: []*bamlutils.DynamicTypeSpec{
+				{Ref: "Book"},
+				{Ref: "Car"},
+				{Type: "null"},
+			},
+		})),
+		Classes: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("Book", &bamlutils.DynamicClass{
+				Properties: props(kv("title", strProp()), kv("pages", intProp())),
+			}),
+			bamlutils.OrderedKV("Car", &bamlutils.DynamicClass{
+				Properties: props(kv("brand", strProp()), kv("wheels", intProp())),
+			}),
+		),
+	}
+}
+
+func TestParse_NullableClassUnionRequiresCleanArm(t *testing.T) {
+	// F1: for a NULLABLE union with non-null input, BAML scores the null arm
+	// too (any non-null value -> null with DefaultButHadValue cost 110). Native
+	// does not score, so it claims the non-null arm ONLY when that arm is a
+	// clean zero-score success (which trivially beats null's 110).
+	s := nullableClassUnionSchema()
+	// Null input -> null fast path.
+	mustParse(t, s, `{"u":null}`, `{"u":null}`)
+	// CLEAN winning arm (exact keys, no extras, exact children) -> CLAIM.
+	mustParse(t, s, `{"u":{"title":"Go","pages":300}}`, `{"u":{"title":"Go","pages":300}}`)
+	// FLAGGED winning arm: even ONE extra key adds an ExtraKey flag, so the
+	// null arm could outscore it (the cold-review probe used 111 extras to make
+	// BAML actually return null). Native cannot tell, so it DECLINES — whereas
+	// the SAME input on the NON-nullable Book|Car union is still claimed
+	// (TestParse_ClassUnionFlatDisjointClaimed), since no null arm competes.
+	requireUnsupported(t, s, `{"u":{"title":"Go","pages":300,"x":1}}`)
+}
+
+func TestParse_NonASCIICaseFoldUnionDeclines(t *testing.T) {
+	// P2: native's case fold (cases.Lower) is not byte-identical to Rust's
+	// str::to_lowercase for every rune, so any match whose verdict hinges on
+	// lowercasing a non-ASCII rune Go can't prove is lowercase-stable is
+	// UNCERTAIN. A|B with A{a: literal "é"(U+00E9), aa, aaa} | B{b, bb}: arm A's
+	// literal only matches the input "É"(U+00C9) via the case-fold attempt
+	// (NFKD leaves the accent so it is not connected at the accent-fold stage),
+	// and 'É' is non-ASCII and not IsLower → uncertain. Native must DECLINE THE
+	// UNION rather than false-reject A and claim B as the lone winner.
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("u", &bamlutils.DynamicProperty{
+			Type:  "union",
+			OneOf: []*bamlutils.DynamicTypeSpec{{Ref: "A"}, {Ref: "B"}},
+		})),
+		Classes: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("A", &bamlutils.DynamicClass{
+				Properties: props(
+					kv("a", &bamlutils.DynamicProperty{Type: "literal_string", Value: "é"}),
+					kv("aa", intProp()),
+					kv("aaa", intProp()),
+				),
+			}),
+			bamlutils.OrderedKV("B", &bamlutils.DynamicClass{
+				Properties: props(kv("b", strProp()), kv("bb", intProp())),
+			}),
+		),
+	}
+	requireUnsupported(t, s, "{\"u\":{\"a\":\"É\",\"aa\":1,\"aaa\":1,\"b\":\"x\",\"bb\":2}}")
+}
+
+func TestParse_NonASCIICaseFoldStandaloneFallsBack(t *testing.T) {
+	// Standalone (non-union) literal/enum under the same uncertainty: native
+	// falls back rather than risk a claim that diverges from BAML.
+	lit := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("k", &bamlutils.DynamicProperty{Type: "literal_string", Value: "é"})),
+	}
+	// "É"(U+00C9) only matches "é" via the uncertain case fold -> decline.
+	requireUnsupported(t, lit, "{\"k\":\"É\"}")
+	// Exact "é" needs no case fold -> certain -> claimed (the canonical literal).
+	mustParse(t, lit, "{\"k\":\"é\"}", "{\"k\":\"é\"}")
+
+	enum := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("c", &bamlutils.DynamicProperty{Ref: "Acc"})),
+		Enums: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("Acc", &bamlutils.DynamicEnum{
+				Values: []*bamlutils.DynamicEnumValue{{Name: "É"}},
+			}),
+		),
+	}
+	requireUnsupported(t, enum, "{\"c\":\"é\"}")
+
+	// ASCII case folding is UNAFFECTED — it stays certain and is claimed.
+	mustParse(t, personSchema(), `{"Name":"Ada","age":36}`, `{"name":"Ada","age":36}`)
+}
+
+func TestParse_OptionalArmRequiresCleanArm(t *testing.T) {
+	// F1 on the single-arm optional path: c is Color? (Color enum | null).
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("c", &bamlutils.DynamicProperty{
+			Type:  "optional",
+			Inner: &bamlutils.DynamicTypeSpec{Ref: "Color"},
+		})),
+		Enums: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("Color", &bamlutils.DynamicEnum{
+				Values: []*bamlutils.DynamicEnumValue{{Name: "RED"}, {Name: "GREEN"}},
+			}),
+		),
+	}
+	// Exact and case-fold enum matches are score 0 (clean) -> CLAIM.
+	mustParse(t, s, `{"c":"GREEN"}`, `{"c":"GREEN"}`)
+	mustParse(t, s, `{"c":"green"}`, `{"c":"GREEN"}`)
+	// A SUBSTRING match adds SubstringMatch (cost 2): the null arm competes, so
+	// native DECLINES (over-declines vs BAML, which would still pick the enum).
+	requireUnsupported(t, s, `{"c":"the color green please"}`)
 }
 
 func TestParse_ClassUnionOverlappingKeysDeclinedAtGate(t *testing.T) {
@@ -804,18 +924,26 @@ func TestParse_SingleFieldClassImpliedKeyDeclines(t *testing.T) {
 	requireClaimedError(t, personSchema(), `[1,2,3]`)
 }
 
-func TestParse_MultiFieldFuzzyKeyDeclines(t *testing.T) {
-	// A required field with no EXACT key match DECLINES: BAML matches field
-	// keys fuzzily (match_string), so a differently-cased key like "Name"
-	// matches `name` in BAML and SUCCEEDS — native must not claim a wrong
-	// missing-required error. Native declines and falls back.
-	requireUnsupported(t, personSchema(), `{"Name":"Ada","age":36}`)
-	// All required fields matched by EXACT key -> native is confident it
-	// matches BAML's structure -> CLAIM.
+func TestParse_MultiFieldFuzzyKey(t *testing.T) {
+	// Mcoerce-a: a required field key now matches fuzzily via match_string
+	// (no substring). A differently-cased key "Name" matches `name`, so the
+	// class is CLAIMED with the CANONICAL field name emitted.
+	mustParse(t, personSchema(), `{"Name":"Ada","age":36}`, `{"name":"Ada","age":36}`)
+	// All required fields matched by EXACT key -> CLAIM.
 	mustParse(t, personSchema(), `{"name":"Ada","age":36}`, `{"name":"Ada","age":36}`)
 	// Extra/unknown keys are ignored on both sides when all required fields
-	// are present by exact key -> still CLAIM.
+	// are present -> still CLAIM.
 	mustParse(t, personSchema(), `{"name":"Ada","age":36,"extra":true}`, `{"name":"Ada","age":36}`)
+}
+
+func TestParse_ClassFuzzyKeyFirstWins(t *testing.T) {
+	// F2: when two input keys fuzzy-match the SAME field, BAML's update_map
+	// keeps the FIRST matched value and ignores later duplicates
+	// (coerce_class.rs:548 "DO NOTHING (keep first value)"). "name" and "Name"
+	// both match field `name`; the FIRST ("Ada") wins, not the last.
+	mustParse(t, personSchema(), `{"name":"Ada","Name":"Grace","age":36}`, `{"name":"Ada","age":36}`)
+	// The first occurrence wins regardless of which case appears first.
+	mustParse(t, personSchema(), `{"Name":"Grace","name":"Ada","age":36}`, `{"name":"Grace","age":36}`)
 }
 
 func TestParse_FixingTrailingCommas(t *testing.T) {

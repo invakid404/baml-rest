@@ -185,14 +185,31 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"map_string_class_values":      true,
 	"map_literal_union_keys_exact": true,
 	// M2b decline set: every map BAML would return as partial/scored — a
-	// skipped bad key/value (MapKeyParseError / MapValueParseError), a fuzzy
-	// match_string key (Mcoerce), or an unterminated/incomplete map (M2a
-	// defers). Native declines (fallback) rather than claim a clean result
-	// where BAML carries flags or skips entries.
+	// skipped bad key/value (MapKeyParseError / MapValueParseError) or an
+	// unterminated/incomplete map (M2a defers). Native declines (fallback)
+	// rather than claim a clean result where BAML carries flags or skips
+	// entries. (map_fuzzy_enum_key flipped to claimed in Mcoerce-a.)
 	"map_bad_enum_key":       false,
 	"map_bad_value_type":     false,
-	"map_fuzzy_enum_key":     false,
 	"map_partial_incomplete": false,
+	// Mcoerce-a native match_string parity: enum / string-literal / class
+	// field-key / map-key fuzzy matching (case / accent+ligature fold /
+	// punctuation strip / case-insensitive / substring) is reproduced
+	// byte-exact, so fuzzy matches BAML accepts are now CLAIMED. A non-union
+	// substring TIE is a CLAIMED error (StrMatchOneFromMany). Multi-success
+	// unions stay deferred to M3.
+	"map_fuzzy_enum_key":                     true,
+	"enum_fuzzy_case_punct_accent":           true,
+	"literal_fuzzy_string_non_union":         true,
+	"class_fuzzy_field_key":                  true,
+	"map_fuzzy_literal_key":                  true,
+	"match_string_ambiguous_substring_error": true,
+	// Mcoerce-a F1: a NULLABLE flat class union scores its null arm
+	// (DefaultButHadValue=110) for non-null input, so native claims the
+	// non-null arm only when it is a CLEAN zero-score success. A clean arm
+	// claims; an arm carrying enough ExtraKey flags to lose to null declines.
+	"nullable_class_union_clean_claimed":   true,
+	"nullable_class_union_extra_keys_null": false,
 	// M2c native SCORE-FREE SIMPLE UNIONS: claimed when native can PROVE BAML
 	// also resolves to exactly one clean zero-score winner.
 	//

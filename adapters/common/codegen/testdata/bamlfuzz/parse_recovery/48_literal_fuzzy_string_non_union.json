@@ -1,0 +1,21 @@
+{
+  "name": "literal_fuzzy_string_non_union",
+  "description": "Mcoerce-a: a NON-union string literal matched fuzzily via match_string with substring enabled (\"status is active\" contains \"active\"). The canonical literal is emitted, not the raw input. Non-union so there is no scoring risk. Native-claimed and diff-green vs BAML. want captured from BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "kind", "type": {"kind": "literal", "literal": {"kind": "string", "string": "active"}}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"kind\":\"status is active\"}",
+  "want": {
+    "status": "success",
+    "json": {"kind": "active"}
+  }
+}
