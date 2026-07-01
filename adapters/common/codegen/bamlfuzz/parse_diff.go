@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"sort"
 	"strings"
@@ -250,7 +251,17 @@ func strictDecodeAny(b json.RawMessage) (any, error) {
 	if err := dec.Decode(&v); err != nil {
 		return nil, err
 	}
-	if dec.More() {
+	// Require the decoder to be fully drained so trailing content is
+	// rejected exactly as json.Unmarshal rejects it. dec.More() is NOT a
+	// substitute: it reports false before a closing ']' or '}', so tokens
+	// like `1]` or `{}]` would slip through. A second Decode must return
+	// io.EOF; insignificant trailing whitespace is consumed and still
+	// yields io.EOF, while any further value or stray byte surfaces here.
+	var scratch json.RawMessage
+	if err := dec.Decode(&scratch); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return nil, err
+		}
 		return nil, fmt.Errorf("unexpected trailing JSON content after top-level value")
 	}
 	return v, nil

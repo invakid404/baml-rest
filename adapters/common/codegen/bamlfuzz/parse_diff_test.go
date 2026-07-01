@@ -347,3 +347,40 @@ func TestDiffParsersIntBoundaryDrift(t *testing.T) {
 		t.Fatalf("expected diff at $.n, got %q", res.SemanticDiff[0].Path)
 	}
 }
+
+// TestStrictDecodeAnyRejectsTrailingContent guards the full-EOF check: the
+// strict decoder must reject any content after the top-level value, exactly
+// as json.Unmarshal does. A dec.More()-based guard WRONGLY accepts payloads
+// whose next byte is a closing bracket (More() reports false there), so
+// `1]`, `1}`, `{}]`, `[]}` are the regression cases; `1 2`, `{} {}`, and
+// `"a" "b"` (a genuine second value) must reject too.
+func TestStrictDecodeAnyRejectsTrailingContent(t *testing.T) {
+	bad := []string{`1]`, `1}`, `{}]`, `[]}`, `1 2`, `{} {}`, `"a" "b"`}
+	for _, in := range bad {
+		if _, err := strictDecodeAny(json.RawMessage(in)); err == nil {
+			t.Errorf("strictDecodeAny(%q): expected trailing-content error, got nil", in)
+		}
+	}
+}
+
+// TestStrictDecodeAnyAcceptsValidAndTrailingWhitespace confirms the EOF
+// check still admits a single valid value, including one followed only by
+// insignificant leading/trailing whitespace and newlines.
+func TestStrictDecodeAnyAcceptsValidAndTrailingWhitespace(t *testing.T) {
+	good := []string{`1`, `1.5`, `{"a":1}`, `[1,2,3]`, "1\n", "  {\"a\":1}  \n\t", `"x"`}
+	for _, in := range good {
+		if _, err := strictDecodeAny(json.RawMessage(in)); err != nil {
+			t.Errorf("strictDecodeAny(%q): expected success, got %v", in, err)
+		}
+	}
+}
+
+// TestSemanticDiffStrictRejectsTrailingGarbageInput exercises the guard
+// end-to-end: malformed input like `1]` must surface as a decode error
+// rather than being silently accepted and compared as its leading value
+// `1` (the finding's example, which the dec.More() guard let pass equal).
+func TestSemanticDiffStrictRejectsTrailingGarbageInput(t *testing.T) {
+	if _, err := SemanticDiffStrict("x", json.RawMessage(`1]`), json.RawMessage(`1`)); err == nil {
+		t.Fatalf("expected decode error for trailing-garbage side, got nil")
+	}
+}
