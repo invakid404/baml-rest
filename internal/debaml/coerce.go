@@ -609,22 +609,42 @@ func matchMapKey(b *schema.Bundle, keyT schema.Type, key string, cf *coerceFlags
 		}
 		return unsupported(fmt.Sprintf("map key %q: no clean literal %q match (BAML skips via MapKeyParseError)", key, keyT.Literal.String))
 	case schema.TypeUnion:
-		// A union-of-string-literals key coerces through the union coercer,
-		// which succeeds when ANY literal arm matches; the map then inserts the
-		// original key, so the winning arm is irrelevant.
+		// Only a non-nullable union of string literals is a legal map key
+		// (the same invariant the parse gate proves via isStringLiteralUnionType
+		// / checkSupportedMapKey). flattenStringLiterals is intentionally lossy —
+		// it silently drops any non-literal arm — so assert the invariant here
+		// too, defensively, since matchMapKey is unit/future-callable without the
+		// gate: a mixed union must NOT be treated as its string-literal subset.
+		if !isStringLiteralUnionType(keyT) {
+			return unsupported("map key union must be a non-nullable union of string literals")
+		}
+		// A union-of-string-literals key coerces through BAML's union coercer,
+		// which accepts when ANY arm matches; the map then inserts the ORIGINAL
+		// key, so the winning arm is irrelevant. Scan ALL arms: a certain match
+		// on any arm accepts the key, so uncertainty on an EARLIER arm must not
+		// short-circuit a later clean acceptance (that would over-decline).
 		accepted := false
+		sawUncertain := false
 		for _, lit := range flattenStringLiterals(keyT) {
 			_, outcome, _, uncertain := matchString(key, []matchCandidate{{name: lit, validValues: []string{lit}}}, true)
 			if uncertain {
-				cf.markUncertain()
-				return unsupported(fmt.Sprintf("map key %q: non-ASCII case-fold uncertainty against string-literal-union arm %q", key, lit))
+				sawUncertain = true
 			}
 			if outcome == matchOne {
 				accepted = true
 			}
 		}
 		if accepted {
+			// A clean arm matched; the key is valid regardless of any uncertain
+			// arm, and the map inserts the original key — no uncertainty to mark.
 			return nil
+		}
+		if sawUncertain {
+			// No clean arm, but an arm's verdict hinged on a non-ASCII case fold
+			// native cannot prove equals BAML — decline the map AND propagate the
+			// uncertainty (so any enclosing union counter declines conservatively).
+			cf.markUncertain()
+			return unsupported(fmt.Sprintf("map key %q: non-ASCII case-fold uncertainty against string-literal-union arms", key))
 		}
 		return unsupported(fmt.Sprintf("map key %q: matches no string-literal-union arm (BAML skips via MapKeyParseError)", key))
 	default:

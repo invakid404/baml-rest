@@ -87,39 +87,89 @@ func TestWrappersPropagateHardErrors(t *testing.T) {
 	})
 }
 
-// TestMatchMapKeyUncertaintyMarksFlags pins the CR-MAPKEY signal-propagation
-// fix: a non-ASCII case-fold-uncertain map key DECLINES the map AND marks
-// cf.uncertain (so a future union counter that admits a map arm would decline
-// the whole union), and the *coerceFlags parameter is nil-safe.
+// strLitType builds a string-literal schema type.
+func strLitType(s string) schema.Type {
+	return schema.Type{Kind: schema.TypeLiteral, Literal: &schema.LiteralValue{Kind: schema.LiteralString, String: s}}
+}
+
+// litUnionType builds a non-nullable union of the given string literals.
+func litUnionType(lits ...string) schema.Type {
+	vs := make([]schema.Type, len(lits))
+	for i, l := range lits {
+		vs[i] = strLitType(l)
+	}
+	return schema.Type{Kind: schema.TypeUnion, Union: &schema.UnionType{Variants: vs}}
+}
+
+// TestMatchMapKeyUncertaintyMarksFlags covers every matchMapKey uncertainty and
+// acceptance branch (string-literal, string-literal-union, enum), pinning:
+//   - CR-MAPKEY: an uncertain key DECLINES and marks cf.uncertain, nil-safely.
+//   - the string-literal-union ACCEPT-ANY-ARM fix: a clean arm accepts the key
+//     even if an EARLIER arm was uncertain (no over-decline, no spurious mark).
+//   - the mixed-union guard: a union with a non-string-literal arm declines
+//     (never treated as its string-literal subset).
+//
+// The runes are 'é'(U+00E9, IsLower -> certain) and 'É'(U+00C9, not IsLower ->
+// uncertain once it reaches the case-fold attempt).
 func TestMatchMapKeyUncertaintyMarksFlags(t *testing.T) {
-	// String-literal map key "é"(U+00E9): the input key "É"(U+00C9) only matches
-	// via the uncertain case fold (NFKD leaves the accent, so it is not
-	// accent-fold-connected), and 'É' is non-ASCII and not IsLower -> uncertain.
-	litKey := schema.Type{
-		Kind:    schema.TypeLiteral,
-		Literal: &schema.LiteralValue{Kind: schema.LiteralString, String: "é"},
+	// An indexed bundle with an (ASCII) enum key type — enum uncertainty is
+	// driven by the non-ASCII INPUT key, so the enum values stay ASCII.
+	enumB, err := schema.FromDynamicOutputSchema(mapEnumKeySchema(), schema.BuildOptions{})
+	if err != nil {
+		t.Fatalf("build enum bundle: %v", err)
+	}
+	enumKey := schema.Type{Kind: schema.TypeEnum, Name: enumB.Enums[0].Name.Name}
+
+	mixedUnion := schema.Type{Kind: schema.TypeUnion, Union: &schema.UnionType{Variants: []schema.Type{
+		strLitType("é"),
+		{Kind: schema.TypePrimitive, Primitive: schema.PrimitiveInt},
+	}}}
+
+	cases := []struct {
+		name          string
+		b             *schema.Bundle
+		keyT          schema.Type
+		key           string
+		wantAccept    bool // true = nil (accepted), false = unsupported decline
+		wantUncertain bool
+	}{
+		{"literal-uncertain", nil, strLitType("é"), "É", false, true},
+		{"literal-exact", nil, strLitType("é"), "é", true, false},
+		// No arm cleanly matches, but an arm's verdict was uncertain -> mark.
+		{"union-uncertain-no-clean", nil, litUnionType("abc", "def"), "É", false, true},
+		// ACCEPT-ANY-ARM: arm "abc" is uncertain for "É", but arm "É" matches
+		// exactly -> accept, and DON'T mark uncertain (the fix's key case).
+		{"union-accept-any-arm", nil, litUnionType("abc", "É"), "É", true, false},
+		// A later arm matches exactly with no uncertainty anywhere.
+		{"union-normal-accept", nil, litUnionType("é", "beta"), "beta", true, false},
+		// Mixed union (string literal | int): declined by the guard, no scan.
+		{"mixed-union-guard", nil, mixedUnion, "É", false, false},
+		// Enum: the non-ASCII input key drives the uncertainty (values are ASCII).
+		{"enum-uncertain", enumB, enumKey, "É", false, true},
+		{"enum-exact", enumB, enumKey, "A", true, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cf := &coerceFlags{}
+			err := matchMapKey(c.b, c.keyT, c.key, cf)
+			if c.wantAccept {
+				if err != nil {
+					t.Fatalf("want accept (nil), got %v", err)
+				}
+			} else {
+				if !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+					t.Fatalf("want ErrDeBAMLParseUnsupported decline, got %v", err)
+				}
+			}
+			if cf.isUncertain() != c.wantUncertain {
+				t.Errorf("cf.uncertain = %v, want %v", cf.isUncertain(), c.wantUncertain)
+			}
+		})
 	}
 
-	cf := &coerceFlags{}
-	if err := matchMapKey(nil, litKey, "É", cf); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
-		t.Fatalf("uncertain map key: want ErrDeBAMLParseUnsupported, got %v", err)
-	}
-	if !cf.isUncertain() {
-		t.Error("uncertain map key did not mark cf.uncertain")
-	}
-
-	// Nil-safe: the same uncertain key with a nil accumulator must not panic.
-	if err := matchMapKey(nil, litKey, "É", nil); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+	// Nil-safe: an uncertain key with a nil accumulator must not panic.
+	if err := matchMapKey(nil, strLitType("é"), "É", nil); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
 		t.Fatalf("nil cf: want ErrDeBAMLParseUnsupported, got %v", err)
-	}
-
-	// A CERTAIN (exact) key accepts and leaves cf.uncertain unset.
-	clean := &coerceFlags{}
-	if err := matchMapKey(nil, litKey, "é", clean); err != nil {
-		t.Fatalf("exact key: want accept (nil), got %v", err)
-	}
-	if clean.isUncertain() {
-		t.Error("exact key wrongly marked cf.uncertain")
 	}
 }
 
