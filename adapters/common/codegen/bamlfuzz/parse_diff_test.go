@@ -251,3 +251,136 @@ func TestRegisterNativeParserRoundTrip(t *testing.T) {
 		t.Fatalf("nil registration should install NoopParser, got %T", RegisteredNativeParser())
 	}
 }
+
+// TestSemanticDiffStrictIntBoundaryDiffers pins the fix for #558: i64::MAX
+// and i64::MAX+1 collapse to the same float64, so the old decodeAny path
+// masked the drift. With json.Number + big.Int the strict comparator must
+// flag it. This test FAILS pre-fix (no diff) and PASSES post-fix.
+func TestSemanticDiffStrictIntBoundaryDiffers(t *testing.T) {
+	a := json.RawMessage(`9223372036854775807`)
+	b := json.RawMessage(`9223372036854775808`)
+	diff, err := SemanticDiffStrict("t", a, b)
+	if err != nil {
+		t.Fatalf("unexpected decode error: %v", err)
+	}
+	if len(diff) != 1 {
+		t.Fatalf("expected exactly one boundary-int diff, got %d: %+v", len(diff), diff)
+	}
+	if diff[0].Path != "$" {
+		t.Fatalf("expected diff at top-level path $, got %q", diff[0].Path)
+	}
+}
+
+// TestSemanticDiffStrictLargeIntEqual guards against a false positive: the
+// same out-of-float64-range integer on both sides must still compare equal
+// via big.Int, producing no diff.
+func TestSemanticDiffStrictLargeIntEqual(t *testing.T) {
+	a := json.RawMessage(`9223372036854775807`)
+	b := json.RawMessage(`9223372036854775807`)
+	diff, err := SemanticDiffStrict("t", a, b)
+	if err != nil {
+		t.Fatalf("unexpected decode error: %v", err)
+	}
+	if len(diff) != 0 {
+		t.Fatalf("identical large ints must be equal, got %+v", diff)
+	}
+}
+
+// TestSemanticDiffStrictNumberEquality covers the non-integer fallback: a
+// token carrying '.', 'e', or 'E' keeps float64 value comparison, so 50 vs
+// 50.0 and 100 vs 1e2 stay equal while genuinely different numbers diff.
+func TestSemanticDiffStrictNumberEquality(t *testing.T) {
+	cases := []struct {
+		name   string
+		a, b   string
+		wantEq bool
+	}{
+		{"int_vs_decimal", `50`, `50.0`, true},
+		{"int_vs_exponent", `100`, `1e2`, true},
+		{"decimal_vs_exponent", `100.0`, `1e2`, true},
+		{"distinct_small_ints", `50`, `51`, false},
+		{"decimal_mismatch", `50.5`, `50.6`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			diff, err := SemanticDiffStrict("t", json.RawMessage(tc.a), json.RawMessage(tc.b))
+			if err != nil {
+				t.Fatalf("unexpected decode error: %v", err)
+			}
+			gotEq := len(diff) == 0
+			if gotEq != tc.wantEq {
+				t.Fatalf("%s vs %s: wantEqual=%v gotEqual=%v (diff %+v)", tc.a, tc.b, tc.wantEq, gotEq, diff)
+			}
+		})
+	}
+}
+
+// TestSemanticDiffStrictNestedIntBoundaryPath verifies boundary-int drift
+// buried under an object key and an array index is reported at the precise
+// nested path, so path-level diff output stays correct with json.Number.
+func TestSemanticDiffStrictNestedIntBoundaryPath(t *testing.T) {
+	a := json.RawMessage(`{"outer":{"vals":[1,9223372036854775807]}}`)
+	b := json.RawMessage(`{"outer":{"vals":[1,9223372036854775808]}}`)
+	diff, err := SemanticDiffStrict("t", a, b)
+	if err != nil {
+		t.Fatalf("unexpected decode error: %v", err)
+	}
+	if len(diff) != 1 {
+		t.Fatalf("expected one nested boundary diff, got %d: %+v", len(diff), diff)
+	}
+	if diff[0].Path != "$.outer.vals[1]" {
+		t.Fatalf("expected diff path $.outer.vals[1], got %q", diff[0].Path)
+	}
+}
+
+// TestDiffParsersIntBoundaryDrift exercises the fix end-to-end: a
+// boundary-int drift between BAML and native output is now a real semantic
+// failure rather than a masked pass.
+func TestDiffParsersIntBoundaryDrift(t *testing.T) {
+	baml := fakeParser{name: "baml", json: json.RawMessage(`{"n":9223372036854775807}`)}
+	native := fakeParser{name: "native", json: json.RawMessage(`{"n":9223372036854775808}`)}
+	res := DiffParsers(context.Background(), baml, native, ParseRequest{Raw: "x"}, nil)
+	if len(res.SemanticDiff) == 0 || len(res.Failures) == 0 {
+		t.Fatalf("boundary-int drift must fail the differential, got %+v", res)
+	}
+	if res.SemanticDiff[0].Path != "$.n" {
+		t.Fatalf("expected diff at $.n, got %q", res.SemanticDiff[0].Path)
+	}
+}
+
+// TestStrictDecodeAnyRejectsTrailingContent guards the full-EOF check: the
+// strict decoder must reject any content after the top-level value, exactly
+// as json.Unmarshal does. A dec.More()-based guard WRONGLY accepts payloads
+// whose next byte is a closing bracket (More() reports false there), so
+// `1]`, `1}`, `{}]`, `[]}` are the regression cases; `1 2`, `{} {}`, and
+// `"a" "b"` (a genuine second value) must reject too.
+func TestStrictDecodeAnyRejectsTrailingContent(t *testing.T) {
+	bad := []string{`1]`, `1}`, `{}]`, `[]}`, `1 2`, `{} {}`, `"a" "b"`}
+	for _, in := range bad {
+		if _, err := strictDecodeAny(json.RawMessage(in)); err == nil {
+			t.Errorf("strictDecodeAny(%q): expected trailing-content error, got nil", in)
+		}
+	}
+}
+
+// TestStrictDecodeAnyAcceptsValidAndTrailingWhitespace confirms the EOF
+// check still admits a single valid value, including one followed only by
+// insignificant leading/trailing whitespace and newlines.
+func TestStrictDecodeAnyAcceptsValidAndTrailingWhitespace(t *testing.T) {
+	good := []string{`1`, `1.5`, `{"a":1}`, `[1,2,3]`, "1\n", "  {\"a\":1}  \n\t", `"x"`}
+	for _, in := range good {
+		if _, err := strictDecodeAny(json.RawMessage(in)); err != nil {
+			t.Errorf("strictDecodeAny(%q): expected success, got %v", in, err)
+		}
+	}
+}
+
+// TestSemanticDiffStrictRejectsTrailingGarbageInput exercises the guard
+// end-to-end: malformed input like `1]` must surface as a decode error
+// rather than being silently accepted and compared as its leading value
+// `1` (the finding's example, which the dec.More() guard let pass equal).
+func TestSemanticDiffStrictRejectsTrailingGarbageInput(t *testing.T) {
+	if _, err := SemanticDiffStrict("x", json.RawMessage(`1]`), json.RawMessage(`1`)); err == nil {
+		t.Fatalf("expected decode error for trailing-garbage side, got nil")
+	}
+}

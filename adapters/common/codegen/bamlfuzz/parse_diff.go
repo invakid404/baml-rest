@@ -1,10 +1,13 @@
 package bamlfuzz
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math/big"
 	"sort"
 	"strings"
 )
@@ -211,17 +214,57 @@ func parseOutcome(name string, res ParseResult, err error) ParseOutcome {
 // leaking back into this comparator — the small duplication buys that
 // safety property.
 func SemanticDiffStrict(side string, a, b json.RawMessage) ([]SemanticDiffEntry, error) {
-	av, err := decodeAny(a)
+	av, err := strictDecodeAny(a)
 	if err != nil {
 		return nil, fmt.Errorf("decode a: %w", err)
 	}
-	bv, err := decodeAny(b)
+	bv, err := strictDecodeAny(b)
 	if err != nil {
 		return nil, fmt.Errorf("decode b: %w", err)
 	}
 	var out []SemanticDiffEntry
 	strictDiffAny(&out, side, "$", av, bv)
 	return out, nil
+}
+
+// strictDecodeAny decodes a JSON payload into the generic any-tree the
+// strict comparator walks, preserving every number as a json.Number
+// instead of collapsing it to float64. Keeping the exact integer token
+// lets strictDeepEqual distinguish i64::MAX (9223372036854775807) from
+// 9223372036854775808 — a one-off drift float64 rounds away. UseNumber
+// applies to the whole decode, so numbers nested inside objects and arrays
+// are preserved too.
+//
+// This is intentionally NOT the shared decodeAny from envelope.go: that
+// decoder feeds the lenient comparators, which switch on float64, and the
+// strict native-vs-BAML leg keeps its own recursion (see the note on
+// strictDiffAny / strictDeepEqual). Empty input is a hard decode error and
+// trailing content after the first value is rejected, both mirroring
+// decodeAny's json.Unmarshal contract.
+func strictDecodeAny(b json.RawMessage) (any, error) {
+	if len(b) == 0 {
+		return nil, fmt.Errorf("empty JSON payload")
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return nil, err
+	}
+	// Require the decoder to be fully drained so trailing content is
+	// rejected exactly as json.Unmarshal rejects it. dec.More() is NOT a
+	// substitute: it reports false before a closing ']' or '}', so tokens
+	// like `1]` or `{}]` would slip through. A second Decode must return
+	// io.EOF; insignificant trailing whitespace is consumed and still
+	// yields io.EOF, while any further value or stray byte surfaces here.
+	var scratch json.RawMessage
+	if err := dec.Decode(&scratch); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("unexpected trailing JSON content after top-level value")
+	}
+	return v, nil
 }
 
 // strictDiffAny appends path-level disagreements between `a` (reference)
@@ -274,7 +317,10 @@ func strictDiffAny(out *[]SemanticDiffEntry, side, path string, a, b any) {
 
 // strictDeepEqual is structural JSON equality modulo object key ordering
 // only — no null-key tolerance. Two objects are equal iff they carry the
-// identical key set and every value is strictDeepEqual.
+// identical key set and every value is strictDeepEqual. Numbers are
+// compared via numbersEqual: two integer tokens by arbitrary-precision
+// big.Int (so i64-boundary drift is not rounded away) and otherwise by
+// float64 value (so 50 and 50.0 still agree).
 func strictDeepEqual(a, b any) bool {
 	switch av := a.(type) {
 	case map[string]any:
@@ -300,9 +346,9 @@ func strictDeepEqual(a, b any) bool {
 			}
 		}
 		return true
-	case float64:
-		bv, ok := b.(float64)
-		return ok && av == bv
+	case json.Number:
+		bv, ok := b.(json.Number)
+		return ok && numbersEqual(av, bv)
 	case string:
 		bv, ok := b.(string)
 		return ok && av == bv
@@ -314,4 +360,41 @@ func strictDeepEqual(a, b any) bool {
 	default:
 		return false
 	}
+}
+
+// isIntegerToken reports whether a decoded JSON number's source token is an
+// integer literal — no fractional point and no exponent. The decision is
+// made on the token TEXT, never the value: 1e2 is a non-integer token even
+// though it denotes 100, and 9223372036854775808 is an integer token even
+// though float64 cannot represent it exactly.
+func isIntegerToken(n json.Number) bool {
+	return !strings.ContainsAny(string(n), ".eE")
+}
+
+// numbersEqual compares two decoded JSON numbers with integer precision at
+// the i64 boundary. When BOTH tokens are integer literals they are compared
+// as arbitrary-precision big.Int, so 9223372036854775807 (i64::MAX) and
+// 9223372036854775808 correctly differ instead of colliding at float64.
+// When EITHER token is non-integer (carries a '.', 'e', or 'E') the
+// comparison falls back to float64 value equality, preserving intended
+// equalities like 50 vs 50.0 and 100 vs 1e2.
+func numbersEqual(a, b json.Number) bool {
+	if isIntegerToken(a) && isIntegerToken(b) {
+		ai, aok := new(big.Int).SetString(string(a), 10)
+		bi, bok := new(big.Int).SetString(string(b), 10)
+		if aok && bok {
+			return ai.Cmp(bi) == 0
+		}
+		// A token we classified as an integer that big.Int nonetheless
+		// rejects is malformed for base 10; fall through to the float
+		// comparison rather than silently claiming equality.
+	}
+	af, aerr := a.Float64()
+	bf, berr := b.Float64()
+	if aerr != nil || berr != nil {
+		// Neither representation parsed as a float; require exact token
+		// equality so we never equate two values we cannot compare.
+		return string(a) == string(b)
+	}
+	return af == bf
 }
