@@ -1,0 +1,22 @@
+{
+  "name": "primitive_float_percent_not_ratio",
+  "description": "Mcoerce-b CLAIMED: float target, '50%' -> the extracted-number regex matches '50' (percent is NOT part of the match and is NOT divided), so the value is 50.0, NOT 0.5 or 5050 (StringToFloat). want captured LIVE from BAML final parse to pin the exposed JSON byte form.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "float"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"50%\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": 50}
+  }
+}

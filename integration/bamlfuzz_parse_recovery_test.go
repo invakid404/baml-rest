@@ -237,6 +237,46 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"union_list_singleton_ambiguity":          false,
 	"union_map_value_partial":                 false,
 	"nested_union":                            false,
+	// Mcoerce-b native LENIENT PRIMITIVE + LITERAL numeric/bool/null coercion:
+	// numeric-string parsing (trim + trailing-comma trim, i64 / u64-wrap / f64 /
+	// fraction / extracted-number regex), float→int rounding (half-away,
+	// saturating cast), string→bool (casefold + match_string), and non-null→null
+	// defaulting — plus int/bool literals by primitive-coerce-then-compare. These
+	// resolve byte-identical to BAML, so the in-scope conversions are CLAIMED.
+	"primitive_int_json_float_round":          true,
+	"primitive_int_numeric_string_trim_comma": true,
+	"primitive_int_u64_wrap":                  true,
+	"primitive_int_fraction_string":           true,
+	"primitive_int_extracted_currency":        true,
+	"primitive_float_numeric_string":          true,
+	"primitive_float_fraction_string":         true,
+	"primitive_float_percent_not_ratio":       true,
+	"primitive_float_extracted_sentence":      true,
+	"primitive_bool_casefold":                 true,
+	"primitive_bool_match_string_substring":   true,
+	"primitive_null_non_null_default":         true,
+	"literal_int_float_round_match":           true,
+	"literal_int_numeric_string_match":        true,
+	"literal_bool_string_match":               true,
+	// M2c union revisit: exactly one lenient success claims.
+	"union_literal_int_string_one_lenient_success": true,
+	"class_union_lenient_leaf_one_success":         true,
+	// Nullable clean-only rule: a CLEAN non-null arm (direct string→int parse)
+	// beats the scored null arm, so it claims.
+	"nullable_optional_int_clean_string_claim": true,
+	// Mcoerce-b FALLBACK set: a literal VALUE mismatch after a successful
+	// primitive coercion (native declines BAML's error/default choice), the
+	// single-key-object ObjectToPrimitive and non-string JsonToString paths
+	// (Mcoerce-d), the over-claim guard where a lenient leaf makes a 2nd union
+	// arm succeed (BAML pick_best = M3), and the nullable clean-only rule where a
+	// score-bearing non-null arm loses claimability against the scored null arm.
+	"literal_int_numeric_string_mismatch":                          false,
+	"literal_bool_string_mismatch":                                 false,
+	"literal_int_single_key_object_stays_fallback":                 false,
+	"primitive_string_non_string_stays_fallback":                   false,
+	"class_union_strict_plus_lenient_two_successes_stays_fallback": false,
+	"nullable_optional_int_float_round_stays_fallback":             false,
+	"nullable_optional_bool_string_stays_fallback":                 false,
 }
 
 // parseRecoveryStats tallies how many final-parse cases the native parser

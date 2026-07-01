@@ -1,0 +1,22 @@
+{
+  "name": "nullable_optional_bool_string_stays_fallback",
+  "description": "Mcoerce-b FALLBACK (nullable clean-only rule): optional bool (bool | null), string 'true' -> the non-null arm coerces to true but carries StringToBool (score-bearing). A flagged non-null arm declines (scored win vs null is M3). want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "optional", "inner": {"kind": "bool"}}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"true\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": true}
+  }
+}

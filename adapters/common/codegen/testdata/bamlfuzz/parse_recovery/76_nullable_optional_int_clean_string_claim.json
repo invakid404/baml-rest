@@ -1,0 +1,22 @@
+{
+  "name": "nullable_optional_int_clean_string_claim",
+  "description": "Mcoerce-b CLAIMED: optional int (int | null), string '123' -> CLEAN direct i64 parse (no flag). A clean non-null arm trivially beats the null arm (DefaultButHadValue=110), so native claims. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "optional", "inner": {"kind": "int"}}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"123\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": 123}
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "name": "class_union_strict_plus_lenient_two_successes_stays_fallback",
+  "description": "Mcoerce-b FALLBACK (over-claim guard): flat disjoint class union A{a int,b string} | B{c int,d string}, input carries ALL four fields with c='5' a numeric string. A succeeds strictly (a,b; c,d extras); B NEWLY succeeds leniently (c='5'->5; a,b extras). TWO lenient successes force BAML pick_best (M3), so native declines the WHOLE union and must NEVER emit the old strict A arm. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "class_ref", "ref": "A"},
+                {"kind": "class_ref", "ref": "B"}
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "A",
+        "properties": [
+          {"name": "a", "type": {"kind": "int"}},
+          {"name": "b", "type": {"kind": "string"}}
+        ]
+      },
+      {
+        "name": "B",
+        "properties": [
+          {"name": "c", "type": {"kind": "int"}},
+          {"name": "d", "type": {"kind": "string"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":{\"a\":1,\"b\":\"x\",\"c\":\"5\",\"d\":\"y\"}}",
+  "want": {
+    "status": "success",
+    "json": {"u": {"a": 1, "b": "x"}}
+  }
+}

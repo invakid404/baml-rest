@@ -153,23 +153,22 @@ func TestParse_PrimitivesAndBool(t *testing.T) {
 	mustParse(t, s, `{"s":"x","i":7,"f":1.5,"b":true}`, `{"s":"x","i":7,"f":1.5,"b":true}`)
 }
 
-func TestParse_ConservativeTypeMatchDeclines(t *testing.T) {
-	// Native primitive matching is strict, but BAML's primitive coercers are
-	// lenient (parse numeric strings, round float->int). A strict native
-	// failure is exactly where BAML would still succeed, so these DECLINE
-	// (fall back to BAML) rather than claim an error BAML would not produce.
+func TestParse_LenientPrimitiveCoercion(t *testing.T) {
+	// Mcoerce-b: native now ports BAML's lenient int/bool/float/null coercers,
+	// so numeric-string and float→int inputs to an int field CLAIM the coerced
+	// value (byte-identical to BAML) instead of declining.
 	//
-	// String where an int is required: BAML parses "36"->36.
-	requireUnsupported(t, personSchema(), `{"name":"Ada","age":"36"}`)
-	// Float where an int is required (strict JSON): BAML rounds 36.5->37.
-	// (Latent M1 case — was a claimed error, must be a fallback.)
-	requireUnsupported(t, personSchema(), `{"name":"Ada","age":36.5}`)
-	// Same via the fixing parser (single-quoted name forces the fix path),
-	// the new M2a exposure: native now CLAIMS the fix, so the non-integer
-	// coercion must DECLINE, not propagate a claimed error.
-	requireUnsupported(t, personSchema(), `{name:'Ada', age:36.5}`)
-	requireUnsupported(t, personSchema(), `{name:'Ada', age:'36'}`)
-	// Number where a string is required: BAML stringifies 36->"36".
+	// String where an int is required: BAML parses "36"->36 (clean).
+	mustParse(t, personSchema(), `{"name":"Ada","age":"36"}`, `{"name":"Ada","age":36}`)
+	// Float where an int is required: BAML rounds 36.5->37 (FloatToInt). A
+	// required (non-nullable) field claims regardless of the flag.
+	mustParse(t, personSchema(), `{"name":"Ada","age":36.5}`, `{"name":"Ada","age":37}`)
+	// Same via the fixing parser (single-quoted name forces the fix path): the
+	// fix is CLAIMED and the lenient coercion now CLAIMS too.
+	mustParse(t, personSchema(), `{name:'Ada', age:36.5}`, `{"name":"Ada","age":37}`)
+	mustParse(t, personSchema(), `{name:'Ada', age:'36'}`, `{"name":"Ada","age":36}`)
+	// Number where a string is required stays STRICT: non-string→string is
+	// JsonToString (Mcoerce-d), so native DECLINES (BAML stringifies 36->"36").
 	s := &bamlutils.DynamicOutputSchema{Properties: props(kv("v", strProp()))}
 	requireUnsupported(t, s, `{"v":36}`)
 }
@@ -332,13 +331,25 @@ func TestParse_MapNonObjectDeclines(t *testing.T) {
 }
 
 func TestParse_MapBadValueDeclines(t *testing.T) {
-	// A value that fails native clean coercion DECLINES the WHOLE map: BAML
-	// records MapValueParseError and SKIPS just that entry, returning a
-	// partial map — native cannot claim a different/partial result.
-	// String where int required (BAML parses "x"->skip or number-extracts).
+	// A value that fails native coercion (even with Mcoerce-b leniency) DECLINES
+	// the WHOLE map: BAML records MapValueParseError and SKIPS just that entry,
+	// returning a partial map — native cannot claim a different/partial result.
+	// "x" is not a number in any form (no i64/u64/f64/fraction/extracted match),
+	// so coerce_int errors and BAML skips the entry.
 	requireUnsupported(t, mapStringIntSchema(), `{"scores":{"a":1,"b":"x"}}`)
-	// Float where int required (BAML rounds; native is exact -> child declines).
-	requireUnsupported(t, mapStringIntSchema(), `{"scores":{"a":1,"b":2.5}}`)
+	// A float map value is NO LONGER "bad": Mcoerce-b rounds 2.5->3 (FloatToInt,
+	// a successful coercion BAML keeps), so this now CLAIMS — see
+	// TestParse_MapLenientValueClaimed.
+}
+
+// TestParse_MapLenientValueClaimed pins the Mcoerce-b map-value flip: a float
+// or numeric-string value coerces to int (a successful, entry-KEEPING coercion,
+// not a MapValueParseError), so the whole clean map is CLAIMED byte-identical
+// to BAML. The map's own score ignores the value's FloatToInt flag (score.rs),
+// so this stays a claimable clean map.
+func TestParse_MapLenientValueClaimed(t *testing.T) {
+	mustParse(t, mapStringIntSchema(), `{"scores":{"a":1,"b":2.5}}`, `{"scores":{"a":1,"b":3}}`)
+	mustParse(t, mapStringIntSchema(), `{"scores":{"a":1,"b":"7"}}`, `{"scores":{"a":1,"b":7}}`)
 }
 
 func TestParse_MapDuplicateKeyDeclines(t *testing.T) {
@@ -565,8 +576,13 @@ func TestParse_LiteralUnionBoolExactClaimed(t *testing.T) {
 	)
 	mustParse(t, s, `{"u":true}`, `{"u":true}`)
 	mustParse(t, s, `{"u":false}`, `{"u":false}`)
-	// Non-bool input → DECLINE (BAML accepts fuzzy/string bool).
-	requireUnsupported(t, s, `{"u":"true"}`)
+	// Mcoerce-b: a string bool coerces (StringToBool) and matches exactly one
+	// arm, so the union CLAIMS (a coerced bool equals at most one literal, so
+	// the family stays safe). "true"→true.
+	mustParse(t, s, `{"u":"true"}`, `{"u":true}`)
+	mustParse(t, s, `{"u":"False"}`, `{"u":false}`)
+	// A number is not a bool in any form (coerce_bool errors on a number), so
+	// neither arm coerces → DECLINE.
 	requireUnsupported(t, s, `{"u":1}`)
 }
 
@@ -577,13 +593,13 @@ func TestParse_LiteralUnionIntExactClaimed(t *testing.T) {
 	)
 	mustParse(t, s, `{"u":1}`, `{"u":1}`)
 	mustParse(t, s, `{"u":2}`, `{"u":2}`)
-	// No literal equals the (exact-integer) input → DECLINE.
+	// No literal equals the coerced integer → DECLINE (3 matches neither arm).
 	requireUnsupported(t, s, `{"u":3}`)
-	// Non-integer JSON number token → DECLINE (BAML rounds/parses).
-	requireUnsupported(t, s, `{"u":2.0}`)
-	requireUnsupported(t, s, `{"u":1.5}`)
-	// Numeric string → DECLINE (BAML parses "2"→2).
-	requireUnsupported(t, s, `{"u":"2"}`)
+	// Mcoerce-b: a JSON float rounds and a numeric string parses; the coerced
+	// int equals at most one literal, so the union CLAIMS the lone match.
+	mustParse(t, s, `{"u":2.0}`, `{"u":2}`) // 2.0→2 matches literal 2
+	mustParse(t, s, `{"u":1.5}`, `{"u":2}`) // round(1.5)=2 matches literal 2
+	mustParse(t, s, `{"u":"2"}`, `{"u":2}`) // "2"→2 matches literal 2
 }
 
 func TestParse_LiteralUnionMixedKindDeclinedAtGate(t *testing.T) {
@@ -628,6 +644,10 @@ func TestParse_ClassUnionFlatDisjointClaimed(t *testing.T) {
 	// (ExtraKey) and the arm still wins — exactly one variant succeeds, so it
 	// is CLAIMED (the extra "x" does not fuzzy-match Car's disjoint fields).
 	mustParse(t, s, `{"u":{"title":"Go","pages":300,"x":1}}`, `{"u":{"title":"Go","pages":300}}`)
+	// Mcoerce-b: pages="300" now coerces via a CLEAN direct string→int parse
+	// (BAML's s.parse::<i64>() adds no flag), so Book is still the lone clean
+	// winner and is CLAIMED. (Before Mcoerce-b native declined this.)
+	mustParse(t, s, `{"u":{"title":"Go","pages":"300"}}`, `{"u":{"title":"Go","pages":300}}`)
 }
 
 func TestParse_ClassUnionDeclines(t *testing.T) {
@@ -636,9 +656,6 @@ func TestParse_ClassUnionDeclines(t *testing.T) {
 	requireUnsupported(t, s, `{"u":{"title":"Go"}}`)
 	// Key set matches no variant → DECLINE.
 	requireUnsupported(t, s, `{"u":{"foo":1,"bar":2}}`)
-	// Winning class's child does not coerce cleanly (pages is a string) →
-	// DECLINE (BAML coerces "300"→300 with a flag and may still resolve here).
-	requireUnsupported(t, s, `{"u":{"title":"Go","pages":"300"}}`)
 	// Non-object input → DECLINE (BAML can infer/imply a class from a scalar).
 	requireUnsupported(t, s, `{"u":5}`)
 	requireUnsupported(t, s, `{"u":"Go"}`)

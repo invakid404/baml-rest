@@ -1,0 +1,21 @@
+{
+  "name": "literal_bool_string_mismatch",
+  "description": "Mcoerce-b FALLBACK: literal bool true, string 'false' -> coerce_bool -> false != true. BAML ERRORS (Expected true, got String(false)) on the required field. Native does NOT claim BAML's error/default choice on a literal value mismatch (conservative), so it declines (fallback). want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "literal", "literal": {"kind": "bool", "bool": true}}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"false\"}",
+  "want": {
+    "status": "error"
+  }
+}

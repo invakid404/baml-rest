@@ -1,0 +1,22 @@
+{
+  "name": "primitive_int_extracted_currency",
+  "description": "Mcoerce-b CLAIMED: int target, currency/comma string '$1,234' -> exactly one extracted-number match -> commas stripped, \\p{Sc} '$' removed -> 1234.0 -> 1234 (FloatToInt). want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"$1,234\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": 1234}
+  }
+}

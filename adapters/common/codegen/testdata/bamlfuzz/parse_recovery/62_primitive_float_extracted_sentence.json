@@ -1,0 +1,22 @@
+{
+  "name": "primitive_float_extracted_sentence",
+  "description": "Mcoerce-b CLAIMED: float target, sentence with exactly one number 'Save up to 20% on your purchase' -> 20.0 (StringToFloat). want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "float"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"Save up to 20% on your purchase\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": 20}
+  }
+}

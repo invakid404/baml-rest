@@ -1,0 +1,22 @@
+{
+  "name": "literal_bool_string_match",
+  "description": "Mcoerce-b CLAIMED: literal bool true, string 'true' -> coerce_bool casefold -> true == literal (StringToBool preserved). want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "literal", "literal": {"kind": "bool", "bool": true}}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"true\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": true}
+  }
+}

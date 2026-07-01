@@ -1,0 +1,22 @@
+{
+  "name": "primitive_int_numeric_string_trim_comma",
+  "description": "Mcoerce-b CLAIMED: int target, numeric string ' 123, ' -> trim() then trim_end_matches(',') -> '123' -> 123 via a CLEAN direct i64 parse (no flag). want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\" 123, \"}",
+  "want": {
+    "status": "success",
+    "json": {"u": 123}
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "primitive_int_u64_wrap",
+  "description": "Mcoerce-b CLAIMED: int target, JSON integer above i64::MAX (u64::MAX). as_i64 misses, as_u64 hits, and Rust's `n as i64` two's-complement wrap yields -1. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":18446744073709551615}",
+  "want": {
+    "status": "success",
+    "json": {"u": -1}
+  }
+}

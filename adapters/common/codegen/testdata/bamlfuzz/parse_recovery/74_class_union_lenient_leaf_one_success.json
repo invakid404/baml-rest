@@ -1,0 +1,46 @@
+{
+  "name": "class_union_lenient_leaf_one_success",
+  "description": "Mcoerce-b CLAIMED (M2c revisit): flat disjoint class union A{a int,b string} | B{c int,d string}, input carries only A's fields with a='5' a numeric string. A succeeds leniently (a='5'->5 clean); B misses its required c,d. EXACTLY one success -> claim A (non-nullable). want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "class_ref", "ref": "A"},
+                {"kind": "class_ref", "ref": "B"}
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "A",
+        "properties": [
+          {"name": "a", "type": {"kind": "int"}},
+          {"name": "b", "type": {"kind": "string"}}
+        ]
+      },
+      {
+        "name": "B",
+        "properties": [
+          {"name": "c", "type": {"kind": "int"}},
+          {"name": "d", "type": {"kind": "string"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":{\"a\":\"5\",\"b\":\"x\"}}",
+  "want": {
+    "status": "success",
+    "json": {"u": {"a": 5, "b": "x"}}
+  }
+}

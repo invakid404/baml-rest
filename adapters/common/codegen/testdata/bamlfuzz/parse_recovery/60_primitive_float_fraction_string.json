@@ -1,0 +1,22 @@
+{
+  "name": "primitive_float_fraction_string",
+  "description": "Mcoerce-b CLAIMED: float target, fraction string '3/2' -> 1.5 (fraction path is CLEAN for float, no flag). want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "float"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"3/2\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": 1.5}
+  }
+}

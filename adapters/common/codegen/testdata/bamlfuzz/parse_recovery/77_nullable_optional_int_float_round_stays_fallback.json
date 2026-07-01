@@ -1,0 +1,22 @@
+{
+  "name": "nullable_optional_int_float_round_stays_fallback",
+  "description": "Mcoerce-b FALLBACK (nullable clean-only rule): optional int (int | null), JSON float 1.6 -> the non-null arm coerces to 2 but carries FloatToInt (score-bearing). A flagged non-null arm declines even though its score (1) is < 110, because scoring the arm against the null arm is M3. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "optional", "inner": {"kind": "int"}}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":1.6}",
+  "want": {
+    "status": "success",
+    "json": {"u": 2}
+  }
+}
