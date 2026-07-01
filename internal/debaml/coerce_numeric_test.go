@@ -114,7 +114,8 @@ func TestParseF64Rust_RejectsGoOnlySpellings(t *testing.T) {
 		}
 	}
 	// Rust also accepts "inf"/"nan" spellings; parseF64Rust returns them
-	// non-finite with ok=true (the caller decides — int saturates, float declines).
+	// non-finite with ok=true. Callers then decline them: int via
+	// i64FromF64RoundOk, float via floatRaw/emitFloat.
 	for _, s := range []string{"inf", "+inf", "-inf", "Infinity", "nan", "NaN"} {
 		if _, ok := parseF64Rust(s); !ok {
 			t.Errorf("parseF64Rust(%q) rejected, want accept (non-finite, ok=true)", s)
