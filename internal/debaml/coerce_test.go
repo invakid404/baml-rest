@@ -135,10 +135,16 @@ func TestMatchMapKeyUncertaintyMarksFlags(t *testing.T) {
 	}{
 		{"literal-uncertain", nil, strLitType("é"), "É", false, true},
 		{"literal-exact", nil, strLitType("é"), "é", true, false},
+		// UNCERTAIN-ONLY match: key "É" matches literal "é" only via the case-fold
+		// pass (matchString returns matchOne AND uncertain) -> must DECLINE and
+		// mark uncertain, NOT accept. (This case was wrongly accepted before the
+		// accepted = matchOne && !uncertain fix.)
+		{"union-uncertain-only-match", nil, litUnionType("é"), "É", false, true},
 		// No arm cleanly matches, but an arm's verdict was uncertain -> mark.
 		{"union-uncertain-no-clean", nil, litUnionType("abc", "def"), "É", false, true},
-		// ACCEPT-ANY-ARM: arm "abc" is uncertain for "É", but arm "É" matches
-		// exactly -> accept, and DON'T mark uncertain (the fix's key case).
+		// ACCEPT-ANY-ARM rescue: arm "abc" is uncertain for "É", but arm "É"
+		// matches EXACTLY (before the case-fold attempt, so certain) -> accept,
+		// and DON'T mark uncertain.
 		{"union-accept-any-arm", nil, litUnionType("abc", "É"), "É", true, false},
 		// A later arm matches exactly with no uncertainty anywhere.
 		{"union-normal-accept", nil, litUnionType("é", "beta"), "beta", true, false},

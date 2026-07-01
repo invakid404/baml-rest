@@ -620,15 +620,23 @@ func matchMapKey(b *schema.Bundle, keyT schema.Type, key string, cf *coerceFlags
 		}
 		// A union-of-string-literals key coerces through BAML's union coercer,
 		// which accepts when ANY arm matches; the map then inserts the ORIGINAL
-		// key, so the winning arm is irrelevant. Scan ALL arms: a certain match
-		// on any arm accepts the key, so uncertainty on an EARLIER arm must not
-		// short-circuit a later clean acceptance (that would over-decline).
+		// key, so the winning arm is irrelevant. Scan ALL arms: only a CERTAIN
+		// match accepts the key. An uncertain-only match (matchString can return
+		// matchOne together with uncertain when the match is achieved solely in
+		// the non-ASCII case-fold pass, e.g. key "É" vs literal "é") must NOT
+		// accept — that verdict hinges on a lowercasing native cannot prove
+		// equals BAML — so it only records sawUncertain. A later CERTAIN arm
+		// still rescues an earlier uncertain one (its match returns before the
+		// case-fold attempt, so uncertain is false), which is why scanning all
+		// arms — rather than short-circuiting on the first uncertain arm —
+		// avoids over-declining.
 		accepted := false
 		sawUncertain := false
 		for _, lit := range flattenStringLiterals(keyT) {
 			_, outcome, _, uncertain := matchString(key, []matchCandidate{{name: lit, validValues: []string{lit}}}, true)
 			if uncertain {
 				sawUncertain = true
+				continue
 			}
 			if outcome == matchOne {
 				accepted = true
