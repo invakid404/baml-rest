@@ -1,0 +1,22 @@
+{
+  "name": "primitive_bool_match_string_substring",
+  "description": "Mcoerce-b CLAIMED: bool target, 'it is true.' -> casefold misses, match_string finds 'true' uniquely by substring -> true. The match_string SubstringMatch flag is DROPPED; only StringToBool (score 1) is added. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "bool"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"it is true.\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": true}
+  }
+}

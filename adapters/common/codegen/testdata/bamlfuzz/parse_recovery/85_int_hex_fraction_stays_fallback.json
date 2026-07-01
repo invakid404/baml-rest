@@ -1,0 +1,21 @@
+{
+  "name": "int_hex_fraction_stays_fallback",
+  "description": "Mcoerce-b FALLBACK (CR-B1): int target, fraction '0x1p4/2' whose numerator is a hex float. The fraction path rejects the hex numerator (Rust parity) and the extracted-number regex sees multiple digit runs, so native declines. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"0x1p4/2\"}",
+  "want": {
+    "status": "error"
+  }
+}

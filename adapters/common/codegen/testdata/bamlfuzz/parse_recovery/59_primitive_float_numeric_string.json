@@ -1,0 +1,22 @@
+{
+  "name": "primitive_float_numeric_string",
+  "description": "Mcoerce-b CLAIMED: float target, direct numeric string '3.14' -> 3.14 via a CLEAN f64 parse (no flag). want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "float"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"3.14\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": 3.14}
+  }
+}

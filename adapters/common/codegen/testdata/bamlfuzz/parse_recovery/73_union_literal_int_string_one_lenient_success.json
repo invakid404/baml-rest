@@ -1,0 +1,32 @@
+{
+  "name": "union_literal_int_string_one_lenient_success",
+  "description": "Mcoerce-b CLAIMED (M2c revisit): homogeneous int-literal union (1 | 2), numeric string '2'. coerce_int '2' == 2 matches only arm 2 (a coerced int equals at most one literal), so EXACTLY one lenient success -> claim. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "literal", "literal": {"kind": "int", "int": 1}},
+                {"kind": "literal", "literal": {"kind": "int", "int": 2}}
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":\"2\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": 2}
+  }
+}

@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -66,18 +69,25 @@ func (f *coerceFlags) isUncertain() bool { return f != nil && f.uncertain }
 // pipeline keys on. Class fields are emitted in schema declaration order so
 // that order pass remains the authority.
 //
-// Coercion cut-line (Mcoerce-a): native now matches enum values, string
-// literals, class field keys, and map keys through BAML's actual match_string
-// (trim / accent+ligature fold / punctuation strip / case-insensitive /
-// substring — see match_string.go), so fuzzy matches BAML accepts are CLAIMED
-// byte-exact. The remaining leniencies stay STRICT and DECLINE: numeric/bool
-// string parsing, float→int rounding, non-string stringification (ObjectToString
-// / JsonToString), single-to-array wrapping, single-field implied-key /
-// inferred-object absorption, partial list/map skips, and class default-fill —
-// all deferred to Mcoerce-b/c/d. Where native's match fails but BAML may
-// leniently SUCCEED (or null-default) — or where native cannot determine BAML's
-// exact success/failure — coercion DECLINES (ErrDeBAMLParseUnsupported → fall
-// back to BAML), so native is never "more capable" than BAML.
+// Coercion cut-line (Mcoerce-b): on top of Mcoerce-a's match_string parity
+// (enum values, string literals, class field keys, map keys via trim /
+// accent+ligature fold / punctuation strip / case-insensitive / substring —
+// see match_string.go), native now ports BAML's lenient PRIMITIVE and LITERAL
+// numeric/bool/null coercers: numeric-string parsing (trim + trailing-comma
+// trim, i64 / u64-wrap / f64 / fraction / extracted-number regex), float→int
+// rounding (half-away-from-zero, saturating cast), string→bool (casefold +
+// match_string), and non-null→null defaulting — plus int/bool LITERALS by
+// primitive-coerce-then-compare. Each score-bearing conversion (FloatToInt,
+// StringToFloat, StringToBool, DefaultButHadValue) flags the coerceFlags
+// accumulator so the nullable-union clean-only rule holds. The remaining
+// leniencies stay STRICT and DECLINE: non-string stringification (ObjectToString
+// / JsonToString), single-key-object ObjectToPrimitive literal extraction,
+// single-to-array wrapping, single-field implied-key / inferred-object
+// absorption, partial list/map skips, and class default-fill — all deferred to
+// Mcoerce-c/d. Where native's coercion fails but BAML may leniently SUCCEED (or
+// null-default) — or where native cannot determine BAML's exact success/failure
+// — coercion DECLINES (ErrDeBAMLParseUnsupported → fall back to BAML), so native
+// is never "more capable" than BAML.
 //
 // Native CLAIMS a coercion error only where BAML also errors: a non-object
 // where a MULTI-field class is required (coerceClass typeMismatch), or a
@@ -86,18 +96,20 @@ func (f *coerceFlags) isUncertain() bool { return f != nil && f.uncertain }
 // DECLINES — BAML may default-fill or hard-fail and native cannot tell which.
 // Union claims count LENIENT per-variant successes and claim only the lone
 // winner; two-plus successes are BAML pick_best (M3) and DECLINE. A consequence
-// is that native still declines some inputs BAML would itself reject (e.g. a
-// required field with no fuzzy key match, {version:3} for literal 2, a
-// non-integer for an int) — behavior is identical via fallback, and precise
-// claim-parity for those is deferred to the rest of the Mcoerce milestone
-// (#546). See coercePrimitive / coerceList / coerceEnum / coerceLiteral /
-// coerceClass for the per-kind boundary.
+// is that native still declines some inputs BAML would itself reject or coerce
+// differently (e.g. a required field with no fuzzy key match, an int-LITERAL
+// value mismatch after rounding, a single-key object into a literal) — behavior
+// is identical via fallback, and precise claim-parity for those is deferred to
+// the rest of the Mcoerce milestone (#546). See coercePrimitive / coerceList /
+// coerceEnum / coerceLiteral / coerceClass for the per-kind boundary.
 func coerce(b *schema.Bundle, t schema.Type, input value, f *coerceFlags) (json.RawMessage, error) {
 	switch t.Kind {
 	case schema.TypePrimitive:
-		// Primitives match strictly in Mcoerce-a (exact JSON type), so they
-		// never add a score-bearing flag — no need to thread f.
-		return coercePrimitive(t.Primitive, input)
+		// Primitives are lenient in Mcoerce-b (numeric-string parse, float→int
+		// rounding, string→bool, non-null→null default), each of which adds a
+		// score-bearing flag, so f is threaded through for the nullable-union
+		// clean-only rule.
+		return coercePrimitive(t.Primitive, input, f)
 	case schema.TypeLiteral:
 		return coerceLiteral(t.Literal, input, f)
 	case schema.TypeEnum:
@@ -115,64 +127,417 @@ func coerce(b *schema.Bundle, t schema.Type, input value, f *coerceFlags) (json.
 	}
 }
 
-// coercePrimitive coerces a value to a primitive target. Native primitive
-// matching is intentionally STRICT (exact JSON type, integer-exact ints),
-// whereas BAML's primitive coercers are lenient: they stringify non-string
-// JSON, parse numeric strings, round float→int, and so on. A strict native
-// failure is therefore exactly where BAML would still succeed, so every
-// mismatch / non-exact value DECLINES (ErrDeBAMLParseUnsupported → fall
-// back to BAML) rather than claiming a hard error BAML would not produce.
-// Porting BAML's full lenient numeric/string coercer is a later milestone;
-// declining keeps parity in the meantime (BAML yields the correct coerced
-// value via fallback).
-func coercePrimitive(p schema.PrimitiveKind, input value) (json.RawMessage, error) {
+// coercePrimitive coerces a value to a primitive target. Mcoerce-b ports
+// BAML's lenient numeric/bool/null coercers (coerce_primitive.rs) so native
+// claims the same conversions BAML would:
+//
+//   - int:   JSON number (i64 / u64-wrap / float→int round) and string
+//     (trim+comma-trim then i64 / u64-wrap / float→int / fraction / extracted
+//     number). Float/fraction/extracted paths add FloatToInt (score 1).
+//   - float: JSON number and string (f64 / i64 / u64 / fraction / extracted).
+//     The extracted-number path adds StringToFloat (score 1).
+//   - bool:  JSON bool, casefold "true"/"false", or a match_string true/false
+//     substring hit — the string paths add StringToBool (score 1).
+//   - null:  JSON null is clean; any non-null value defaults to null with
+//     DefaultButHadValue (score 110).
+//
+// Primitive STRING stays STRICT (only a JSON string coerces): non-string→string
+// via JsonToString (score 2) is Mcoerce-d, so a non-string DECLINES. Every
+// score-bearing conversion marks f (nil-safe) so the nullable-union clean-only
+// rule can require the winning non-null arm to be clean.
+func coercePrimitive(p schema.PrimitiveKind, input value, f *coerceFlags) (json.RawMessage, error) {
 	switch p {
 	case schema.PrimitiveString:
 		if input.kind != valString {
+			// Non-string → string is JsonToString (score 2), Mcoerce-d.
 			return nil, declineCoerce("string target", input)
 		}
 		return marshalJSON(input.strV)
 	case schema.PrimitiveInt:
-		if input.kind != valNumber {
-			return nil, declineCoerce("int target", input)
-		}
-		if _, err := input.numV.Int64(); err != nil {
-			// Fractional, out-of-range, or exponent forms BAML rounds/parses.
-			return nil, unsupported(fmt.Sprintf("int target: %s not an exact integer", input.numV.String()))
-		}
-		return json.RawMessage(input.numV.String()), nil
+		return coercePrimitiveInt(input, f)
 	case schema.PrimitiveFloat:
-		if input.kind != valNumber {
-			return nil, declineCoerce("float target", input)
-		}
-		if _, err := input.numV.Float64(); err != nil {
-			return nil, unsupported(fmt.Sprintf("float target: %s not representable", input.numV.String()))
-		}
-		return json.RawMessage(input.numV.String()), nil
+		return coercePrimitiveFloat(input, f)
 	case schema.PrimitiveBool:
-		if input.kind != valBool {
-			return nil, declineCoerce("bool target", input)
-		}
-		return marshalJSON(input.boolV)
+		return coercePrimitiveBool(input, f)
 	case schema.PrimitiveNull:
-		if input.kind != valNull {
-			return nil, declineCoerce("null target", input)
-		}
-		return json.RawMessage("null"), nil
+		return coercePrimitiveNull(input, f)
 	default:
 		return nil, fmt.Errorf("debaml: unsupported primitive %q", p)
 	}
+}
+
+// coercePrimitiveInt emits the coerced integer as a JSON number, marking f
+// when the value came from a float/fraction/extracted path (FloatToInt).
+func coercePrimitiveInt(input value, f *coerceFlags) (json.RawMessage, error) {
+	n, flagged, err := coerceIntValue(input)
+	if err != nil {
+		return nil, err
+	}
+	if flagged {
+		f.flag() // FloatToInt (score 1)
+	}
+	return json.RawMessage(strconv.FormatInt(n, 10)), nil
+}
+
+// coercePrimitiveFloat emits the coerced float as a JSON number, marking f
+// when the value came from the extracted-number path (StringToFloat).
+func coercePrimitiveFloat(input value, f *coerceFlags) (json.RawMessage, error) {
+	out, flagged, err := coerceFloatValue(input)
+	if err != nil {
+		return nil, err
+	}
+	if flagged {
+		f.flag() // StringToFloat (score 1)
+	}
+	return out, nil
+}
+
+// coercePrimitiveBool emits the coerced bool, marking f when it came from a
+// string (StringToBool). A non-ASCII case-fold uncertainty in the match_string
+// fallback marks f and DECLINES (native cannot prove the verdict equals BAML).
+func coercePrimitiveBool(input value, f *coerceFlags) (json.RawMessage, error) {
+	b, flagged, uncertain, err := coerceBoolValue(input)
+	if uncertain {
+		f.markUncertain()
+	}
+	if err != nil {
+		return nil, err
+	}
+	if flagged {
+		f.flag() // StringToBool (score 1)
+	}
+	return boolRaw(b), nil
+}
+
+// coercePrimitiveNull emits JSON null. A non-null input defaults to null with
+// DefaultButHadValue (score 110), marking f. In a nullable-union scoring
+// decision the implicit null arm is handled by coerceUnionSafe, not here — this
+// is the standalone primitive-null target BAML always resolves to null.
+func coercePrimitiveNull(input value, f *coerceFlags) (json.RawMessage, error) {
+	if input.kind != valNull {
+		f.flag() // DefaultButHadValue (score 110)
+	}
+	return json.RawMessage("null"), nil
+}
+
+// coerceIntValue ports coerce_int (coerce_primitive.rs). It returns the coerced
+// i64, whether a FloatToInt-class conversion happened (score-bearing), and an
+// error. A JSON number tries i64, then u64 (Rust wrap cast), then f64 (round
+// half-away-from-zero, saturating cast). A string is trimmed then comma-trimmed
+// and tried as i64, u64, f64, fraction, and finally the extracted-number regex.
+func coerceIntValue(input value) (n int64, flagged bool, err error) {
+	switch input.kind {
+	case valNumber:
+		return intFromNumeric(input.numV.String(), input)
+	case valString:
+		t := trimNumericString(input.strV)
+		if v, fl, e := intFromNumeric(t, input); e == nil {
+			return v, fl, nil
+		}
+		if v, ok := floatFromMaybeFraction(t); ok {
+			n, fin := i64FromF64RoundOk(v)
+			if !fin {
+				return 0, false, declineCoerce("int target (non-finite fraction)", input)
+			}
+			return n, true, nil // FloatToInt
+		}
+		if v, ok := floatFromCommaSeparated(t); ok {
+			n, fin := i64FromF64RoundOk(v)
+			if !fin {
+				return 0, false, declineCoerce("int target (non-finite extracted)", input)
+			}
+			return n, true, nil // FloatToInt
+		}
+		return 0, false, declineCoerce("int target", input)
+	default:
+		// Array→singular (coerce_array_to_singular) is Mcoerce-c; every other
+		// kind is a BAML error_unexpected_type but native declines conservatively.
+		return 0, false, declineCoerce("int target", input)
+	}
+}
+
+// intFromNumeric parses a numeric token (a JSON number's text, or a
+// trimmed/comma-trimmed string) as int the way BAML's number arm does: i64,
+// then u64 wrapped to i64, then f64 rounded (FloatToInt). It returns a non-nil
+// error only when none of the three parse — the string arm then falls through
+// to the fraction / extracted-number strategies.
+func intFromNumeric(s string, input value) (int64, bool, error) {
+	if v, ok := parseI64Rust(s); ok {
+		return v, false, nil
+	}
+	if v, ok := parseU64Rust(s); ok {
+		return int64(v), false, nil // Rust u64 as i64 (two's-complement wrap)
+	}
+	if v, ok := parseF64Rust(s); ok {
+		n, fin := i64FromF64RoundOk(v)
+		if !fin {
+			return 0, false, declineCoerce("int target (non-finite)", input)
+		}
+		return n, true, nil // FloatToInt
+	}
+	return 0, false, declineCoerce("int target", input)
+}
+
+// coerceFloatValue ports coerce_float (coerce_primitive.rs), returning the
+// emitted JSON number, whether the extracted-number path (StringToFloat) was
+// used, and an error. A JSON number emits its exact token (as_f64 always
+// succeeds for a valid number). A string is trimmed then comma-trimmed and
+// tried as f64, i64, u64, fraction (all clean), then extracted (StringToFloat).
+func coerceFloatValue(input value) (json.RawMessage, bool, error) {
+	switch input.kind {
+	case valNumber:
+		if _, ok := parseF64Rust(input.numV.String()); ok {
+			return json.RawMessage(input.numV.String()), false, nil
+		}
+		return nil, false, declineCoerce("float target", input)
+	case valString:
+		t := trimNumericString(input.strV)
+		if v, ok := parseF64Rust(t); ok {
+			return emitFloat(v, false, input) // non-finite ("inf"/"nan") declines
+		}
+		if v, ok := parseI64Rust(t); ok {
+			return emitFloat(float64(v), false, input)
+		}
+		if v, ok := parseU64Rust(t); ok {
+			return emitFloat(float64(v), false, input)
+		}
+		if v, ok := floatFromMaybeFraction(t); ok {
+			return emitFloat(v, false, input)
+		}
+		if v, ok := floatFromCommaSeparated(t); ok {
+			return emitFloat(v, true, input) // StringToFloat
+		}
+		return nil, false, declineCoerce("float target", input)
+	default:
+		return nil, false, declineCoerce("float target", input)
+	}
+}
+
+// boolMatchCandidates is the true/false candidate set coerce_bool passes to
+// match_string (coerce_primitive.rs:366) when the casefold check misses.
+var boolMatchCandidates = []matchCandidate{
+	{name: "true", validValues: []string{"true", "True", "TRUE"}},
+	{name: "false", validValues: []string{"false", "False", "FALSE"}},
+}
+
+// coerceBoolValue ports coerce_bool (coerce_primitive.rs). It returns the bool,
+// whether a StringToBool conversion happened, whether a non-ASCII case-fold
+// uncertainty was hit in the match_string fallback, and an error. A JSON bool
+// is clean; a string is first tested casefold-exact against "true"/"false",
+// then via match_string (substring enabled) — whose own flags (SubstringMatch)
+// are DROPPED: a substring hit still adds only StringToBool (score 1).
+func coerceBoolValue(input value) (b bool, flagged bool, uncertain bool, err error) {
+	switch input.kind {
+	case valBool:
+		return input.boolV, false, false, nil
+	case valString:
+		switch strings.ToLower(input.strV) {
+		case "true":
+			return true, true, false, nil // StringToBool
+		case "false":
+			return false, true, false, nil // StringToBool
+		}
+		matched, outcome, _, unc := matchString(input.strV, boolMatchCandidates, true)
+		if unc {
+			return false, false, true, unsupported("bool target: non-ASCII case-fold uncertainty in match_string")
+		}
+		if outcome == matchOne {
+			switch matched {
+			case "true":
+				return true, true, false, nil // StringToBool (NOT SubstringMatch)
+			case "false":
+				return false, true, false, nil
+			}
+		}
+		// match_string no-match or substring TIE (StrMatchOneFromMany): BAML's
+		// coerce_bool errors; for a required bool it errors, for an optional one
+		// it null-defaults, and native cannot tell which without scoring — decline.
+		return false, false, false, declineCoerce("bool target", input)
+	default:
+		return false, false, false, declineCoerce("bool target", input)
+	}
+}
+
+// boolRaw emits a bool as its JSON literal.
+func boolRaw(b bool) json.RawMessage {
+	if b {
+		return json.RawMessage("true")
+	}
+	return json.RawMessage("false")
+}
+
+// floatRaw emits f as a JSON number using the shortest round-trip form, or
+// reports ok=false for a NON-FINITE value (NaN, +Inf, -Inf) — which has no
+// valid JSON number spelling, so the caller must DECLINE rather than emit an
+// invalid token like "NaN"/"+Inf". The differential compares numeric VALUE
+// (both sides decode to float64), so the byte spelling (50 vs 50.0 vs
+// scientific) never affects parity — only the decoded value must equal BAML's.
+func floatRaw(f float64) (json.RawMessage, bool) {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return nil, false
+	}
+	return json.RawMessage(strconv.FormatFloat(f, 'g', -1, 64)), true
+}
+
+// emitFloat wraps floatRaw for coerceFloatValue's string paths: a finite value
+// emits (carrying the given StringToFloat flag), while a NON-FINITE value
+// DECLINES — BAML's Float(NaN/±Inf) has no valid JSON number form, so native
+// falls back rather than claim invalid output.
+func emitFloat(v float64, flagged bool, input value) (json.RawMessage, bool, error) {
+	out, ok := floatRaw(v)
+	if !ok {
+		return nil, false, declineCoerce("float target (non-finite)", input)
+	}
+	return out, flagged, nil
+}
+
+// trimNumericString mirrors BAML's shared numeric-string preprocessing:
+// s.trim() then s.trim_end_matches(',') — whitespace-trim, THEN strip every
+// trailing comma (no second whitespace trim).
+func trimNumericString(s string) string {
+	return strings.TrimRight(strings.TrimSpace(s), ",")
+}
+
+// parseI64Rust mirrors s.parse::<i64>(): base-10, optional leading sign, no
+// underscores (Go ParseInt base 10 rejects them, matching Rust).
+func parseI64Rust(s string) (int64, bool) {
+	n, err := strconv.ParseInt(s, 10, 64)
+	return n, err == nil
+}
+
+// parseU64Rust mirrors s.parse::<u64>(): base-10 digits with an optional
+// leading '+' (Rust unsigned FromStr accepts '+', Go ParseUint does not, so a
+// single leading '+' is stripped first).
+func parseU64Rust(s string) (uint64, bool) {
+	if strings.HasPrefix(s, "+") {
+		s = s[1:]
+	}
+	n, err := strconv.ParseUint(s, 10, 64)
+	return n, err == nil
+}
+
+// parseF64Rust mirrors s.parse::<f64>() (Rust's FromStr for f64): decimal /
+// exponent / leading-dot / signed forms, plus the case-insensitive "inf" /
+// "infinity" / "nan" special values. Go's strconv.ParseFloat is a SUPERSET —
+// it also accepts two spellings Rust REJECTS: digit-group underscores
+// ("1_000") and hex floats ("0x1p4"). Both are rejected here BEFORE
+// ParseFloat, so native never CLAIMS a numeric string BAML's coerce_int /
+// coerce_float would decline (a parity over-claim). A ParseFloat range error
+// (overflow, e.g. "1e400") also declines — Rust yields Ok(inf) there, but
+// native conservatively falls back rather than guess the dynamic bridge's
+// handling of a non-finite value.
+//
+// NOTE: a valid "inf" / "nan" spelling returns the non-finite value with
+// ok=true — the caller then rejects it: the int path via i64FromF64RoundOk and
+// every FLOAT-emitting path via floatRaw both DECLINE non-finite (a NaN / ±Inf
+// has no valid JSON number form, and native does not claim BAML's saturation
+// against the dynamic bridge).
+func parseF64Rust(s string) (float64, bool) {
+	if strings.IndexByte(s, '_') >= 0 {
+		return 0, false // Rust f64 parse rejects digit-group underscores.
+	}
+	t := s
+	if len(t) > 0 && (t[0] == '+' || t[0] == '-') {
+		t = t[1:]
+	}
+	if strings.HasPrefix(t, "0x") || strings.HasPrefix(t, "0X") {
+		return 0, false // Rust f64 parse rejects hex-float syntax.
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, false
+	}
+	return f, true
+}
+
+// i64FromF64Round rounds f half-away-from-zero (Rust f64::round) then applies
+// Rust's saturating float→int cast: NaN→0, values ≥ 2^63 saturate to
+// math.MaxInt64, values < -2^63 saturate to math.MinInt64. (Go's own
+// float→int conversion is implementation-defined out of range, so the bounds
+// are checked explicitly.)
+func i64FromF64Round(f float64) int64 {
+	r := math.Round(f) // ties away from zero, matching Rust f64::round
+	switch {
+	case math.IsNaN(r):
+		return 0
+	case r >= 9223372036854775808.0: // 2^63 (i64::MAX + 1)
+		return math.MaxInt64
+	case r < -9223372036854775808.0: // -2^63 (i64::MIN, exactly representable)
+		return math.MinInt64
+	default:
+		return int64(r)
+	}
+}
+
+// i64FromF64RoundOk applies i64FromF64Round but reports ok=false for a
+// NON-FINITE input (NaN / ±Inf). BAML would saturate it via `round() as i64`
+// (inf→i64::MAX, nan→0), but native conservatively DECLINES the whole int
+// coercion rather than claim against the dynamic bridge's non-finite handling
+// — a parity-safe under-claim (fall back to BAML) captured in the corpus. A
+// FINITE value out of i64 range (e.g. 1e19) still saturates and returns
+// ok=true, matching BAML exactly.
+func i64FromF64RoundOk(f float64) (int64, bool) {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, false
+	}
+	return i64FromF64Round(f), true
+}
+
+// floatFromMaybeFraction ports float_from_maybe_fraction: split on the FIRST
+// '/', parse each side (trimmed) as f64, and divide when the denominator is
+// non-zero.
+func floatFromMaybeFraction(s string) (float64, bool) {
+	i := strings.IndexByte(s, '/')
+	if i < 0 {
+		return 0, false
+	}
+	num, ok1 := parseF64Rust(strings.TrimSpace(s[:i]))
+	den, ok2 := parseF64Rust(strings.TrimSpace(s[i+1:]))
+	if !ok1 || !ok2 || den == 0.0 {
+		return 0, false
+	}
+	return num / den, true
+}
+
+// extractedNumberRe ports float_from_comma_separated's number regex verbatim:
+// unanchored, an optional sign and currency prefix, then a comma-grouped /
+// decimal / plain / leading-dot mantissa with an optional exponent. It is
+// deliberately case-sensitive on 'e' (matching the Rust literal).
+var extractedNumberRe = regexp.MustCompile(`([-+]?)\$?(?:\d+(?:,\d+)*(?:\.\d+)?|\d+\.\d+|\d+|\.\d+)(?:e[-+]?\d+)?`)
+
+// currencySymbolRe matches any Unicode currency symbol (\p{Sc}), removed from
+// the extracted number before parsing.
+var currencySymbolRe = regexp.MustCompile(`\p{Sc}`)
+
+// floatFromCommaSeparated ports float_from_comma_separated: require EXACTLY one
+// regex match in the whole string, strip its commas, then strip Unicode
+// currency symbols, and parse the remainder as f64. Percent signs are never
+// part of the match (so "50%" → 50.0, not 0.5) and multiple numbers yield no
+// result.
+func floatFromCommaSeparated(s string) (float64, bool) {
+	ms := extractedNumberRe.FindAllString(s, -1)
+	if len(ms) != 1 {
+		return 0, false
+	}
+	withoutCommas := strings.ReplaceAll(ms[0], ",", "")
+	withoutCurrency := currencySymbolRe.ReplaceAllString(withoutCommas, "")
+	return parseF64Rust(withoutCurrency)
 }
 
 // coerceLiteral coerces a value to a literal target. String literals route
 // through BAML's actual match_string (Mcoerce-a) — trim / fold / strip /
 // case-insensitive / substring — emitting the canonical literal (not the
 // fuzzy raw input); a substring tie is a CLAIMED error and a no-match
-// DECLINES. Int and bool literals still match EXACTLY: BAML rounds/parses
-// them (string→int, float→int), which is Mcoerce-b, so a non-exact int/bool
-// DECLINES rather than claiming a mismatch BAML would not produce. A
-// non-string input to a string literal also DECLINES (BAML's single-key
-// object ObjectToPrimitive extraction is Mcoerce-d).
+// DECLINES. Int and bool literals are LENIENT in Mcoerce-b: they run the
+// primitive int/bool coercer and compare the coerced value to the literal
+// (coerce_literal.rs:110-135), so string→int, float→int, and string→bool all
+// resolve exactly as BAML would. On a value MISMATCH after a successful
+// primitive coercion native DECLINES (falls back) rather than claiming BAML's
+// error-vs-default choice, keeping the conservative Mcoerce boundary.
+//
+// BAML's coerce_literal runs a single-key-object ObjectToPrimitive extraction
+// BEFORE every literal kind; that prelude is Mcoerce-d, so native does NOT copy
+// it — an OBJECT input to an int/bool (or string) literal DECLINES here.
 func coerceLiteral(lit *schema.LiteralValue, input value, f *coerceFlags) (json.RawMessage, error) {
 	if lit == nil {
 		return nil, fmt.Errorf("debaml: literal type missing value")
@@ -200,19 +565,48 @@ func coerceLiteral(lit *schema.LiteralValue, input value, f *coerceFlags) (json.
 			return nil, unsupported(fmt.Sprintf("literal string %q: %q matches no value (BAML errors or null-defaults)", lit.String, input.strV))
 		}
 	case schema.LiteralInt:
-		if input.kind != valNumber {
-			return nil, declineCoerce("literal int", input)
+		if input.kind == valObject {
+			// Single-key-object ObjectToPrimitive extraction is Mcoerce-d.
+			return nil, declineCoerce("literal int (BAML single-key object extraction)", input)
 		}
-		n, err := input.numV.Int64()
-		if err != nil || n != lit.Int {
-			return nil, unsupported(fmt.Sprintf("literal int %d: no exact match (BAML rounds/parses)", lit.Int))
+		n, flagged, err := coerceIntValue(input)
+		if err != nil {
+			if !declinableChildError(err) {
+				return nil, err // hard/invariant failure: propagate.
+			}
+			return nil, unsupported(fmt.Sprintf("literal int %d: primitive int coercion declined: %v", lit.Int, err))
 		}
-		return json.RawMessage(input.numV.String()), nil
+		if n != lit.Int {
+			// BAML errors here (required) or null-defaults (optional); native
+			// cannot tell which without scoring, so decline (fall back).
+			return nil, unsupported(fmt.Sprintf("literal int %d: coerced to %d (value mismatch → BAML error/default)", lit.Int, n))
+		}
+		if flagged {
+			f.flag() // FloatToInt (score 1) — preserved from the primitive coercer.
+		}
+		return json.RawMessage(strconv.FormatInt(n, 10)), nil
 	case schema.LiteralBool:
-		if input.kind != valBool || input.boolV != lit.Bool {
-			return nil, unsupported(fmt.Sprintf("literal bool %v: no exact match", lit.Bool))
+		if input.kind == valObject {
+			return nil, declineCoerce("literal bool (BAML single-key object extraction)", input)
 		}
-		return marshalJSON(input.boolV)
+		b, flagged, uncertain, err := coerceBoolValue(input)
+		if uncertain {
+			f.markUncertain()
+			return nil, unsupported(fmt.Sprintf("literal bool %v: non-ASCII case-fold uncertainty (cannot prove verdict equals BAML)", lit.Bool))
+		}
+		if err != nil {
+			if !declinableChildError(err) {
+				return nil, err // hard/invariant failure: propagate.
+			}
+			return nil, unsupported(fmt.Sprintf("literal bool %v: primitive bool coercion declined: %v", lit.Bool, err))
+		}
+		if b != lit.Bool {
+			return nil, unsupported(fmt.Sprintf("literal bool %v: coerced to %v (value mismatch → BAML error/default)", lit.Bool, b))
+		}
+		if flagged {
+			f.flag() // StringToBool (score 1) — preserved from the primitive coercer.
+		}
+		return boolRaw(b), nil
 	default:
 		return nil, fmt.Errorf("debaml: unknown literal kind %q", lit.Kind)
 	}
@@ -699,8 +1093,11 @@ func flattenStringLiterals(t schema.Type) []string {
 //     score < 110; if it carries ≥110 worth of flags BAML returns NULL. Native
 //     does not score, so in a nullable context it claims the non-null arm ONLY
 //     when that arm is CLEAN (zero score-bearing flags) — which trivially beats
-//     null's 110. A flagged arm (extra keys, substring match, object→map, …)
-//     DECLINES (it might be an M3 scored win for null or another arm).
+//     null's 110. A flagged arm (extra keys, substring match, object→map, or an
+//     Mcoerce-b FloatToInt / StringToFloat / StringToBool / DefaultButHadValue
+//     conversion) DECLINES (it might be an M3 scored win for null or another
+//     arm) — so optional int|null with "123" claims (clean direct parse) while
+//     the same with 1.6 declines (FloatToInt).
 //
 // The claim is limited to:
 //
@@ -788,11 +1185,14 @@ func resolveArmFlags(requireClean bool, arm, cf *coerceFlags) error {
 }
 
 // coerceLiteralUnion claims a homogeneous literal union when EXACTLY one
-// variant leniently coerces (Mcoerce-a's no-over-claim rule). It counts
-// per-variant successes through coerceLiteral itself — so string literals
-// are evaluated with the actual match_string (a fuzzy/substring hit counts),
-// while int/bool literals stay exact (their lenient numeric coercion is
-// Mcoerce-b). Two-plus lenient successes mean BAML would run scored pick_best
+// variant leniently coerces (the no-over-claim rule). It counts per-variant
+// successes through coerceLiteral itself — so string literals are evaluated
+// with the actual match_string (a fuzzy/substring hit counts), and int/bool
+// literals now count their Mcoerce-b lenient coercion too (a numeric string or
+// rounded float that equals the literal, a casefold/substring bool). This is
+// the M2c union revisit: once int/bool leaves are lenient, a union that had one
+// STRICT success can gain a second LENIENT one, so counting through the lenient
+// coerceLiteral is load-bearing. Two-plus lenient successes mean BAML would run scored pick_best
 // — e.g. input "foobar" substring-matching both "foo" and "bar" arms even
 // though the literal VALUES were proven match-disjoint at the gate — so
 // native DECLINES (M3). Zero successes decline too. When requireClean (nullable

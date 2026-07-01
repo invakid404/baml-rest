@@ -524,9 +524,11 @@ func normalizeForMatchString(s string) (string, bool) {
 // separate file so the de-BAML embed source list stays unchanged.
 //
 // Null handling and non-string stringification (ObjectToString) are the
-// CALLER's job: matchString operates on an already-string input. Mcoerce-a only
-// coerces string inputs; non-string enum/literal inputs decline upstream (their
-// jsonish::Value Display reproduction is Mcoerce-b/d).
+// CALLER's job: matchString operates on an already-string input. Mcoerce-b adds
+// lenient numeric/bool/null PRIMITIVE + int/bool LITERAL coercion (see
+// coerce.go), but enum/string-literal matching still coerces string inputs
+// only; non-string enum/literal inputs decline upstream (their jsonish::Value
+// Display reproduction — ObjectToString / JsonToString — is Mcoerce-d).
 
 // matchOutcome is the verdict of a matchString evaluation.
 type matchOutcome int

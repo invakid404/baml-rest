@@ -1,0 +1,22 @@
+{
+  "name": "primitive_int_fraction_string",
+  "description": "Mcoerce-b CLAIMED: int target, fraction string '3/2' -> 1.5 -> round-half-away 2 (FloatToInt). Required int field claims. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"3/2\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": 2}
+  }
+}

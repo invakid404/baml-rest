@@ -1,0 +1,22 @@
+{
+  "name": "literal_int_float_round_match",
+  "description": "Mcoerce-b CLAIMED: literal int 2, JSON float 1.6 -> coerce_int rounds to 2 == literal (FloatToInt preserved). want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "literal", "literal": {"kind": "int", "int": 2}}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":1.6}",
+  "want": {
+    "status": "success",
+    "json": {"u": 2}
+  }
+}

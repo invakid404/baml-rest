@@ -1,0 +1,22 @@
+{
+  "name": "primitive_bool_casefold",
+  "description": "Mcoerce-b CLAIMED: bool target, 'TRUE' -> to_lowercase 'true' -> true (StringToBool). want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "bool"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"TRUE\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": true}
+  }
+}

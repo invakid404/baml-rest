@@ -1,0 +1,22 @@
+{
+  "name": "literal_int_numeric_string_match",
+  "description": "Mcoerce-b CLAIMED: literal int 2, numeric string '2' -> coerce_int '2' == 2 == literal (clean). want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "literal", "literal": {"kind": "int", "int": 2}}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"2\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": 2}
+  }
+}

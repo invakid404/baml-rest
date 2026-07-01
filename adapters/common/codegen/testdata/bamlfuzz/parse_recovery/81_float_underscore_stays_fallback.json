@@ -1,0 +1,21 @@
+{
+  "name": "float_underscore_stays_fallback",
+  "description": "Mcoerce-b FALLBACK (CR-B1): float target, underscore-grouped string '1_000'. Go's ParseFloat parses it to 1000, but Rust's f64 parse REJECTS digit-group underscores, so native rejects it too and declines. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "float"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"1_000\"}",
+  "want": {
+    "status": "error"
+  }
+}

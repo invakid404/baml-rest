@@ -1,0 +1,21 @@
+{
+  "name": "float_nan_fraction_stays_fallback",
+  "description": "Mcoerce-b FALLBACK (CR-B1): float target, fraction 'NaN/2' whose numerator is NaN -> the fraction result is NaN, which has no valid JSON number spelling, so native declines. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "float"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"NaN/2\"}",
+  "want": {
+    "status": "error"
+  }
+}

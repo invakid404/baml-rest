@@ -1,0 +1,22 @@
+{
+  "name": "int_inf_stays_fallback",
+  "description": "Mcoerce-b FALLBACK (CR-B1, documented divergence): int target, 'inf'. BAML's int coercer saturates via round() as i64 -> i64::MAX, but native conservatively DECLINES non-finite rather than claim against the dynamic bridge's handling (parity-safe under-claim). want captured LIVE from BAML final parse to pin BAML's saturated output.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"inf\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": 9223372036854775807}
+  }
+}

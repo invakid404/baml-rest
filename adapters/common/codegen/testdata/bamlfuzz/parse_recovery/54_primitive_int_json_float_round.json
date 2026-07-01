@@ -1,0 +1,22 @@
+{
+  "name": "primitive_int_json_float_round",
+  "description": "Mcoerce-b CLAIMED: int target, JSON float 1.6 -> round-half-away-from-zero to 2 (FloatToInt). A required (non-nullable) int field claims regardless of the score-bearing flag. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":1.6}",
+  "want": {
+    "status": "success",
+    "json": {"u": 2}
+  }
+}

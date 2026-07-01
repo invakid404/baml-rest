@@ -1,0 +1,21 @@
+{
+  "name": "int_hex_stays_fallback",
+  "description": "Mcoerce-b FALLBACK (CR-B1): int target, hex-float string '0x1p4'. i64/u64 parse reject it, the Rust-compatible f64 parse rejects hex floats, and the extracted-number regex finds multiple digit runs (0,1,4) so it declines too. Native never claims 16. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"0x1p4\"}",
+  "want": {
+    "status": "error"
+  }
+}
