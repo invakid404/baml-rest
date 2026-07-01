@@ -277,6 +277,26 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"class_union_strict_plus_lenient_two_successes_stays_fallback": false,
 	"nullable_optional_int_float_round_stays_fallback":             false,
 	"nullable_optional_bool_string_stays_fallback":                 false,
+	// CR-B1 FALLBACK set: float spellings Go's ParseFloat accepts but Rust's
+	// str::parse::<f64>() rejects (hex floats, digit-group underscores) must NOT
+	// be claimed — parseF64Rust rejects them so native declines exactly where
+	// BAML declines. Non-finite results (NaN / ±Inf) have no valid JSON number
+	// form, so the float paths decline; the int path also declines non-finite
+	// (a parity-safe under-claim: BAML saturates inf->i64::MAX / nan->0, but
+	// native falls back rather than claim against the dynamic bridge).
+	"float_hex_stays_fallback":                false,
+	"float_signed_hex_stays_fallback":         false,
+	"float_underscore_stays_fallback":         false,
+	"float_hex_fraction_stays_fallback":       false,
+	"int_hex_stays_fallback":                  false,
+	"int_underscore_stays_fallback":           false,
+	"int_hex_fraction_stays_fallback":         false,
+	"literal_int_hex_spelling_stays_fallback": false,
+	"float_nan_stays_fallback":                false,
+	"float_inf_stays_fallback":                false,
+	"float_nan_fraction_stays_fallback":       false,
+	"int_inf_stays_fallback":                  false,
+	"int_nan_stays_fallback":                  false,
 }
 
 // parseRecoveryStats tallies how many final-parse cases the native parser

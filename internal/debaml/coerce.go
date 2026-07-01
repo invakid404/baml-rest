@@ -235,10 +235,18 @@ func coerceIntValue(input value) (n int64, flagged bool, err error) {
 			return v, fl, nil
 		}
 		if v, ok := floatFromMaybeFraction(t); ok {
-			return i64FromF64Round(v), true, nil // FloatToInt
+			n, fin := i64FromF64RoundOk(v)
+			if !fin {
+				return 0, false, declineCoerce("int target (non-finite fraction)", input)
+			}
+			return n, true, nil // FloatToInt
 		}
 		if v, ok := floatFromCommaSeparated(t); ok {
-			return i64FromF64Round(v), true, nil // FloatToInt
+			n, fin := i64FromF64RoundOk(v)
+			if !fin {
+				return 0, false, declineCoerce("int target (non-finite extracted)", input)
+			}
+			return n, true, nil // FloatToInt
 		}
 		return 0, false, declineCoerce("int target", input)
 	default:
@@ -261,7 +269,11 @@ func intFromNumeric(s string, input value) (int64, bool, error) {
 		return int64(v), false, nil // Rust u64 as i64 (two's-complement wrap)
 	}
 	if v, ok := parseF64Rust(s); ok {
-		return i64FromF64Round(v), true, nil // FloatToInt
+		n, fin := i64FromF64RoundOk(v)
+		if !fin {
+			return 0, false, declineCoerce("int target (non-finite)", input)
+		}
+		return n, true, nil // FloatToInt
 	}
 	return 0, false, declineCoerce("int target", input)
 }
@@ -281,19 +293,19 @@ func coerceFloatValue(input value) (json.RawMessage, bool, error) {
 	case valString:
 		t := trimNumericString(input.strV)
 		if v, ok := parseF64Rust(t); ok {
-			return floatRaw(v), false, nil
+			return emitFloat(v, false, input) // non-finite ("inf"/"nan") declines
 		}
 		if v, ok := parseI64Rust(t); ok {
-			return floatRaw(float64(v)), false, nil
+			return emitFloat(float64(v), false, input)
 		}
 		if v, ok := parseU64Rust(t); ok {
-			return floatRaw(float64(v)), false, nil
+			return emitFloat(float64(v), false, input)
 		}
 		if v, ok := floatFromMaybeFraction(t); ok {
-			return floatRaw(v), false, nil
+			return emitFloat(v, false, input)
 		}
 		if v, ok := floatFromCommaSeparated(t); ok {
-			return floatRaw(v), true, nil // StringToFloat
+			return emitFloat(v, true, input) // StringToFloat
 		}
 		return nil, false, declineCoerce("float target", input)
 	default:
@@ -354,12 +366,29 @@ func boolRaw(b bool) json.RawMessage {
 	return json.RawMessage("false")
 }
 
-// floatRaw emits f as a JSON number using the shortest round-trip form. The
-// differential compares numeric VALUE (both sides decode to float64), so the
-// byte spelling (50 vs 50.0 vs scientific) never affects parity — only the
-// decoded value must equal BAML's coerced float.
-func floatRaw(f float64) json.RawMessage {
-	return json.RawMessage(strconv.FormatFloat(f, 'g', -1, 64))
+// floatRaw emits f as a JSON number using the shortest round-trip form, or
+// reports ok=false for a NON-FINITE value (NaN, +Inf, -Inf) — which has no
+// valid JSON number spelling, so the caller must DECLINE rather than emit an
+// invalid token like "NaN"/"+Inf". The differential compares numeric VALUE
+// (both sides decode to float64), so the byte spelling (50 vs 50.0 vs
+// scientific) never affects parity — only the decoded value must equal BAML's.
+func floatRaw(f float64) (json.RawMessage, bool) {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return nil, false
+	}
+	return json.RawMessage(strconv.FormatFloat(f, 'g', -1, 64)), true
+}
+
+// emitFloat wraps floatRaw for coerceFloatValue's string paths: a finite value
+// emits (carrying the given StringToFloat flag), while a NON-FINITE value
+// DECLINES — BAML's Float(NaN/±Inf) has no valid JSON number form, so native
+// falls back rather than claim invalid output.
+func emitFloat(v float64, flagged bool, input value) (json.RawMessage, bool, error) {
+	out, ok := floatRaw(v)
+	if !ok {
+		return nil, false, declineCoerce("float target (non-finite)", input)
+	}
+	return out, flagged, nil
 }
 
 // trimNumericString mirrors BAML's shared numeric-string preprocessing:
@@ -387,12 +416,38 @@ func parseU64Rust(s string) (uint64, bool) {
 	return n, err == nil
 }
 
-// parseF64Rust mirrors s.parse::<f64>() for the corpus (decimal / exponent /
-// inf / nan forms). Go ParseFloat additionally accepts hex-float syntax Rust
-// rejects, but no such token appears in the numeric-string corpus.
+// parseF64Rust mirrors s.parse::<f64>() (Rust's FromStr for f64): decimal /
+// exponent / leading-dot / signed forms, plus the case-insensitive "inf" /
+// "infinity" / "nan" special values. Go's strconv.ParseFloat is a SUPERSET —
+// it also accepts two spellings Rust REJECTS: digit-group underscores
+// ("1_000") and hex floats ("0x1p4"). Both are rejected here BEFORE
+// ParseFloat, so native never CLAIMS a numeric string BAML's coerce_int /
+// coerce_float would decline (a parity over-claim). A ParseFloat range error
+// (overflow, e.g. "1e400") also declines — Rust yields Ok(inf) there, but
+// native conservatively falls back rather than guess the dynamic bridge's
+// handling of a non-finite value.
+//
+// NOTE: a valid "inf" / "nan" spelling returns the non-finite value with
+// ok=true — the caller then rejects it: the int path via i64FromF64RoundOk and
+// every FLOAT-emitting path via floatRaw both DECLINE non-finite (a NaN / ±Inf
+// has no valid JSON number form, and native does not claim BAML's saturation
+// against the dynamic bridge).
 func parseF64Rust(s string) (float64, bool) {
+	if strings.IndexByte(s, '_') >= 0 {
+		return 0, false // Rust f64 parse rejects digit-group underscores.
+	}
+	t := s
+	if len(t) > 0 && (t[0] == '+' || t[0] == '-') {
+		t = t[1:]
+	}
+	if strings.HasPrefix(t, "0x") || strings.HasPrefix(t, "0X") {
+		return 0, false // Rust f64 parse rejects hex-float syntax.
+	}
 	f, err := strconv.ParseFloat(s, 64)
-	return f, err == nil
+	if err != nil {
+		return 0, false
+	}
+	return f, true
 }
 
 // i64FromF64Round rounds f half-away-from-zero (Rust f64::round) then applies
@@ -412,6 +467,20 @@ func i64FromF64Round(f float64) int64 {
 	default:
 		return int64(r)
 	}
+}
+
+// i64FromF64RoundOk applies i64FromF64Round but reports ok=false for a
+// NON-FINITE input (NaN / ±Inf). BAML would saturate it via `round() as i64`
+// (inf→i64::MAX, nan→0), but native conservatively DECLINES the whole int
+// coercion rather than claim against the dynamic bridge's non-finite handling
+// — a parity-safe under-claim (fall back to BAML) captured in the corpus. A
+// FINITE value out of i64 range (e.g. 1e19) still saturates and returns
+// ok=true, matching BAML exactly.
+func i64FromF64RoundOk(f float64) (int64, bool) {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, false
+	}
+	return i64FromF64Round(f), true
 }
 
 // floatFromMaybeFraction ports float_from_maybe_fraction: split on the FIRST

@@ -1,0 +1,21 @@
+{
+  "name": "float_hex_stays_fallback",
+  "description": "Mcoerce-b FALLBACK (CR-B1): float target, hex-float string '0x1p4'. Go's ParseFloat would parse it to 16, but Rust's str::parse::<f64>() REJECTS hex floats, so native rejects it too (no over-claim) and declines. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "float"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"0x1p4\"}",
+  "want": {
+    "status": "error"
+  }
+}

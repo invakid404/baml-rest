@@ -1,0 +1,21 @@
+{
+  "name": "float_signed_hex_stays_fallback",
+  "description": "Mcoerce-b FALLBACK (CR-B1): float target, signed hex-float string '+0x1p4'. parseF64Rust strips one leading sign then rejects the '0x' prefix (Rust rejects hex floats), so native declines. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "float"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"+0x1p4\"}",
+  "want": {
+    "status": "error"
+  }
+}

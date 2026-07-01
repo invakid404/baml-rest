@@ -68,6 +68,31 @@ func TestCoercePrimitiveString_StaysStrict(t *testing.T) {
 	requireUnsupported(t, s, `{"u":true}`)
 }
 
+// TestCoercePrimitive_GoOnlyFloatSpellingsDecline pins the CR-B1 fix
+// end-to-end: float spellings Go's ParseFloat accepts but Rust rejects
+// (underscores, hex floats) and non-finite results DECLINE for int, float, and
+// int-literal targets, so native never claims a value BAML would decline nor
+// emits an invalid JSON token.
+func TestCoercePrimitive_GoOnlyFloatSpellingsDecline(t *testing.T) {
+	ints := oneField(intProp())
+	requireUnsupported(t, ints, `{"u":"0x1p4"}`)
+	requireUnsupported(t, ints, `{"u":"1_000"}`)
+	requireUnsupported(t, ints, `{"u":"0x1p4/2"}`)
+	requireUnsupported(t, ints, `{"u":"inf"}`) // non-finite -> decline
+	requireUnsupported(t, ints, `{"u":"nan"}`)
+
+	floats := oneField(&bamlutils.DynamicProperty{Type: "float"})
+	requireUnsupported(t, floats, `{"u":"0x1p4"}`)
+	requireUnsupported(t, floats, `{"u":"1_000"}`)
+	requireUnsupported(t, floats, `{"u":"NaN"}`) // non-finite -> no valid JSON
+	requireUnsupported(t, floats, `{"u":"inf"}`)
+	requireUnsupported(t, floats, `{"u":"NaN/2"}`)
+
+	// Literal int inherits the primitive int reject: "0x1p4" would be 16 in Go
+	// (== the literal) but Rust rejects it, so native declines (never claims 16).
+	requireUnsupported(t, litIntField(16), `{"u":"0x1p4"}`)
+}
+
 // litIntField / litBoolField build a single literal-typed field.
 func litIntField(v int64) *bamlutils.DynamicOutputSchema {
 	return oneField(&bamlutils.DynamicProperty{Type: "literal_int", Value: v})

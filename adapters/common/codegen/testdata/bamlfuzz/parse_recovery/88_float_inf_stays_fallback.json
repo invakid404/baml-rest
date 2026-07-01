@@ -1,0 +1,21 @@
+{
+  "name": "float_inf_stays_fallback",
+  "description": "Mcoerce-b FALLBACK (CR-B1): float target, 'inf'. Parses to +Inf, which has no valid JSON number spelling, so native declines rather than emit an invalid token. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "float"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"inf\"}",
+  "want": {
+    "status": "error"
+  }
+}

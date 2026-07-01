@@ -89,6 +89,54 @@ func TestFloatFromCommaSeparated(t *testing.T) {
 	}
 }
 
+// TestParseF64Rust_RejectsGoOnlySpellings pins the CR-B1 fix: parseF64Rust
+// rejects the float spellings Go's strconv.ParseFloat accepts but Rust's
+// str::parse::<f64>() does NOT (underscores, hex floats), and reports a
+// ParseFloat range error (overflow) as a decline — while still accepting every
+// valid Rust decimal/exponent/leading-dot/signed form and the "inf"/"nan"
+// special values (as non-finite, ok=true).
+func TestParseF64Rust_RejectsGoOnlySpellings(t *testing.T) {
+	reject := []string{"1_000", "0x1p4", "+0x1p4", "0X1p4", "-0x1.8p+2", "1_0.5", "1e400"}
+	for _, s := range reject {
+		if v, ok := parseF64Rust(s); ok {
+			t.Errorf("parseF64Rust(%q) accepted (=%v), want reject (Go-only/overflow)", s, v)
+		}
+	}
+	// Valid Rust forms accepted (finite).
+	accept := map[string]float64{
+		"1": 1, "+1": 1, "-1": -1, "1.5": 1.5, ".5": 0.5, "1.": 1, "+.5": 0.5,
+		"1e5": 1e5, "1E5": 1e5, "-2.5e-1": -0.25,
+	}
+	for s, want := range accept {
+		v, ok := parseF64Rust(s)
+		if !ok || v != want {
+			t.Errorf("parseF64Rust(%q) = (%v,%v), want (%v,true)", s, v, ok, want)
+		}
+	}
+	// Rust also accepts "inf"/"nan" spellings; parseF64Rust returns them
+	// non-finite with ok=true (the caller decides — int saturates, float declines).
+	for _, s := range []string{"inf", "+inf", "-inf", "Infinity", "nan", "NaN"} {
+		if _, ok := parseF64Rust(s); !ok {
+			t.Errorf("parseF64Rust(%q) rejected, want accept (non-finite, ok=true)", s)
+		}
+	}
+}
+
+// TestFloatRaw_NonFinite pins that floatRaw refuses to emit a non-finite float
+// (which has no valid JSON number form), reporting ok=false so the caller
+// declines instead of emitting an invalid token.
+func TestFloatRaw_NonFinite(t *testing.T) {
+	for _, f := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		if _, ok := floatRaw(f); ok {
+			t.Errorf("floatRaw(%v) ok=true, want false (invalid JSON)", f)
+		}
+	}
+	out, ok := floatRaw(50)
+	if !ok || string(out) != "50" {
+		t.Errorf("floatRaw(50) = (%q,%v), want (\"50\",true)", string(out), ok)
+	}
+}
+
 // TestI64FromF64Round pins Rust's f64::round (ties away from zero) followed by
 // the saturating float→int cast (NaN→0, out-of-range→i64 bound).
 func TestI64FromF64Round(t *testing.T) {
@@ -179,6 +227,16 @@ func TestCoerceIntValue(t *testing.T) {
 		{"str-garbage", strVv("hello"), 0, false, false},
 		{"str-multi-number", strVv("1 and 2"), 0, false, false},
 		{"bool-input", value{kind: valBool, boolV: true}, 0, false, false},
+		// CR-B1: Go-only float spellings Rust rejects must DECLINE (no over-claim).
+		{"str-hex-float-reject", strVv("0x1p4"), 0, false, false},
+		{"str-underscore-reject", strVv("1_000"), 0, false, false},
+		{"str-hex-fraction-reject", strVv("0x1p4/2"), 0, false, false},
+		// CR-B1: non-finite ("inf"/"nan"/fraction) DECLINES (parity-safe under-claim).
+		{"str-inf-declines", strVv("inf"), 0, false, false},
+		{"str-nan-declines", strVv("nan"), 0, false, false},
+		{"str-inf-fraction-declines", strVv("inf/2"), 0, false, false},
+		// A FINITE out-of-range value still saturates and CLAIMS (matches BAML).
+		{"str-finite-overflow-saturates", strVv("1e19"), math.MaxInt64, true, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -222,6 +280,14 @@ func TestCoerceFloatValue(t *testing.T) {
 		{"str-sentence", strVv("Save up to 20% on your purchase"), 20.0, true, true},
 		{"str-garbage", strVv("hello"), 0, false, false},
 		{"str-multi", strVv("1 and 2"), 0, false, false},
+		// CR-B1: Go-only float spellings Rust rejects must DECLINE (no over-claim).
+		{"str-hex-reject", strVv("0x1p4"), 0, false, false},
+		{"str-underscore-reject", strVv("1_000"), 0, false, false},
+		{"str-hex-fraction-reject", strVv("0x1p4/2"), 0, false, false},
+		// CR-B1: non-finite has no valid JSON number form -> DECLINE (never emit).
+		{"str-nan-declines", strVv("NaN"), 0, false, false},
+		{"str-inf-declines", strVv("inf"), 0, false, false},
+		{"str-nan-fraction-declines", strVv("NaN/2"), 0, false, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

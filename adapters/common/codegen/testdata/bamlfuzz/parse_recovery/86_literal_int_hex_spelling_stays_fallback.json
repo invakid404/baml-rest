@@ -1,0 +1,21 @@
+{
+  "name": "literal_int_hex_spelling_stays_fallback",
+  "description": "Mcoerce-b FALLBACK (CR-B1): literal int 16, hex-float string '0x1p4' (which Go would parse to 16 == the literal). The literal path inherits the primitive int coercer's Rust-parity reject of hex floats, so native declines and never claims 16. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "literal", "literal": {"kind": "int", "int": 16}}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"0x1p4\"}",
+  "want": {
+    "status": "error"
+  }
+}

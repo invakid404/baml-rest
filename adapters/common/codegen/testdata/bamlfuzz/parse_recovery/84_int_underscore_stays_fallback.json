@@ -1,0 +1,21 @@
+{
+  "name": "int_underscore_stays_fallback",
+  "description": "Mcoerce-b FALLBACK (CR-B1): int target, underscore-grouped string '1_000'. i64/u64/f64 parse all reject underscores (Rust parity), and the extracted-number regex sees two digit runs (1, 000) so it declines. Native never claims 1000. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"1_000\"}",
+  "want": {
+    "status": "error"
+  }
+}

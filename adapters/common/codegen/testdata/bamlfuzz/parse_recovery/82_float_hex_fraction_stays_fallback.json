@@ -1,0 +1,21 @@
+{
+  "name": "float_hex_fraction_stays_fallback",
+  "description": "Mcoerce-b FALLBACK (CR-B1): float target, fraction '0x1p4/2' whose numerator is a hex float. The fraction path parses each side with the Rust-compatible f64 parse, which rejects '0x1p4', so native declines. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "float"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"0x1p4/2\"}",
+  "want": {
+    "status": "error"
+  }
+}
