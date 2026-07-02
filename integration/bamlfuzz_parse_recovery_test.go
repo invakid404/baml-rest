@@ -372,6 +372,13 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"list_literal_int_single_key_object_kept":              true,
 	"map_string_literal_bool_single_key_object_value_kept": true,
 	"list_string_null_skipped":                             true,
+	// Number-display parity (over-claim guard): a NON-integer number spelling is
+	// canonicalized by BAML's serde_json f64 Display (5e0 -> "5.0"), which native's
+	// raw-token render cannot prove byte-identical, so native marks it UNCERTAIN and
+	// DECLINES — standalone and (whole-collection, not a partial skip) in a list/map.
+	// Integer stringification still claims (see the CLAIMED entries above).
+	"primitive_string_number_noninteger_stays_fallback": false,
+	"list_string_noninteger_number_stays_fallback":      false,
 }
 
 // parseRecoveryStats tallies how many final-parse cases the native parser

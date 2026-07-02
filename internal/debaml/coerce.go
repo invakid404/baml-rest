@@ -23,11 +23,15 @@ import (
 //     claim, where BAML's null arm competes by scoring (DefaultButHadValue,
 //     cost 110): only a clean (score-0) non-null arm provably beats null
 //     without native computing scores.
-//   - uncertain: the match verdict depended on a non-ASCII case fold native
-//     cannot prove equals Rust's str::to_lowercase (caseFoldUncertain). Used by
-//     EVERY union claim: if any arm's verdict was uncertain, native cannot
-//     trust its per-arm count (a false-rejected leaf would let it claim the
-//     wrong arm), so it declines.
+//   - uncertain: the verdict depended on something native cannot prove equals
+//     BAML — a non-ASCII case fold vs Rust's str::to_lowercase
+//     (caseFoldUncertain), OR a non-integer number spelling whose jsonish Value
+//     Display native cannot reproduce byte-identically vs serde_json's f64
+//     Display (displayNumber, Mcoerce-d). Used by EVERY union claim: if any
+//     arm's verdict was uncertain, native cannot trust its per-arm count (a
+//     false-rejected leaf would let it claim the wrong arm), so it declines; and
+//     by the collection classifiers, which DECLINE the whole list/map (never
+//     proven-skip) on an uncertain child.
 //
 // A nil receiver means "don't track" (top-level / non-nullable / standalone),
 // so threading it is free there.
@@ -43,7 +47,9 @@ func (f *coerceFlags) flag() {
 	}
 }
 
-// markUncertain records a non-ASCII case-fold native cannot prove matches BAML.
+// markUncertain records a verdict native cannot prove matches BAML — a
+// non-ASCII case-fold (caseFoldUncertain) or a non-integer number display
+// (displayNumber). Callers DECLINE (never claim, never proven-skip).
 func (f *coerceFlags) markUncertain() {
 	if f != nil {
 		f.uncertain = true
@@ -244,11 +250,13 @@ func coercePrimitiveNull(input value, f *coerceFlags) (json.RawMessage, error) {
 // coercePrimitiveString ports coerce_string (coerce_primitive.rs:132). A JSON
 // string is emitted unchanged (score 0). A NON-null, NON-string value is
 // stringified via jsonish Value Display (displayValue) and carries JsonToString
-// (score 2). A JSON null is NOT stringified: BAML errors (error_unexpected_null)
-// and native DECLINES — a required string is a hard error and an optional string
-// null-defaults, neither of which native reproduces without scoring. (BAML's
-// AnyOf parser-meta path is not modeled by native's value kinds, so it never
-// arises here.)
+// (score 2) — but ONLY when native can prove the display byte-identical to BAML;
+// a display carrying a non-integer number spelling native cannot reproduce (see
+// displayNumber) DECLINES and marks f uncertain. A JSON null is NOT stringified:
+// BAML errors (error_unexpected_null) and native DECLINES — a required string is
+// a hard error and an optional string null-defaults, neither of which native
+// reproduces without scoring. (BAML's AnyOf parser-meta path is not modeled by
+// native's value kinds, so it never arises here.)
 func coercePrimitiveString(input value, f *coerceFlags) (json.RawMessage, error) {
 	switch input.kind {
 	case valString:
@@ -257,20 +265,25 @@ func coercePrimitiveString(input value, f *coerceFlags) (json.RawMessage, error)
 		// BAML error_unexpected_null — null is never stringified.
 		return nil, declineCoerce("string target (null)", input)
 	default:
+		s, certain := displayValue(input)
+		if !certain {
+			f.markUncertain()
+			return nil, unsupported("string target: number spelling display not provably identical to BAML's serde_json Display (Mcoerce-d number-display parity)")
+		}
 		f.flag() // JsonToString (score 2)
-		return marshalJSON(displayValue(input))
+		return marshalJSON(s)
 	}
 }
 
-// displayValue renders v exactly as BAML's jsonish::Value Display impl does
+// displayValue renders v the way BAML's jsonish::Value Display impl does
 // (jsonish/value.rs:195) — the string BAML feeds to JsonToString (primitive
 // string, coercePrimitiveString) and ObjectToString (enum / string-literal
 // match_string, stringForMatch). This is NOT JSON serialization: keys and
 // nested strings are UNQUOTED. The forms, per value.rs:
 //
-//   - number: the raw numeric token text (json.Number preserves the input
-//     spelling, matching serde_json::Number's Display for the integer /
-//     simple-decimal forms — e.g. 5, 5.0 — the corpus uses);
+//   - number: BAML's serde_json::Number Display (see displayNumber) — native
+//     renders it byte-identically ONLY for a provably-canonical integer token
+//     and marks a NON-integer spelling UNCERTAIN;
 //   - bool:   "true" / "false";
 //   - null:   "null";
 //   - string: the raw string, unquoted (a nested string is not re-quoted);
@@ -278,48 +291,94 @@ func coercePrimitiveString(input value, f *coerceFlags) (json.RawMessage, error)
 //     ", " between entries, in input order, values recursively displayed;
 //   - array:  "[v, v2]" — ", " between elements, recursively displayed.
 //
-// The caller JSON-marshals the result (marshalJSON, HTML-escaping disabled) so
-// the display string becomes the emitted JSON string value.
-func displayValue(v value) string {
+// It returns the rendered string plus a certain flag: certain is false when the
+// display contains ANY number spelling native cannot prove equals BAML's
+// serde_json f64 Display (see displayNumber), propagated up through nested
+// object/array trees. Callers MUST DECLINE (never claim, never proven-skip) when
+// certain is false. The caller JSON-marshals a certain result (marshalJSON,
+// HTML-escaping disabled) so the display string becomes the emitted JSON string.
+func displayValue(v value) (s string, certain bool) {
 	switch v.kind {
 	case valNull:
-		return "null"
+		return "null", true
 	case valBool:
 		if v.boolV {
-			return "true"
+			return "true", true
 		}
-		return "false"
+		return "false", true
 	case valNumber:
-		return v.numV.String()
+		return displayNumber(v.numV)
 	case valString:
-		return v.strV
+		return v.strV, true
 	case valArray:
 		var b strings.Builder
 		b.WriteByte('[')
+		certain = true
 		for i := range v.arrV {
 			if i > 0 {
 				b.WriteString(", ")
 			}
-			b.WriteString(displayValue(v.arrV[i]))
+			es, ec := displayValue(v.arrV[i])
+			certain = certain && ec
+			b.WriteString(es)
 		}
 		b.WriteByte(']')
-		return b.String()
+		return b.String(), certain
 	case valObject:
 		var b strings.Builder
 		b.WriteByte('{')
+		certain = true
 		for i := range v.objV {
 			if i > 0 {
 				b.WriteString(", ")
 			}
 			b.WriteString(v.objV[i].key)
 			b.WriteString(": ")
-			b.WriteString(displayValue(v.objV[i].val))
+			vs, vc := displayValue(v.objV[i].val)
+			certain = certain && vc
+			b.WriteString(vs)
 		}
 		b.WriteByte('}')
-		return b.String()
+		return b.String(), certain
 	default:
-		return ""
+		return "", false
 	}
+}
+
+// displayNumber renders a json.Number the way BAML's serde_json::Number Display
+// does, but returns certain=true ONLY when native can PROVE byte-identity.
+//
+// BAML's jsonish engine does NOT enable serde_json's arbitrary_precision, so a
+// jsonish::Value::Number stores a serde_json::Number as i64 / u64 / f64 and its
+// Display prints the CANONICAL form, NOT the input token:
+//
+//   - an INTEGER in i64/u64 range prints its decimal digits — identical to the
+//     raw token, so native renders it as-is (certain);
+//   - a NON-integer spelling — a decimal point, an exponent (5e0), "-0", a
+//     redundant form (5.00), or an integer too large for u64 that serde falls
+//     back to f64 — is canonicalized via serde's float formatter (ryu), which Go's
+//     strconv does NOT reproduce byte-for-byte (serde "5.0" vs strconv "5", serde
+//     "5.0" vs token "5e0"/"5.00"). Native cannot prove its display equals BAML's,
+//     so it marks the value UNCERTAIN and the caller DECLINES.
+//
+// The certain test is a round-trip: the token must contain no '.'/'e'/'E' and
+// re-format identically from the parsed i64/u64. That rejects "-0", "+5", leading
+// zeros, and oversized ints, leaving only tokens whose native spelling equals
+// Rust's i64/u64 Display byte-for-byte.
+func displayNumber(n json.Number) (string, bool) {
+	s := string(n)
+	if strings.ContainsAny(s, ".eE") {
+		return s, false // fraction/exponent: BAML canonicalizes via f64 Display.
+	}
+	if v, err := strconv.ParseInt(s, 10, 64); err == nil && strconv.FormatInt(v, 10) == s {
+		return s, true
+	}
+	if v, err := strconv.ParseUint(s, 10, 64); err == nil && strconv.FormatUint(v, 10) == s {
+		return s, true
+	}
+	// "-0" (serde f64 -0.0 -> "-0.0"), "+5", leading zeros, or an int past u64
+	// (serde f64 fallback) — none provably identical to BAML's Display.
+	return s, false
 }
 
 // stringForMatch reproduces match_string's value→string prelude
@@ -327,9 +386,12 @@ func displayValue(v value) string {
 // non-string is stringified via jsonish Value Display and marks ObjectToString
 // (score 2); a JSON null is BAML error_unexpected_null and DECLINES (null is
 // never matched — a required target errors, an optional one null-defaults, and
-// native cannot tell which without scoring). It is the shared prelude for enum
-// and string-literal coercion (coerceEnum / coerceLiteral). BAML's AnyOf
-// parser-meta path is not modeled by native's value kinds.
+// native cannot tell which without scoring). A non-string whose Display carries
+// a number spelling native cannot prove equals BAML's (displayValue certain=false)
+// also DECLINES and marks f uncertain, so match_string is never run against an
+// unprovable stringification. It is the shared prelude for enum and string-literal
+// coercion (coerceEnum / coerceLiteral). BAML's AnyOf parser-meta path is not
+// modeled by native's value kinds.
 func stringForMatch(input value, f *coerceFlags) (string, error) {
 	switch input.kind {
 	case valString:
@@ -337,8 +399,13 @@ func stringForMatch(input value, f *coerceFlags) (string, error) {
 	case valNull:
 		return "", declineCoerce("match_string target (null)", input)
 	default:
+		s, certain := displayValue(input)
+		if !certain {
+			f.markUncertain()
+			return "", unsupported("match_string target: number spelling display not provably identical to BAML's serde_json Display (Mcoerce-d number-display parity)")
+		}
 		f.flag() // ObjectToString (score 2)
-		return displayValue(input), nil
+		return s, nil
 	}
 }
 

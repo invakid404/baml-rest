@@ -19,38 +19,60 @@ func arrVal(vs ...value) value    { return value{kind: valArray, arrV: vs} }
 
 // TestDisplayValue pins displayValue against BAML's jsonish::Value Display impl
 // (jsonish/value.rs:195) BYTE-FOR-BYTE. This is NOT JSON: keys and nested
-// strings are UNQUOTED, entries use ", " and keys ": ".
+// strings are UNQUOTED, entries use ", " and keys ": ". certain is true only when
+// native can prove byte-identity to BAML's serde_json Display — an INTEGER token
+// is certain; a non-integer number spelling is UNCERTAIN (BAML canonicalizes it
+// via f64 Display, which native cannot reproduce), and that uncertainty
+// propagates up through nested object/array trees.
 func TestDisplayValue(t *testing.T) {
 	cases := []struct {
-		name string
-		in   value
-		want string
+		name        string
+		in          value
+		want        string
+		wantCertain bool
 	}{
-		{"number-int", numV("5"), "5"},
-		{"number-float-trailing-zero", numV("5.0"), "5.0"},
-		{"number-negative", numV("-3"), "-3"},
-		{"number-decimal", numV("3.14"), "3.14"},
-		{"bool-true", boolVal(true), "true"},
-		{"bool-false", boolVal(false), "false"},
-		{"null", nullVal(), "null"},
-		{"string-plain", strVv("hi"), "hi"}, // UNQUOTED
-		{"string-empty", strVv(""), ""},     // UNQUOTED empty
-		{"string-with-spaces", strVv("a b"), "a b"},
-		{"empty-object", objVal(), "{}"},
-		{"empty-array", arrVal(), "[]"},
-		{"object-single", objVal(fld("a", numV("1"))), "{a: 1}"},
-		{"object-multi", objVal(fld("a", numV("1")), fld("b", strVv("x"))), "{a: 1, b: x}"},
-		{"array-mixed", arrVal(numV("1"), strVv("x"), boolVal(true)), "[1, x, true]"},
-		{"array-with-null", arrVal(numV("1"), nullVal()), "[1, null]"},
-		{"nested-array-in-object", objVal(fld("a", arrVal(numV("1"), numV("2")))), "{a: [1, 2]}"},
-		{"nested-object-in-array", arrVal(objVal(fld("k", strVv("v")))), "[{k: v}]"},
-		{"deep-nest", objVal(fld("a", arrVal(numV("1"), objVal(fld("b", numV("2")))))), "{a: [1, {b: 2}]}"},
+		{"number-int", numV("5"), "5", true},
+		{"number-negative", numV("-3"), "-3", true},
+		{"number-zero", numV("0"), "0", true},
+		{"number-large-in-i64", numV("9223372036854775807"), "9223372036854775807", true},
+		{"number-large-in-u64", numV("18446744073709551615"), "18446744073709551615", true},
+		// Non-integer spellings are UNCERTAIN — BAML canonicalizes via f64 Display
+		// (serde ryu), which native's strconv does not reproduce byte-for-byte.
+		{"number-trailing-zero", numV("5.0"), "5.0", false},
+		{"number-decimal", numV("3.14"), "3.14", false},
+		{"number-exponent-lower", numV("5e0"), "5e0", false},
+		{"number-exponent-upper", numV("5E0"), "5E0", false},
+		{"number-redundant-decimal", numV("5.00"), "5.00", false},
+		{"number-negative-zero", numV("-0"), "-0", false},
+		{"number-past-u64", numV("18446744073709551616"), "18446744073709551616", false},
+		{"bool-true", boolVal(true), "true", true},
+		{"bool-false", boolVal(false), "false", true},
+		{"null", nullVal(), "null", true},
+		{"string-plain", strVv("hi"), "hi", true}, // UNQUOTED
+		{"string-empty", strVv(""), "", true},     // UNQUOTED empty
+		{"string-with-spaces", strVv("a b"), "a b", true},
+		{"empty-object", objVal(), "{}", true},
+		{"empty-array", arrVal(), "[]", true},
+		{"object-single", objVal(fld("a", numV("1"))), "{a: 1}", true},
+		{"object-multi", objVal(fld("a", numV("1")), fld("b", strVv("x"))), "{a: 1, b: x}", true},
+		{"array-mixed", arrVal(numV("1"), strVv("x"), boolVal(true)), "[1, x, true]", true},
+		{"array-with-null", arrVal(numV("1"), nullVal()), "[1, null]", true},
+		{"nested-array-in-object", objVal(fld("a", arrVal(numV("1"), numV("2")))), "{a: [1, 2]}", true},
+		{"nested-object-in-array", arrVal(objVal(fld("k", strVv("v")))), "[{k: v}]", true},
+		{"deep-nest", objVal(fld("a", arrVal(numV("1"), objVal(fld("b", numV("2")))))), "{a: [1, {b: 2}]}", true},
 		// Input key ORDER is preserved (not sorted).
-		{"object-order-preserved", objVal(fld("z", numV("1")), fld("a", numV("2"))), "{z: 1, a: 2}"},
+		{"object-order-preserved", objVal(fld("z", numV("1")), fld("a", numV("2"))), "{z: 1, a: 2}", true},
+		// A non-integer number ANYWHERE in the tree makes the WHOLE display uncertain.
+		{"object-nested-noninteger-number", objVal(fld("a", numV("5.0"))), "{a: 5.0}", false},
+		{"array-nested-exponent-number", arrVal(numV("1"), numV("2e0")), "[1, 2e0]", false},
 	}
 	for _, c := range cases {
-		if got := displayValue(c.in); got != c.want {
+		got, certain := displayValue(c.in)
+		if got != c.want {
 			t.Errorf("displayValue(%s): got %q, want %q", c.name, got, c.want)
+		}
+		if certain != c.wantCertain {
+			t.Errorf("displayValue(%s): certain = %v, want %v", c.name, certain, c.wantCertain)
 		}
 	}
 }
@@ -102,6 +124,82 @@ func TestCoercePrimitiveString_Direct(t *testing.T) {
 	if _, err := coercePrimitiveString(nullVal(), fn); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
 		t.Errorf("string<-null: expected ErrDeBAMLParseUnsupported, got %v", err)
 	}
+}
+
+// TestCoercePrimitiveString_NonIntegerNumberDeclines pins the number-display
+// parity guard: a NON-integer number spelling (BAML canonicalizes via serde f64
+// Display, which native cannot reproduce byte-for-byte) DECLINES and marks f
+// uncertain — standalone and nested inside an object/array display. An INTEGER
+// (and integer-only object/array display) still claims.
+func TestCoercePrimitiveString_NonIntegerNumberDeclines(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		in   value
+	}{
+		{"exponent", numV("5e0")},
+		{"upper-exponent", numV("5E0")},
+		{"decimal", numV("5.0")},
+		{"redundant-decimal", numV("5.00")},
+		{"negative-zero", numV("-0")},
+		{"past-u64", numV("18446744073709551616")},
+		{"object-with-noninteger", objVal(fld("a", numV("5.0")))},
+		{"array-with-exponent", arrVal(numV("1"), numV("2e0"))},
+	} {
+		f := &coerceFlags{}
+		if _, err := coercePrimitiveString(c.in, f); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+			t.Errorf("%s: expected ErrDeBAMLParseUnsupported, got %v", c.name, err)
+		}
+		if !f.isUncertain() {
+			t.Errorf("%s: expected f marked uncertain (number-display parity)", c.name)
+		}
+	}
+	// Sanity: a plain integer and an integer-only object/array still CLAIM.
+	for _, c := range []struct {
+		name string
+		in   value
+		want string
+	}{
+		{"integer", numV("5"), `"5"`},
+		{"object-integers", objVal(fld("a", numV("1"))), `"{a: 1}"`},
+	} {
+		f := &coerceFlags{}
+		got, err := coercePrimitiveString(c.in, f)
+		if err != nil || string(got) != c.want {
+			t.Errorf("%s: got (%s,%v), want (%s,nil)", c.name, got, err, c.want)
+		}
+		if f.isUncertain() {
+			t.Errorf("%s: must NOT be uncertain (provable integer display)", c.name)
+		}
+	}
+}
+
+// TestNumberDisplayUncertainty_EndToEnd pins that a non-integer number spelling
+// makes stringification DECLINE end-to-end — standalone string, and (whole-
+// collection decline, NOT a partial skip) inside a list<string> / map value /
+// enum / string-literal — while integer stringification still claims.
+func TestNumberDisplayUncertainty_EndToEnd(t *testing.T) {
+	// Standalone string target: 5e0 declines (BAML would emit "5.0").
+	strS := oneField(strProp())
+	requireUnsupported(t, strS, `{"u":5e0}`)
+	mustParse(t, strS, `{"u":5}`, `{"u":"5"}`) // integer still claims
+
+	// list<string> with a non-integer element -> WHOLE list declines (not a skip).
+	listS := oneField(&bamlutils.DynamicProperty{Type: "list", Items: &bamlutils.DynamicTypeSpec{Type: "string"}})
+	requireUnsupported(t, listS, `{"u":["a",5.0]}`)
+
+	// map<string,string> with a non-integer value -> WHOLE map declines.
+	mapS := oneField(&bamlutils.DynamicProperty{
+		Type:   "map",
+		Keys:   &bamlutils.DynamicTypeSpec{Type: "string"},
+		Values: &bamlutils.DynamicTypeSpec{Type: "string"},
+	})
+	requireUnsupported(t, mapS, `{"u":{"a":"x","b":5.0}}`)
+
+	// string literal "5" with a non-integer number input -> declines (can't prove
+	// the stringification, so match_string is not run).
+	litS := oneField(&bamlutils.DynamicProperty{Type: "literal_string", Value: "5"})
+	requireUnsupported(t, litS, `{"u":5e0}`)
+	mustParse(t, litS, `{"u":5}`, `{"u":"5"}`) // integer stringifies to "5" == literal
 }
 
 // TestStringForMatch pins the shared match_string value→string prelude used by
