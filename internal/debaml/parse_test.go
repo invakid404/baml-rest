@@ -335,16 +335,17 @@ func TestParse_MapNonObjectDeclines(t *testing.T) {
 	requireUnsupported(t, mapStringIntSchema(), `{"scores":"x"}`)
 }
 
-func TestParse_MapBadValueDeclines(t *testing.T) {
-	// A value that fails native coercion (even with Mcoerce-b leniency) DECLINES
-	// the WHOLE map: BAML records MapValueParseError and SKIPS just that entry,
-	// returning a partial map — native cannot claim a different/partial result.
-	// "x" is not a number in any form (no i64/u64/f64/fraction/extracted match),
-	// so coerce_int errors and BAML skips the entry.
-	requireUnsupported(t, mapStringIntSchema(), `{"scores":{"a":1,"b":"x"}}`)
-	// A float map value is NO LONGER "bad": Mcoerce-b rounds 2.5->3 (FloatToInt,
-	// a successful coercion BAML keeps), so this now CLAIMS — see
-	// TestParse_MapLenientValueClaimed.
+func TestParse_MapBadValuePartialSkip(t *testing.T) {
+	// Mcoerce-c: a value that is a PROVEN BAML int parse error is SKIPPED as a
+	// partial map entry (MapValueParseError), not a whole-map decline. "x" is not
+	// a number in any form (no i64/u64/f64/fraction/extracted match), so
+	// coerce_int errors and BAML skips just that entry, keeping the rest in input
+	// order.
+	mustParseExact(t, mapStringIntSchema(), `{"scores":{"a":1,"b":"x"}}`, `{"scores":{"a":1}}`)
+	// All values bad -> {} (still a successful, empty map).
+	mustParseExact(t, mapStringIntSchema(), `{"scores":{"a":"x","b":"y"}}`, `{"scores":{}}`)
+	// A float map value is NOT "bad": Mcoerce-b rounds 2.5->3 (FloatToInt, a
+	// successful coercion BAML keeps) — see TestParse_MapLenientValueClaimed.
 }
 
 // TestParse_MapLenientValueClaimed pins the Mcoerce-b map-value flip: a float
@@ -439,7 +440,9 @@ func TestParse_MapLiteralUnionKeysExact(t *testing.T) {
 		})),
 	}
 	mustParseExact(t, s, `{"m":{"A":"x","B":"y"}}`, `{"m":{"A":"x","B":"y"}}`)
-	// A key not among the literals declines (BAML fuzzy-matches/skips).
+	// A key matching NO string-literal-union arm is NOT a native partial skip: the
+	// dynamic bridge KEEPS the non-matching key (live-captured full map), so
+	// native declines the WHOLE map rather than skip an entry BAML keeps.
 	requireUnsupported(t, s, `{"m":{"A":"x","C":"z"}}`)
 }
 

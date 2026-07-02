@@ -101,17 +101,22 @@ func litUnionType(lits ...string) schema.Type {
 	return schema.Type{Kind: schema.TypeUnion, Union: &schema.UnionType{Variants: vs}}
 }
 
-// TestMatchMapKeyUncertaintyMarksFlags covers every matchMapKey uncertainty and
-// acceptance branch (string-literal, string-literal-union, enum), pinning:
-//   - CR-MAPKEY: an uncertain key DECLINES and marks cf.uncertain, nil-safely.
-//   - the string-literal-union ACCEPT-ANY-ARM fix: a clean arm accepts the key
-//     even if an EARLIER arm was uncertain (no over-decline, no spurious mark).
-//   - the mixed-union guard: a union with a non-string-literal arm declines
-//     (never treated as its string-literal subset).
+// TestCoerceMapKey covers every coerceMapKey branch (string primitive,
+// string-literal, string-literal-union, enum), pinning the TWO-way outcome:
 //
-// The runes are 'é'(U+00E9, IsLower -> certain) and 'É'(U+00C9, not IsLower ->
-// uncertain once it reaches the case-fold attempt).
-func TestMatchMapKeyUncertaintyMarksFlags(t *testing.T) {
+//   - ACCEPT: err=nil — a clean match_string match (any arm, for a union), or any
+//     string-primitive key.
+//   - DECLINE the whole map: err=ErrDeBAMLParseUnsupported — a case-fold-UNCERTAIN
+//     verdict (marks cf.uncertain, nil-safely), the mixed-union guard, or a
+//     certain MISS. A KEY never yields a partial skip: the dynamic bridge keeps
+//     non-matching enum/literal/literal-union keys leniently (full map), so a
+//     miss is a DEFERRED Mcoerce-d keep and native declines the whole map.
+//
+// It also pins the string-literal-union ACCEPT-ANY-ARM rule (a clean arm accepts
+// even if an EARLIER arm was uncertain). The runes are 'é'(U+00E9, IsLower ->
+// certain) and 'É'(U+00C9, not IsLower -> uncertain once it reaches the case-fold
+// attempt).
+func TestCoerceMapKey(t *testing.T) {
 	// An indexed bundle with an (ASCII) enum key type — enum uncertainty is
 	// driven by the non-ASCII INPUT key, so the enum values stay ASCII.
 	enumB, err := schema.FromDynamicOutputSchema(mapEnumKeySchema(), schema.BuildOptions{})
@@ -119,6 +124,7 @@ func TestMatchMapKeyUncertaintyMarksFlags(t *testing.T) {
 		t.Fatalf("build enum bundle: %v", err)
 	}
 	enumKey := schema.Type{Kind: schema.TypeEnum, Name: enumB.Enums[0].Name.Name}
+	strKey := schema.Type{Kind: schema.TypePrimitive, Primitive: schema.PrimitiveString}
 
 	mixedUnion := schema.Type{Kind: schema.TypeUnion, Union: &schema.UnionType{Variants: []schema.Type{
 		strLitType("é"),
@@ -130,42 +136,47 @@ func TestMatchMapKeyUncertaintyMarksFlags(t *testing.T) {
 		b             *schema.Bundle
 		keyT          schema.Type
 		key           string
-		wantAccept    bool // true = nil (accepted), false = unsupported decline
+		wantAccept    bool // true = nil (accepted), false = whole-map decline (err)
 		wantUncertain bool
 	}{
-		{"literal-uncertain", nil, strLitType("é"), "É", false, true},
+		// String primitive: any key coerces -> ACCEPT.
+		{"string-any", nil, strKey, "whatever", true, false},
+		// String literal: exact -> ACCEPT; certain miss -> DECLINE (dynamic keeps);
+		// uncertain case fold -> DECLINE + mark.
 		{"literal-exact", nil, strLitType("é"), "é", true, false},
+		{"literal-certain-miss-decline", nil, strLitType("abc"), "xyz", false, false},
+		{"literal-uncertain-decline", nil, strLitType("é"), "É", false, true},
+		// String-literal union.
+		{"union-normal-accept", nil, litUnionType("é", "beta"), "beta", true, false},
+		{"union-certain-miss-decline", nil, litUnionType("abc", "def"), "xyz", false, false},
 		// UNCERTAIN-ONLY match: key "É" matches literal "é" only via the case-fold
-		// pass (matchString returns matchOne AND uncertain) -> must DECLINE and
-		// mark uncertain, NOT accept. (This case was wrongly accepted before the
-		// accepted = matchOne && !uncertain fix.)
+		// pass (matchString returns matchOne AND uncertain) -> DECLINE + mark, NOT
+		// accept.
 		{"union-uncertain-only-match", nil, litUnionType("é"), "É", false, true},
-		// No arm cleanly matches, but an arm's verdict was uncertain -> mark.
+		// No arm cleanly matches, but an arm's verdict was uncertain -> DECLINE.
 		{"union-uncertain-no-clean", nil, litUnionType("abc", "def"), "É", false, true},
 		// ACCEPT-ANY-ARM rescue: arm "abc" is uncertain for "É", but arm "É"
 		// matches EXACTLY (before the case-fold attempt, so certain) -> accept,
 		// and DON'T mark uncertain.
 		{"union-accept-any-arm", nil, litUnionType("abc", "É"), "É", true, false},
-		// A later arm matches exactly with no uncertainty anywhere.
-		{"union-normal-accept", nil, litUnionType("é", "beta"), "beta", true, false},
 		// Mixed union (string literal | int): declined by the guard, no scan.
 		{"mixed-union-guard", nil, mixedUnion, "É", false, false},
-		// Enum: the non-ASCII input key drives the uncertainty (values are ASCII).
-		{"enum-uncertain", enumB, enumKey, "É", false, true},
+		// Enum: exact -> ACCEPT; a MISS (dynamic keeps non-members) -> DECLINE the
+		// whole map; uncertain -> DECLINE + mark.
 		{"enum-exact", enumB, enumKey, "A", true, false},
+		{"enum-miss-decline", enumB, enumKey, "ZZZ", false, false},
+		{"enum-uncertain-decline", enumB, enumKey, "É", false, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			cf := &coerceFlags{}
-			err := matchMapKey(c.b, c.keyT, c.key, cf)
+			err := coerceMapKey(c.b, c.keyT, c.key, cf)
 			if c.wantAccept {
 				if err != nil {
 					t.Fatalf("want accept (nil), got %v", err)
 				}
-			} else {
-				if !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
-					t.Fatalf("want ErrDeBAMLParseUnsupported decline, got %v", err)
-				}
+			} else if !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+				t.Fatalf("want ErrDeBAMLParseUnsupported decline, got %v", err)
 			}
 			if cf.isUncertain() != c.wantUncertain {
 				t.Errorf("cf.uncertain = %v, want %v", cf.isUncertain(), c.wantUncertain)
@@ -174,32 +185,7 @@ func TestMatchMapKeyUncertaintyMarksFlags(t *testing.T) {
 	}
 
 	// Nil-safe: an uncertain key with a nil accumulator must not panic.
-	if err := matchMapKey(nil, strLitType("é"), "É", nil); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+	if err := coerceMapKey(nil, strLitType("é"), "É", nil); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
 		t.Fatalf("nil cf: want ErrDeBAMLParseUnsupported, got %v", err)
 	}
-}
-
-// TestWrapperDeclinesValueVerdict confirms the no-regression side of CR1 for the
-// wrapper that STILL declines on a value-verdict child: coerceMap (partial maps
-// are deferred to the Mcoerce-c maps follow-up). A non-object map VALUE where a
-// multi-field class is required makes coerceClass return typeMismatch
-// (value-verdict), and coerceMap declines the whole map rather than skip the
-// entry. (coerceList, by contrast, now SKIPS such a proven parse error — see
-// coerce_list_test.go's TestCoerceList_ClassScalarSkips.)
-func TestWrapperDeclinesValueVerdict(t *testing.T) {
-	// Root{ items: map<string, Pair> }, Pair{ a, b }. A non-object map value
-	// makes coerceClass return typeMismatch (value-verdict) -> coerceMap declines.
-	s := &bamlutils.DynamicOutputSchema{
-		Properties: props(kv("items", &bamlutils.DynamicProperty{
-			Type:   "map",
-			Keys:   &bamlutils.DynamicTypeSpec{Type: "string"},
-			Values: &bamlutils.DynamicTypeSpec{Ref: "Pair"},
-		})),
-		Classes: bamlutils.MustOrderedMap(
-			bamlutils.OrderedKV("Pair", &bamlutils.DynamicClass{
-				Properties: props(kv("a", strProp()), kv("b", strProp())),
-			}),
-		),
-	}
-	requireUnsupported(t, s, `{"items":{"k":5}}`)
 }

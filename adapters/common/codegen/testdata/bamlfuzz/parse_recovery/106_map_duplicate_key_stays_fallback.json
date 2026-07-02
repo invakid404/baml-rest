@@ -1,0 +1,21 @@
+{
+  "name": "map_duplicate_key_stays_fallback",
+  "description": "Mcoerce-c FALLBACK: map<string,int> with a DUPLICATE original input key (\"a\" twice). BAML's IndexMap insert/overwrite ordering for duplicates is unproven, so native declines the WHOLE map before claiming output — even if one occurrence would otherwise be accepted (pinned native disposition: fallback). want captured from live BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "scores", "type": {"kind": "map", "key": {"kind": "string"}, "inner": {"kind": "int"}}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"scores\":{\"a\":1,\"a\":2}}",
+  "want": {
+    "status": "success",
+    "json": {"scores": {"a": 2}}
+  }
+}
