@@ -1,0 +1,22 @@
+{
+  "name": "list_singleton_bad_int_empty",
+  "description": "Mcoerce-c CLAIMED: list<int> field, non-array unparseable string 'bad'. BAML wraps it (SingleToArray), the inner int coercion errors (ArrayItemParseError(0)), and the list still SUCCEEDS as the EMPTY list []. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "list", "inner": {"kind": "int"}}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"bad\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": []}
+  }
+}

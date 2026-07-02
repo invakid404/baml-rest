@@ -181,12 +181,17 @@ func TestParse_List(t *testing.T) {
 		})),
 	}
 	mustParse(t, s, `{"tags":["x","y","z"]}`, `{"tags":["x","y","z"]}`)
-	// Wrong element type DECLINES: BAML stringifies 2->"2" in a string list,
-	// so native (strict) declines rather than claiming a mismatch.
+	// Wrong element type DECLINES: BAML stringifies 2->"2" in a string list
+	// (JsonToString is Mcoerce-d), so native can't PROVE the element is a parse
+	// error and declines the whole list rather than skip an item BAML would keep.
 	requireUnsupported(t, s, `{"tags":["x",2]}`)
-	// A non-array where a list is required DECLINES: BAML wraps a singleton
-	// into a one-element array, so native declines rather than claiming.
-	requireUnsupported(t, s, `{"tags":"x"}`)
+	// Mcoerce-c: a non-array STRING where list<string> is required is wrapped as
+	// a single implied element (SingleToArray) and coerces cleanly -> claimed.
+	mustParse(t, s, `{"tags":"x"}`, `{"tags":["x"]}`)
+	// A non-array NUMBER singleton still DECLINES: BAML stringifies it
+	// (JsonToString, Mcoerce-d), so the singleton element is not a proven parse
+	// error and native falls back rather than emit an empty/wrong list.
+	requireUnsupported(t, s, `{"tags":5}`)
 }
 
 func TestParse_OptionalPresentAndAbsent(t *testing.T) {

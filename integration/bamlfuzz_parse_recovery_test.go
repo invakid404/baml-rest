@@ -297,6 +297,27 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"float_nan_fraction_stays_fallback":       false,
 	"int_inf_stays_fallback":                  false,
 	"int_nan_stays_fallback":                  false,
+	// Mcoerce-c native LISTS (coerceList / coerce_array.rs): non-array
+	// SingleToArray wrapping, PARTIAL array skips of PROVEN-parse-error items,
+	// and empty-list-on-singleton-failure resolve byte-identical to BAML, so the
+	// deterministic collection claims are CLAIMED. A child native merely DECLINED
+	// (could be a DEFERRED Mcoerce-d success — JsonToString, etc.) is NOT skipped;
+	// native declines the whole list. The union revisit counts a list arm as a
+	// lenient success and, for nullable lists, keeps the clean-only rule: a
+	// SingleToArray/partial-skip/flagged-child list arm declines against the
+	// scored null arm.
+	"list_singleton_int_success":               true,
+	"list_singleton_bad_int_empty":             true,
+	"list_array_partial_bad_int":               true,
+	"list_array_lenient_elements_kept":         true,
+	"list_class_non_object_partial":            true,
+	"nullable_optional_list_clean_array_claim": true,
+	// Mcoerce-c LIST fallback set: a list<string> non-string element defers to
+	// JsonToString (Mcoerce-d); a nullable list arm flagged by SingleToArray is
+	// score-bearing (M3 vs null); a union with a list arm can force pick_best.
+	"list_string_non_string_stays_fallback":           false,
+	"nullable_optional_list_singleton_stays_fallback": false,
+	"union_list_partial_stays_fallback":               false,
 }
 
 // parseRecoveryStats tallies how many final-parse cases the native parser

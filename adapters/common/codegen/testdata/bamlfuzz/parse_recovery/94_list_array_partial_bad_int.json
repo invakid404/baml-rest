@@ -1,0 +1,22 @@
+{
+  "name": "list_array_partial_bad_int",
+  "description": "Mcoerce-c CLAIMED: list<int> field, array with good values around one unparseable value ['1', 2, 'bad', 4]. BAML drops 'bad' (ArrayItemParseError) and keeps the rest in accepted order -> [1, 2, 4]. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "list", "inner": {"kind": "int"}}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":[\"1\",2,\"bad\",4]}",
+  "want": {
+    "status": "success",
+    "json": {"u": [1, 2, 4]}
+  }
+}

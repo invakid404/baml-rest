@@ -1,0 +1,32 @@
+{
+  "name": "union_list_partial_stays_fallback",
+  "description": "Mcoerce-c FALLBACK: union (int | list<int>) with a partial array [1, 'bad', 2]. The list arm now leniently succeeds ([1,2] after an ArrayItemParseError skip), but the int arm can also succeed via coerce_array_to_singular, so BAML runs scored pick_best (M3). A union with a list arm is not an M2c safe family, so native declines at the gate and never over-claims the partial list. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "int"},
+                {"kind": "list", "inner": {"kind": "int"}}
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":[1,\"bad\",2]}",
+  "want": {
+    "status": "success",
+    "json": {"u": [1, 2]}
+  }
+}

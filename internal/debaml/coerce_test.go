@@ -179,17 +179,21 @@ func TestMatchMapKeyUncertaintyMarksFlags(t *testing.T) {
 	}
 }
 
-// TestWrapperDeclinesValueVerdict confirms the no-regression side of CR1: a
-// VALUE-verdict child error (here typeMismatch — a scalar where a multi-field
-// class is required) still makes the wrapper DECLINE (fall back), so BAML's
-// partial-list behavior is deferred, not claimed.
+// TestWrapperDeclinesValueVerdict confirms the no-regression side of CR1 for the
+// wrapper that STILL declines on a value-verdict child: coerceMap (partial maps
+// are deferred to the Mcoerce-c maps follow-up). A non-object map VALUE where a
+// multi-field class is required makes coerceClass return typeMismatch
+// (value-verdict), and coerceMap declines the whole map rather than skip the
+// entry. (coerceList, by contrast, now SKIPS such a proven parse error — see
+// coerce_list_test.go's TestCoerceList_ClassScalarSkips.)
 func TestWrapperDeclinesValueVerdict(t *testing.T) {
-	// Root{ items: Pair[] }, Pair{ a, b }. A non-object list element makes
-	// coerceClass return typeMismatch (value-verdict) -> coerceList declines.
+	// Root{ items: map<string, Pair> }, Pair{ a, b }. A non-object map value
+	// makes coerceClass return typeMismatch (value-verdict) -> coerceMap declines.
 	s := &bamlutils.DynamicOutputSchema{
 		Properties: props(kv("items", &bamlutils.DynamicProperty{
-			Type:  "list",
-			Items: &bamlutils.DynamicTypeSpec{Ref: "Pair"},
+			Type:   "map",
+			Keys:   &bamlutils.DynamicTypeSpec{Type: "string"},
+			Values: &bamlutils.DynamicTypeSpec{Ref: "Pair"},
 		})),
 		Classes: bamlutils.MustOrderedMap(
 			bamlutils.OrderedKV("Pair", &bamlutils.DynamicClass{
@@ -197,5 +201,5 @@ func TestWrapperDeclinesValueVerdict(t *testing.T) {
 			}),
 		),
 	}
-	requireUnsupported(t, s, `{"items":[5]}`)
+	requireUnsupported(t, s, `{"items":{"k":5}}`)
 }

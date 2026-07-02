@@ -79,12 +79,16 @@ func (f *coerceFlags) isUncertain() bool { return f != nil && f.uncertain }
 // match_string), and non-null→null defaulting — plus int/bool LITERALS by
 // primitive-coerce-then-compare. Each score-bearing conversion (FloatToInt,
 // StringToFloat, StringToBool, DefaultButHadValue) flags the coerceFlags
-// accumulator so the nullable-union clean-only rule holds. The remaining
-// leniencies stay STRICT and DECLINE: non-string stringification (ObjectToString
-// / JsonToString), single-key-object ObjectToPrimitive literal extraction,
-// single-to-array wrapping, single-field implied-key / inferred-object
-// absorption, partial list/map skips, and class default-fill — all deferred to
-// Mcoerce-c/d. Where native's coercion fails but BAML may leniently SUCCEED (or
+// accumulator so the nullable-union clean-only rule holds. Mcoerce-c adds native
+// LIST parity (coerceList / coerceArray.rs): non-array SINGLE-TO-ARRAY wrapping,
+// PARTIAL array skips of PROVEN-parse-error items, and empty-list-on-singleton-
+// failure — each score-bearing (SingleToArray, ArrayItemParseError, child flags)
+// so the nullable-union clean-only rule still holds. The remaining leniencies stay
+// STRICT and DECLINE: non-string stringification (ObjectToString / JsonToString),
+// single-key-object ObjectToPrimitive literal extraction, single-field implied-key
+// / inferred-object absorption, PARTIAL MAP skips, and class default-fill — all
+// deferred to Mcoerce-c(maps)/d. Where native's coercion fails but BAML may
+// leniently SUCCEED (or
 // null-default) — or where native cannot determine BAML's exact success/failure
 // — coercion DECLINES (ErrDeBAMLParseUnsupported → fall back to BAML), so native
 // is never "more capable" than BAML.
@@ -814,41 +818,314 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 	return buf.Bytes(), nil
 }
 
+// coerceList coerces a value into a list, porting BAML's coerce_array
+// (coerce_array.rs) so native reproduces BAML's PARTIAL-list result byte-for-byte.
+// A list coercion always SUCCEEDS: child failures fold into list-level flags, not
+// a list error.
+//
+//   - ARRAY input: each element is coerced in input order. A KEPT child's coerced
+//     output is appended in accepted order; a child that is a PROVEN BAML parse
+//     error (provenListItemError) is DROPPED — BAML records ArrayItemParseError(i)
+//     and continues — so an all-bad array becomes [] and [good,bad,good] becomes
+//     [good,good].
+//   - NON-ARRAY input: BAML wraps the value as a single implied element
+//     (SingleToArray). A successful inner coercion yields [child]; a PROVEN inner
+//     parse error yields an EMPTY list (SingleToArray + ArrayItemParseError(0)),
+//     NOT a parse failure.
+//
+// THE CRUX (over-claim guard): a child failure is SKIPPED only when it is a
+// PROVEN BAML parse error for that exact child target+input. A child native
+// merely DECLINED (an ErrDeBAMLParseUnsupported that is NOT a proven error) may be
+// a DEFERRED Mcoerce-d SUCCESS (e.g. list<string> with a number → JsonToString),
+// so native DECLINES THE WHOLE LIST there rather than skip an item BAML would
+// keep. A case-fold-uncertain child likewise declines the whole list. A
+// HARD/invariant child error propagates unchanged. See coerceListChild /
+// provenListItemError for the exact safe-skip vs must-decline split.
+//
+// Score-bearing flags (SingleToArray, each ArrayItemParseError skip, and a kept
+// child's own flags) are threaded into cf so the nullable-union clean-only rule
+// (coerceUnionSafe) sees a flagged list arm and declines it against the scored
+// null arm — Mcoerce-c does not score collection arms against null.
 func coerceList(b *schema.Bundle, elem *schema.Type, input value, cf *coerceFlags) (json.RawMessage, error) {
 	if elem == nil {
 		return nil, fmt.Errorf("debaml: list type missing element")
 	}
-	if input.kind != valArray {
-		// BAML wraps a non-array value into a one-element array; native is
-		// stricter, so decline rather than claim a mismatch BAML would not
-		// produce.
-		return nil, declineCoerce("list target", input)
-	}
 	var buf bytes.Buffer
 	buf.WriteByte('[')
-	for i := range input.arrV {
-		// A clean array adds no list-level flag; element flags (e.g. a
-		// substring enum) propagate through cf so a nullable list arm can
-		// require all elements clean.
-		child, err := coerce(b, *elem, input.arrV[i], cf)
+
+	if input.kind != valArray {
+		// Non-array → BAML wraps it as one implied element (SingleToArray, score 1).
+		cf.flag()
+		out, keep, err := coerceListChild(b, *elem, input, cf)
 		if err != nil {
-			if !declinableChildError(err) {
-				return nil, err // hard/invariant failure: propagate, never mask.
-			}
-			// A bad element (decline sentinel or value-verdict mismatch): BAML
-			// records ArrayItemParseError and SKIPS it, returning a partial list
-			// that still succeeds — native cannot reproduce that partial result,
-			// so it DECLINES the whole list rather than claim a list error where
-			// BAML would just drop the element. Partial-list parity is Mcoerce-c.
-			return nil, unsupported(fmt.Sprintf("list element %d: %v (BAML skips bad items via ArrayItemParseError)", i, err))
+			return nil, err
 		}
-		if i > 0 {
+		if keep {
+			buf.Write(out)
+		} else {
+			// The implied element is a proven parse error → ArrayItemParseError(0):
+			// the list is the EMPTY list, which still SUCCEEDS.
+			cf.flag()
+		}
+		buf.WriteByte(']')
+		return buf.Bytes(), nil
+	}
+
+	first := true
+	for i := range input.arrV {
+		out, keep, err := coerceListChild(b, *elem, input.arrV[i], cf)
+		if err != nil {
+			return nil, err
+		}
+		if !keep {
+			// Proven BAML parse error → ArrayItemParseError(i) (score 1+i): SKIP.
+			cf.flag()
+			continue
+		}
+		if !first {
 			buf.WriteByte(',')
 		}
-		buf.Write(child)
+		first = false
+		buf.Write(out)
 	}
 	buf.WriteByte(']')
 	return buf.Bytes(), nil
+}
+
+// coerceListChild coerces one list element (array item or implied singleton).
+// It returns exactly one of:
+//
+//   - (out, true, nil):  the child coerced; append out (its flags merged into cf).
+//   - (nil, false, nil): the child is a PROVEN BAML parse error; the caller SKIPS
+//     it (BAML records ArrayItemParseError and the list still succeeds).
+//   - (nil, false, err): the whole list must FAIL — err is either a HARD/invariant
+//     error to propagate, or an ErrDeBAMLParseUnsupported DECLINE because the
+//     child could be a DEFERRED Mcoerce-d success or its match verdict was
+//     case-fold-uncertain, so native falls back rather than skip an item BAML
+//     might keep.
+func coerceListChild(b *schema.Bundle, elem schema.Type, item value, cf *coerceFlags) (json.RawMessage, bool, error) {
+	childF := &coerceFlags{}
+	out, err := coerce(b, elem, item, childF)
+	if err == nil {
+		// Kept: the child value's own flags count toward the list arm's score
+		// (types.rs List score = own flags + sum of child scores), so propagate
+		// them so an enclosing nullable optional sees a non-clean list arm.
+		if childF.isFlagged() {
+			cf.flag()
+		}
+		if childF.isUncertain() {
+			cf.markUncertain()
+		}
+		return out, true, nil
+	}
+	if !declinableChildError(err) {
+		return nil, false, err // hard/invariant failure: propagate, never mask.
+	}
+	if childF.isUncertain() {
+		// The child's match verdict hinged on a non-ASCII case fold native cannot
+		// prove equals BAML — it might MATCH (BAML keeps) or MISS (BAML skips), and
+		// native cannot tell which, so DECLINE the whole list.
+		cf.markUncertain()
+		return nil, false, unsupported(fmt.Sprintf("list element %s→%s: non-ASCII case-fold uncertainty (cannot prove skip vs keep)", item.kind, elem.Kind))
+	}
+	if provenListItemError(b, elem, item) {
+		return nil, false, nil // PROVEN parse error → BAML skips via ArrayItemParseError.
+	}
+	// A declinable error that is NOT a proven parse error: BAML may still SUCCEED
+	// via a deferred Mcoerce-d path (JsonToString / ObjectToString /
+	// ObjectToPrimitive / implied-key / default-fill / array-to-singular / union
+	// scoring), so native cannot skip it — DECLINE the whole list (fall back).
+	return nil, false, unsupported(fmt.Sprintf("list element %s→%s: child declined but not a proven BAML parse error (deferred Mcoerce-d success possible): %v", item.kind, elem.Kind, err))
+}
+
+// provenListItemError reports whether BAML PROVABLY errors coercing item to the
+// list element type elem — the ONLY case where BAML records ArrayItemParseError
+// and drops the item, so native may skip it. It is a WHITELIST called ONLY after
+// native's own coercion FAILED with a declinable error AND was not case-fold-
+// uncertain, so for match_string-based targets (bool/enum/string-literal from a
+// STRING) a native failure already equals a BAML failure. For NUMERIC targets
+// native is STRICTER than BAML (inf/overflow/hex/underscore), so a string is
+// proven only when BAML's own parse strategies are re-checked
+// (bamlStringNumberFails); an input kind BAML rejects with error_unexpected_type
+// is proven; an ARRAY defers to coerce_array_to_singular (pick_best, M3) and a
+// class/map/union child (or object into a numeric/literal target) defers to
+// Mcoerce-d, so those are NOT proven and DECLINE the whole list.
+func provenListItemError(b *schema.Bundle, elem schema.Type, item value) bool {
+	switch elem.Kind {
+	case schema.TypePrimitive:
+		switch elem.Primitive {
+		case schema.PrimitiveInt, schema.PrimitiveFloat:
+			switch item.kind {
+			case valString:
+				return bamlStringNumberFails(item.strV)
+			case valObject, valBool, valNull:
+				return true // BAML coerce_int/coerce_float: error_unexpected_type.
+			default:
+				// valNumber: BAML always coerces a number; valArray:
+				// coerce_array_to_singular (pick_best, M3) — both DEFERRED.
+				return false
+			}
+		case schema.PrimitiveBool:
+			switch item.kind {
+			case valString:
+				// Reached only after a native bool coercion FAILED and was NOT
+				// case-fold-uncertain: a certain casefold + match_string miss/tie,
+				// which BAML's coerce_bool turns into error_unexpected_type.
+				return true
+			case valObject, valNumber, valNull:
+				return true // error_unexpected_type (BAML never coerces number→bool).
+			default:
+				return false // valBool: success; valArray: array-to-singular (M3).
+			}
+		default:
+			// string / null targets: a native failure is a DEFERRED BAML SUCCESS
+			// (JsonToString for string; null defaults for any value), never proven.
+			return false
+		}
+	case schema.TypeEnum:
+		// A non-string enum input stringifies (ObjectToString, Mcoerce-d). A
+		// STRING native rejected (non-uncertain) is a certain match_string
+		// miss/tie, which coerce_enum turns into an error in a required
+		// list-element position.
+		return item.kind == valString
+	case schema.TypeLiteral:
+		// Only a STRING literal from a STRING is a proven match_string failure;
+		// int/bool literals (value mismatch / exhausted parse) and object/scalar
+		// extraction defer to Mcoerce-d.
+		return elem.Literal != nil && elem.Literal.Kind == schema.LiteralString && item.kind == valString
+	case schema.TypeClass:
+		// A multi-field class whose fields are ALL required flat leaves has no
+		// default_value for any field, so a genuine SCALAR input leaves every
+		// required field unfilled → BAML error_missing_required_field. An ARRAY
+		// element defers to coerce_array_to_singular (M3); a single-field class, or
+		// a class with any defaultable (list/map/optional) field, defers to
+		// Mcoerce-d — so those are NOT proven.
+		cls, ok := b.FindClass(elem.Name, elem.Mode)
+		if !ok {
+			return false
+		}
+		if !classAllRequiredFlatLeaf(cls) {
+			return false
+		}
+		switch item.kind {
+		case valString, valNumber, valBool, valNull:
+			return true
+		default:
+			return false // valObject: coerce succeeds/defers; valArray: M3.
+		}
+	default:
+		// map / list / union children: a map non-object, a nested list, or a
+		// union needing scoring are all DEFERRED, never proven parse errors.
+		return false
+	}
+}
+
+// classAllRequiredFlatLeaf reports whether cls is a multi-field class every field
+// of which is a REQUIRED flat leaf (primitive scalar / literal / enum — the
+// isFlatLeafField set, which excludes optionals, lists, maps, unions and nested
+// classes). Such a class has no field with a BAML default_value, so a genuine
+// SCALAR input can be neither absorbed (single-field implied-key needs len==1)
+// nor default-filled, guaranteeing a missing-required-field error — the only
+// class shape safe to treat as a proven list-item skip.
+func classAllRequiredFlatLeaf(cls *schema.ClassDef) bool {
+	if len(cls.Fields) < 2 {
+		return false
+	}
+	for i := range cls.Fields {
+		if !isFlatLeafField(cls.Fields[i].Type) {
+			return false
+		}
+	}
+	return true
+}
+
+// bamlStringNumberFails reports whether BAML's coerce_int / coerce_float STRING
+// path (coerce_primitive.rs) would DEFINITELY error on s — i.e. NONE of Rust's
+// strategies yields a number: i64, u64, f64 (INCLUDING inf/nan/overflow, which
+// Rust parses to a non-finite f64 BAML then saturates), a single fraction, or a
+// single extracted comma/currency number. Native's own numeric coercers are
+// STRICTER (they reject non-finite/overflow/underscore/hex), so a native failure
+// does NOT prove a BAML failure; only this Rust-faithful re-check does, and only
+// a TRUE result makes a bad numeric string a skippable list item. (A single-i64/
+// -u64 string is always f64-parseable, so rustF64Parseable subsumes all three.)
+func bamlStringNumberFails(s string) bool {
+	t := trimNumericString(s) // BAML: s.trim().trim_end_matches(',')
+	if rustF64Parseable(t) {
+		return false
+	}
+	if bamlFractionParses(t) {
+		return false
+	}
+	if bamlCommaNumberParses(t) {
+		return false
+	}
+	return true
+}
+
+// rustF64Parseable reports whether Rust's <str>::parse::<f64>() would return Ok
+// for s — the predicate BAML's numeric coercers use. It mirrors parseF64Rust's
+// REJECTIONS (digit-group underscores and hex-float syntax, which Go's ParseFloat
+// accepts but Rust does not) but, UNLIKE parseF64Rust, treats an OVERFLOW as a
+// parse SUCCESS: Rust returns Ok(±inf) for "1e400" while Go returns ErrRange, and
+// "inf"/"nan" parse to non-finite values both accept. Native's own coercers
+// DECLINE those non-finite results, but for classifying a list item native needs
+// BAML's verdict — and BAML SUCCEEDS (saturating) — so they must NOT count as
+// proven parse errors.
+func rustF64Parseable(s string) bool {
+	if s == "" {
+		return false
+	}
+	if strings.IndexByte(s, '_') >= 0 {
+		return false // Rust f64 parse rejects digit-group underscores.
+	}
+	t := s
+	if t[0] == '+' || t[0] == '-' {
+		t = t[1:]
+	}
+	if strings.HasPrefix(t, "0x") || strings.HasPrefix(t, "0X") {
+		return false // Rust f64 parse rejects hex-float syntax.
+	}
+	if _, err := strconv.ParseFloat(s, 64); err == nil {
+		return true
+	} else if errors.Is(err, strconv.ErrRange) {
+		return true // overflow → Rust yields Ok(±inf).
+	}
+	return false
+}
+
+// bamlFractionParses mirrors float_from_maybe_fraction (coerce_primitive.rs):
+// split on the FIRST '/', both trimmed sides parse as Rust f64, denominator
+// non-zero. (BAML then divides; the exact quotient is irrelevant here — a success
+// means BAML coerces the string, so it is NOT a proven error.)
+func bamlFractionParses(s string) bool {
+	i := strings.IndexByte(s, '/')
+	if i < 0 {
+		return false
+	}
+	num := strings.TrimSpace(s[:i])
+	den := strings.TrimSpace(s[i+1:])
+	if !rustF64Parseable(num) || !rustF64Parseable(den) {
+		return false
+	}
+	// denominator != 0.0 (BAML's guard). A den that overflows to ±inf is != 0.
+	d, err := strconv.ParseFloat(den, 64)
+	if err != nil && !errors.Is(err, strconv.ErrRange) {
+		return false
+	}
+	return d != 0.0
+}
+
+// bamlCommaNumberParses mirrors float_from_comma_separated (coerce_primitive.rs):
+// require EXACTLY one extracted-number regex match, strip its commas and Unicode
+// currency symbols, then parse the remainder as Rust f64.
+func bamlCommaNumberParses(s string) bool {
+	ms := extractedNumberRe.FindAllString(s, -1)
+	if len(ms) != 1 {
+		return false
+	}
+	withoutCommas := strings.ReplaceAll(ms[0], ",", "")
+	withoutCurrency := currencySymbolRe.ReplaceAllString(withoutCommas, "")
+	return rustF64Parseable(withoutCurrency)
 }
 
 // coerceMap coerces a JSON object into a map, emitting entries in INPUT key
