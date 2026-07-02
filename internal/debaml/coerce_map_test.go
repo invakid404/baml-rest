@@ -149,14 +149,18 @@ func TestCoerceMap_ValueThenKeyOrder(t *testing.T) {
 	mustParseExact(t, s, `{"u":{"É":"zzz"}}`, `{"u":{}}`)
 }
 
-// TestCoerceMap_DeferredValuePreemptsKeySkip pins the other side of value-first:
-// a value that is a DEFERRED Mcoerce-d success (JsonToString) declines the WHOLE
-// map even when the key would otherwise be a proven skip — native must not emit
-// a partial map that drops an entry BAML would keep via a lenient value path.
+// TestCoerceMap_DeferredValuePreemptsKeySkip pins value-first ordering: a value
+// that is a DEFERRED Mcoerce-d success (JsonToString) declines the WHOLE map
+// before the key is even coerced — native must not emit a partial map that drops
+// an entry BAML would keep via a lenient value path.
 func TestCoerceMap_DeferredValuePreemptsKeySkip(t *testing.T) {
-	// map<"A"|"B", string> with {"C": 5}: key "C" would be a proven MapKeyParseError
-	// skip, but the value 5 -> string is JsonToString (Mcoerce-d, NOT proven), so
-	// the whole map declines rather than skipping the entry.
+	// map<"A"|"B", string> with {"C": 5}: the value 5 -> string is JsonToString
+	// (Mcoerce-d, NOT a proven parse error), so the map declines on the VALUE
+	// first — the key "C" is never reached. And even if it were, a non-matching
+	// key is NOT a skip: coerceMapKey is decline-only (the dynamic bridge keeps
+	// non-matching literal-union keys leniently -> a whole-map decline, not a
+	// partial MapKeyParseError skip; see TestCoerceMap_KeyMissDeclines). Either
+	// way the whole map declines rather than dropping an entry.
 	requireUnsupported(t, mapLitUnionStrSchema(), `{"u":{"C":5}}`)
 }
 
