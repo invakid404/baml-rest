@@ -83,12 +83,16 @@ func (f *coerceFlags) isUncertain() bool { return f != nil && f.uncertain }
 // LIST parity (coerceList / coerceArray.rs): non-array SINGLE-TO-ARRAY wrapping,
 // PARTIAL array skips of PROVEN-parse-error items, and empty-list-on-singleton-
 // failure — each score-bearing (SingleToArray, ArrayItemParseError, child flags)
-// so the nullable-union clean-only rule still holds. The remaining leniencies stay
+// so the nullable-union clean-only rule still holds. Mcoerce-c also adds native
+// MAP parity (coerceMap / coerce_map.rs): object→map ObjectToMap flagging, VALUE-
+// then-KEY coercion, PARTIAL entry skips of PROVEN value/key parse errors
+// (MapValueParseError / MapKeyParseError), and ORIGINAL input key strings in
+// input order — each score-bearing (ObjectToMap, the partial errors) so the
+// nullable-union clean-only rule still holds. The remaining leniencies stay
 // STRICT and DECLINE: non-string stringification (ObjectToString / JsonToString),
 // single-key-object ObjectToPrimitive literal extraction, single-field implied-key
-// / inferred-object absorption, PARTIAL MAP skips, and class default-fill — all
-// deferred to Mcoerce-c(maps)/d. Where native's coercion fails but BAML may
-// leniently SUCCEED (or
+// / inferred-object absorption, and class default-fill — all deferred to
+// Mcoerce-d. Where native's coercion fails but BAML may leniently SUCCEED (or
 // null-default) — or where native cannot determine BAML's exact success/failure
 // — coercion DECLINES (ErrDeBAMLParseUnsupported → fall back to BAML), so native
 // is never "more capable" than BAML.
@@ -1128,31 +1132,48 @@ func bamlCommaNumberParses(s string) bool {
 	return rustF64Parseable(withoutCurrency)
 }
 
-// coerceMap coerces a JSON object into a map, emitting entries in INPUT key
-// order (the opposite of coerceClass's schema order: a map's keys are data,
-// a class's fields are the schema). It CLAIMS only the clean-map subset and
-// DECLINES everything BAML would represent as a partial/scored map — because
-// BAML's map coercer does NOT hard-fail on a bad entry: it records a
-// score-bearing MapKeyParseError / MapValueParseError and SKIPS that entry,
-// returning a partial map. Native cannot reproduce that partial result, and
-// must never claim a clean map where BAML would return a flagged/partial
-// one, so any uncertainty DECLINES (ErrDeBAMLParseUnsupported → fall back):
+// coerceMap coerces a JSON object into a map, porting BAML's coerce_map
+// (coerce_map.rs) so native reproduces BAML's PARTIAL-map result byte-for-byte.
+// A map coercion of an OBJECT always SUCCEEDS: a bad VALUE folds into a
+// score-bearing MapValueParseError and the ENTRY is SKIPPED, not a map error.
+// Entries are emitted in INPUT key order (the opposite of coerceClass's schema
+// order: a map's keys are data, a class's fields are the schema), keyed by the
+// ORIGINAL input key string (never the canonical enum/literal form, matching
+// coerce_map.rs:165-174) — so an all-bad-value map becomes {} and
+// {"b":good,"bad":bad,"a":good} becomes {"b":...,"a":...}.
 //
-//   - Non-object input → DECLINE: BAML has object/map coercion + scoring
-//     outside this clean subset (it is not a hard type error).
-//   - A key with no EXACT match (matchMapKey) → DECLINE: BAML's enum/literal
-//     key coercion is fuzzy (match_string), and a no-match key is skipped
-//     with a flag rather than failing the map. Fuzzy key matching is Mcoerce.
-//   - ANY value coercion error (sentinel OR claimed) → DECLINE the WHOLE
-//     map: BAML attaches MapValueParseError and skips just that entry, so a
-//     native hard-claim here would diverge from BAML's partial success.
-//   - A duplicate output key → DECLINE: BAML's IndexMap insert/overwrite
-//     ordering for duplicates is unproven, so native does not claim it.
+// Per BAML each entry coerces the VALUE first, then the KEY:
 //
-// Accepted entries are keyed by the ORIGINAL input key string (never the
-// canonical enum/literal form, matching coerce_map.rs:165-174), and an empty
-// object is a clean empty map. A class value is emitted by coerceClass in
-// schema order, nested inside the input-ordered map.
+//   - value coercion PROVEN-errors → MapValueParseError: SKIP the whole entry
+//     WITHOUT coercing the key (coerceMapValueChild / provenMapValueError).
+//   - value succeeds but the KEY does not cleanly coerce → DECLINE the whole map
+//     (coerceMapKey). Unlike a value, a KEY never yields a native partial skip:
+//     the DYNAMIC bridge's enum/literal/literal-union key coercion is LENIENT —
+//     it accepts a NON-MATCHING key and KEEPS the ORIGINAL string (live-captured:
+//     {"A":x,"C":z} over enum {A,B} or over "A"|"B" → the FULL map, not a partial
+//     one), so a key miss is a DEFERRED Mcoerce-d keep, not a provable skip.
+//   - both succeed → insert (original key string, coerced value).
+//
+// THE CRUX (over-claim guard, mirroring coerceList): an entry's VALUE is SKIPPED
+// only when its failure is a PROVEN BAML parse error for that exact value
+// target+input. A value native merely DECLINED (an ErrDeBAMLParseUnsupported that
+// is NOT a proven error) may be a DEFERRED Mcoerce-d SUCCESS (e.g.
+// map<string,string> with a NUMBER value → JsonToString), so native DECLINES THE
+// WHOLE MAP there rather than skip an entry BAML would keep. A case-fold-
+// uncertain value or key likewise declines the whole map.
+//
+// Native still DECLINES (ErrDeBAMLParseUnsupported → fall back) on:
+//   - Non-object input: BAML has object/map coercion + scoring outside this
+//     subset (it is not a hard type error).
+//   - A DUPLICATE original input key: BAML's IndexMap insert/overwrite ordering
+//     for duplicates is unproven, and a skipped duplicate must not be reasoned
+//     safe, so ANY duplicate declines the whole map before emitting.
+//
+// Every object→map carries ObjectToMap (cost 1), and BAML scores a map by its
+// OWN flags only — the value scores do NOT propagate (score.rs:21) — so a map is
+// NEVER a zero-score "clean" arm: cf is flagged, so a nullable optional map arm
+// declines against the scored null arm (the clean-only rule), and Mcoerce-c does
+// not score collection arms against null.
 func coerceMap(b *schema.Bundle, keyT, valT *schema.Type, input value, cf *coerceFlags) (json.RawMessage, error) {
 	if keyT == nil || valT == nil {
 		return nil, fmt.Errorf("debaml: map type missing key or value")
@@ -1163,38 +1184,44 @@ func coerceMap(b *schema.Bundle, keyT, valT *schema.Type, input value, cf *coerc
 		// rather than claim a mismatch BAML would not produce.
 		return nil, declineCoerce("map target", input)
 	}
-	// Every object→map carries ObjectToMap (cost 1), and BAML scores a map by
-	// its OWN flags only — the value scores do NOT propagate (score.rs:21). So
-	// a map is NEVER a zero-score "clean" arm: flag cf, and coerce values with
-	// no accumulator since their flags don't affect the map's score.
+	// Any DUPLICATE original input key declines the WHOLE map up-front (BAML's
+	// duplicate insert/overwrite ordering is unproven). Scanning ALL keys before
+	// emitting means a duplicate whose entry would otherwise SKIP still declines
+	// — native never reasons that a skipped duplicate leaves the rest safe.
+	seen := make(map[string]struct{}, len(input.objV))
+	for i := range input.objV {
+		k := input.objV[i].key
+		if _, dup := seen[k]; dup {
+			return nil, unsupported(fmt.Sprintf("map duplicate key %q (BAML duplicate insert/overwrite ordering unproven)", k))
+		}
+		seen[k] = struct{}{}
+	}
+
+	// Every object→map carries ObjectToMap (cost 1); flag before iterating.
 	cf.flag()
 
 	var buf bytes.Buffer
 	buf.WriteByte('{')
-	seen := make(map[string]struct{}, len(input.objV))
 	first := true
 	for i := range input.objV {
 		f := &input.objV[i]
-		if err := matchMapKey(b, *keyT, f.key, cf); err != nil {
+		// VALUE first (BAML coerce_map order): a proven value error skips the
+		// entry WITHOUT coercing the key.
+		child, keepVal, err := coerceMapValueChild(b, *valT, f.val, cf)
+		if err != nil {
+			return nil, err // hard/invariant error, or decline-the-whole-map.
+		}
+		if !keepVal {
+			cf.flag() // MapValueParseError (cost 1) → skip entry.
+			continue
+		}
+		// KEY second: the original key string coerced against the key type. A key
+		// that does not cleanly coerce DECLINES the whole map (the dynamic bridge
+		// keeps non-matching keys leniently — a miss is Mcoerce-d, never a skip).
+		if err := coerceMapKey(b, *keyT, f.key, cf); err != nil {
 			return nil, err
 		}
-		if _, dup := seen[f.key]; dup {
-			return nil, unsupported(fmt.Sprintf("map duplicate key %q (BAML duplicate insert/overwrite ordering unproven)", f.key))
-		}
-		seen[f.key] = struct{}{}
-
-		child, err := coerce(b, *valT, f.val, nil)
-		if err != nil {
-			if !declinableChildError(err) {
-				return nil, err // hard/invariant failure: propagate, never mask.
-			}
-			// A bad value (decline sentinel or value-verdict mismatch): BAML
-			// records MapValueParseError and SKIPS this entry, returning a
-			// partial map — native cannot reproduce that, so decline the whole
-			// map. Partial-map parity is Mcoerce-c.
-			return nil, unsupported(fmt.Sprintf("map value for key %q: %v (BAML skips bad entries via MapValueParseError)", f.key, err))
-		}
-
+		// Both succeeded: insert the ORIGINAL input key string + coerced value.
 		if !first {
 			buf.WriteByte(',')
 		}
@@ -1211,36 +1238,93 @@ func coerceMap(b *schema.Bundle, keyT, valT *schema.Type, input value, cf *coerc
 	return buf.Bytes(), nil
 }
 
-// matchMapKey validates an input object key string against the declared map
-// key type via BAML's actual match_string (Mcoerce-a), returning nil on a
-// clean accept and a DECLINE sentinel otherwise. checkSupportedMapKey has
-// already restricted the key type to the four legal shapes, so the default
-// arm is defensive. BAML coerces the key with the key type's coercer
-// (coerce_map.rs:163) and, on success, inserts the entry under the ORIGINAL
-// input key string — so the accepted key is never rewritten, and the only
-// thing that matters here is whether the key coercion SUCCEEDS:
+// coerceMapValueChild coerces one map VALUE. Like coerceListChild it returns
+// exactly one of:
 //
-//   - string primitive: accept any key verbatim.
-//   - enum: accept on a clean match_string match (substring enabled); a
-//     no-match or substring TIE declines (BAML skips the entry via
-//     MapKeyParseError, returning a partial map — Mcoerce-c).
-//   - string literal: accept on a clean match_string match (substring enabled).
-//   - union of string literals: accept when AT LEAST ONE arm matches. The
-//     map output is the original key regardless of which arm BAML's union
-//     pick_best selects, so multiple matches do not need scoring here.
+//   - (out, true, nil):  the value coerced; insert the entry with out.
+//   - (nil, false, nil): the value is a PROVEN BAML parse error; the caller SKIPS
+//     the entry (BAML records MapValueParseError and the map still succeeds).
+//   - (nil, false, err): the whole map must FAIL — a HARD/invariant error, or an
+//     ErrDeBAMLParseUnsupported DECLINE because the value could be a DEFERRED
+//     Mcoerce-d success or its verdict was case-fold-uncertain, so native falls
+//     back rather than skip an entry BAML might keep.
 //
-// Any non-clean key DECLINES the whole map, because BAML would skip just that
-// entry and return a partial map, which native does not yet reproduce
-// (Mcoerce-c). The accepted key is NOT rewritten — coerceMap emits the
-// original input key string, matching BAML's insertion of the raw object key.
+// A map scores by its OWN flags only (score.rs) — a kept value's own flags do
+// NOT propagate to the map score — so, unlike coerceListChild, a flagged value
+// does NOT flag cf here (the map is already non-clean via ObjectToMap). The
+// child's case-fold uncertainty is still propagated defensively.
+func coerceMapValueChild(b *schema.Bundle, valT schema.Type, val value, cf *coerceFlags) (json.RawMessage, bool, error) {
+	childF := &coerceFlags{}
+	out, err := coerce(b, valT, val, childF)
+	if err == nil {
+		if childF.isUncertain() {
+			cf.markUncertain()
+		}
+		return out, true, nil
+	}
+	if !declinableChildError(err) {
+		return nil, false, err // hard/invariant failure: propagate, never mask.
+	}
+	if childF.isUncertain() {
+		// The value's match verdict hinged on a non-ASCII case fold native cannot
+		// prove equals BAML — it might MATCH (BAML keeps) or MISS (BAML skips), so
+		// DECLINE the whole map.
+		cf.markUncertain()
+		return nil, false, unsupported(fmt.Sprintf("map value %s→%s: non-ASCII case-fold uncertainty (cannot prove skip vs keep)", val.kind, valT.Kind))
+	}
+	if provenMapValueError(b, valT, val) {
+		return nil, false, nil // PROVEN parse error → BAML skips via MapValueParseError.
+	}
+	// A declinable error that is NOT a proven parse error: BAML may still SUCCEED
+	// via a deferred Mcoerce-d path (JsonToString / ObjectToString /
+	// ObjectToPrimitive / implied-key / default-fill / array-to-singular / union
+	// scoring), so native cannot skip it — DECLINE the whole map (fall back).
+	return nil, false, unsupported(fmt.Sprintf("map value %s→%s: child declined but not a proven BAML parse error (deferred Mcoerce-d success possible): %v", val.kind, valT.Kind, err))
+}
+
+// provenMapValueError reports whether BAML PROVABLY errors coercing a map VALUE
+// child — the ONLY case native may SKIP the entry (MapValueParseError). A map
+// value is coerced on the raw child with a fresh scope exactly like a list
+// ELEMENT (both invoke the value type's coercer on the child, and both wrap a
+// failure in a *ParseError flag and skip), so the proven-parse-error whitelist
+// is IDENTICAL: it delegates to provenListItemError. See that function for the
+// per-kind safe-skip vs must-decline split (numeric-string re-derivation via
+// bamlStringNumberFails, error_unexpected_type kinds, certain match_string miss,
+// multi-field all-required-flat-leaf class ← scalar; object/array/union/nested-
+// collection values DEFER and decline the whole map instead of skipping).
+func provenMapValueError(b *schema.Bundle, valT schema.Type, val value) bool {
+	return provenListItemError(b, valT, val)
+}
+
+// coerceMapKey coerces one map KEY: the ORIGINAL input key STRING wrapped as a
+// JSONish string and coerced against the key type (BAML coerce_map.rs:163). It
+// returns nil on a clean ACCEPT (the entry is inserted under the ORIGINAL key
+// string, never the canonical enum/literal form) and a DECLINE sentinel
+// otherwise. checkSupportedMapKey has already restricted the key type to the
+// four legal shapes (string primitive / enum / string literal / non-nullable
+// union of string literals), so the default arm is defensive.
 //
-// A non-ASCII case-fold uncertainty on a key declines the map AND marks cf
-// (nil-safe), so that — should a map ever become reachable as a union arm —
-// the enclosing union counter makes the same conservative whole-union decline
-// rather than treating the rejected key as an ordinary non-match. Today no
-// claimable union admits a map arm (parse.go's safe families are literal/class
-// only), so this is purely defensive signal propagation, never an over-claim.
-func matchMapKey(b *schema.Bundle, keyT schema.Type, key string, cf *coerceFlags) error {
+// Unlike a map VALUE, a KEY has NO native partial-skip path: a key that does not
+// cleanly match DECLINES THE WHOLE MAP (Mcoerce-d), never a per-entry skip. The
+// live-captured DYNAMIC behavior is that enum / string-literal / literal-union
+// map keys are LENIENT — a NON-MATCHING key is ACCEPTED and inserted under its
+// ORIGINAL string, so {"A":x,"C":z} over enum {A,B} (map_bad_enum_key) or over
+// "A"|"B" (map_literal_key_partial_bad_key) yields the FULL map, not a partial
+// one. Native cannot SKIP a missed key (BAML keeps it) nor reproduce that lenient
+// keep (that is Mcoerce-d structural leniency), so it declines the whole map on
+// ANY non-clean key. Per key type:
+//
+//   - string primitive: any key coerces → ACCEPT.
+//   - enum / string literal / string-literal union: a clean match_string match
+//     (any arm, for a union) → ACCEPT; a case-fold-UNCERTAIN verdict marks cf and
+//     declines; a certain MISS declines the whole map (dynamic lenient keep).
+//
+// A non-ASCII case-fold uncertainty marks cf (nil-safe) so that — should a map
+// ever become reachable as a union arm — the enclosing union counter makes the
+// same conservative whole-union decline. Today no claimable union admits a map
+// arm (parse.go's safe families are literal/class only), so this is purely
+// defensive signal propagation, never an over-claim.
+func coerceMapKey(b *schema.Bundle, keyT schema.Type, key string, cf *coerceFlags) error {
 	switch keyT.Kind {
 	case schema.TypePrimitive:
 		if keyT.Primitive == schema.PrimitiveString {
@@ -1252,11 +1336,8 @@ func matchMapKey(b *schema.Bundle, keyT schema.Type, key string, cf *coerceFlags
 		if !ok {
 			return fmt.Errorf("debaml: unknown enum %q", keyT.Name)
 		}
-		// The key's own match flags do not propagate to the map score (BAML
-		// discards the coerced key, inserting the original string), so ignore
-		// the substring bit — only success/failure matters. But a non-ASCII
-		// case-fold uncertainty means the key inclusion could diverge, so
-		// DECLINE the whole map (Mcoerce stays conservative on uncertainty).
+		// Only success/failure matters (BAML discards the coerced key, inserting
+		// the original string), so ignore the substring bit.
 		_, outcome, _, uncertain := matchString(key, enumMatchCandidates(e), true)
 		if uncertain {
 			cf.markUncertain()
@@ -1265,7 +1346,9 @@ func matchMapKey(b *schema.Bundle, keyT schema.Type, key string, cf *coerceFlags
 		if outcome == matchOne {
 			return nil
 		}
-		return unsupported(fmt.Sprintf("map key %q: no clean enum %q match (BAML skips via MapKeyParseError)", key, keyT.Name))
+		// A missed enum key is a DEFERRED lenient keep (dynamic enum keys accept
+		// non-members → full map), not a skip, so decline the whole map.
+		return unsupported(fmt.Sprintf("map key %q: no clean enum %q match (dynamic keeps non-members → Mcoerce-d decline)", key, keyT.Name))
 	case schema.TypeLiteral:
 		if keyT.Literal == nil || keyT.Literal.Kind != schema.LiteralString {
 			return unsupported("map key literal must be a string literal")
@@ -1278,13 +1361,14 @@ func matchMapKey(b *schema.Bundle, keyT schema.Type, key string, cf *coerceFlags
 		if outcome == matchOne {
 			return nil
 		}
-		return unsupported(fmt.Sprintf("map key %q: no clean literal %q match (BAML skips via MapKeyParseError)", key, keyT.Literal.String))
+		// A missed literal key is a DEFERRED lenient keep, not a skip → decline.
+		return unsupported(fmt.Sprintf("map key %q: no clean literal %q match (dynamic keeps non-matches → Mcoerce-d decline)", key, keyT.Literal.String))
 	case schema.TypeUnion:
 		// Only a non-nullable union of string literals is a legal map key
 		// (the same invariant the parse gate proves via isStringLiteralUnionType
 		// / checkSupportedMapKey). flattenStringLiterals is intentionally lossy —
 		// it silently drops any non-literal arm — so assert the invariant here
-		// too, defensively, since matchMapKey is unit/future-callable without the
+		// too, defensively, since coerceMapKey is unit/future-callable without the
 		// gate: a mixed union must NOT be treated as its string-literal subset.
 		if !isStringLiteralUnionType(keyT) {
 			return unsupported("map key union must be a non-nullable union of string literals")
@@ -1325,7 +1409,9 @@ func matchMapKey(b *schema.Bundle, keyT schema.Type, key string, cf *coerceFlags
 			cf.markUncertain()
 			return unsupported(fmt.Sprintf("map key %q: non-ASCII case-fold uncertainty against string-literal-union arms", key))
 		}
-		return unsupported(fmt.Sprintf("map key %q: matches no string-literal-union arm (BAML skips via MapKeyParseError)", key))
+		// No arm matched: a DEFERRED lenient keep (dynamic keeps non-matching
+		// literal-union keys → full map), not a skip → decline the whole map.
+		return unsupported(fmt.Sprintf("map key %q: matches no string-literal-union arm (dynamic keeps non-matches → Mcoerce-d decline)", key))
 	default:
 		return unsupported(fmt.Sprintf("map key kind %q", keyT.Kind))
 	}

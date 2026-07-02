@@ -1,0 +1,24 @@
+{
+  "name": "map_bad_key_original_order",
+  "description": "Mcoerce-c FALLBACK (live probe): map<\"A\"|\"B\", string> with a non-matching key (\"C\") between two matching keys that are OUT of lexical order (\"B\" before \"A\"). Confirms the dynamic bridge keeps ALL keys (incl. the non-matching \"C\") under their ORIGINAL strings in INPUT order — a FULL map, not a partial one — so native declines the WHOLE map (a missed literal-union key is a DEFERRED Mcoerce-d keep, not a skip). Pinned native disposition: fallback. want captured from live BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "m", "type": {"kind": "map", "key": {"kind": "union", "variants": [
+            {"kind": "literal", "literal": {"kind": "string", "string": "A"}},
+            {"kind": "literal", "literal": {"kind": "string", "string": "B"}}
+          ]}, "inner": {"kind": "string"}}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"m\":{\"B\":\"y\",\"C\":\"z\",\"A\":\"x\"}}",
+  "want": {
+    "status": "success",
+    "json": {"m": {"B": "y", "C": "z", "A": "x"}}
+  }
+}

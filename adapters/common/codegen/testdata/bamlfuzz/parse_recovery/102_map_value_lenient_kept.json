@@ -1,0 +1,21 @@
+{
+  "name": "map_value_lenient_kept",
+  "description": "Mcoerce-c CLAIMED: map<string,int> with Mcoerce-b lenient VALUES — a numeric string (\"7\") and a float (2.5, rounded half-away to 3). Both are successful, entry-KEEPING coercions (not MapValueParseError), so the whole map is claimed byte-identical to BAML, in INPUT key order. The map's own score ignores the value FloatToInt flag (score.rs). want captured from live BAML final parse.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "scores", "type": {"kind": "map", "key": {"kind": "string"}, "inner": {"kind": "int"}}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"scores\":{\"a\":\"7\",\"b\":2.5}}",
+  "want": {
+    "status": "success",
+    "json": {"scores": {"a": 7, "b": 3}}
+  }
+}

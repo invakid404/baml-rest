@@ -189,8 +189,11 @@ var parseRecoveryNativeClaim = map[string]bool{
 	// unterminated/incomplete map (M2a defers). Native declines (fallback)
 	// rather than claim a clean result where BAML carries flags or skips
 	// entries. (map_fuzzy_enum_key flipped to claimed in Mcoerce-a.)
-	"map_bad_enum_key":       false,
-	"map_bad_value_type":     false,
+	"map_bad_enum_key": false,
+	// Mcoerce-c native MAPS flip: an OBJECT map value can't coerce to int
+	// (error_unexpected_type), a PROVEN MapValueParseError, so BAML skips just
+	// that entry and native now reproduces the partial map {"a":1} — CLAIMED.
+	"map_bad_value_type":     true,
 	"map_partial_incomplete": false,
 	// Mcoerce-a native match_string parity: enum / string-literal / class
 	// field-key / map-key fuzzy matching (case / accent+ligature fold /
@@ -318,6 +321,26 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"list_string_non_string_stays_fallback":           false,
 	"nullable_optional_list_singleton_stays_fallback": false,
 	"union_list_partial_stays_fallback":               false,
+	// Mcoerce-c native MAPS (coerceMap / coerce_map.rs): object→map ObjectToMap
+	// flagging, VALUE-then-KEY coercion, and PARTIAL entry skips of PROVEN map
+	// VALUE parse errors (MapValueParseError) resolve byte-identical to BAML, so
+	// the deterministic partial-map claims are CLAIMED — accepted entries in INPUT
+	// key order under their ORIGINAL key strings.
+	"map_value_partial_bad_int": true,
+	"map_value_lenient_kept":    true,
+	// Mcoerce-c MAP fallback set. KEY misses are NOT native skips: the dynamic
+	// bridge keeps non-matching enum / string-literal / literal-union keys
+	// leniently (live-captured FULL maps, not partial), so a key miss is a
+	// DEFERRED Mcoerce-d keep and native declines the WHOLE map. Also fallback: a
+	// duplicate original key (unproven insert order), a map<string,string>
+	// non-string value (JsonToString, Mcoerce-d), and a nullable map arm flagged
+	// by ObjectToMap (score-bearing, M3 vs null).
+	"map_literal_key_partial_bad_key":                   false,
+	"map_bad_key_original_order":                        false,
+	"map_enum_key_nonmember_live_probe":                 false,
+	"map_duplicate_key_stays_fallback":                  false,
+	"map_string_string_non_string_value_stays_fallback": false,
+	"nullable_optional_map_object_stays_fallback":       false,
 }
 
 // parseRecoveryStats tallies how many final-parse cases the native parser
