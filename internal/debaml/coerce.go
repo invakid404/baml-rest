@@ -84,11 +84,14 @@ func (f *coerceFlags) isUncertain() bool { return f != nil && f.uncertain }
 // PARTIAL array skips of PROVEN-parse-error items, and empty-list-on-singleton-
 // failure — each score-bearing (SingleToArray, ArrayItemParseError, child flags)
 // so the nullable-union clean-only rule still holds. Mcoerce-c also adds native
-// MAP parity (coerceMap / coerce_map.rs): object→map ObjectToMap flagging, VALUE-
-// then-KEY coercion, PARTIAL entry skips of PROVEN value/key parse errors
-// (MapValueParseError / MapKeyParseError), and ORIGINAL input key strings in
-// input order — each score-bearing (ObjectToMap, the partial errors) so the
-// nullable-union clean-only rule still holds. The remaining leniencies stay
+// MAP parity (coerceMap / coerce_map.rs): object→map ObjectToMap flagging,
+// VALUE-then-KEY coercion, VALUE partial entry skips of PROVEN value parse
+// errors (MapValueParseError), and ORIGINAL input key strings in input order.
+// KEYS do not partial-skip in native: any non-clean enum/literal/literal-union
+// key verdict declines the WHOLE map (no MapKeyParseError skip), because the
+// dynamic bridge keeps non-matching keys leniently. ObjectToMap and value
+// partial skips are score-bearing, so the nullable-union clean-only rule still
+// holds. The remaining leniencies stay
 // STRICT and DECLINE: non-string stringification (ObjectToString / JsonToString),
 // single-key-object ObjectToPrimitive literal extraction, single-field implied-key
 // / inferred-object absorption, and class default-fill — all deferred to
