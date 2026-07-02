@@ -83,19 +83,21 @@ func TestCoerceList_SingletonWrap(t *testing.T) {
 	mustParse(t, s, `{"u":true}`, `{"u":[]}`)     // bool->int proven error -> []
 }
 
-// TestCoerceList_StringElementDeferredDeclines pins the CRUX must-decline: a
-// list<string> child that native declines is a DEFERRED Mcoerce-d success
-// (JsonToString), NOT a proven parse error, so native declines the whole list.
-func TestCoerceList_StringElementDeferredDeclines(t *testing.T) {
+// TestCoerceList_StringElementStringified pins the Mcoerce-d PR 1 flip: a
+// list<string> non-null non-string element is now stringified (JsonToString) and
+// KEPT, so the whole list claims instead of declining. A direct null element is
+// a PROVEN skip. (Was TestCoerceList_StringElementDeferredDeclines.)
+func TestCoerceList_StringElementStringified(t *testing.T) {
 	s := listStrSchema()
 	mustParse(t, s, `{"u":["a","b"]}`, `{"u":["a","b"]}`) // clean claim
-	// Number element -> BAML JsonToString keeps it; native can't prove a parse
-	// error, so it declines the whole list rather than skip an item BAML keeps.
-	requireUnsupported(t, s, `{"u":["a",2]}`)
-	// Number singleton -> SingleToArray then JsonToString (Mcoerce-d) -> decline.
-	requireUnsupported(t, s, `{"u":5}`)
+	// Number element -> JsonToString "2", kept (fixture 96).
+	mustParse(t, s, `{"u":["a",2]}`, `{"u":["a","2"]}`)
+	// Number singleton -> SingleToArray then JsonToString -> ["5"].
+	mustParse(t, s, `{"u":5}`, `{"u":["5"]}`)
 	// String singleton coerces cleanly -> claim.
 	mustParse(t, s, `{"u":"x"}`, `{"u":["x"]}`)
+	// Direct null element is a proven error_unexpected_null skip; the rest kept.
+	mustParse(t, s, `{"u":["a",null,"b"]}`, `{"u":["a","b"]}`)
 }
 
 // TestCoerceList_ClassScalarSkips pins that a multi-field flat class element

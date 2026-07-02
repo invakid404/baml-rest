@@ -1,0 +1,34 @@
+{
+  "name": "list_string_null_skipped",
+  "description": "Mcoerce-d PR 1 CLAIMED: list<string> ['a', null, 'b']. A direct NULL element is BAML error_unexpected_null -> a proven ArrayItemParseError skip, so native drops it and keeps ['a', 'b'] (non-null non-strings would stringify). want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "list",
+              "inner": {
+                "kind": "string"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":[\"a\",null,\"b\"]}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": [
+        "a",
+        "b"
+      ]
+    }
+  }
+}

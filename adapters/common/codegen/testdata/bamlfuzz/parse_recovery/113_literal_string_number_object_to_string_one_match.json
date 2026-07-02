@@ -1,0 +1,32 @@
+{
+  "name": "literal_string_number_object_to_string_one_match",
+  "description": "Mcoerce-d PR 1 CLAIMED: string literal \"5\", NUMBER input 5. BAML stringifies via Display '5' (ObjectToString) then match_string matches the literal. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "literal",
+              "literal": {
+                "kind": "string",
+                "string": "5"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":5}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": "5"
+    }
+  }
+}

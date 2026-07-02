@@ -1,0 +1,35 @@
+{
+  "name": "list_string_bool_object_array_values_kept",
+  "description": "Mcoerce-d PR 1 CLAIMED: list<string> with bool/object/array elements. Each stringifies via Display (JsonToString) and is KEPT: ['true', '{a: 1}', '[1, 2]']. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "list",
+              "inner": {
+                "kind": "string"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":[true,{\"a\":1},[1,2]]}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": [
+        "true",
+        "{a: 1}",
+        "[1, 2]"
+      ]
+    }
+  }
+}

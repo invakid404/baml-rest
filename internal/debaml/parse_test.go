@@ -167,10 +167,10 @@ func TestParse_LenientPrimitiveCoercion(t *testing.T) {
 	// fix is CLAIMED and the lenient coercion now CLAIMS too.
 	mustParse(t, personSchema(), `{name:'Ada', age:36.5}`, `{"name":"Ada","age":37}`)
 	mustParse(t, personSchema(), `{name:'Ada', age:'36'}`, `{"name":"Ada","age":36}`)
-	// Number where a string is required stays STRICT: non-string→string is
-	// JsonToString (Mcoerce-d), so native DECLINES (BAML stringifies 36->"36").
+	// Mcoerce-d PR 1: a number where a string is required now stringifies via
+	// jsonish Value Display (JsonToString), so native CLAIMS "36".
 	s := &bamlutils.DynamicOutputSchema{Properties: props(kv("v", strProp()))}
-	requireUnsupported(t, s, `{"v":36}`)
+	mustParse(t, s, `{"v":36}`, `{"v":"36"}`)
 }
 
 func TestParse_List(t *testing.T) {
@@ -181,17 +181,14 @@ func TestParse_List(t *testing.T) {
 		})),
 	}
 	mustParse(t, s, `{"tags":["x","y","z"]}`, `{"tags":["x","y","z"]}`)
-	// Wrong element type DECLINES: BAML stringifies 2->"2" in a string list
-	// (JsonToString is Mcoerce-d), so native can't PROVE the element is a parse
-	// error and declines the whole list rather than skip an item BAML would keep.
-	requireUnsupported(t, s, `{"tags":["x",2]}`)
+	// Mcoerce-d PR 1: a non-string element is stringified (JsonToString) and
+	// KEPT, so the list claims 2->"2" instead of declining.
+	mustParse(t, s, `{"tags":["x",2]}`, `{"tags":["x","2"]}`)
 	// Mcoerce-c: a non-array STRING where list<string> is required is wrapped as
 	// a single implied element (SingleToArray) and coerces cleanly -> claimed.
 	mustParse(t, s, `{"tags":"x"}`, `{"tags":["x"]}`)
-	// A non-array NUMBER singleton still DECLINES: BAML stringifies it
-	// (JsonToString, Mcoerce-d), so the singleton element is not a proven parse
-	// error and native falls back rather than emit an empty/wrong list.
-	requireUnsupported(t, s, `{"tags":5}`)
+	// A non-array NUMBER singleton is now SingleToArray then JsonToString -> ["5"].
+	mustParse(t, s, `{"tags":5}`, `{"tags":["5"]}`)
 }
 
 func TestParse_OptionalPresentAndAbsent(t *testing.T) {

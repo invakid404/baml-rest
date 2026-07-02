@@ -1,0 +1,47 @@
+{
+  "name": "map_string_enum_object_to_string_value_kept",
+  "description": "Mcoerce-d PR 1 CLAIMED: map<string,Color> with an OBJECT value. It stringifies via Display '{v: BLUE}' (ObjectToString), substring-matches BLUE (only), and the entry is KEPT. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "m",
+            "type": {
+              "kind": "map",
+              "key": {
+                "kind": "string"
+              },
+              "inner": {
+                "kind": "enum_ref",
+                "ref": "Color"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root",
+    "enums": [
+      {
+        "name": "Color",
+        "values": [
+          "RED",
+          "GREEN",
+          "BLUE"
+        ]
+      }
+    ]
+  },
+  "raw": "{\"m\":{\"k\":{\"v\":\"BLUE\"}}}",
+  "want": {
+    "status": "success",
+    "json": {
+      "m": {
+        "k": "BLUE"
+      }
+    }
+  }
+}

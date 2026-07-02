@@ -1,0 +1,29 @@
+{
+  "name": "primitive_string_non_string_json_to_string",
+  "description": "Mcoerce-d PR 1 CLAIMED: string target, JSON number 5. BAML stringifies the non-string via jsonish Value Display (JsonToString, score 2); native now ports coerce_string and claims \"5\". want live-captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":5}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": "5"
+    }
+  }
+}

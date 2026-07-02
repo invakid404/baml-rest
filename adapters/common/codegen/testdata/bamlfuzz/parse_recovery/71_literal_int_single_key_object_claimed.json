@@ -1,0 +1,33 @@
+{
+  "name": "literal_int_single_key_object_claimed",
+  "description": "Mcoerce-d PR 1 CLAIMED: literal int 1, single-key object {\"value\":\"1\"}. BAML extracts the inner primitive and adds ObjectToPrimitive (score 2); native now ports that prelude, coerces \"1\"->1 == literal, and claims. want live-captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "literal",
+              "literal": {
+                "kind": "int",
+                "int": 1
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":{\"value\":\"1\"}}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": 1
+    }
+  }
+}

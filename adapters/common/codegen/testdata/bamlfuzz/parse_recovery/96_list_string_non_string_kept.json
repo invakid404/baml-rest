@@ -1,0 +1,35 @@
+{
+  "name": "list_string_non_string_kept",
+  "description": "Mcoerce-d PR 1 CLAIMED: list<string> with a numeric element ['a', 2]. BAML stringifies 2 -> '2' (JsonToString), an entry-KEEPING lenient success; native now coerces+keeps the element and claims ['a','2']. want live-captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "list",
+              "inner": {
+                "kind": "string"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":[\"a\",2]}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": [
+        "a",
+        "2"
+      ]
+    }
+  }
+}

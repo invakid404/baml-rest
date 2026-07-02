@@ -91,14 +91,24 @@ func (f *coerceFlags) isUncertain() bool { return f != nil && f.uncertain }
 // key verdict declines the WHOLE map (no MapKeyParseError skip), because the
 // dynamic bridge keeps non-matching keys leniently. ObjectToMap and value
 // partial skips are score-bearing, so the nullable-union clean-only rule still
-// holds. The remaining leniencies stay
-// STRICT and DECLINE: non-string stringification (ObjectToString / JsonToString),
-// single-key-object ObjectToPrimitive literal extraction, single-field implied-key
-// / inferred-object absorption, and class default-fill — all deferred to
-// Mcoerce-d. Where native's coercion fails but BAML may leniently SUCCEED (or
-// null-default) — or where native cannot determine BAML's exact success/failure
-// — coercion DECLINES (ErrDeBAMLParseUnsupported → fall back to BAML), so native
-// is never "more capable" than BAML.
+// holds. Mcoerce-d PR 1 adds native STRINGIFICATION + literal EXTRACTION: a
+// primitive STRING target stringifies a NON-null non-string via jsonish Value
+// Display (displayValue) and marks JsonToString (score 2); ENUM and string
+// LITERAL targets stringify a non-string the same way and mark ObjectToString
+// (score 2) before running match_string; and every LITERAL kind first tries a
+// single-key-object ObjectToPrimitive extraction (score 2) of a number / bool /
+// string inner value. These are score-bearing (JsonToString / ObjectToString /
+// ObjectToPrimitive all flag the accumulator) so the nullable-union clean-only
+// rule holds, and the leaf-level collection classifiers keep the newly-succeeding
+// string/enum/literal children instead of declining the whole collection (a
+// direct string←null child is now a proven ArrayItemParseError/MapValueParseError
+// skip). The remaining leniencies stay STRICT and DECLINE: class STRUCTURAL
+// coercion — single-field implied-key / inferred-object absorption, extra-key
+// tolerance, and default-fill (Mcoerce-d PR 2) — and broadened union families
+// (Mcoerce-d PR 3). Where native's coercion fails but BAML may leniently SUCCEED
+// (or null-default) — or where native cannot determine BAML's exact
+// success/failure — coercion DECLINES (ErrDeBAMLParseUnsupported → fall back to
+// BAML), so native is never "more capable" than BAML.
 //
 // Native CLAIMS a coercion error only where BAML also errors: a non-object
 // where a MULTI-field class is required (coerceClass typeMismatch), or a
@@ -151,19 +161,19 @@ func coerce(b *schema.Bundle, t schema.Type, input value, f *coerceFlags) (json.
 //     substring hit — the string paths add StringToBool (score 1).
 //   - null:  JSON null is clean; any non-null value defaults to null with
 //     DefaultButHadValue (score 110).
+//   - string: Mcoerce-d ports coerce_string's non-string stringification: a
+//     JSON string is emitted unchanged, a NON-null non-string is rendered via
+//     jsonish Value Display (displayValue) and marked JsonToString (score 2),
+//     and a JSON null still DECLINES (BAML error_unexpected_null — null is
+//     never stringified; an optional string null-defaults, which native cannot
+//     score).
 //
-// Primitive STRING stays STRICT (only a JSON string coerces): non-string→string
-// via JsonToString (score 2) is Mcoerce-d, so a non-string DECLINES. Every
-// score-bearing conversion marks f (nil-safe) so the nullable-union clean-only
-// rule can require the winning non-null arm to be clean.
+// Every score-bearing conversion marks f (nil-safe) so the nullable-union
+// clean-only rule can require the winning non-null arm to be clean.
 func coercePrimitive(p schema.PrimitiveKind, input value, f *coerceFlags) (json.RawMessage, error) {
 	switch p {
 	case schema.PrimitiveString:
-		if input.kind != valString {
-			// Non-string → string is JsonToString (score 2), Mcoerce-d.
-			return nil, declineCoerce("string target", input)
-		}
-		return marshalJSON(input.strV)
+		return coercePrimitiveString(input, f)
 	case schema.PrimitiveInt:
 		return coercePrimitiveInt(input, f)
 	case schema.PrimitiveFloat:
@@ -229,6 +239,107 @@ func coercePrimitiveNull(input value, f *coerceFlags) (json.RawMessage, error) {
 		f.flag() // DefaultButHadValue (score 110)
 	}
 	return json.RawMessage("null"), nil
+}
+
+// coercePrimitiveString ports coerce_string (coerce_primitive.rs:132). A JSON
+// string is emitted unchanged (score 0). A NON-null, NON-string value is
+// stringified via jsonish Value Display (displayValue) and carries JsonToString
+// (score 2). A JSON null is NOT stringified: BAML errors (error_unexpected_null)
+// and native DECLINES — a required string is a hard error and an optional string
+// null-defaults, neither of which native reproduces without scoring. (BAML's
+// AnyOf parser-meta path is not modeled by native's value kinds, so it never
+// arises here.)
+func coercePrimitiveString(input value, f *coerceFlags) (json.RawMessage, error) {
+	switch input.kind {
+	case valString:
+		return marshalJSON(input.strV)
+	case valNull:
+		// BAML error_unexpected_null — null is never stringified.
+		return nil, declineCoerce("string target (null)", input)
+	default:
+		f.flag() // JsonToString (score 2)
+		return marshalJSON(displayValue(input))
+	}
+}
+
+// displayValue renders v exactly as BAML's jsonish::Value Display impl does
+// (jsonish/value.rs:195) — the string BAML feeds to JsonToString (primitive
+// string, coercePrimitiveString) and ObjectToString (enum / string-literal
+// match_string, stringForMatch). This is NOT JSON serialization: keys and
+// nested strings are UNQUOTED. The forms, per value.rs:
+//
+//   - number: the raw numeric token text (json.Number preserves the input
+//     spelling, matching serde_json::Number's Display for the integer /
+//     simple-decimal forms — e.g. 5, 5.0 — the corpus uses);
+//   - bool:   "true" / "false";
+//   - null:   "null";
+//   - string: the raw string, unquoted (a nested string is not re-quoted);
+//   - object: "{k: v, k2: v2}" — unquoted keys, ": " key/value separator,
+//     ", " between entries, in input order, values recursively displayed;
+//   - array:  "[v, v2]" — ", " between elements, recursively displayed.
+//
+// The caller JSON-marshals the result (marshalJSON, HTML-escaping disabled) so
+// the display string becomes the emitted JSON string value.
+func displayValue(v value) string {
+	switch v.kind {
+	case valNull:
+		return "null"
+	case valBool:
+		if v.boolV {
+			return "true"
+		}
+		return "false"
+	case valNumber:
+		return v.numV.String()
+	case valString:
+		return v.strV
+	case valArray:
+		var b strings.Builder
+		b.WriteByte('[')
+		for i := range v.arrV {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(displayValue(v.arrV[i]))
+		}
+		b.WriteByte(']')
+		return b.String()
+	case valObject:
+		var b strings.Builder
+		b.WriteByte('{')
+		for i := range v.objV {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(v.objV[i].key)
+			b.WriteString(": ")
+			b.WriteString(displayValue(v.objV[i].val))
+		}
+		b.WriteByte('}')
+		return b.String()
+	default:
+		return ""
+	}
+}
+
+// stringForMatch reproduces match_string's value→string prelude
+// (match_string.rs:47): a JSON string is used verbatim (score 0); a NON-null
+// non-string is stringified via jsonish Value Display and marks ObjectToString
+// (score 2); a JSON null is BAML error_unexpected_null and DECLINES (null is
+// never matched — a required target errors, an optional one null-defaults, and
+// native cannot tell which without scoring). It is the shared prelude for enum
+// and string-literal coercion (coerceEnum / coerceLiteral). BAML's AnyOf
+// parser-meta path is not modeled by native's value kinds.
+func stringForMatch(input value, f *coerceFlags) (string, error) {
+	switch input.kind {
+	case valString:
+		return input.strV, nil
+	case valNull:
+		return "", declineCoerce("match_string target (null)", input)
+	default:
+		f.flag() // ObjectToString (score 2)
+		return displayValue(input), nil
+	}
 }
 
 // coerceIntValue ports coerce_int (coerce_primitive.rs). It returns the coerced
@@ -547,21 +658,45 @@ func floatFromCommaSeparated(s string) (float64, bool) {
 // error-vs-default choice, keeping the conservative Mcoerce boundary.
 //
 // BAML's coerce_literal runs a single-key-object ObjectToPrimitive extraction
-// BEFORE every literal kind; that prelude is Mcoerce-d, so native does NOT copy
-// it — an OBJECT input to an int/bool (or string) literal DECLINES here.
+// BEFORE every literal kind (coerce_literal.rs:90): an object with EXACTLY ONE
+// key whose inner value is a number / bool / string is unwrapped, the literal is
+// re-coerced against that inner value, and on success ObjectToPrimitive (score
+// 2) is added (the key name is ignored). An inner object / array / null gets NO
+// extraction and falls through to the normal per-kind path. This is Mcoerce-d;
+// a JSON null still DECLINES (BAML error_unexpected_null before any extraction).
 func coerceLiteral(lit *schema.LiteralValue, input value, f *coerceFlags) (json.RawMessage, error) {
 	if lit == nil {
 		return nil, fmt.Errorf("debaml: literal type missing value")
 	}
+	// Single-key-object ObjectToPrimitive prelude (coerce_literal.rs:90). Only a
+	// number / bool / string inner value is extracted; the recursion re-runs this
+	// coercer on that scalar (so the prelude never re-fires) and PROPAGATES an
+	// inner mismatch — BAML does NOT fall back to matching the whole object.
+	if input.kind == valObject && len(input.objV) == 1 {
+		if inner := input.objV[0].val; inner.kind == valNumber || inner.kind == valBool || inner.kind == valString {
+			out, err := coerceLiteral(lit, inner, f)
+			if err != nil {
+				return nil, err
+			}
+			f.flag() // ObjectToPrimitive (score 2)
+			return out, nil
+		}
+	}
 	switch lit.Kind {
 	case schema.LiteralString:
-		if input.kind != valString {
-			return nil, declineCoerce("literal string", input)
+		// A NON-null non-string stringifies via jsonish Value Display and marks
+		// ObjectToString (score 2, Mcoerce-d) before matching; a JSON null
+		// DECLINES (stringForMatch). A multi-key object (or an object whose lone
+		// inner value is an object/array/null, which the prelude skipped) is
+		// stringified whole here.
+		str, err := stringForMatch(input, f)
+		if err != nil {
+			return nil, err
 		}
-		matched, outcome, viaSub, uncertain := matchString(input.strV, []matchCandidate{{name: lit.String, validValues: []string{lit.String}}}, true)
+		matched, outcome, viaSub, uncertain := matchString(str, []matchCandidate{{name: lit.String, validValues: []string{lit.String}}}, true)
 		if uncertain {
 			f.markUncertain()
-			return nil, unsupported(fmt.Sprintf("literal string %q: non-ASCII case-fold uncertainty for %q (cannot prove match equals BAML)", lit.String, input.strV))
+			return nil, unsupported(fmt.Sprintf("literal string %q: non-ASCII case-fold uncertainty for %q (cannot prove match equals BAML)", lit.String, str))
 		}
 		switch outcome {
 		case matchOne:
@@ -571,15 +706,14 @@ func coerceLiteral(lit *schema.LiteralValue, input value, f *coerceFlags) (json.
 			return marshalJSON(matched)
 		case matchAmbiguous:
 			// A single candidate cannot tie; defensive.
-			return nil, ambiguousMatch(fmt.Sprintf("literal string %q", lit.String), input.strV)
+			return nil, ambiguousMatch(fmt.Sprintf("literal string %q", lit.String), str)
 		default:
-			return nil, unsupported(fmt.Sprintf("literal string %q: %q matches no value (BAML errors or null-defaults)", lit.String, input.strV))
+			return nil, unsupported(fmt.Sprintf("literal string %q: %q matches no value (BAML errors or null-defaults)", lit.String, str))
 		}
 	case schema.LiteralInt:
-		if input.kind == valObject {
-			// Single-key-object ObjectToPrimitive extraction is Mcoerce-d.
-			return nil, declineCoerce("literal int (BAML single-key object extraction)", input)
-		}
+		// A multi-key object (or single-key object with an object/array/null
+		// inner) not consumed by the prelude falls to coerceIntValue, whose
+		// default arm DECLINES it (BAML coerce_int error_unexpected_type).
 		n, flagged, err := coerceIntValue(input)
 		if err != nil {
 			if !declinableChildError(err) {
@@ -597,9 +731,6 @@ func coerceLiteral(lit *schema.LiteralValue, input value, f *coerceFlags) (json.
 		}
 		return json.RawMessage(strconv.FormatInt(n, 10)), nil
 	case schema.LiteralBool:
-		if input.kind == valObject {
-			return nil, declineCoerce("literal bool (BAML single-key object extraction)", input)
-		}
 		b, flagged, uncertain, err := coerceBoolValue(input)
 		if uncertain {
 			f.markUncertain()
@@ -631,25 +762,28 @@ func coerceLiteral(lit *schema.LiteralValue, input value, f *coerceFlags) (json.
 // CLAIMED error (StrMatchOneFromMany — BAML errors before emitting), while a
 // no-match DECLINES: BAML errors in a required position but null-defaults in
 // an optional one (DefaultButHadValue), and native cannot tell which apart
-// without scoring, so it falls back. A non-string input also DECLINES — BAML
-// stringifies it via jsonish Value Display (ObjectToString), whose exact
-// reproduction is Mcoerce-b/d. An enum absent from the lowered bundle is a
-// broken schema, kept as a claimed error.
+// without scoring, so it falls back. A NON-null non-string input is stringified
+// via jsonish Value Display and marked ObjectToString (score 2, Mcoerce-d,
+// stringForMatch) before matching — so an object/array/number/bool that
+// substring-matches a value coerces to that value's canonical name; a JSON null
+// DECLINES (never matched). An enum absent from the lowered bundle is a broken
+// schema, kept as a claimed error.
 func coerceEnum(b *schema.Bundle, name string, input value, f *coerceFlags) (json.RawMessage, error) {
-	if input.kind != valString {
-		return nil, declineCoerce("enum target", input)
-	}
 	e, ok := b.FindEnum(name)
 	if !ok {
 		return nil, fmt.Errorf("debaml: unknown enum %q", name)
 	}
-	matched, outcome, viaSub, uncertain := matchString(input.strV, enumMatchCandidates(e), true)
+	str, err := stringForMatch(input, f)
+	if err != nil {
+		return nil, err
+	}
+	matched, outcome, viaSub, uncertain := matchString(str, enumMatchCandidates(e), true)
 	if uncertain {
 		// The verdict hinged on a non-ASCII case fold native cannot prove
 		// equals BAML's. Mark it (so a union counter declines the whole union)
 		// and DECLINE rather than claim a match/no-match that might diverge.
 		f.markUncertain()
-		return nil, unsupported(fmt.Sprintf("enum %q: non-ASCII case-fold uncertainty for %q (cannot prove match equals BAML)", name, input.strV))
+		return nil, unsupported(fmt.Sprintf("enum %q: non-ASCII case-fold uncertainty for %q (cannot prove match equals BAML)", name, str))
 	}
 	switch outcome {
 	case matchOne:
@@ -659,9 +793,9 @@ func coerceEnum(b *schema.Bundle, name string, input value, f *coerceFlags) (jso
 		// matched is the candidate name = the value's canonical real name.
 		return marshalJSON(matched)
 	case matchAmbiguous:
-		return nil, ambiguousMatch(fmt.Sprintf("enum %q", name), input.strV)
+		return nil, ambiguousMatch(fmt.Sprintf("enum %q", name), str)
 	default:
-		return nil, unsupported(fmt.Sprintf("enum %q: %q matches no value (BAML errors or null-defaults)", name, input.strV))
+		return nil, unsupported(fmt.Sprintf("enum %q: %q matches no value (BAML errors or null-defaults)", name, str))
 	}
 }
 
@@ -956,7 +1090,9 @@ func coerceListChild(b *schema.Bundle, elem schema.Type, item value, cf *coerceF
 // (bamlStringNumberFails); an input kind BAML rejects with error_unexpected_type
 // is proven; an ARRAY defers to coerce_array_to_singular (pick_best, M3) and a
 // class/map/union child (or object into a numeric/literal target) defers to
-// Mcoerce-d, so those are NOT proven and DECLINE the whole list.
+// Mcoerce-d, so those are NOT proven and DECLINE the whole list. For a STRING
+// target (Mcoerce-d) a non-null non-string now SUCCEEDS via JsonToString and
+// never reaches here; only a direct NULL is proven (error_unexpected_null).
 func provenListItemError(b *schema.Bundle, elem schema.Type, item value) bool {
 	switch elem.Kind {
 	case schema.TypePrimitive:
@@ -984,9 +1120,15 @@ func provenListItemError(b *schema.Bundle, elem schema.Type, item value) bool {
 			default:
 				return false // valBool: success; valArray: array-to-singular (M3).
 			}
+		case schema.PrimitiveString:
+			// A NON-null non-string now stringifies (JsonToString, Mcoerce-d) and
+			// SUCCEEDS at the leaf, so it never reaches here. Only a NULL reaches
+			// here: BAML coerce_string on Null is error_unexpected_null → a proven
+			// ArrayItemParseError skip (an array item is never null-defaulted).
+			return item.kind == valNull
 		default:
-			// string / null targets: a native failure is a DEFERRED BAML SUCCESS
-			// (JsonToString for string; null defaults for any value), never proven.
+			// null target: coercePrimitiveNull always succeeds (any value
+			// null-defaults), so a null-target child never fails into here.
 			return false
 		}
 	case schema.TypeEnum:

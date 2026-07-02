@@ -1,0 +1,37 @@
+{
+  "name": "map_string_string_non_string_value_kept",
+  "description": "Mcoerce-d PR 1 CLAIMED: map<string,string> with a NUMBER value (5). BAML stringifies it via JsonToString (an entry-KEEPING lenient success); native now coerces+keeps the value and claims {\"a\":\"x\",\"b\":\"5\"}. want live-captured from live BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "m",
+            "type": {
+              "kind": "map",
+              "key": {
+                "kind": "string"
+              },
+              "inner": {
+                "kind": "string"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"m\":{\"a\":\"x\",\"b\":5}}",
+  "want": {
+    "status": "success",
+    "json": {
+      "m": {
+        "a": "x",
+        "b": "5"
+      }
+    }
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "name": "list_literal_int_single_key_object_kept",
+  "description": "Mcoerce-d PR 1 CLAIMED: list<literal 1> with a single-key-object element {\"value\":\"1\"}. BAML extracts the inner primitive (ObjectToPrimitive), coerces \"1\"->1 == literal, element KEPT. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "list",
+              "inner": {
+                "kind": "literal",
+                "literal": {
+                  "kind": "int",
+                  "int": 1
+                }
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":[{\"value\":\"1\"}]}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": [
+        1
+      ]
+    }
+  }
+}

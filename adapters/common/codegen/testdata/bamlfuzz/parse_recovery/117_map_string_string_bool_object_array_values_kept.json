@@ -1,0 +1,38 @@
+{
+  "name": "map_string_string_bool_object_array_values_kept",
+  "description": "Mcoerce-d PR 1 CLAIMED: map<string,string> with bool/object/array VALUES. Each stringifies via Display (JsonToString) and its entry is KEPT, in input key order. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "m",
+            "type": {
+              "kind": "map",
+              "key": {
+                "kind": "string"
+              },
+              "inner": {
+                "kind": "string"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"m\":{\"a\":true,\"b\":{\"x\":1},\"c\":[1,2]}}",
+  "want": {
+    "status": "success",
+    "json": {
+      "m": {
+        "a": "true",
+        "b": "{x: 1}",
+        "c": "[1, 2]"
+      }
+    }
+  }
+}
