@@ -1,0 +1,28 @@
+{
+  "name": "list_class_non_object_partial",
+  "description": "Mcoerce-c CLAIMED: list<Pair> where Pair is a multi-field all-required-flat-leaf class and one array item is a scalar [5, {a,b}]. A scalar cannot fill Pair's required fields (no default_value), so BAML errors (error_missing_required_field) and drops it (ArrayItemParseError), keeping the valid object -> [{a,b}]. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "items", "type": {"kind": "list", "inner": {"kind": "class_ref", "ref": "Pair"}}}
+        ]
+      },
+      {
+        "name": "Pair",
+        "properties": [
+          {"name": "a", "type": {"kind": "string"}},
+          {"name": "b", "type": {"kind": "string"}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"items\":[5,{\"a\":\"x\",\"b\":\"y\"}]}",
+  "want": {
+    "status": "success",
+    "json": {"items": [{"a": "x", "b": "y"}]}
+  }
+}

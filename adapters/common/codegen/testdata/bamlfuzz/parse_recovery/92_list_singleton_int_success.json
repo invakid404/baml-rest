@@ -1,0 +1,22 @@
+{
+  "name": "list_singleton_int_success",
+  "description": "Mcoerce-c CLAIMED: list<int> field, non-array numeric-string input '123'. BAML wraps it as a single implied element (SingleToArray) and coerces it to 123 -> [123]. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "list", "inner": {"kind": "int"}}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"123\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": [123]}
+  }
+}

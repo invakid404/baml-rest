@@ -1,0 +1,22 @@
+{
+  "name": "nullable_optional_list_singleton_stays_fallback",
+  "description": "Mcoerce-c FALLBACK: optional list<int> (list<int> | null) with a non-array singleton '123'. The non-null list arm succeeds via SingleToArray, which is SCORE-BEARING (score 1), so BAML scores it against the null arm (DefaultButHadValue=110). Native's nullable clean-only rule declines a flagged non-null arm (scoring is M3). want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "optional", "inner": {"kind": "list", "inner": {"kind": "int"}}}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"123\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": [123]}
+  }
+}
