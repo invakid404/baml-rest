@@ -265,14 +265,32 @@ func coercePrimitiveString(input value, f *coerceFlags) (json.RawMessage, error)
 		// BAML error_unexpected_null — null is never stringified.
 		return nil, declineCoerce("string target (null)", input)
 	default:
-		s, certain := displayValue(input)
-		if !certain {
-			f.markUncertain()
-			return nil, unsupported("string target: number spelling display not provably identical to BAML's serde_json Display (Mcoerce-d number-display parity)")
+		s, err := displayStringification(input, f, "string target")
+		if err != nil {
+			return nil, err
 		}
-		f.flag() // JsonToString (score 2)
 		return marshalJSON(s)
 	}
+}
+
+// displayStringification is the shared non-null/non-string stringification guard
+// behind both JsonToString (coercePrimitiveString) and ObjectToString
+// (stringForMatch). It renders the jsonish Value Display of input (displayValue)
+// and enforces number-display certainty: if the display carries a number spelling
+// native cannot prove byte-identical to BAML's serde_json Display (displayNumber),
+// it marks f uncertain and DECLINES; otherwise it marks the score-bearing flag
+// (JsonToString / ObjectToString both reduce to coerceFlags.flagged) and returns
+// the raw Display string. It does NOT handle string passthrough, null, JSON
+// marshaling, or match_string — those stay in each caller. uncertainContext names
+// the target for the decline message.
+func displayStringification(input value, f *coerceFlags, uncertainContext string) (string, error) {
+	s, certain := displayValue(input)
+	if !certain {
+		f.markUncertain()
+		return "", unsupported(uncertainContext + ": number spelling display not provably identical to BAML's serde_json Display (Mcoerce-d number-display parity)")
+	}
+	f.flag() // JsonToString / ObjectToString (score 2)
+	return s, nil
 }
 
 // displayValue renders v the way BAML's jsonish::Value Display impl does
@@ -399,13 +417,7 @@ func stringForMatch(input value, f *coerceFlags) (string, error) {
 	case valNull:
 		return "", declineCoerce("match_string target (null)", input)
 	default:
-		s, certain := displayValue(input)
-		if !certain {
-			f.markUncertain()
-			return "", unsupported("match_string target: number spelling display not provably identical to BAML's serde_json Display (Mcoerce-d number-display parity)")
-		}
-		f.flag() // ObjectToString (score 2)
-		return s, nil
+		return displayStringification(input, f, "match_string target")
 	}
 }
 
