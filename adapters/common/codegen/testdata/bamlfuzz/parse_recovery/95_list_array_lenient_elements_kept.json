@@ -1,0 +1,22 @@
+{
+  "name": "list_array_lenient_elements_kept",
+  "description": "Mcoerce-c CLAIMED: list<int> field with Mcoerce-b lenient elements ['1', 2.6, '3/2'] — numeric string, float->int round (half-away), and a fraction — all KEPT inside the list -> [1, 3, 2]. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "list", "inner": {"kind": "int"}}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":[\"1\",2.6,\"3/2\"]}",
+  "want": {
+    "status": "success",
+    "json": {"u": [1, 3, 2]}
+  }
+}

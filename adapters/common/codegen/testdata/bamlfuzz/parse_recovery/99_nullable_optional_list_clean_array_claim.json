@@ -1,0 +1,22 @@
+{
+  "name": "nullable_optional_list_clean_array_claim",
+  "description": "Mcoerce-c CLAIMED: optional list<int> (list<int> | null) with a CLEAN array input [1, 2]. The non-null list arm is a clean zero-score success, which trivially beats the null arm (DefaultButHadValue=110), so native claims it under the nullable clean-only rule -> [1, 2]. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "optional", "inner": {"kind": "list", "inner": {"kind": "int"}}}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":[1,2]}",
+  "want": {
+    "status": "success",
+    "json": {"u": [1, 2]}
+  }
+}
