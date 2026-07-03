@@ -1,0 +1,28 @@
+{
+  "name": "primitive_string_array_json_to_string",
+  "description": "Mcoerce-d PR 1 CLAIMED: string target, ARRAY input. BAML stringifies via jsonish Value Display (JsonToString, score 2) -> '[1, x, true]' (nested strings unquoted). want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":[1,\"x\",true]}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": "[1, x, true]"
+    }
+  }
+}

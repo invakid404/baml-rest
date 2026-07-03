@@ -269,14 +269,13 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"nullable_optional_int_clean_string_claim": true,
 	// Mcoerce-b FALLBACK set: a literal VALUE mismatch after a successful
 	// primitive coercion (native declines BAML's error/default choice), the
-	// single-key-object ObjectToPrimitive and non-string JsonToString paths
-	// (Mcoerce-d), the over-claim guard where a lenient leaf makes a 2nd union
-	// arm succeed (BAML pick_best = M3), and the nullable clean-only rule where a
-	// score-bearing non-null arm loses claimability against the scored null arm.
+	// over-claim guard where a lenient leaf makes a 2nd union arm succeed (BAML
+	// pick_best = M3), and the nullable clean-only rule where a score-bearing
+	// non-null arm loses claimability against the scored null arm. (The
+	// single-key-object ObjectToPrimitive and non-string JsonToString paths that
+	// were pinned fallback here are now CLAIMED — see the Mcoerce-d PR 1 block.)
 	"literal_int_numeric_string_mismatch":                          false,
 	"literal_bool_string_mismatch":                                 false,
-	"literal_int_single_key_object_stays_fallback":                 false,
-	"primitive_string_non_string_stays_fallback":                   false,
 	"class_union_strict_plus_lenient_two_successes_stays_fallback": false,
 	"nullable_optional_int_float_round_stays_fallback":             false,
 	"nullable_optional_bool_string_stays_fallback":                 false,
@@ -315,10 +314,9 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"list_array_lenient_elements_kept":         true,
 	"list_class_non_object_partial":            true,
 	"nullable_optional_list_clean_array_claim": true,
-	// Mcoerce-c LIST fallback set: a list<string> non-string element defers to
-	// JsonToString (Mcoerce-d); a nullable list arm flagged by SingleToArray is
-	// score-bearing (M3 vs null); a union with a list arm can force pick_best.
-	"list_string_non_string_stays_fallback":           false,
+	// Mcoerce-c LIST fallback set: a nullable list arm flagged by SingleToArray
+	// is score-bearing (M3 vs null); a union with a list arm can force pick_best.
+	// (list_string_non_string flipped to CLAIMED in Mcoerce-d PR 1.)
 	"nullable_optional_list_singleton_stays_fallback": false,
 	"union_list_partial_stays_fallback":               false,
 	// Mcoerce-c native MAPS (coerceMap / coerce_map.rs): object→map ObjectToMap
@@ -335,12 +333,52 @@ var parseRecoveryNativeClaim = map[string]bool{
 	// duplicate original key (unproven insert order), a map<string,string>
 	// non-string value (JsonToString, Mcoerce-d), and a nullable map arm flagged
 	// by ObjectToMap (score-bearing, M3 vs null).
-	"map_literal_key_partial_bad_key":                   false,
-	"map_bad_key_original_order":                        false,
-	"map_enum_key_nonmember_live_probe":                 false,
-	"map_duplicate_key_stays_fallback":                  false,
-	"map_string_string_non_string_value_stays_fallback": false,
-	"nullable_optional_map_object_stays_fallback":       false,
+	"map_literal_key_partial_bad_key":             false,
+	"map_bad_key_original_order":                  false,
+	"map_enum_key_nonmember_live_probe":           false,
+	"map_duplicate_key_stays_fallback":            false,
+	"nullable_optional_map_object_stays_fallback": false,
+	// (map_string_string_non_string_value flipped to CLAIMED in Mcoerce-d PR 1.)
+
+	// Mcoerce-d PR 1 — STRINGIFICATION + LITERAL EXTRACTION. Leaf coercers now
+	// port BAML's coerce_string (JsonToString), match_string ObjectToString
+	// (enum / string-literal), and coerce_literal's single-key-object
+	// ObjectToPrimitive prelude. A NON-null non-string into a string/enum/literal
+	// target, and a single-key-object into a literal, resolve byte-identical to
+	// BAML, so the deterministic non-union cases are CLAIMED — including the
+	// leaf-level collection flips (a stringified list element / map value is KEPT,
+	// and a direct string←null child is a PROVEN skip). A JSON null into a
+	// standalone string target still DECLINES (error_unexpected_null; native
+	// cannot score error-vs-default). No class-structural / union-broadening /
+	// pick_best work here (PR 2 / PR 3 / M3).
+	//
+	// Flipped from the Mcoerce-b/c fallback set (were *_stays_fallback):
+	"literal_int_single_key_object_claimed":      true,
+	"primitive_string_non_string_json_to_string": true,
+	"list_string_non_string_kept":                true,
+	"map_string_string_non_string_value_kept":    true,
+	// New leaf-level coverage:
+	"primitive_string_object_json_to_string":               true,
+	"primitive_string_array_json_to_string":                true,
+	"primitive_string_null_stays_fallback":                 false,
+	"enum_object_to_string_one_match":                      true,
+	"literal_string_number_object_to_string_one_match":     true,
+	"literal_bool_single_key_object_claimed":               true,
+	"literal_string_single_key_object_claimed":             true,
+	"list_string_bool_object_array_values_kept":            true,
+	"map_string_string_bool_object_array_values_kept":      true,
+	"list_enum_object_to_string_value_kept":                true,
+	"map_string_enum_object_to_string_value_kept":          true,
+	"list_literal_int_single_key_object_kept":              true,
+	"map_string_literal_bool_single_key_object_value_kept": true,
+	"list_string_null_skipped":                             true,
+	// Number-display parity (over-claim guard): a NON-integer number spelling is
+	// canonicalized by BAML's serde_json f64 Display (5e0 -> "5.0"), which native's
+	// raw-token render cannot prove byte-identical, so native marks it UNCERTAIN and
+	// DECLINES — standalone and (whole-collection, not a partial skip) in a list/map.
+	// Integer stringification still claims (see the CLAIMED entries above).
+	"primitive_string_number_noninteger_stays_fallback": false,
+	"list_string_noninteger_number_stays_fallback":      false,
 }
 
 // parseRecoveryStats tallies how many final-parse cases the native parser

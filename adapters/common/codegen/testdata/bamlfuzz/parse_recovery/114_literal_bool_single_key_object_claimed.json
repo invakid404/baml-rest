@@ -1,0 +1,32 @@
+{
+  "name": "literal_bool_single_key_object_claimed",
+  "description": "Mcoerce-d PR 1 CLAIMED: bool literal true, single-key object {\"value\":\"true\"}. BAML extracts the inner primitive (ObjectToPrimitive, score 2), coerces \"true\"->true == literal. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "literal",
+              "literal": {
+                "kind": "bool",
+                "bool": true
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":{\"value\":\"true\"}}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": true
+    }
+  }
+}

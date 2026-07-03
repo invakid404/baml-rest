@@ -1,0 +1,40 @@
+{
+  "name": "map_string_literal_bool_single_key_object_value_kept",
+  "description": "Mcoerce-d PR 1 CLAIMED: map<string, literal true> with a single-key-object VALUE {\"value\":\"true\"}. BAML extracts the inner primitive (ObjectToPrimitive), coerces \"true\"->true == literal, entry KEPT. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "m",
+            "type": {
+              "kind": "map",
+              "key": {
+                "kind": "string"
+              },
+              "inner": {
+                "kind": "literal",
+                "literal": {
+                  "kind": "bool",
+                  "bool": true
+                }
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"m\":{\"k\":{\"value\":\"true\"}}}",
+  "want": {
+    "status": "success",
+    "json": {
+      "m": {
+        "k": true
+      }
+    }
+  }
+}

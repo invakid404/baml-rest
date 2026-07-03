@@ -1,0 +1,25 @@
+{
+  "name": "primitive_string_null_stays_fallback",
+  "description": "Mcoerce-d PR 1 FALLBACK: string target, JSON null. BAML coerce_string(null) is error_unexpected_null (null is NEVER stringified); a required string errors, so native DECLINES (cannot tell error-vs-default without scoring). want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":null}",
+  "want": {
+    "status": "error"
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "name": "list_enum_object_to_string_value_kept",
+  "description": "Mcoerce-d PR 1 CLAIMED: list<Color> with an OBJECT element. It stringifies via Display '{v: GREEN}' (ObjectToString), substring-matches GREEN (only), and the element is KEPT. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "list",
+              "inner": {
+                "kind": "enum_ref",
+                "ref": "Color"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root",
+    "enums": [
+      {
+        "name": "Color",
+        "values": [
+          "RED",
+          "GREEN",
+          "BLUE"
+        ]
+      }
+    ]
+  },
+  "raw": "{\"u\":[{\"v\":\"GREEN\"}]}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": [
+        "GREEN"
+      ]
+    }
+  }
+}

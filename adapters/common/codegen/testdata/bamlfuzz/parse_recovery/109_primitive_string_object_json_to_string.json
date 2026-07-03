@@ -1,0 +1,28 @@
+{
+  "name": "primitive_string_object_json_to_string",
+  "description": "Mcoerce-d PR 1 CLAIMED: string target, OBJECT input. BAML stringifies via jsonish Value Display (JsonToString, score 2) -> unquoted-key object form '{a: 1, b: x}'. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":{\"a\":1,\"b\":\"x\"}}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": "{a: 1, b: x}"
+    }
+  }
+}

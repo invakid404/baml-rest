@@ -164,15 +164,19 @@ func TestCoerceMap_DeferredValuePreemptsKeySkip(t *testing.T) {
 	requireUnsupported(t, mapLitUnionStrSchema(), `{"u":{"C":5}}`)
 }
 
-// TestCoerceMap_StringStringNonStringValueDeclines pins the must-decline value
-// path: map<string,string> with a NUMBER value is BAML JsonToString (Mcoerce-d),
-// NOT a proven parse error, so native declines the whole map (never skips or
-// stringifies).
-func TestCoerceMap_StringStringNonStringValueDeclines(t *testing.T) {
+// TestCoerceMap_StringStringNonStringValueStringified pins the Mcoerce-d PR 1
+// flip: a map<string,string> non-null non-string VALUE is now stringified
+// (JsonToString) and KEPT, so the map claims a partial-free result. A direct
+// null value is a PROVEN MapValueParseError skip. (Was
+// TestCoerceMap_StringStringNonStringValueDeclines.)
+func TestCoerceMap_StringStringNonStringValueStringified(t *testing.T) {
 	s := mapStrStrSchema()
 	mustParseExact(t, s, `{"u":{"a":"x","b":"y"}}`, `{"u":{"a":"x","b":"y"}}`) // clean claim
-	requireUnsupported(t, s, `{"u":{"a":"x","b":5}}`)
-	requireUnsupported(t, s, `{"u":{"a":true}}`)
+	// Number value -> JsonToString "5", kept (fixture 107 shape).
+	mustParseExact(t, s, `{"u":{"a":"x","b":5}}`, `{"u":{"a":"x","b":"5"}}`)
+	mustParseExact(t, s, `{"u":{"a":true}}`, `{"u":{"a":"true"}}`)
+	// Direct null value is a proven skip; the rest is kept.
+	mustParseExact(t, s, `{"u":{"a":"x","b":null}}`, `{"u":{"a":"x"}}`)
 }
 
 // TestCoerceMap_DuplicateKeyDeclines pins that ANY duplicate original input key

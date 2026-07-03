@@ -1,0 +1,32 @@
+{
+  "name": "literal_string_single_key_object_claimed",
+  "description": "Mcoerce-d PR 1 CLAIMED: string literal \"active\", single-key object {\"tag\":\"active\"}. BAML extracts the inner string (ObjectToPrimitive, score 2), match_string matches the literal. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "literal",
+              "literal": {
+                "kind": "string",
+                "string": "active"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":{\"tag\":\"active\"}}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": "active"
+    }
+  }
+}

@@ -59,13 +59,24 @@ func TestCoercePrimitiveNull_EndToEnd(t *testing.T) {
 	mustParse(t, s, `{"u":"anything"}`, `{"u":null}`)
 }
 
-// TestCoercePrimitiveString_StaysStrict pins the b/d boundary: a non-string
-// into a string field is JsonToString (Mcoerce-d), so native declines.
-func TestCoercePrimitiveString_StaysStrict(t *testing.T) {
+// TestCoercePrimitiveString_JsonToString pins Mcoerce-d PR 1: a NON-null
+// non-string into a string field now stringifies via jsonish Value Display
+// (JsonToString), while a JSON null still DECLINES (BAML error_unexpected_null,
+// never stringified). Byte forms are exercised end-to-end (the emitted JSON
+// string value must equal BAML's Display).
+func TestCoercePrimitiveString_JsonToString(t *testing.T) {
 	s := oneField(strProp())
-	mustParse(t, s, `{"u":"hi"}`, `{"u":"hi"}`)
-	requireUnsupported(t, s, `{"u":5}`)
-	requireUnsupported(t, s, `{"u":true}`)
+	mustParse(t, s, `{"u":"hi"}`, `{"u":"hi"}`)     // string passthrough (clean)
+	mustParse(t, s, `{"u":5}`, `{"u":"5"}`)         // number
+	mustParse(t, s, `{"u":true}`, `{"u":"true"}`)   // bool
+	mustParse(t, s, `{"u":false}`, `{"u":"false"}`) // bool
+	// Object: UNQUOTED keys, ", " between entries, ": " kv separator, nested
+	// string values UNQUOTED — the jsonish Value Display form.
+	mustParse(t, s, `{"u":{"a":1,"b":"x"}}`, `{"u":"{a: 1, b: x}"}`)
+	// Array: ", " between elements, nested string unquoted, nested null -> null.
+	mustParse(t, s, `{"u":[1,"x",true,null]}`, `{"u":"[1, x, true, null]"}`)
+	// Direct null is NOT stringified — BAML errors, native declines (fall back).
+	requireUnsupported(t, s, `{"u":null}`)
 }
 
 // TestCoercePrimitive_GoOnlyFloatSpellingsDecline pins the CR-B1 fix
@@ -102,27 +113,34 @@ func litBoolField(v bool) *bamlutils.DynamicOutputSchema {
 }
 
 // TestCoerceLiteralInt_Lenient pins int-literal coercion by primitive-coerce
-// then value-compare, and the conservative fallback on mismatch / object input.
+// then value-compare, the conservative fallback on mismatch, and (Mcoerce-d PR
+// 1) the single-key-object ObjectToPrimitive extraction.
 func TestCoerceLiteralInt_Lenient(t *testing.T) {
 	s := litIntField(2)
 	mustParse(t, s, `{"u":2}`, `{"u":2}`)
-	mustParse(t, s, `{"u":"2"}`, `{"u":2}`)         // string→int match
-	mustParse(t, s, `{"u":1.6}`, `{"u":2}`)         // round(1.6)=2 == literal
-	requireUnsupported(t, s, `{"u":"5"}`)           // coerces to 5 != 2 -> fallback
-	requireUnsupported(t, s, `{"u":3}`)             // 3 != 2 -> fallback
-	requireUnsupported(t, s, `{"u":{"value":"2"}}`) // single-key object = Mcoerce-d
+	mustParse(t, s, `{"u":"2"}`, `{"u":2}`) // string→int match
+	mustParse(t, s, `{"u":1.6}`, `{"u":2}`) // round(1.6)=2 == literal
+	requireUnsupported(t, s, `{"u":"5"}`)   // coerces to 5 != 2 -> fallback
+	requireUnsupported(t, s, `{"u":3}`)     // 3 != 2 -> fallback
+	// Mcoerce-d: single-key object extracts the inner primitive (ObjectToPrimitive).
+	mustParse(t, s, `{"u":{"value":"2"}}`, `{"u":2}`) // extract "2" -> 2 == literal
+	mustParse(t, s, `{"u":{"any":2}}`, `{"u":2}`)     // key ignored, inner 2 == literal
+	requireUnsupported(t, s, `{"u":{"value":"5"}}`)   // extract 5 != 2 -> fallback
 }
 
 // TestCoerceLiteralBool_Lenient pins bool-literal coercion by primitive-coerce
-// then value-compare, and the conservative fallback on mismatch / object input.
+// then value-compare, the conservative fallback on mismatch, and (Mcoerce-d PR
+// 1) the single-key-object ObjectToPrimitive extraction.
 func TestCoerceLiteralBool_Lenient(t *testing.T) {
 	s := litBoolField(true)
 	mustParse(t, s, `{"u":true}`, `{"u":true}`)
 	mustParse(t, s, `{"u":"true"}`, `{"u":true}`) // casefold match
 	mustParse(t, s, `{"u":"TRUE"}`, `{"u":true}`)
-	requireUnsupported(t, s, `{"u":"false"}`)          // coerces to false != true
-	requireUnsupported(t, s, `{"u":false}`)            // false != true
-	requireUnsupported(t, s, `{"u":{"value":"true"}}`) // single-key object = Mcoerce-d
+	requireUnsupported(t, s, `{"u":"false"}`) // coerces to false != true
+	requireUnsupported(t, s, `{"u":false}`)   // false != true
+	// Mcoerce-d: single-key object extracts the inner primitive (ObjectToPrimitive).
+	mustParse(t, s, `{"u":{"value":"true"}}`, `{"u":true}`) // extract "true" -> true
+	requireUnsupported(t, s, `{"u":{"value":"false"}}`)     // extract false != true
 }
 
 // litIntUnion builds Root{u: v0 | v1} of int literals.

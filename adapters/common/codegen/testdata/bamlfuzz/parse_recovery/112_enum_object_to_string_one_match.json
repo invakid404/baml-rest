@@ -1,0 +1,39 @@
+{
+  "name": "enum_object_to_string_one_match",
+  "description": "Mcoerce-d PR 1 CLAIMED: enum Color{RED,GREEN,BLUE}, OBJECT input. BAML stringifies via Display '{v: RED}' (ObjectToString, score 2) then match_string substring-matches RED (only). want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "enum_ref",
+              "ref": "Color"
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root",
+    "enums": [
+      {
+        "name": "Color",
+        "values": [
+          "RED",
+          "GREEN",
+          "BLUE"
+        ]
+      }
+    ]
+  },
+  "raw": "{\"u\":{\"v\":\"RED\"}}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": "RED"
+    }
+  }
+}
