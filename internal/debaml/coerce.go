@@ -62,6 +62,19 @@ func (f *coerceFlags) isFlagged() bool { return f != nil && f.flagged }
 // isUncertain reports whether a non-ASCII case-fold uncertainty was recorded.
 func (f *coerceFlags) isUncertain() bool { return f != nil && f.uncertain }
 
+// mergeFrom folds a CHILD accumulator's signals into f: a flagged child makes f
+// non-clean (a class/list score is own flags plus child scores), and an uncertain
+// child makes f uncertain. Nil-safe on the receiver (flag / markUncertain are),
+// so untracked callers pay nothing; child is always non-nil at the call sites.
+func (f *coerceFlags) mergeFrom(child *coerceFlags) {
+	if child.isFlagged() {
+		f.flag()
+	}
+	if child.isUncertain() {
+		f.markUncertain()
+	}
+}
+
 // coerce converts an ordered value (decoded strict, or via the
 // conservative fixing pass) into the flattened dynamic output JSON for
 // type t, returning a json.RawMessage. checkSupported has already rejected
@@ -108,27 +121,37 @@ func (f *coerceFlags) isUncertain() bool { return f != nil && f.uncertain }
 // rule holds, and the leaf-level collection classifiers keep the newly-succeeding
 // string/enum/literal children instead of declining the whole collection (a
 // direct string←null child is now a proven ArrayItemParseError/MapValueParseError
-// skip). The remaining leniencies stay STRICT and DECLINE: class STRUCTURAL
-// coercion — single-field implied-key / inferred-object absorption, extra-key
-// tolerance, and default-fill (Mcoerce-d PR 2) — and broadened union families
-// (Mcoerce-d PR 3). Where native's coercion fails but BAML may leniently SUCCEED
-// (or null-default) — or where native cannot determine BAML's exact
-// success/failure — coercion DECLINES (ErrDeBAMLParseUnsupported → fall back to
-// BAML), so native is never "more capable" than BAML.
+// skip). Mcoerce-d PR 2 adds native STRUCTURAL CLASS coercion (coerceClass /
+// coerce_class.rs): input-key→field assignment (first-match, keep-first
+// duplicates, ExtraKey extras), single-field OBJECT implied-key and SCALAR/null
+// inferred-object absorption (ImpliedKey / InferedObject), missing-optional null
+// fill (OptionalDefaultFromNoValue), and required-field DEFAULTS via
+// TypeIR::default_value (defaultValue — list→[], map→{}, null→null, first
+// defaultable union arm; DefaultFromNoValue) plus the present-map-non-object
+// default {} (DefaultButHadUnparseableValue). Each new flag is score-bearing so
+// the nullable-union clean-only rule holds, and a class child that now succeeds
+// through these paths is KEPT in a list/map instead of declining the whole
+// collection. ARRAY input to a class still DECLINES (coerce_array_to_singular /
+// pick_best = M3), as do broadened union families (Mcoerce-d PR 3). Where
+// native's coercion fails but BAML may leniently SUCCEED (or null-default) — or
+// where native cannot determine BAML's exact success/failure — coercion DECLINES
+// (ErrDeBAMLParseUnsupported → fall back to BAML), so native is never "more
+// capable" than BAML.
 //
-// Native CLAIMS a coercion error only where BAML also errors: a non-object
-// where a MULTI-field class is required (coerceClass typeMismatch), or a
-// match_string substring TIE (StrMatchOneFromMany — coerceEnum/coerceLiteral
-// ambiguousMatch). A required field still unmatched after fuzzy key matching
-// DECLINES — BAML may default-fill or hard-fail and native cannot tell which.
-// Union claims count LENIENT per-variant successes and claim only the lone
-// winner; two-plus successes are BAML pick_best (M3) and DECLINE. A consequence
-// is that native still declines some inputs BAML would itself reject or coerce
-// differently (e.g. a required field with no fuzzy key match, an int-LITERAL
-// value mismatch after rounding, a single-key object into a literal) — behavior
-// is identical via fallback, and precise claim-parity for those is deferred to
-// the rest of the Mcoerce milestone (#546). See coercePrimitive / coerceList /
-// coerceEnum / coerceLiteral / coerceClass for the per-kind boundary.
+// Native CLAIMS a coercion error only where BAML also errors: a match_string
+// substring TIE (StrMatchOneFromMany — coerceEnum / coerceLiteral
+// ambiguousMatch). A class missing a required NON-defaultable field DECLINES
+// (BAML errors, but native falls back to stay strictly non-over-claiming), as
+// does ARRAY input to a class (M3 array-to-singular). Union claims count LENIENT
+// per-variant successes and claim only the lone winner; two-plus successes are
+// BAML pick_best (M3) and DECLINE. A consequence is that native still declines
+// some inputs BAML would itself reject or coerce differently (a required field
+// with no key match, a present field native's coercer is stricter on, an
+// implied-key/inferred coercion native declines, an int-LITERAL value mismatch
+// after rounding) — behavior is identical via fallback, and precise claim-parity
+// for those is deferred to the rest of the Mcoerce milestone (#546). See
+// coercePrimitive / coerceList / coerceEnum / coerceLiteral / coerceClass for the
+// per-kind boundary.
 func coerce(b *schema.Bundle, t schema.Type, input value, f *coerceFlags) (json.RawMessage, error) {
 	switch t.Kind {
 	case schema.TypePrimitive:
@@ -902,140 +925,340 @@ func enumMatchCandidates(e *schema.EnumDef) []matchCandidate {
 	return cands
 }
 
-// coerceClass coerces an object value into a class, emitting fields in
-// schema declaration order. Input keys are matched to fields by BAML's
-// actual no-substring match_string (Mcoerce-a, via matchesStringToString),
-// reproducing coerce_class.rs: each input key is assigned to the FIRST field
-// whose rendered name it matches (case-insensitive / punctuation-stripped /
-// accent-folded — but NOT substring); when two input keys match the same
-// field the FIRST keeps it (update_map's "keep first", coerce_class.rs:548);
-// extra/unknown keys are ignored (ExtraKey, not emitted). It CLAIMS when the
-// input is an object and every required field is matched and coerces;
-// otherwise it DECLINES, because BAML's class coercer is leniently broader
-// than native and native cannot tell whether BAML would succeed:
+// coerceClass ports BAML's structural class coercer (coerce_class.rs, the
+// non-array subset) so native reproduces BAML's class value BYTE-for-BYTE.
+// Fields are emitted in SCHEMA declaration order under their CANONICAL names;
+// input keys are matched to fields by BAML's no-substring match_string
+// (matchesStringToString) — each key to the FIRST field whose rendered name it
+// fuzzily matches, first key keeps a field (update_map "keep first"), unmatched
+// keys are extras (ExtraKey, cost 1, not emitted). On top of field assignment it
+// ports (Mcoerce-d):
 //
-//   - A required field still unmatched after fuzzy key matching → DECLINE:
-//     BAML may fill a type default (list/map/null/union) or hard-fail
-//     (coerce_class.rs:342/field_type.rs:288), which native cannot reproduce.
-//   - A SINGLE-field class with a non-object input, or an object NONE of
-//     whose keys match the lone field → DECLINE: BAML absorbs the value into
-//     the one field via implied-key / inferred-object, or fills a default
-//     for an empty object (coerce_class.rs:224/295/313) — all Mcoerce-d.
+//   - SINGLE-field OBJECT implied-key (coerce_class.rs:224): when NO key matched
+//     the lone field and the object is non-empty, the WHOLE object is coerced
+//     into that field (ImpliedKey, cost 2) instead of flagging ExtraKey.
+//   - SINGLE-field SCALAR/null inferred-object (coerce_class.rs:295): a
+//     non-object non-array value is coerced into the lone field (ImpliedKey cost
+//     2 on the child + InferedObject cost 0 on the class).
+//   - Missing OPTIONAL field → null (OptionalDefaultFromNoValue cost 1 + Pending);
+//     native OMITS it (InjectAbsentOptionals re-adds the null downstream) but
+//     flags the score so a nullable-union arm stays non-clean.
+//   - Missing required field → TypeIR::default_value (defaultValue): list→[],
+//     map→{}, primitive-null→null, first-defaultable-union-arm, tuple (all cost
+//     100 DefaultFromNoValue); a non-defaultable missing required field is a
+//     BAML error_missing_required_field.
+//   - Present required MAP field with a NON-object value → the map default {}
+//     (DefaultButHadUnparseableValue cost 2): coerce_map errors on a non-object
+//     (error_unexpected_type), a PROVEN failure whose default is deterministic.
 //
-// A MULTI-field class with a NON-OBJECT input stays CLAIMED (typeMismatch):
-// BAML hard-fails turning a scalar into a multi-field object too, so the
-// differential checks error parity. A claimed child error (e.g. an enum
-// substring tie) propagates so the differential checks error parity; lenient
-// structural coercion (defaults, implied keys) is deferred to Mcoerce-d. Any
-// EXTRA input key (ExtraKey, cost 1) and any flagged child flag cf, so a
-// nullable-union claim can require this class arm to be clean.
+// It CLAIMS a class SUCCESS when every field resolves to a value native can
+// prove equals BAML's, PROPAGATES a claimed child error (an enum/literal
+// substring tie — BAML errors that non-defaultable field and so the class), and
+// DECLINES (fall back) otherwise:
+//
+//   - ARRAY input → DECLINE: BAML runs coerce_array_to_singular / pick_best over
+//     the items (M3); native does not model the scored selection.
+//   - A required NON-defaultable field is absent → DECLINE: BAML errors, but
+//     native falls back to stay strictly non-over-claiming (mirroring the
+//     pre-Mcoerce-d conservative choice).
+//   - A field native's coercer merely DECLINED (native stricter, so BAML may
+//     leniently succeed or null-default) or an implied-key/inferred coercion that
+//     declined → DECLINE: native cannot prove BAML's field value.
+//
+// Every score-bearing flag (ExtraKey / ImpliedKey / OptionalDefaultFromNoValue /
+// DefaultFromNoValue / DefaultButHadUnparseableValue) and any flagged child folds
+// into cf, so a nullable-union claim can require this class arm to be clean.
 func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input value, cf *coerceFlags) (json.RawMessage, error) {
 	cls, ok := b.FindClass(name, mode)
 	if !ok {
 		return nil, fmt.Errorf("debaml: unknown class %q", name)
 	}
-	singleField := len(cls.Fields) == 1
-	if input.kind != valObject {
-		if singleField {
-			return nil, declineCoerce("single-field class (BAML implied-key)", input)
+	// ARRAY input → coerce_array_to_singular / multi-candidate pick_best (M3):
+	// native cannot reproduce the scored selection (nor prove an all-items-fail
+	// error without walking the array), so it DECLINES and lets BAML decide.
+	if input.kind == valArray {
+		return nil, declineCoerce("class (BAML array-to-singular / pick_best, M3)", input)
+	}
+	nF := len(cls.Fields)
+	singleField := nF == 1
+
+	// Per-field resolution: out[i] holds the emitted bytes when filled[i]. A
+	// still-unfilled required NON-defaultable field sets missingRequired (BAML
+	// errors; native DECLINES, see below); a field native cannot resolve to
+	// BAML's exact value sets indeterminate (fall back).
+	out := make([]json.RawMessage, nF)
+	filled := make([]bool, nF)
+	missingRequired := false
+	indeterminate := false
+
+	// resolveMatched coerces a matched/implied/inferred field value into field i,
+	// folding a clean child's flags on success and classifying a failure: a
+	// PROVEN map-non-object failure fills the {} default; every other declinable
+	// failure is INDETERMINATE (native may be stricter than BAML); a hard failure
+	// propagates.
+	resolveMatched := func(i int, v value) error {
+		childF := &coerceFlags{}
+		o, err := coerce(b, cls.Fields[i].Type, v, childF)
+		if err == nil {
+			out[i] = o
+			filled[i] = true
+			cf.mergeFrom(childF)
+			return nil
 		}
-		return nil, typeMismatch("object", input)
+		if !declinableChildError(err) {
+			return err // hard/invariant failure: propagate, never mask.
+		}
+		if isClaimedMismatch(err) {
+			// A CLAIMED field error (enum/literal substring tie StrMatchOneFromMany,
+			// a non-nullable-union null) — BAML PROVABLY errors this field, and only
+			// NON-defaultable field types produce it, so BAML errors the whole class
+			// (no array candidate for non-array input). Propagate so native claims
+			// the same error (the differential checks status parity).
+			return err
+		}
+		if cls.Fields[i].Type.Kind == schema.TypeMap && v.kind != valObject {
+			// coerce_map on a non-object is error_unexpected_type (coerce_map.rs),
+			// so BAML fills the map default {} with DefaultButHadUnparseableValue.
+			out[i] = json.RawMessage("{}")
+			filled[i] = true
+			cf.flag() // DefaultButHadUnparseableValue (cost 2)
+			return nil
+		}
+		if childF.isUncertain() {
+			cf.markUncertain()
+		}
+		indeterminate = true
+		return nil
 	}
 
-	// Assign input keys to fields the way BAML does: iterate input keys in
-	// order, and for each map it to the FIRST field whose rendered name it
-	// fuzzily matches (no substring). When two input keys match the same field,
-	// the FIRST keeps it (update_map "keep first") — later duplicates are
-	// ignored, NOT treated as extras. An input key matching no field is an
-	// extra (ExtraKey). This input-key-first order — rather than scanning
-	// fields for a matching key — is what makes one key resolve to a single
-	// field, avoiding a key being assigned to two fold-equal fields at once.
-	assigned := make([]value, len(cls.Fields))
-	present := make([]bool, len(cls.Fields))
-	foundAny := false
-	hasExtra := false
-	keyUncertain := false
-	for i := range input.objV {
-		key := input.objV[i].key
-		matchedField := -1
-		for j := range cls.Fields {
-			m, unc := matchesStringToString(key, cls.Fields[j].Name.RenderedName())
-			if unc {
-				// This key-vs-field comparison hinged on a non-ASCII case fold
-				// native cannot prove equals BAML's, so the assignment is
-				// untrustworthy.
-				keyUncertain = true
-				cf.markUncertain()
+	// coerceImplied coerces v into the lone field (implied-key / inferred-object),
+	// filling it with ImpliedKey (cost 2) on success. A CLAIMED failure propagates
+	// (the lone non-defaultable field errors → BAML errors the class); an unproven
+	// declinable failure records indeterminate (native cannot prove BAML's
+	// ExtraKey+default/error path).
+	coerceImplied := func(v value) error {
+		childF := &coerceFlags{}
+		o, err := coerce(b, cls.Fields[0].Type, v, childF)
+		if err == nil {
+			out[0] = o
+			filled[0] = true
+			cf.mergeFrom(childF)
+			cf.flag() // ImpliedKey (cost 2); InferedObject is cost 0 (no flag).
+			return nil
+		}
+		if !declinableChildError(err) {
+			return err
+		}
+		if isClaimedMismatch(err) {
+			return err // claimed field error → BAML errors the class; propagate.
+		}
+		if childF.isUncertain() {
+			cf.markUncertain()
+		}
+		indeterminate = true
+		return nil
+	}
+
+	switch input.kind {
+	case valObject:
+		// Assign input keys to fields in INPUT order: each key to the FIRST field
+		// it fuzzily matches (no substring); a key matching an already-filled
+		// field is a duplicate (keep first, ignored, NOT an extra); a key matching
+		// no field is an extra. Input-key-first order (rather than scanning fields
+		// for a matching key) is what resolves one key to a single field.
+		matched := make([]bool, nF)
+		assigned := make([]value, nF)
+		foundAny := false
+		extraCount := 0
+		keyUncertain := false
+		for i := range input.objV {
+			key := input.objV[i].key
+			mf := -1
+			for j := range cls.Fields {
+				m, unc := matchesStringToString(key, cls.Fields[j].Name.RenderedName())
+				if unc {
+					keyUncertain = true
+					cf.markUncertain()
+				}
+				if m {
+					mf = j
+					break
+				}
 			}
-			if m {
-				matchedField = j
-				break
+			switch {
+			case mf < 0:
+				extraCount++
+			case matched[mf]:
+				// Duplicate match for an already-filled field: keep first, ignore.
+			default:
+				assigned[mf] = input.objV[i].val
+				matched[mf] = true
+				foundAny = true
+			}
+		}
+		if keyUncertain {
+			// A field-key match/no-match could diverge from BAML; DECLINE (cf is
+			// already marked so an enclosing union counter declines too).
+			return nil, unsupported(fmt.Sprintf("class %q: non-ASCII case-fold uncertainty in a field key (cannot prove assignment equals BAML)", name))
+		}
+		for j := range cls.Fields {
+			if matched[j] {
+				if err := resolveMatched(j, assigned[j]); err != nil {
+					return nil, err
+				}
 			}
 		}
 		switch {
-		case matchedField < 0:
-			hasExtra = true // unmatched input key -> ExtraKey
-		case present[matchedField]:
-			// Duplicate match for an already-filled field: keep first, ignore.
-		default:
-			assigned[matchedField] = input.objV[i].val
-			present[matchedField] = true
-			foundAny = true
+		case singleField && !foundAny && extraCount > 0:
+			// No key matched the lone field: coerce the whole object into it
+			// (ImpliedKey, no ExtraKey). A declinable failure → indeterminate.
+			if err := coerceImplied(input); err != nil {
+				return nil, err
+			}
+		case extraCount > 0:
+			cf.flag() // ExtraKey (cost 1 each) — not a clean zero-score class.
+		}
+	default:
+		// Scalar / null (non-object, non-array). A single-field class absorbs the
+		// value into its lone field (inferred-object); a multi-field class assigns
+		// nothing (BAML's Some(x) arm is a no-op for >1 field) — every field falls
+		// to the default/missing pass below.
+		if singleField {
+			if err := coerceImplied(input); err != nil {
+				return nil, err
+			}
 		}
 	}
-	if keyUncertain {
-		// A field-key match/no-match could diverge from BAML; DECLINE rather
-		// than claim a (possibly wrong) assignment. cf is already marked so an
-		// enclosing union counter declines the whole union.
-		return nil, unsupported(fmt.Sprintf("class %q: non-ASCII case-fold uncertainty in a field key (cannot prove assignment equals BAML)", name))
+
+	if indeterminate {
+		// A field native could not resolve to BAML's exact value (a non-proven
+		// coercion decline, or an implied-key/inferred decline): fall back so
+		// BAML's lenient success / null-default / scored choice stands.
+		return nil, unsupported(fmt.Sprintf("class %q: a field could not be resolved to BAML's value (deferred lenient success/default/scoring)", name))
 	}
-	if singleField && !foundAny {
-		// No input key matched the lone field: BAML tries implied-key /
-		// inferred-object on the whole object, or fills a default for an empty
-		// object — native cannot reproduce either, so DECLINE (Mcoerce-d).
-		return nil, unsupported(fmt.Sprintf("single-field class %q: lone field unmatched (BAML implied-key/default)", name))
+
+	// Defaults / missing pass for every still-unfilled field (BAML's "check what
+	// we have / what we need").
+	for i := range cls.Fields {
+		if filled[i] {
+			continue
+		}
+		ft := cls.Fields[i].Type
+		if isOptional(ft) {
+			// Absent optional → null (OptionalDefaultFromNoValue + Pending). Native
+			// omits it (InjectAbsentOptionals adds the null downstream, identically
+			// for both legs) but flags the score for nullable-union cleanliness.
+			cf.flag() // OptionalDefaultFromNoValue (cost 1)
+			continue
+		}
+		if d, ok := defaultValue(ft); ok {
+			out[i] = d
+			filled[i] = true
+			cf.flag() // DefaultFromNoValue (cost 100)
+			continue
+		}
+		missingRequired = true
 	}
-	if hasExtra {
-		cf.flag() // ExtraKey (cost 1 each) -> not a clean zero-score class
+
+	if missingRequired {
+		// A required non-defaultable field is absent: BAML has no array candidate
+		// for non-array input, so it errors (error_missing_required_field). Native
+		// DECLINES (falls back) rather than claim the error — mirroring the
+		// pre-Mcoerce-d conservative choice: BAML's fuzzy field-key matching is
+		// reproduced here, but declining keeps native strictly non-over-claiming
+		// (a container/union wrapper that would skip or score the entry falls
+		// back too). The class-with-all-required-flat-leaf SCALAR case that a
+		// list/map element must SKIP is still identified independently by
+		// provenListItemError (classAllRequiredFlatLeaf), so partial collections
+		// stay correct.
+		return nil, unsupported(fmt.Sprintf("class %q: required non-defaultable field missing (BAML errors; native falls back)", name))
 	}
 
 	var buf bytes.Buffer
 	buf.WriteByte('{')
 	first := true
 	for i := range cls.Fields {
-		f := &cls.Fields[i]
-		if !present[i] {
-			if isOptional(f.Type) {
-				// Absent optional: omit it. The downstream
-				// InjectAbsentOptionals pass inserts the null, identically
-				// for the native and BAML paths.
-				continue
-			}
-			// A required field with no key match even after fuzzy matching:
-			// BAML may fill a type default (field_type.rs:288) or hard-fail,
-			// and native cannot tell which, so it DECLINES (fall back to BAML)
-			// rather than claim a missing-required error that would be WRONG
-			// when BAML defaults. Default-filling parity is Mcoerce-d.
-			return nil, unsupported(fmt.Sprintf("class %q: required field %q has no key match (BAML may default/error)", name, f.Name.RenderedName()))
-		}
-		child, err := coerce(b, f.Type, assigned[i], cf)
-		if err != nil {
-			return nil, err
+		if !filled[i] {
+			continue // absent optional (omitted; InjectAbsentOptionals adds null).
 		}
 		if !first {
 			buf.WriteByte(',')
 		}
 		first = false
-		key, err := marshalJSON(f.Name.Name)
+		key, err := marshalJSON(cls.Fields[i].Name.Name)
 		if err != nil {
 			return nil, err
 		}
 		buf.Write(key)
 		buf.WriteByte(':')
-		buf.Write(child)
+		buf.Write(out[i])
 	}
 	buf.WriteByte('}')
 	return buf.Bytes(), nil
+}
+
+// defaultValue ports TypeIR::default_value (field_type.rs:288) for the subset
+// native supports: the value BAML fills for a class field with no usable input.
+// It returns the default's JSON bytes and whether the type is DEFAULTABLE:
+//
+//   - list  → []
+//   - map   → {}
+//   - primitive null → null
+//   - union → the FIRST defaultable arm from iter_include_null (non-null variants
+//     in declaration order, then null appended when the union is optional),
+//     resolved recursively.
+//   - tuple → the list of every element's default, only when ALL elements have
+//     defaults (native rejects tuple at the gate, so this stays unreachable but
+//     faithful).
+//
+// Non-defaultable (ok=false): enum, literal, class, recursive alias, and the
+// primitive scalars string/int/float/bool — a missing required field of those is
+// a BAML error_missing_required_field. BAML only uses a default that passes its
+// asserts; native rejects every constrained type at the gate, so all defaults
+// here are unconditional.
+func defaultValue(t schema.Type) (json.RawMessage, bool) {
+	switch t.Kind {
+	case schema.TypeList:
+		return json.RawMessage("[]"), true
+	case schema.TypeMap:
+		return json.RawMessage("{}"), true
+	case schema.TypePrimitive:
+		if t.Primitive == schema.PrimitiveNull {
+			return json.RawMessage("null"), true
+		}
+		return nil, false
+	case schema.TypeUnion:
+		if t.Union == nil {
+			return nil, false
+		}
+		for i := range t.Union.Variants {
+			if d, ok := defaultValue(t.Union.Variants[i]); ok {
+				return d, true
+			}
+		}
+		if t.Union.Nullable {
+			return json.RawMessage("null"), true // the appended null arm
+		}
+		return nil, false
+	case schema.TypeTuple:
+		var buf bytes.Buffer
+		buf.WriteByte('[')
+		for i := range t.Items {
+			d, ok := defaultValue(t.Items[i])
+			if !ok {
+				return nil, false
+			}
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			buf.Write(d)
+		}
+		buf.WriteByte(']')
+		return buf.Bytes(), true
+	default:
+		// enum, literal, class, recursive_alias, primitive scalar, arrow, top.
+		return nil, false
+	}
 }
 
 // coerceList coerces a value into a list, porting BAML's coerce_array
@@ -1223,11 +1446,18 @@ func provenListItemError(b *schema.Bundle, elem schema.Type, item value) bool {
 		return elem.Literal != nil && elem.Literal.Kind == schema.LiteralString && item.kind == valString
 	case schema.TypeClass:
 		// A multi-field class whose fields are ALL required flat leaves has no
-		// default_value for any field, so a genuine SCALAR input leaves every
-		// required field unfilled → BAML error_missing_required_field. An ARRAY
-		// element defers to coerce_array_to_singular (M3); a single-field class, or
-		// a class with any defaultable (list/map/optional) field, defers to
-		// Mcoerce-d — so those are NOT proven.
+		// default_value for any field and is not single-field, so a genuine SCALAR
+		// input can be neither inferred-object-absorbed nor default-filled — every
+		// required field stays unfilled → BAML error_missing_required_field. That
+		// is the PROVEN skip this whitelist establishes (coerceClass itself only
+		// DECLINES that case — see its missingRequired branch — so the list/map
+		// skip verdict is decided HERE, not by a claimed class error). Everything
+		// else is NOT proven: a single-field class (Mcoerce-d inferred-object /
+		// implied-key) or a class with any defaultable (list/map/optional/
+		// defaultable-union) field now SUCCEEDS through coerceClass and is KEPT
+		// before reaching here (or DECLINES as indeterminate → whole-list fallback);
+		// a valObject may coerce or default; an ARRAY element defers to
+		// coerce_array_to_singular (pick_best, M3).
 		cls, ok := b.FindClass(elem.Name, elem.Mode)
 		if !ok {
 			return false
@@ -1239,7 +1469,7 @@ func provenListItemError(b *schema.Bundle, elem schema.Type, item value) bool {
 		case valString, valNumber, valBool, valNull:
 			return true
 		default:
-			return false // valObject: coerce succeeds/defers; valArray: M3.
+			return false // valObject: coerce succeeds/defaults/declines; valArray: M3.
 		}
 	default:
 		// map / list / union children: a map non-object, a nested list, or a
@@ -1923,6 +2153,17 @@ func declinableChildError(err error) bool {
 	if errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
 		return true
 	}
+	var me *mismatchError
+	return errors.As(err, &me)
+}
+
+// isClaimedMismatch reports whether err is a CLAIMED value-verdict mismatchError
+// (typeMismatch / ambiguousMatch — an error BAML also produces) as opposed to the
+// ErrDeBAMLParseUnsupported fallback sentinel. coerceClass uses it to distinguish
+// a field failure BAML PROVABLY errors on (propagate as the class error, since
+// such a field type is non-defaultable) from one native merely DECLINED (native
+// stricter than BAML → indeterminate, fall back).
+func isClaimedMismatch(err error) bool {
 	var me *mismatchError
 	return errors.As(err, &me)
 }

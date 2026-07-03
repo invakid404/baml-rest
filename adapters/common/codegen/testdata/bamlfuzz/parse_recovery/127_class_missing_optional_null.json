@@ -1,0 +1,53 @@
+{
+  "name": "class_missing_optional_null",
+  "description": "Mcoerce-d PR 2 CLAIMED: class C{name string, nick string?} with nick ABSENT. BAML fills the missing optional with null (OptionalDefaultFromNoValue cost 1 + Pending); the dynamic pipeline injects the null. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "class_ref",
+              "ref": "C"
+            }
+          }
+        ]
+      },
+      {
+        "name": "C",
+        "properties": [
+          {
+            "name": "name",
+            "type": {
+              "kind": "string"
+            }
+          },
+          {
+            "name": "nick",
+            "type": {
+              "kind": "optional",
+              "inner": {
+                "kind": "string"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":{\"name\":\"Ada\"}}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": {
+        "name": "Ada",
+        "nick": null
+      }
+    }
+  }
+}

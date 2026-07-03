@@ -1,0 +1,49 @@
+{
+  "name": "class_required_map_default_from_no_value",
+  "description": "Mcoerce-d PR 2 CLAIMED: class C{m map<string,int>} with m ABSENT. BAML fills the map default {} (DefaultFromNoValue cost 100). want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "class_ref",
+              "ref": "C"
+            }
+          }
+        ]
+      },
+      {
+        "name": "C",
+        "properties": [
+          {
+            "name": "m",
+            "type": {
+              "kind": "map",
+              "key": {
+                "kind": "string"
+              },
+              "inner": {
+                "kind": "int"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":{}}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": {
+        "m": {}
+      }
+    }
+  }
+}

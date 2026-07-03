@@ -1,0 +1,49 @@
+{
+  "name": "class_map_field_default_but_had_unparseable_value",
+  "description": "Mcoerce-d PR 2 CLAIMED: class C{m map<string,int>} with m present as a NON-object 'bad'. coerce_map errors on a non-object (error_unexpected_type), so BAML fills the map default {} (DefaultButHadUnparseableValue cost 2). want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "class_ref",
+              "ref": "C"
+            }
+          }
+        ]
+      },
+      {
+        "name": "C",
+        "properties": [
+          {
+            "name": "m",
+            "type": {
+              "kind": "map",
+              "key": {
+                "kind": "string"
+              },
+              "inner": {
+                "kind": "int"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":{\"m\":\"bad\"}}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": {
+        "m": {}
+      }
+    }
+  }
+}

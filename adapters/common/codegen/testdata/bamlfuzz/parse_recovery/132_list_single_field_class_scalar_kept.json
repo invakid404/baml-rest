@@ -1,0 +1,51 @@
+{
+  "name": "list_single_field_class_scalar_kept",
+  "description": "Mcoerce-d PR 2 CLAIMED: list<Box> where Box{value int}, scalar elements. Each element inferred-object-absorbs into its Box (ImpliedKey), so both elements are KEPT (not skipped, not a whole-list decline). want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "list",
+              "inner": {
+                "kind": "class_ref",
+                "ref": "Box"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "Box",
+        "properties": [
+          {
+            "name": "value",
+            "type": {
+              "kind": "int"
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":[5,6]}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": [
+        {
+          "value": 5
+        },
+        {
+          "value": 6
+        }
+      ]
+    }
+  }
+}

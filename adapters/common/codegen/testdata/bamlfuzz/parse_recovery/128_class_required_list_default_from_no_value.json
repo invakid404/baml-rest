@@ -1,0 +1,46 @@
+{
+  "name": "class_required_list_default_from_no_value",
+  "description": "Mcoerce-d PR 2 CLAIMED: class C{items int[]} with items ABSENT (empty object). BAML's TypeIR::default_value fills the list default [] (DefaultFromNoValue cost 100 + Pending). want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "class_ref",
+              "ref": "C"
+            }
+          }
+        ]
+      },
+      {
+        "name": "C",
+        "properties": [
+          {
+            "name": "items",
+            "type": {
+              "kind": "list",
+              "inner": {
+                "kind": "int"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":{}}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": {
+        "items": []
+      }
+    }
+  }
+}

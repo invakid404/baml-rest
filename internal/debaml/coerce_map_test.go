@@ -189,14 +189,17 @@ func TestCoerceMap_DuplicateKeyDeclines(t *testing.T) {
 	requireUnsupported(t, s, `{"scores":{"a":1,"a":"bad"}}`)
 }
 
-// TestCoerceMap_NonObjectDeclines pins the conservative non-object decline
-// (unchanged): a non-object where a map is required is not a hard type error, so
-// native falls back rather than claiming a mismatch BAML would not produce.
-func TestCoerceMap_NonObjectDeclines(t *testing.T) {
+// TestCoerceMap_NonObjectFieldDefaults pins the Mcoerce-d PR 2 flip: a REQUIRED
+// map class field with a NON-object value is a PROVEN coerce_map
+// error_unexpected_type, so BAML fills the map default {} with
+// DefaultButHadUnparseableValue (score 2). Native now reproduces the default and
+// CLAIMS {"scores":{}}. (A standalone/list/nullable map with a non-object still
+// declines — only the class-field-default path is claimed here.)
+func TestCoerceMap_NonObjectFieldDefaults(t *testing.T) {
 	s := mapStringIntSchema()
-	requireUnsupported(t, s, `{"scores":[1,2,3]}`)
-	requireUnsupported(t, s, `{"scores":"x"}`)
-	requireUnsupported(t, s, `{"scores":5}`)
+	mustParse(t, s, `{"scores":[1,2,3]}`, `{"scores":{}}`)
+	mustParse(t, s, `{"scores":"x"}`, `{"scores":{}}`)
+	mustParse(t, s, `{"scores":5}`, `{"scores":{}}`)
 }
 
 // TestCoerceMap_NullableCleanOnlyDeclines pins the union revisit for maps: an
