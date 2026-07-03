@@ -132,6 +132,24 @@ func TestCoerceClass_SingleFieldScalarInferredObject(t *testing.T) {
 	// A scalar that the lone field cannot coerce -> DECLINE (native cannot prove
 	// BAML's outcome). "hello" -> int is a proven BAML error, but native declines.
 	requireUnsupported(t, intBox, `{"u":"hello"}`)
+
+	// A bare JSON null takes the SAME inferred-object path (non-object non-array):
+	// coerceImplied(null) coerces null into the lone field. For an int/string
+	// field, coerce_int/coerce_string on null is error_unexpected_null (a sentinel
+	// decline, not a proven-map default), so the class is indeterminate and native
+	// DECLINES (BAML errors; native falls back).
+	requireUnsupported(t, intBox, `{"u":null}`)
+	requireUnsupported(t, strBox, `{"u":null}`)
+	// Directly: coerceClass on a bare null declines with the fallback sentinel.
+	bn, cn := classBundle(t, strBox, "Box")
+	if _, err := coerceClass(bn, cn.Name, cn.Mode, nullVal(), nil); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+		t.Errorf("single-field string class <- null: expected ErrDeBAMLParseUnsupported, got %v", err)
+	}
+
+	// When the lone field ACCEPTS null (an optional), the inferred-object path
+	// SUCCEEDS on null: null is absorbed into the field as null (ImpliedKey).
+	optBox := nestedClassSchema("Box", props(kv("value", optProp(&bamlutils.DynamicTypeSpec{Type: "int"}))))
+	mustParse(t, optBox, `{"u":null}`, `{"u":{"value":null}}`)
 }
 
 // TestCoerceClass_MissingOptionalNull pins that an absent optional field is
@@ -268,6 +286,10 @@ func TestDefaultValue(t *testing.T) {
 		{"union-skip-nondefaultable", schema.Type{Kind: schema.TypeUnion, Union: &schema.UnionType{Variants: []schema.Type{strT, mapT}}}, "{}"},
 		// Nullable union with no defaultable non-null arm -> the appended null arm.
 		{"union-nullable-null", schema.Type{Kind: schema.TypeUnion, Union: &schema.UnionType{Variants: []schema.Type{intT}, Nullable: true}}, "null"},
+		// Tuple: a single-element defaultable tuple (no comma path).
+		{"tuple-single", schema.Type{Kind: schema.TypeTuple, Items: []schema.Type{nullT}}, "[null]"},
+		// Tuple: every element defaultable -> the JOINED element defaults, in order.
+		{"tuple-all-defaultable", schema.Type{Kind: schema.TypeTuple, Items: []schema.Type{listT, mapT}}, "[[],{}]"},
 	}
 	for _, c := range defaultable {
 		got, ok := defaultValue(c.t)
@@ -287,6 +309,9 @@ func TestDefaultValue(t *testing.T) {
 		{"literal", litT},
 		// A non-nullable union of non-defaultable arms (int | string).
 		{"union-all-nondefaultable", schema.Type{Kind: schema.TypeUnion, Union: &schema.UnionType{Variants: []schema.Type{intT, strT}}}},
+		// A tuple with ANY non-defaultable element (int[] , string) -> early return,
+		// the whole tuple is non-defaultable.
+		{"tuple-has-nondefaultable", schema.Type{Kind: schema.TypeTuple, Items: []schema.Type{listT, strT}}},
 	}
 	for _, c := range nonDefaultable {
 		if _, ok := defaultValue(c.t); ok {

@@ -983,9 +983,9 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 	singleField := nF == 1
 
 	// Per-field resolution: out[i] holds the emitted bytes when filled[i]. A
-	// still-unfilled required NON-defaultable field records missingRequired (a
-	// claimed BAML error); a field native cannot resolve to BAML's exact value
-	// records indeterminate (fall back).
+	// still-unfilled required NON-defaultable field sets missingRequired (BAML
+	// errors; native DECLINES, see below); a field native cannot resolve to
+	// BAML's exact value sets indeterminate (fall back).
 	out := make([]json.RawMessage, nF)
 	filled := make([]bool, nF)
 	missingRequired := false
@@ -1448,10 +1448,12 @@ func provenListItemError(b *schema.Bundle, elem schema.Type, item value) bool {
 		// A multi-field class whose fields are ALL required flat leaves has no
 		// default_value for any field and is not single-field, so a genuine SCALAR
 		// input can be neither inferred-object-absorbed nor default-filled — every
-		// required field stays unfilled → BAML error_missing_required_field (a
-		// PROVEN skip, which coerceClass itself now claims via missingRequiredField).
-		// Everything else is NOT proven: a single-field class (Mcoerce-d inferred-
-		// object / implied-key) or a class with any defaultable (list/map/optional/
+		// required field stays unfilled → BAML error_missing_required_field. That
+		// is the PROVEN skip this whitelist establishes (coerceClass itself only
+		// DECLINES that case — see its missingRequired branch — so the list/map
+		// skip verdict is decided HERE, not by a claimed class error). Everything
+		// else is NOT proven: a single-field class (Mcoerce-d inferred-object /
+		// implied-key) or a class with any defaultable (list/map/optional/
 		// defaultable-union) field now SUCCEEDS through coerceClass and is KEPT
 		// before reaching here (or DECLINES as indeterminate → whole-list fallback);
 		// a valObject may coerce or default; an ARRAY element defers to
