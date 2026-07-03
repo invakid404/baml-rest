@@ -1,0 +1,32 @@
+{
+  "name": "literal_union_object_to_primitive_one_success_claimed",
+  "description": "Mcoerce-d PR 3 CLAIMED (union revisit): homogeneous int-literal union (1 | 2), single-key object {\"value\":1}. coerce_literal's single-key-object ObjectToPrimitive prelude extracts the inner 1, which matches ONLY arm 1 (int literals match by value equality, so at most one arm), giving EXACTLY one lenient success -> claim. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "literal", "literal": {"kind": "int", "int": 1}},
+                {"kind": "literal", "literal": {"kind": "int", "int": 2}}
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":{\"value\":1}}",
+  "want": {
+    "status": "success",
+    "json": {"u": 1}
+  }
+}

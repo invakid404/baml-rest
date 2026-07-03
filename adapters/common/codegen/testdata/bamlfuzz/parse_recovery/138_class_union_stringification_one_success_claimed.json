@@ -1,0 +1,46 @@
+{
+  "name": "class_union_stringification_one_success_claimed",
+  "description": "Mcoerce-d PR 3 CLAIMED (union revisit): flat disjoint class union Book{title,pages} | Car{brand,wheels}, input carries only Book's fields with title=5 (a NON-string). coerce_string stringifies 5 via jsonish Value Display to \"5\" (JsonToString) so Book succeeds leniently; Car misses its required brand,wheels. EXACTLY one lenient success -> claim Book (non-nullable). want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "class_ref", "ref": "Book"},
+                {"kind": "class_ref", "ref": "Car"}
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "Book",
+        "properties": [
+          {"name": "title", "type": {"kind": "string"}},
+          {"name": "pages", "type": {"kind": "int"}}
+        ]
+      },
+      {
+        "name": "Car",
+        "properties": [
+          {"name": "brand", "type": {"kind": "string"}},
+          {"name": "wheels", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":{\"title\":5,\"pages\":300}}",
+  "want": {
+    "status": "success",
+    "json": {"u": {"pages": 300, "title": "5"}}
+  }
+}

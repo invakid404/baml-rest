@@ -1,0 +1,46 @@
+{
+  "name": "class_union_stringification_two_successes_stays_fallback",
+  "description": "Mcoerce-d PR 3 FALLBACK (over-claim guard): flat disjoint class union Book{title,pages} | Car{brand,wheels}, input carries ALL FOUR fields with title=5 (a NON-string). Book succeeds (title=5 stringified via JsonToString; brand,wheels are extras) AND Car succeeds (brand,wheels exact; title,pages are extras), so TWO lenient successes -> BAML pick_best scored selection (M3). Native declines the WHOLE union and must NEVER emit either arm. want live-captured (BAML's scored winner).",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "class_ref", "ref": "Book"},
+                {"kind": "class_ref", "ref": "Car"}
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "Book",
+        "properties": [
+          {"name": "title", "type": {"kind": "string"}},
+          {"name": "pages", "type": {"kind": "int"}}
+        ]
+      },
+      {
+        "name": "Car",
+        "properties": [
+          {"name": "brand", "type": {"kind": "string"}},
+          {"name": "wheels", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":{\"title\":5,\"pages\":300,\"brand\":\"Audi\",\"wheels\":4}}",
+  "want": {
+    "status": "success",
+    "json": {"u": {"brand": "Audi", "wheels": 4}}
+  }
+}
