@@ -1,0 +1,43 @@
+{
+  "name": "class_required_null_default_from_no_value",
+  "description": "Mcoerce-d PR 2 CLAIMED: class C{n null} with n ABSENT. BAML fills the primitive-null default null (DefaultFromNoValue cost 100). want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "class_ref",
+              "ref": "C"
+            }
+          }
+        ]
+      },
+      {
+        "name": "C",
+        "properties": [
+          {
+            "name": "n",
+            "type": {
+              "kind": "null"
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":{}}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": {
+        "n": null
+      }
+    }
+  }
+}

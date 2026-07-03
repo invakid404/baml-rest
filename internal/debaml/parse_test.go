@@ -324,12 +324,12 @@ func TestParse_MapStringInt(t *testing.T) {
 	mustParseExact(t, mapStringIntSchema(), `{"scores":{}}`, `{"scores":{}}`)
 }
 
-func TestParse_MapNonObjectDeclines(t *testing.T) {
-	// A non-object where a map is required is NOT a hard error: BAML's
-	// object/map coercion + scoring can still produce a (partial) map, so
-	// native declines rather than claiming a mismatch.
-	requireUnsupported(t, mapStringIntSchema(), `{"scores":[1,2,3]}`)
-	requireUnsupported(t, mapStringIntSchema(), `{"scores":"x"}`)
+func TestParse_MapNonObjectFieldDefaults(t *testing.T) {
+	// Mcoerce-d PR 2: a required map class field with a non-object value is a
+	// PROVEN coerce_map error_unexpected_type, so BAML fills the map default {}
+	// (DefaultButHadUnparseableValue) and native now CLAIMS {"scores":{}}.
+	mustParse(t, mapStringIntSchema(), `{"scores":[1,2,3]}`, `{"scores":{}}`)
+	mustParse(t, mapStringIntSchema(), `{"scores":"x"}`, `{"scores":{}}`)
 }
 
 func TestParse_MapBadValuePartialSkip(t *testing.T) {
@@ -925,25 +925,37 @@ func TestParse_UnsupportedNestedUnionVariant(t *testing.T) {
 	requireUnsupported(t, s, `{"u":true}`)
 }
 
-func TestParse_SingleFieldClassImpliedKeyDeclines(t *testing.T) {
-	// A single-field class: BAML absorbs a scalar/non-object — or an object
-	// whose lone field key is absent — directly into the one field via its
-	// implied-key / inferred-object coercion, so it often SUCCEEDS where
-	// native's strict object/key match fails. Native must DECLINE, not claim.
+func TestParse_SingleFieldClassImpliedKeyInferredObject(t *testing.T) {
+	// A single-field class: BAML absorbs a scalar/non-object into the one field
+	// via inferred-object, or an object whose keys miss the lone field via
+	// implied-key. Mcoerce-d PR 2 ports both, so native now CLAIMS them when the
+	// lone-field coercion succeeds and matches BAML byte-for-byte.
 	oneField := &bamlutils.DynamicOutputSchema{
 		Properties: props(kv("value", intProp())),
 	}
-	// Non-object input -> BAML implied-key {value: 42}; native declines.
-	requireUnsupported(t, oneField, `42`)
-	// Object with no matching key -> BAML implied path; native declines.
+	// Scalar input -> inferred-object into the lone int field (ImpliedKey +
+	// InferedObject): claimed {value: 42}.
+	mustParse(t, oneField, `42`, `{"value":42}`)
+	// Object with no matching key, lone field is int -> implied-key coerces the
+	// WHOLE object into the int field, which FAILS (object->int is
+	// error_unexpected_type), so the field is missing + non-defaultable and BAML
+	// errors; native cannot prove that from its own decline, so it DECLINES.
 	requireUnsupported(t, oneField, `{"other":5}`)
 	// The lone field present -> normal claim (no implied-key needed).
 	mustParse(t, oneField, `{"value":5}`, `{"value":5}`)
 
-	// A MULTI-field class with a NON-OBJECT input stays CLAIMED — BAML
-	// hard-fails turning a scalar/array into a multi-field object too, so the
-	// differential checks error parity rather than masking it.
-	requireClaimedError(t, personSchema(), `[1,2,3]`)
+	// A single-field STRING class absorbs a non-matching object via implied-key +
+	// JsonToString: {foo: 5} stringifies to "{foo: 5}" into the lone string field.
+	strBox := &bamlutils.DynamicOutputSchema{Properties: props(kv("value", strProp()))}
+	mustParse(t, strBox, `{"foo":5}`, `{"value":"{foo: 5}"}`)
+	// A scalar into the lone string field: inferred-object + JsonToString.
+	mustParse(t, strBox, `true`, `{"value":"true"}`)
+
+	// A MULTI-field class with a NON-OBJECT input DECLINES: an ARRAY defers to
+	// coerce_array_to_singular (M3) and a scalar leaves every required
+	// non-defaultable field missing (BAML errors, native falls back).
+	requireUnsupported(t, personSchema(), `[1,2,3]`)
+	requireUnsupported(t, personSchema(), `42`)
 }
 
 func TestParse_MultiFieldFuzzyKey(t *testing.T) {
@@ -1111,10 +1123,12 @@ func TestParse_MultipleTopLevelValuesDeclines(t *testing.T) {
 	mustParse(t, personSchema(), `{"name":"Ada","age":36} see "{}".`, `{"name":"Ada","age":36}`)
 }
 
-func TestParse_TopLevelArrayIsClaimedError(t *testing.T) {
-	// The synthetic top-level is always an object; a top-level array fails
-	// to coerce — a claimed error, not a fallback.
-	requireClaimedError(t, personSchema(), `[1,2,3]`)
+func TestParse_TopLevelArrayDeclines(t *testing.T) {
+	// The synthetic top-level is always a class. Mcoerce-d PR 2: an ARRAY into a
+	// class is coerce_array_to_singular / pick_best (M3) — BAML may coerce the
+	// first matching item into the class (e.g. [{name,age}] succeeds) — so native
+	// DECLINES (falls back) rather than claim a scored outcome it cannot model.
+	requireUnsupported(t, personSchema(), `[1,2,3]`)
 }
 
 func TestParse_AliasedFieldMatchesRenderedNameOnly(t *testing.T) {

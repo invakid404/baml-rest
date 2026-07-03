@@ -1,0 +1,43 @@
+{
+  "name": "single_field_class_object_implied_key",
+  "description": "Mcoerce-d PR 2 CLAIMED: single-field class Box{value string} with an object {foo:5} whose key does NOT match the lone field. BAML's coerce_class implied-key coerces the WHOLE object into the string field (JsonToString Display '{foo: 5}' + ImpliedKey cost 2, no ExtraKey). want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "class_ref",
+              "ref": "Box"
+            }
+          }
+        ]
+      },
+      {
+        "name": "Box",
+        "properties": [
+          {
+            "name": "value",
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":{\"foo\":5}}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": {
+        "value": "{foo: 5}"
+      }
+    }
+  }
+}

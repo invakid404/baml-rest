@@ -1,0 +1,51 @@
+{
+  "name": "list_class_required_default_value_kept",
+  "description": "Mcoerce-d PR 2 CLAIMED: list<C> where C{items int[]}, an empty-object element. BAML fills C's required list default [], so the element is KEPT as {items:[]}. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "list",
+              "inner": {
+                "kind": "class_ref",
+                "ref": "C"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "C",
+        "properties": [
+          {
+            "name": "items",
+            "type": {
+              "kind": "list",
+              "inner": {
+                "kind": "int"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":[{}]}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": [
+        {
+          "items": []
+        }
+      ]
+    }
+  }
+}

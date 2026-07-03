@@ -1,0 +1,54 @@
+{
+  "name": "map_string_single_field_class_scalar_value_kept",
+  "description": "Mcoerce-d PR 2 CLAIMED: map<string,Box> where Box{value int}, scalar values. Each value inferred-object-absorbs into its Box, so both entries are KEPT. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "map",
+              "key": {
+                "kind": "string"
+              },
+              "inner": {
+                "kind": "class_ref",
+                "ref": "Box"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "Box",
+        "properties": [
+          {
+            "name": "value",
+            "type": {
+              "kind": "int"
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":{\"a\":5,\"b\":6}}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": {
+        "a": {
+          "value": 5
+        },
+        "b": {
+          "value": 6
+        }
+      }
+    }
+  }
+}

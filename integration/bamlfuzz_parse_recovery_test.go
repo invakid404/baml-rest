@@ -379,6 +379,28 @@ var parseRecoveryNativeClaim = map[string]bool{
 	// Integer stringification still claims (see the CLAIMED entries above).
 	"primitive_string_number_noninteger_stays_fallback": false,
 	"list_string_noninteger_number_stays_fallback":      false,
+
+	// Mcoerce-d PR 2 — STRUCTURAL CLASS DEFAULTS. coerceClass now ports BAML's
+	// coerce_class.rs (non-array subset): single-field OBJECT implied-key and
+	// SCALAR/null inferred-object absorption, missing-optional null fill, and
+	// TypeIR::default_value required-field fills (list→[], map→{}, null→null;
+	// DefaultFromNoValue) plus the present-map-non-object default {}
+	// (DefaultButHadUnparseableValue). These resolve byte-identical to BAML, so the
+	// deterministic non-union class cases are CLAIMED — including the collection
+	// flips (a single-field-class scalar element / class-with-defaults element is
+	// KEPT in a list/map). ARRAY input to a class still DECLINES (M3
+	// array-to-singular). No union-family broadening (PR 3).
+	"single_field_class_scalar_inferred":                true,
+	"single_field_class_object_implied_key":             true,
+	"class_missing_optional_null":                       true,
+	"class_required_list_default_from_no_value":         true,
+	"class_required_map_default_from_no_value":          true,
+	"class_required_null_default_from_no_value":         true,
+	"class_map_field_default_but_had_unparseable_value": true,
+	"list_single_field_class_scalar_kept":               true,
+	"map_string_single_field_class_scalar_value_kept":   true,
+	"list_class_required_default_value_kept":            true,
+	"map_string_class_required_default_value_kept":      true,
 }
 
 // parseRecoveryStats tallies how many final-parse cases the native parser
