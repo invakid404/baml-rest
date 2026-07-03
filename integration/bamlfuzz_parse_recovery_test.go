@@ -401,6 +401,24 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"map_string_single_field_class_scalar_value_kept":   true,
 	"list_class_required_default_value_kept":            true,
 	"map_string_class_required_default_value_kept":      true,
+
+	// Mcoerce-d PR 3 — UNION REVISIT. The safe-family union counters
+	// (coerceLiteralUnion / coerceFlatClassUnion) count LENIENT successes through
+	// the PR 1/PR 2 leaf + structural coercers, so a union that becomes
+	// deterministic via ObjectToPrimitive / ObjectToString / class-field
+	// JsonToString now CLAIMS when EXACTLY one non-null arm succeeds and DECLINES
+	// on two-plus (BAML pick_best = M3). The nullable clean-only rule still holds:
+	// a FLAGGED non-null winner (JsonToString / ObjectToString / ObjectToPrimitive
+	// / DefaultFromNoValue) declines against the scored null arm. No broadening
+	// beyond the two existing safe families — every mixed / primitive-overlap /
+	// overlapping-key-class / fuzzy-literal / list-map-variant / nested union
+	// stays fallback (see the M2c block above: 37/38/39/41/44/45/46, 40/42/43).
+	"literal_union_object_to_primitive_one_success_claimed":    true,
+	"literal_union_object_to_string_one_success_claimed":       true,
+	"class_union_stringification_one_success_claimed":          true,
+	"class_union_stringification_two_successes_stays_fallback": false,
+	"nullable_optional_string_json_to_string_stays_fallback":   false,
+	"nullable_optional_class_default_stays_fallback":           false,
 }
 
 // parseRecoveryStats tallies how many final-parse cases the native parser

@@ -1,0 +1,34 @@
+{
+  "name": "nullable_optional_class_default_stays_fallback",
+  "description": "Mcoerce-d PR 3 FALLBACK (nullable clean-only rule): optional class (C{items int[]} | null), input {} (items absent). The non-null arm fills the required list default [] (DefaultFromNoValue cost 100), score-bearing, so it is not clean. BAML scores it against the null arm (DefaultButHadValue=110) and the class wins (100 < 110); native does not score, so a FLAGGED non-null arm declines. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {"kind": "optional", "inner": {"kind": "class_ref", "ref": "C"}}
+          }
+        ]
+      },
+      {
+        "name": "C",
+        "properties": [
+          {
+            "name": "items",
+            "type": {"kind": "list", "inner": {"kind": "int"}}
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":{}}",
+  "want": {
+    "status": "success",
+    "json": {"u": {"items": []}}
+  }
+}

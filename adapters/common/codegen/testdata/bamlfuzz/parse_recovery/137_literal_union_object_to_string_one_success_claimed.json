@@ -1,0 +1,32 @@
+{
+  "name": "literal_union_object_to_string_one_success_claimed",
+  "description": "Mcoerce-d PR 3 CLAIMED (union revisit): homogeneous string-literal union (\"5\" | \"6\"), NON-string input 5. match_string's ObjectToString prelude stringifies 5 via jsonish Value Display to \"5\", which matches ONLY the \"5\" arm (the values are pairwise match-disjoint), giving EXACTLY one lenient success -> claim. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "literal", "literal": {"kind": "string", "string": "5"}},
+                {"kind": "literal", "literal": {"kind": "string", "string": "6"}}
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":5}",
+  "want": {
+    "status": "success",
+    "json": {"u": "5"}
+  }
+}
