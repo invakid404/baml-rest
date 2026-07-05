@@ -1,6 +1,6 @@
 {
-  "name": "nullable_optional_class_default_stays_fallback",
-  "description": "Mcoerce-d PR 3 FALLBACK (nullable clean-only rule): optional class (C{items int[]} | null), input {} (items absent). The non-null arm fills the required list default [] (DefaultFromNoValue cost 100), score-bearing, so it is not clean. BAML scores it against the null arm (DefaultButHadValue=110) and the class wins (100 < 110); native does not score, so a FLAGGED non-null arm declines. want live-captured.",
+  "name": "nullable_optional_class_default_claims",
+  "description": "M3a CLAIMED (scored nullable): optional class (C{items int[]} | null), input {} (items absent) -> the arm fills the required list default [] (DefaultFromNoValue score 100). Native scores it against the null arm (110) and CLAIMS the class because 100 < 110. want live-captured.",
   "preserve_schema_order": false,
   "schema": {
     "classes": [

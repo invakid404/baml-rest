@@ -1,0 +1,22 @@
+{
+  "name": "nullable_optional_int_float_round_claims",
+  "description": "M3a CLAIMED (scored nullable): optional int (int | null), JSON float 1.6 -> the non-null arm coerces to 2 with FloatToInt (score 1). Native now scores the arm against the null arm (DefaultButHadValue 110) and CLAIMS the arm because 1 < 110. want captured from live BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "optional", "inner": {"kind": "int"}}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":1.6}",
+  "want": {
+    "status": "success",
+    "json": {"u": 2}
+  }
+}

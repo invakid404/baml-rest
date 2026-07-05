@@ -1,0 +1,77 @@
+{
+  "name": "class_union_provable_losing_arm_claims",
+  "description": "M3a F-Codex: flat disjoint class union A{a int,b string} | B{c int,d string}, input {a:1,b:\"x\",c:\"bad\",d:\"y\"}. A succeeds (c,d extras => score 2). B matches c=\"bad\", which PROVABLY fails int coercion, so BAML records a required-field parse error and errors the B arm (excluded, not a whole-union decline). pick_best selects the sole success A. Native must EXCLUDE B (proven error) and claim A. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {
+                  "kind": "class_ref",
+                  "ref": "A"
+                },
+                {
+                  "kind": "class_ref",
+                  "ref": "B"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "A",
+        "properties": [
+          {
+            "name": "a",
+            "type": {
+              "kind": "int"
+            }
+          },
+          {
+            "name": "b",
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      },
+      {
+        "name": "B",
+        "properties": [
+          {
+            "name": "c",
+            "type": {
+              "kind": "int"
+            }
+          },
+          {
+            "name": "d",
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":{\"a\":1,\"b\":\"x\",\"c\":\"bad\",\"d\":\"y\"}}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": {
+        "a": 1,
+        "b": "x"
+      }
+    }
+  }
+}

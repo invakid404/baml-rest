@@ -6,14 +6,13 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 )
 
-// Mcoerce-d PR 3 — UNION REVISIT. The leaf/structural coercers (coerceLiteral,
-// coerceClass) became lenient in PR 1/PR 2 (ObjectToPrimitive / ObjectToString /
-// JsonToString / class defaults), and the safe-family union counters
-// (coerceLiteralUnion / coerceFlatClassUnion) already COUNT successes through
-// them. These tests pin that the counters now CLAIM the newly-deterministic
-// one-success cases while keeping the no-over-claim guard (count != 1 declines)
-// and the nullable clean-only rule (a flagged non-null winner declines vs the
-// scored null arm). No pick_best, no broadening beyond the two safe families.
+// M3 slice a — SCORE MODEL + safe-family pick_best. The safe-family union
+// coercers (coerceLiteralUnion / coerceFlatClassUnion) now score every arm with
+// the types.rs inherent model, apply BAML's early first-score-0 winner rule, and
+// otherwise run a faithful array_helper::pick_best over the successful candidates
+// plus (when nullable) the null arm (DefaultButHadValue, score 110). No gate
+// broadening — only the existing literal/class safe families are scored. These
+// tests pin the flips from the pre-M3 clean-only rule to scored selection.
 
 // TestLiteralUnion_ObjectToPrimitive_OneSuccess pins that a homogeneous
 // int-literal union claims when a single-key-object extraction (ObjectToPrimitive)
@@ -22,7 +21,8 @@ func TestLiteralUnion_ObjectToPrimitive_OneSuccess(t *testing.T) {
 	s := litIntUnion(1, 2)
 	mustParse(t, s, `{"u":{"value":1}}`, `{"u":1}`) // extract 1 -> matches arm 1 only
 	mustParse(t, s, `{"u":{"any":2}}`, `{"u":2}`)   // key ignored, extract 2 -> arm 2 only
-	// Extracted inner value matches NO arm -> decline (BAML errors/pick_best neither).
+	// Extracted inner value matches NO arm -> both arms are proven BAML errors,
+	// so the (non-nullable) union has no success and declines.
 	requireUnsupported(t, s, `{"u":{"value":7}}`)
 }
 
@@ -33,24 +33,25 @@ func TestLiteralUnion_ObjectToString_OneSuccess(t *testing.T) {
 	s := unionSchema(litStr("5"), litStr("6"))
 	mustParse(t, s, `{"u":5}`, `{"u":"5"}`) // Display "5" matches literal "5" only
 	mustParse(t, s, `{"u":6}`, `{"u":"6"}`)
-	// Display matches neither literal -> decline.
+	// Display matches neither literal -> both proven errors -> decline.
 	requireUnsupported(t, s, `{"u":7}`)
 }
 
-// TestLiteralUnion_TwoSuccesses_Decline pins the over-claim guard: a stringified
-// value that substring-matches BOTH disjoint literal arms is two lenient
-// successes -> BAML pick_best (M3) -> decline (native must never pick one).
-func TestLiteralUnion_TwoSuccesses_Decline(t *testing.T) {
+// TestLiteralUnion_TwoSubstring_Scored pins the M3 pick_best selection: a value
+// that substring-matches BOTH disjoint literal arms is two successes with equal
+// score, so the lower-index arm ("foo", arm 0) wins instead of declining. The
+// array Display "[foo, bar]" substring-matches both "foo" and "bar".
+func TestLiteralUnion_TwoSubstring_Scored(t *testing.T) {
 	s := unionSchema(litStr("foo"), litStr("bar"))
-	// Array Display "[foo, bar]" substring-matches both "foo" and "bar" arms.
-	requireUnsupported(t, s, `{"u":["foo","bar"]}`)
+	// Each arm: ObjectToString (2) + SubstringMatch (2) = score 4; tie -> arm 0.
+	mustParse(t, s, `{"u":["foo","bar"]}`, `{"u":"foo"}`)
 }
 
-// TestLiteralUnion_NullableFlaggedArm_Declines pins the nullable clean-only rule
-// for both literal families: a non-null arm won only via ObjectToPrimitive /
-// ObjectToString is FLAGGED, so it declines against the scored null arm (M3),
-// while the JSON-null fast path still claims null.
-func TestLiteralUnion_NullableFlaggedArm_Declines(t *testing.T) {
+// TestLiteralUnion_NullableFlaggedArm_Scored pins that a non-null arm won only
+// via ObjectToPrimitive / ObjectToString (score 2) now BEATS the scored null arm
+// (110) and is claimed, while the JSON-null fast path still claims null and a
+// clean exact match wins immediately.
+func TestLiteralUnion_NullableFlaggedArm_Scored(t *testing.T) {
 	sInt := oneField(&bamlutils.DynamicProperty{
 		Type: "union",
 		OneOf: []*bamlutils.DynamicTypeSpec{
@@ -59,13 +60,13 @@ func TestLiteralUnion_NullableFlaggedArm_Declines(t *testing.T) {
 			{Type: "null"},
 		},
 	})
-	mustParse(t, sInt, `{"u":null}`, `{"u":null}`)   // null fast path
-	requireUnsupported(t, sInt, `{"u":{"value":1}}`) // ObjectToPrimitive flag -> decline
+	mustParse(t, sInt, `{"u":null}`, `{"u":null}`)     // null fast path
+	mustParse(t, sInt, `{"u":{"value":1}}`, `{"u":1}`) // ObjectToPrimitive score 2 < 110
 
 	sStr := unionSchema(litStr("5"), litStr("6"), &bamlutils.DynamicTypeSpec{Type: "null"})
 	mustParse(t, sStr, `{"u":null}`, `{"u":null}`)
-	mustParse(t, sStr, `{"u":"5"}`, `{"u":"5"}`) // clean exact string still claims
-	requireUnsupported(t, sStr, `{"u":5}`)       // ObjectToString flag -> decline
+	mustParse(t, sStr, `{"u":"5"}`, `{"u":"5"}`) // clean exact (score 0) wins immediately
+	mustParse(t, sStr, `{"u":5}`, `{"u":"5"}`)   // ObjectToString score 2 < 110 -> claim
 }
 
 // TestClassUnion_Stringification_OneSuccess pins that a flat disjoint-key class
@@ -76,37 +77,38 @@ func TestClassUnion_Stringification_OneSuccess(t *testing.T) {
 	mustParse(t, s, `{"u":{"title":5,"pages":300}}`, `{"u":{"title":"5","pages":300}}`)
 }
 
-// TestClassUnion_Stringification_TwoSuccesses_Decline pins the over-claim guard:
-// an input carrying BOTH arms' full field sets makes both succeed -> BAML
-// pick_best (M3) -> decline (native must never emit either arm).
-func TestClassUnion_Stringification_TwoSuccesses_Decline(t *testing.T) {
+// TestClassUnion_Stringification_TwoSuccesses_Scored pins the M3 pick_best flip:
+// an input carrying BOTH arms' full field sets makes both succeed, and pick_best
+// picks the lower-score class. Book carries JsonToString (2) + 2 extras = 4; Car
+// carries only 2 extras = 2, so Car wins.
+func TestClassUnion_Stringification_TwoSuccesses_Scored(t *testing.T) {
 	s := classUnionSchema()
-	requireUnsupported(t, s, `{"u":{"title":5,"pages":300,"brand":"Audi","wheels":4}}`)
+	mustParse(t, s, `{"u":{"title":5,"pages":300,"brand":"Audi","wheels":4}}`, `{"u":{"brand":"Audi","wheels":4}}`)
 }
 
-// TestClassUnion_NullableStringified_Declines pins the nullable clean-only rule:
-// a JsonToString-flagged winning class arm declines against the scored null arm,
+// TestClassUnion_NullableStringified_Scored pins that a JsonToString-flagged
+// winning class arm (score 2 < 110) now beats the scored null arm and is claimed,
 // while the JSON-null fast path still claims null.
-func TestClassUnion_NullableStringified_Declines(t *testing.T) {
+func TestClassUnion_NullableStringified_Scored(t *testing.T) {
 	s := nullableClassUnionSchema()
 	mustParse(t, s, `{"u":null}`, `{"u":null}`)
-	requireUnsupported(t, s, `{"u":{"title":5,"pages":300}}`) // JsonToString flag -> decline
+	mustParse(t, s, `{"u":{"title":5,"pages":300}}`, `{"u":{"title":"5","pages":300}}`) // JsonToString score 2 < 110
 }
 
-// TestNullableOptionalString_JsonToString_Declines pins that an optional string
-// with a NON-string input coerces via JsonToString (flagged) and so declines
-// under the nullable clean-only rule, while a clean string passthrough claims.
-func TestNullableOptionalString_JsonToString_Declines(t *testing.T) {
+// TestNullableOptionalString_JsonToString_Scored pins that an optional string
+// with a NON-string input coerces via JsonToString (score 2 < 110) and is now
+// CLAIMED, while a clean string passthrough wins immediately.
+func TestNullableOptionalString_JsonToString_Scored(t *testing.T) {
 	s := oneField(&bamlutils.DynamicProperty{Type: "optional", Inner: &bamlutils.DynamicTypeSpec{Type: "string"}})
 	mustParse(t, s, `{"u":null}`, `{"u":null}`)
-	mustParse(t, s, `{"u":"hi"}`, `{"u":"hi"}`) // clean passthrough -> claim
-	requireUnsupported(t, s, `{"u":5}`)         // JsonToString -> decline
+	mustParse(t, s, `{"u":"hi"}`, `{"u":"hi"}`) // clean passthrough (score 0)
+	mustParse(t, s, `{"u":5}`, `{"u":"5"}`)     // JsonToString score 2 < 110 -> claim
 }
 
-// TestNullableOptionalClassDefault_Declines pins that an optional class whose
-// lone arm fills a required-field DEFAULT (DefaultFromNoValue) is flagged, so it
-// declines under the nullable clean-only rule (C{items int[]} with {} -> []).
-func TestNullableOptionalClassDefault_Declines(t *testing.T) {
+// TestNullableOptionalClassDefault_Scored pins that an optional class whose lone
+// arm fills a required-field DEFAULT (DefaultFromNoValue, score 100) still beats
+// the null arm (110) and is CLAIMED (C{items int[]} with {} -> {items:[]}).
+func TestNullableOptionalClassDefault_Scored(t *testing.T) {
 	s := &bamlutils.DynamicOutputSchema{
 		Properties: props(kv("u", optProp(&bamlutils.DynamicTypeSpec{Ref: "C"}))),
 		Classes: bamlutils.MustOrderedMap(bamlutils.OrderedKV("C", &bamlutils.DynamicClass{
@@ -114,5 +116,5 @@ func TestNullableOptionalClassDefault_Declines(t *testing.T) {
 		})),
 	}
 	mustParse(t, s, `{"u":null}`, `{"u":null}`)
-	requireUnsupported(t, s, `{"u":{}}`) // DefaultFromNoValue -> decline
+	mustParse(t, s, `{"u":{}}`, `{"u":{"items":[]}}`) // DefaultFromNoValue 100 < 110 -> claim
 }

@@ -1,6 +1,6 @@
 {
   "name": "nullable_class_union_extra_keys_null",
-  "description": "Mcoerce-a F1 (cold-review probe): nullable flat class union (Book | Car | null) where the Book arm carries 115 EXTRA input keys (ExtraKey cost 1 each => score 115) which OUTSCORES BAML's null arm (DefaultButHadValue=110), so BAML returns NULL, not Book. Native does not score and cannot tell the null arm wins, so it DECLINES (fallback) rather than claim Book \u2014 pinned disposition: fallback. want captured from BAML final parse.",
+  "description": "M3a CLAIMED (scored nullable): nullable flat class union (Book | Car | null) where the Book arm carries 115 EXTRA input keys (ExtraKey score 115) and Car misses its required fields (a proven error, excluded). Native scores Book (115) against the null arm (DefaultButHadValue 110): 115 > 110, so pick_best returns NULL and native now CLAIMS null (matching BAML). want captured from live BAML final parse.",
   "preserve_schema_order": false,
   "schema": {
     "classes": [

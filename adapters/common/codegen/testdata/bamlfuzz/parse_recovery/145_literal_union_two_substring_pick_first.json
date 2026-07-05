@@ -1,0 +1,46 @@
+{
+  "name": "literal_union_two_substring_pick_first",
+  "description": "M3a pick_best: homogeneous string-literal union (\"foo\" | \"bar\"), pairwise match-disjoint, with ARRAY input [\"foo\",\"bar\"]. Each arm stringifies the array Display \"[foo, bar]\" (ObjectToString 2) and substring-matches its literal (SubstringMatch 2) => score 4 each. Two successes tie on score, so pick_best picks the lower index (arm 0, \"foo\"). want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {
+                  "kind": "literal",
+                  "literal": {
+                    "kind": "string",
+                    "string": "foo"
+                  }
+                },
+                {
+                  "kind": "literal",
+                  "literal": {
+                    "kind": "string",
+                    "string": "bar"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":[\"foo\",\"bar\"]}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": "foo"
+    }
+  }
+}

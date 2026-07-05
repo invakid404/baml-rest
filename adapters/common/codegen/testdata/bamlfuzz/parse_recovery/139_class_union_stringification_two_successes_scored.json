@@ -1,6 +1,6 @@
 {
-  "name": "class_union_stringification_two_successes_stays_fallback",
-  "description": "Mcoerce-d PR 3 FALLBACK (over-claim guard): flat disjoint class union Book{title,pages} | Car{brand,wheels}, input carries ALL FOUR fields with title=5 (a NON-string). Book succeeds (title=5 stringified via JsonToString; brand,wheels are extras) AND Car succeeds (brand,wheels exact; title,pages are extras), so TWO lenient successes -> BAML pick_best scored selection (M3). Native declines the WHOLE union and must NEVER emit either arm. want live-captured (BAML's scored winner).",
+  "name": "class_union_stringification_two_successes_scored",
+  "description": "M3a CLAIMED (scored pick_best): flat disjoint class union Book{title,pages} | Car{brand,wheels}, input carries ALL FOUR fields with title=5 (a NON-string). Book succeeds (title=5 via JsonToString score 2 + brand,wheels extras 2 => 4) AND Car succeeds (brand,wheels exact + title,pages extras 2 => 2), so pick_best picks Car (2 < 4). Native now reproduces BAML's scored winner. want live-captured (BAML's scored winner).",
   "preserve_schema_order": false,
   "schema": {
     "classes": [

@@ -1,6 +1,6 @@
 {
-  "name": "nullable_optional_bool_string_stays_fallback",
-  "description": "Mcoerce-b FALLBACK (nullable clean-only rule): optional bool (bool | null), string 'true' -> the non-null arm coerces to true but carries StringToBool (score-bearing). A flagged non-null arm declines (scored win vs null is M3). want captured from BAML final parse.",
+  "name": "nullable_optional_bool_string_claims",
+  "description": "M3a CLAIMED (scored nullable): optional bool (bool | null), string 'true' -> the non-null arm coerces to true with StringToBool (score 1). Native scores the arm against the null arm (110) and CLAIMS it because 1 < 110. want captured from live BAML final parse.",
   "preserve_schema_order": false,
   "schema": {
     "classes": [

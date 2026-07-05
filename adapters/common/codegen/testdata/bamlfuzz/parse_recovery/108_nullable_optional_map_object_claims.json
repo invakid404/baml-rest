@@ -1,0 +1,22 @@
+{
+  "name": "nullable_optional_map_object_claims",
+  "description": "M3a CLAIMED (scored nullable): optional map<string,int> (map | null) with OBJECT input -> the map arm carries ObjectToMap (score 1) plus clean value scores. Native scores it against the null arm (110) and CLAIMS the fully-accepted map because 1 < 110. want captured from live BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "optional", "inner": {"kind": "map", "key": {"kind": "string"}, "inner": {"kind": "int"}}}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":{\"a\":1,\"b\":2}}",
+  "want": {
+    "status": "success",
+    "json": {"u": {"a": 1, "b": 2}}
+  }
+}
