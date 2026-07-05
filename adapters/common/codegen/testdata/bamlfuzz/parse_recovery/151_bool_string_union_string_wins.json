@@ -1,0 +1,32 @@
+{
+  "name": "bool_string_union_string_wins",
+  "description": "M3b CLAIMED: scalar-leaf union (bool | string) with a bool-looking STRING 'true'. The bool arm coerces via StringToBool (score 1, not early); the string arm is clean (score 0), so pick_best / early first-winner keeps it a STRING. Pins that a clean arm beats a flagged arm regardless of declaration order. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "bool"},
+                {"kind": "string"}
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":\"true\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": "true"}
+  }
+}

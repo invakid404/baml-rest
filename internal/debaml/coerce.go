@@ -2374,8 +2374,8 @@ func setWinnerCf(cf *coerceFlags, w candidate) {
 // rule with a faithful port of the BAML SCORE MODEL: each arm is coerced and
 // scored (types.rs inherent BamlValueWithFlags::score()), the first score-0 arm
 // wins immediately, and otherwise array_helper::pick_best chooses the lowest
-// (special-ordering, score, index). The claim stays inside the EXISTING safe
-// families (checkSupportedUnionShape is unchanged — no gate broadening):
+// (special-ordering, score, index). The claim stays inside the supported union
+// families proven by checkSupportedUnionShape:
 //
 //  1. JSON-null input + nullable union → null immediately (BAML's null fast path).
 //  2. nullable single-non-null union (the optional shape) → the lone arm is
@@ -2383,14 +2383,16 @@ func setWinnerCf(cf *coerceFlags, w candidate) {
 //     when its score < 110 (e.g. optional int with 1.6 → 2, FloatToInt score 1),
 //     null wins when the arm scores > 110 (e.g. an extra-key-heavy class), and a
 //     score-110 tie goes to the arm (lower index).
-//  3. non-null input + a multi-variant SAFE FAMILY (homogeneous literal union or
-//     flat disjoint-key class union), scored via selectUnionArms — including two
-//     lenient successes (BAML pick_best) and, when nullable, the null arm.
+//  3. non-null input + a multi-variant SUPPORTED FAMILY — a scalar/literal/enum
+//     leaf union (M3b) or a flat disjoint-key class union — scored via
+//     selectUnionArms, including two lenient successes (BAML pick_best) and, when
+//     nullable, the null arm.
 //
 // Over-claim guards: any arm native cannot prove (an ErrDeBAMLParseUnsupported
 // that is not a proven BAML error) or any uncertain arm DECLINES THE WHOLE UNION;
-// there is no array-to-singular here. cf carries the winner's score/kind up to an
-// outer scored context (a union that is itself a class field / list element).
+// there is no array-to-singular here (an int/float/bool arm declines ARRAY input,
+// declining the union). cf carries the winner's score/kind up to an outer scored
+// context (a union that is itself a class field / list element).
 func coerceUnionSafe(b *schema.Bundle, u *schema.UnionType, input value, cf *coerceFlags) (json.RawMessage, error) {
 	if u == nil {
 		return nil, fmt.Errorf("debaml: union type missing payload")
@@ -2430,29 +2432,67 @@ func coerceUnionSafe(b *schema.Bundle, u *schema.UnionType, input value, cf *coe
 // family's scored coercer. nullable is the union's Nullable flag, threaded so
 // selectUnionArms adds the null arm as a scored candidate.
 // checkSupportedUnionShape has already proven the variant set is one of the two
-// homogeneous families, so the else branch is the flat class union.
+// families, so an all-class set is the flat class union and everything else is
+// the scalar/literal/enum leaf family.
 func coerceUnionSafeMulti(b *schema.Bundle, variants []schema.Type, input value, nullable bool, cf *coerceFlags) (json.RawMessage, error) {
-	if allLiteralVariants(variants) {
-		return coerceLiteralUnion(variants, input, nullable, cf)
+	if allClassVariants(variants) {
+		return coerceFlatClassUnion(b, variants, input, nullable, cf)
 	}
-	return coerceFlatClassUnion(b, variants, input, nullable, cf)
+	return coerceScalarLeafUnion(b, variants, input, nullable, cf)
 }
 
-// coerceLiteralUnion scores a homogeneous literal union (coerce_union.rs over
-// literal arms). Each arm is coerced through coerceLiteral (the actual
-// match_string, ObjectToPrimitive extraction, and int/bool lenient coercion), so
-// a fuzzy/substring hit or a stringified value scores as BAML would. The first
-// score-0 arm wins immediately; otherwise pickBest chooses the lowest score
-// (index tiebreak) — so two arms that both substring-match, e.g. "foo"|"bar"
-// against a value containing both, resolve to the lower-index arm instead of
-// declining. A non-matching arm is a PROVEN BAML error (excluded); an int/bool
-// arm native's stricter primitive coercer merely DECLINED (hex/overflow) is
-// native-can't-prove and declines the whole union. When nullable, the null arm
-// (score 110) competes. The winner's own coercion output is emitted directly.
-func coerceLiteralUnion(variants []schema.Type, input value, nullable bool, cf *coerceFlags) (json.RawMessage, error) {
+// coerceScalarLeafUnion resolves a union whose every arm is a fully-modeled
+// non-composite LEAF — a primitive scalar (int/float/bool/string), a literal
+// (any kind), or an enum (checkSupportedUnionShape's M3b scalar-leaf family) —
+// reproducing BAML's TWO-PHASE union coercion exactly:
+//
+//  1. try_cast pass (tryCastScalarUnion): the FIRST non-null arm whose STRICT
+//     native-JSON-type cast succeeds wins at score 0, BEFORE any lenient
+//     conversion. This is BAML's field_type.rs "try_cast is basically a way to
+//     exit early" over try_cast_union, and is why `int | string` keeps a numeric
+//     string as a STRING and a JSON number picks the int/float arm regardless of
+//     declaration order (the string arm's try_cast rejects a number, the int
+//     arm's rejects a string).
+//  2. lenient coerce pass (only when no arm try_casts): each arm is coerced
+//     through coerce(), which dispatches to the SAME per-kind coercer BAML uses
+//     (coercePrimitive / coerceLiteral / coerceEnum), so a lenient conversion
+//     (numeric-string parse, float→int round, string→bool, stringify+match,
+//     substring/fuzzy hit, single-key extraction) scores exactly as BAML would.
+//     selectUnionArms applies the early first-score-0 rule and otherwise runs
+//     array_helper::pick_best over the successes (plus the null arm, score 110,
+//     when nullable). Every arm being a leaf, pick_best collapses to (score,
+//     index) — no list/class/scalar-vs-composite case fires — so the winner is
+//     exact.
+//
+// In the lenient pass a non-matching or value-mismatched arm is a PROVEN BAML
+// error (excluded from ranking); an arm native's stricter coercer merely DECLINED
+// (native-can't-prove — a non-numeric string to an int arm, or ARRAY input to an
+// int/float/bool arm whose array-to-singular is M3d) or a case-fold-UNCERTAIN arm
+// declines the WHOLE union, because BAML might succeed it via a deferred path and
+// change the winner. The winner's own output is emitted directly.
+//
+// It SUBSUMES the pre-M3b homogeneous-literal path (a literal arm try_casts on an
+// exact match and otherwise coerces identically), which is why the old
+// string-literal disjointness gate is gone: two lenient successes are resolved by
+// pick_best rather than declined.
+func coerceScalarLeafUnion(b *schema.Bundle, variants []schema.Type, input value, nullable bool, cf *coerceFlags) (json.RawMessage, error) {
+	// Phase 1: try_cast pass (coerce_union.rs try_cast_union, run by field_type.rs
+	// BEFORE the lenient coerce). The FIRST non-null arm whose STRICT native-type
+	// cast succeeds is BAML's winner at score 0 — before any numeric parse,
+	// stringify, fuzzy match, or extraction. This is why `int | string` keeps a
+	// numeric STRING as a string and a JSON number picks the int/float arm.
+	if w, ok, err := tryCastScalarUnion(b, variants, input); err != nil {
+		return nil, err
+	} else if ok {
+		setWinnerCf(cf, w)
+		return w.output, nil
+	}
+	// Phase 2: lenient coerce pass (coerce_union.rs standard path) — early
+	// first-score-0, else array_helper::pick_best, with the null arm (score 110)
+	// when nullable.
 	w, err := selectUnionArms(len(variants), nullable, func(i int) (json.RawMessage, *coerceFlags, error) {
 		armF := &coerceFlags{}
-		out, e := coerceLiteral(variants[i].Literal, input, armF)
+		out, e := coerce(b, variants[i], input, armF)
 		return out, armF, e
 	})
 	if err != nil {
@@ -2460,6 +2500,118 @@ func coerceLiteralUnion(variants []schema.Type, input value, nullable bool, cf *
 	}
 	setWinnerCf(cf, w)
 	return w.output, nil
+}
+
+// tryCastScalarUnion ports BAML's try_cast_union (coerce_union.rs) for the
+// scalar-leaf family. field_type.rs runs self.try_cast BEFORE the lenient coerce
+// for EVERY value ("try_cast is basically a way to exit early"); for a union that
+// is try_cast_union over iter_skip_null (the non-null arms in order). A scalar /
+// literal / enum arm's try_cast succeeds ONLY when the input's native JSON type
+// already matches the arm — no numeric parse, stringify, fuzzy/substring match,
+// or single-key extraction — and it always scores 0. So the FIRST arm that
+// try_casts is BAML's immediate winner (UnionMatch), returned before the lenient
+// coerce pass. The null arm is excluded here (the JSON-null input fast path is in
+// coerceUnionSafe; a non-null input never try_casts to null).
+//
+// Returns (winner, true, nil) on a hit; (_, false, nil) when no arm try_casts
+// (caller runs the lenient pass); (_, false, err) only for a value native cannot
+// emit (a JSON number that parses to a non-finite float), which declines the
+// whole union rather than risk emitting an invalid token.
+func tryCastScalarUnion(b *schema.Bundle, variants []schema.Type, input value) (candidate, bool, error) {
+	for i := range variants {
+		out, kind, matched, err := tryCastScalarArm(b, variants[i], input)
+		if err != nil {
+			return candidate{}, false, err
+		}
+		if matched {
+			return candidate{output: out, originIndex: i, kind: kind, score: 0, hasUnionMatch: true}, true, nil
+		}
+	}
+	return candidate{}, false, nil
+}
+
+// tryCastScalarArm ports the per-kind try_cast for the scalar-leaf family
+// (coerce_primitive.rs / coerce_literal.rs / coerce_enum.rs try_cast): a STRICT
+// native-type match that adds no score-bearing flag. It returns the emitted JSON,
+// the BAML value kind (for pick_best/setWinnerCf), and whether the arm matched.
+//
+//   - string:  a JSON string (verbatim).
+//   - int:     a JSON number whose token is an i64-range integer (as_i64 Some) —
+//     a float-valued or u64-overflow number does NOT try_cast (it falls to the
+//     lenient FloatToInt / u64-wrap coerce pass).
+//   - float:   any JSON number (as_f64); a non-finite result (huge exponent) has
+//     no JSON spelling, so the arm declines the whole union.
+//   - bool:    a JSON boolean.
+//   - literal: a JSON value whose native type EQUALS the literal (string by exact
+//     ==, int by as_i64 ==, bool by ==) — no stringify/parse/fuzzy.
+//   - enum:    a JSON string EXACTLY equal to a value's rendered name (no
+//     description forms, no case fold, no substring); emits the canonical name.
+func tryCastScalarArm(b *schema.Bundle, t schema.Type, input value) (json.RawMessage, candKind, bool, error) {
+	switch t.Kind {
+	case schema.TypePrimitive:
+		switch t.Primitive {
+		case schema.PrimitiveString:
+			if input.kind == valString {
+				out, err := marshalJSON(input.strV)
+				return out, candScalar, err == nil, err
+			}
+		case schema.PrimitiveInt:
+			if input.kind == valNumber {
+				if v, ok := parseI64Rust(input.numV.String()); ok {
+					return json.RawMessage(strconv.FormatInt(v, 10)), candScalar, true, nil
+				}
+			}
+		case schema.PrimitiveFloat:
+			if input.kind == valNumber {
+				if v, ok := parseF64Rust(input.numV.String()); ok {
+					out, fin := floatRaw(v)
+					if !fin {
+						return nil, 0, false, unsupported("union try_cast: JSON number parses to a non-finite float (no JSON spelling)")
+					}
+					return out, candScalar, true, nil
+				}
+			}
+		case schema.PrimitiveBool:
+			if input.kind == valBool {
+				return boolRaw(input.boolV), candScalar, true, nil
+			}
+		}
+	case schema.TypeLiteral:
+		if t.Literal == nil {
+			return nil, 0, false, fmt.Errorf("debaml: literal type missing value")
+		}
+		switch t.Literal.Kind {
+		case schema.LiteralString:
+			if input.kind == valString && input.strV == t.Literal.String {
+				out, err := marshalJSON(input.strV)
+				return out, candScalar, err == nil, err
+			}
+		case schema.LiteralInt:
+			if input.kind == valNumber {
+				if v, ok := parseI64Rust(input.numV.String()); ok && v == t.Literal.Int {
+					return json.RawMessage(strconv.FormatInt(v, 10)), candScalar, true, nil
+				}
+			}
+		case schema.LiteralBool:
+			if input.kind == valBool && input.boolV == t.Literal.Bool {
+				return boolRaw(input.boolV), candScalar, true, nil
+			}
+		}
+	case schema.TypeEnum:
+		if input.kind == valString {
+			e, ok := b.FindEnum(t.Name)
+			if !ok {
+				return nil, 0, false, fmt.Errorf("debaml: unknown enum %q", t.Name)
+			}
+			for i := range e.Values {
+				if e.Values[i].Name.RenderedName() == input.strV {
+					out, err := marshalJSON(e.Values[i].Name.Name)
+					return out, candEnum, err == nil, err
+				}
+			}
+		}
+	}
+	return nil, 0, false, nil
 }
 
 // coerceFlatClassUnion scores a flat disjoint-key class union (coerce_union.rs

@@ -152,6 +152,24 @@ func checkSupportedType(b *schema.Bundle, t schema.Type) error {
 		if t.Elem == nil {
 			return unsupported("list without element")
 		}
+		// A MULTI-ARM union as a LIST ELEMENT is out of scope for M3b. BAML threads
+		// the previous element's winning arm into the next element as
+		// ctx.union_variant_hint (coerce_array.rs enter_scope_with_hint, the ONLY
+		// setter of the hint) and tries that arm FIRST in both the try_cast and
+		// lenient phases (coerce_union.rs); native coerces each element
+		// independently with no hint, so an array like list<Color | string> can
+		// pick a different arm per element than BAML (e.g. a hinted string arm keeps
+		// an exact enum token as a string). The hint only flows when the elements
+		// are THEMSELVES unions (the hint is the previous element's OUTERMOST
+		// UnionMatch, which a map/class/list element never carries), and map values
+		// and class fields RESET the hint (enter_scope / visit_class_value_pair), so
+		// map<_, union> and class union fields stay in scope. A single-non-null-arm
+		// optional element (T?) is safe — its only hint is that one arm. Declining
+		// the multi-arm case is the scope's conservative answer; the array
+		// union_variant_hint is modeled in M3d.
+		if isMultiArmUnion(*t.Elem) {
+			return unsupported("list element is a multi-arm union (array union_variant_hint is M3d)")
+		}
 		return checkSupportedType(b, *t.Elem)
 	case schema.TypeUnion:
 		if t.Union == nil {
@@ -266,60 +284,84 @@ func isStringLiteralUnionType(t schema.Type) bool {
 }
 
 // checkSupportedUnionShape reports whether the NON-NULL variant set of a
-// multi-variant union (len(Variants) >= 2) is one of the two M2c safe
-// families. It is the structural half of the M2c claim: it proves BAML
-// cannot leniently succeed on a SECOND arm (which would force BAML's scored
-// pick_best, where native's single pick may diverge). The value-level guard
-// in coerceUnionSafe then proves BAML sees exactly one clean winner for the
-// concrete input.
+// multi-variant union (len(Variants) >= 2) is one of the supported families.
+// It is the structural half of the union claim: it admits only variant sets
+// whose scored selection native reproduces exactly, so BAML's array_helper::
+// pick_best never diverges from native's.
 //
-// The two safe families are:
+// The two supported families are:
 //
-//   - HOMOGENEOUS LITERAL-ONLY union: every variant is a literal of the SAME
-//     kind. For string literals the value set must be pairwise disjoint under
-//     a conservative match_string SUPERSET (matchStringMightMatch) — exact
-//     disjointness is not enough because BAML fuzzy-matches string literals.
-//     int/bool literals need no extra check: BAML matches them by value
-//     equality, which (after dedup) no two distinct literals can both satisfy.
-//   - HOMOGENEOUS FLAT CLASS union: every variant is a constraint-free class
-//     ref whose class has >= 2 fields, every field REQUIRED and a FLAT LEAF
-//     (primitive scalar / literal / enum — no union/map/list/optional/
-//     recursive-alias/nested-class), and whose rendered field-name sets are
-//     pairwise disjoint under the same conservative key-match superset.
+//   - SCALAR-LEAF union (M3b): every variant is a fully-modeled non-composite
+//     LEAF — a primitive scalar (int/float/bool/string), a literal (any kind),
+//     or an enum. No structural disjointness sub-check is needed: the M3a score
+//     model + pick_best + early first-score-0 rule pick BAML's exact winner
+//     across these arms (each is coerced by the SAME per-kind coercer BAML uses
+//     and scored with the types.rs inherent model), two-plus lenient successes
+//     are resolved by pick_best rather than declined, and a within-arm
+//     match_string tie (StrMatchOneFromMany) fails that arm exactly as BAML
+//     errors it. Per-arm native-can't-prove declines and case-fold uncertainty
+//     decline the WHOLE union at coerce time (selectUnionArms), so over-claim is
+//     impossible — the only residual is under-claim (safe). Nested scalar unions
+//     arrive here already flattened into this variant set by simplifyUnion.
+//   - FLAT CLASS union: every variant is a constraint-free class ref whose class
+//     has >= 2 fields, every field REQUIRED and a FLAT LEAF (primitive scalar /
+//     literal / enum — no union/map/list/optional/recursive-alias/nested-class),
+//     and whose rendered field-name sets are pairwise disjoint under a
+//     conservative key-match superset.
 //
-// Every other shape — a bare primitive variant, a list/map variant, a nested
-// union, mixed literal kinds, literal-vs-class, enum-vs-anything, overlapping
-// or single-field classes — declines, because BAML could leniently succeed on
-// a second arm there.
+// Every OTHER shape declines: a mixed scalar+class family, any list/map variant,
+// overlapping or single-field classes (M3c/M3d). A list/map/array-to-singular
+// arm is out of scope until its scoring is modeled.
 func checkSupportedUnionShape(b *schema.Bundle, u *schema.UnionType) error {
 	vs := u.Variants
 	if len(vs) < 2 {
 		return unsupported("union shape: needs >= 2 non-null variants")
 	}
 	switch {
-	case allLiteralVariants(vs):
-		return checkHomogeneousLiteralUnion(vs)
 	case allClassVariants(vs):
 		return checkFlatClassUnion(b, vs)
+	case allScalarLeafVariants(vs):
+		// Nothing further to prove: coercion + the M3a scored selection are
+		// faithful for a leaf-only variant set, and every over-claim path
+		// (native-can't-prove arm, uncertain case fold, array-to-singular on an
+		// int/float/bool arm) declines the whole union at coerce time.
+		return nil
 	default:
-		// Bare primitive, list, map, nested union, or a mixed variant family:
-		// BAML's lenient coercers (stringify, string<->number, array-to-
-		// singular, fuzzy enum/literal, implied-key class, defaults) can make
-		// a second arm succeed, so native cannot prove a single winner.
-		return unsupported("union shape: not a homogeneous literal or flat class union")
+		// A mixed scalar+class family, or any list/map/array-to-singular variant:
+		// BAML's composite special ordering (class devalue, list SingleToArray/
+		// markdown, FirstMatch) is not modeled until M3c/M3d, so native cannot
+		// prove the pick_best winner — decline.
+		return unsupported("union shape: not a flat class union or a scalar/literal/enum leaf union")
 	}
 }
 
-// allLiteralVariants reports whether every variant is a constraint-free
-// literal — the precondition for the homogeneous-literal family.
-func allLiteralVariants(vs []schema.Type) bool {
+// allScalarLeafVariants reports whether every variant is a constraint-free,
+// fully-modeled non-composite LEAF: a primitive scalar (int/float/bool/string),
+// a literal, or an enum — the M3b scalar-leaf union family. It reuses
+// isFlatLeafField, which encodes the identical leaf predicate for flat
+// class-union fields, because the coercers a union arm and a class field route
+// through are the same. (Null is never a variant — it is hoisted to
+// UnionType.Nullable; media / list / map / class / nested-union variants are
+// rejected, so a mixed or composite family falls through to a decline.)
+func allScalarLeafVariants(vs []schema.Type) bool {
 	for i := range vs {
-		v := &vs[i]
-		if v.Kind != schema.TypeLiteral || v.Literal == nil || len(v.Meta.Constraints) > 0 {
+		if !isFlatLeafField(vs[i]) {
 			return false
 		}
 	}
 	return true
+}
+
+// isMultiArmUnion reports whether t is a union with two or more NON-NULL
+// variants — the hint-sensitive shape a list element must not be (see the
+// TypeList branch of checkSupportedType). A nullable multi-union keeps its two+
+// non-null variants in Variants (null is hoisted to Nullable), so it is
+// multi-arm; a single-non-null optional (T?) has one Variant and is NOT (its
+// only union_variant_hint is that lone arm, so per-element coercion cannot
+// diverge). A non-nullable single-variant union is collapsed by simplifyUnion
+// and never appears here.
+func isMultiArmUnion(t schema.Type) bool {
+	return t.Kind == schema.TypeUnion && t.Union != nil && len(t.Union.Variants) >= 2
 }
 
 // allClassVariants reports whether every variant is a constraint-free class
@@ -332,27 +374,6 @@ func allClassVariants(vs []schema.Type) bool {
 		}
 	}
 	return true
-}
-
-// checkHomogeneousLiteralUnion validates a literal-only variant set: all the
-// same literal kind, and — for string literals — pairwise match-disjoint.
-func checkHomogeneousLiteralUnion(vs []schema.Type) error {
-	kind := vs[0].Literal.Kind
-	for i := range vs {
-		if vs[i].Literal.Kind != kind {
-			return unsupported("literal union: mixed literal kinds (BAML may coerce a 2nd arm)")
-		}
-	}
-	if kind == schema.LiteralString {
-		lits := make([]string, len(vs))
-		for i := range vs {
-			lits[i] = vs[i].Literal.String
-		}
-		if !stringsPairwiseDisjoint(lits) {
-			return unsupported("string-literal union: values not pairwise match-disjoint (BAML may fuzzy-match a 2nd arm)")
-		}
-	}
-	return nil
 }
 
 // checkFlatClassUnion validates a class-only variant set as a flat,
@@ -425,19 +446,6 @@ func isFlatLeafField(t schema.Type) bool {
 	default:
 		return false
 	}
-}
-
-// stringsPairwiseDisjoint reports whether no two distinct strings in vals
-// could match under the conservative match_string superset.
-func stringsPairwiseDisjoint(vals []string) bool {
-	for i := 0; i < len(vals); i++ {
-		for j := i + 1; j < len(vals); j++ {
-			if matchStringMightMatch(vals[i], vals[j]) {
-				return false
-			}
-		}
-	}
-	return true
 }
 
 // fieldNameSetsPairwiseDisjoint reports whether no field name in any set
