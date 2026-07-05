@@ -1,0 +1,81 @@
+{
+  "name": "class_union_literal_bool_field_losing_arm",
+  "description": "M3a F-Codex2: flat disjoint class union A{a int,b string} | B{c literal_bool true,d string}, input {a:1,b:\"x\",c:false,d:\"y\"}. A succeeds (c,d extras => score 2). B matches required literal-bool field c=false, which mismatches the literal true -> BAML errors the B arm. Native must EXCLUDE B (proven literal value mismatch) and claim A. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {
+                  "kind": "class_ref",
+                  "ref": "A"
+                },
+                {
+                  "kind": "class_ref",
+                  "ref": "B"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "A",
+        "properties": [
+          {
+            "name": "a",
+            "type": {
+              "kind": "int"
+            }
+          },
+          {
+            "name": "b",
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      },
+      {
+        "name": "B",
+        "properties": [
+          {
+            "name": "c",
+            "type": {
+              "kind": "literal",
+              "literal": {
+                "kind": "bool",
+                "bool": true
+              }
+            }
+          },
+          {
+            "name": "d",
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":{\"a\":1,\"b\":\"x\",\"c\":false,\"d\":\"y\"}}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": {
+        "a": 1,
+        "b": "x"
+      }
+    }
+  }
+}

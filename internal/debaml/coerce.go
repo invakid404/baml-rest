@@ -14,36 +14,93 @@ import (
 	"github.com/invakid404/baml-rest/internal/schema"
 )
 
-// coerceFlags accumulates two signals a union claim needs:
+// candKind classifies a coerced value the way BAML's BamlValueWithFlags variants
+// do (types.rs), so pickBest can apply its list / class / scalar-vs-composite
+// special ordering.
+type candKind uint8
+
+const (
+	candScalar candKind = iota // String / Int / Float / Bool — non-composite
+	candEnum                   // Enum — non-composite
+	candNull                   // Null — non-composite
+	candList                   // composite
+	candMap                    // composite
+	candClass                  // composite
+)
+
+// isComposite mirrors BamlValueWithFlags::is_composite (types.rs): list / map /
+// class are composite; scalar / enum / null are not.
+func (k candKind) isComposite() bool {
+	return k == candList || k == candMap || k == candClass
+}
+
+// coerceFlags accumulates the BAML SCORE MODEL (M3) for one coerced subtree,
+// plus the pick_best discriminators the union / array-to-singular selection
+// needs. It replaces the pre-M3 boolean "flagged" signal with a real score:
 //
-//   - flagged: a BAML score-bearing condition native CLAIMS (and is therefore
-//     NOT a zero-score "clean" success): a SubstringMatch (enum/literal/map-key
-//     substring, cost 2), an ExtraKey (unmatched class input key, cost 1 each),
-//     or an ObjectToMap (every object→map, cost 1). Used by the NULLABLE-union
-//     claim, where BAML's null arm competes by scoring (DefaultButHadValue,
-//     cost 110): only a clean (score-0) non-null arm provably beats null
-//     without native computing scores.
+//   - score: the types.rs INHERENT BamlValueWithFlags::score() of this subtree —
+//     the sum of this node's OWN score-bearing flag weights PLUS every child
+//     score (list = own + item scores; class = own + field scores; map = own +
+//     each key conditions + value score). Lower wins in a union / pick_best.
+//     NOT the score.rs trait model (which multiplies list/class children by 10
+//     and scores a map by own flags only); the union and pick_best call sites
+//     use the inherent model. A nil receiver means "don't track" (top-level /
+//     standalone), so add / foldChild are nil-safe and free there.
 //   - uncertain: the verdict depended on something native cannot prove equals
 //     BAML — a non-ASCII case fold vs Rust's str::to_lowercase
 //     (caseFoldUncertain), OR a non-integer number spelling whose jsonish Value
-//     Display native cannot reproduce byte-identically vs serde_json's f64
-//     Display (displayNumber, Mcoerce-d). Used by EVERY union claim: if any
-//     arm's verdict was uncertain, native cannot trust its per-arm count (a
-//     false-rejected leaf would let it claim the wrong arm), so it declines; and
-//     by the collection classifiers, which DECLINE the whole list/map (never
-//     proven-skip) on an uncertain child.
+//     Display native cannot reproduce byte-identically (displayNumber). A HARD
+//     decline signal: any uncertain arm declines the WHOLE union, and the
+//     collection classifiers decline the whole list/map on an uncertain child.
 //
-// A nil receiver means "don't track" (top-level / non-nullable / standalone),
-// so threading it is free there.
+// The remaining fields describe the TOP-LEVEL node this accumulator coerced (its
+// OWN conditions and kind) for pick_best's special ordering. They are set by the
+// node's own coercer and are NOT folded up from children (foldChild folds only
+// score + uncertain). At a union arm the arm's own accumulator carries them; a
+// nested child's descriptors are set but ignored by its parent.
 type coerceFlags struct {
-	flagged   bool
+	score     int
 	uncertain bool
+
+	kind candKind
+
+	// list discriminators (this list's OWN conditions):
+	singleToArray     bool // produced by SingleToArray (non-array wrap)
+	itemsEmpty        bool // emitted zero items
+	arrayItemErrors   int  // count of ArrayItemParseError flags on the list
+	firstItemMarkdown bool // first item carries ObjectFromMarkdown (native: never)
+
+	// scalar discriminators (this value's OWN conditions):
+	hasJsonToString bool // a string coerced from a non-string via JsonToString
+	hasFirstMatch   bool // an array-to-singular / pick_best FirstMatch winner
+	hasUnionMatch   bool // a union winner (carries UnionMatch, score 0)
+
+	// class discriminators:
+	classPropCount     int
+	classAllDefault    bool // every emitted field came from a default/missing path
+	classSingleImplied bool // single field, a string coerced via ImpliedKey
 }
 
-// flag marks the coercion as non-clean. Nil-safe so untracked paths are free.
-func (f *coerceFlags) flag() {
+// add records w points of this node's OWN score-bearing conditions (a specific
+// Flag weight, e.g. FloatToInt=1, JsonToString=2, DefaultButHadValue=110).
+// Nil-safe so untracked top-level / standalone callers pay nothing.
+func (f *coerceFlags) add(w int) {
 	if f != nil {
-		f.flagged = true
+		f.score += w
+	}
+}
+
+// foldChild folds a CHILD subtree's total score into this node — the types.rs
+// composite scoring (list/class/map = own + child scores) — and propagates the
+// child's uncertainty. Nil-safe on the receiver; child is always non-nil at the
+// call sites. Descriptor bits are NOT folded (they describe each node's own
+// top-level conditions).
+func (f *coerceFlags) foldChild(child *coerceFlags) {
+	if f != nil {
+		f.score += child.score
+	}
+	if child.isUncertain() {
+		f.markUncertain()
 	}
 }
 
@@ -56,23 +113,48 @@ func (f *coerceFlags) markUncertain() {
 	}
 }
 
-// isFlagged reports whether any score-bearing condition was recorded.
-func (f *coerceFlags) isFlagged() bool { return f != nil && f.flagged }
-
-// isUncertain reports whether a non-ASCII case-fold uncertainty was recorded.
+// isUncertain reports whether a non-ASCII case-fold / number-display
+// uncertainty was recorded.
 func (f *coerceFlags) isUncertain() bool { return f != nil && f.uncertain }
 
-// mergeFrom folds a CHILD accumulator's signals into f: a flagged child makes f
-// non-clean (a class/list score is own flags plus child scores), and an uncertain
-// child makes f uncertain. Nil-safe on the receiver (flag / markUncertain are),
-// so untracked callers pay nothing; child is always non-nil at the call sites.
-func (f *coerceFlags) mergeFrom(child *coerceFlags) {
-	if child.isFlagged() {
-		f.flag()
+// isFlagged reports whether any score-bearing condition was recorded — i.e. the
+// value is not a clean zero-score success. Every native score-bearing flag has
+// weight >= 1, so this is exactly score > 0. Retained as a readable predicate for
+// the leaf/structural unit tests that assert a conversion is score-bearing.
+func (f *coerceFlags) isFlagged() bool { return f != nil && f.score > 0 }
+
+// setKind records this node's BAML value kind (nil-safe).
+func (f *coerceFlags) setKind(k candKind) {
+	if f != nil {
+		f.kind = k
 	}
-	if child.isUncertain() {
-		f.markUncertain()
+}
+
+// toCandidate snapshots this arm accumulator into a pickBest candidate carrying
+// the emitted output, the inherent score, and the special-ordering discriminators.
+// originIndex is the arm's position in BAML's iter_include_null() order (so the
+// index tiebreak reproduces BAML's res indices even with excluded error arms).
+// Nil-safe (like add / foldChild / setKind): a nil receiver yields a zero-scored
+// candidate. Today every selectUnionArms caller passes a fresh non-nil
+// accumulator, so this is API-consistency hardening only.
+func (f *coerceFlags) toCandidate(out json.RawMessage, originIndex int) candidate {
+	c := candidate{output: out, originIndex: originIndex}
+	if f == nil {
+		return c
 	}
+	c.kind = f.kind
+	c.score = f.score
+	c.singleToArray = f.singleToArray
+	c.itemsEmpty = f.itemsEmpty
+	c.arrayItemErrors = f.arrayItemErrors
+	c.firstItemMarkdown = f.firstItemMarkdown
+	c.hasJsonToString = f.hasJsonToString
+	c.hasFirstMatch = f.hasFirstMatch
+	c.hasUnionMatch = f.hasUnionMatch
+	c.classPropCount = f.classPropCount
+	c.classAllDefault = f.classAllDefault
+	c.classSingleImplied = f.classSingleImplied
+	return c
 }
 
 // coerce converts an ordered value (decoded strict, or via the
@@ -223,8 +305,9 @@ func coercePrimitiveInt(input value, f *coerceFlags) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
+	f.setKind(candScalar)
 	if flagged {
-		f.flag() // FloatToInt (score 1)
+		f.add(1) // FloatToInt (score 1)
 	}
 	return json.RawMessage(strconv.FormatInt(n, 10)), nil
 }
@@ -236,8 +319,9 @@ func coercePrimitiveFloat(input value, f *coerceFlags) (json.RawMessage, error) 
 	if err != nil {
 		return nil, err
 	}
+	f.setKind(candScalar)
 	if flagged {
-		f.flag() // StringToFloat (score 1)
+		f.add(1) // StringToFloat (score 1)
 	}
 	return out, nil
 }
@@ -253,8 +337,9 @@ func coercePrimitiveBool(input value, f *coerceFlags) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
+	f.setKind(candScalar)
 	if flagged {
-		f.flag() // StringToBool (score 1)
+		f.add(1) // StringToBool (score 1)
 	}
 	return boolRaw(b), nil
 }
@@ -264,8 +349,9 @@ func coercePrimitiveBool(input value, f *coerceFlags) (json.RawMessage, error) {
 // decision the implicit null arm is handled by coerceUnionSafe, not here — this
 // is the standalone primitive-null target BAML always resolves to null.
 func coercePrimitiveNull(input value, f *coerceFlags) (json.RawMessage, error) {
+	f.setKind(candNull)
 	if input.kind != valNull {
-		f.flag() // DefaultButHadValue (score 110)
+		f.add(110) // DefaultButHadValue (score 110)
 	}
 	return json.RawMessage("null"), nil
 }
@@ -281,6 +367,7 @@ func coercePrimitiveNull(input value, f *coerceFlags) (json.RawMessage, error) {
 // reproduces without scoring. (BAML's AnyOf parser-meta path is not modeled by
 // native's value kinds, so it never arises here.)
 func coercePrimitiveString(input value, f *coerceFlags) (json.RawMessage, error) {
+	f.setKind(candScalar)
 	switch input.kind {
 	case valString:
 		return marshalJSON(input.strV)
@@ -291,6 +378,12 @@ func coercePrimitiveString(input value, f *coerceFlags) (json.RawMessage, error)
 		s, err := displayStringification(input, f, "string target")
 		if err != nil {
 			return nil, err
+		}
+		// Score-bearing JsonToString (added by displayStringification); record the
+		// discriminator pick_best's scalar-vs-composite rule keys on (a string cast
+		// from JSON is devalued against a composite arm).
+		if f != nil {
+			f.hasJsonToString = true
 		}
 		return marshalJSON(s)
 	}
@@ -312,7 +405,7 @@ func displayStringification(input value, f *coerceFlags, uncertainContext string
 		f.markUncertain()
 		return "", unsupported(uncertainContext + ": number spelling display not provably identical to BAML's serde_json Display (Mcoerce-d number-display parity)")
 	}
-	f.flag() // JsonToString / ObjectToString (score 2)
+	f.add(2) // JsonToString / ObjectToString (score 2)
 	return s, nil
 }
 
@@ -770,6 +863,7 @@ func coerceLiteral(lit *schema.LiteralValue, input value, f *coerceFlags) (json.
 	if lit == nil {
 		return nil, fmt.Errorf("debaml: literal type missing value")
 	}
+	f.setKind(candScalar) // a literal coerces to a String/Int/Bool value — non-composite.
 	// Single-key-object ObjectToPrimitive prelude (coerce_literal.rs:90). Only a
 	// number / bool / string inner value is extracted; the recursion re-runs this
 	// coercer on that scalar (so the prelude never re-fires) and PROPAGATES an
@@ -780,7 +874,7 @@ func coerceLiteral(lit *schema.LiteralValue, input value, f *coerceFlags) (json.
 			if err != nil {
 				return nil, err
 			}
-			f.flag() // ObjectToPrimitive (score 2)
+			f.add(2) // ObjectToPrimitive (score 2)
 			return out, nil
 		}
 	}
@@ -803,14 +897,22 @@ func coerceLiteral(lit *schema.LiteralValue, input value, f *coerceFlags) (json.
 		switch outcome {
 		case matchOne:
 			if viaSub {
-				f.flag() // SubstringMatch (cost 2)
+				f.add(2) // SubstringMatch (cost 2)
 			}
 			return marshalJSON(matched)
 		case matchAmbiguous:
 			// A single candidate cannot tie; defensive.
 			return nil, ambiguousMatch(fmt.Sprintf("literal string %q", lit.String), str)
 		default:
-			return nil, unsupported(fmt.Sprintf("literal string %q: %q matches no value (BAML errors or null-defaults)", lit.String, str))
+			// A no-match through the COMPLETE match_string (native reproduces every
+			// strategy for the already-stringified input) is a PROVABLE BAML error:
+			// coerce_string/match_string errors this literal. In a union arm that is
+			// an excluded candidate (not a native-can't-prove decline); at a
+			// standalone position it still declines (fall back) — provenError wraps
+			// ErrDeBAMLParseUnsupported, so top-level/container disposition is
+			// unchanged. (A higher-level optional's null-default is the union's job,
+			// not this leaf's.)
+			return nil, provenError(fmt.Sprintf("literal string %q: %q matches no value (BAML errors)", lit.String, str))
 		}
 	case schema.LiteralInt:
 		// A multi-key object (or single-key object with an object/array/null
@@ -824,12 +926,14 @@ func coerceLiteral(lit *schema.LiteralValue, input value, f *coerceFlags) (json.
 			return nil, unsupported(fmt.Sprintf("literal int %d: primitive int coercion declined: %v", lit.Int, err))
 		}
 		if n != lit.Int {
-			// BAML errors here (required) or null-defaults (optional); native
-			// cannot tell which without scoring, so decline (fall back).
-			return nil, unsupported(fmt.Sprintf("literal int %d: coerced to %d (value mismatch → BAML error/default)", lit.Int, n))
+			// The primitive int coercion SUCCEEDED but the value is not the literal:
+			// a PROVABLE BAML error (coerce_literal compares equal and errors). In a
+			// union arm that is an excluded candidate; at a standalone position it
+			// still declines (provenError wraps the fallback sentinel).
+			return nil, provenError(fmt.Sprintf("literal int %d: coerced to %d (value mismatch → BAML errors)", lit.Int, n))
 		}
 		if flagged {
-			f.flag() // FloatToInt (score 1) — preserved from the primitive coercer.
+			f.add(1) // FloatToInt (score 1) — preserved from the primitive coercer.
 		}
 		return json.RawMessage(strconv.FormatInt(n, 10)), nil
 	case schema.LiteralBool:
@@ -845,10 +949,12 @@ func coerceLiteral(lit *schema.LiteralValue, input value, f *coerceFlags) (json.
 			return nil, unsupported(fmt.Sprintf("literal bool %v: primitive bool coercion declined: %v", lit.Bool, err))
 		}
 		if b != lit.Bool {
-			return nil, unsupported(fmt.Sprintf("literal bool %v: coerced to %v (value mismatch → BAML error/default)", lit.Bool, b))
+			// Primitive bool coercion SUCCEEDED but the value is not the literal: a
+			// PROVABLE BAML error (excluded in a union arm; declines standalone).
+			return nil, provenError(fmt.Sprintf("literal bool %v: coerced to %v (value mismatch → BAML errors)", lit.Bool, b))
 		}
 		if flagged {
-			f.flag() // StringToBool (score 1) — preserved from the primitive coercer.
+			f.add(1) // StringToBool (score 1) — preserved from the primitive coercer.
 		}
 		return boolRaw(b), nil
 	default:
@@ -875,6 +981,7 @@ func coerceEnum(b *schema.Bundle, name string, input value, f *coerceFlags) (jso
 	if !ok {
 		return nil, fmt.Errorf("debaml: unknown enum %q", name)
 	}
+	f.setKind(candEnum)
 	str, err := stringForMatch(input, f)
 	if err != nil {
 		return nil, err
@@ -890,14 +997,16 @@ func coerceEnum(b *schema.Bundle, name string, input value, f *coerceFlags) (jso
 	switch outcome {
 	case matchOne:
 		if viaSub {
-			f.flag() // SubstringMatch (cost 2)
+			f.add(2) // SubstringMatch (cost 2)
 		}
 		// matched is the candidate name = the value's canonical real name.
 		return marshalJSON(matched)
 	case matchAmbiguous:
 		return nil, ambiguousMatch(fmt.Sprintf("enum %q", name), str)
 	default:
-		return nil, unsupported(fmt.Sprintf("enum %q: %q matches no value (BAML errors or null-defaults)", name, str))
+		// A no-match through the COMPLETE match_string is a PROVABLE BAML error
+		// (coerce_enum errors); excluded in a union arm, declines standalone.
+		return nil, provenError(fmt.Sprintf("enum %q: %q matches no value (BAML errors)", name, str))
 	}
 }
 
@@ -979,6 +1088,7 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 	if input.kind == valArray {
 		return nil, declineCoerce("class (BAML array-to-singular / pick_best, M3)", input)
 	}
+	cf.setKind(candClass)
 	nF := len(cls.Fields)
 	singleField := nF == 1
 
@@ -990,19 +1100,30 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 	filled := make([]bool, nF)
 	missingRequired := false
 	indeterminate := false
+	// pick_best class discriminators: hasRealField is set when any field takes a
+	// real input value (matched / implied / inferred) — so classAllDefault (every
+	// emitted field came from a default/missing path) is its negation.
+	// impliedString records a single-field string filled via ImpliedKey (the
+	// class-vs-union devalue rule keys on it). Both are score-neutral; they feed
+	// pickBest only, and are unreachable in M3a's flat/single-arm families (where
+	// class-vs-class never fires), so they are computed best-effort for M3c.
+	hasRealField := false
+	impliedString := false
 
 	// resolveMatched coerces a matched/implied/inferred field value into field i,
 	// folding a clean child's flags on success and classifying a failure: a
-	// PROVEN map-non-object failure fills the {} default; every other declinable
-	// failure is INDETERMINATE (native may be stricter than BAML); a hard failure
-	// propagates.
+	// CLAIMED mismatch and a PROVABLE field parse error both make BAML error the
+	// whole class (a proven class error); a PROVEN map-non-object failure fills the
+	// {} default; every other declinable failure is INDETERMINATE (native may be
+	// stricter than BAML); a hard failure propagates.
 	resolveMatched := func(i int, v value) error {
 		childF := &coerceFlags{}
 		o, err := coerce(b, cls.Fields[i].Type, v, childF)
 		if err == nil {
 			out[i] = o
 			filled[i] = true
-			cf.mergeFrom(childF)
+			hasRealField = true
+			cf.foldChild(childF) // class score = own + field value scores (types.rs)
 			return nil
 		}
 		if !declinableChildError(err) {
@@ -1021,11 +1142,27 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 			// so BAML fills the map default {} with DefaultButHadUnparseableValue.
 			out[i] = json.RawMessage("{}")
 			filled[i] = true
-			cf.flag() // DefaultButHadUnparseableValue (cost 2)
+			hasRealField = true
+			cf.add(2) // DefaultButHadUnparseableValue (cost 2)
 			return nil
 		}
 		if childF.isUncertain() {
+			// The field verdict hinged on a case fold native cannot prove — it might
+			// MATCH (BAML keeps) or MISS (BAML errors), so native cannot classify the
+			// class: INDETERMINATE (a scored union arm declines the whole union).
 			cf.markUncertain()
+			indeterminate = true
+			return nil
+		}
+		if provenClassFieldError(b, cls.Fields[i].Type, v, err) {
+			// The value is a PROVABLE BAML parse error for a REQUIRED NON-defaultable
+			// field (a bad numeric string / wrong-kind scalar / null-into-string, OR
+			// an int/bool literal value mismatch), so BAML records Some(Err) for that
+			// field and PROVABLY errors the whole class (a present-but-unparseable
+			// required field, no array candidate for non-array input). Return a proven
+			// class error so a scored union arm is EXCLUDED (BAML selects the OTHER
+			// arm) rather than declining the whole union.
+			return provenError(fmt.Sprintf("class %q: required field %q provably fails to coerce (BAML errors the class)", name, cls.Fields[i].Name.Name))
 		}
 		indeterminate = true
 		return nil
@@ -1042,8 +1179,15 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 		if err == nil {
 			out[0] = o
 			filled[0] = true
-			cf.mergeFrom(childF)
-			cf.flag() // ImpliedKey (cost 2); InferedObject is cost 0 (no flag).
+			hasRealField = true
+			cf.foldChild(childF) // class score = own + field value scores (types.rs)
+			cf.add(2)            // ImpliedKey (cost 2); InferedObject is cost 0 (no flag).
+			// A single-field STRING filled via ImpliedKey is the class-vs-union
+			// devalue subject (pick_best); the field type is a string primitive, so
+			// the emitted value is a JSON string carrying ImpliedKey.
+			if singleField && cls.Fields[0].Type.Kind == schema.TypePrimitive && cls.Fields[0].Type.Primitive == schema.PrimitiveString {
+				impliedString = true
+			}
 			return nil
 		}
 		if !declinableChildError(err) {
@@ -1054,6 +1198,14 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 		}
 		if childF.isUncertain() {
 			cf.markUncertain()
+			indeterminate = true
+			return nil
+		}
+		if provenClassFieldError(b, cls.Fields[0].Type, v, err) {
+			// The implied/inferred value PROVABLY fails to coerce into the lone
+			// REQUIRED NON-defaultable field, so BAML errors the class. Return a
+			// proven class error so a scored union arm is EXCLUDED, not declined.
+			return provenError(fmt.Sprintf("class %q: implied field %q provably fails to coerce (BAML errors the class)", name, cls.Fields[0].Name.Name))
 		}
 		indeterminate = true
 		return nil
@@ -1116,7 +1268,7 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 				return nil, err
 			}
 		case extraCount > 0:
-			cf.flag() // ExtraKey (cost 1 each) — not a clean zero-score class.
+			cf.add(extraCount) // ExtraKey (cost 1 EACH) — not a clean zero-score class.
 		}
 	default:
 		// Scalar / null (non-object, non-array). A single-field class absorbs the
@@ -1147,14 +1299,14 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 		if isOptional(ft) {
 			// Absent optional → null (OptionalDefaultFromNoValue + Pending). Native
 			// omits it (InjectAbsentOptionals adds the null downstream, identically
-			// for both legs) but flags the score for nullable-union cleanliness.
-			cf.flag() // OptionalDefaultFromNoValue (cost 1)
+			// for both legs) but scores it for the nullable-union comparison.
+			cf.add(1) // OptionalDefaultFromNoValue (cost 1)
 			continue
 		}
 		if d, ok := defaultValue(ft); ok {
 			out[i] = d
 			filled[i] = true
-			cf.flag() // DefaultFromNoValue (cost 100)
+			cf.add(100) // DefaultFromNoValue (cost 100)
 			continue
 		}
 		missingRequired = true
@@ -1162,16 +1314,29 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 
 	if missingRequired {
 		// A required non-defaultable field is absent: BAML has no array candidate
-		// for non-array input, so it errors (error_missing_required_field). Native
-		// DECLINES (falls back) rather than claim the error — mirroring the
-		// pre-Mcoerce-d conservative choice: BAML's fuzzy field-key matching is
-		// reproduced here, but declining keeps native strictly non-over-claiming
-		// (a container/union wrapper that would skip or score the entry falls
-		// back too). The class-with-all-required-flat-leaf SCALAR case that a
-		// list/map element must SKIP is still identified independently by
-		// provenListItemError (classAllRequiredFlatLeaf), so partial collections
-		// stay correct.
-		return nil, unsupported(fmt.Sprintf("class %q: required non-defaultable field missing (BAML errors; native falls back)", name))
+		// for non-array input, so it PROVABLY errors (error_missing_required_field).
+		// At a standalone / container position native DECLINES (falls back) rather
+		// than claim the error — provenError wraps the fallback sentinel, so that
+		// disposition is unchanged. Inside a UNION arm the categorizer recognizes
+		// the proven error and EXCLUDES this arm from scoring (it is a real BAML
+		// failure, not a native-can't-prove decline), so e.g. a Book | Car | null
+		// union whose Car arm misses both its required fields scores just Book vs
+		// null. The class-with-all-required-flat-leaf SCALAR list/map SKIP case is
+		// still identified independently by provenListItemError.
+		return nil, provenError(fmt.Sprintf("class %q: required non-defaultable field missing (BAML errors)", name))
+	}
+
+	// pick_best class discriminators, now that field resolution is complete.
+	propCount := 0
+	for i := range cls.Fields {
+		if filled[i] {
+			propCount++
+		}
+	}
+	if cf != nil {
+		cf.classPropCount = propCount
+		cf.classAllDefault = !hasRealField // every emitted field came from a default/missing path
+		cf.classSingleImplied = impliedString
 	}
 
 	var buf bytes.Buffer
@@ -1293,24 +1458,36 @@ func coerceList(b *schema.Bundle, elem *schema.Type, input value, cf *coerceFlag
 	if elem == nil {
 		return nil, fmt.Errorf("debaml: list type missing element")
 	}
+	cf.setKind(candList)
 	var buf bytes.Buffer
 	buf.WriteByte('[')
+	kept := 0     // emitted items (itemsEmpty = kept == 0)
+	errCount := 0 // ArrayItemParseError count (pick_best list-vs-list discriminator)
 
 	if input.kind != valArray {
 		// Non-array → BAML wraps it as one implied element (SingleToArray, score 1).
-		cf.flag()
+		cf.add(1)
+		if cf != nil {
+			cf.singleToArray = true
+		}
 		out, keep, err := coerceListChild(b, *elem, input, cf)
 		if err != nil {
 			return nil, err
 		}
 		if keep {
 			buf.Write(out)
+			kept++
 		} else {
-			// The implied element is a proven parse error → ArrayItemParseError(0):
-			// the list is the EMPTY list, which still SUCCEEDS.
-			cf.flag()
+			// The implied element is a proven parse error → ArrayItemParseError(0)
+			// (score 1+0=1): the list is the EMPTY list, which still SUCCEEDS.
+			cf.add(1)
+			errCount++
 		}
 		buf.WriteByte(']')
+		if cf != nil {
+			cf.itemsEmpty = kept == 0
+			cf.arrayItemErrors = errCount
+		}
 		return buf.Bytes(), nil
 	}
 
@@ -1322,7 +1499,8 @@ func coerceList(b *schema.Bundle, elem *schema.Type, input value, cf *coerceFlag
 		}
 		if !keep {
 			// Proven BAML parse error → ArrayItemParseError(i) (score 1+i): SKIP.
-			cf.flag()
+			cf.add(1 + i)
+			errCount++
 			continue
 		}
 		if !first {
@@ -1330,8 +1508,13 @@ func coerceList(b *schema.Bundle, elem *schema.Type, input value, cf *coerceFlag
 		}
 		first = false
 		buf.Write(out)
+		kept++
 	}
 	buf.WriteByte(']')
+	if cf != nil {
+		cf.itemsEmpty = kept == 0
+		cf.arrayItemErrors = errCount
+	}
 	return buf.Bytes(), nil
 }
 
@@ -1350,15 +1533,10 @@ func coerceListChild(b *schema.Bundle, elem schema.Type, item value, cf *coerceF
 	childF := &coerceFlags{}
 	out, err := coerce(b, elem, item, childF)
 	if err == nil {
-		// Kept: the child value's own flags count toward the list arm's score
-		// (types.rs List score = own flags + sum of child scores), so propagate
-		// them so an enclosing nullable optional sees a non-clean list arm.
-		if childF.isFlagged() {
-			cf.flag()
-		}
-		if childF.isUncertain() {
-			cf.markUncertain()
-		}
+		// Kept: the child value's TOTAL score counts toward the list score
+		// (types.rs List score = own conditions + sum of item scores), so fold
+		// it in (and propagate any child uncertainty).
+		cf.foldChild(childF)
 		return out, true, nil
 	}
 	if !declinableChildError(err) {
@@ -1476,6 +1654,38 @@ func provenListItemError(b *schema.Bundle, elem schema.Type, item value) bool {
 		// union needing scoring are all DEFERRED, never proven parse errors.
 		return false
 	}
+}
+
+// provenClassFieldError reports whether a present class field of type fieldT
+// whose coercion FAILED with err PROVABLY makes BAML error the whole class. Two
+// conditions must both hold:
+//
+//   - the field is REQUIRED and NON-DEFAULTABLE (not optional and has no
+//     TypeIR::default_value). BAML records such a present-but-unparseable field as
+//     an unparsed_required field and errors the class (no array candidate for
+//     non-array input). A DEFAULTABLE field is DEFAULTED on failure, not errored —
+//     an optional field → null, a list/map/null/defaultable-union → its default —
+//     so excluding an arm whose field BAML would default would OVER-claim the
+//     other arm; those return false (native stays indeterminate → whole-union
+//     decline). (A required map field with a non-object value is the {} default,
+//     handled by resolveMatched before this call.)
+//   - BAML provably errors the field coercion: either err is already a proven
+//     BAML error (isProvenBamlError — a literal/enum no-match, an int/bool LITERAL
+//     value mismatch, a missing sub-field), OR the value is a proven-error SHAPE
+//     the leaf coercer reports as a plain decline (provenListItemError — a bad
+//     numeric string, a wrong-kind scalar, a null into a string).
+//
+// The isProvenBamlError(err) arm is why an int/bool LITERAL field mismatch (which
+// coerceLiteral flags as provenErr but provenListItemError does not recognize)
+// now correctly excludes just that arm.
+func provenClassFieldError(b *schema.Bundle, fieldT schema.Type, v value, err error) bool {
+	if isOptional(fieldT) {
+		return false
+	}
+	if _, ok := defaultValue(fieldT); ok {
+		return false // a defaultable field is DEFAULTED on failure, not errored.
+	}
+	return isProvenBamlError(err) || provenListItemError(b, fieldT, v)
 }
 
 // classAllRequiredFlatLeaf reports whether cls is a multi-field class every field
@@ -1623,11 +1833,11 @@ func bamlCommaNumberParses(s string) bool {
 //     for duplicates is unproven, and a skipped duplicate must not be reasoned
 //     safe, so ANY duplicate declines the whole map before emitting.
 //
-// Every object→map carries ObjectToMap (cost 1), and BAML scores a map by its
-// OWN flags only — the value scores do NOT propagate (score.rs:21) — so a map is
-// NEVER a zero-score "clean" arm: cf is flagged, so a nullable optional map arm
-// declines against the scored null arm (the clean-only rule), and Mcoerce-c does
-// not score collection arms against null.
+// Every object→map carries ObjectToMap (cost 1), so a map is NEVER a zero-score
+// arm; its INHERENT score (types.rs, the model union/pick_best use) is own
+// conditions plus each accepted entry's key conditions (empty, 0) plus value
+// score. M3 scores a non-null map arm against the null arm (DefaultButHadValue
+// 110) rather than the pre-M3 clean-only decline.
 func coerceMap(b *schema.Bundle, keyT, valT *schema.Type, input value, cf *coerceFlags) (json.RawMessage, error) {
 	if keyT == nil || valT == nil {
 		return nil, fmt.Errorf("debaml: map type missing key or value")
@@ -1651,8 +1861,9 @@ func coerceMap(b *schema.Bundle, keyT, valT *schema.Type, input value, cf *coerc
 		seen[k] = struct{}{}
 	}
 
-	// Every object→map carries ObjectToMap (cost 1); flag before iterating.
-	cf.flag()
+	// Every object→map carries ObjectToMap (cost 1); score it before iterating.
+	cf.setKind(candMap)
+	cf.add(1)
 
 	var buf bytes.Buffer
 	buf.WriteByte('{')
@@ -1666,7 +1877,7 @@ func coerceMap(b *schema.Bundle, keyT, valT *schema.Type, input value, cf *coerc
 			return nil, err // hard/invariant error, or decline-the-whole-map.
 		}
 		if !keepVal {
-			cf.flag() // MapValueParseError (cost 1) → skip entry.
+			cf.add(1) // MapValueParseError (cost 1) → skip entry.
 			continue
 		}
 		// KEY second: the original key string coerced against the key type. A key
@@ -1703,17 +1914,16 @@ func coerceMap(b *schema.Bundle, keyT, valT *schema.Type, input value, cf *coerc
 //     Mcoerce-d success or its verdict was case-fold-uncertain, so native falls
 //     back rather than skip an entry BAML might keep.
 //
-// A map scores by its OWN flags only (score.rs) — a kept value's own flags do
-// NOT propagate to the map score — so, unlike coerceListChild, a flagged value
-// does NOT flag cf here (the map is already non-clean via ObjectToMap). The
-// child's case-fold uncertainty is still propagated defensively.
+// A map's INHERENT score (types.rs) is own conditions plus, per accepted entry,
+// the key conditions (inserted EMPTY, score 0) plus the VALUE score — so a kept
+// value's total score DOES fold into the map here (M3 drops the pre-M3
+// "map own flags only" score.rs shortcut). The child's case-fold uncertainty is
+// still propagated.
 func coerceMapValueChild(b *schema.Bundle, valT schema.Type, val value, cf *coerceFlags) (json.RawMessage, bool, error) {
 	childF := &coerceFlags{}
 	out, err := coerce(b, valT, val, childF)
 	if err == nil {
-		if childF.isUncertain() {
-			cf.markUncertain()
-		}
+		cf.foldChild(childF) // map score += accepted value score (key conds are empty=0)
 		return out, true, nil
 	}
 	if !declinableChildError(err) {
@@ -1895,38 +2105,292 @@ func flattenStringLiterals(t schema.Type) []string {
 	return out
 }
 
+// candidate is one coerced union / array-to-singular arm ready for pickBest: its
+// emitted output plus the inherent score and the special-ordering discriminators.
+// originIndex is the arm's position in BAML's iter_include_null() order, so the
+// index tiebreak reproduces BAML's res indices even though EXCLUDED error arms
+// leave gaps in the candidate slice.
+type candidate struct {
+	output      json.RawMessage
+	originIndex int
+	kind        candKind
+	score       int
+
+	singleToArray     bool
+	itemsEmpty        bool
+	arrayItemErrors   int
+	firstItemMarkdown bool
+
+	hasJsonToString bool
+	hasFirstMatch   bool
+	hasUnionMatch   bool
+
+	classPropCount     int
+	classAllDefault    bool
+	classSingleImplied bool
+}
+
+// isDefaultList mirrors pick_best's "default" bit: an EMPTY list produced by
+// SingleToArray, which the generic order devalues behind a non-default value.
+func (c candidate) isDefaultList() bool {
+	return c.kind == candList && c.itemsEmpty && c.singleToArray
+}
+
+// nullCandidate is BAML's null arm for NON-null input: the value coerces to null
+// with DefaultButHadValue (score 110). iter_include_null() appends it LAST, so
+// originIndex is the count of preceding non-null variants.
+func nullCandidate(originIndex int) candidate {
+	return candidate{output: json.RawMessage("null"), originIndex: originIndex, kind: candNull, score: 110}
+}
+
+// pickBest ports array_helper::pick_best's SELECTION (array_helper.rs) over the
+// Ok candidates and returns the winning candidate's index. It does NOT re-add a
+// UnionMatch/FirstMatch flag — native emits the winner's raw output directly
+// (those flags carry score 0), and coerceUnionSafe folds the winner's score into
+// the caller. targetIsUnion enables the class-vs-union ImpliedKey devalue rule.
+//
+// It computes the winner by pairwise MINIMUM SCAN rather than sort.SliceStable,
+// then VERIFIES the winner ranks <= every other candidate. cmpCandidates mirrors
+// BAML's pairwise sort_by closure, whose conditional special cases (list /
+// class / scalar-vs-composite) make it INTRANSITIVE on some mixed shapes — e.g.
+// an ordinary class (score 111), an all-default class (score 100), and a null
+// (score 110) form a cmp cycle. On such a set no candidate is a consistent
+// global minimum: Go's sort would be undefined, and BAML's own sort_by result is
+// an implementation artifact native cannot reliably reproduce, so native DECLINES
+// (fall back to BAML). For every shape M3a actually claims (literal/scalar/null
+// and flat-class-union/null, where classAllDefault / classSingleImplied are
+// unreachable and no list arms appear) the comparator reduces to (score, index),
+// a total order — the verification always passes and the winner is exact.
+func pickBest(targetIsUnion bool, cands []candidate) (int, error) {
+	if len(cands) == 0 {
+		return -1, unsupported("pick_best: empty candidate set")
+	}
+	if len(cands) == 1 {
+		return 0, nil
+	}
+	// Pairwise minimum scan (well-defined even for an intransitive comparator).
+	best := 0
+	for i := 1; i < len(cands); i++ {
+		if cmpCandidates(targetIsUnion, cands[i], cands[best]) < 0 {
+			best = i
+		}
+	}
+	// Verify best is a CONSISTENT global minimum (ranks <= every other candidate).
+	// If not, the comparator cycles on this set and there is no well-defined
+	// winner native can prove equals BAML's — DECLINE (fall back).
+	for i := range cands {
+		if i == best {
+			continue
+		}
+		if cmpCandidates(targetIsUnion, cands[best], cands[i]) > 0 {
+			return -1, unsupported("pick_best: candidate comparator is not a total order on this set (BAML sort_by is intransitive here) — declining")
+		}
+	}
+	return best, nil
+}
+
+// cmpCandidates returns <0 if a should rank before b, >0 after, 0 equal —
+// a faithful translation of pick_best's sort_by closure (array_helper.rs). Its
+// conditional special cases (list / class / scalar-vs-composite) are pairwise and
+// can be INTRANSITIVE on mixed sets (as BAML's own closure is), so pickBest never
+// feeds it to a sort; it uses a minimum scan plus a total-order verification and
+// declines when the relation cycles. The generic (default, score, index) tail is
+// a total order (the index tiebreak breaks all ties).
+func cmpCandidates(targetIsUnion bool, a, b candidate) int {
+	// Two list candidates (array_helper.rs:74).
+	if a.kind == candList && b.kind == candList {
+		switch {
+		case a.singleToArray && !b.singleToArray:
+			return 1 // prefer the non-SingleToArray list (b)
+		case !a.singleToArray && b.singleToArray:
+			return -1 // prefer a
+		default:
+			// Same SingleToArray-ness: prefer content NOT from markdown.
+			switch {
+			case a.firstItemMarkdown && !b.firstItemMarkdown:
+				return 1
+			case !a.firstItemMarkdown && b.firstItemMarkdown:
+				return -1
+			}
+			// A list empty ONLY because of ArrayItemParseError loses to a
+			// no-parse-error list.
+			ua, ub := a.arrayItemErrors, b.arrayItemErrors
+			switch {
+			case ua == 0 && ub > 0 && b.itemsEmpty:
+				return -1 // prefer a (no errors) over the empty-error b
+			case ua > 0 && ub == 0 && a.itemsEmpty:
+				return 1 // prefer b
+			}
+		}
+	}
+
+	// Two class candidates (array_helper.rs:150).
+	if a.kind == candClass && b.kind == candClass {
+		if targetIsUnion {
+			// Devalue a class whose only property is a string with ImpliedKey.
+			switch {
+			case a.classSingleImplied && !b.classSingleImplied:
+				return 1
+			case !a.classSingleImplied && b.classSingleImplied:
+				return -1
+			}
+		}
+		// Devalue an all-default class behind a non-default one.
+		switch {
+		case a.classAllDefault && !b.classAllDefault:
+			return 1
+		case !a.classAllDefault && b.classAllDefault:
+			return -1
+		}
+	}
+
+	// Devalue a non-composite scalar cast from JSON (JsonToString) or picked by
+	// array-to-singular (FirstMatch) against a composite (array_helper.rs:214).
+	if !a.kind.isComposite() && b.kind.isComposite() && (a.hasJsonToString || a.hasFirstMatch) {
+		return 1
+	}
+	if a.kind.isComposite() && !b.kind.isComposite() && (b.hasJsonToString || b.hasFirstMatch) {
+		return -1
+	}
+
+	// Generic order: (default, score, index) — non-default before default, then
+	// lower score, then lower original index (array_helper.rs:237).
+	if a.isDefaultList() != b.isDefaultList() {
+		if !a.isDefaultList() {
+			return -1
+		}
+		return 1
+	}
+	if a.score != b.score {
+		if a.score < b.score {
+			return -1
+		}
+		return 1
+	}
+	if a.originIndex != b.originIndex {
+		if a.originIndex < b.originIndex {
+			return -1
+		}
+		return 1
+	}
+	return 0
+}
+
+// unionArm coerces variant i of a union into a FRESH accumulator, returning its
+// emitted output, that accumulator (for the score + discriminators), and an error.
+type unionArm func(i int) (json.RawMessage, *coerceFlags, error)
+
+// selectUnionArms is the shared scored-selection core for the safe union
+// families (coerce_union.rs standard path). It coerces narms arms in
+// iter_include_null() order, categorizes each, applies BAML's early
+// first-score-0 winner rule, and otherwise runs pickBest over the successful
+// candidates (plus the null arm when nullable). Categorization:
+//
+//   - SUCCESS: a candidate; a score-0 success is the immediate winner (BAML
+//     returns it without trying later arms).
+//   - PROVEN BAML error (isProvenBamlError): excluded from ranking (i32::MAX) —
+//     a real BAML arm failure, safe to skip.
+//   - native-can't-prove / uncertain: DECLINE THE WHOLE UNION. Native cannot
+//     prove BAML also fails this arm; BAML might succeed it through a deferred
+//     path and change the selection, so excluding it would risk an over-claim.
+//   - hard/invariant error: propagate.
+//
+// A non-nullable union with no successful arm declines (BAML merges the errors
+// and errors; native falls back — a safe under-claim).
+func selectUnionArms(narms int, nullable bool, arm unionArm) (candidate, error) {
+	var cands []candidate
+	for i := 0; i < narms; i++ {
+		out, armF, err := arm(i)
+		if armF.isUncertain() {
+			return candidate{}, unsupported("union arm: non-ASCII case-fold / number-display uncertainty (cannot prove verdict equals BAML)")
+		}
+		if err == nil {
+			c := armF.toCandidate(out, i)
+			if c.score == 0 {
+				// BAML's early first-winner (coerce_union.rs standard path): the
+				// FIRST arm that coerces with score()==0 is returned immediately,
+				// BEFORE later arms (or the null arm) are coerced and BEFORE
+				// array_helper::pick_best runs. This branch INTENTIONALLY bypasses
+				// cmpCandidates/pickBest — a score-0 arm is BAML's winner regardless
+				// of any special ordering. It is parity-correct today because every
+				// pick_best discriminator that is REACHABLE in M3a's safe families is
+				// score-bearing when present (SingleToArray, JsonToString, ImpliedKey,
+				// default fills, ArrayItemParseError, ExtraKey), so a score-0 arm
+				// carries none of them, and the unreachable ones (FirstMatch,
+				// ObjectFromMarkdown, list-vs-list, all-default flat-class) never
+				// arise. If future work adds a score-0-capable discriminator or
+				// changes any flag weight, RE-AUDIT this branch against BAML's
+				// coerce_union before routing score-0 arms through pickBest.
+				return c, nil
+			}
+			cands = append(cands, c)
+			continue
+		}
+		if isProvenBamlError(err) {
+			continue // BAML provably errors this arm: excluded from ranking.
+		}
+		if declinableChildError(err) {
+			return candidate{}, unsupported("union arm: unsupported/indeterminate (BAML may succeed via a deferred path)")
+		}
+		return candidate{}, err // hard/invariant failure: propagate, never mask.
+	}
+	if nullable {
+		cands = append(cands, nullCandidate(narms))
+	}
+	if len(cands) == 0 {
+		return candidate{}, unsupported("union: no arm succeeded (BAML errors)")
+	}
+	idx, err := pickBest(true, cands)
+	if err != nil {
+		return candidate{}, err
+	}
+	return cands[idx], nil
+}
+
+// setWinnerCf folds the union WINNER into the enclosing accumulator. The union
+// result IS the winner value plus UnionMatch (score 0), so the caller sees the
+// winner's score and top-level discriminators (needed only when this union is
+// itself a field/element of an outer scored context). Nil-safe.
+func setWinnerCf(cf *coerceFlags, w candidate) {
+	if cf == nil {
+		return
+	}
+	cf.score += w.score // UnionMatch adds 0
+	cf.kind = w.kind
+	cf.singleToArray = w.singleToArray
+	cf.itemsEmpty = w.itemsEmpty
+	cf.arrayItemErrors = w.arrayItemErrors
+	cf.firstItemMarkdown = w.firstItemMarkdown
+	cf.hasJsonToString = w.hasJsonToString
+	cf.hasFirstMatch = w.hasFirstMatch
+	cf.hasUnionMatch = true
+	cf.classPropCount = w.classPropCount
+	cf.classAllDefault = w.classAllDefault
+	cf.classSingleImplied = w.classSingleImplied
+}
+
 // coerceUnionSafe coerces a value against a union, claiming native JSON ONLY
-// where it can PROVE BAML also resolves to exactly one clean zero-score
-// winner — otherwise it DECLINES (ErrDeBAMLParseUnsupported → fall back). Two
-// traps shape the claim:
-//
-//   - LENIENCY (M2c): native's per-variant verdicts must mirror BAML's lenient
-//     ones, and exactly one variant must succeed; two-plus is BAML pick_best
-//     SCORING (M3) and declines.
-//   - THE NULL ARM SCORES (F1): for a NULLABLE union with NON-null input, BAML
-//     includes the null arm in scoring — any non-null value coerces to null
-//     with DefaultButHadValue cost 110 (coerce_union.rs:129,
-//     coerce_primitive.rs:116). So the chosen non-null arm wins only if its
-//     score < 110; if it carries ≥110 worth of flags BAML returns NULL. Native
-//     does not score, so in a nullable context it claims the non-null arm ONLY
-//     when that arm is CLEAN (zero score-bearing flags) — which trivially beats
-//     null's 110. A flagged arm (extra keys, substring match, object→map, or an
-//     Mcoerce-b FloatToInt / StringToFloat / StringToBool / DefaultButHadValue
-//     conversion) DECLINES (it might be an M3 scored win for null or another
-//     arm) — so optional int|null with "123" claims (clean direct parse) while
-//     the same with 1.6 declines (FloatToInt).
-//
-// The claim is limited to:
+// where it can PROVE BAML's scored selection. M3 replaces the pre-M3 clean-only
+// rule with a faithful port of the BAML SCORE MODEL: each arm is coerced and
+// scored (types.rs inherent BamlValueWithFlags::score()), the first score-0 arm
+// wins immediately, and otherwise array_helper::pick_best chooses the lowest
+// (special-ordering, score, index). The claim stays inside the EXISTING safe
+// families (checkSupportedUnionShape is unchanged — no gate broadening):
 //
 //  1. JSON-null input + nullable union → null immediately (BAML's null fast path).
-//  2. nullable single-non-null union (the optional shape) → non-null input
-//     coerces through the lone variant ONLY when that coercion is clean.
+//  2. nullable single-non-null union (the optional shape) → the lone arm is
+//     scored against the NULL arm (DefaultButHadValue, score 110): the arm wins
+//     when its score < 110 (e.g. optional int with 1.6 → 2, FloatToInt score 1),
+//     null wins when the arm scores > 110 (e.g. an extra-key-heavy class), and a
+//     score-110 tie goes to the arm (lower index).
 //  3. non-null input + a multi-variant SAFE FAMILY (homogeneous literal union or
-//     flat disjoint-key class union) where exactly one variant succeeds — and,
-//     when the union is nullable, that winner is clean.
+//     flat disjoint-key class union), scored via selectUnionArms — including two
+//     lenient successes (BAML pick_best) and, when nullable, the null arm.
 //
-// cf carries the winner's cleanliness up to an OUTER nullable context (a flagged
-// arm makes an enclosing optional non-clean too).
+// Over-claim guards: any arm native cannot prove (an ErrDeBAMLParseUnsupported
+// that is not a proven BAML error) or any uncertain arm DECLINES THE WHOLE UNION;
+// there is no array-to-singular here. cf carries the winner's score/kind up to an
+// outer scored context (a union that is itself a class field / list element).
 func coerceUnionSafe(b *schema.Bundle, u *schema.UnionType, input value, cf *coerceFlags) (json.RawMessage, error) {
 	if u == nil {
 		return nil, fmt.Errorf("debaml: union type missing payload")
@@ -1940,29 +2404,18 @@ func coerceUnionSafe(b *schema.Bundle, u *schema.UnionType, input value, cf *coe
 	}
 	// Case 2: optional — a single non-null variant (always the nullable shape,
 	// since a non-nullable single variant collapses to the bare type in
-	// simplifyUnion). Coerce the lone arm into a LOCAL accumulator: an arm
-	// FAILURE means BAML null-defaults (cost 110) — native can't reproduce that
-	// — and a FLAGGED arm might also lose to null by score, so claim ONLY a
-	// clean success.
+	// simplifyUnion). Score the lone arm against the null arm.
 	if len(u.Variants) == 1 {
-		arm := &coerceFlags{}
-		out, err := coerce(b, u.Variants[0], input, arm)
+		w, err := selectUnionArms(1, true, func(i int) (json.RawMessage, *coerceFlags, error) {
+			armF := &coerceFlags{}
+			out, e := coerce(b, u.Variants[0], input, armF)
+			return out, armF, e
+		})
 		if err != nil {
-			if !declinableChildError(err) {
-				return nil, err // hard/invariant failure: propagate, never mask.
-			}
-			return nil, unsupported(fmt.Sprintf("optional single-arm union: non-null arm did not cleanly succeed (BAML may null-default): %v", err))
+			return nil, err
 		}
-		if arm.isUncertain() {
-			// The arm matched, but its verdict hinged on a non-ASCII case fold
-			// native cannot prove equals BAML — decline rather than risk a
-			// claim BAML would resolve differently (to the arm, or to null).
-			return nil, unsupported("optional single-arm union: non-ASCII case-fold uncertainty in the non-null arm")
-		}
-		if arm.isFlagged() {
-			return nil, unsupported("optional single-arm union: non-null arm is not a clean zero-score match (null arm competes by scoring → M3)")
-		}
-		return out, nil
+		setWinnerCf(cf, w)
+		return w.output, nil
 	}
 	// Case 3: non-null input against a multi-variant union. Re-prove the
 	// non-null arm set is a safe family (this also rejects non-null input to a
@@ -1974,137 +2427,70 @@ func coerceUnionSafe(b *schema.Bundle, u *schema.UnionType, input value, cf *coe
 }
 
 // coerceUnionSafeMulti dispatches a proven-safe multi-variant union to its
-// family's value-level guard. requireClean is the union's Nullable flag: when
-// true the lone winner must be a clean zero-score success (the null arm
-// competes by scoring). checkSupportedUnionShape has already proven the variant
-// set is one of the two homogeneous families, so the else branch is the flat
-// class union.
-func coerceUnionSafeMulti(b *schema.Bundle, variants []schema.Type, input value, requireClean bool, cf *coerceFlags) (json.RawMessage, error) {
+// family's scored coercer. nullable is the union's Nullable flag, threaded so
+// selectUnionArms adds the null arm as a scored candidate.
+// checkSupportedUnionShape has already proven the variant set is one of the two
+// homogeneous families, so the else branch is the flat class union.
+func coerceUnionSafeMulti(b *schema.Bundle, variants []schema.Type, input value, nullable bool, cf *coerceFlags) (json.RawMessage, error) {
 	if allLiteralVariants(variants) {
-		return coerceLiteralUnion(variants, input, requireClean, cf)
+		return coerceLiteralUnion(variants, input, nullable, cf)
 	}
-	return coerceFlatClassUnion(b, variants, input, requireClean, cf)
+	return coerceFlatClassUnion(b, variants, input, nullable, cf)
 }
 
-// resolveArmFlags applies the lone winner's local flags. When requireClean (a
-// nullable union, where BAML's 110-cost null arm competes), a flagged winner
-// DECLINES. Otherwise a flagged winner is still claimed but its flags propagate
-// to the caller's accumulator, so an enclosing nullable context sees it.
-func resolveArmFlags(requireClean bool, arm, cf *coerceFlags) error {
-	if !arm.isFlagged() {
-		return nil
-	}
-	if requireClean {
-		return unsupported("nullable union: lone non-null arm is not a clean zero-score match (null arm competes by scoring → M3)")
-	}
-	cf.flag()
-	return nil
-}
-
-// coerceLiteralUnion claims a homogeneous literal union when EXACTLY one
-// variant leniently coerces (the no-over-claim rule). It counts per-variant
-// successes through coerceLiteral itself — so string literals are evaluated
-// with the actual match_string (a fuzzy/substring hit counts), and int/bool
-// literals now count their Mcoerce-b lenient coercion too (a numeric string or
-// rounded float that equals the literal, a casefold/substring bool). This is
-// the M2c union revisit: once int/bool leaves are lenient, a union that had one
-// STRICT success can gain a second LENIENT one, so counting through the lenient
-// coerceLiteral is load-bearing. Two-plus lenient successes mean BAML would run scored pick_best
-// — e.g. input "foobar" substring-matching both "foo" and "bar" arms even
-// though the literal VALUES were proven match-disjoint at the gate — so
-// native DECLINES (M3). Zero successes decline too. When requireClean (nullable
-// union), a winner that only substring-matched (SubstringMatch flag) declines —
-// the null arm could score lower. The single winner is re-coerced through
-// coerceLiteral so the emitted form matches the single-literal path exactly.
-func coerceLiteralUnion(variants []schema.Type, input value, requireClean bool, cf *coerceFlags) (json.RawMessage, error) {
-	matched := -1
-	count := 0
-	unc := &coerceFlags{}
-	for i := range variants {
-		_, err := coerceLiteral(variants[i].Literal, input, unc)
-		switch {
-		case err == nil:
-			matched = i
-			count++
-		case !declinableChildError(err):
-			return nil, err // hard/invariant failure in an arm: propagate.
-		}
-		// A declinable error just means this arm did not match; keep counting.
-	}
-	if unc.isUncertain() {
-		// Some arm's match verdict hinged on a non-ASCII case fold native
-		// cannot prove equals BAML; a false-rejected arm would let native claim
-		// the wrong lone winner, so DECLINE the whole union.
-		return nil, unsupported("literal union: non-ASCII case-fold uncertainty in an arm (cannot prove verdict equals BAML)")
-	}
-	if count != 1 {
-		return nil, unsupported(fmt.Sprintf("literal union: %d lenient matches for %s input (need exactly 1; 2+ is BAML pick_best = M3)", count, input.kind.String()))
-	}
-	arm := &coerceFlags{}
-	out, err := coerceLiteral(variants[matched].Literal, input, arm)
+// coerceLiteralUnion scores a homogeneous literal union (coerce_union.rs over
+// literal arms). Each arm is coerced through coerceLiteral (the actual
+// match_string, ObjectToPrimitive extraction, and int/bool lenient coercion), so
+// a fuzzy/substring hit or a stringified value scores as BAML would. The first
+// score-0 arm wins immediately; otherwise pickBest chooses the lowest score
+// (index tiebreak) — so two arms that both substring-match, e.g. "foo"|"bar"
+// against a value containing both, resolve to the lower-index arm instead of
+// declining. A non-matching arm is a PROVEN BAML error (excluded); an int/bool
+// arm native's stricter primitive coercer merely DECLINED (hex/overflow) is
+// native-can't-prove and declines the whole union. When nullable, the null arm
+// (score 110) competes. The winner's own coercion output is emitted directly.
+func coerceLiteralUnion(variants []schema.Type, input value, nullable bool, cf *coerceFlags) (json.RawMessage, error) {
+	w, err := selectUnionArms(len(variants), nullable, func(i int) (json.RawMessage, *coerceFlags, error) {
+		armF := &coerceFlags{}
+		out, e := coerceLiteral(variants[i].Literal, input, armF)
+		return out, armF, e
+	})
 	if err != nil {
 		return nil, err
 	}
-	if err := resolveArmFlags(requireClean, arm, cf); err != nil {
-		return nil, err
-	}
-	return out, nil
+	setWinnerCf(cf, w)
+	return w.output, nil
 }
 
-// coerceFlatClassUnion claims a flat disjoint-key class union when EXACTLY
-// one variant class leniently coerces (Mcoerce-a's no-over-claim rule). It
-// counts per-variant successes through coerceClass itself — which now matches
-// field keys fuzzily and ignores extra keys — so a class succeeds when all
-// its required fields are matched and coerce, regardless of extras. The
-// variant classes were proven flat / >=2-required-field / disjoint-key by
-// checkSupportedUnionShape, so an input carrying one class's full field set
-// cannot satisfy another (every other arm is missing >=2 disjoint required
-// fields it cannot fill) — unless the input ALSO carries a second arm's full
-// field set, which makes BOTH succeed and forces BAML's scored pick_best, so
-// native DECLINES (M3). Zero successes decline too. When requireClean (nullable
-// union), a winner carrying ExtraKey flags (extra input keys) or any flagged
-// child DECLINES — BAML's null arm (110) could outscore it. A child coercion
-// error (sentinel OR claimed) just means that variant did not succeed and is
-// swallowed by the count; only the lone winner is emitted.
-func coerceFlatClassUnion(b *schema.Bundle, variants []schema.Type, input value, requireClean bool, cf *coerceFlags) (json.RawMessage, error) {
+// coerceFlatClassUnion scores a flat disjoint-key class union (coerce_union.rs
+// over class arms). Each arm is coerced through coerceClass; the disjoint-key
+// gate guarantees at most one arm matches an input's full field set unless the
+// input carries a second arm's fields too, in which case BOTH succeed and
+// pickBest chooses the lower-score class (then lower index). A non-matching arm
+// missing its required fields is a PROVEN BAML error (excluded); an arm native's
+// stricter coercer left INDETERMINATE is native-can't-prove and declines the
+// whole union (BAML might succeed it and pick it). When nullable, the null arm
+// (score 110) competes — so an extra-key-heavy class scoring above 110 loses to
+// null, while a class scoring below 110 wins. The winner's own coercion output
+// is emitted directly, in that class's schema field order.
+func coerceFlatClassUnion(b *schema.Bundle, variants []schema.Type, input value, nullable bool, cf *coerceFlags) (json.RawMessage, error) {
 	if input.kind != valObject {
-		// BAML can infer a single-field class from a scalar / imply a key;
-		// these classes are multi-field so a non-object is never a clean arm,
-		// but it is not a hard type error either, so decline.
+		// Non-object to a >=2-required-field class union: every arm misses its
+		// required fields (a proven error), leaving only the null arm — but native
+		// cannot prove BAML has no other object/inference path for a scalar, so it
+		// stays conservative and DECLINES (unchanged pre-M3 behavior).
 		return nil, declineCoerce("class union", input)
 	}
-	matched := -1
-	count := 0
-	unc := &coerceFlags{}
-	for i := range variants {
-		_, err := coerceClass(b, variants[i].Name, variants[i].Mode, input, unc)
-		switch {
-		case err == nil:
-			matched = i
-			count++
-		case !declinableChildError(err):
-			return nil, err // hard/invariant failure in an arm: propagate.
-		}
-		// A declinable error just means this arm did not match; keep counting.
-	}
-	if unc.isUncertain() {
-		// Some arm's field-key or leaf match hinged on a non-ASCII case fold
-		// native cannot prove equals BAML; a false-rejected arm would let native
-		// claim the wrong lone winner, so DECLINE the whole union.
-		return nil, unsupported("class union: non-ASCII case-fold uncertainty in an arm (cannot prove verdict equals BAML)")
-	}
-	if count != 1 {
-		return nil, unsupported(fmt.Sprintf("class union: %d variant classes coerce cleanly (need exactly 1; 2+ is BAML pick_best = M3)", count))
-	}
-	arm := &coerceFlags{}
-	out, err := coerceClass(b, variants[matched].Name, variants[matched].Mode, input, arm)
+	w, err := selectUnionArms(len(variants), nullable, func(i int) (json.RawMessage, *coerceFlags, error) {
+		armF := &coerceFlags{}
+		out, e := coerceClass(b, variants[i].Name, variants[i].Mode, input, armF)
+		return out, armF, e
+	})
 	if err != nil {
 		return nil, err
 	}
-	if err := resolveArmFlags(requireClean, arm, cf); err != nil {
-		return nil, err
-	}
-	return out, nil
+	setWinnerCf(cf, w)
+	return w.output, nil
 }
 
 // isOptional reports whether t is an optional (a nullable union), the only
@@ -2166,6 +2552,42 @@ func declinableChildError(err error) bool {
 func isClaimedMismatch(err error) bool {
 	var me *mismatchError
 	return errors.As(err, &me)
+}
+
+// provenErr marks a PROVABLE BAML coercion error native does NOT claim at a
+// standalone position — a literal/enum no-match, an int/bool literal value
+// mismatch, or a missing required class field — where BAML errors but native
+// falls back (an optional at a higher level might null-default, which native
+// cannot score). It wraps the ErrDeBAMLParseUnsupported sentinel via Unwrap, so
+// declinableChildError and the top-level / container disposition are UNCHANGED
+// from the pre-M3 plain unsupported() form. What it adds is a signal for the
+// SCORED UNION selection (isProvenBamlError): inside a union arm this is a real
+// BAML failure that is EXCLUDED from ranking, as opposed to a native-can't-prove
+// decline (plain unsupported) that must decline the whole union.
+type provenErr struct{ msg string }
+
+func (e *provenErr) Error() string { return e.msg }
+
+func (e *provenErr) Unwrap() error { return bamlutils.ErrDeBAMLParseUnsupported }
+
+// provenError constructs a provenErr with the fallback sentinel wrapped in, so
+// errors.Is(err, ErrDeBAMLParseUnsupported) holds (unchanged fallback behavior).
+func provenError(reason string) error {
+	return &provenErr{msg: fmt.Sprintf("%s: %s", bamlutils.ErrDeBAMLParseUnsupported.Error(), reason)}
+}
+
+// isProvenBamlError reports whether err is a PROVABLE BAML coercion error for a
+// union arm — a claimed mismatchError (substring tie / type mismatch) or a
+// provenErr (no-match / value-mismatch / missing-required-field). Such an arm is
+// EXCLUDED from the scored selection (a real BAML failure). A plain unsupported()
+// decline (native stricter, can't prove BAML's outcome) is NOT proven and
+// declines the whole union instead.
+func isProvenBamlError(err error) bool {
+	if isClaimedMismatch(err) {
+		return true
+	}
+	var pe *provenErr
+	return errors.As(err, &pe)
 }
 
 // typeMismatch reports a conservative JSON-type mismatch as a CLAIMED

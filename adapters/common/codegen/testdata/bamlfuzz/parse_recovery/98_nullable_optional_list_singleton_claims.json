@@ -1,0 +1,22 @@
+{
+  "name": "nullable_optional_list_singleton_claims",
+  "description": "M3a CLAIMED (scored nullable): optional list<int> (list<int> | null) with a non-array singleton '123' -> [123] via SingleToArray (score 1). Native scores the list arm against the null arm (110) and CLAIMS it because 1 < 110. want captured from live BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "optional", "inner": {"kind": "list", "inner": {"kind": "int"}}}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"123\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": [123]}
+  }
+}

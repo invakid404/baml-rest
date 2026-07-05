@@ -655,6 +655,54 @@ func TestParse_ClassUnionFlatDisjointClaimed(t *testing.T) {
 	mustParse(t, s, `{"u":{"title":"Go","pages":"300"}}`, `{"u":{"title":"Go","pages":300}}`)
 }
 
+// TestParse_ClassUnionProvableLosingArmClaimed pins F-Codex / F-Codex2: when a
+// LOSING arm has a PROVABLE required-field parse error, BAML errors just that arm
+// and picks the other — native must EXCLUDE the losing arm (not decline the whole
+// union). This covers a primitive int bad-string field, a required string ← null,
+// and (F-Codex2) an int/bool LITERAL field value mismatch (which the leaf reports
+// as a proven error but the type-shape whitelist alone does not recognize).
+func TestParse_ClassUnionProvableLosingArmClaimed(t *testing.T) {
+	s := classUnionSchema() // Book{title,pages} | Car{brand,wheels}
+	// Book matches title,pages (brand,wheels extras -> score 2); Car matches
+	// wheels="bad", which PROVABLY fails int coercion -> BAML errors Car -> Book.
+	mustParse(t, s, `{"u":{"title":"Go","pages":300,"brand":"Audi","wheels":"bad"}}`, `{"u":{"title":"Go","pages":300}}`)
+	// Symmetric: title=null provably errors Book (required string ← null), so Car
+	// (a valid strict match) wins.
+	mustParse(t, s, `{"u":{"title":null,"pages":300,"brand":"Audi","wheels":4}}`, `{"u":{"brand":"Audi","wheels":4}}`)
+
+	// F-Codex2: a required int/bool LITERAL field whose value mismatches is a proven
+	// BAML error, so BAML errors that arm and picks the other.
+	// A{a int, b string} | B{c literal_int 5, d string}: c=7 (≠5) errors B -> A.
+	litInt := litFieldClassUnionSchema(&bamlutils.DynamicTypeSpec{Type: "literal_int", Value: int64(5)})
+	mustParse(t, litInt, `{"u":{"a":1,"b":"x","c":7,"d":"y"}}`, `{"u":{"a":1,"b":"x"}}`)
+	// A{a int, b string} | B{c literal_bool true, d string}: c=false (≠true) errors B -> A.
+	litBool := litFieldClassUnionSchema(&bamlutils.DynamicTypeSpec{Type: "literal_bool", Value: true})
+	mustParse(t, litBool, `{"u":{"a":1,"b":"x","c":false,"d":"y"}}`, `{"u":{"a":1,"b":"x"}}`)
+}
+
+// litFieldClassUnionSchema builds A{a int, b string} | B{c <lit>, d string} — a
+// flat disjoint-key class union whose B arm has a literal field, for the
+// literal-field proven-error losing-arm tests.
+func litFieldClassUnionSchema(lit *bamlutils.DynamicTypeSpec) *bamlutils.DynamicOutputSchema {
+	return &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("u", &bamlutils.DynamicProperty{
+			Type:  "union",
+			OneOf: []*bamlutils.DynamicTypeSpec{{Ref: "A"}, {Ref: "B"}},
+		})),
+		Classes: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("A", &bamlutils.DynamicClass{
+				Properties: props(kv("a", intProp()), kv("b", strProp())),
+			}),
+			bamlutils.OrderedKV("B", &bamlutils.DynamicClass{
+				Properties: props(
+					kv("c", &bamlutils.DynamicProperty{Type: lit.Type, Value: lit.Value}),
+					kv("d", strProp()),
+				),
+			}),
+		),
+	}
+}
+
 func TestParse_ClassUnionDeclines(t *testing.T) {
 	s := classUnionSchema()
 	// Missing a required field → DECLINE (BAML may fuzzy-match/fill).
@@ -689,22 +737,20 @@ func nullableClassUnionSchema() *bamlutils.DynamicOutputSchema {
 	}
 }
 
-func TestParse_NullableClassUnionRequiresCleanArm(t *testing.T) {
-	// F1: for a NULLABLE union with non-null input, BAML scores the null arm
-	// too (any non-null value -> null with DefaultButHadValue cost 110). Native
-	// does not score, so it claims the non-null arm ONLY when that arm is a
-	// clean zero-score success (which trivially beats null's 110).
+func TestParse_NullableClassUnionScored(t *testing.T) {
+	// M3: for a NULLABLE union with non-null input, BAML scores the null arm too
+	// (any non-null value -> null with DefaultButHadValue cost 110). Native now
+	// reproduces the score model: the winning class arm is claimed whenever its
+	// inherent score is < 110.
 	s := nullableClassUnionSchema()
 	// Null input -> null fast path.
 	mustParse(t, s, `{"u":null}`, `{"u":null}`)
-	// CLEAN winning arm (exact keys, no extras, exact children) -> CLAIM.
+	// CLEAN winning arm (score 0) -> CLAIM immediately (early first-winner).
 	mustParse(t, s, `{"u":{"title":"Go","pages":300}}`, `{"u":{"title":"Go","pages":300}}`)
-	// FLAGGED winning arm: even ONE extra key adds an ExtraKey flag, so the
-	// null arm could outscore it (the cold-review probe used 111 extras to make
-	// BAML actually return null). Native cannot tell, so it DECLINES — whereas
-	// the SAME input on the NON-nullable Book|Car union is still claimed
-	// (TestParse_ClassUnionFlatDisjointClaimed), since no null arm competes.
-	requireUnsupported(t, s, `{"u":{"title":"Go","pages":300,"x":1}}`)
+	// ONE extra key (ExtraKey score 1) still scores well under null's 110, so the
+	// Book arm wins and is CLAIMED (extra omitted). (The extra-key-heavy variant
+	// that actually loses to null is exercised by the >110 corpus fixtures.)
+	mustParse(t, s, `{"u":{"title":"Go","pages":300,"x":1}}`, `{"u":{"title":"Go","pages":300}}`)
 }
 
 func TestParse_NonASCIICaseFoldUnionDeclines(t *testing.T) {
@@ -762,8 +808,8 @@ func TestParse_NonASCIICaseFoldStandaloneFallsBack(t *testing.T) {
 	mustParse(t, personSchema(), `{"Name":"Ada","age":36}`, `{"name":"Ada","age":36}`)
 }
 
-func TestParse_OptionalArmRequiresCleanArm(t *testing.T) {
-	// F1 on the single-arm optional path: c is Color? (Color enum | null).
+func TestParse_OptionalArmScored(t *testing.T) {
+	// M3 scored single-arm optional path: c is Color? (Color enum | null).
 	s := &bamlutils.DynamicOutputSchema{
 		Properties: props(kv("c", &bamlutils.DynamicProperty{
 			Type:  "optional",
@@ -775,12 +821,12 @@ func TestParse_OptionalArmRequiresCleanArm(t *testing.T) {
 			}),
 		),
 	}
-	// Exact and case-fold enum matches are score 0 (clean) -> CLAIM.
+	// Exact and case-fold enum matches are score 0 (clean) -> CLAIM immediately.
 	mustParse(t, s, `{"c":"GREEN"}`, `{"c":"GREEN"}`)
 	mustParse(t, s, `{"c":"green"}`, `{"c":"GREEN"}`)
-	// A SUBSTRING match adds SubstringMatch (cost 2): the null arm competes, so
-	// native DECLINES (over-declines vs BAML, which would still pick the enum).
-	requireUnsupported(t, s, `{"c":"the color green please"}`)
+	// A SUBSTRING match adds SubstringMatch (score 2), which is < 110, so the enum
+	// arm beats the scored null arm and is now CLAIMED (M3 scoring).
+	mustParse(t, s, `{"c":"the color green please"}`, `{"c":"GREEN"}`)
 }
 
 func TestParse_ClassUnionOverlappingKeysDeclinedAtGate(t *testing.T) {

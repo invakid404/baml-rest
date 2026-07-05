@@ -1,0 +1,22 @@
+{
+  "name": "nullable_optional_string_json_to_string_claims",
+  "description": "M3a CLAIMED (scored nullable): optional string (string | null), NON-string input 5 -> \"5\" via JsonToString (score 2). Native scores the arm against the null arm (110) and CLAIMS it because 2 < 110. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "optional", "inner": {"kind": "string"}}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":5}",
+  "want": {
+    "status": "success",
+    "json": {"u": "5"}
+  }
+}

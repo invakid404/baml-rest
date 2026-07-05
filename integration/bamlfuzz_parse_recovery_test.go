@@ -207,12 +207,12 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"class_fuzzy_field_key":                  true,
 	"map_fuzzy_literal_key":                  true,
 	"match_string_ambiguous_substring_error": true,
-	// Mcoerce-a F1: a NULLABLE flat class union scores its null arm
-	// (DefaultButHadValue=110) for non-null input, so native claims the
-	// non-null arm only when it is a CLEAN zero-score success. A clean arm
-	// claims; an arm carrying enough ExtraKey flags to lose to null declines.
+	// Mcoerce-a F1 / M3a: a NULLABLE flat class union scores its null arm
+	// (DefaultButHadValue=110) for non-null input. M3a computes the arm score, so
+	// native claims the non-null arm when it scores < 110 and claims NULL when it
+	// scores > 110 (the 115-extra-key Book arm loses to null). Both are now claimed.
 	"nullable_class_union_clean_claimed":   true,
-	"nullable_class_union_extra_keys_null": false,
+	"nullable_class_union_extra_keys_null": true,
 	// M2c native SCORE-FREE SIMPLE UNIONS: claimed when native can PROVE BAML
 	// also resolves to exactly one clean zero-score winner.
 	//
@@ -268,17 +268,16 @@ var parseRecoveryNativeClaim = map[string]bool{
 	// beats the scored null arm, so it claims.
 	"nullable_optional_int_clean_string_claim": true,
 	// Mcoerce-b FALLBACK set: a literal VALUE mismatch after a successful
-	// primitive coercion (native declines BAML's error/default choice), the
-	// over-claim guard where a lenient leaf makes a 2nd union arm succeed (BAML
-	// pick_best = M3), and the nullable clean-only rule where a score-bearing
-	// non-null arm loses claimability against the scored null arm. (The
-	// single-key-object ObjectToPrimitive and non-string JsonToString paths that
-	// were pinned fallback here are now CLAIMED — see the Mcoerce-d PR 1 block.)
-	"literal_int_numeric_string_mismatch":                          false,
-	"literal_bool_string_mismatch":                                 false,
-	"class_union_strict_plus_lenient_two_successes_stays_fallback": false,
-	"nullable_optional_int_float_round_stays_fallback":             false,
-	"nullable_optional_bool_string_stays_fallback":                 false,
+	// primitive coercion (native declines BAML's error/default choice).
+	"literal_int_numeric_string_mismatch": false,
+	"literal_bool_string_mismatch":        false,
+	// M3a CLAIMED (score model + pick_best): the two-success safe-family unions
+	// and the score-bearing nullable arms that were pinned fallback under the
+	// pre-M3 clean-only rule now resolve via the scored selection (winner < 110,
+	// or two successes picked by pick_best) — all live-captured green vs BAML.
+	"class_union_strict_plus_lenient_two_successes_scored": true,
+	"nullable_optional_int_float_round_claims":             true,
+	"nullable_optional_bool_string_claims":                 true,
 	// CR-B1 FALLBACK set: float spellings Go's ParseFloat accepts but Rust's
 	// str::parse::<f64>() rejects (hex floats, digit-group underscores) must NOT
 	// be claimed — parseF64Rust rejects them so native declines exactly where
@@ -314,11 +313,11 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"list_array_lenient_elements_kept":         true,
 	"list_class_non_object_partial":            true,
 	"nullable_optional_list_clean_array_claim": true,
-	// Mcoerce-c LIST fallback set: a nullable list arm flagged by SingleToArray
-	// is score-bearing (M3 vs null); a union with a list arm can force pick_best.
-	// (list_string_non_string flipped to CLAIMED in Mcoerce-d PR 1.)
-	"nullable_optional_list_singleton_stays_fallback": false,
-	"union_list_partial_stays_fallback":               false,
+	// M3a CLAIMED: a nullable list arm scored by SingleToArray (score 1) beats the
+	// null arm (110). (union_list_partial stays fallback — a union WITH a list arm
+	// is outside the M3a safe families, deferred to M3d.)
+	"nullable_optional_list_singleton_claims": true,
+	"union_list_partial_stays_fallback":       false,
 	// Mcoerce-c native MAPS (coerceMap / coerce_map.rs): object→map ObjectToMap
 	// flagging, VALUE-then-KEY coercion, and PARTIAL entry skips of PROVEN map
 	// VALUE parse errors (MapValueParseError) resolve byte-identical to BAML, so
@@ -330,14 +329,16 @@ var parseRecoveryNativeClaim = map[string]bool{
 	// bridge keeps non-matching enum / string-literal / literal-union keys
 	// leniently (live-captured FULL maps, not partial), so a key miss is a
 	// DEFERRED Mcoerce-d keep and native declines the WHOLE map. Also fallback: a
-	// duplicate original key (unproven insert order), a map<string,string>
-	// non-string value (JsonToString, Mcoerce-d), and a nullable map arm flagged
-	// by ObjectToMap (score-bearing, M3 vs null).
-	"map_literal_key_partial_bad_key":             false,
-	"map_bad_key_original_order":                  false,
-	"map_enum_key_nonmember_live_probe":           false,
-	"map_duplicate_key_stays_fallback":            false,
-	"nullable_optional_map_object_stays_fallback": false,
+	// duplicate original key (unproven insert order). Map-key non-member probes
+	// stay fallback (M3d).
+	"map_literal_key_partial_bad_key":   false,
+	"map_bad_key_original_order":        false,
+	"map_enum_key_nonmember_live_probe": false,
+	"map_duplicate_key_stays_fallback":  false,
+	// M3a CLAIMED: a nullable map arm carrying ObjectToMap (score 1) plus its clean
+	// value scores beats the null arm (110) — the map's inherent score is now
+	// computed (own + value scores).
+	"nullable_optional_map_object_claims": true,
 	// (map_string_string_non_string_value flipped to CLAIMED in Mcoerce-d PR 1.)
 
 	// Mcoerce-d PR 1 — STRINGIFICATION + LITERAL EXTRACTION. Leaf coercers now
@@ -402,23 +403,40 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"list_class_required_default_value_kept":            true,
 	"map_string_class_required_default_value_kept":      true,
 
-	// Mcoerce-d PR 3 — UNION REVISIT. The safe-family union counters
-	// (coerceLiteralUnion / coerceFlatClassUnion) count LENIENT successes through
-	// the PR 1/PR 2 leaf + structural coercers, so a union that becomes
-	// deterministic via ObjectToPrimitive / ObjectToString / class-field
-	// JsonToString now CLAIMS when EXACTLY one non-null arm succeeds and DECLINES
-	// on two-plus (BAML pick_best = M3). The nullable clean-only rule still holds:
-	// a FLAGGED non-null winner (JsonToString / ObjectToString / ObjectToPrimitive
-	// / DefaultFromNoValue) declines against the scored null arm. No broadening
-	// beyond the two existing safe families — every mixed / primitive-overlap /
-	// overlapping-key-class / fuzzy-literal / list-map-variant / nested union
-	// stays fallback (see the M2c block above: 37/38/39/41/44/45/46, 40/42/43).
-	"literal_union_object_to_primitive_one_success_claimed":    true,
-	"literal_union_object_to_string_one_success_claimed":       true,
-	"class_union_stringification_one_success_claimed":          true,
-	"class_union_stringification_two_successes_stays_fallback": false,
-	"nullable_optional_string_json_to_string_stays_fallback":   false,
-	"nullable_optional_class_default_stays_fallback":           false,
+	// Mcoerce-d PR 3 — UNION REVISIT (one-success safe-family claims, unchanged).
+	"literal_union_object_to_primitive_one_success_claimed": true,
+	"literal_union_object_to_string_one_success_claimed":    true,
+	"class_union_stringification_one_success_claimed":       true,
+
+	// M3 slice a — SCORE MODEL + safe-family pick_best. The safe-family union
+	// coercers now compute the types.rs inherent score for every arm, apply BAML's
+	// early first-score-0 winner rule, and otherwise run a faithful
+	// array_helper::pick_best over the successes plus (when nullable) the null arm
+	// (DefaultButHadValue, score 110). No gate broadening — only the existing
+	// literal/class safe families are scored, so 37-46/100 and the map-key
+	// non-member probes STAY fallback (M3b/c/d). These were pinned fallback under
+	// the pre-M3 clean-only rule and now CLAIM the scored winner (all live-captured
+	// green vs BAML):
+	//   - two-success safe-family unions resolved by pick_best (scored winner);
+	//   - score-bearing nullable arms scoring < 110 (claim the arm);
+	//   - a nullable class arm scoring > 110 (claim null);
+	//   - the score boundary cases (109 < 110 -> arm, 110 tie -> lower index arm,
+	//     111 > 110 -> null);
+	//   - a two-substring literal union (pick_best picks the lower-index arm);
+	//   - a class union where a LOSING arm has a PROVABLE required-field parse
+	//     error (BAML errors just that arm; native excludes it and claims the
+	//     winner rather than declining the whole union) — including int/bool
+	//     LITERAL field value mismatches.
+	"class_union_stringification_two_successes_scored": true,
+	"nullable_optional_string_json_to_string_claims":   true,
+	"nullable_optional_class_default_claims":           true,
+	"class_union_extra_keys_109_below_null":            true,
+	"class_union_extra_keys_110_tie_null":              true,
+	"class_union_extra_keys_111_above_null":            true,
+	"literal_union_two_substring_pick_first":           true,
+	"class_union_provable_losing_arm_claims":           true,
+	"class_union_literal_int_field_losing_arm":         true,
+	"class_union_literal_bool_field_losing_arm":        true,
 }
 
 // parseRecoveryStats tallies how many final-parse cases the native parser

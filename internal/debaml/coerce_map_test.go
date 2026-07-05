@@ -202,18 +202,18 @@ func TestCoerceMap_NonObjectFieldDefaults(t *testing.T) {
 	mustParse(t, s, `{"scores":5}`, `{"scores":{}}`)
 }
 
-// TestCoerceMap_NullableCleanOnlyDeclines pins the union revisit for maps: an
-// object-input map arm ALWAYS carries ObjectToMap (score-bearing), so a nullable
-// optional map declines against the scored null arm — while a JSON null claims
-// the null fast path.
-func TestCoerceMap_NullableCleanOnlyDeclines(t *testing.T) {
+// TestCoerceMap_NullableScored pins the M3 scored selection for maps: an
+// object-input map arm ALWAYS carries ObjectToMap (score 1), which is < 110, so
+// a nullable optional map now CLAIMS the (fully-accepted) map — while a JSON null
+// still takes the null fast path.
+func TestCoerceMap_NullableScored(t *testing.T) {
 	s := optionalMapStrIntSchema()
 	// JSON null -> the null fast path claims null.
 	mustParse(t, s, `{"u":null}`, `{"u":null}`)
-	// Object input -> ObjectToMap (score-bearing) -> decline (M3 scoring vs null),
-	// even for a clean, fully-accepted map.
-	requireUnsupported(t, s, `{"u":{"a":1}}`)
-	requireUnsupported(t, s, `{"u":{}}`)
+	// Object input -> ObjectToMap (score 1 < 110) -> claim the map, clean values.
+	mustParse(t, s, `{"u":{"a":1}}`, `{"u":{"a":1}}`)
+	// Empty object -> ObjectToMap (score 1 < 110) -> claim {}.
+	mustParse(t, s, `{"u":{}}`, `{"u":{}}`)
 }
 
 // TestProvenMapValueError pins the map-VALUE child classifier delegates to the

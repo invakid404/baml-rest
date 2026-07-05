@@ -320,30 +320,32 @@ func TestDefaultValue(t *testing.T) {
 	}
 }
 
-// TestCoerceClass_NullableCleanOnly pins the nullable-union clean-only rule for
-// class arms: a class that fills any score-bearing flag (extra key, absent
-// optional, default) inside a nullable single-arm union DECLINES against the
-// scored null arm; only a clean class arm claims.
-func TestCoerceClass_NullableCleanOnly(t *testing.T) {
-	// Root{u: (C)?}, C{name string} — a clean class arm claims.
+// TestCoerceClass_NullableScored pins the M3 scored selection for class arms: a
+// class arm inside a nullable single-arm union wins whenever its inherent score
+// is < 110 (the null arm's DefaultButHadValue). An extra key (score 1) or an
+// absent optional (OptionalDefaultFromNoValue, score 1) is well under 110, so
+// those now CLAIM the class value.
+func TestCoerceClass_NullableScored(t *testing.T) {
+	// Root{u: (C)?}, C{name string} — a clean class arm (score 0) claims.
 	clean := &bamlutils.DynamicOutputSchema{
 		Properties: props(kv("u", optProp(&bamlutils.DynamicTypeSpec{Ref: "C"}))),
 		Classes:    bamlutils.MustOrderedMap(bamlutils.OrderedKV("C", &bamlutils.DynamicClass{Properties: props(kv("name", strProp()))})),
 	}
 	mustParse(t, clean, `{"u":{"name":"x"}}`, `{"u":{"name":"x"}}`)
-	// An EXTRA key makes the class arm non-clean -> declines against null (M3).
-	requireUnsupported(t, clean, `{"u":{"name":"x","extra":1}}`)
+	// An EXTRA key (score 1 < 110) -> claim the class (extra omitted).
+	mustParse(t, clean, `{"u":{"name":"x","extra":1}}`, `{"u":{"name":"x"}}`)
 
-	// Root{u: (C)?}, C{name string, nick string?} — an absent optional makes the
-	// arm non-clean (OptionalDefaultFromNoValue) -> declines against null.
+	// Root{u: (C)?}, C{name string, nick string?} — an absent optional
+	// (OptionalDefaultFromNoValue, score 1 < 110) -> claim (native omits nick;
+	// InjectAbsentOptionals re-adds it downstream, outside this unit path).
 	withOpt := &bamlutils.DynamicOutputSchema{
 		Properties: props(kv("u", optProp(&bamlutils.DynamicTypeSpec{Ref: "C"}))),
 		Classes: bamlutils.MustOrderedMap(bamlutils.OrderedKV("C", &bamlutils.DynamicClass{
 			Properties: props(kv("name", strProp()), kv("nick", optProp(&bamlutils.DynamicTypeSpec{Type: "string"}))),
 		})),
 	}
-	requireUnsupported(t, withOpt, `{"u":{"name":"x"}}`)
-	// Both fields present -> clean -> claims.
+	mustParse(t, withOpt, `{"u":{"name":"x"}}`, `{"u":{"name":"x"}}`)
+	// Both fields present -> clean (score 0) -> claims.
 	mustParse(t, withOpt, `{"u":{"name":"x","nick":"y"}}`, `{"u":{"name":"x","nick":"y"}}`)
 
 	// A JSON null still takes the null fast path.

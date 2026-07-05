@@ -173,40 +173,41 @@ func TestClassUnion_LenientLeaf_OneSuccess(t *testing.T) {
 	mustParse(t, s, `{"u":{"brand":"Audi","wheels":"4"}}`, `{"u":{"brand":"Audi","wheels":4}}`)
 }
 
-// TestClassUnion_TwoLenientSuccesses_Fallback pins the over-claim guard: a
-// numeric-string field (wheels="4") makes the SECOND arm (Car) newly succeed
-// on an input that also strictly satisfies Book, so native declines the whole
-// union (BAML pick_best = M3) rather than emitting the old strict Book arm.
-func TestClassUnion_TwoLenientSuccesses_Fallback(t *testing.T) {
+// TestClassUnion_TwoLenientSuccesses_Scored pins the M3 scored selection: a
+// numeric-string field (wheels="4") makes Car succeed on an input that also
+// strictly satisfies Book, so BOTH arms succeed and native runs pick_best. Book
+// (2 extras) and Car (2 extras) TIE on score 2, so the lower index (Book, arm 0)
+// wins — native emits Book's value directly instead of declining.
+func TestClassUnion_TwoLenientSuccesses_Scored(t *testing.T) {
 	s := classUnionSchema()
-	// title,pages satisfy Book (brand,wheels extras); brand + wheels="4" satisfy
-	// Car (title,pages extras) -> TWO lenient successes -> decline. Before
-	// Mcoerce-b wheels="4" declined, so only Book succeeded (the over-claim).
-	requireUnsupported(t, s, `{"u":{"title":"Go","pages":300,"brand":"Audi","wheels":"4"}}`)
+	// title,pages satisfy Book (brand,wheels extras => 2); brand + wheels="4"
+	// satisfy Car (title,pages extras => 2) -> TWO successes, tie -> index 0 (Book).
+	mustParse(t, s, `{"u":{"title":"Go","pages":300,"brand":"Audi","wheels":"4"}}`, `{"u":{"title":"Go","pages":300}}`)
 }
 
-// TestNullableOptionalInt_CleanOnly pins the nullable clean-only rule for an
-// optional int: a clean direct string parse claims, but a FloatToInt round
-// declines (the null arm competes by scoring → M3).
-func TestNullableOptionalInt_CleanOnly(t *testing.T) {
+// TestNullableOptionalInt_Scored pins the M3 scored rule for an optional int:
+// the non-null arm wins when its score < 110 (the null arm's DefaultButHadValue),
+// so a FloatToInt round (score 1) now CLAIMS 2 rather than declining.
+func TestNullableOptionalInt_Scored(t *testing.T) {
 	s := oneField(&bamlutils.DynamicProperty{Type: "optional", Inner: &bamlutils.DynamicTypeSpec{Type: "int"}})
 	mustParse(t, s, `{"u":null}`, `{"u":null}`)
-	mustParse(t, s, `{"u":"123"}`, `{"u":123}`) // clean direct parse -> claim
-	requireUnsupported(t, s, `{"u":1.6}`)       // FloatToInt -> decline
+	mustParse(t, s, `{"u":"123"}`, `{"u":123}`) // clean direct parse (score 0) -> claim
+	mustParse(t, s, `{"u":1.6}`, `{"u":2}`)     // FloatToInt score 1 < 110 -> claim 2
 }
 
-// TestNullableOptionalBool_StringDeclines pins that an optional bool with a
-// string bool (StringToBool) declines under the clean-only rule.
-func TestNullableOptionalBool_StringDeclines(t *testing.T) {
+// TestNullableOptionalBool_Scored pins that an optional bool with a string bool
+// (StringToBool, score 1 < 110) now CLAIMS the coerced bool.
+func TestNullableOptionalBool_Scored(t *testing.T) {
 	s := oneField(&bamlutils.DynamicProperty{Type: "optional", Inner: &bamlutils.DynamicTypeSpec{Type: "bool"}})
 	mustParse(t, s, `{"u":null}`, `{"u":null}`)
-	mustParse(t, s, `{"u":true}`, `{"u":true}`) // clean JSON bool -> claim
-	requireUnsupported(t, s, `{"u":"true"}`)    // StringToBool -> decline
+	mustParse(t, s, `{"u":true}`, `{"u":true}`)   // clean JSON bool (score 0) -> claim
+	mustParse(t, s, `{"u":"true"}`, `{"u":true}`) // StringToBool score 1 < 110 -> claim
 }
 
-// TestNullableLiteralIntUnion_CleanOnly pins the clean-only rule inside a
-// nullable homogeneous int-literal union.
-func TestNullableLiteralIntUnion_CleanOnly(t *testing.T) {
+// TestNullableLiteralIntUnion_Scored pins scored selection inside a nullable
+// homogeneous int-literal union: arm 2 via FloatToInt (score 1) beats the null
+// arm (110), so the union claims 2.
+func TestNullableLiteralIntUnion_Scored(t *testing.T) {
 	s := oneField(&bamlutils.DynamicProperty{
 		Type: "union",
 		OneOf: []*bamlutils.DynamicTypeSpec{
@@ -216,6 +217,6 @@ func TestNullableLiteralIntUnion_CleanOnly(t *testing.T) {
 		},
 	})
 	mustParse(t, s, `{"u":null}`, `{"u":null}`)
-	mustParse(t, s, `{"u":"2"}`, `{"u":2}`) // clean string→int, arm 2 -> claim
-	requireUnsupported(t, s, `{"u":1.6}`)   // arm 2 via FloatToInt -> decline
+	mustParse(t, s, `{"u":"2"}`, `{"u":2}`) // clean string→int, arm 2 (score 0) -> claim
+	mustParse(t, s, `{"u":1.6}`, `{"u":2}`) // arm 2 via FloatToInt score 1 < 110 -> claim
 }

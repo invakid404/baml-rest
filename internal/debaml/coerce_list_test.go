@@ -114,21 +114,23 @@ func TestCoerceList_ClassScalarSkips(t *testing.T) {
 	requireUnsupported(t, s, `{"items":[["x","y"]]}`)
 }
 
-// TestCoerceList_NullableOptionalCleanOnly pins the union revisit for lists:
-// a list arm carrying score-bearing flags (SingleToArray / ArrayItemParseError /
-// child flags) declines against the scored null arm, while a CLEAN array claims.
-func TestCoerceList_NullableOptionalCleanOnly(t *testing.T) {
+// TestCoerceList_NullableOptionalScored pins the M3 scored selection for lists:
+// a list arm wins whenever its inherent score < 110 (the null arm), so a
+// SingleToArray wrap (score 1), a kept FloatToInt element (score 1), or an
+// ArrayItemParseError skip scored as 1+i (so an index-1 skip scores 2) all now
+// CLAIM the list value.
+func TestCoerceList_NullableOptionalScored(t *testing.T) {
 	s := optionalListIntSchema()
 	// Clean array -> clean list arm (score 0) beats null (110) -> claim.
 	mustParse(t, s, `{"u":[1,2]}`, `{"u":[1,2]}`)
 	// JSON null -> the null fast path claims null.
 	mustParse(t, s, `{"u":null}`, `{"u":null}`)
-	// Singleton -> SingleToArray (score-bearing) -> decline (M3 scoring vs null).
-	requireUnsupported(t, s, `{"u":"123"}`)
-	// A kept-but-flagged element (2.6 -> FloatToInt) makes the arm non-clean -> decline.
-	requireUnsupported(t, s, `{"u":[2.6]}`)
-	// A partial skip (ArrayItemParseError) makes the arm non-clean -> decline.
-	requireUnsupported(t, s, `{"u":[1,"bad"]}`)
+	// Singleton -> SingleToArray (score 1 < 110) -> claim [123].
+	mustParse(t, s, `{"u":"123"}`, `{"u":[123]}`)
+	// A kept FloatToInt element (2.6 -> 3, score 1 < 110) -> claim [3].
+	mustParse(t, s, `{"u":[2.6]}`, `{"u":[3]}`)
+	// A partial skip (ArrayItemParseError(1) = score 2 < 110) -> claim [1].
+	mustParse(t, s, `{"u":[1,"bad"]}`, `{"u":[1]}`)
 }
 
 // TestProvenListItemError_Primitives pins the child-error classifier for

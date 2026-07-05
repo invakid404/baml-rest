@@ -1,6 +1,6 @@
 {
-  "name": "class_union_strict_plus_lenient_two_successes_stays_fallback",
-  "description": "Mcoerce-b FALLBACK (over-claim guard): flat disjoint class union A{a int,b string} | B{c int,d string}, input carries ALL four fields with c=\"5\" a numeric string. A succeeds strictly on its own fields (c,d are extras); B newly succeeds through lenient numeric-string int coercion (c=\"5\"->5; a,b are extras). This is one strict success plus one lenient success, so native declines the WHOLE union for BAML pick_best (M3) and must NEVER emit the old strict A arm. want captured from BAML final parse.",
+  "name": "class_union_strict_plus_lenient_two_successes_scored",
+  "description": "M3a CLAIMED (scored pick_best): flat disjoint class union A{a int,b string} | B{c int,d string}, input carries ALL four fields with c=\"5\" a numeric string. A succeeds (c,d extras => score 2); B succeeds via clean numeric-string int coercion (c=\"5\"->5, a,b extras => score 2). Two successes tie on score 2, so pick_best picks the lower index (A, arm 0). Native now reproduces BAML's scored winner. want captured from live BAML final parse.",
   "preserve_schema_order": false,
   "schema": {
     "classes": [
