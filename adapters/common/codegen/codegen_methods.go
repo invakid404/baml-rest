@@ -253,6 +253,11 @@ func (me *methodEmitter) emitInputAndOutputStructs() {
 	// Generate unwrap helpers for dynamic types (called at setter time, not getter time)
 	if me.isDynamicStream {
 		g.emitDynamicUnwrapFunc(me.unwrapStreamFuncName, me.streamTypePtr)
+		// Record the stream unwrap like the final one below so the parse-stream
+		// method emitter (emitParseMethods) references this helper instead of
+		// re-declaring it — without this, a dynamic method with a ParseStream
+		// counterpart emits unwrapDynamic<Method>OutputStream twice.
+		g.emittedUnwrapHelpers[me.unwrapStreamFuncName] = true
 	}
 	if me.isDynamicFinal {
 		g.emitDynamicUnwrapFunc(me.unwrapFinalFuncName, me.finalTypePtr)
@@ -961,6 +966,11 @@ func (g *generator) emitMethodsMap(methods []methodOut) {
 type parseMethodOut struct {
 	name             string
 	outputStructQual jen.Code
+	// streamFuncName is the emitted parse-stream wrapper (parse_<Method>Stream)
+	// for a method with a BAML ParseStream counterpart, or "" when the method
+	// has no parse-stream variant. When set, emitParseMethodsMap wires it as
+	// the ParseMethod's StreamImpl.
+	streamFuncName string
 }
 
 // isDeBAMLDynamicMethod reports whether methodName is the configured
@@ -1094,9 +1104,84 @@ func (g *generator) emitParseMethods() []parseMethodOut {
 			Params(jen.Any(), jen.Error()).
 			Block(parseBody...)
 
+		// Emit a parse-STREAM wrapper for a method that has a BAML ParseStream
+		// counterpart. It calls bamlclient.ParseStream.<Method> — BAML's
+		// partial parse over the accumulated prefix — and, for a dynamic
+		// method, unwraps the stream DynamicProperties in place so the worker
+		// marshals the SAME {"DynamicProperties":{...}} envelope a final parse
+		// produces. This exposes the BAML parse-stream oracle to the bamlfuzz
+		// streaming differential; the native de-BAML seam is deliberately NOT
+		// spliced here (native stream parsing stays unsupported/fallback).
+		var parseStreamFuncName string
+		if streamFuncValue, hasParseStreamFunc := g.intro.ParseStreamFuncs[methodName]; hasParseStreamFunc {
+			parseStreamFuncName = strcase.LowerCamelCase("parse_" + methodName + "_stream")
+
+			// Derive the stream-unwrap decision from the ACTUAL parse-stream
+			// return type, NOT the sync/final type's `isDynamic`. The stream
+			// and final shapes are emitted independently and can diverge (one
+			// carries DynamicProperties, the other not); gating stream unwrap
+			// on the final type would emit/call an unwrap helper for a
+			// non-dynamic stream type, or skip unwrapping when only the stream
+			// type is dynamic. Mirrors emitInputAndOutputStructs, which keys
+			// me.isDynamicStream off this same ParseStream return.
+			var streamFuncType reflect.Type
+			if streamFuncValue != nil {
+				streamFuncType = reflect.TypeOf(streamFuncValue)
+			}
+			isDynamicStream := streamFuncType != nil &&
+				streamFuncType.Kind() == reflect.Func &&
+				streamFuncType.NumOut() >= 1 &&
+				hasDynamicPropertiesForType(streamFuncType.Out(0))
+
+			// Resolve the stream-side unwrap helper. For a dynamic streaming
+			// method emitMethods already emitted it; emit it here only if a
+			// parse-only-with-stream method reached this path first.
+			var parseStreamUnwrapName string
+			if isDynamicStream {
+				parseStreamUnwrapName = strcase.LowerCamelCase(fmt.Sprintf("unwrapDynamic%sStream", strcase.UpperCamelCase(fmt.Sprintf("%sOutput", methodName))))
+				if !g.emittedUnwrapHelpers[parseStreamUnwrapName] {
+					streamTypePtr := jen.Op("*").Add(parseReflectType(streamFuncType.Out(0)).statement)
+					g.emitDynamicUnwrapFunc(parseStreamUnwrapName, streamTypePtr)
+					g.emittedUnwrapHelpers[parseStreamUnwrapName] = true
+				}
+			}
+
+			var streamBody []jen.Code
+			streamBody = append(streamBody,
+				jen.List(jen.Id("options"), jen.Id("err")).Op(":=").Id("makeOptionsFromAdapter").Call(jen.Id("adapter")),
+				jen.If(jen.Id("err").Op("!=").Nil()).Block(
+					jen.Return(jen.Nil(), jen.Id("err")),
+				),
+				jen.List(jen.Id("result"), jen.Id("parseErr")).Op(":=").
+					Qual(g.pkgs.GeneratedClientPkg, "ParseStream").Dot(methodName).Call(parseCallParams...),
+				jen.If(jen.Id("parseErr").Op("!=").Nil()).Block(
+					jen.Return(jen.Nil(), jen.Id("parseErr")),
+				),
+			)
+			// Gate the stream unwrap on the stream shape alone
+			// (parseStreamUnwrapName is set iff isDynamicStream), not the
+			// final type's isDynamic — see the derivation comment above.
+			if parseStreamUnwrapName != "" {
+				streamBody = append(streamBody,
+					jen.Id(parseStreamUnwrapName).Call(jen.Op("&").Id("result")),
+				)
+			}
+			streamBody = append(streamBody, jen.Return(jen.Id("result"), jen.Nil()))
+
+			g.out.Func().
+				Id(parseStreamFuncName).
+				Params(
+					jen.Id("adapter").Qual(g.pkgs.InterfacesPkg, "Adapter"),
+					jen.Id("raw").String(),
+				).
+				Params(jen.Any(), jen.Error()).
+				Block(streamBody...)
+		}
+
 		parseMethods = append(parseMethods, parseMethodOut{
 			name:             methodName,
 			outputStructQual: finalResultType,
+			streamFuncName:   parseStreamFuncName,
 		})
 	}
 
@@ -1113,13 +1198,19 @@ func (g *generator) emitParseMethodsMap(parseMethods []parseMethodOut) {
 	parseMapElements := make(jen.Dict)
 	for _, method := range parseMethods {
 		parseFuncName := strcase.LowerCamelCase("parse_" + method.name)
-		parseMapElements[jen.Lit(method.name)] = jen.Values(jen.Dict{
+		methodDict := jen.Dict{
 			jen.Id("MakeOutput"): jen.Func().Params().Any().
 				Block(
 					jen.Return(jen.New(method.outputStructQual)),
 				),
 			jen.Id("Impl"): jen.Id(parseFuncName),
-		})
+		}
+		// Wire the parse-stream oracle when the method has a ParseStream
+		// counterpart; the worker drives StreamImpl for a Stream=true parse.
+		if method.streamFuncName != "" {
+			methodDict[jen.Id("StreamImpl")] = jen.Id(method.streamFuncName)
+		}
+		parseMapElements[jen.Lit(method.name)] = jen.Values(methodDict)
 	}
 
 	g.out.Var().Id("ParseMethods").Op("=").

@@ -1,6 +1,6 @@
 {
   "name": "streaming_trailing_comma",
-  "description": "Accumulated prefixes build a list with a trailing comma before the closing bracket/brace. STREAMING DIFFERENTIAL IS BLOCKED ON DIRECT PARSE-STREAM EXPOSURE (deferred): the per-prefix `want` values are NOT yet BAML-characterized and the harness does not gate on them today — only the corpus format and prefix-growth monotonicity are exercised.",
+  "description": "Accumulated prefixes build a list with a trailing comma before the closing bracket/brace. Per-prefix `want` values are LIVE-CAPTURED from BAML v0.223.0 parse-stream (BAMLFUZZ_PARSE_CAPTURE=1), not hand-written: BAML's parse-stream drops the dangling trailing comma and keeps the completed elements at every prefix. Native de-BAML declines all stream parses in M4a (per-prefix fallback).",
   "preserve_schema_order": true,
   "schema": {
     "classes": [

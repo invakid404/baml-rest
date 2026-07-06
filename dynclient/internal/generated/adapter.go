@@ -1174,12 +1174,25 @@ func parseBamlRestDynamic(adapter bamlutils.Adapter, raw string) (any, error) {
 	unwrapDynamicBamlRestDynamicOutputFinal(&result)
 	return result, nil
 }
+func parseBamlRestDynamicStream(adapter bamlutils.Adapter, raw string) (any, error) {
+	options, err := makeOptionsFromAdapter(adapter)
+	if err != nil {
+		return nil, err
+	}
+	result, parseErr := bamlclient.ParseStream.Baml_Rest_Dynamic(adapter, raw, options...)
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	unwrapDynamicBamlRestDynamicOutputStream(&result)
+	return result, nil
+}
 
 var ParseMethods = map[string]bamlutils.ParseMethod{"Baml_Rest_Dynamic": {
 	Impl: parseBamlRestDynamic,
 	MakeOutput: func() any {
 		return new(types.Baml_Rest_DynamicOutput)
 	},
+	StreamImpl: parseBamlRestDynamicStream,
 }}
 
 func applyDynamicTypes(tb *introspected.TypeBuilder, dt *bamlutils.DynamicTypes) error {

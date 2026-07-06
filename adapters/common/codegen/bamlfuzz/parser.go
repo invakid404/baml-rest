@@ -11,8 +11,9 @@ import (
 // ErrParserUnavailable is the sentinel a Parser returns when it cannot
 // service a request — either because it is the no-op stub (no native
 // parser has been registered yet) or because the request shape is one
-// the parser does not implement (e.g. the dynamic BAML adapter declining
-// a Stream request before direct parse-stream is plumbed).
+// the parser does not implement (e.g. the native de-BAML candidate
+// declining every Stream request, which stays fallback until a later slice
+// claims native stream parity).
 //
 // The differential comparator treats ErrParserUnavailable from the
 // *candidate* (native) parser as a skip/pass, not a parser success. The

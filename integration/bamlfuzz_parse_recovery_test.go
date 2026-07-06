@@ -29,12 +29,13 @@ const parseRecoveryCorpusDir = "../adapters/common/codegen/testdata/bamlfuzz/par
 // bamlfuzz oracle artifact dirs.
 const parseRecoveryArtifactDir = "../adapters/common/codegen/testdata/bamlfuzz/parse_recovery/_artifacts"
 
-// bamlDynamicParser adapts dynclient's final dynamic parse to the
-// bamlfuzz.Parser interface so the differential harness can drive BAML as
-// the oracle. It covers final parse only: parse-stream over accumulated
-// prefixes is not yet exposed by dynclient/worker, so a Stream request is
-// declined with ErrParserUnavailable (the streaming differential is
-// deferred — see the scope's blocked-on-plumbing note).
+// bamlDynamicParser adapts dynclient's dynamic parse to the bamlfuzz.Parser
+// interface so the differential harness can drive BAML as the oracle. It
+// covers BOTH final parse and parse-stream: a Stream=true request drives
+// BAML's parse-stream (partial) path over the accumulated prefix, normalized
+// into the SAME flattened shape a final parse produces. This exposes the
+// direct parse-stream oracle the streaming differential needs — BAML remains
+// the reference the native candidate must reproduce.
 type bamlDynamicParser struct {
 	dyn *dynclient.Client
 }
@@ -42,14 +43,14 @@ type bamlDynamicParser struct {
 // Name identifies the BAML oracle leg in diff output and envelopes.
 func (p bamlDynamicParser) Name() string { return "baml_dynamic" }
 
-// Parse drives dynclient.DynamicParse for a final parse. The returned
-// JSON is the flattened, absent-optional-injected, order-normalized
-// payload the dynamic endpoints expose — exactly the shape a native
-// parser must reproduce. Stream requests are declined (deferred).
+// Parse drives dynclient.DynamicParse for a final parse, or — when
+// req.Stream is true — BAML's parse-stream (partial) path over the same
+// raw text. The returned JSON is the flattened, absent-optional-injected,
+// order-normalized payload the dynamic endpoints expose (identical shape
+// for final and stream), exactly what a native parser must reproduce. BAML
+// may reject an early streaming prefix; that surfaces as a real parse error
+// here and the comparator records error parity.
 func (p bamlDynamicParser) Parse(ctx context.Context, req bamlfuzz.ParseRequest) (bamlfuzz.ParseResult, error) {
-	if req.Stream {
-		return bamlfuzz.ParseResult{}, bamlfuzz.ErrParserUnavailable
-	}
 	lowered, err := bamlfuzz.LowerToDynamicSchema(req.Schema)
 	if err != nil {
 		return bamlfuzz.ParseResult{}, err
@@ -59,6 +60,7 @@ func (p bamlDynamicParser) Parse(ctx context.Context, req bamlfuzz.ParseRequest)
 		Raw:                 req.Raw,
 		OutputSchema:        &lowered,
 		PreserveSchemaOrder: &preserve,
+		Stream:              req.Stream,
 	})
 	if err != nil {
 		return bamlfuzz.ParseResult{}, err
@@ -84,7 +86,12 @@ type nativeDeBAMLParser struct{}
 func (nativeDeBAMLParser) Name() string { return "native_debaml" }
 
 // Parse drives internal/debaml.Parse for a final parse and normalizes its
-// flattened output exactly like dynclient's parse-only path.
+// flattened output exactly like dynclient's parse-only path. A Stream=true
+// request is passed through unchanged: internal/debaml.Parse declines every
+// stream parse (ErrDeBAMLParseUnsupported), which maps to
+// ErrParserUnavailable below, so in M4a the native candidate falls back
+// (SkippedNative) on every streaming prefix — native stream parity is not
+// claimed this slice.
 func (nativeDeBAMLParser) Parse(ctx context.Context, req bamlfuzz.ParseRequest) (bamlfuzz.ParseResult, error) {
 	lowered, err := bamlfuzz.LowerToDynamicSchema(req.Schema)
 	if err != nil {
@@ -128,6 +135,40 @@ func (nativeDeBAMLParser) Parse(ctx context.Context, req bamlfuzz.ParseRequest) 
 		return bamlfuzz.ParseResult{}, err
 	}
 	return bamlfuzz.ParseResult{JSON: out}, nil
+}
+
+// perCallOracleTimeout is the bounded budget a SINGLE live BAML oracle call
+// gets. The final-parse and dynamic parse_diff legs already wrap their one
+// live call in context.WithTimeout(..., 30s); the streaming leg fans one live
+// call out per accumulated prefix, so it applies this SAME per-call budget to
+// each call (via perCallTimeoutParser) rather than sharing one loop-wide
+// deadline across all of them.
+const perCallOracleTimeout = 30 * time.Second
+
+// perCallTimeoutParser wraps a bamlfuzz.Parser so every Parse call derives its
+// own bounded deadline from the incoming context instead of drawing down a
+// single shared budget. DiffParserPrefixes drives the BAML oracle once per
+// accumulated prefix (up to 7 per streaming fixture) through one ctx; without
+// a per-call bound those live calls would all share one deadline and a slow
+// oracle call under CI load could starve the later prefixes. This mirrors the
+// per-call WithTimeout the single-call final-parse leg already uses. Only the
+// live BAML leg is wrapped; the native candidate declines every stream prefix
+// without a live call, so its disposition (fallback) is unaffected.
+type perCallTimeoutParser struct {
+	inner   bamlfuzz.Parser
+	timeout time.Duration
+}
+
+// Name passes through the wrapped parser's identity so diff output and
+// failure envelopes are unchanged.
+func (p perCallTimeoutParser) Name() string { return p.inner.Name() }
+
+// Parse bounds a single delegated call to p.timeout, derived from ctx so an
+// outer cancellation still wins, then forwards to the wrapped parser.
+func (p perCallTimeoutParser) Parse(ctx context.Context, req bamlfuzz.ParseRequest) (bamlfuzz.ParseResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, p.timeout)
+	defer cancel()
+	return p.inner.Parse(ctx, req)
 }
 
 // parseRecoveryNativeClaim pins the native-parser cut-line per corpus case
@@ -524,14 +565,38 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"primitive_int_array_empty_stays_fallback": false,
 }
 
-// parseRecoveryStats tallies how many final-parse cases the native parser
-// claimed vs fell back on, logged as a summary so a shift in the native
-// cut-line is visible even when every case still passes. The harness runs
-// the per-case subtests sequentially (no t.Parallel), so a plain
+// parseRecoveryStreamNativeClaim pins the per-prefix native disposition for
+// streaming recovery cases: caseName -> prefixName -> claimed. In M4a the
+// native parser CLAIMS NO streaming prefix — internal/debaml.Parse declines
+// every Stream=true request — so every prefix's expected disposition is
+// fallback (false) and this map is intentionally empty (streamPrefixNativeClaim
+// defaults to false). It is the per-prefix seam a later slice (M4b+) uses to
+// flip an individual prefix from fallback to claimed without reworking the
+// harness: set caseName->prefixName to true and the per-prefix differential
+// then holds the native claim to BAML exactly.
+var parseRecoveryStreamNativeClaim = map[string]map[string]bool{}
+
+// streamPrefixNativeClaim returns the expected native disposition for one
+// streaming prefix: true = native is expected to CLAIM it (and be diffed
+// against BAML), false = native FALLS BACK to BAML (the M4a default for every
+// prefix).
+func streamPrefixNativeClaim(caseName, prefixName string) bool {
+	if m, ok := parseRecoveryStreamNativeClaim[caseName]; ok {
+		return m[prefixName]
+	}
+	return false
+}
+
+// parseRecoveryStats tallies how many final-parse and streaming-prefix legs
+// the native parser claimed vs fell back on, logged as a summary so a shift
+// in the native cut-line is visible even when every case still passes. The
+// harness runs the per-case subtests sequentially (no t.Parallel), so a plain
 // pointer-shared counter needs no locking.
 type parseRecoveryStats struct {
-	claimed  int
-	fallback int
+	claimed        int
+	fallback       int
+	streamClaimed  int
+	streamFallback int
 }
 
 // TestBamlfuzzParseRecovery characterizes BAML's JSONish final-parse
@@ -542,15 +607,20 @@ type parseRecoveryStats struct {
 // for BAML behavior changes), and the differential leg holds any future
 // native parser to BAML's exact behavior.
 //
-// With the default NoopParser the differential leg is a vacuous skip, so
-// today the test is a pure BAML characterization. Streaming-prefix cases
-// validate corpus format + prefix-growth monotonicity but skip the
-// per-prefix differential, which is blocked on direct parse-stream
-// exposure (deferred).
+// The native de-BAML parser is registered as the differential candidate, so
+// both the final-parse and streaming legs are live differentials. Streaming
+// cases additionally drive the direct BAML parse-stream oracle
+// (DynamicParse with Stream=true) per accumulated prefix and gate BAML
+// against the live-captured prefix `want`; the native candidate declines
+// every stream parse in M4a, so each streaming prefix records a fallback
+// disposition (SkippedNative) rather than a native claim.
 //
-// Run with BAMLFUZZ_PARSE_CAPTURE=1 to log BAML's observed final-parse
-// outcomes instead of gating — used to (re)capture the corpus `want`
-// values when adding cases or after an intentional BAML behavior change.
+// Run with BAMLFUZZ_PARSE_CAPTURE=1 to log BAML's observed final-parse AND
+// per-prefix parse-stream outcomes instead of gating — used to (re)capture
+// the corpus `want` values when adding cases or after an intentional BAML
+// behavior change. Streaming captures carry full prefix identity (case +
+// prefix name + a `stream` marker) so a stream want can never be reused as a
+// final-parse want.
 func TestBamlfuzzParseRecovery(t *testing.T) {
 	if !bamlutils.IsVersionAtLeast(BAMLVersion, "0.215.0") {
 		t.Skip("Skipping: dynamic endpoints require BAML >= 0.215.0")
@@ -587,6 +657,7 @@ func TestBamlfuzzParseRecovery(t *testing.T) {
 		})
 	}
 	t.Logf("native de-BAML final-parse dispositions: %d claimed, %d fell back to BAML", stats.claimed, stats.fallback)
+	t.Logf("native de-BAML parse-stream dispositions: %d claimed, %d fell back to BAML (M4a expects 0 claimed)", stats.streamClaimed, stats.streamFallback)
 }
 
 // runParseRecoveryCase drives the final and/or streaming legs of one
@@ -660,14 +731,133 @@ func runParseRecoveryCase(t *testing.T, baml, native bamlfuzz.Parser, c bamlfuzz
 						i, c.Prefixes[i].Name, i-1, c.Prefixes[i-1].Name)
 				}
 			}
-			// The per-prefix native-vs-BAML differential needs direct
-			// BAML parse-stream over arbitrary accumulated prefixes, which
-			// dynclient/worker do not yet expose. The corpus + harness
-			// format are in place (DiffParserPrefixes); wiring the live
-			// differential is deferred to the parse-stream plumbing PR.
-			t.Skip("streaming parse-stream differential blocked on direct parse-stream exposure (deferred)")
+
+			// Per-prefix native-vs-BAML parse-stream differential. BAML is the
+			// oracle: DiffParserPrefixes forces Stream=true and diffs each
+			// accumulated prefix on its own (early accept/reject is part of the
+			// spec, so no prefix is privileged). BAML being unavailable on a
+			// prefix is a harness failure, surfaced through res.Failures with
+			// SkippedNative=false; the native candidate declining is a skip.
+			// Each accumulated prefix issues its OWN live BAML parse-stream
+			// call. Give every call the same bounded headroom the single-call
+			// final-parse leg gets (perCallOracleTimeout) instead of sharing
+			// one deadline across up to len(raws) sequential calls, so a slow
+			// oracle call under CI load can't starve the later prefixes.
+			// perCallTimeoutParser applies the per-call bound inside
+			// DiffParserPrefixes' loop; an outer budget scaled to the prefix
+			// count still caps the whole streaming leg as a backstop.
+			ctx, cancel := context.WithTimeout(context.Background(), perCallOracleTimeout*time.Duration(len(raws)))
+			defer cancel()
+			gatedBAML := perCallTimeoutParser{inner: baml, timeout: perCallOracleTimeout}
+			req := bamlfuzz.ParseRequest{
+				Schema:              c.Schema,
+				PreserveSchemaOrder: c.PreserveSchemaOrder,
+			}
+			results := bamlfuzz.DiffParserPrefixes(ctx, gatedBAML, native, req, raws, c.UnionChoices)
+
+			for i := range results {
+				i := i
+				p := c.Prefixes[i]
+				res := results[i]
+				t.Run(p.Name, func(t *testing.T) {
+					// Capture mode logs BAML's observed per-prefix outcome
+					// (with full prefix identity) instead of gating, so a
+					// developer running BAMLFUZZ_PARSE_CAPTURE=1 records the
+					// corpus `want`; otherwise gate BAML against it.
+					if capture {
+						logObservedStreamOutcome(t, c.Name, p, res.BAML)
+					} else {
+						characterizeStreamPrefix(t, c, p, res.BAML)
+					}
+
+					// Native-vs-BAML per-prefix differential. In M4a native
+					// declines every stream prefix, so SkippedNative is the
+					// expected shape and this gate never fires for a native
+					// mismatch; it DOES fire on a BAML harness failure
+					// (SkippedNative=false with failures) or, once a later
+					// slice claims a prefix, on real native drift.
+					if !res.SkippedNative && len(res.Failures) > 0 {
+						dumpParseDiffAndFail(t, parseRecoveryArtifactDir,
+							parseDiffEnvelope(c, idx, i, p.Name, p.Raw, true, res),
+							strings.Join(res.Failures, "; "))
+					}
+
+					// Per-prefix native disposition (claimed vs fallback),
+					// pinned so a later slice can flip individual prefixes.
+					claimed := !res.SkippedNative
+					if claimed {
+						stats.streamClaimed++
+					} else {
+						stats.streamFallback++
+					}
+					want := streamPrefixNativeClaim(c.Name, p.Name)
+					if claimed {
+						t.Logf("native CLAIMED stream prefix %q/%q", c.Name, p.Name)
+					} else {
+						t.Logf("native FELL BACK to BAML for stream prefix %q/%q", c.Name, p.Name)
+					}
+					if claimed != want {
+						t.Errorf("native stream disposition for %q/%q: got claimed=%v, want claimed=%v (M4a: every stream prefix falls back)", c.Name, p.Name, claimed, want)
+					}
+				})
+			}
 		})
 	}
+}
+
+// characterizeStreamPrefix gates the live BAML parse-stream outcome for one
+// accumulated prefix against the recorded `want`: status (success/error)
+// parity, plus strict JSON + key-order equality on a successful partial parse.
+// `want` is BAML's own captured parse-stream output (recorded via
+// BAMLFUZZ_PARSE_CAPTURE=1), so strict equality is correct — a divergence
+// means BAML's parse-stream behavior drifted from the checked-in
+// characterization. It reads the BAML outcome DiffParserPrefixes already
+// produced (res.BAML) rather than re-calling BAML.
+func characterizeStreamPrefix(t *testing.T, c bamlfuzz.ParseRecoveryCase, p bamlfuzz.ParseRecoveryPrefix, outcome bamlfuzz.ParseOutcome) {
+	t.Helper()
+	observed := bamlfuzz.ParseStatusSuccess
+	if outcome.Error != "" {
+		observed = bamlfuzz.ParseStatusError
+	}
+	if observed != p.Want.Status {
+		t.Errorf("stream prefix %q/%q raw=%q: BAML status %q ≠ want %q (BAML json=%s err=%s)",
+			c.Name, p.Name, p.Raw, observed, p.Want.Status, string(outcome.JSON), outcome.Error)
+		return
+	}
+	if !p.Want.IsSuccess() {
+		return // both errored — parity holds, no payload to compare.
+	}
+	diff, err := bamlfuzz.SemanticDiffStrict("want_vs_baml_stream", p.Want.JSON, outcome.JSON)
+	if err != nil {
+		t.Errorf("characterize stream %q/%q: semantic diff: %v", c.Name, p.Name, err)
+		return
+	}
+	if len(diff) > 0 {
+		t.Errorf("stream prefix %q/%q raw=%q: want ≠ BAML (semantic): %+v", c.Name, p.Name, p.Raw, diff)
+	}
+	if c.PreserveSchemaOrder {
+		od, oerr := bamlfuzz.SchemaOrderDiffWithChoices("want_vs_baml_stream", c.Schema, p.Want.JSON, outcome.JSON, c.UnionChoices)
+		if oerr != nil {
+			t.Errorf("stream prefix %q/%q: schema order: %v", c.Name, p.Name, oerr)
+		} else if len(od) > 0 {
+			t.Errorf("stream prefix %q/%q raw=%q: want ≠ BAML (order): %+v", c.Name, p.Name, p.Raw, od)
+		}
+	}
+}
+
+// logObservedStreamOutcome prints BAML's observed parse-stream outcome for one
+// accumulated prefix in a stable, greppable form so a developer running
+// BAMLFUZZ_PARSE_CAPTURE=1 can copy the values into the corpus prefix `want`.
+// It carries the full prefix identity (case + prefix name + exact raw) and a
+// `stream` marker so a stream want can never be confused with — or reused
+// from — a final-parse want. Not a gate.
+func logObservedStreamOutcome(t *testing.T, caseName string, p bamlfuzz.ParseRecoveryPrefix, outcome bamlfuzz.ParseOutcome) {
+	t.Helper()
+	if outcome.Error != "" {
+		t.Logf("CAPTURE stream case=%q prefix=%q raw=%q -> status=error err=%s", caseName, p.Name, p.Raw, outcome.Error)
+		return
+	}
+	t.Logf("CAPTURE stream case=%q prefix=%q raw=%q -> status=success json=%s", caseName, p.Name, p.Raw, string(outcome.JSON))
 }
 
 // characterizeFinal gates the live BAML final parse against the recorded
