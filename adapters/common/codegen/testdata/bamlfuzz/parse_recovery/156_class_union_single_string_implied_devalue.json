@@ -1,0 +1,45 @@
+{
+  "name": "class_union_single_string_implied_devalue",
+  "description": "M3c: pins the pick_best classSingleImplied devalue. A{s string} | B{x int, y int} with an object carrying x,y plus 4 EXTRA keys. Neither arm try_casts (A sees x,y,e* as extras; B sees e* as extras). Phase 2: A absorbs the whole object into its lone STRING field via implied-key (JsonToString 2 + ImpliedKey 2 = 4, classSingleImplied), B keeps x,y and flags 4 extras (ExtraKey 4 = 4). Scores TIE at 4, so the single-string-implied devalue (under a union target) picks the OTHER arm B. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "class_ref", "ref": "A"},
+                {"kind": "class_ref", "ref": "B"}
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "A",
+        "properties": [
+          {"name": "s", "type": {"kind": "string"}}
+        ]
+      },
+      {
+        "name": "B",
+        "properties": [
+          {"name": "x", "type": {"kind": "int"}},
+          {"name": "y", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":{\"x\":1,\"y\":2,\"e0\":1,\"e1\":1,\"e2\":1,\"e3\":1}}",
+  "want": {
+    "status": "success",
+    "json": {"u": {"x": 1, "y": 2}}
+  }
+}

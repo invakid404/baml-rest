@@ -227,7 +227,7 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"nullable_multi_union_null":  true,
 	// M3b SCALAR-LEAF unions: checkSupportedUnionShape now admits any union whose
 	// arms are all fully-modeled non-composite leaves (primitive int/float/bool/
-	// string, literal, enum, + hoisted null), and coerceScalarLeafUnion scores
+	// string, literal, enum, + hoisted null), and coerceUnionSafeMulti scores
 	// each arm through the same per-kind coercer BAML uses, applying the early
 	// first-score-0 rule + pick_best. Bare-primitive, mixed-scalar, non-disjoint
 	// string-literal, and (post-flatten) nested-scalar unions are now CLAIMED —
@@ -241,20 +241,42 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"float_int_union_reversal":        true,
 	"bool_string_union_string_wins":   true,
 	"enum_string_union_exact":         true,
-	// Fallback: unions where a 2nd BAML arm invokes COMPOSITE scored pick_best or
-	// array-to-singular native does not yet model — mixed scalar+class, overlapping/
-	// single-field classes, literal/enum-vs-class, list/single-to-array, map
-	// partials (M3c/M3d) — plus scalar unions where no arm proves a winner (all
-	// arms error) or the winner is array-to-singular. Native declines (fallback)
-	// rather than risk a scored divergence.
-	"class_union_overlapping_keys":            false,
-	"single_field_class_union_implied_key":    false,
-	"literal_class_union_object_to_primitive": false,
-	"enum_class_union_object_to_string":       false,
-	"union_list_singleton_ambiguity":          false,
-	"union_map_value_partial":                 false,
-	"scalar_union_no_match_fallback":          false,
-	"scalar_union_array_input_fallback":       false,
+	// M3c CLAIMED — CLASS + MIXED literal/enum/class union scoring. The union gate
+	// now admits class arms (required flat-leaf fields, single-field allowed,
+	// overlapping keys allowed) and mixes of scalar/literal/enum/class, and
+	// coerceUnionSafeMulti resolves them TWO-PHASE like BAML: a phase-1 try_cast pass
+	// (tryCastClass ports Class::try_cast — a STRICT exact-key object cast) and, only
+	// when NO arm try_casts, a phase-2 lenient coerce + array_helper::pick_best (with
+	// the class / scalar-vs-composite special ordering). These four resolve
+	// byte-identical to live BAML:
+	//   - overlapping-key classes where one arm's full field set try_casts (39);
+	//   - single-field class arms with a scalar input inferred-object-absorbed (40);
+	//   - a literal|class mix where the class try_casts first (42);
+	//   - an enum|class mix scored in phase 2 (43).
+	"class_union_overlapping_keys":            true,
+	"single_field_class_union_implied_key":    true,
+	"literal_class_union_object_to_primitive": true,
+	"enum_class_union_object_to_string":       true,
+	// M3c added coverage: the pick_best classSingleImplied devalue (a single-string
+	// implied-key class ties an ordinary class on score and loses the tie under the
+	// union target), and a mixed literal|class where the class arm provably errors so
+	// the literal wins via ObjectToPrimitive — both CLAIMED green vs live BAML.
+	"class_union_single_string_implied_devalue":            true,
+	"literal_class_union_object_to_primitive_literal_wins": true,
+	// M3d guard: a class union with a DEFAULTABLE-field arm (a list field defaulting
+	// to [], an all-default class) stays fallback — its default-fill / all-default
+	// devalue scoring inside a union is not modeled until M3d, so native declines at
+	// the gate (the arm has a non-flat-leaf field).
+	"class_union_all_default_stays_fallback": false,
+	// Fallback: unions where a 2nd BAML arm invokes a list/map composite scored
+	// pick_best or array-to-singular native does not yet model — list/single-to-array,
+	// map partials (M3d) — plus scalar unions where no arm proves a winner (all arms
+	// error) or the winner is array-to-singular. Native declines (fallback) rather
+	// than risk a scored divergence.
+	"union_list_singleton_ambiguity":    false,
+	"union_map_value_partial":           false,
+	"scalar_union_no_match_fallback":    false,
+	"scalar_union_array_input_fallback": false,
 	// A multi-arm union as a LIST ELEMENT declines: BAML threads the previous
 	// element's arm as ctx.union_variant_hint (coerce_array.rs) but native has no
 	// hint, so per-element arm selection can diverge. Array union hints are M3d.

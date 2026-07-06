@@ -6,10 +6,10 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 )
 
-// M3 slice a — SCORE MODEL + safe-family pick_best. The safe-family union
-// coercers (coerceScalarLeafUnion / coerceFlatClassUnion) now score every arm with
-// the types.rs inherent model, apply BAML's early first-score-0 winner rule, and
-// otherwise run a faithful array_helper::pick_best over the successful candidates
+// M3 slice a — SCORE MODEL + safe-family pick_best. The unified union coercer
+// (coerceUnionSafeMulti) scores every arm with
+// the types.rs inherent model, applies BAML's early first-score-0 winner rule, and
+// otherwise runs a faithful array_helper::pick_best over the successful candidates
 // plus (when nullable) the null arm (DefaultButHadValue, score 110). No gate
 // broadening — only the existing literal/class safe families are scored. These
 // tests pin the flips from the pre-M3 clean-only rule to scored selection.

@@ -2428,62 +2428,53 @@ func coerceUnionSafe(b *schema.Bundle, u *schema.UnionType, input value, cf *coe
 	return coerceUnionSafeMulti(b, u.Variants, input, u.Nullable, cf)
 }
 
-// coerceUnionSafeMulti dispatches a proven-safe multi-variant union to its
-// family's scored coercer. nullable is the union's Nullable flag, threaded so
-// selectUnionArms adds the null arm as a scored candidate.
-// checkSupportedUnionShape has already proven the variant set is one of the two
-// families, so an all-class set is the flat class union and everything else is
-// the scalar/literal/enum leaf family.
-func coerceUnionSafeMulti(b *schema.Bundle, variants []schema.Type, input value, nullable bool, cf *coerceFlags) (json.RawMessage, error) {
-	if allClassVariants(variants) {
-		return coerceFlatClassUnion(b, variants, input, nullable, cf)
-	}
-	return coerceScalarLeafUnion(b, variants, input, nullable, cf)
-}
-
-// coerceScalarLeafUnion resolves a union whose every arm is a fully-modeled
-// non-composite LEAF — a primitive scalar (int/float/bool/string), a literal
-// (any kind), or an enum (checkSupportedUnionShape's M3b scalar-leaf family) —
-// reproducing BAML's TWO-PHASE union coercion exactly:
+// coerceUnionSafeMulti resolves a proven-safe multi-variant union (a scalar/
+// literal/enum leaf family, a required-flat-leaf CLASS family, or any MIX of them —
+// checkSupportedUnionShape) reproducing BAML's TWO-PHASE union coercion exactly:
 //
-//  1. try_cast pass (tryCastScalarUnion): the FIRST non-null arm whose STRICT
-//     native-JSON-type cast succeeds wins at score 0, BEFORE any lenient
-//     conversion. This is BAML's field_type.rs "try_cast is basically a way to
-//     exit early" over try_cast_union, and is why `int | string` keeps a numeric
-//     string as a STRING and a JSON number picks the int/float arm regardless of
-//     declaration order (the string arm's try_cast rejects a number, the int
-//     arm's rejects a string).
-//  2. lenient coerce pass (only when no arm try_casts): each arm is coerced
-//     through coerce(), which dispatches to the SAME per-kind coercer BAML uses
-//     (coercePrimitive / coerceLiteral / coerceEnum), so a lenient conversion
-//     (numeric-string parse, float→int round, string→bool, stringify+match,
-//     substring/fuzzy hit, single-key extraction) scores exactly as BAML would.
+//  1. try_cast pass (tryCastUnion): field_type.rs runs self.try_cast BEFORE the
+//     lenient coerce for EVERY value ("try_cast is basically a way to exit early");
+//     for a union that is try_cast_union over iter_skip_null (the non-null arms in
+//     order). The FIRST arm whose STRICT native-type cast succeeds is BAML's
+//     immediate winner at score 0 — a scalar/literal/enum by exact native-JSON-type
+//     match (tryCastArm), a CLASS by an exact-key object match whose every required
+//     flat-leaf field try_casts (tryCastClass). No numeric parse, stringify, fuzzy
+//     match, single-key extraction, class implied-key, or default happens here. This
+//     is why `int | string` keeps a numeric STRING as a string, a JSON number picks
+//     the int/float arm regardless of order, and a class whose full field set is
+//     present (fixtures 35/39/42) returns immediately regardless of the other arms.
+//  2. lenient coerce pass (only when NO arm try_casts): each arm is coerced through
+//     coerce(), which dispatches to the SAME per-kind coercer BAML uses
+//     (coercePrimitive / coerceLiteral / coerceEnum / coerceClass), so a lenient
+//     conversion (numeric-string parse, float→int round, string→bool, stringify+
+//     match, substring/fuzzy hit, single-key extraction, class implied-key /
+//     inferred-object / extra-key / default) scores exactly as BAML would.
 //     selectUnionArms applies the early first-score-0 rule and otherwise runs
 //     array_helper::pick_best over the successes (plus the null arm, score 110,
-//     when nullable). Every arm being a leaf, pick_best collapses to (score,
-//     index) — no list/class/scalar-vs-composite case fires — so the winner is
-//     exact.
+//     when nullable) — whose list/class/scalar-vs-composite special ordering native
+//     reproduces in cmpCandidates.
 //
-// In the lenient pass a non-matching or value-mismatched arm is a PROVEN BAML
-// error (excluded from ranking); an arm native's stricter coercer merely DECLINED
-// (native-can't-prove — a non-numeric string to an int arm, or ARRAY input to an
-// int/float/bool arm whose array-to-singular is M3d) or a case-fold-UNCERTAIN arm
-// declines the WHOLE union, because BAML might succeed it via a deferred path and
-// change the winner. The winner's own output is emitted directly.
+// In the lenient pass a non-matching / value-mismatched / missing-required arm is a
+// PROVEN BAML error (excluded from ranking); an arm native's stricter coercer merely
+// DECLINED (native-can't-prove — a non-numeric string to an int arm, or ARRAY input
+// to an int/float/bool/class arm whose array-to-singular is M3d) or a case-fold-
+// UNCERTAIN arm declines the WHOLE union, because BAML might succeed it via a
+// deferred path and change the winner. The winner's own output is emitted directly
+// (in the winner's schema field order for a class).
 //
-// It SUBSUMES the pre-M3b homogeneous-literal path (a literal arm try_casts on an
-// exact match and otherwise coerces identically), which is why the old
-// string-literal disjointness gate is gone: two lenient successes are resolved by
-// pick_best rather than declined.
-func coerceScalarLeafUnion(b *schema.Bundle, variants []schema.Type, input value, nullable bool, cf *coerceFlags) (json.RawMessage, error) {
+// It SUBSUMES the pre-M3c per-family paths: a scalar/literal/enum-only variant set
+// behaves exactly as the M3b scalar-leaf coercer (phase-1 leaf try_cast, phase-2
+// per-kind scoring), and an all-class or mixed set adds the class try_cast (phase 1)
+// and the class pick_best special ordering (phase 2). The old disjoint-key /
+// >=2-field class gate is gone: overlapping and single-field class arms are resolved
+// by pick_best rather than declined.
+func coerceUnionSafeMulti(b *schema.Bundle, variants []schema.Type, input value, nullable bool, cf *coerceFlags) (json.RawMessage, error) {
 	// Phase 1: try_cast pass (coerce_union.rs try_cast_union, run by field_type.rs
 	// BEFORE the lenient coerce). The FIRST non-null arm whose STRICT native-type
-	// cast succeeds is BAML's winner at score 0 — before any numeric parse,
-	// stringify, fuzzy match, or extraction. This is why `int | string` keeps a
-	// numeric STRING as a string and a JSON number picks the int/float arm.
-	if w, ok, err := tryCastScalarUnion(b, variants, input); err != nil {
+	// cast succeeds is BAML's winner at score 0.
+	if w, matched, err := tryCastUnion(b, variants, input); err != nil {
 		return nil, err
-	} else if ok {
+	} else if matched {
 		setWinnerCf(cf, w)
 		return w.output, nil
 	}
@@ -2502,24 +2493,32 @@ func coerceScalarLeafUnion(b *schema.Bundle, variants []schema.Type, input value
 	return w.output, nil
 }
 
-// tryCastScalarUnion ports BAML's try_cast_union (coerce_union.rs) for the
-// scalar-leaf family. field_type.rs runs self.try_cast BEFORE the lenient coerce
-// for EVERY value ("try_cast is basically a way to exit early"); for a union that
-// is try_cast_union over iter_skip_null (the non-null arms in order). A scalar /
-// literal / enum arm's try_cast succeeds ONLY when the input's native JSON type
-// already matches the arm — no numeric parse, stringify, fuzzy/substring match,
-// or single-key extraction — and it always scores 0. So the FIRST arm that
+// tryCastUnion ports BAML's try_cast_union (coerce_union.rs) for the supported
+// union families. field_type.rs runs self.try_cast BEFORE the lenient coerce for
+// EVERY value; for a union that is try_cast_union over iter_skip_null (the non-null
+// arms in order). Each arm's try_cast (tryCastArm — a scalar/literal/enum by strict
+// native-JSON-type match, a CLASS by tryCastClass) succeeds ONLY when the input's
+// native shape already matches, adding NO score-bearing flag: within the supported
+// families a try_cast always scores 0 (leaf arms are strict; a required-flat-leaf
+// class has empty own conditions and score-0 field try_casts). So the FIRST arm that
 // try_casts is BAML's immediate winner (UnionMatch), returned before the lenient
 // coerce pass. The null arm is excluded here (the JSON-null input fast path is in
 // coerceUnionSafe; a non-null input never try_casts to null).
 //
+// Because every supported arm's try_cast is 0-or-no-match, BAML's try_cast_union
+// non-zero-collection + pick_best sub-path is never reached and is intentionally not
+// modeled: if a future gate admits an arm whose try_cast can score non-zero (e.g. a
+// class with an OPTIONAL field → a missing OptionalDefaultFromNoValue), that sub-path
+// must be ported before it is claimed (checkUnionClassVariant enforces this today by
+// rejecting non-flat-leaf/optional class fields).
+//
 // Returns (winner, true, nil) on a hit; (_, false, nil) when no arm try_casts
 // (caller runs the lenient pass); (_, false, err) only for a value native cannot
-// emit (a JSON number that parses to a non-finite float), which declines the
-// whole union rather than risk emitting an invalid token.
-func tryCastScalarUnion(b *schema.Bundle, variants []schema.Type, input value) (candidate, bool, error) {
+// emit (a JSON number that parses to a non-finite float) or a hard/invariant failure
+// (unknown class / malformed arm type), which declines/propagates.
+func tryCastUnion(b *schema.Bundle, variants []schema.Type, input value) (candidate, bool, error) {
 	for i := range variants {
-		out, kind, matched, err := tryCastScalarArm(b, variants[i], input)
+		out, kind, matched, err := tryCastArm(b, variants[i], input)
 		if err != nil {
 			return candidate{}, false, err
 		}
@@ -2530,10 +2529,9 @@ func tryCastScalarUnion(b *schema.Bundle, variants []schema.Type, input value) (
 	return candidate{}, false, nil
 }
 
-// tryCastScalarArm ports the per-kind try_cast for the scalar-leaf family
-// (coerce_primitive.rs / coerce_literal.rs / coerce_enum.rs try_cast): a STRICT
-// native-type match that adds no score-bearing flag. It returns the emitted JSON,
-// the BAML value kind (for pick_best/setWinnerCf), and whether the arm matched.
+// tryCastArm ports the per-kind try_cast (field_type.rs::try_cast dispatch): a
+// STRICT native-type match that adds no score-bearing flag. It returns the emitted
+// JSON, the BAML value kind (for pick_best/setWinnerCf), and whether the arm matched.
 //
 //   - string:  a JSON string (verbatim).
 //   - int:     a JSON number whose token is an i64-range integer (as_i64 Some) —
@@ -2546,7 +2544,15 @@ func tryCastScalarUnion(b *schema.Bundle, variants []schema.Type, input value) (
 //     ==, int by as_i64 ==, bool by ==) — no stringify/parse/fuzzy.
 //   - enum:    a JSON string EXACTLY equal to a value's rendered name (no
 //     description forms, no case fold, no substring); emits the canonical name.
-func tryCastScalarArm(b *schema.Bundle, t schema.Type, input value) (json.RawMessage, candKind, bool, error) {
+//   - class:   an OBJECT whose keys EXACTLY match a subset of the fields with NO
+//     extras and every required flat-leaf field try_casting (tryCastClass).
+//
+// Every other kind (list / map / union / recursive alias) never appears as a
+// supported union arm (checkSupportedUnionShape), so it returns not-matched.
+func tryCastArm(b *schema.Bundle, t schema.Type, input value) (json.RawMessage, candKind, bool, error) {
+	if t.Kind == schema.TypeClass {
+		return tryCastClass(b, t.Name, t.Mode, input)
+	}
 	switch t.Kind {
 	case schema.TypePrimitive:
 		switch t.Primitive {
@@ -2614,35 +2620,92 @@ func tryCastScalarArm(b *schema.Bundle, t schema.Type, input value) (json.RawMes
 	return nil, 0, false, nil
 }
 
-// coerceFlatClassUnion scores a flat disjoint-key class union (coerce_union.rs
-// over class arms). Each arm is coerced through coerceClass; the disjoint-key
-// gate guarantees at most one arm matches an input's full field set unless the
-// input carries a second arm's fields too, in which case BOTH succeed and
-// pickBest chooses the lower-score class (then lower index). A non-matching arm
-// missing its required fields is a PROVEN BAML error (excluded); an arm native's
-// stricter coercer left INDETERMINATE is native-can't-prove and declines the
-// whole union (BAML might succeed it and pick it). When nullable, the null arm
-// (score 110) competes — so an extra-key-heavy class scoring above 110 loses to
-// null, while a class scoring below 110 wins. The winner's own coercion output
-// is emitted directly, in that class's schema field order.
-func coerceFlatClassUnion(b *schema.Bundle, variants []schema.Type, input value, nullable bool, cf *coerceFlags) (json.RawMessage, error) {
+// tryCastClass ports Class::try_cast (ir_ref/coerce_class.rs) — the STRICT phase-1
+// class coercion. It matches ONLY a JSON OBJECT whose keys EXACTLY equal (by
+// rendered name — a case-sensitive BamlMap key lookup, NOT the lenient fuzzy
+// matches_string_to_string coerce uses) a subset of the class fields with NO extra
+// key, where every present field's value try_casts (recursively, via tryCastArm)
+// and every field is present. The M3c gate (checkUnionClassVariant) guarantees all
+// fields are REQUIRED flat leaves, so there are no optional fills and a class
+// try_cast that matches always scores 0 (own conditions empty, every field try_cast
+// score 0) — hence it is BAML's immediate union winner, and no non-zero try_cast
+// score arises for the caller to pick_best over.
+//
+// Returns (out, candClass, true, nil) on a strict match (emitted in SCHEMA field
+// order under canonical field names, byte-identical to the class's clean lenient
+// coerce output); (nil, candClass, false, nil) when the object does not strictly
+// match (extra key, missing field, or a field that does not try_cast — the caller
+// falls to the lenient phase, or the next arm); (nil, _, false, err) only for a
+// hard/invariant failure (unknown class, or a malformed field arm type).
+func tryCastClass(b *schema.Bundle, name string, mode schema.StreamingMode, input value) (json.RawMessage, candKind, bool, error) {
+	cls, ok := b.FindClass(name, mode)
+	if !ok {
+		return nil, 0, false, fmt.Errorf("debaml: unknown class %q", name)
+	}
 	if input.kind != valObject {
-		// Non-object to a >=2-required-field class union: every arm misses its
-		// required fields (a proven error), leaving only the null arm — but native
-		// cannot prove BAML has no other object/inference path for a scalar, so it
-		// stays conservative and DECLINES (unchanged pre-M3 behavior).
-		return nil, declineCoerce("class union", input)
+		// Class try_cast handles objects only (a scalar/array/null never try_casts
+		// to a class; those are the lenient inferred-object / array-to-singular
+		// paths, not the strict cast).
+		return nil, candClass, false, nil
 	}
-	w, err := selectUnionArms(len(variants), nullable, func(i int) (json.RawMessage, *coerceFlags, error) {
-		armF := &coerceFlags{}
-		out, e := coerceClass(b, variants[i].Name, variants[i].Mode, input, armF)
-		return out, armF, e
-	})
-	if err != nil {
-		return nil, err
+	nF := len(cls.Fields)
+	assigned := make([]value, nF)
+	present := make([]bool, nF)
+	for i := range input.objV {
+		key := input.objV[i].key
+		mf := -1
+		for j := range cls.Fields {
+			// EXACT rendered-name match (BAML's fill_result.get_mut(k)); the gate
+			// rejects duplicate rendered names, so the first match is unique.
+			if cls.Fields[j].Name.RenderedName() == key {
+				mf = j
+				break
+			}
+		}
+		if mf < 0 {
+			// try_cast rejects objects with ANY extra key (stricter matching).
+			return nil, candClass, false, nil
+		}
+		if present[mf] {
+			continue // duplicate key for an already-set field: keep first.
+		}
+		present[mf] = true
+		assigned[mf] = input.objV[i].val
 	}
-	setWinnerCf(cf, w)
-	return w.output, nil
+
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	first := true
+	for j := range cls.Fields {
+		if !present[j] {
+			// The gate guarantees every field is REQUIRED (no optional), so a field
+			// with no input key fails the strict cast (BAML returns None; the lenient
+			// phase would default/error it instead).
+			return nil, candClass, false, nil
+		}
+		fout, _, matched, err := tryCastArm(b, cls.Fields[j].Type, assigned[j])
+		if err != nil {
+			return nil, candClass, false, err
+		}
+		if !matched {
+			// A field's value does not strictly cast to its type → the class
+			// try_cast fails (BAML returns None; the lenient phase may still coerce).
+			return nil, candClass, false, nil
+		}
+		if !first {
+			buf.WriteByte(',')
+		}
+		first = false
+		key, err := marshalJSON(cls.Fields[j].Name.Name)
+		if err != nil {
+			return nil, candClass, false, err
+		}
+		buf.Write(key)
+		buf.WriteByte(':')
+		buf.Write(fout)
+	}
+	buf.WriteByte('}')
+	return buf.Bytes(), candClass, true, nil
 }
 
 // isOptional reports whether t is an optional (a nullable union), the only

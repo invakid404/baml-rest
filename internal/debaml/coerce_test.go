@@ -75,16 +75,16 @@ func TestWrappersPropagateHardErrors(t *testing.T) {
 		u := &schema.UnionType{Variants: []schema.Type{ghostEnum}, Nullable: true}
 		return coerceUnionSafe(b, u, value{kind: valString, strV: "x"}, nil)
 	})
-	run("coerceFlatClassUnion-counting", "unknown class", func() (interface{}, error) {
-		// Bypasses checkSupportedUnionShape (a unit-level wrapper probe): the
-		// counting loop hits FindClass and must propagate the hard error.
-		return coerceFlatClassUnion(b, []schema.Type{ghostClass, ghostClass}, obj, false, nil)
+	run("coerceUnionSafeMulti-class-counting", "unknown class", func() (interface{}, error) {
+		// Bypasses checkSupportedUnionShape (a unit-level wrapper probe): phase-1
+		// tryCastUnion → tryCastClass hits FindClass and must propagate the hard error.
+		return coerceUnionSafeMulti(b, []schema.Type{ghostClass, ghostClass}, obj, false, nil)
 	})
-	run("coerceScalarLeafUnion-counting", "literal type missing value", func() (interface{}, error) {
+	run("coerceUnionSafeMulti-literal-counting", "literal type missing value", func() (interface{}, error) {
 		// A literal variant with a nil payload is a hard invariant failure surfaced
-		// by phase-1 tryCastScalarArm before the scored coerce loop runs.
+		// by phase-1 tryCastArm before the scored coerce loop runs.
 		bad := schema.Type{Kind: schema.TypeLiteral, Literal: nil}
-		return coerceScalarLeafUnion(b, []schema.Type{bad, bad}, value{kind: valString, strV: "x"}, false, nil)
+		return coerceUnionSafeMulti(b, []schema.Type{bad, bad}, value{kind: valString, strV: "x"}, false, nil)
 	})
 }
 

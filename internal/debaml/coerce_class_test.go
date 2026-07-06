@@ -352,14 +352,15 @@ func TestCoerceClass_NullableScored(t *testing.T) {
 	mustParse(t, clean, `{"u":null}`, `{"u":null}`)
 }
 
-// TestCoerceClass_Fixture40ShapeStaysFallback is the LOAD-BEARING over-claim
-// guard: a union of SINGLE-field classes (fixture 40 shape) with a scalar input
-// must STAY fallback. It declines at the SCHEMA GATE (checkFlatClassUnion rejects
-// a <2-field class-union variant), and — were the gate lifted — the lenient
-// coerceClass makes BOTH single-field arms succeed via inferred-object, so the
-// flat-class-union counter would see >=2 successes and decline. This must hold
-// after coerceClass became lenient.
-func TestCoerceClass_Fixture40ShapeStaysFallback(t *testing.T) {
+// TestCoerceClass_Fixture40SingleFieldUnionClaimed pins fixture 40 (M3c): a union
+// of SINGLE-field classes A{val} | B{num} with a scalar input now CLAIMS. No arm
+// try_casts (a scalar is not an object), so the lenient phase runs: BOTH single-
+// field arms absorb 5 via inferred-object (ImpliedKey score 2), and pick_best picks
+// the lower-index arm A (both ordinary int-implied classes, so classSingleImplied /
+// classAllDefault do not fire — the winner is (score, index)). This is the flip the
+// pre-M3c gate declined; the inferred-object absorption that made it fallback is now
+// exactly what makes it claimable under the scored two-phase model.
+func TestCoerceClass_Fixture40SingleFieldUnionClaimed(t *testing.T) {
 	// Root{u: A | B}, A{val int}, B{num int}, input {"u":5}.
 	s := &bamlutils.DynamicOutputSchema{
 		Properties: props(kv("u", &bamlutils.DynamicProperty{
@@ -371,10 +372,10 @@ func TestCoerceClass_Fixture40ShapeStaysFallback(t *testing.T) {
 			bamlutils.OrderedKV("B", &bamlutils.DynamicClass{Properties: props(kv("num", intProp()))}),
 		),
 	}
-	requireUnsupported(t, s, `{"u":5}`)
+	mustParse(t, s, `{"u":5}`, `{"u":{"val":5}}`)
 
-	// Both single-field classes DO absorb the scalar via inferred-object (which
-	// is exactly why the union must stay fallback): each coerceClass succeeds.
+	// Both single-field classes DO absorb the scalar via inferred-object: each
+	// coerceClass succeeds (the phase-2 successes pick_best chooses between).
 	bA, aT := classBundle(t, s, "A")
 	if _, err := coerceClass(bA, aT.Name, aT.Mode, numV("5"), nil); err != nil {
 		t.Errorf("A{val int} must absorb scalar 5 via inferred-object: %v", err)

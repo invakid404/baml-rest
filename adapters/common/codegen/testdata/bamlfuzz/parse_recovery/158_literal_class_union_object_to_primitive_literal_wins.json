@@ -1,0 +1,38 @@
+{
+  "name": "literal_class_union_object_to_primitive_literal_wins",
+  "description": "M3c: a mixed literal-vs-class union (\"active\" | Other{tag int}) with a single-key object whose key does NOT match the class field. Neither arm try_casts. Phase 2: the literal arm extracts the inner primitive via object-to-primitive (coerce_literal single-key object) and matches \"active\" (ObjectToPrimitive 2), while the class arm's implied-key coercion of {x:\"active\"} into an int field PROVABLY fails (missing required int) and is EXCLUDED. The literal wins. Pins the mixed family + ObjectToPrimitive + provable-losing-class-arm exclusion. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "literal", "literal": {"kind": "string", "string": "active"}},
+                {"kind": "class_ref", "ref": "Other"}
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "Other",
+        "properties": [
+          {"name": "tag", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":{\"x\":\"active\"}}",
+  "want": {
+    "status": "success",
+    "json": {"u": "active"}
+  }
+}

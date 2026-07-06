@@ -845,9 +845,11 @@ func TestParse_OptionalArmScored(t *testing.T) {
 	mustParse(t, s, `{"c":"the color green please"}`, `{"c":"GREEN"}`)
 }
 
-func TestParse_ClassUnionOverlappingKeysDeclinedAtGate(t *testing.T) {
-	// Two classes sharing a field name (id) are NOT disjoint: BAML could
-	// partially match either arm → scoring → decline the whole schema.
+func TestParse_ClassUnionOverlappingKeysClaimed(t *testing.T) {
+	// M3c: two classes sharing a field name (id) are NO LONGER declined at the gate
+	// — pick_best now resolves overlapping-key arms. Here the input's full field set
+	// is exactly A{id,name}, so A try_casts at score 0 in phase 1 and wins outright
+	// (fixture 39). (The B arm's try_cast rejects the extra `name` key.)
 	s := &bamlutils.DynamicOutputSchema{
 		Properties: props(kv("u", &bamlutils.DynamicProperty{
 			Type: "union",
@@ -865,12 +867,14 @@ func TestParse_ClassUnionOverlappingKeysDeclinedAtGate(t *testing.T) {
 			}),
 		),
 	}
-	requireUnsupported(t, s, `{"u":{"id":1,"name":"x"}}`)
+	mustParse(t, s, `{"u":{"id":1,"name":"x"}}`, `{"u":{"id":1,"name":"x"}}`)
 }
 
-func TestParse_ClassUnionSingleFieldDeclinedAtGate(t *testing.T) {
-	// A single-field class arm is implied-key risk → decline at the gate even
-	// though the field names are disjoint.
+func TestParse_ClassUnionSingleFieldClaimed(t *testing.T) {
+	// M3c: a single-field class arm is NO LONGER declined at the gate — the
+	// implied-key / inferred-object paths and the pick_best classSingleImplied
+	// devalue are modeled. Here the input's key set is exactly A{only}, so A
+	// try_casts at score 0 in phase 1 and wins (the B arm rejects the `only` key).
 	s := &bamlutils.DynamicOutputSchema{
 		Properties: props(kv("u", &bamlutils.DynamicProperty{
 			Type: "union",
@@ -888,7 +892,7 @@ func TestParse_ClassUnionSingleFieldDeclinedAtGate(t *testing.T) {
 			}),
 		),
 	}
-	requireUnsupported(t, s, `{"u":{"only":1}}`)
+	mustParse(t, s, `{"u":{"only":1}}`, `{"u":{"only":1}}`)
 }
 
 func TestParse_ClassUnionNonFlatFieldDeclinedAtGate(t *testing.T) {
