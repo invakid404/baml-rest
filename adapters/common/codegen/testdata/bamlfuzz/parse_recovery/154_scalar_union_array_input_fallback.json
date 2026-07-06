@@ -1,0 +1,32 @@
+{
+  "name": "scalar_union_array_input_fallback",
+  "description": "M3b FALLBACK: scalar-leaf union (string | int) with ARRAY input [1,2]. BAML's int arm runs coerce_array_to_singular (pick_best over items + FirstMatch) while the string arm stringifies the array (JsonToString); the scored winner is array-to-singular, which native does not model until M3d. Native's int arm declines ARRAY input -> whole union declines -> fall back. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "string"},
+                {"kind": "int"}
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":[1,2]}",
+  "want": {
+    "status": "success",
+    "json": {"u": 1}
+  }
+}

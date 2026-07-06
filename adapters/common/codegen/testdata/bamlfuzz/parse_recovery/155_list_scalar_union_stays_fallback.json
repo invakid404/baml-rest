@@ -1,0 +1,37 @@
+{
+  "name": "list_scalar_union_stays_fallback",
+  "description": "M3b FALLBACK: a MULTI-ARM union as a LIST ELEMENT (list<Color enum | string>). BAML threads the previous element's winning arm into the next element as ctx.union_variant_hint (coerce_array.rs, the only hint setter) and tries that arm FIRST in both the try_cast and lenient phases; native coerces each element independently with no hint, so per-element arm selection can diverge (the reviewer's list<Color|string> ['other','Verde'] case — the alias 'Verde' is not expressible in the FuzzEnum IR, so this uses canonical tokens). Native DECLINES list-element unions in M3b (array union_variant_hint is M3d); the map<_,union> and top-level union claims are unaffected. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "list",
+              "inner": {
+                "kind": "union",
+                "variants": [
+                  {"kind": "enum_ref", "ref": "Color"},
+                  {"kind": "string"}
+                ]
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "enums": [
+      {"name": "Color", "values": ["RED", "GREEN", "BLUE"]}
+    ],
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":[\"other\",\"GREEN\"]}",
+  "want": {
+    "status": "success",
+    "json": {"u": ["other", "GREEN"]}
+  }
+}

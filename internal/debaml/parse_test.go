@@ -514,10 +514,12 @@ func TestParse_UnsupportedMapIntKey(t *testing.T) {
 	requireUnsupported(t, s, `{"m":{"1":1}}`)
 }
 
-func TestParse_UnsupportedMapUnionValue(t *testing.T) {
-	// A map value that is a general (multi-variant) union is out of scope:
-	// checkSupportedType rejects it via the value recursion, so the parser
-	// falls back.
+func TestParse_MapScalarUnionValueClaimed(t *testing.T) {
+	// M3b: a map VALUE that is a scalar-leaf union (string|int) is now in scope —
+	// checkSupportedType's value recursion admits it, and coerceMapValueChild
+	// routes the value through the try_cast-first scalar-union coercer. "x"
+	// try_casts to the string arm; numeric value 5 skips string try_cast and
+	// try_casts to int, so JsonToString phase-2 scoring is not reached.
 	s := &bamlutils.DynamicOutputSchema{
 		Properties: props(kv("m", &bamlutils.DynamicProperty{
 			Type: "map",
@@ -531,7 +533,11 @@ func TestParse_UnsupportedMapUnionValue(t *testing.T) {
 			},
 		})),
 	}
-	requireUnsupported(t, s, `{"m":{"a":"x"}}`)
+	mustParse(t, s, `{"m":{"a":"x"}}`, `{"m":{"a":"x"}}`)
+	mustParse(t, s, `{"m":{"a":5}}`, `{"m":{"a":5}}`)
+	// An indeterminate value (array: int arm array-to-singular is M3d, string arm
+	// stringifies) declines the whole map -> fall back (never a partial skip).
+	requireUnsupported(t, s, `{"m":{"a":[1,2]}}`)
 }
 
 // unionSchema wraps a single union property `u` with the given variants.
@@ -549,29 +555,35 @@ func litStr(v string) *bamlutils.DynamicTypeSpec {
 }
 
 func TestParse_LiteralUnionStringExactClaimed(t *testing.T) {
-	// Homogeneous string-literal union with pairwise BAML-match-disjoint
-	// values: native CLAIMS the arm that EXACTLY equals the input, because
-	// disjointness proves BAML cannot fuzzy-match a second arm.
+	// Homogeneous string-literal union: an input that EXACTLY equals a literal
+	// value try_casts to that arm in phase 1 and is CLAIMED. M3b no longer
+	// requires literal values to be pairwise match-disjoint: exact inputs still
+	// return from phase 1, while non-exact inputs that coerce against multiple
+	// arms are resolved by phase-2 scoring / pick_best.
 	s := unionSchema(litStr("small"), litStr("large"))
 	mustParse(t, s, `{"u":"small"}`, `{"u":"small"}`)
 	mustParse(t, s, `{"u":"large"}`, `{"u":"large"}`)
-	// No exact literal match → DECLINE (BAML may fuzzy-match one arm).
+	// "medium" try_casts to neither literal and match_strings neither in phase 2,
+	// so no arm succeeds → DECLINE (BAML also errors; native falls back).
 	requireUnsupported(t, s, `{"u":"medium"}`)
-	// Non-string input → DECLINE (BAML may stringify/coerce it).
+	// A JSON number try_casts to neither string literal; the phase-2 stringify
+	// (ObjectToString "5") matches neither value → no arm succeeds → DECLINE.
 	requireUnsupported(t, s, `{"u":5}`)
 }
 
-func TestParse_LiteralUnionFuzzyStringDeclinedAtGate(t *testing.T) {
-	// "on" is a substring of "only" under the conservative match_string
-	// superset, so the set is NOT provably disjoint: BAML could fuzzy-match
-	// the input "on" against the "only" arm too → scoring → native must
-	// never claim. The whole schema is rejected at the gate (fall back).
+func TestParse_LiteralUnionFuzzyStringScored(t *testing.T) {
+	// M3b: a string-literal union whose values are NOT match-disjoint
+	// ("on" | "only") is now CLAIMED by the try_cast-first scalar-union path
+	// instead of declined at the gate. "on" exact-matches arm 0 in phase 1. "only"
+	// skips arm 0's exact literal try_cast, then exact-matches arm 1 in phase 1;
+	// substring scoring / pick_best is not reached. This pins the formerly
+	// non-disjoint literal family now admitted by M3b (fixture 41).
 	s := unionSchema(litStr("on"), litStr("only"))
-	requireUnsupported(t, s, `{"u":"on"}`)
-	requireUnsupported(t, s, `{"u":"only"}`)
-	// Case/punctuation-only variants are also non-disjoint under the fold.
+	mustParse(t, s, `{"u":"on"}`, `{"u":"on"}`)
+	mustParse(t, s, `{"u":"only"}`, `{"u":"only"}`)
+	// Case/punctuation-only variants: "Yes" exact-matches arm 0 in phase-1 try_cast.
 	s2 := unionSchema(litStr("Yes"), litStr("yes!"))
-	requireUnsupported(t, s2, `{"u":"Yes"}`)
+	mustParse(t, s2, `{"u":"Yes"}`, `{"u":"Yes"}`)
 }
 
 func TestParse_LiteralUnionBoolExactClaimed(t *testing.T) {
@@ -607,12 +619,16 @@ func TestParse_LiteralUnionIntExactClaimed(t *testing.T) {
 	mustParse(t, s, `{"u":"2"}`, `{"u":2}`) // "2"→2 matches literal 2
 }
 
-func TestParse_LiteralUnionMixedKindDeclinedAtGate(t *testing.T) {
-	// Mixed literal kinds (string vs int): BAML can string-coerce/parse across
-	// kinds, so a second arm could succeed → decline at the gate.
+func TestParse_LiteralUnionMixedKindScored(t *testing.T) {
+	// M3b: a mixed-literal-kind union (literal "1" | literal 1) is a scalar-leaf
+	// family, now claimed via the try_cast-first pass rather than declined at the
+	// gate. A JSON string "1" exact-matches the string literal (arm 0) in phase 1
+	// -> "1". A JSON number 1 skips the string-literal try_cast, exact-matches the
+	// int literal in phase 1, and emits 1; ObjectToString scoring is not reached.
+	// The winner's own kind/value is emitted.
 	s := unionSchema(litStr("1"), &bamlutils.DynamicTypeSpec{Type: "literal_int", Value: int64(1)})
-	requireUnsupported(t, s, `{"u":"1"}`)
-	requireUnsupported(t, s, `{"u":1}`)
+	mustParse(t, s, `{"u":"1"}`, `{"u":"1"}`)
+	mustParse(t, s, `{"u":1}`, `{"u":1}`)
 }
 
 // classUnionSchema wraps a single union property `u` over two flat classes
@@ -900,28 +916,30 @@ func TestParse_ClassUnionNonFlatFieldDeclinedAtGate(t *testing.T) {
 	requireUnsupported(t, s, `{"u":{"title":"Go","tags":["a"]}}`)
 }
 
-func TestParse_NullableMultiUnionNullClaimed(t *testing.T) {
-	// A nullable multi-union with UNSAFE non-null arms (bare string/int):
-	// native CLAIMS the null fast path for JSON-null input, but DECLINES every
-	// non-null input (the non-null arm set is not a safe family).
+func TestParse_NullableScalarMultiUnionScored(t *testing.T) {
+	// M3b: a nullable scalar-leaf multi-union (string | int | null) is now claimed
+	// for non-null input too. The variants flatten to [string, int] (null hoisted
+	// to Nullable). JSON null uses the null fast path. "x" try_casts to string; 5
+	// skips string try_cast and try_casts to int, so both non-null cases return
+	// before phase-2 scoring or null-arm competition.
 	s := unionSchema(
 		&bamlutils.DynamicTypeSpec{Type: "string"},
 		&bamlutils.DynamicTypeSpec{Type: "int"},
 		&bamlutils.DynamicTypeSpec{Type: "null"},
 	)
 	mustParse(t, s, `{"u":null}`, `{"u":null}`)
-	// Non-null input → DECLINE (string/int arms are lenient/scored).
-	requireUnsupported(t, s, `{"u":"x"}`)
-	requireUnsupported(t, s, `{"u":5}`)
+	mustParse(t, s, `{"u":"x"}`, `{"u":"x"}`)
+	mustParse(t, s, `{"u":5}`, `{"u":5}`)
 }
 
 func TestParse_NullableSingleArmUnsupportedArmClaimsNull(t *testing.T) {
 	// A nullable single-arm union T | null where T is UNSUPPORTED (here T is a
-	// map whose value is a general string|int union — out of scope). The null
-	// fast path must CLAIM null regardless of the unsupported arm (mirroring
-	// BAML's null arm), consistently with nullable MULTI unions. A NON-null
-	// input must DECLINE: coerceUnionSafe delegates to coerce on the lone arm,
-	// which falls back because the arm is unsupported.
+	// map whose value is a union WITH A LIST ARM — string | int[] — which is not
+	// a scalar-leaf family, so it stays out of scope in M3b). The null fast path
+	// must CLAIM null regardless of the unsupported arm (mirroring BAML's null
+	// arm), consistently with nullable MULTI unions. A NON-null input must
+	// DECLINE: coerceUnionSafe delegates to coerce on the lone arm, which falls
+	// back because the map value union is unsupported.
 	s := &bamlutils.DynamicOutputSchema{
 		Properties: props(kv("u", &bamlutils.DynamicProperty{
 			Type: "optional",
@@ -929,8 +947,11 @@ func TestParse_NullableSingleArmUnsupportedArmClaimsNull(t *testing.T) {
 				Type: "map",
 				Keys: &bamlutils.DynamicTypeSpec{Type: "string"},
 				Values: &bamlutils.DynamicTypeSpec{
-					Type:  "union",
-					OneOf: []*bamlutils.DynamicTypeSpec{{Type: "string"}, {Type: "int"}},
+					Type: "union",
+					OneOf: []*bamlutils.DynamicTypeSpec{
+						{Type: "string"},
+						{Type: "list", Items: &bamlutils.DynamicTypeSpec{Type: "int"}},
+					},
 				},
 			},
 		})),
@@ -939,26 +960,33 @@ func TestParse_NullableSingleArmUnsupportedArmClaimsNull(t *testing.T) {
 	// unsupported. Before the gate fix this DECLINED (the len==1 recursion
 	// rejected the unsupported arm before the nullable check).
 	mustParse(t, s, `{"u":null}`, `{"u":null}`)
-	// Non-null → DECLINE (the lone map arm has a general-union value type).
+	// Non-null → DECLINE (the lone map arm's value union has a list arm).
 	requireUnsupported(t, s, `{"u":{"a":"x"}}`)
 }
 
-func TestParse_UnsupportedPrimitiveUnion(t *testing.T) {
-	// A bare-primitive multi-union (string|int) declines: BAML stringifies /
-	// parses across kinds, so a second arm could succeed → scoring.
+func TestParse_PrimitiveScalarUnionScored(t *testing.T) {
+	// M3b: a bare-primitive scalar-leaf union (string | int) is now claimed via
+	// the try_cast-first pass. A plain string try_casts to the string arm. A JSON
+	// number 5 is selected in phase 1: string try_cast rejects numbers, int
+	// try_cast accepts, so JsonToString scoring is skipped.
 	s := unionSchema(
 		&bamlutils.DynamicTypeSpec{Type: "string"},
 		&bamlutils.DynamicTypeSpec{Type: "int"},
 	)
-	requireUnsupported(t, s, `{"u":"x"}`)
-	requireUnsupported(t, s, `{"u":5}`)
+	mustParse(t, s, `{"u":"x"}`, `{"u":"x"}`)
+	mustParse(t, s, `{"u":5}`, `{"u":5}`)
+	// A numeric STRING try_casts to the string arm in phase 1, before the int arm
+	// is considered (mirrors fixture 37).
+	mustParse(t, s, `{"u":"123"}`, `{"u":"123"}`)
 }
 
-func TestParse_UnsupportedNestedUnionVariant(t *testing.T) {
-	// A genuinely nested union ((string | int) | bool): BAML flattens it to a
-	// bare-primitive multi-union (string|int|bool) whose scored pick_best
-	// native cannot reproduce, so native declines at the gate. (This mirrors
-	// the nested_union parse-recovery fallback fixture.)
+func TestParse_NestedScalarUnionFlattenedScored(t *testing.T) {
+	// A genuinely nested union ((string | int) | bool) flattens (simplifyUnion,
+	// mirroring BAML's TypeIR::union) to the scalar-leaf set [string, int, bool].
+	// M3b resolves it try_cast-first: for 123, the flattened string arm rejects
+	// the number in try_cast, the int arm accepts in phase 1, and the value emits
+	// as 123; JsonToString scoring is not reached. "a" try_casts to the string
+	// arm. (Mirrors fixture 46.)
 	s := unionSchema(
 		&bamlutils.DynamicTypeSpec{Type: "union", OneOf: []*bamlutils.DynamicTypeSpec{
 			{Type: "string"},
@@ -966,9 +994,12 @@ func TestParse_UnsupportedNestedUnionVariant(t *testing.T) {
 		}},
 		&bamlutils.DynamicTypeSpec{Type: "bool"},
 	)
-	requireUnsupported(t, s, `{"u":123}`)
-	requireUnsupported(t, s, `{"u":"a"}`)
-	requireUnsupported(t, s, `{"u":true}`)
+	mustParse(t, s, `{"u":123}`, `{"u":123}`)
+	mustParse(t, s, `{"u":"a"}`, `{"u":"a"}`)
+	// A JSON bool try_casts to the bool arm (index 2) at score 0 — try_cast skips
+	// the string/int arms (a bool is neither a JSON string nor a JSON number), so
+	// it is CLAIMED (the int arm's lenient decline is never reached).
+	mustParse(t, s, `{"u":true}`, `{"u":true}`)
 }
 
 func TestParse_SingleFieldClassImpliedKeyInferredObject(t *testing.T) {

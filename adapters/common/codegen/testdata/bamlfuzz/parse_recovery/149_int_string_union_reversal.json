@@ -1,0 +1,32 @@
+{
+  "name": "int_string_union_reversal",
+  "description": "M3b CLAIMED: scalar-leaf union (int | string) — the ORDER-REVERSAL of fixture 37. BAML's try_cast pass tries the int arm first, but try_cast(int) REJECTS a JSON string (it needs a number), so the string arm's try_cast wins and the numeric string '123' stays a STRING — exactly as in fixture 37 (string | int). Native reproduces the try_cast-first selection: a numeric string never gets stolen by an int arm regardless of order. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "int"},
+                {"kind": "string"}
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":\"123\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": "123"}
+  }
+}

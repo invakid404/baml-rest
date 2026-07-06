@@ -1,0 +1,32 @@
+{
+  "name": "float_int_union_reversal",
+  "description": "M3b CLAIMED: scalar-leaf union (float | int) — the ORDER-REVERSAL of fixture 38. The float arm (index 0) accepts the JSON integer 5 as a clean f64 cast (score 0), so BAML's early first-score-0 rule returns the float arm before the int arm is scored. The emitted value is numerically 5 (differential compares numbers by value). want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "float"},
+                {"kind": "int"}
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":5}",
+  "want": {
+    "status": "success",
+    "json": {"u": 5}
+  }
+}

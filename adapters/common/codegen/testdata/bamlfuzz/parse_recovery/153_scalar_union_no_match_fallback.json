@@ -1,0 +1,31 @@
+{
+  "name": "scalar_union_no_match_fallback",
+  "description": "M3b FALLBACK: scalar-leaf union (int | bool), non-nullable, with a non-numeric non-bool string 'hello'. Both arms fail coercion (coerce_int / coerce_bool errors) and there is no null arm, so BAML merges the errors and the parse fails. Native declines (int arm is native-can't-prove for a plain string -> whole union declines), so it falls back. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "int"},
+                {"kind": "bool"}
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":\"hello\"}",
+  "want": {
+    "status": "error"
+  }
+}

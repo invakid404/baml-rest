@@ -80,10 +80,11 @@ func TestWrappersPropagateHardErrors(t *testing.T) {
 		// counting loop hits FindClass and must propagate the hard error.
 		return coerceFlatClassUnion(b, []schema.Type{ghostClass, ghostClass}, obj, false, nil)
 	})
-	run("coerceLiteralUnion-counting", "literal type missing value", func() (interface{}, error) {
-		// A literal variant with a nil payload is a hard invariant failure.
+	run("coerceScalarLeafUnion-counting", "literal type missing value", func() (interface{}, error) {
+		// A literal variant with a nil payload is a hard invariant failure surfaced
+		// by phase-1 tryCastScalarArm before the scored coerce loop runs.
 		bad := schema.Type{Kind: schema.TypeLiteral, Literal: nil}
-		return coerceLiteralUnion([]schema.Type{bad, bad}, value{kind: valString, strV: "x"}, false, nil)
+		return coerceScalarLeafUnion(b, []schema.Type{bad, bad}, value{kind: valString, strV: "x"}, false, nil)
 	})
 }
 

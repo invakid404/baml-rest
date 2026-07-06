@@ -225,21 +225,40 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"literal_union_int_exact":    true,
 	"class_union_single_shape":   true,
 	"nullable_multi_union_null":  true,
-	// Fallback: every union where a 2nd BAML arm could leniently succeed and
-	// invoke scored pick_best — bare primitive variants, numeric overlap,
-	// overlapping/single-field classes, fuzzy (non-disjoint) string literals,
-	// literal/enum-vs-class, list/single-to-array, map partials, nested
-	// unions. Native declines (fallback) rather than risk a scored divergence.
-	"string_int_union_numeric_string":         false,
-	"int_float_union_number":                  false,
+	// M3b SCALAR-LEAF unions: checkSupportedUnionShape now admits any union whose
+	// arms are all fully-modeled non-composite leaves (primitive int/float/bool/
+	// string, literal, enum, + hoisted null), and coerceScalarLeafUnion scores
+	// each arm through the same per-kind coercer BAML uses, applying the early
+	// first-score-0 rule + pick_best. Bare-primitive, mixed-scalar, non-disjoint
+	// string-literal, and (post-flatten) nested-scalar unions are now CLAIMED —
+	// their scored winner is reproduced exactly; a value-equal int/float, an
+	// order-reversal, and an enum arm are all pinned.
+	"string_int_union_numeric_string": true,
+	"int_float_union_number":          true,
+	"literal_union_fuzzy_string":      true,
+	"nested_union":                    true,
+	"int_string_union_reversal":       true,
+	"float_int_union_reversal":        true,
+	"bool_string_union_string_wins":   true,
+	"enum_string_union_exact":         true,
+	// Fallback: unions where a 2nd BAML arm invokes COMPOSITE scored pick_best or
+	// array-to-singular native does not yet model — mixed scalar+class, overlapping/
+	// single-field classes, literal/enum-vs-class, list/single-to-array, map
+	// partials (M3c/M3d) — plus scalar unions where no arm proves a winner (all
+	// arms error) or the winner is array-to-singular. Native declines (fallback)
+	// rather than risk a scored divergence.
 	"class_union_overlapping_keys":            false,
 	"single_field_class_union_implied_key":    false,
-	"literal_union_fuzzy_string":              false,
 	"literal_class_union_object_to_primitive": false,
 	"enum_class_union_object_to_string":       false,
 	"union_list_singleton_ambiguity":          false,
 	"union_map_value_partial":                 false,
-	"nested_union":                            false,
+	"scalar_union_no_match_fallback":          false,
+	"scalar_union_array_input_fallback":       false,
+	// A multi-arm union as a LIST ELEMENT declines: BAML threads the previous
+	// element's arm as ctx.union_variant_hint (coerce_array.rs) but native has no
+	// hint, so per-element arm selection can diverge. Array union hints are M3d.
+	"list_scalar_union_stays_fallback": false,
 	// Mcoerce-b native LENIENT PRIMITIVE + LITERAL numeric/bool/null coercion:
 	// numeric-string parsing (trim + trailing-comma trim, i64 / u64-wrap / f64 /
 	// fraction / extracted-number regex), float→int rounding (half-away,

@@ -1,0 +1,34 @@
+{
+  "name": "enum_string_union_exact",
+  "description": "M3b CLAIMED: scalar-leaf union (Color enum | string) with an exact enum token 'GREEN'. The enum arm (index 0) matches exactly via match_string (score 0), so BAML's early first-score-0 rule returns the enum arm's canonical name before the string arm competes. Pins an enum arm winning inside a scored union. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "enum_ref", "ref": "Color"},
+                {"kind": "string"}
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "enums": [
+      {"name": "Color", "values": ["RED", "GREEN", "BLUE"]}
+    ],
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":\"GREEN\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": "GREEN"}
+  }
+}

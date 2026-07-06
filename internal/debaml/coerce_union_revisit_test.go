@@ -7,7 +7,7 @@ import (
 )
 
 // M3 slice a — SCORE MODEL + safe-family pick_best. The safe-family union
-// coercers (coerceLiteralUnion / coerceFlatClassUnion) now score every arm with
+// coercers (coerceScalarLeafUnion / coerceFlatClassUnion) now score every arm with
 // the types.rs inherent model, apply BAML's early first-score-0 winner rule, and
 // otherwise run a faithful array_helper::pick_best over the successful candidates
 // plus (when nullable) the null arm (DefaultButHadValue, score 110). No gate
@@ -65,8 +65,8 @@ func TestLiteralUnion_NullableFlaggedArm_Scored(t *testing.T) {
 
 	sStr := unionSchema(litStr("5"), litStr("6"), &bamlutils.DynamicTypeSpec{Type: "null"})
 	mustParse(t, sStr, `{"u":null}`, `{"u":null}`)
-	mustParse(t, sStr, `{"u":"5"}`, `{"u":"5"}`) // clean exact (score 0) wins immediately
-	mustParse(t, sStr, `{"u":5}`, `{"u":"5"}`)   // ObjectToString score 2 < 110 -> claim
+	mustParse(t, sStr, `{"u":"5"}`, `{"u":"5"}`) // phase-1 try_cast exact match, no phase-2 scoring
+	mustParse(t, sStr, `{"u":5}`, `{"u":"5"}`)   // number: phase-2 ObjectToString score 2 < 110 -> claim
 }
 
 // TestClassUnion_Stringification_OneSuccess pins that a flat disjoint-key class
