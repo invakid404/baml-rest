@@ -1,0 +1,15 @@
+{
+  "name": "union_map_clean_try_cast",
+  "description": "M3d CLAIMED: union map<string,int> | string with a CLEAN object {\"a\":1}. try_cast_union collects the map's non-zero try_cast (ObjectToMap, score 1) as the only candidate (the string arm does not try_cast an object), so the map wins -> {\"a\":1}. want live-captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {"name": "Root", "properties": [{"name": "u", "type": {"kind": "union", "variants": [{"kind": "map", "key": {"kind": "string"}, "inner": {"kind": "int"}}, {"kind": "string"}]}}]}
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":{\"a\":1}}",
+  "want": {"status": "success", "json": {"u": {"a": 1}}}
+}

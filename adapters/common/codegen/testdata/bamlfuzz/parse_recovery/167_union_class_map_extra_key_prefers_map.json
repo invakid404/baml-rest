@@ -1,0 +1,16 @@
+{
+  "name": "union_class_map_extra_key_prefers_map",
+  "description": "M3d over-claim GUARD: union C{a:int} | map<string,int> with {\"a\":1,\"extra\":2}. The class try_cast REJECTS the extra key (strict), but the map try_cast KEEPS it (ObjectToMap, score 1), so try_cast_union returns the MAP with both keys. Without tryCastMap native's lenient pass would wrongly prefer the lower-index class (ExtraKey, also score 1) — this pins the map. want live-captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {"name": "Root", "properties": [{"name": "u", "type": {"kind": "union", "variants": [{"kind": "class_ref", "ref": "C"}, {"kind": "map", "key": {"kind": "string"}, "inner": {"kind": "int"}}]}}]},
+      {"name": "C", "properties": [{"name": "a", "type": {"kind": "int"}}]}
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":{\"a\":1,\"extra\":2}}",
+  "want": {"status": "success", "json": {"u": {"a": 1, "extra": 2}}}
+}

@@ -1,0 +1,14 @@
+{
+  "name": "primitive_int_array_empty_stays_fallback",
+  "description": "M3d FALLBACK: int field with EMPTY ARRAY input []. coerce_array_to_singular on zero items is BAML's error_unexpected_empty_array, so the required field (and the parse) errors. Native models it as a provenError (which wraps the fallback sentinel), so native DECLINES the whole parse rather than claim the error -> fall back. want live-captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {"name": "Root", "properties": [{"name": "u", "type": {"kind": "int"}}]}
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":[]}",
+  "want": {"status": "error"}
+}

@@ -1,6 +1,6 @@
 {
   "name": "union_map_value_partial",
-  "description": "M2c FALLBACK: union with a map variant (map<string,int> | string) where a map value is uncoercible. BAML's map coercer records a MapValueParseError and returns a PARTIAL map rather than hard-failing, so a 2nd arm can succeed -> scoring. Native declines at the gate (map variant). want captured from BAML final parse.",
+  "description": "M3d CLAIMED: union with a map variant (map<string,int> | string) where a map value is uncoercible ({\"a\":1,\"b\":\"x\"}). No arm try_casts (the map value \"x\" is not int), so the lenient pass runs: the map arm records a MapValueParseError and returns the PARTIAL map {\"a\":1} (ObjectToMap, score 2) while the string arm stringifies the object (JsonToString, score 2); pick_best's scalar-vs-composite rule prefers the composite map. Native admits string-keyed map arms and reproduces this. want captured from BAML final parse.",
   "preserve_schema_order": false,
   "schema": {
     "classes": [
@@ -12,8 +12,18 @@
             "type": {
               "kind": "union",
               "variants": [
-                {"kind": "map", "key": {"kind": "string"}, "inner": {"kind": "int"}},
-                {"kind": "string"}
+                {
+                  "kind": "map",
+                  "key": {
+                    "kind": "string"
+                  },
+                  "inner": {
+                    "kind": "int"
+                  }
+                },
+                {
+                  "kind": "string"
+                }
               ]
             }
           }
@@ -27,6 +37,10 @@
   "raw": "{\"u\":{\"a\":1,\"b\":\"x\"}}",
   "want": {
     "status": "success",
-    "json": {"u": {"a": 1}}
+    "json": {
+      "u": {
+        "a": 1
+      }
+    }
   }
 }

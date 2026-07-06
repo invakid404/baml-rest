@@ -1,0 +1,15 @@
+{
+  "name": "class_array_to_singular_length_one",
+  "description": "M3d CLAIMED: a class field (Pair{a:int,b:string}) with a LENGTH-ONE ARRAY [{\"a\":1,\"b\":\"x\"}]. coerce_class routes the Array through coerce_array_to_singular over the items (each coerced into the class) -> Pair{a:1,b:x} + FirstMatch. want live-captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {"name": "Root", "properties": [{"name": "p", "type": {"kind": "class_ref", "ref": "Pair"}}]},
+      {"name": "Pair", "properties": [{"name": "a", "type": {"kind": "int"}}, {"name": "b", "type": {"kind": "string"}}]}
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"p\":[{\"a\":1,\"b\":\"x\"}]}",
+  "want": {"status": "success", "json": {"p": {"a": 1, "b": "x"}}}
+}

@@ -1,0 +1,15 @@
+{
+  "name": "class_array_to_singular_multi_item",
+  "description": "M3d CLAIMED: a class field (Pair{a:int,b:string}) with a MULTI-ITEM ARRAY [{a:1,b:x},{a:2,b:y}]. coerce_array_to_singular coerces each object into the class; both score 0, so pick_best takes the FIRST (index 0) -> Pair{a:1,b:x}. want live-captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {"name": "Root", "properties": [{"name": "p", "type": {"kind": "class_ref", "ref": "Pair"}}]},
+      {"name": "Pair", "properties": [{"name": "a", "type": {"kind": "int"}}, {"name": "b", "type": {"kind": "string"}}]}
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"p\":[{\"a\":1,\"b\":\"x\"},{\"a\":2,\"b\":\"y\"}]}",
+  "want": {"status": "success", "json": {"p": {"a": 1, "b": "x"}}}
+}

@@ -160,15 +160,25 @@ func TestScalarUnion_NullableAllProvenErrorClaimsNull(t *testing.T) {
 }
 
 // TestScalarUnion_NoMatchAndArrayDecline pins the hard guards. A no-match scalar
-// union declines the whole union; ARRAY input to a union with an int/float/bool
-// arm declines (array-to-singular is M3d).
+// union declines the whole union; an ARRAY-input union arm whose array-to-singular
+// declines an item (native-can't-prove) still declines the whole union (M3d
+// array-to-singular claims only when every item is Ok or a PROVEN error).
 func TestScalarUnion_NoMatchAndArrayDecline(t *testing.T) {
 	// int | bool with a non-numeric non-bool string: both arms declineCoerce
 	// (native-can't-prove) -> whole union declines.
 	requireUnsupported(t, primUnion("int", "bool"), `{"u":"hello"}`)
-	// ARRAY input to string | int: the string arm stringifies (JsonToString) but
-	// the int arm's array-to-singular is M3d and declines -> whole union declines.
-	requireUnsupported(t, primUnion("string", "int"), `{"u":[1,2]}`)
+	// M3d: ARRAY input to string | int now CLAIMS the INT arm. As a union arm the
+	// int's array-to-singular target IS the union, so its inner pick_best adds
+	// UnionMatch (score 0) not FirstMatch — Int 1 scores just 1 (UnionMatch +
+	// coerce_array_to_singular FirstMatch), which BEATS the string arm's JsonToString
+	// "[1, 2]" (score 2). (Standalone the same int would score 2, FirstMatch twice.)
+	mustParse(t, primUnion("string", "int"), `{"u":[1,2]}`, `{"u":1}`)
+	// int | bool with [1,2] CLAIMS 1: the int arm array-to-singulars to Int 1, and
+	// the bool arm's array-to-singular sees every item as a PROVEN coerce_bool error
+	// (a NUMBER is error_unexpected_type — provenBoolArrayItemError), so the bool arm
+	// is a proven all-items-fail error EXCLUDED from ranking; the int arm is the lone
+	// success.
+	mustParse(t, primUnion("int", "bool"), `{"u":[1,2]}`, `{"u":1}`)
 }
 
 // TestScalarUnion_NonFiniteFloatDeclines pins the non-finite-float fallback. A

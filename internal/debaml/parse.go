@@ -152,23 +152,26 @@ func checkSupportedType(b *schema.Bundle, t schema.Type) error {
 		if t.Elem == nil {
 			return unsupported("list without element")
 		}
-		// A MULTI-ARM union as a LIST ELEMENT is out of scope for M3b. BAML threads
-		// the previous element's winning arm into the next element as
+		// A MULTI-ARM union as a LIST ELEMENT stays out of scope: BAML threads the
+		// previous element's winning arm into the next element as
 		// ctx.union_variant_hint (coerce_array.rs enter_scope_with_hint, the ONLY
 		// setter of the hint) and tries that arm FIRST in both the try_cast and
-		// lenient phases (coerce_union.rs); native coerces each element
-		// independently with no hint, so an array like list<Color | string> can
-		// pick a different arm per element than BAML (e.g. a hinted string arm keeps
-		// an exact enum token as a string). The hint only flows when the elements
-		// are THEMSELVES unions (the hint is the previous element's OUTERMOST
-		// UnionMatch, which a map/class/list element never carries), and map values
-		// and class fields RESET the hint (enter_scope / visit_class_value_pair), so
-		// map<_, union> and class union fields stay in scope. A single-non-null-arm
-		// optional element (T?) is safe — its only hint is that one arm. Declining
-		// the multi-arm case is the scope's conservative answer; the array
-		// union_variant_hint is modeled in M3d.
+		// lenient phases (coerce_union.rs), so an array like list<Color | string> can
+		// pick a DIFFERENT arm per element than a hint-less native coercer (e.g. a
+		// hinted string arm keeps an exact enum token as a string). The hint only
+		// flows when the elements are THEMSELVES unions (the hint is the previous
+		// element's OUTERMOST UnionMatch, which a map/class/list element never
+		// carries), and map values and class fields RESET the hint (enter_scope /
+		// visit_class_value_pair), so map<_, union> and class union fields stay in
+		// scope. A single-non-null-arm optional element (T?) is safe — its only hint
+		// is that one arm. M3d EVALUATED modeling the array union_variant_hint and
+		// DELIBERATELY DEFERRED it (the conservative answer to the scope's open
+		// question): faithfully reproducing the per-element hint carry-over and its
+		// two-phase first-try semantics — and PROVING per-element parity for every
+		// arm shape — is not something native can guarantee without over-claim risk,
+		// so a multi-arm-union list element keeps DECLINING (over-decline is safe).
 		if isMultiArmUnion(*t.Elem) {
-			return unsupported("list element is a multi-arm union (array union_variant_hint is M3d)")
+			return unsupported("list element is a multi-arm union (array union_variant_hint deferred — over-claim risk)")
 		}
 		return checkSupportedType(b, *t.Elem)
 	case schema.TypeUnion:
@@ -332,19 +335,66 @@ func checkSupportedUnionShape(b *schema.Bundle, u *schema.UnionType) error {
 // checkUnionVariant reports whether one union variant is in the supported set: a
 // fully-modeled scalar/literal/enum LEAF (isFlatLeafField — the identical predicate
 // flat class-union fields use, because a union arm and a class field route through
-// the same coercers), or a modelable CLASS ref (checkUnionClassVariant). Every
-// other kind — list, map, nested union, media, recursive alias — declines, because
-// its scored selection (array-to-singular, list special ordering, array-of-union
-// hint) is not modeled until M3d. Null is never a variant here (it is hoisted to
-// UnionType.Nullable).
+// the same coercers), a modelable CLASS ref (checkUnionClassVariant), or (M3d) a
+// LIST or STRING-keyed MAP arm whose scored selection native now reproduces:
+//
+//   - LIST arm: scored in phase 2 by coerceList (SingleToArray / partial skips /
+//     child scores) and pick_best's list-vs-list / scalar-vs-composite ordering
+//     (cmpCandidates). No list try_cast is modeled — a list try_cast always scores
+//     0 and native's lenient early-first-score-0 rule reproduces that winner (no
+//     earlier arm lenient-scores-0 on an array without also try_cast-scoring-0). The
+//     element must be in scope (checkSupportedType), and a MULTI-ARM-UNION element
+//     declines (the array union_variant_hint is not modeled — see the TypeList
+//     branch of checkSupportedType).
+//   - MAP arm: scored by tryCastMap (phase 1, ObjectToMap) and coerceMap (phase 2,
+//     partial value skips). Restricted to a STRING key: enum/literal map-key
+//     dynamic-keep semantics are unproven, and try_cast_map skips key validation, so
+//     only a string key (every key valid) is safe inside a union.
+//
+// Every other kind — nested union, media, recursive alias — declines. Null is never
+// a variant here (it is hoisted to UnionType.Nullable).
 func checkUnionVariant(b *schema.Bundle, v schema.Type) error {
 	if isFlatLeafField(v) {
 		return nil
 	}
-	if v.Kind == schema.TypeClass {
+	switch v.Kind {
+	case schema.TypeClass:
 		return checkUnionClassVariant(b, v)
+	case schema.TypeList:
+		// checkSupportedType handles the list arm's constraints, its element being
+		// in scope, and the multi-arm-union-element decline (array hint is M3d+).
+		return checkSupportedType(b, v)
+	case schema.TypeMap:
+		return checkUnionMapVariant(b, v)
+	default:
+		return unsupported(fmt.Sprintf("union variant kind %q: not a scalar/literal/enum leaf, a required-flat-leaf class, a list, or a string-keyed map", v.Kind))
 	}
-	return unsupported(fmt.Sprintf("union variant kind %q: not a scalar/literal/enum leaf or a required-flat-leaf class (list/map/nested-union arms are M3d)", v.Kind))
+}
+
+// checkUnionMapVariant validates a MAP variant of a union: constraint-free, a
+// STRING primitive key, and an in-scope value type. A non-string key (enum /
+// literal / string-literal union) is rejected because its dynamic-keep semantics
+// are unproven and try_cast_map (phase 1) skips key validation — only a string key
+// (where every key is valid) resolves identically to BAML inside a union.
+func checkUnionMapVariant(b *schema.Bundle, v schema.Type) error {
+	if len(v.Meta.Constraints) > 0 {
+		return unsupported("union map variant has type constraints")
+	}
+	if v.Key == nil || v.Value == nil {
+		return unsupported("union map variant without key or value")
+	}
+	// A CONSTRAINED key stays fallback (native does not model key constraints),
+	// mirroring checkSupportedMapKey's up-front constraint reject. The dynamic
+	// bridge carries no constraint channel today, so this is defensive, but it must
+	// hold before the primitive-string-key check so a constrained string key never
+	// slips through the union map-arm gate.
+	if len(v.Key.Meta.Constraints) > 0 {
+		return unsupported("union map variant key has constraints")
+	}
+	if v.Key.Kind != schema.TypePrimitive || v.Key.Primitive != schema.PrimitiveString {
+		return unsupported("union map variant must have a string key (enum/literal map-key dynamic-keep is unproven in a union)")
+	}
+	return checkSupportedType(b, *v.Value)
 }
 
 // checkUnionClassVariant validates one CLASS variant of a union as a fully-modeled
