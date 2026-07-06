@@ -1,0 +1,15 @@
+{
+  "name": "union_list_scalar_string_wins",
+  "description": "M3d CLAIMED: union list<string> | string with a SCALAR 'hi'. try_cast_union tries the string arm's try_cast (a JSON string, score 0) and wins immediately -> 'hi'; the list arm's SingleToArray wrap is never scored. want live-captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {"name": "Root", "properties": [{"name": "u", "type": {"kind": "union", "variants": [{"kind": "list", "inner": {"kind": "string"}}, {"kind": "string"}]}}]}
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":\"hi\"}",
+  "want": {"status": "success", "json": {"u": "hi"}}
+}

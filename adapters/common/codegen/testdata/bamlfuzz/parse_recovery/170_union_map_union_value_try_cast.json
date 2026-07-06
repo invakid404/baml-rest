@@ -1,0 +1,15 @@
+{
+  "name": "union_map_union_value_try_cast",
+  "description": "M3d over-claim GUARD (cold-review F-CR2): union map<string,int> | map<string,int|string> with {\"u\":{\"a\":\"1\"}}. try_cast_map recursively try_casts each value: the first map's value try_cast fails (int rejects the string \"1\"), the second map's value is a union whose try_cast (int|string) selects the string arm at score 0, so the second map wins -> {\"a\":\"1\"}. Native tryCastMap now recurses into UNION-valued map values via tryCastUnionArm. want live-captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {"name": "Root", "properties": [{"name": "u", "type": {"kind": "union", "variants": [{"kind": "map", "key": {"kind": "string"}, "inner": {"kind": "int"}}, {"kind": "map", "key": {"kind": "string"}, "inner": {"kind": "union", "variants": [{"kind": "int"}, {"kind": "string"}]}}]}}]}
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":{\"a\":\"1\"}}",
+  "want": {"status": "success", "json": {"u": {"a": "1"}}}
+}

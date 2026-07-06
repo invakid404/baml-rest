@@ -208,12 +208,14 @@ func TestClassUnion_HardGuardsStayFallback(t *testing.T) {
 	)
 	requireUnsupported(t, mapField, `{"u":{"a":1,"m":{"k":1}}}`)
 
-	// ARRAY input to a class union declines: BAML runs coerce_array_to_singular /
-	// pick_best over the items (array-to-singular is M3d), which native does not
-	// model, so every class arm declines the array and the union falls back.
+	// M3d: ARRAY input to a class union of MULTI-field all-required-flat-leaf classes
+	// now CLAIMS via class array-to-singular. The A arm ({a,b}) array-to-singulars
+	// the lone object [{a:1,b:"x"}] into A{a:1,b:"x"} (+FirstMatch); the B arm
+	// ({c,d}) errors on the item (keys a,b are extras, c,d missing → a proven
+	// coerce_class error), so it is excluded — A wins.
 	arr := abClassUnionSchema(
 		props(kv("a", intProp()), kv("b", strProp())),
 		props(kv("c", intProp()), kv("d", strProp())),
 	)
-	requireUnsupported(t, arr, `{"u":[{"a":1,"b":"x"}]}`)
+	mustParse(t, arr, `{"u":[{"a":1,"b":"x"}]}`, `{"u":{"a":1,"b":"x"}}`)
 }

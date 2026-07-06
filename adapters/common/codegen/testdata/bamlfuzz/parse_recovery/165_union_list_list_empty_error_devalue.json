@@ -1,0 +1,15 @@
+{
+  "name": "union_list_list_empty_error_devalue",
+  "description": "M3d CLAIMED: union list<int> | list<string> with a SCALAR 'hi'. Both arms SingleToArray-wrap; the int list's item is a PROVEN coerce_int error so it becomes [] (empty, ArrayItemParseError), while the string list becomes ['hi']. pick_best's list-vs-list rule devalues the empty-only-because-of-parse-error list, so ['hi'] wins. want live-captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {"name": "Root", "properties": [{"name": "u", "type": {"kind": "union", "variants": [{"kind": "list", "inner": {"kind": "int"}}, {"kind": "list", "inner": {"kind": "string"}}]}}]}
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":\"hi\"}",
+  "want": {"status": "success", "json": {"u": ["hi"]}}
+}

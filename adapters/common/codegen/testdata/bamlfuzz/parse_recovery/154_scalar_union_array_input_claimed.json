@@ -1,0 +1,38 @@
+{
+  "name": "scalar_union_array_input_claimed",
+  "description": "M3d CLAIMED: scalar-leaf union (string | int) with ARRAY input [1,2]. No arm try_casts; the int arm's coerce_array_to_singular yields Int 1 scoring 1 (as a UNION ARM its array-to-singular target is the union, so pick_best adds UnionMatch (0) not FirstMatch, plus coerce_array_to_singular's FirstMatch (1)), which BEATS the string arm's JsonToString \"[1, 2]\" (score 2). Native models array-to-singular with the union-target UnionMatch flag. want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {
+                  "kind": "string"
+                },
+                {
+                  "kind": "int"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":[1,2]}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": 1
+    }
+  }
+}

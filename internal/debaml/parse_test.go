@@ -535,9 +535,11 @@ func TestParse_MapScalarUnionValueClaimed(t *testing.T) {
 	}
 	mustParse(t, s, `{"m":{"a":"x"}}`, `{"m":{"a":"x"}}`)
 	mustParse(t, s, `{"m":{"a":5}}`, `{"m":{"a":5}}`)
-	// An indeterminate value (array: int arm array-to-singular is M3d, string arm
-	// stringifies) declines the whole map -> fall back (never a partial skip).
-	requireUnsupported(t, s, `{"m":{"a":[1,2]}}`)
+	// M3d: an ARRAY value now resolves to the INT arm. As a union arm the int's
+	// array-to-singular target is the union, so Int 1 scores 1 (UnionMatch +
+	// FirstMatch) and beats the string arm's JsonToString "[1, 2]" (score 2), so
+	// the map keeps {"a":1}.
+	mustParse(t, s, `{"m":{"a":[1,2]}}`, `{"m":{"a":1}}`)
 }
 
 // unionSchema wraps a single union property `u` with the given variants.
@@ -937,11 +939,12 @@ func TestParse_NullableScalarMultiUnionScored(t *testing.T) {
 }
 
 func TestParse_NullableSingleArmUnsupportedArmClaimsNull(t *testing.T) {
-	// A nullable single-arm union T | null where T is UNSUPPORTED (here T is a
-	// map whose value is a union WITH A LIST ARM — string | int[] — which is not
-	// a scalar-leaf family, so it stays out of scope in M3b). The null fast path
-	// must CLAIM null regardless of the unsupported arm (mirroring BAML's null
-	// arm), consistently with nullable MULTI unions. A NON-null input must
+	// A nullable single-arm union T | null where T is UNSUPPORTED (here T is a map
+	// whose value is a union with a list-of-MULTI-ARM-UNION arm — string |
+	// list<int|string> — whose list element is a multi-arm union, so its array
+	// union_variant_hint is out of scope and the value union declines). The null
+	// fast path must CLAIM null regardless of the unsupported arm (mirroring BAML's
+	// null arm), consistently with nullable MULTI unions. A NON-null input must
 	// DECLINE: coerceUnionSafe delegates to coerce on the lone arm, which falls
 	// back because the map value union is unsupported.
 	s := &bamlutils.DynamicOutputSchema{
@@ -954,7 +957,13 @@ func TestParse_NullableSingleArmUnsupportedArmClaimsNull(t *testing.T) {
 					Type: "union",
 					OneOf: []*bamlutils.DynamicTypeSpec{
 						{Type: "string"},
-						{Type: "list", Items: &bamlutils.DynamicTypeSpec{Type: "int"}},
+						{Type: "list", Items: &bamlutils.DynamicTypeSpec{
+							Type: "union",
+							OneOf: []*bamlutils.DynamicTypeSpec{
+								{Type: "int"},
+								{Type: "string"},
+							},
+						}},
 					},
 				},
 			},

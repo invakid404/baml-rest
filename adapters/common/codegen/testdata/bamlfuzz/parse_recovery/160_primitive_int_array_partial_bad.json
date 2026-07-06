@@ -1,0 +1,14 @@
+{
+  "name": "primitive_int_array_partial_bad",
+  "description": "M3d CLAIMED: int field with ARRAY input [\"bad\",2]. coerce_array_to_singular coerces each item; the non-numeric string 'bad' is a PROVEN coerce_int error (excluded, i32::MAX) and 2 wins -> 2. want live-captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {"name": "Root", "properties": [{"name": "u", "type": {"kind": "int"}}]}
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":[\"bad\",2]}",
+  "want": {"status": "success", "json": {"u": 2}}
+}

@@ -1,0 +1,14 @@
+{
+  "name": "primitive_int_array_first_best",
+  "description": "M3d CLAIMED: int field with ARRAY input [1,2]. BAML's coerce_int routes an Array through coerce_array_to_singular over the items (pick_best + FirstMatch); both items coerce, so the FIRST (index 0, score 0) wins -> 1. want live-captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {"name": "Root", "properties": [{"name": "u", "type": {"kind": "int"}}]}
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":[1,2]}",
+  "want": {"status": "success", "json": {"u": 1}}
+}

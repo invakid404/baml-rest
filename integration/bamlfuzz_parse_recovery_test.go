@@ -268,15 +268,26 @@ var parseRecoveryNativeClaim = map[string]bool{
 	// devalue scoring inside a union is not modeled until M3d, so native declines at
 	// the gate (the arm has a non-flat-leaf field).
 	"class_union_all_default_stays_fallback": false,
-	// Fallback: unions where a 2nd BAML arm invokes a list/map composite scored
-	// pick_best or array-to-singular native does not yet model — list/single-to-array,
-	// map partials (M3d) — plus scalar unions where no arm proves a winner (all arms
-	// error) or the winner is array-to-singular. Native declines (fallback) rather
-	// than risk a scored divergence.
-	"union_list_singleton_ambiguity":    false,
-	"union_map_value_partial":           false,
-	"scalar_union_no_match_fallback":    false,
-	"scalar_union_array_input_fallback": false,
+	// M3d CLAIMED — unions with LIST / MAP arms + array-to-singular. The union gate
+	// now admits a list arm (scored by coerceList + pick_best list ordering) and a
+	// string-keyed map arm (tryCastMap phase 1 + coerceMap phase 2), and the
+	// primitive int/float/bool coercers array-to-singular on array input. These
+	// resolve byte-identical to live BAML:
+	//   - string | list<string> with a scalar → the string arm try_casts first (44);
+	//   - int | list<int> with a partial array → the list arm ([1,2] via
+	//     ArrayItemParseError) beats the int arm's array-to-singular (Int 1 devalued
+	//     by FirstMatch against the composite list) (100);
+	//   - map<string,int> | string with a partial-value map → the map arm ({"a":1}
+	//     via MapValueParseError) beats the stringified array/object (45).
+	"union_list_singleton_ambiguity": true,
+	"union_map_value_partial":        true,
+	// M3d CLAIMED: array input to a scalar union resolves via array-to-singular —
+	// string | int with [1,2] → the int arm scores 1 (UnionMatch+FirstMatch, since a
+	// union arm's array-to-singular target IS the union) and beats the string arm's
+	// JsonToString "[1, 2]" (score 2).
+	"scalar_union_array_input_claimed": true,
+	// Still fallback: a scalar union where no arm proves a winner (all arms error).
+	"scalar_union_no_match_fallback": false,
 	// A multi-arm union as a LIST ELEMENT declines: BAML threads the previous
 	// element's arm as ctx.union_variant_hint (coerce_array.rs) but native has no
 	// hint, so per-element arm selection can diverge. Array union hints are M3d.
@@ -355,10 +366,13 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"list_class_non_object_partial":            true,
 	"nullable_optional_list_clean_array_claim": true,
 	// M3a CLAIMED: a nullable list arm scored by SingleToArray (score 1) beats the
-	// null arm (110). (union_list_partial stays fallback — a union WITH a list arm
-	// is outside the M3a safe families, deferred to M3d.)
+	// null arm (110).
 	"nullable_optional_list_singleton_claims": true,
-	"union_list_partial_stays_fallback":       false,
+	// M3d CLAIMED (union WITH a list arm): int | list<int> with [1,"bad",2] — the
+	// int arm array-to-singulars to Int 1 (a proven bad-numeric-string item is
+	// excluded) but carries FirstMatch, so pick_best's scalar-vs-composite rule
+	// devalues it behind the list arm ([1,2] via ArrayItemParseError(1)).
+	"union_list_partial_claimed": true,
 	// Mcoerce-c native MAPS (coerceMap / coerce_map.rs): object→map ObjectToMap
 	// flagging, VALUE-then-KEY coercion, and PARTIAL entry skips of PROVEN map
 	// VALUE parse errors (MapValueParseError) resolve byte-identical to BAML, so
@@ -478,6 +492,36 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"class_union_provable_losing_arm_claims":           true,
 	"class_union_literal_int_field_losing_arm":         true,
 	"class_union_literal_bool_field_losing_arm":        true,
+
+	// M3d — ARRAY-TO-SINGULAR + LIST/MAP-VARIANT unions (this slice's new corpus).
+	// The primitive int/float/bool coercers array-to-singular on array input
+	// (coerce_array_to_singular over the items + pick_best + FirstMatch), the
+	// multi-field all-required-flat-leaf class coerces array input the same way, and
+	// the union gate admits list + string-keyed map arms. These resolve
+	// byte-identical to live BAML:
+	"primitive_int_array_first_best":      true,
+	"primitive_int_array_partial_bad":     true,
+	"class_array_to_singular_length_one":  true,
+	"class_array_to_singular_multi_item":  true,
+	"union_list_scalar_string_wins":       true,
+	"union_list_list_empty_error_devalue": true,
+	"union_map_clean_try_cast":            true,
+	// Over-claim GUARD: C{a:int} | map with an extra key resolves to the MAP (the
+	// class try_cast rejects the extra key; the map try_cast keeps it), which
+	// tryCastMap + the try_cast_union non-zero pick_best reproduce.
+	"union_class_map_extra_key_prefers_map": true,
+	// Over-claim GUARDs (cold review): a LIST / MAP-value / UNION-value arm's phase-1
+	// try_cast REJECTS a numeric-string element that its LENIENT coerce would accept,
+	// so BAML's try_cast_union picks the string-typed arm — tryCastArray +
+	// tryCastUnionArm (recursive tryCastArm dispatch) reproduce it, not a lenient
+	// early-return of the numeric arm.
+	"union_list_int_string_try_cast": true,
+	"union_map_list_value_try_cast":  true,
+	"union_map_union_value_try_cast": true,
+	// FALLBACK: an EMPTY array to a scalar is BAML's error_unexpected_empty_array;
+	// native models it as a provenError (wraps the fallback sentinel), so native
+	// DECLINES the whole parse rather than claim the error.
+	"primitive_int_array_empty_stays_fallback": false,
 }
 
 // parseRecoveryStats tallies how many final-parse cases the native parser

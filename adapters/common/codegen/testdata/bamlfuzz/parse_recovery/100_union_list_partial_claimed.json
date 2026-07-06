@@ -1,0 +1,44 @@
+{
+  "name": "union_list_partial_claimed",
+  "description": "M3d CLAIMED (union WITH a list arm): union (int | list<int>) with a partial array [1, 'bad', 2]. No arm try_casts, so the lenient pass runs: the int arm's coerce_array_to_singular yields Int 1 (the bad-numeric-string item is a PROVEN error, excluded) carrying UnionMatch+FirstMatch (score 1) but scalar, while the list arm yields [1,2] (ArrayItemParseError(1), score 2, composite). pick_best's scalar-vs-composite rule devalues the FirstMatch scalar behind the composite list, so [1,2] wins. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {
+                  "kind": "int"
+                },
+                {
+                  "kind": "list",
+                  "inner": {
+                    "kind": "int"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":[1,\"bad\",2]}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": [
+        1,
+        2
+      ]
+    }
+  }
+}
