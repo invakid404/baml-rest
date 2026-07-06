@@ -284,72 +284,117 @@ func isStringLiteralUnionType(t schema.Type) bool {
 }
 
 // checkSupportedUnionShape reports whether the NON-NULL variant set of a
-// multi-variant union (len(Variants) >= 2) is one of the supported families.
-// It is the structural half of the union claim: it admits only variant sets
-// whose scored selection native reproduces exactly, so BAML's array_helper::
-// pick_best never diverges from native's.
+// multi-variant union (len(Variants) >= 2) is one native reproduces exactly. It
+// is the structural half of the union claim: it admits only variant sets whose
+// two-phase scored selection native matches, so BAML's try_cast_union / lenient
+// coerce_union + array_helper::pick_best never diverges from native's.
 //
-// The two supported families are:
+// It admits a variant set in which EVERY variant is either:
 //
-//   - SCALAR-LEAF union (M3b): every variant is a fully-modeled non-composite
-//     LEAF — a primitive scalar (int/float/bool/string), a literal (any kind),
-//     or an enum. No structural disjointness sub-check is needed: the M3a score
-//     model + pick_best + early first-score-0 rule pick BAML's exact winner
-//     across these arms (each is coerced by the SAME per-kind coercer BAML uses
-//     and scored with the types.rs inherent model), two-plus lenient successes
-//     are resolved by pick_best rather than declined, and a within-arm
-//     match_string tie (StrMatchOneFromMany) fails that arm exactly as BAML
-//     errors it. Per-arm native-can't-prove declines and case-fold uncertainty
-//     decline the WHOLE union at coerce time (selectUnionArms), so over-claim is
-//     impossible — the only residual is under-claim (safe). Nested scalar unions
-//     arrive here already flattened into this variant set by simplifyUnion.
-//   - FLAT CLASS union: every variant is a constraint-free class ref whose class
-//     has >= 2 fields, every field REQUIRED and a FLAT LEAF (primitive scalar /
-//     literal / enum — no union/map/list/optional/recursive-alias/nested-class),
-//     and whose rendered field-name sets are pairwise disjoint under a
-//     conservative key-match superset.
+//   - a fully-modeled non-composite LEAF — a primitive scalar (int/float/bool/
+//     string), a literal (any kind), or an enum (the M3b scalar-leaf family); or
+//   - a constraint-free, resolvable class ref whose class is constraint-free and
+//     has only REQUIRED FLAT-LEAF fields (primitive scalar / literal / enum — no
+//     optional/union/map/list/nested-class/recursive field) with no duplicate
+//     rendered field names (the M3c class family).
 //
-// Every OTHER shape declines: a mixed scalar+class family, any list/map variant,
-// overlapping or single-field classes (M3c/M3d). A list/map/array-to-singular
-// arm is out of scope until its scoring is modeled.
+// A MIX of the two (literal/enum/class, scalar/class) is admitted too — both
+// families flow through the SAME two-phase coercer (coerceUnionSafeMulti): a
+// phase-1 try_cast pass (the first arm whose STRICT native-type cast matches wins
+// at score 0 — coerce_union.rs try_cast_union, with class try_cast ported by
+// tryCastClass) and, only when no arm try_casts, a phase-2 lenient coerce +
+// array_helper::pick_best (whose list/class/scalar-vs-composite special ordering
+// native reproduces in cmpCandidates). Nested scalar unions arrive here already
+// flattened into this variant set by simplifyUnion.
+//
+// Every over-claim path declines the WHOLE union at coerce time — an arm native
+// cannot prove (a non-proven ErrDeBAMLParseUnsupported), a case-fold-uncertain
+// verdict, or ARRAY input to an int/float/bool/class arm (array-to-singular is
+// M3d) — so over-claim is impossible; the only residual is safe under-claim.
+//
+// Every OTHER shape declines: a list/map variant (its SingleToArray / markdown /
+// FirstMatch / array-of-union-hint scoring is M3d), a class with any non-flat-leaf
+// or optional field (its default/partial/implied scoring inside a union is not yet
+// proven), a constrained or recursive class, or a surviving nested union.
 func checkSupportedUnionShape(b *schema.Bundle, u *schema.UnionType) error {
 	vs := u.Variants
 	if len(vs) < 2 {
 		return unsupported("union shape: needs >= 2 non-null variants")
 	}
-	switch {
-	case allClassVariants(vs):
-		return checkFlatClassUnion(b, vs)
-	case allScalarLeafVariants(vs):
-		// Nothing further to prove: coercion + the M3a scored selection are
-		// faithful for a leaf-only variant set, and every over-claim path
-		// (native-can't-prove arm, uncertain case fold, array-to-singular on an
-		// int/float/bool arm) declines the whole union at coerce time.
-		return nil
-	default:
-		// A mixed scalar+class family, or any list/map/array-to-singular variant:
-		// BAML's composite special ordering (class devalue, list SingleToArray/
-		// markdown, FirstMatch) is not modeled until M3c/M3d, so native cannot
-		// prove the pick_best winner — decline.
-		return unsupported("union shape: not a flat class union or a scalar/literal/enum leaf union")
-	}
-}
-
-// allScalarLeafVariants reports whether every variant is a constraint-free,
-// fully-modeled non-composite LEAF: a primitive scalar (int/float/bool/string),
-// a literal, or an enum — the M3b scalar-leaf union family. It reuses
-// isFlatLeafField, which encodes the identical leaf predicate for flat
-// class-union fields, because the coercers a union arm and a class field route
-// through are the same. (Null is never a variant — it is hoisted to
-// UnionType.Nullable; media / list / map / class / nested-union variants are
-// rejected, so a mixed or composite family falls through to a decline.)
-func allScalarLeafVariants(vs []schema.Type) bool {
 	for i := range vs {
-		if !isFlatLeafField(vs[i]) {
-			return false
+		if err := checkUnionVariant(b, vs[i]); err != nil {
+			return err
 		}
 	}
-	return true
+	return nil
+}
+
+// checkUnionVariant reports whether one union variant is in the supported set: a
+// fully-modeled scalar/literal/enum LEAF (isFlatLeafField — the identical predicate
+// flat class-union fields use, because a union arm and a class field route through
+// the same coercers), or a modelable CLASS ref (checkUnionClassVariant). Every
+// other kind — list, map, nested union, media, recursive alias — declines, because
+// its scored selection (array-to-singular, list special ordering, array-of-union
+// hint) is not modeled until M3d. Null is never a variant here (it is hoisted to
+// UnionType.Nullable).
+func checkUnionVariant(b *schema.Bundle, v schema.Type) error {
+	if isFlatLeafField(v) {
+		return nil
+	}
+	if v.Kind == schema.TypeClass {
+		return checkUnionClassVariant(b, v)
+	}
+	return unsupported(fmt.Sprintf("union variant kind %q: not a scalar/literal/enum leaf or a required-flat-leaf class (list/map/nested-union arms are M3d)", v.Kind))
+}
+
+// checkUnionClassVariant validates one CLASS variant of a union as a fully-modeled
+// arm: constraint-free, resolvable, whose class is constraint-free and every field
+// is a REQUIRED FLAT LEAF (primitive scalar / literal / enum — isFlatLeafField),
+// with no duplicate rendered field names. This is the shape whose STRICT try_cast
+// (tryCastClass) and LENIENT coerce (coerceClass) native reproduces byte-exact, so
+// the two-phase union selection matches BAML.
+//
+// SINGLE-field classes ARE admitted (unlike the pre-M3c flat-disjoint family that
+// rejected them): the implied-key / inferred-object paths and the pick_best
+// classSingleImplied devalue are now modeled, so a single-field class arm is a
+// faithful pick_best participant. NO disjoint-key requirement either — overlapping
+// field-name sets are resolved by pick_best now, not declined.
+//
+// A class with ANY optional / list / map / union / nested-class field declines: its
+// try_cast can score non-zero (a missing optional → OptionalDefaultFromNoValue) and
+// its lenient default/partial/implied scoring inside a union is not yet proven (that
+// broadening, plus the try_cast_union non-zero-collection sub-path, is M3d+). A
+// zero-field class declines too (its NoFields / empty-object try_cast is unmodeled).
+func checkUnionClassVariant(b *schema.Bundle, v schema.Type) error {
+	if len(v.Meta.Constraints) > 0 {
+		return unsupported("class-union variant has type constraints")
+	}
+	cls, ok := b.FindClass(v.Name, v.Mode)
+	if !ok {
+		return fmt.Errorf("debaml: unknown class %q", v.Name)
+	}
+	if len(cls.Constraints) > 0 {
+		return unsupported("class-union variant class has constraints")
+	}
+	if len(cls.Fields) == 0 {
+		return unsupported("class-union variant class has no fields (NoFields/empty-object try_cast unmodeled)")
+	}
+	seen := make(map[string]struct{}, len(cls.Fields))
+	for j := range cls.Fields {
+		f := &cls.Fields[j]
+		if !isFlatLeafField(f.Type) {
+			// Any optional/union/map/list/nested-class/recursive field opens BAML
+			// leniency (defaults, implied keys, partial maps, single-to-array) whose
+			// union scoring native does not yet prove — decline (M3d).
+			return unsupported("class-union variant class has a non-flat-leaf or optional field (M3c models required flat-leaf class fields only)")
+		}
+		rn := f.Name.RenderedName()
+		if _, dup := seen[rn]; dup {
+			return unsupported("class-union variant class has duplicate rendered field names")
+		}
+		seen[rn] = struct{}{}
+	}
+	return nil
 }
 
 // isMultiArmUnion reports whether t is a union with two or more NON-NULL
@@ -362,65 +407,6 @@ func allScalarLeafVariants(vs []schema.Type) bool {
 // and never appears here.
 func isMultiArmUnion(t schema.Type) bool {
 	return t.Kind == schema.TypeUnion && t.Union != nil && len(t.Union.Variants) >= 2
-}
-
-// allClassVariants reports whether every variant is a constraint-free class
-// ref — the precondition for the flat-class family.
-func allClassVariants(vs []schema.Type) bool {
-	for i := range vs {
-		v := &vs[i]
-		if v.Kind != schema.TypeClass || len(v.Meta.Constraints) > 0 {
-			return false
-		}
-	}
-	return true
-}
-
-// checkFlatClassUnion validates a class-only variant set as a flat,
-// disjoint-key discriminated union: every variant class is constraint-free,
-// has >= 2 required FLAT-LEAF fields, has no duplicate rendered field names,
-// and the variants' rendered field-name sets are pairwise disjoint under the
-// conservative key-match superset.
-func checkFlatClassUnion(b *schema.Bundle, vs []schema.Type) error {
-	sets := make([][]string, len(vs))
-	for i := range vs {
-		v := &vs[i]
-		cls, ok := b.FindClass(v.Name, v.Mode)
-		if !ok {
-			return fmt.Errorf("debaml: unknown class %q", v.Name)
-		}
-		if len(cls.Constraints) > 0 {
-			return unsupported("class-union variant class has constraints")
-		}
-		if len(cls.Fields) < 2 {
-			// A single-field class is implied-key/inferred-object risk: BAML
-			// can absorb a scalar or a differently-keyed object into the lone
-			// field, succeeding where native's exact match fails.
-			return unsupported("class-union variant class has < 2 fields (BAML implied-key risk)")
-		}
-		names := make([]string, 0, len(cls.Fields))
-		seen := make(map[string]struct{}, len(cls.Fields))
-		for j := range cls.Fields {
-			f := &cls.Fields[j]
-			if !isFlatLeafField(f.Type) {
-				// Any optional/union/map/list/nested-class/recursive field opens
-				// BAML leniency (defaults, implied keys, partial maps, single-to-
-				// array), so the class is not a clean discriminated arm.
-				return unsupported("class-union variant has a non-flat-leaf or optional field")
-			}
-			rn := f.Name.RenderedName()
-			if _, dup := seen[rn]; dup {
-				return unsupported("class-union variant has duplicate rendered field names")
-			}
-			seen[rn] = struct{}{}
-			names = append(names, rn)
-		}
-		sets[i] = names
-	}
-	if !fieldNameSetsPairwiseDisjoint(sets) {
-		return unsupported("class-union field-name sets not pairwise match-disjoint (BAML may fuzzy-match keys to a 2nd arm)")
-	}
-	return nil
 }
 
 // isFlatLeafField reports whether t is a flat exact leaf field type usable in
@@ -448,88 +434,15 @@ func isFlatLeafField(t schema.Type) bool {
 	}
 }
 
-// fieldNameSetsPairwiseDisjoint reports whether no field name in any set
-// could match a field name in any OTHER set under the conservative
-// match_string superset — the property that lets native prove BAML cannot
-// fuzzy-match the input keys of one class-union arm onto another arm.
-func fieldNameSetsPairwiseDisjoint(sets [][]string) bool {
-	for i := 0; i < len(sets); i++ {
-		for j := i + 1; j < len(sets); j++ {
-			for _, a := range sets[i] {
-				for _, b := range sets[j] {
-					if matchStringMightMatch(a, b) {
-						return false
-					}
-				}
-			}
-		}
-	}
-	return true
-}
-
-// matchStringMightMatch is a CONSERVATIVE SUPERSET of BAML's match_string: it
-// returns true whenever BAML could possibly match one of a/b against the
-// other, and only "wrongly" returns true in extra cases (which merely cause
-// native to DECLINE — always parity-safe). BAML's match_string normalizes
-// (trim, strip punctuation, fold case, fold accents) and then substring-
-// matches in both directions; this mirrors that and additionally treats any
-// non-ASCII residue conservatively (BAML may transliterate it in ways this
-// folder does not reproduce, e.g. ø->o, ß->ss), so a pair that still carries
-// non-ASCII letters after folding is treated as a possible match.
-func matchStringMightMatch(a, b string) bool {
-	na, asciiA := normalizeForMatchString(a)
-	nb, asciiB := normalizeForMatchString(b)
-	if !asciiA || !asciiB {
-		// Non-ASCII residue after accent folding could still transliterate-
-		// match in BAML; be conservative and treat as a possible match.
-		return true
-	}
-	if na == "" || nb == "" {
-		// An all-punctuation token normalizes empty and is a substring of
-		// everything under BAML's substring matching; treat as a match.
-		return true
-	}
-	if na == nb {
-		return true
-	}
-	return strings.Contains(na, nb) || strings.Contains(nb, na)
-}
-
-// normalizeForMatchString folds a string the way the conservative
-// match_string superset compares: NFD-decompose, drop combining marks (accent
-// fold), lowercase, and keep only letters and digits (trim + punctuation
-// strip). It also reports whether every kept rune is ASCII, so the caller can
-// treat unfoldable non-ASCII residue conservatively.
-func normalizeForMatchString(s string) (string, bool) {
-	d := norm.NFD.String(s)
-	var sb strings.Builder
-	allASCII := true
-	for _, r := range d {
-		if unicode.Is(unicode.Mn, r) {
-			// Combining mark left by NFD decomposition (the accent itself).
-			continue
-		}
-		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
-			continue
-		}
-		lr := unicode.ToLower(r)
-		if lr > unicode.MaxASCII {
-			allASCII = false
-		}
-		sb.WriteRune(lr)
-	}
-	return sb.String(), allASCII
-}
-
 // The production matcher below ports BAML's deserializer/coercer/match_string.rs
 // — the fuzzy matcher enum, string-literal, class-field-key, and map-key
-// coercion route through (Mcoerce-a). It is deliberately distinct from the
-// conservative matchStringMightMatch SUPERSET above: that one only gates
-// union-shape disjointness (over-declining there is parity-safe), while this
-// one is the PRODUCTION matcher whose accept/reject/ambiguous verdict and
-// matched candidate native must reproduce BAML byte-exact (a fuzzy match
-// changes the emitted value). It lives here, beside the gate, rather than in a
-// separate file so the de-BAML embed source list stays unchanged.
+// coercion route through (Mcoerce-a). It is the PRODUCTION matcher whose
+// accept/reject/ambiguous verdict and matched candidate native must reproduce
+// BAML byte-exact (a fuzzy match changes the emitted value). It lives here,
+// beside the gate, rather than in a separate file so the de-BAML embed source
+// list stays unchanged. (M3c removed the older conservative match_string
+// SUPERSET that gated class-union field-name disjointness: pick_best now
+// resolves overlapping-key class arms, so the disjointness gate is gone.)
 //
 // Null handling and non-string stringification (ObjectToString) are the
 // CALLER's job: matchString operates on an already-string input. Mcoerce-b adds

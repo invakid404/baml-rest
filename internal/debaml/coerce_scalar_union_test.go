@@ -8,8 +8,8 @@ import (
 
 // M3 slice b — SCALAR / LITERAL / ENUM (+ null) and flattened-scalar NESTED
 // unions. checkSupportedUnionShape now admits any union whose arms are all
-// fully-modeled non-composite leaves, and coerceScalarLeafUnion resolves them
-// TWO-PHASE like BAML: a phase-1 try_cast pass (the first arm whose STRICT
+// fully-modeled non-composite leaves, and the unified coerceUnionSafeMulti resolves
+// them TWO-PHASE like BAML: a phase-1 try_cast pass (the first arm whose STRICT
 // native-JSON-type cast matches wins at score 0, before any lenient conversion)
 // and, only when no arm try_casts, a phase-2 lenient coerce pass (the M3a
 // per-kind coercers + early first-score-0 + array_helper::pick_best). These tests
@@ -243,7 +243,7 @@ func TestScalarUnion_ListElementUnionDeclines(t *testing.T) {
 // tiebreak for a scalar union: an ARRAY whose Display substring-matches BOTH
 // disjoint string-literal arms scores 4 on each (ObjectToString 2 + SubstringMatch
 // 2), so the lower-index arm wins. (Same as the M3a two-substring fixture, now
-// routed through the broadened coerceScalarLeafUnion.)
+// routed through the unified coerceUnionSafeMulti.)
 func TestScalarUnion_LiteralStringSubstringTie_PickFirst(t *testing.T) {
 	s := unionSchema(litStr("foo"), litStr("bar"))
 	mustParse(t, s, `{"u":["foo","bar"]}`, `{"u":"foo"}`)

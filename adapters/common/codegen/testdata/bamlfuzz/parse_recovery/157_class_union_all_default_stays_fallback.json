@@ -1,0 +1,44 @@
+{
+  "name": "class_union_all_default_stays_fallback",
+  "description": "M3c FALLBACK (M3d guard): a class union with a DEFAULTABLE-field arm stays fallback. A{items string[]} | B{name string} with an empty object. BAML: A fills items via TypeIR::default_value ([], DefaultFromNoValue 100) -> an ALL-DEFAULT class; B errors (missing required string). pick_best picks the all-default A. Native declines at the union gate (A has a non-flat-leaf list field), so the all-default class devalue / default-fill scoring inside a union is deferred to M3d. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {"kind": "class_ref", "ref": "A"},
+                {"kind": "class_ref", "ref": "B"}
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "A",
+        "properties": [
+          {"name": "items", "type": {"kind": "list", "inner": {"kind": "string"}}}
+        ]
+      },
+      {
+        "name": "B",
+        "properties": [
+          {"name": "name", "type": {"kind": "string"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":{}}",
+  "want": {
+    "status": "success",
+    "json": {"u": {"items": []}}
+  }
+}
