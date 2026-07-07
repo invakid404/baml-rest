@@ -3231,31 +3231,67 @@ func declineCoerce(target string, input value) error {
 
 // --- M4b: streaming (raw_is_done=false) coercion --------------------------
 //
+// errStreamDeleted is an INTERNAL sentinel (never surfaced to a Parse caller) a
+// coerceStream* function returns for a value BAML's semantic streaming DELETES: an
+// INCOMPLETE value whose type is done-required, which semantic_streaming.rs
+// process_node errors (`must_be_done && state != Complete → Err(IncompleteDoneValue)`).
+// It is DISTINCT from bamlutils.ErrDeBAMLParseUnsupported: a deletion is a PROVEN
+// BAML behavior native REPRODUCES (drop the list/map child, null-replace the class
+// field), whereas the unsupported sentinel means native cannot prove BAML's output
+// and must FALL BACK. Each container inspects its child's error:
+//
+//   - errStreamDeleted            → child deleted (list/map drop, class null-fill);
+//   - ErrDeBAMLParseUnsupported   → native cannot prove the child → the WHOLE stream
+//     parse falls back (propagated up unchanged);
+//   - any other error             → a CLAIMED parse failure, propagated for parity.
+//
+// It never escapes coerceStream: the top-level target is always the synthetic
+// Baml_Rest_DynamicOutput CLASS (a class is never done-required), whose
+// coerceStreamClass converts every child deletion into a null field — so a stray
+// errStreamDeleted reaching parseStream would be an invariant bug, not a claim.
+var errStreamDeleted = errors.New("debaml: stream value deleted by semantic streaming")
+
 // coerceStream coerces a value recovered by the streaming parser
 // (streamExtractCandidate / streamFix) into the flattened dynamic output JSON for
-// type t. It models the SUBSET of BAML's semantic_streaming.rs whose observable
-// output for an UNANNOTATED dynamic schema is an ordinary object/list/string with
-// NO StreamState wrappers:
+// type t. It ports the ANNOTATION-FREE slice of BAML's semantic_streaming.rs
+// process_node (M4c) whose observable output for a dynamic schema is an ordinary
+// object/list/map/string with NO StreamState wrappers.
 //
-//   - class: assign present object keys to fields (BAML's input-key-first fuzzy
-//     match), coerce each present field's value through coerceStream, and NULL-FILL
-//     every MISSING field (BAML's Pending null under raw_is_done=false). Requires at
-//     least one field to receive a present value — see coerceStreamClass.
-//   - list: coerce each element through coerceStream and keep it; a non-array input
-//     or an element BAML would DELETE declines the whole list — see coerceStreamList.
-//   - string: NOT done-required, so a JSON string is emitted as-is whether COMPLETE
-//     or INCOMPLETE (a truncated / markdown-recovered string keeps its partial value).
-//     This is the "AnyOf string does not leak" surface: native carries the string
-//     value directly, so the output is the string, never an AnyOf rendering. A
-//     non-string into a string target declines (stream JsonToString deferred).
-//   - int / float / bool / null / enum / literal (DONE-REQUIRED): an INCOMPLETE value
-//     DECLINES (BAML deletes it — semantic deletion is M4c); a COMPLETE value is
-//     coerced through the SAME final leaf coercer (stream == final for a done value).
-//   - map / union: DECLINE (deferred — over-decline is safe).
+// The dynamic output bridge (bamlutils.DynamicOutputSchema) carries no streaming-
+// annotation channel: BAML's dynamic TypeBuilder cannot attach @stream.done,
+// @@stream.done, @stream.not_null, or @stream.with_state to a dynamically-built
+// field/class (ClassPropertyBuilder exposes only SetType / description / alias), and
+// schema.FromDynamicOutputSchema lowers every class non-streaming with a zero
+// StreamingBehavior. So for a dynamic schema BAML's OWN parse-stream also sees no
+// annotations: process_node's `must_be_done` collapses to the INTRINSIC required-done
+// TYPE TABLE (semantic_streaming.rs required_done) — int / float / bool / enum /
+// literal / null / media require done; string / list / map / class / tuple /
+// recursive-alias do NOT — and needed_fields (@stream.not_null) is empty, so a class
+// never errors from a missing needed field. M4c models exactly that intrinsic
+// behavior; any annotation-dependent behavior is NOT representable and stays BAML's
+// job (checkNoStreamAnnotations is a defensive gate; a union target still declines).
 //
-// Every path either reproduces BAML's exact partial output or DECLINES
-// (ErrDeBAMLParseUnsupported → fall back to BAML). It never claims a value BAML
-// would delete, wrap in StreamState, or produce differently.
+// process_node's KEEP / DELETE / NULL-REPLACE decisions, ported per container:
+//
+//   - int / float / bool / null / enum / literal / media (DONE-REQUIRED leaf): a
+//     COMPLETE value coerces through the SAME final leaf coercer (stream == final for
+//     a done value); an INCOMPLETE value is DELETED (errStreamDeleted) — process_node
+//     errors it, and the parent drops/null-fills — see coerceStreamDoneLeaf.
+//   - string: NOT done-required, emitted as-is whether COMPLETE or INCOMPLETE (a
+//     truncated / markdown-recovered string keeps its partial value; the "AnyOf
+//     string does not leak" surface). A non-string into a string target declines.
+//   - list: coerce each element; KEEP a coerced element, DROP a DELETED element,
+//     keeping completed siblings in BAML order — see coerceStreamList.
+//   - map: same as list, but a DELETED value drops the WHOLE entry — coerceStreamMap.
+//   - class: assign present keys to fields, coerce each; a DELETED field value is
+//     REPLACED WITH NULL, a MISSING field is NULL-FILLED (Pending), fields emitted in
+//     class-definition order — see coerceStreamClass.
+//   - union: DECLINE (mixed/composite union semantic streaming stays fallback — the
+//     variant-dependent required_done and array union_variant_hint are not modeled).
+//
+// A child that DECLINES with ErrDeBAMLParseUnsupported (native cannot prove BAML's
+// output) propagates unchanged so the WHOLE stream parse falls back; a deletion is a
+// proven behavior native reproduces. Over-decline is safe; over-claim is a bug.
 func coerceStream(b *schema.Bundle, t schema.Type, input value) (json.RawMessage, error) {
 	switch t.Kind {
 	case schema.TypePrimitive:
@@ -3273,23 +3309,27 @@ func coerceStream(b *schema.Bundle, t schema.Type, input value) (json.RawMessage
 	case schema.TypeList:
 		return coerceStreamList(b, t.Elem, input)
 	case schema.TypeMap:
-		return nil, unsupported("stream: map target (deferred)")
+		return coerceStreamMap(b, t.Key, t.Value, input)
 	case schema.TypeUnion:
-		return nil, unsupported("stream: union target (deferred)")
+		return nil, unsupported("stream: union target (mixed-union semantic streaming deferred)")
 	default:
 		return nil, unsupported(fmt.Sprintf("stream: type kind %q", t.Kind))
 	}
 }
 
 // coerceStreamDoneLeaf coerces a DONE-REQUIRED leaf (int / float / bool / null /
-// enum / literal) in stream mode. An INCOMPLETE value would be DELETED by BAML's
-// semantic streaming (the type requires done), which M4b does not model, so it
-// DECLINES. A COMPLETE value is coerced through the SAME final leaf coercer — for
-// a done value stream and final coercion are identical — and any final decline or
-// proven error DECLINES the whole stream parse (fall back to BAML).
+// enum / literal / media) in stream mode, porting semantic_streaming.rs
+// process_node's done-check for a leaf. An INCOMPLETE value FAILS the check
+// (must_be_done && state != Complete → Err(IncompleteDoneValue)): BAML DELETES it,
+// so this returns errStreamDeleted and the parent container drops it (list/map) or
+// null-replaces it (class). A COMPLETE value is coerced through the SAME final leaf
+// coercer — for a done value stream and final coercion are identical — and a final
+// DECLINE / proven error DECLINES the whole stream parse (fall back): the leaf sits
+// below semantic streaming, so native cannot prove whether BAML's coercion-layer
+// skip (ArrayItemParseError) or default-fill would fire, and over-declines instead.
 func coerceStreamDoneLeaf(b *schema.Bundle, t schema.Type, input value) (json.RawMessage, error) {
 	if input.incomplete {
-		return nil, unsupported(fmt.Sprintf("stream: incomplete %s value requires done (semantic deletion deferred)", t.Kind))
+		return nil, errStreamDeleted
 	}
 	out, err := coerce(b, t, input, &coerceFlags{})
 	if err != nil {
@@ -3299,23 +3339,34 @@ func coerceStreamDoneLeaf(b *schema.Bundle, t schema.Type, input value) (json.Ra
 }
 
 // coerceStreamClass coerces an object into a class in stream mode, porting the
-// slice of coerce_class.rs whose streaming output is an ordinary object: assign
-// present input keys to fields (BAML's input-key-first fuzzy match, keep-first on
-// duplicates, extra keys ignored), coerce each present field's value through
-// coerceStream, and NULL-FILL every field with no present value (BAML's Pending
-// null under raw_is_done=false — emitted as an explicit null in schema declaration
-// order, so it survives the downstream InjectAbsentOptionals + reorder identically
-// to BAML's flattened output).
+// annotation-free slice of semantic_streaming.rs process_node's Class arm together
+// with the coerce_class.rs field assignment: assign present input keys to fields
+// (BAML's input-key-first fuzzy match, keep-first on duplicates, extra keys ignored),
+// coerce each present field's value through coerceStream, and emit every field in
+// class-definition order. A field's value becomes null in two BAML cases, both an
+// explicit null here:
 //
-// It DECLINES (fall back) for the shapes M4b does not model:
+//   - MISSING field (no input key matched): NULL-FILLED with BAML's Pending null
+//     (fields_needing_null_filler → Null{state: Pending});
+//   - DELETED field value (coerceStream returns errStreamDeleted — an incomplete
+//     done-required field value process_node errors): REPLACED WITH NULL
+//     (deletion_nulls), never dropped — a class field is null-replaced, not removed.
+//
+// Both survive the downstream InjectAbsentOptionals + reorder identically to BAML's
+// flattened output. Because the dynamic bridge carries no @stream.not_null,
+// needed_fields is empty, so a class never errors from a missing needed field (that
+// MissingNeededFields → whole-class null/drop path is not representable here).
+//
+// It DECLINES (fall back) for the shapes M4c does not model:
 //   - NON-object input (a scalar/array → class implied-key / inferred-object /
 //     array-to-singular is deferred);
 //   - a class where NO field received a present value — the "open/repaired root
 //     object AFTER ≥1 field value is available" guard: a bare `{`, a key with no
-//     value, a dangling colon, or an all-extra-keys object stays fallback;
-//   - a present field whose value does not cleanly coerce in stream (an incomplete
-//     done-required field, a deferred leaf conversion) — its decline propagates and
-//     the whole class falls back;
+//     value, a dangling colon, or an all-extra-keys object stays fallback (a matched
+//     field whose value is DELETED still counts as present, so it is claimed);
+//   - a present field whose value DECLINES in stream with the unsupported sentinel (a
+//     complete leaf that does not cleanly coerce, a deferred conversion) — its
+//     decline propagates and the whole class falls back;
 //   - a field-key match that hinges on a non-ASCII case fold native cannot prove
 //     equals BAML.
 func coerceStreamClass(b *schema.Bundle, name string, mode schema.StreamingMode, input value) (json.RawMessage, error) {
@@ -3371,29 +3422,69 @@ func coerceStreamClass(b *schema.Bundle, name string, mode schema.StreamingMode,
 		buf.WriteByte(':')
 		if matched[j] {
 			o, err := coerceStream(b, cls.Fields[j].Type, assigned[j])
-			if err != nil {
+			switch {
+			case err == nil:
+				buf.Write(o)
+			case errors.Is(err, errStreamDeleted):
+				// Field value DELETED by semantic streaming (incomplete done-required)
+				// → BAML's deletion_nulls: the field is REPLACED WITH NULL, not dropped.
+				buf.WriteString("null")
+			default:
+				// Unsupported → whole class falls back; a claimed error propagates.
 				return nil, err
 			}
-			buf.Write(o)
 		} else {
-			buf.WriteString("null") // BAML Pending null for a missing field.
+			buf.Write(streamMissingFieldFiller(cls.Fields[j].Type))
 		}
 	}
 	buf.WriteByte('}')
 	return buf.Bytes(), nil
 }
 
-// coerceStreamList coerces an array into a list in stream mode. Each element is
-// coerced through coerceStream and KEPT; the list is emitted in element order. A
-// list is never done-required, so an unterminated (Incomplete) list is fine as
-// long as every element it contains cleanly coerces.
+// streamMissingFieldFiller returns BAML's streaming filler value for a class field
+// absent from the stream, matching semantic_streaming.rs fields_needing_null_filler
+// composed with the coercion-layer default fill (coerce_class.rs) — the SAME
+// TypeIR::default_value the FINAL missing-field pass uses (defaultValue), differing
+// only in that streaming TOLERATES a missing required field rather than erroring:
 //
-// It DECLINES (fall back) for the cases M4b does not model:
+//   - OPTIONAL field → null (OptionalDefaultFromNoValue + Pending);
+//   - REQUIRED field with a default_value → that default (list→[], map→{},
+//     primitive-null→null, first-defaultable-union-arm, tuple — DefaultFromNoValue +
+//     Pending);
+//   - REQUIRED non-defaultable field (scalar / enum / literal / class) → null (the
+//     Pending null-filler; final parse would error, streaming null-fills).
+//
+// This is why a missing required list field surfaces as [] and a missing required map
+// as {} in BAML parse-stream (LIVE-CAPTURED — see corpus 177), not null. A DELETED
+// field (present but incomplete done-required) is null-replaced separately
+// (deletion_nulls), never routed here; those types are never defaultable anyway.
+func streamMissingFieldFiller(ft schema.Type) json.RawMessage {
+	if isOptional(ft) {
+		return json.RawMessage("null")
+	}
+	if d, ok := defaultValue(ft); ok {
+		return d
+	}
+	return json.RawMessage("null")
+}
+
+// coerceStreamList coerces an array into a list in stream mode, porting
+// semantic_streaming.rs process_node's List arm (filter_map over the children,
+// dropping any that error). A list is never done-required, so an unterminated
+// (Incomplete) list is fine; each element is coerced through coerceStream and:
+//
+//   - KEPT (in element order) when it coerces;
+//   - DROPPED when it is DELETED by semantic streaming (errStreamDeleted — an
+//     incomplete done-required element), keeping completed siblings in BAML order.
+//     This is the NUMBERS behavior: int[] streaming `[1,2` keeps 1 and drops the
+//     still-building 2.
+//
+// It DECLINES (fall back) for the cases M4c does not model:
 //   - a NON-array input (SingleToArray wrapping is deferred);
-//   - an element that would be DELETED by semantic streaming — coerceStream on the
-//     element declines (an incomplete done-required element, or a value the leaf
-//     coercer cannot cleanly claim / BAML would skip) — so the WHOLE list falls back
-//     rather than reproduce the semantic child deletion (M4c).
+//   - an element that returns ErrDeBAMLParseUnsupported — native cannot prove BAML's
+//     output for it (a complete leaf that does not cleanly coerce, whose
+//     coercion-layer ArrayItemParseError skip-vs-keep native does not model in
+//     stream) — so the WHOLE list falls back; a claimed element error propagates.
 func coerceStreamList(b *schema.Bundle, elem *schema.Type, input value) (json.RawMessage, error) {
 	if elem == nil {
 		return nil, fmt.Errorf("debaml: list type missing element")
@@ -3403,16 +3494,85 @@ func coerceStreamList(b *schema.Bundle, elem *schema.Type, input value) (json.Ra
 	}
 	var buf bytes.Buffer
 	buf.WriteByte('[')
+	first := true
 	for i := range input.arrV {
-		if i > 0 {
-			buf.WriteByte(',')
-		}
 		o, err := coerceStream(b, *elem, input.arrV[i])
 		if err != nil {
-			return nil, err
+			if errors.Is(err, errStreamDeleted) {
+				continue // semantic-streaming deletion: drop the element, keep siblings.
+			}
+			return nil, err // unsupported → whole list falls back; claimed error → propagate.
 		}
+		if !first {
+			buf.WriteByte(',')
+		}
+		first = false
 		buf.Write(o)
 	}
 	buf.WriteByte(']')
+	return buf.Bytes(), nil
+}
+
+// coerceStreamMap coerces an object into a map in stream mode, porting
+// semantic_streaming.rs process_node's Map arm (filter_map over the entries,
+// dropping any whose VALUE errors — the WHOLE key/value pair is removed, never
+// null-kept, unlike a class field). A map is never done-required.
+//
+// It is restricted to the SIMPLE reachable subset — a STRING key (every key valid)
+// and no duplicate keys — where native reproduces BAML's partial map byte-exact.
+// A non-string key (enum / literal / string-literal union, whose dynamic lenient
+// key-keep / MapKeyParseError semantics are Mcoerce-d / unproven in stream) and a
+// duplicate key (insert/overwrite ordering unproven) DECLINE the whole map. Entries
+// are emitted in INPUT key order under their ORIGINAL key strings.
+//
+//   - KEPT: an entry whose value coerces;
+//   - DROPPED: an entry whose value is DELETED by semantic streaming
+//     (errStreamDeleted — an incomplete done-required value), keeping siblings;
+//   - WHOLE map DECLINES: a non-object input, a non-string key, a duplicate key, or a
+//     value that returns ErrDeBAMLParseUnsupported / a claimed error.
+func coerceStreamMap(b *schema.Bundle, keyT, valT *schema.Type, input value) (json.RawMessage, error) {
+	if keyT == nil || valT == nil {
+		return nil, fmt.Errorf("debaml: map type missing key or value")
+	}
+	if input.kind != valObject {
+		return nil, unsupported(fmt.Sprintf("stream: map from %s (ObjectToMap of non-object deferred)", input.kind))
+	}
+	if keyT.Kind != schema.TypePrimitive || keyT.Primitive != schema.PrimitiveString {
+		return nil, unsupported("stream: map with non-string key (enum/literal key dynamic-keep unproven in stream)")
+	}
+	// Any DUPLICATE original key declines the whole map (mirrors coerceMap): BAML's
+	// duplicate insert/overwrite ordering is unproven, so native never claims it.
+	seen := make(map[string]struct{}, len(input.objV))
+	for i := range input.objV {
+		if _, dup := seen[input.objV[i].key]; dup {
+			return nil, unsupported(fmt.Sprintf("stream: map duplicate key %q (insert/overwrite ordering unproven)", input.objV[i].key))
+		}
+		seen[input.objV[i].key] = struct{}{}
+	}
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	first := true
+	for i := range input.objV {
+		f := &input.objV[i]
+		o, err := coerceStream(b, *valT, f.val)
+		if err != nil {
+			if errors.Is(err, errStreamDeleted) {
+				continue // value deleted → drop the WHOLE entry, keep siblings.
+			}
+			return nil, err // unsupported → whole map falls back; claimed error → propagate.
+		}
+		if !first {
+			buf.WriteByte(',')
+		}
+		first = false
+		key, err := marshalJSON(f.key)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(key)
+		buf.WriteByte(':')
+		buf.Write(o)
+	}
+	buf.WriteByte('}')
 	return buf.Bytes(), nil
 }

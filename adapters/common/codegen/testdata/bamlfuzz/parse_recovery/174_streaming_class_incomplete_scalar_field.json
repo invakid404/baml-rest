@@ -1,0 +1,22 @@
+{
+  "name": "streaming_class_incomplete_scalar_field",
+  "description": "Class field null-replacement for Root{name:string, age:int}: an INCOMPLETE done-required int field is DELETED by semantic streaming and, as a class field, REPLACED WITH NULL (semantic_streaming.rs deletion_nulls), while a completed string sibling is kept. Distinguishes a string field (not done-required, partial value shown) from an int field (done-required, incomplete -> null). Per-prefix `want` values are LIVE-CAPTURED from BAML v0.223.0 parse-stream (BAMLFUZZ_PARSE_CAPTURE=1), not hand-written.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "name", "type": {"kind": "string"}},
+          {"name": "age", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "prefixes": [
+    {"name": "name_done_age_partial", "raw": "{\"name\":\"Ada\",\"age\":3", "want": {"status": "success", "json": {"name": "Ada", "age": null}}},
+    {"name": "name_done_age_more_digits", "raw": "{\"name\":\"Ada\",\"age\":36", "want": {"status": "success", "json": {"name": "Ada", "age": null}}},
+    {"name": "age_closed", "raw": "{\"name\":\"Ada\",\"age\":36}", "want": {"status": "success", "json": {"name": "Ada", "age": 36}}}
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "name": "streaming_numbers_list_int",
+  "description": "NUMBERS semantic-streaming behavior for Root{nums:list<int>}: a partial integer-list prefix KEEPS completed (comma-terminated) elements and DROPS the incomplete done-required trailing element (int is done-required, list is not — semantic_streaming.rs process_node List arm filter_map). Per-prefix `want` values are LIVE-CAPTURED from BAML v0.223.0 parse-stream (BAMLFUZZ_PARSE_CAPTURE=1), not hand-written. M4c native CLAIMS these (the intrinsic required-done child deletion is annotation-free and representable in the plain dynamic schema).",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "nums", "type": {"kind": "list", "inner": {"kind": "int"}}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "prefixes": [
+    {"name": "open_list", "raw": "{\"nums\":[", "want": {"status": "success", "json": {"nums": []}}},
+    {"name": "one_partial", "raw": "{\"nums\":[1", "want": {"status": "success", "json": {"nums": []}}},
+    {"name": "one_done", "raw": "{\"nums\":[1,", "want": {"status": "success", "json": {"nums": [1]}}},
+    {"name": "two_partial", "raw": "{\"nums\":[1,2", "want": {"status": "success", "json": {"nums": [1]}}},
+    {"name": "three_partial", "raw": "{\"nums\":[1,2,3", "want": {"status": "success", "json": {"nums": [1, 2]}}},
+    {"name": "list_closed", "raw": "{\"nums\":[1,2,3]", "want": {"status": "success", "json": {"nums": [1, 2, 3]}}},
+    {"name": "object_closed", "raw": "{\"nums\":[1,2,3]}", "want": {"status": "success", "json": {"nums": [1, 2, 3]}}}
+  ]
+}

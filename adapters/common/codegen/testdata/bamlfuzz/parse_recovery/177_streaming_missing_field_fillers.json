@@ -1,0 +1,24 @@
+{
+  "name": "streaming_missing_field_fillers",
+  "description": "Missing-field fillers for Root{a:int, tags:list<string>, scores:map<string,int>, note:string?}: only `a` streams; tags/scores/note never appear. BAML fills each missing field with its TypeIR::default_value (LIVE-CAPTURED: required list→[], required map→{}, optional→null) rather than a blanket null — the streaming filler reuses the coercion-layer default fill. Per-prefix `want` values are LIVE-CAPTURED from BAML v0.223.0 parse-stream (BAMLFUZZ_PARSE_CAPTURE=1), not hand-written; the native disposition is pinned from the capture.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "a", "type": {"kind": "int"}},
+          {"name": "tags", "type": {"kind": "list", "inner": {"kind": "string"}}},
+          {"name": "scores", "type": {"kind": "map", "key": {"kind": "string"}, "inner": {"kind": "int"}}},
+          {"name": "note", "type": {"kind": "optional", "inner": {"kind": "string"}}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "prefixes": [
+    {"name": "key_only", "raw": "{\"a\"", "want": {"status": "success", "json": {"a": null, "tags": [], "scores": {}, "note": null}}},
+    {"name": "a_partial", "raw": "{\"a\":1", "want": {"status": "success", "json": {"a": null, "tags": [], "scores": {}, "note": null}}},
+    {"name": "a_closed", "raw": "{\"a\":1}", "want": {"status": "success", "json": {"a": 1, "tags": [], "scores": {}, "note": null}}}
+  ]
+}
