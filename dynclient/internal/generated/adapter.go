@@ -720,6 +720,14 @@ func bamlRestDynamicBuildRequest(adapter bamlutils.Adapter, rawInput any, out ch
 		return req, nil
 	}
 	parseStreamFn := func(ctx context.Context, accumulated string) (any, error) {
+		// Native de-BAML stream parse first; ok==false && err==nil means
+		// declined/unsupported, so fall through to BAML parse-stream. The
+		// fallback is SILENT (runs per accumulated prefix); a CLAIMED native
+		// error propagates and the orchestrator drops it like a BAML parse-
+		// stream error (non-terminal for partial emission).
+		if result, ok, err := maybeParseDeBAMLStream(ctx, adapter, accumulated); ok || err != nil {
+			return result, err
+		}
 		return bamlclient.ParseStream.Baml_Rest_Dynamic(ctx, accumulated, options...)
 	}
 	parseFinalFn := func(ctx context.Context, accumulated string) (any, error) {
