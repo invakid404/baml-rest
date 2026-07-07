@@ -7,6 +7,7 @@ import (
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/dynclient/internal/generated/adapter"
+	streamtypes "github.com/invakid404/baml-rest/dynclient/internal/generated/baml_client/stream_types"
 	types "github.com/invakid404/baml-rest/dynclient/internal/generated/baml_client/types"
 )
 
@@ -276,6 +277,120 @@ func TestMaybeParseDeBAMLFinal_DeclinesWhenOff(t *testing.T) {
 	mustDecline := func(name string, a bamlutils.Adapter) {
 		t.Helper()
 		if _, ok, err := maybeParseDeBAMLFinal(context.Background(), a, "raw", "final"); ok || err != nil {
+			t.Errorf("%s: expected decline (ok=false, err=nil), got ok=%v err=%v", name, ok, err)
+		}
+	}
+	claim := parserReturning(`{"answer":"hi"}`, nil)
+	mustDecline("flag off", newParserTestAdapter(false, simpleSchema(), claim))
+	mustDecline("nil schema", newParserTestAdapter(true, nil, claim))
+	mustDecline("nil parser", newParserTestAdapter(true, simpleSchema(), nil))
+}
+
+// --- M4d: native-first parse-stream seam (maybeParseDeBAMLStream) ---
+//
+// The stream seam is the parse-stream twin of maybeParseDeBAMLFinal: same
+// claim/decline/propagate contract, but it drives the wired parser with
+// Stream=true and its unsupported fallback is SILENT (parseStreamFn runs per
+// accumulated prefix). These tests pin all four dispositions plus the
+// stream-mode request flag, mirroring the final-seam tests above.
+
+// capturingParser records the last DeBAMLParseRequest it saw and returns a
+// fixed JSON/error, so a test can assert the seam forwards Stream=true.
+func capturingParser(json string, err error, seen *bamlutils.DeBAMLParseRequest) bamlutils.DeBAMLParseFunc {
+	return func(_ context.Context, req bamlutils.DeBAMLParseRequest) (bamlutils.DeBAMLParseResult, error) {
+		*seen = req
+		return bamlutils.DeBAMLParseResult{JSON: []byte(json)}, err
+	}
+}
+
+// TestMaybeParseDeBAMLStream_ClaimsValidObject pins the success path: a native
+// stream parser returning a flattened JSON object is claimed and wrapped into
+// the STREAMING dynamic-output envelope (streamtypes, not the final types).
+func TestMaybeParseDeBAMLStream_ClaimsValidObject(t *testing.T) {
+	var seen bamlutils.DeBAMLParseRequest
+	out, ok, err := maybeParseDeBAMLStream(
+		context.Background(),
+		newParserTestAdapter(true, simpleSchema(), capturingParser(`{"answer":"hi"}`, nil, &seen)),
+		"raw",
+	)
+	if err != nil || !ok {
+		t.Fatalf("expected claimed success, got ok=%v err=%v", ok, err)
+	}
+	if !seen.Stream {
+		t.Errorf("stream seam must drive the parser with Stream=true, got Stream=%v", seen.Stream)
+	}
+	var _ streamtypes.Baml_Rest_DynamicOutput = out // wrapped into the STREAMING envelope
+	if v, present := out.DynamicProperties.Get("answer"); !present || v != "hi" {
+		t.Errorf("stream envelope DynamicProperties.answer = %v (present=%v), want %q", v, present, "hi")
+	}
+}
+
+// TestMaybeParseDeBAMLStream_UnsupportedFallsBack pins that the sentinel — and
+// only the sentinel — declines (ok=false, err=nil) so the caller falls back to
+// BAML parse-stream. The fallback is silent (no per-prefix log).
+func TestMaybeParseDeBAMLStream_UnsupportedFallsBack(t *testing.T) {
+	_, ok, err := maybeParseDeBAMLStream(
+		context.Background(),
+		newParserTestAdapter(true, simpleSchema(), parserReturning("", bamlutils.ErrDeBAMLParseUnsupported)),
+		"raw",
+	)
+	if ok || err != nil {
+		t.Fatalf("unsupported must decline (ok=false, err=nil), got ok=%v err=%v", ok, err)
+	}
+}
+
+// TestMaybeParseDeBAMLStream_ClaimedErrorPropagates pins that a NON-sentinel
+// native stream error propagates (ok=false, err!=nil, NOT the unsupported
+// sentinel) so the orchestrator handles it exactly like a BAML parse-stream
+// error — dropped as non-terminal for partial emission, never a silent fallback.
+func TestMaybeParseDeBAMLStream_ClaimedErrorPropagates(t *testing.T) {
+	claimedErr := errors.New("debaml: claimed stream parse failure")
+	_, ok, err := maybeParseDeBAMLStream(
+		context.Background(),
+		newParserTestAdapter(true, simpleSchema(), parserReturning("", claimedErr)),
+		"raw",
+	)
+	if ok {
+		t.Errorf("claimed error must not claim a result (ok), got ok=true")
+	}
+	if !errors.Is(err, claimedErr) {
+		t.Errorf("claimed native stream error must PROPAGATE, got %v", err)
+	}
+	if errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+		t.Errorf("claimed error must NOT be the unsupported sentinel (would silently fall back): %v", err)
+	}
+}
+
+// TestMaybeParseDeBAMLStream_WrapFailurePropagates mirrors the final-seam R1
+// regression: a native parser that CLAIMS success but returns JSON that cannot
+// wrap into the streaming envelope must PROPAGATE (not the sentinel), so a
+// parser/callback bug can't hide behind a BAML parse-stream.
+func TestMaybeParseDeBAMLStream_WrapFailurePropagates(t *testing.T) {
+	for _, badJSON := range []string{`123`, `"scalar"`, `[1,2,3]`, `{not json`} {
+		_, ok, err := maybeParseDeBAMLStream(
+			context.Background(),
+			newParserTestAdapter(true, simpleSchema(), parserReturning(badJSON, nil)),
+			"raw",
+		)
+		if ok {
+			t.Errorf("%q: expected ok=false on wrap failure, got ok=true", badJSON)
+		}
+		if err == nil {
+			t.Errorf("%q: expected wrap failure to PROPAGATE, got nil (silent BAML fallback)", badJSON)
+		}
+		if errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+			t.Errorf("%q: wrap failure must NOT be the unsupported sentinel (would fall back): %v", badJSON, err)
+		}
+	}
+}
+
+// TestMaybeParseDeBAMLStream_DeclinesWhenOff pins the runtime gates: flag off,
+// nil schema, and nil parser all decline without invoking the callback — the
+// stream seam is inert until de-BAML is enabled with a wired parser.
+func TestMaybeParseDeBAMLStream_DeclinesWhenOff(t *testing.T) {
+	mustDecline := func(name string, a bamlutils.Adapter) {
+		t.Helper()
+		if _, ok, err := maybeParseDeBAMLStream(context.Background(), a, "raw"); ok || err != nil {
 			t.Errorf("%s: expected decline (ok=false, err=nil), got ok=%v err=%v", name, ok, err)
 		}
 	}

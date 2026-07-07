@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	bamlutils "github.com/invakid404/baml-rest/bamlutils"
+	streamtypes "github.com/invakid404/baml-rest/dynclient/internal/generated/baml_client/stream_types"
 	types "github.com/invakid404/baml-rest/dynclient/internal/generated/baml_client/types"
 )
 
@@ -194,6 +195,84 @@ func wrapDeBAMLDynamicOutput(flat []byte) (types.Baml_Rest_DynamicOutput, error)
 	var out types.Baml_Rest_DynamicOutput
 	if err := out.DynamicProperties.UnmarshalJSON(flat); err != nil {
 		return types.Baml_Rest_DynamicOutput{}, err
+	}
+	return out, nil
+}
+
+// maybeParseDeBAMLStream attempts the native de-BAML STREAM parse
+// (raw_is_done=false) for the dynamic method, returning the generated
+// STREAMING dynamic-output envelope on success. It is the parse-stream twin
+// of maybeParseDeBAMLFinal, driving the same wired parser with Stream=true so
+// the native partial surface (M4b jsonish recovery + M4c annotation-free
+// semantic streaming) is reproduced byte-exact where claimed. The boolean
+// reports whether native CLAIMED a result:
+//
+//   - (envelope, true, nil): native produced the partial; the caller sends it.
+//   - (zero, false, nil): native declined — de-BAML off, no carried schema, no
+//     parser wired, or bamlutils.ErrDeBAMLParseUnsupported — so the caller
+//     falls back to BAML parse-stream for this prefix.
+//   - (zero, false, err): native CLAIMED a stream parse failure; the caller
+//     propagates it, and the orchestrator drops it exactly like a BAML
+//     parse-stream error (per-prefix parse errors are NON-TERMINAL for partial
+//     emission — final response parsing still decides success/failure).
+//
+// UNLIKE maybeParseDeBAMLFinal, the unsupported fallback is SILENT: parseStreamFn
+// runs once per accumulated prefix, so a per-prefix warn would be noisy. Native
+// @stream.with_state / @stream.done / @stream.not_null are NOT representable on a
+// dynamic schema (BAML's dynamic TypeBuilder cannot attach them — see
+// FromDynamicOutputSchema), so the native parser declines any such shape and this
+// seam silently keeps BAML authoritative there.
+//
+// ctx is the caller's per-attempt request context so the native parser observes
+// the same cancellation/deadline the BAML fallback would.
+func maybeParseDeBAMLStream(ctx context.Context, adapter bamlutils.Adapter, raw string) (streamtypes.Baml_Rest_DynamicOutput, bool, error) {
+	var zero streamtypes.Baml_Rest_DynamicOutput
+	if !adapter.DeBAMLConfig().Enabled {
+		return zero, false, nil
+	}
+	outputSchema := adapter.DeBAMLOutputSchema()
+	if outputSchema == nil {
+		return zero, false, nil
+	}
+	getter, ok := adapter.(deBAMLParserGetter)
+	if !ok {
+		return zero, false, nil
+	}
+	parse := getter.DeBAMLParser()
+	if parse == nil {
+		return zero, false, nil
+	}
+	res, err := parse(ctx, bamlutils.DeBAMLParseRequest{Raw: raw, OutputSchema: outputSchema, Stream: true})
+	if err != nil {
+		if errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+			// SILENT fallback (no per-prefix log): BAML parse-stream stays
+			// authoritative for this prefix.
+			return zero, false, nil
+		}
+		return zero, false, err
+	}
+	out, werr := wrapDeBAMLDynamicOutputStream(res.JSON)
+	if werr != nil {
+		// Native CLAIMED a success but produced JSON we cannot wrap into the
+		// streaming dynamic-output envelope. Per the seam contract only
+		// ErrDeBAMLParseUnsupported falls back; every other failure on a claimed
+		// result propagates so a parser/callback bug surfaces (the orchestrator
+		// still treats a stream parse error as non-terminal).
+		return zero, false, fmt.Errorf("wrap native de-BAML stream parse result: %w", werr)
+	}
+	return out, true, nil
+}
+
+// wrapDeBAMLDynamicOutputStream wraps the flattened native parse JSON into the
+// generated STREAMING dynamic-output envelope (streamtypes.Baml_Rest_DynamicOutput,
+// the type BAML's ParseStream returns), so the existing newResultFn stream-unwrap /
+// partial-emission pipeline runs unchanged. It is the parse-stream twin of
+// wrapDeBAMLDynamicOutput; both decode DynamicProperties in wire order and the
+// downstream reorder/sort pass remains the order authority.
+func wrapDeBAMLDynamicOutputStream(flat []byte) (streamtypes.Baml_Rest_DynamicOutput, error) {
+	var out streamtypes.Baml_Rest_DynamicOutput
+	if err := out.DynamicProperties.UnmarshalJSON(flat); err != nil {
+		return streamtypes.Baml_Rest_DynamicOutput{}, err
 	}
 	return out, nil
 }

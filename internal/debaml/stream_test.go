@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/internal/schema"
 )
 
 // M4b/M4c streaming (raw_is_done=false) native-parse coverage. Each claimed case
@@ -229,6 +230,71 @@ func TestStream_NilSchemaDeclines(t *testing.T) {
 	if !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
 		t.Fatalf("nil schema stream: expected ErrDeBAMLParseUnsupported, got %v", err)
 	}
+}
+
+// TestStream_WithStateAndAnnotationsDecline pins the M4d part-A boundary:
+// @stream.with_state (StreamingBehavior.State) and the other BAML stream
+// annotations — @@stream.done (Done), @stream.not_null (class Needed /
+// ClassField.StreamingNeeded), and any type-level Stream flag — are
+// UNREPRESENTABLE on a dynamic schema. bamlutils.DynamicProperty / DynamicClass /
+// DynamicTypeSpec carry NO stream-annotation channel, and
+// schema.FromDynamicOutputSchema lowers every class with a zero
+// StreamingBehavior (see its doc), so BAML's own dynamic parse-stream never sees
+// one either — there is nothing to capture and nothing to claim, and with_state
+// STAYS BAML fallback.
+//
+// checkNoStreamAnnotations is the DEFENSIVE gate that keeps that true even if a
+// future bridge extension somehow carried an annotation: any non-zero stream flag
+// DECLINES so BAML parse-stream stays authoritative. Because the live dynamic
+// bridge cannot produce such a bundle, this white-box test INJECTS each annotation
+// onto a freshly-lowered bundle (which the bridge cannot) and asserts the decline —
+// pinning that @stream.with_state can never be silently claimed on the stream path.
+func TestStream_WithStateAndAnnotationsDecline(t *testing.T) {
+	lower := func() *schema.Bundle {
+		t.Helper()
+		b, err := schema.FromDynamicOutputSchema(personSchema(), schema.BuildOptions{})
+		if err != nil {
+			t.Fatalf("lower personSchema: %v", err)
+		}
+		return b
+	}
+	requireGateDeclines := func(b *schema.Bundle, what string) {
+		t.Helper()
+		err := checkNoStreamAnnotations(b)
+		if err == nil {
+			t.Fatalf("%s: expected checkNoStreamAnnotations to DECLINE, got nil", what)
+		}
+		if !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+			t.Fatalf("%s: expected ErrDeBAMLParseUnsupported, got %v", what, err)
+		}
+	}
+	// A lowered dynamic schema carries NO annotations, so the gate passes (this is
+	// the ONLY shape the live bridge can ever produce — hence with_state is always
+	// unrepresentable, not merely declined).
+	if err := checkNoStreamAnnotations(lower()); err != nil {
+		t.Fatalf("annotation-free dynamic schema must pass the gate, got %v", err)
+	}
+	// Each injected annotation declines. b.Classes[0] is the synthetic
+	// Baml_Rest_DynamicOutput class (fields name, age); no nested classes.
+	b := lower()
+	b.Classes[0].Stream.State = true // @stream.with_state
+	requireGateDeclines(b, "@stream.with_state (class State)")
+
+	b = lower()
+	b.Classes[0].Stream.Done = true // @@stream.done
+	requireGateDeclines(b, "@@stream.done (class Done)")
+
+	b = lower()
+	b.Classes[0].Stream.Needed = true // @stream.not_null (class level)
+	requireGateDeclines(b, "@stream.not_null (class Needed)")
+
+	b = lower()
+	b.Classes[0].Fields[0].StreamingNeeded = true // @stream.not_null (field level)
+	requireGateDeclines(b, "@stream.not_null (field StreamingNeeded)")
+
+	b = lower()
+	b.Classes[0].Fields[0].Type.Meta.Stream.State = true // @stream.with_state on a field type
+	requireGateDeclines(b, "@stream.with_state (field type State)")
 }
 
 // TestStream_FinalParseUnchanged is a belt-and-suspenders check that the M4b

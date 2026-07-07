@@ -129,8 +129,14 @@ func TestMaybeWriteDeBAMLHelper_WritesWhenEmitted(t *testing.T) {
 		"package genx",
 		`bamlutils "github.com/invakid404/baml-rest/bamlutils"`,
 		`types "example.com/x/baml_client/types"`,
+		`streamtypes "example.com/x/baml_client/stream_types"`,
 		"func maybeApplyDeBAMLOutputFormat(",
 		"func rewriteOutputFormat(",
+		// The parse-stream (M4d native-first) seam twin is always emitted with
+		// the final seam.
+		"func maybeParseDeBAMLFinal(",
+		"func maybeParseDeBAMLStream(",
+		"func wrapDeBAMLDynamicOutputStream(",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("emitted debaml.go missing %q\n%s", want, got)

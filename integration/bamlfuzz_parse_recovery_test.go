@@ -643,6 +643,16 @@ var parseRecoveryStreamNativeClaim = map[string]map[string]bool{
 	// @stream.with_state) stays fallback and has NO fixture — BAML's dynamic
 	// TypeBuilder cannot attach those annotations, so neither the BAML oracle nor the
 	// native bridge can carry them (nothing to differential-test).
+	//
+	// M4d adds NO streaming corpus fixture: its part (A) — @stream.with_state output
+	// wrappers — is UNREPRESENTABLE on a dynamic schema for exactly the reason above
+	// (schema.FromDynamicOutputSchema lowers every class with a zero StreamingBehavior),
+	// so with_state STAYS BAML fallback and there is nothing to capture here. M4d's part
+	// (B) — the native-first runtime parseStreamFn seam — wires internal/debaml.Parse
+	// (Stream=true, the SAME parser this differential holds to BAML byte-exact) into the
+	// generated streaming path; it is exercised end-to-end in
+	// dynamic_debaml_stream_seam_test.go (native-first CLAIM + silent BAML fallback),
+	// not by new corpus prefixes.
 
 	// 173_streaming_numbers_list_int (Root{nums:list<int>}). int is done-required, so
 	// a still-streaming trailing element is DROPPED and completed (comma-terminated)
