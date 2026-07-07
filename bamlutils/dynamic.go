@@ -727,6 +727,14 @@ type DynamicParseInput struct {
 	// nil inherits the server default, non-nil wins. See that field's
 	// doc comment for the full tri-state contract.
 	PreserveSchemaOrder *bool `json:"preserve_schema_order,omitempty"`
+	// Stream selects BAML parse-stream (partial) semantics: when true the
+	// worker drives the parse method's StreamImpl (BAML ParseStream) over Raw
+	// and returns the partial typed output, normalized through the SAME
+	// flatten / absent-optional-injection / ordering pipeline a final parse
+	// uses. This exposes a direct BAML parse-stream oracle to the bamlfuzz
+	// parse-recovery streaming differential; it does not enable native
+	// de-BAML stream parsing (internal/debaml.Parse still declines Stream).
+	Stream bool `json:"stream,omitempty"`
 }
 
 // Validate checks that required fields are present for parse
@@ -783,7 +791,8 @@ func (d *DynamicParseInput) ToWorkerInput() (b []byte, err error) {
 	}
 
 	internal := map[string]any{
-		"raw": d.Raw,
+		"raw":    d.Raw,
+		"stream": d.Stream,
 		"__baml_options__": &BamlOptions{
 			TypeBuilder: &TypeBuilder{
 				DynamicTypes: dynamicTypes,

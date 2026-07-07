@@ -1,6 +1,6 @@
 {
   "name": "streaming_markdown_fence",
-  "description": "Accumulated prefixes enter prose, open a ```json fence, build the object, then close the fence. STREAMING DIFFERENTIAL IS BLOCKED ON DIRECT PARSE-STREAM EXPOSURE (deferred): the per-prefix `want` values are NOT yet BAML-characterized and the harness does not gate on them today — only the corpus format and prefix-growth monotonicity are exercised.",
+  "description": "Accumulated prefixes enter prose, open a ```json fence, build the object, then close the fence. Per-prefix `want` values are LIVE-CAPTURED from BAML v0.223.0 parse-stream (BAMLFUZZ_PARSE_CAPTURE=1), not hand-written: BAML's parse-stream recovers a partial object even from bare prose or a just-opened fence (both fields null-filled), so every prefix here is a success. Native de-BAML declines all stream parses in M4a (per-prefix fallback).",
   "preserve_schema_order": true,
   "schema": {
     "classes": [
@@ -15,8 +15,8 @@
     "root_class": "Root"
   },
   "prefixes": [
-    {"name": "prose", "raw": "Here you go:\n", "want": {"status": "error"}},
-    {"name": "fence_open", "raw": "Here you go:\n```json\n", "want": {"status": "error"}},
+    {"name": "prose", "raw": "Here you go:\n", "want": {"status": "success", "json": {"name": null, "age": null}}},
+    {"name": "fence_open", "raw": "Here you go:\n```json\n", "want": {"status": "success", "json": {"name": null, "age": null}}},
     {"name": "object_partial", "raw": "Here you go:\n```json\n{\"name\":\"Ada\"", "want": {"status": "success", "json": {"name": "Ada", "age": null}}},
     {"name": "object_full", "raw": "Here you go:\n```json\n{\"name\":\"Ada\",\"age\":36}", "want": {"status": "success", "json": {"name": "Ada", "age": 36}}},
     {"name": "fence_close", "raw": "Here you go:\n```json\n{\"name\":\"Ada\",\"age\":36}\n```", "want": {"status": "success", "json": {"name": "Ada", "age": 36}}}

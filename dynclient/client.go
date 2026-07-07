@@ -277,6 +277,14 @@ func (c *Client) DynamicCallRaw(ctx context.Context, req Request) (*CallRawResul
 
 // DynamicParse parses a raw LLM response against the request's output
 // schema and returns the flattened JSON payload.
+//
+// When req.Stream is true it drives BAML's parse-stream (partial) path over
+// the raw text instead of the final parse, exposing a direct parse-stream
+// oracle. The partial output is normalized through the identical
+// flatten / absent-optional-injection / ordering pipeline, so a streaming
+// prefix's result is directly comparable to a final parse's — this is what
+// the bamlfuzz parse-recovery streaming differential consumes. BAML may
+// reject an early prefix; that surfaces as a normal parse error here.
 func (c *Client) DynamicParse(ctx context.Context, req ParseRequest) (*ParseResult, error) {
 	if c == nil {
 		return nil, errNilClient

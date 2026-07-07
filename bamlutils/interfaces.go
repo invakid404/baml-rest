@@ -210,6 +210,15 @@ type ParsePrompt func(adapter Adapter, raw string) (any, error)
 type ParseMethod struct {
 	MakeOutput func() any
 	Impl       ParsePrompt
+	// StreamImpl is the parse-STREAM (partial) implementation: it drives
+	// BAML's ParseStream over the accumulated raw prefix and returns the
+	// partial typed output, which the worker marshals into the same
+	// DynamicProperties envelope a final parse produces. It is nil for a
+	// method with no parse-stream counterpart; the worker treats a Stream
+	// parse request against a nil StreamImpl as unsupported. Native de-BAML
+	// stream parsing is NOT wired here — this seam exposes the BAML
+	// parse-stream oracle for the bamlfuzz streaming differential only.
+	StreamImpl ParsePrompt
 }
 
 type ClientRegistry struct {

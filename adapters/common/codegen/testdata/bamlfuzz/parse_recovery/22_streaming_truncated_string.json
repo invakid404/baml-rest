@@ -1,6 +1,6 @@
 {
   "name": "streaming_truncated_string",
-  "description": "Accumulated prefixes stop inside a string value and then complete it. STREAMING DIFFERENTIAL IS BLOCKED ON DIRECT PARSE-STREAM EXPOSURE (deferred): the per-prefix `want` values are NOT yet BAML-characterized and the harness does not gate on them today — only the corpus format and prefix-growth monotonicity are exercised.",
+  "description": "Accumulated prefixes stop inside a string value and then complete it. Per-prefix `want` values are LIVE-CAPTURED from BAML v0.223.0 parse-stream (BAMLFUZZ_PARSE_CAPTURE=1), not hand-written: an opened-but-empty string parses as \"\", a truncated string keeps its partial content, and the completed forms hold the full value. Native de-BAML declines all stream parses in M4a (per-prefix fallback).",
   "preserve_schema_order": true,
   "schema": {
     "classes": [

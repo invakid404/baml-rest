@@ -1,6 +1,6 @@
 {
   "name": "streaming_growing_object",
-  "description": "Accumulated prefixes grow through { , key, colon, partial string, full string, next key, full object. STREAMING DIFFERENTIAL IS BLOCKED ON DIRECT PARSE-STREAM EXPOSURE (deferred): the per-prefix `want` values are NOT yet BAML-characterized and the harness does not gate on them today — only the corpus format and prefix-growth monotonicity are exercised.",
+  "description": "Accumulated prefixes grow through { , key, colon, partial string, full string, next key, full object. Per-prefix `want` values are LIVE-CAPTURED from BAML v0.223.0 parse-stream (BAMLFUZZ_PARSE_CAPTURE=1), not hand-written: BAML's parse-stream is lenient enough that even a bare open-brace / partial-key / dangling-colon prefix recovers a partial object with both fields null-filled, so every prefix here is a success. Native de-BAML declines all stream parses in M4a (per-prefix fallback).",
   "preserve_schema_order": true,
   "schema": {
     "classes": [
@@ -15,9 +15,9 @@
     "root_class": "Root"
   },
   "prefixes": [
-    {"name": "open_brace", "raw": "{", "want": {"status": "error"}},
-    {"name": "first_key", "raw": "{\"name\"", "want": {"status": "error"}},
-    {"name": "colon", "raw": "{\"name\":", "want": {"status": "error"}},
+    {"name": "open_brace", "raw": "{", "want": {"status": "success", "json": {"name": null, "age": null}}},
+    {"name": "first_key", "raw": "{\"name\"", "want": {"status": "success", "json": {"name": null, "age": null}}},
+    {"name": "colon", "raw": "{\"name\":", "want": {"status": "success", "json": {"name": null, "age": null}}},
     {"name": "partial_string", "raw": "{\"name\":\"Ad", "want": {"status": "success", "json": {"name": "Ad", "age": null}}},
     {"name": "full_string", "raw": "{\"name\":\"Ada\"", "want": {"status": "success", "json": {"name": "Ada", "age": null}}},
     {"name": "second_key", "raw": "{\"name\":\"Ada\",\"age\"", "want": {"status": "success", "json": {"name": "Ada", "age": null}}},

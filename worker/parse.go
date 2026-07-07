@@ -12,7 +12,12 @@ import (
 
 // workerParseInput wraps the input for parse requests.
 type workerParseInput struct {
-	Raw     string                 `json:"raw"`
+	Raw string `json:"raw"`
+	// Stream selects the parse-STREAM (partial) path: when true, Parse drives
+	// the method's StreamImpl (BAML ParseStream) instead of the final Impl.
+	// Absent/false on every production /parse input, so the default path is
+	// unchanged; only the dynamic parse-stream oracle sets it.
+	Stream  bool                   `json:"stream,omitempty"`
 	Options *bamlutils.BamlOptions `json:"__baml_options__,omitempty"`
 }
 
@@ -47,8 +52,22 @@ func (h *Handler) Parse(ctx context.Context, methodName string, inputJSON []byte
 		}
 	}
 
-	// Call the parse method
-	result, err := method.Impl(adapter, input.Raw)
+	// Select the final or parse-stream implementation. Stream=true drives
+	// BAML's ParseStream over the accumulated prefix (the parse-stream
+	// oracle); a method with no StreamImpl cannot service a Stream request.
+	// This is a real error (the method does not expose parse-stream), not a
+	// native fallback: native de-BAML stream parsing is not wired at this
+	// seam.
+	impl := method.Impl
+	if input.Stream {
+		if method.StreamImpl == nil {
+			return nil, fmt.Errorf("parse method %q does not support stream parse", methodName)
+		}
+		impl = method.StreamImpl
+	}
+
+	// Call the selected parse implementation.
+	result, err := impl(adapter, input.Raw)
 	if err != nil {
 		// Wrap with any typed classification so the gRPC layer's
 		// errors.As against GetCode()/GetDetails() picks it up
