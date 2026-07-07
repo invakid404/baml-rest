@@ -1,0 +1,27 @@
+{
+  "name": "streaming_list_class_partial_field",
+  "description": "Nested class-in-list: Root{items:list<Inner>}, Inner{a:int}. A completed list element remains; a still-streaming trailing class element is KEPT (a class is NOT done-required) with its incomplete done-required int field NULL-REPLACED. This is the annotation-free reachable analogue of 'nested done-class-in-list' (BAML's dynamic TypeBuilder cannot express @@stream.done, so a class element is never itself dropped). Per-prefix `want` values are LIVE-CAPTURED from BAML v0.223.0 parse-stream (BAMLFUZZ_PARSE_CAPTURE=1), not hand-written.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "items", "type": {"kind": "list", "inner": {"kind": "class_ref", "ref": "Inner"}}}
+        ]
+      },
+      {
+        "name": "Inner",
+        "properties": [
+          {"name": "a", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "prefixes": [
+    {"name": "first_done_second_partial", "raw": "{\"items\":[{\"a\":1},{\"a\":2", "want": {"status": "success", "json": {"items": [{"a": 1}, {"a": null}]}}},
+    {"name": "second_closed", "raw": "{\"items\":[{\"a\":1},{\"a\":2}", "want": {"status": "success", "json": {"items": [{"a": 1}, {"a": 2}]}}},
+    {"name": "list_closed", "raw": "{\"items\":[{\"a\":1},{\"a\":2}]", "want": {"status": "success", "json": {"items": [{"a": 1}, {"a": 2}]}}}
+  ]
+}

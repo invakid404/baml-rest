@@ -1,0 +1,21 @@
+{
+  "name": "streaming_map_int_partial",
+  "description": "Map value drop for Root{m:map<string,int>}: an entry whose done-required int value is INCOMPLETE has the WHOLE key/value pair DROPPED (semantic_streaming.rs Map arm filter_map — never null-kept, unlike a class field), while completed sibling entries stay in input key order. Raws keep a space after the comma so the unquoted object value stays out of streamFix's greedy-tight-comma decline. Per-prefix `want` values are LIVE-CAPTURED from BAML v0.223.0 parse-stream (BAMLFUZZ_PARSE_CAPTURE=1), not hand-written.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "m", "type": {"kind": "map", "key": {"kind": "string"}, "inner": {"kind": "int"}}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "prefixes": [
+    {"name": "one_done_two_partial", "raw": "{\"m\":{\"a\":1, \"b\":2", "want": {"status": "success", "json": {"m": {"a": 1}}}},
+    {"name": "two_closed", "raw": "{\"m\":{\"a\":1, \"b\":2}", "want": {"status": "success", "json": {"m": {"a": 1, "b": 2}}}},
+    {"name": "map_closed", "raw": "{\"m\":{\"a\":1, \"b\":2}}", "want": {"status": "success", "json": {"m": {"a": 1, "b": 2}}}}
+  ]
+}

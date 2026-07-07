@@ -50,9 +50,11 @@ func Parse(ctx context.Context, req bamlutils.DeBAMLParseRequest) (bamlutils.DeB
 	_ = ctx // M1 parsing is a local CPU operation; no cancellation points.
 
 	if req.Stream {
-		// M4b: the native STREAMING (raw_is_done=false) path claims the smallest
-		// useful partial surface; everything outside it declines. Final-parse
-		// behavior below is untouched.
+		// M4b/M4c: the native STREAMING (raw_is_done=false) path claims the basic
+		// partial surface PLUS the annotation-free semantic-streaming shape
+		// (required-done child deletion, class field null-replacement, Pending
+		// fillers); everything outside it declines. Final-parse behavior below is
+		// untouched.
 		return parseStream(req)
 	}
 	if req.OutputSchema == nil {
@@ -100,25 +102,29 @@ func Parse(ctx context.Context, req bamlutils.DeBAMLParseRequest) (bamlutils.DeB
 // Compile-time assertion that Parse satisfies the public callback type.
 var _ bamlutils.DeBAMLParseFunc = Parse
 
-// parseStream is the M4b native streaming (raw_is_done=false) parse path. It
-// claims the SMALLEST useful partial surface: ordinary dynamic partials whose
-// observable output is jsonish recovery + class null-filling, with NO stream
-// annotations and NO displayed StreamState. Everything else DECLINES with the
-// unsupported sentinel so BAML parse-stream stays authoritative.
+// parseStream is the M4b/M4c native streaming (raw_is_done=false) parse path. It
+// claims the basic partial surface (jsonish recovery + class null-filling) PLUS the
+// ANNOTATION-FREE slice of BAML's semantic streaming — the required-done child
+// deletion, class field null-replacement, and Pending fillers that shape the
+// ordinary JSON — with NO stream annotations and NO displayed StreamState.
+// Everything else DECLINES with the unsupported sentinel so BAML parse-stream stays
+// authoritative.
 //
 // The claim boundary is: a dynamic schema inside the SAME structural cut-line as
 // final parse (checkSupported) AND carrying no stream annotations
-// (checkNoStreamAnnotations — defensive, since the dynamic bridge cannot express
-// them), a candidate the streaming extractor can recover
-// (streamExtractCandidate), and a value coerceStream can reproduce byte-exact
-// (open/repaired root objects after ≥1 field value, truncated/markdown-recovered
-// strings, missing-field null fillers, completed scalar/list children). Anything
-// coerceStream cannot prove — a value BAML would delete (incomplete done-required
-// scalar, semantic child deletion), a StreamState wrapper, a map/union target, an
-// implied-key/inferred class, a still-empty open object — declines. See
-// coerceStream for the per-shape boundary. A non-sentinel error is a CLAIMED
-// stream parse failure (surfaced for parity like the final path); today no
-// claimed shape produces one, so every non-claim is the fallback sentinel.
+// (checkNoStreamAnnotations — defensive, since the dynamic TypeBuilder cannot
+// express them), a candidate the streaming extractor can recover
+// (streamExtractCandidate), and a value coerceStream can reproduce byte-exact:
+// open/repaired root objects after ≥1 field value, truncated/markdown-recovered
+// strings, missing-field Pending nulls, completed scalar/list/map/class children,
+// and the semantic-streaming reshaping — an INCOMPLETE done-required leaf DROPPED
+// from a list / map entry or NULL-REPLACED as a class field, with completed siblings
+// kept in BAML order. Anything coerceStream cannot prove — a StreamState wrapper, a
+// mixed/composite union target, an implied-key/inferred class, a non-string map key,
+// a still-empty open object — declines. See coerceStream for the per-shape boundary.
+// A non-sentinel error is a CLAIMED stream parse failure (surfaced for parity like
+// the final path); today no claimed shape produces one, so every non-claim is the
+// fallback sentinel.
 func parseStream(req bamlutils.DeBAMLParseRequest) (bamlutils.DeBAMLParseResult, error) {
 	if req.OutputSchema == nil {
 		return bamlutils.DeBAMLParseResult{}, unsupported("nil output schema")
@@ -157,12 +163,18 @@ func parseStream(req bamlutils.DeBAMLParseRequest) (bamlutils.DeBAMLParseResult,
 // checkNoStreamAnnotations DECLINES any schema carrying BAML stream metadata —
 // @stream.done / @@stream.done (StreamingBehavior.Done), @stream.not_null
 // (Needed / ClassField.StreamingNeeded), or @stream.with_state (State) — at the
-// class, field, or type level. M4b claims only UNANNOTATED partials; an annotated
-// schema keeps the BAML parse-stream path, whose semantic-deletion / not-null /
-// with-state behavior is M4c/M4d. The dynamic output bridge carries no
-// streaming-annotation channel today (every dynamic class is non-streaming with a
-// zero StreamingBehavior), so this is a defensive guard pinning the boundary
-// rather than a reachable path.
+// class, field, or type level. M4c models the ANNOTATION-FREE intrinsic semantic
+// streaming (the required-done TYPE TABLE, deletion, null-replacement, Pending
+// fillers); the annotation-DEPENDENT behavior (a forced-done string/list/class,
+// not-null whole-class nulling, with-state wrappers) is NOT representable in the
+// native dynamic-schema data at field-level precision — BAML's dynamic TypeBuilder
+// cannot attach these annotations (ClassPropertyBuilder exposes only
+// SetType/description/alias) and schema.FromDynamicOutputSchema lowers every class
+// non-streaming with a zero StreamingBehavior. So BAML's own dynamic parse-stream
+// also sees no annotations, and any schema that somehow DID carry one must keep the
+// BAML path. Since the dynamic bridge produces no annotation today, this is a
+// defensive guard pinning the boundary rather than a reachable path (a future bridge
+// extension that carries annotations would decline here until modeled).
 func checkNoStreamAnnotations(b *schema.Bundle) error {
 	if err := checkTypeNoStream(b.Target); err != nil {
 		return err

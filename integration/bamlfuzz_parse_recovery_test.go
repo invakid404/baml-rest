@@ -634,6 +634,64 @@ var parseRecoveryStreamNativeClaim = map[string]map[string]bool{
 	// cross-element union_variant_hint (coerce_array.rs) was intentionally deferred
 	// after M3, so native declines at the gate (checkSupported) on every prefix and
 	// BAML parse-stream stays authoritative. No prefix is claimed (absent → false).
+
+	// --- M4c: annotation-free semantic streaming (required-done child deletion,
+	// class field null-replacement, map entry drop, Pending fillers). These flip
+	// prefixes M4b DECLINED (an incomplete done-required child that BAML DELETES) to
+	// CLAIMED: native now reproduces the deletion/null-replacement byte-exact. The
+	// annotation-DEPENDENT behavior (@stream.done / @@stream.done / @stream.not_null /
+	// @stream.with_state) stays fallback and has NO fixture — BAML's dynamic
+	// TypeBuilder cannot attach those annotations, so neither the BAML oracle nor the
+	// native bridge can carry them (nothing to differential-test).
+
+	// 173_streaming_numbers_list_int (Root{nums:list<int>}). int is done-required, so
+	// a still-streaming trailing element is DROPPED and completed (comma-terminated)
+	// elements are kept; the list itself is not done-required.
+	"streaming_numbers_list_int": {
+		"open_list":     true,
+		"one_partial":   true,
+		"one_done":      true,
+		"two_partial":   true,
+		"three_partial": true,
+		"list_closed":   true,
+		"object_closed": true,
+	},
+	// 174_streaming_class_incomplete_scalar_field (Root{name:string, age:int}). An
+	// incomplete done-required int class field is NULL-REPLACED; the completed string
+	// sibling is kept; the closed int is kept.
+	"streaming_class_incomplete_scalar_field": {
+		"name_done_age_partial":     true,
+		"name_done_age_more_digits": true,
+		"age_closed":                true,
+	},
+	// 175_streaming_list_class_partial_field (Root{items:list<Inner{a:int}>}). A
+	// partial trailing class element is KEPT (class not done-required) with its
+	// incomplete int field null-replaced; completed elements remain.
+	"streaming_list_class_partial_field": {
+		"first_done_second_partial": true,
+		"second_closed":             true,
+		"list_closed":               true,
+	},
+	// 176_streaming_map_int_partial (Root{m:map<string,int>}). An entry whose
+	// incomplete done-required int value is dropped WHOLE (key+value); completed
+	// entries stay in input key order.
+	"streaming_map_int_partial": {
+		"one_done_two_partial": true,
+		"two_closed":           true,
+		"map_closed":           true,
+	},
+	// 177_streaming_missing_field_fillers (Root{a:int, tags:list<string>,
+	// scores:map<string,int>, note:string?}). Missing fields are filled with BAML's
+	// TypeIR::default_value (LIVE-CAPTURED: required list→[], required map→{},
+	// optional→null), NOT null. key_only (`{"a"`) has no field value yet → native
+	// over-declines (the ≥1-present-field guard, BAML still succeeds). a_partial
+	// (`{"a":1`) has an incomplete int → deleted → a:null with the default fillers;
+	// a_closed (`{"a":1}`) has the completed int → a:1. Both claimed.
+	"streaming_missing_field_fillers": {
+		"key_only":  false,
+		"a_partial": true,
+		"a_closed":  true,
+	},
 }
 
 // streamPrefixNativeClaim returns the expected native disposition for one
