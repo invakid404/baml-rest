@@ -85,13 +85,14 @@ type nativeDeBAMLParser struct{}
 // Name identifies the native candidate leg in diff output and envelopes.
 func (nativeDeBAMLParser) Name() string { return "native_debaml" }
 
-// Parse drives internal/debaml.Parse for a final parse and normalizes its
-// flattened output exactly like dynclient's parse-only path. A Stream=true
-// request is passed through unchanged: internal/debaml.Parse declines every
-// stream parse (ErrDeBAMLParseUnsupported), which maps to
-// ErrParserUnavailable below, so in M4a the native candidate falls back
-// (SkippedNative) on every streaming prefix — native stream parity is not
-// claimed this slice.
+// Parse drives internal/debaml.Parse for both a final parse and (M4b) a
+// STREAMING parse, normalizing its flattened output exactly like dynclient's
+// parse-only path. A Stream=true request now routes to the native streaming path,
+// which CLAIMS the smallest useful partial surface (jsonish recovery + class
+// null-filling, no stream annotations / StreamState) and DECLINES everything else
+// with ErrDeBAMLParseUnsupported — mapped to ErrParserUnavailable below, so an
+// unclaimed prefix falls back (SkippedNative) and BAML parse-stream stands alone.
+// A claimed prefix is held to BAML byte-exact by the per-prefix differential.
 func (nativeDeBAMLParser) Parse(ctx context.Context, req bamlfuzz.ParseRequest) (bamlfuzz.ParseResult, error) {
 	lowered, err := bamlfuzz.LowerToDynamicSchema(req.Schema)
 	if err != nil {
@@ -566,15 +567,74 @@ var parseRecoveryNativeClaim = map[string]bool{
 }
 
 // parseRecoveryStreamNativeClaim pins the per-prefix native disposition for
-// streaming recovery cases: caseName -> prefixName -> claimed. In M4a the
-// native parser CLAIMS NO streaming prefix — internal/debaml.Parse declines
-// every Stream=true request — so every prefix's expected disposition is
-// fallback (false) and this map is intentionally empty (streamPrefixNativeClaim
-// defaults to false). It is the per-prefix seam a later slice (M4b+) uses to
-// flip an individual prefix from fallback to claimed without reworking the
-// harness: set caseName->prefixName to true and the per-prefix differential
-// then holds the native claim to BAML exactly.
-var parseRecoveryStreamNativeClaim = map[string]map[string]bool{}
+// streaming recovery cases: caseName -> prefixName -> claimed. A prefix set to
+// true is expected to be CLAIMED by internal/debaml.Parse(Stream=true) and held
+// to BAML parse-stream byte-exact by the per-prefix differential; a prefix absent
+// from the map defaults to false (native FALLS BACK to BAML).
+//
+// M4b flips the live-captured success prefixes whose observable behavior is
+// jsonish recovery + class null-filling WITHOUT stream annotations or displayed
+// stream state: an open/repaired root object AFTER at least one field value is
+// available (BAML's Pending null fills the missing fields), truncated /
+// markdown-fence-recovered incomplete STRING values (strings are not done-required
+// so a partial string is kept as its value — no AnyOf leak), and trailing-comma
+// list/string prefixes BAML accepts. The prefixes that stay FALLBACK (absent) are
+// the over-claim guards: a bare open brace / dangling key / dangling colon and
+// bare prose / just-opened fence (NO field value yet — the empty-object and
+// allow_as_string→class recovery paths are not claimed), which M4b deliberately
+// over-declines. Completed done-required scalars are claimed only where the
+// enclosing structure proves them done (the closed full_object); an INCOMPLETE
+// done-required scalar and any semantic child deletion stay fallback (M4c).
+var parseRecoveryStreamNativeClaim = map[string]map[string]bool{
+	// 20_streaming_growing_object (Root{name:string, age:int}). The bare `{`,
+	// key-only, and dangling-colon prefixes have no field value yet → fallback;
+	// every prefix from the first present field value on is claimed (missing fields
+	// null-filled, the closed int kept).
+	"streaming_growing_object": {
+		"partial_string": true,
+		"full_string":    true,
+		"second_key":     true,
+		"full_object":    true,
+	},
+	// 21_streaming_markdown_fence (Root{name:string, age:int}). Bare prose and the
+	// just-opened fence have no JSON content → fallback; the object emerging inside
+	// the (still-open, then closed) fence is claimed.
+	"streaming_markdown_fence": {
+		"object_partial": true,
+		"object_full":    true,
+		"fence_close":    true,
+	},
+	// 22_streaming_truncated_string (Root{name:string}). Every prefix carries a
+	// present (possibly empty / truncated / incomplete) STRING value, which is not
+	// done-required, so all four are claimed as the exact string value.
+	"streaming_truncated_string": {
+		"open":          true,
+		"mid_string":    true,
+		"closed_string": true,
+		"closed_object": true,
+	},
+	// 23_streaming_trailing_comma (Root{name:string, tags:list<string>}). Both
+	// fields are present with completed string / list-of-completed-string values,
+	// and the dangling trailing comma is dropped, so all four are claimed.
+	"streaming_trailing_comma": {
+		"list_open":      true,
+		"trailing_comma": true,
+		"list_closed":    true,
+		"object_closed":  true,
+	},
+	// anyof_string_no_leak (Root{note:string}): a truncated string value BAML
+	// represents internally as an AnyOf must surface as the STRING value natively,
+	// never an AnyOf[...] rendering — claimed from the first present value on.
+	"anyof_string_no_leak": {
+		"partial": true,
+		"closed":  true,
+	},
+	// list_multi_arm_union_stream (Root{items:list<int|bool>}): a direct
+	// list<multi-arm-union> element stays NATIVE-SKIPPED in stream mode — BAML's
+	// cross-element union_variant_hint (coerce_array.rs) was intentionally deferred
+	// after M3, so native declines at the gate (checkSupported) on every prefix and
+	// BAML parse-stream stays authoritative. No prefix is claimed (absent → false).
+}
 
 // streamPrefixNativeClaim returns the expected native disposition for one
 // streaming prefix: true = native is expected to CLAIM it (and be diffed
@@ -611,9 +671,9 @@ type parseRecoveryStats struct {
 // both the final-parse and streaming legs are live differentials. Streaming
 // cases additionally drive the direct BAML parse-stream oracle
 // (DynamicParse with Stream=true) per accumulated prefix and gate BAML
-// against the live-captured prefix `want`; the native candidate declines
-// every stream parse in M4a, so each streaming prefix records a fallback
-// disposition (SkippedNative) rather than a native claim.
+// against the live-captured prefix `want`; the native candidate CLAIMS the M4b
+// partial surface (per parseRecoveryStreamNativeClaim) and is held to BAML
+// byte-exact there, and FALLS BACK (SkippedNative) on every other prefix.
 //
 // Run with BAMLFUZZ_PARSE_CAPTURE=1 to log BAML's observed final-parse AND
 // per-prefix parse-stream outcomes instead of gating — used to (re)capture
@@ -657,7 +717,7 @@ func TestBamlfuzzParseRecovery(t *testing.T) {
 		})
 	}
 	t.Logf("native de-BAML final-parse dispositions: %d claimed, %d fell back to BAML", stats.claimed, stats.fallback)
-	t.Logf("native de-BAML parse-stream dispositions: %d claimed, %d fell back to BAML (M4a expects 0 claimed)", stats.streamClaimed, stats.streamFallback)
+	t.Logf("native de-BAML parse-stream dispositions: %d claimed, %d fell back to BAML (M4b claims the basic-partial surface)", stats.streamClaimed, stats.streamFallback)
 }
 
 // runParseRecoveryCase drives the final and/or streaming legs of one
@@ -770,12 +830,11 @@ func runParseRecoveryCase(t *testing.T, baml, native bamlfuzz.Parser, c bamlfuzz
 						characterizeStreamPrefix(t, c, p, res.BAML)
 					}
 
-					// Native-vs-BAML per-prefix differential. In M4a native
-					// declines every stream prefix, so SkippedNative is the
-					// expected shape and this gate never fires for a native
-					// mismatch; it DOES fire on a BAML harness failure
-					// (SkippedNative=false with failures) or, once a later
-					// slice claims a prefix, on real native drift.
+					// Native-vs-BAML per-prefix differential. For an M4b-claimed
+					// prefix native returns real JSON and this gate holds it to
+					// BAML byte-exact; for a fallback prefix SkippedNative is the
+					// expected shape and this gate never fires. It also fires on a
+					// BAML harness failure (SkippedNative=false with failures).
 					if !res.SkippedNative && len(res.Failures) > 0 {
 						dumpParseDiffAndFail(t, parseRecoveryArtifactDir,
 							parseDiffEnvelope(c, idx, i, p.Name, p.Raw, true, res),
@@ -797,7 +856,7 @@ func runParseRecoveryCase(t *testing.T, baml, native bamlfuzz.Parser, c bamlfuzz
 						t.Logf("native FELL BACK to BAML for stream prefix %q/%q", c.Name, p.Name)
 					}
 					if claimed != want {
-						t.Errorf("native stream disposition for %q/%q: got claimed=%v, want claimed=%v (M4a: every stream prefix falls back)", c.Name, p.Name, claimed, want)
+						t.Errorf("native stream disposition for %q/%q: got claimed=%v, want claimed=%v (M4b cut-line drift)", c.Name, p.Name, claimed, want)
 					}
 				})
 			}

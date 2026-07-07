@@ -405,3 +405,321 @@ func (p *fixer) parseSingleQuoted() (string, error) {
 	}
 	return "", errFixUnsupported // unterminated string
 }
+
+// --- M4b: streaming (raw_is_done=false) fixing parser ---------------------
+//
+// streamFix runs the STREAMING variant of the conservative fixing pass over a
+// candidate span captured mid-generation (raw_is_done=false). On top of the M2a
+// fixing subset (trailing/leading/repeated commas, unquoted keys, single quotes,
+// unquoted true/false/null/number scalars) it RECOVERS the incomplete structures
+// BAML's jsonish closes at EOF and tags each value's CompletionState via the
+// value.incomplete bit:
+//
+//   - an object/array with no closing delimiter is closed at EOF (Incomplete);
+//   - a double/single-quoted string with no closing quote keeps its partial
+//     content and is closed at EOF (Incomplete — allow_as_string under is_done=false);
+//   - an unquoted scalar that runs to EOF is Incomplete;
+//   - an object key with no ':' — or a ':' with no value — at EOF is DROPPED: the
+//     field has no value yet, so the class null-fills it downstream (this is how
+//     BAML's `{`, `{"name"`, and `{"name":` prefixes recover an all-null object);
+//   - a value terminated by its proper delimiter (',' or a closing bracket) is
+//     Complete, so the LAST child of an incomplete container is Incomplete while
+//     earlier properly-terminated siblings stay Complete (semantic_streaming.rs).
+//
+// It DECLINES (ok=false) exactly the constructs the final fixer declines for
+// reasons OTHER than truncation — comments, backtick/triple-quoted strings,
+// escapes inside strings, and a missing comma between two PRESENT values (a
+// non-EOF junk byte) — plus any trailing content after a self-closed top-level
+// value (the multiple-values / inferred-array case). The top level must be an
+// object or array (recovery schemas target object/list/class shapes); a bare
+// scalar span declines. Completion is advisory only: stream coercion consults it
+// to DECLINE an incomplete done-required value (which BAML would delete) rather
+// than model the deletion (M4c). The final decoders never call this, so
+// value.incomplete stays false on the final-parse path.
+func streamFix(s string) (value, bool) {
+	p := &fixer{s: s}
+	p.skipWS()
+	if p.eof() {
+		return value{}, false
+	}
+	if c := p.s[p.pos]; c != '{' && c != '[' {
+		// A bare scalar span is not a recovery target (and would be handled by the
+		// strict decode that runs first for a complete one).
+		return value{}, false
+	}
+	v, err := p.parseValueStream("")
+	if err != nil {
+		return value{}, false
+	}
+	p.skipWS()
+	if !p.eof() {
+		// Trailing content after a self-closed top-level value is the
+		// multiple-values / inferred-array case BAML scores; decline. (An
+		// unterminated top-level value consumed to EOF, so this only fires when the
+		// value self-closed and more text follows.)
+		return value{}, false
+	}
+	return v, true
+}
+
+// parseValueStream parses one streaming value. The caller guarantees a non-EOF,
+// non-terminator byte at the cursor (object/array callers handle the EOF and
+// terminator cases before dispatching here). term is the terminator set for a
+// bare unquoted scalar; quoted strings, objects, and arrays self-delimit.
+func (p *fixer) parseValueStream(term string) (value, error) {
+	switch c := p.s[p.pos]; c {
+	case '{':
+		return p.parseObjectStream()
+	case '[':
+		return p.parseArrayStream()
+	case '"':
+		return p.parseDoubleQuotedStream()
+	case '\'':
+		return p.parseSingleQuotedStream()
+	case '`', '/', '#':
+		// Backtick strings and comments are deferred to BAML.
+		return value{}, errFixUnsupported
+	default:
+		return p.parseUnquotedScalarStream(term)
+	}
+}
+
+// parseObjectStream parses an object body with streaming recovery. The opening
+// '{' is at the cursor. On EOF it closes the object Incomplete; a key with no
+// ':' or a ':' with no value at EOF drops that (still-streaming) field so the
+// class null-fills it. A missing comma / separator with more input present is
+// out of the subset and declines.
+func (p *fixer) parseObjectStream() (value, error) {
+	p.pos++ // consume '{'
+	obj := value{kind: valObject}
+	for {
+		p.skipWS()
+		if p.eof() {
+			obj.incomplete = true
+			return obj, nil
+		}
+		switch p.s[p.pos] {
+		case '}':
+			p.pos++
+			return obj, nil // complete (closed)
+		case ',':
+			p.pos++ // tolerate leading / trailing / repeated commas
+			continue
+		}
+		key, ok := p.parseKeyStream()
+		if !ok {
+			// Unterminated / unparseable key → field has no value yet: drop it and
+			// close the object Incomplete.
+			obj.incomplete = true
+			return obj, nil
+		}
+		p.skipWS()
+		if p.eof() {
+			// Key present but no ':' yet → drop the still-streaming field.
+			obj.incomplete = true
+			return obj, nil
+		}
+		if p.s[p.pos] != ':' {
+			return value{}, errFixUnsupported // missing key/value separator
+		}
+		p.pos++ // consume ':'
+		p.skipWS()
+		if p.eof() {
+			// ':' with no value yet → drop the still-streaming field.
+			obj.incomplete = true
+			return obj, nil
+		}
+		v, err := p.parseValueStream(objectValueTerm)
+		if err != nil {
+			return value{}, err
+		}
+		obj.objV = append(obj.objV, field{key: key, val: v})
+
+		p.skipWS()
+		if p.eof() {
+			obj.incomplete = true
+			return obj, nil
+		}
+		switch p.s[p.pos] {
+		case '}':
+			p.pos++
+			return obj, nil
+		case ',':
+			p.pos++
+		default:
+			return value{}, errFixUnsupported // missing comma / junk
+		}
+	}
+}
+
+// parseArrayStream parses an array body with streaming recovery. The opening '['
+// is at the cursor. On EOF it closes the array Incomplete; trailing/leading/
+// repeated commas are tolerated. A missing comma with more input present declines.
+func (p *fixer) parseArrayStream() (value, error) {
+	p.pos++ // consume '['
+	arr := value{kind: valArray, arrV: []value{}}
+	for {
+		p.skipWS()
+		if p.eof() {
+			arr.incomplete = true
+			return arr, nil
+		}
+		switch p.s[p.pos] {
+		case ']':
+			p.pos++
+			return arr, nil // complete
+		case ',':
+			p.pos++
+			continue
+		}
+		v, err := p.parseValueStream(arrayValueTerm)
+		if err != nil {
+			return value{}, err
+		}
+		arr.arrV = append(arr.arrV, v)
+
+		p.skipWS()
+		if p.eof() {
+			arr.incomplete = true
+			return arr, nil
+		}
+		switch p.s[p.pos] {
+		case ']':
+			p.pos++
+			return arr, nil
+		case ',':
+			p.pos++
+		default:
+			return value{}, errFixUnsupported
+		}
+	}
+}
+
+// parseKeyStream reads an object key for the streaming parser. It returns
+// (key, true) for a fully-formed key, and ("", false) when the key is still
+// streaming (an unterminated quoted key closed by EOF) or unparseable (backtick /
+// empty) — the caller then drops the field and closes the object Incomplete.
+func (p *fixer) parseKeyStream() (string, bool) {
+	p.skipWS()
+	if p.eof() {
+		return "", false
+	}
+	switch p.s[p.pos] {
+	case '"':
+		v, err := p.parseDoubleQuotedStream()
+		if err != nil || v.incomplete {
+			return "", false
+		}
+		return v.strV, true
+	case '\'':
+		v, err := p.parseSingleQuotedStream()
+		if err != nil || v.incomplete {
+			return "", false
+		}
+		return v.strV, true
+	case '`':
+		return "", false
+	default:
+		key, err := p.parseUnquotedKey()
+		if err != nil {
+			return "", false
+		}
+		return key, true
+	}
+}
+
+// parseDoubleQuotedStream reads a double-quoted string with streaming recovery.
+// A backslash escape or triple-quoted opener still declines (deferred to BAML);
+// an unterminated string keeps its partial content and is marked Incomplete.
+func (p *fixer) parseDoubleQuotedStream() (value, error) {
+	if strings.HasPrefix(p.s[p.pos:], `"""`) {
+		return value{}, errFixUnsupported // triple-quoted string deferred
+	}
+	p.pos++ // consume opening '"'
+	var sb strings.Builder
+	for !p.eof() {
+		c := p.s[p.pos]
+		switch c {
+		case '\\':
+			return value{}, errFixUnsupported // escapes deferred to BAML
+		case '"':
+			p.pos++
+			return value{kind: valString, strV: sb.String()}, nil // complete
+		}
+		sb.WriteByte(c)
+		p.pos++
+	}
+	// Unterminated → keep partial content, mark Incomplete.
+	return value{kind: valString, strV: sb.String(), incomplete: true}, nil
+}
+
+// parseSingleQuotedStream reads a single-quoted string with streaming recovery.
+// A backslash declines (its embedded-quote close heuristic is ambiguous); an
+// unterminated string keeps its partial content and is marked Incomplete.
+func (p *fixer) parseSingleQuotedStream() (value, error) {
+	p.pos++ // consume opening '\''
+	var sb strings.Builder
+	for !p.eof() {
+		c := p.s[p.pos]
+		switch c {
+		case '\\':
+			return value{}, errFixUnsupported
+		case '\'':
+			p.pos++
+			return value{kind: valString, strV: sb.String()}, nil // complete
+		}
+		sb.WriteByte(c)
+		p.pos++
+	}
+	return value{kind: valString, strV: sb.String(), incomplete: true}, nil
+}
+
+// parseUnquotedScalarStream reads a bare scalar value with streaming recovery.
+// It classifies the token like the final parser (true/false/null and strict JSON
+// numbers only; a bareword string declines), but a token that runs to EOF is
+// marked Incomplete rather than declined. The same greedy-object-value comma
+// guard the final parser uses applies (native cannot reproduce BAML's greedy
+// unquoted-object-value scan), and a value followed by a non-terminator non-EOF
+// byte is a missing-comma case that declines.
+func (p *fixer) parseUnquotedScalarStream(term string) (value, error) {
+	start := p.pos
+	for !p.eof() {
+		c := p.s[p.pos]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			break
+		}
+		if strings.IndexByte(term, c) >= 0 {
+			break
+		}
+		if strings.IndexByte(scalarBailBytes, c) >= 0 {
+			return value{}, errFixUnsupported
+		}
+		p.pos++
+	}
+	raw := p.s[start:p.pos]
+	if strings.TrimSpace(raw) == "" {
+		return value{}, errFixUnsupported
+	}
+	p.skipWS()
+	if p.eof() {
+		// Ran to EOF with no terminator → still streaming → Incomplete.
+		v, err := classifyScalar(raw)
+		if err != nil {
+			return value{}, err
+		}
+		v.incomplete = true
+		return v, nil
+	}
+	if strings.IndexByte(term, p.s[p.pos]) < 0 {
+		return value{}, errFixUnsupported // missing comma / junk
+	}
+	if term == objectValueTerm && p.s[p.pos] == ',' {
+		next := p.pos + 1
+		if next >= len(p.s) || (p.s[next] != ' ' && p.s[next] != '\n') {
+			// BAML would consume this comma and read greedily — decline.
+			return value{}, errFixUnsupported
+		}
+	}
+	// Terminated by a proper delimiter → Complete.
+	return classifyScalar(raw)
+}

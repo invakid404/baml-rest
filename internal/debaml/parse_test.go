@@ -286,12 +286,19 @@ func TestParse_EnumByAlias(t *testing.T) {
 	mustParse(t, s, `{"color":"Verde"}`, `{"color":"GREEN"}`)
 }
 
-func TestParse_UnsupportedStream(t *testing.T) {
-	_, err := Parse(context.Background(), bamlutils.DeBAMLParseRequest{
+// TestParse_StreamCompleteObjectClaimed pins that a fully-closed complete object
+// in stream mode (raw_is_done=false) is now CLAIMED (M4b) and produces the same
+// ordinary output a final parse would — stream == final for a done value. The
+// broader per-prefix claim/decline surface is covered in stream_test.go.
+func TestParse_StreamCompleteObjectClaimed(t *testing.T) {
+	res, err := Parse(context.Background(), bamlutils.DeBAMLParseRequest{
 		Raw: `{"name":"Ada","age":36}`, OutputSchema: personSchema(), Stream: true,
 	})
-	if !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
-		t.Fatalf("stream parse: expected ErrDeBAMLParseUnsupported, got %v", err)
+	if err != nil {
+		t.Fatalf("stream parse of complete object: unexpected error: %v", err)
+	}
+	if !jsonValueEqual(t, string(res.JSON), `{"name":"Ada","age":36}`) {
+		t.Fatalf("stream parse of complete object: got %s", res.JSON)
 	}
 }
 

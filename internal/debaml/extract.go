@@ -207,3 +207,145 @@ func extractBalancedSpan(raw string) (span string, end int, ok bool) {
 	}
 	return "", 0, false
 }
+
+// --- M4b: streaming (raw_is_done=false) candidate extraction --------------
+//
+// streamExtractCandidate finds the JSON candidate in a raw prefix captured
+// mid-generation and decodes it with streaming recovery, in the SAME
+// BAML-recovery priority order as extractCandidate: the whole input (strict),
+// then a markdown fenced block (open-to-close OR open-to-EOF while still
+// streaming), then the first balanced-or-truncated object/array embedded in
+// prose. A strict whole-input success is a fully-closed value whose children are
+// all complete; every other path routes through decodeSpanStream, which recovers
+// the incomplete structure via streamFix and tags per-value completion.
+//
+// The second return is false (DECLINE) when no candidate can be found — no
+// JSON-looking content at all (bare prose / a just-opened fence with no body), or
+// a construct outside the streaming fixing subset. Extraction NEVER claims a
+// parse error: a claim only happens when a candidate is found AND stream
+// coercion against the schema succeeds (handled by the caller).
+func streamExtractCandidate(raw string) (value, bool) {
+	// 1. Strict whole-input parse — a fully-closed, complete value.
+	if trimmed := strings.TrimSpace(raw); trimmed != "" {
+		if v, err := strictDecode(trimmed); err == nil {
+			return v, true
+		}
+	}
+
+	// 2. Markdown fenced block: content between the opening fence and the closing
+	//    fence, or — while still streaming — everything after the opening fence to
+	//    EOF. Strict, then streaming fix, on the fence content.
+	if content, ok := extractFenceContentStream(raw); ok {
+		return decodeSpanStream(strings.TrimSpace(content))
+	}
+
+	// 3. First balanced-or-truncated object/array span embedded in prose.
+	if span, end, closed, ok := extractBalancedSpanStream(raw); ok {
+		if closed && containsUnquotedBracket(raw[end:]) {
+			// A second top-level structure follows the first CLOSED span: BAML's
+			// multiple-values / inferred-array case (scored), which M4b defers — so
+			// decline rather than claim the first span.
+			return value{}, false
+		}
+		return decodeSpanStream(strings.TrimSpace(span))
+	}
+
+	return value{}, false
+}
+
+// decodeSpanStream decodes a selected candidate span with streaming recovery:
+// strict first (a fully-closed span whose values are all complete), then the
+// streaming fixing pass (which recovers open objects/arrays/strings, drops
+// still-streaming keys, and tags per-value completion). A span the streaming
+// subset declines returns false (fall back to BAML).
+func decodeSpanStream(span string) (value, bool) {
+	if v, err := strictDecode(span); err == nil {
+		return v, true
+	}
+	return streamFix(span)
+}
+
+// extractFenceContentStream is the streaming variant of extractFenceContent: it
+// returns the body between the first opening ``` fence line and the next closing
+// fence line, OR — when no closing fence has arrived yet (still streaming) —
+// everything after the opening fence line to EOF. The second return is false when
+// no opening fence line is present. Both fences are line-anchored, exactly as in
+// the final extractor, so an inline ``` inside a string value does not truncate.
+func extractFenceContentStream(raw string) (string, bool) {
+	const fence = "```"
+	lines := strings.Split(raw, "\n")
+	open := -1
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimLeft(line, " \t"), fence) {
+			open = i
+			break
+		}
+	}
+	if open < 0 {
+		return "", false
+	}
+	for j := open + 1; j < len(lines); j++ {
+		if strings.HasPrefix(strings.TrimLeft(lines[j], " \t"), fence) {
+			return strings.Join(lines[open+1:j], "\n"), true
+		}
+	}
+	// No closing fence yet: take everything after the opening fence line to EOF.
+	return strings.Join(lines[open+1:], "\n"), true
+}
+
+// extractBalancedSpanStream is the streaming variant of extractBalancedSpan: it
+// anchors on the first '{' or '[' outside double-quoted content and returns the
+// span to its matching close (closed=true) OR, when the structure never closes
+// (a truncated response BAML recovers at is_done=false), the span from the anchor
+// to EOF (closed=false). end is the index just past a closed span (len(raw) for a
+// truncated one) so the caller can scan the remainder for a second top-level
+// candidate. ok is false only when no opening bracket is found at all. Like the
+// final extractor, span detection is single-quote-blind and double-quote-aware.
+func extractBalancedSpanStream(raw string) (span string, end int, closed bool, ok bool) {
+	start := -1
+	depth := 0
+	var open, closing byte
+	inString := false
+	escaped := false
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			}
+			continue
+		}
+		if c == '"' {
+			inString = true
+			continue
+		}
+		if start < 0 {
+			switch c {
+			case '{':
+				start, open, closing, depth = i, '{', '}', 1
+			case '[':
+				start, open, closing, depth = i, '[', ']', 1
+			}
+			continue
+		}
+		switch c {
+		case open:
+			depth++
+		case closing:
+			depth--
+			if depth == 0 {
+				return raw[start : i+1], i + 1, true, true
+			}
+		}
+	}
+	if start < 0 {
+		return "", 0, false, false // no anchor
+	}
+	// Unterminated: take the anchor to EOF (BAML closes it at is_done=false).
+	return raw[start:], len(raw), false, true
+}

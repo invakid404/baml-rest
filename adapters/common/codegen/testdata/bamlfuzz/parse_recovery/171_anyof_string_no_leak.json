@@ -1,0 +1,20 @@
+{
+  "name": "anyof_string_no_leak",
+  "description": "M4b: a truncated STRING field value whose content literally contains an 'AnyOf[' rendering must surface as the STRING VALUE, never an AnyOf[...] wrapper. BAML's coerce_string extracts the string content from its internal AnyOf/string-fallback (coerce_primitive.rs:153); native has no AnyOf value kind and carries the string directly, so a partial (Incomplete) string field is kept verbatim (strings are not done-required). Per-prefix `want` values are LIVE-CAPTURED from BAML v0.223.0 parse-stream (BAMLFUZZ_PARSE_CAPTURE=1), not hand-written. Native CLAIMS every prefix here — the string value is emitted as-is, never an AnyOf rendering.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "note", "type": {"kind": "string"}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "prefixes": [
+    {"name": "partial", "raw": "{\"note\":\"AnyOf[hello", "want": {"status": "success", "json": {"note": "AnyOf[hello"}}},
+    {"name": "closed", "raw": "{\"note\":\"AnyOf[hello]\"}", "want": {"status": "success", "json": {"note": "AnyOf[hello]"}}}
+  ]
+}
