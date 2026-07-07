@@ -1,0 +1,22 @@
+{
+  "name": "list_multi_arm_union_stream",
+  "description": "M4b NEGATIVE GUARD: a direct list<int | bool> element in STREAM mode stays NATIVE-SKIPPED. BAML threads the previous element's winning outer UnionMatch into the next element as ctx.union_variant_hint (coerce_array.rs) and tries that arm FIRST on the next element; M3 intentionally DEFERRED modeling the cross-element array union_variant_hint, so native declines list-of-multi-arm-union at the gate (checkSupported) in BOTH final and stream mode. This fixture pins that native FALLS BACK on every prefix (disposition absent from parseRecoveryStreamNativeClaim) while BAML parse-stream stays authoritative. Per-prefix `want` values are LIVE-CAPTURED from BAML v0.223.0 parse-stream (BAMLFUZZ_PARSE_CAPTURE=1), not hand-written.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "items", "type": {"kind": "list", "inner": {"kind": "union", "variants": [{"kind": "int"}, {"kind": "bool"}]}}}
+        ]
+      }
+    ],
+    "root_class": "Root",
+    "has_union": true
+  },
+  "prefixes": [
+    {"name": "list_open", "raw": "{\"items\":[1", "want": {"status": "success", "json": {"items": []}}},
+    {"name": "second_elem", "raw": "{\"items\":[1,true", "want": {"status": "success", "json": {"items": [1, true]}}},
+    {"name": "closed", "raw": "{\"items\":[1,true]}", "want": {"status": "success", "json": {"items": [1, true]}}}
+  ]
+}

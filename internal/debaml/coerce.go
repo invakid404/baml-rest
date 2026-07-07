@@ -3228,3 +3228,191 @@ func ambiguousMatch(target, input string) error {
 func declineCoerce(target string, input value) error {
 	return unsupported(fmt.Sprintf("%s: got %s (native stricter than BAML)", target, input.kind.String()))
 }
+
+// --- M4b: streaming (raw_is_done=false) coercion --------------------------
+//
+// coerceStream coerces a value recovered by the streaming parser
+// (streamExtractCandidate / streamFix) into the flattened dynamic output JSON for
+// type t. It models the SUBSET of BAML's semantic_streaming.rs whose observable
+// output for an UNANNOTATED dynamic schema is an ordinary object/list/string with
+// NO StreamState wrappers:
+//
+//   - class: assign present object keys to fields (BAML's input-key-first fuzzy
+//     match), coerce each present field's value through coerceStream, and NULL-FILL
+//     every MISSING field (BAML's Pending null under raw_is_done=false). Requires at
+//     least one field to receive a present value — see coerceStreamClass.
+//   - list: coerce each element through coerceStream and keep it; a non-array input
+//     or an element BAML would DELETE declines the whole list — see coerceStreamList.
+//   - string: NOT done-required, so a JSON string is emitted as-is whether COMPLETE
+//     or INCOMPLETE (a truncated / markdown-recovered string keeps its partial value).
+//     This is the "AnyOf string does not leak" surface: native carries the string
+//     value directly, so the output is the string, never an AnyOf rendering. A
+//     non-string into a string target declines (stream JsonToString deferred).
+//   - int / float / bool / null / enum / literal (DONE-REQUIRED): an INCOMPLETE value
+//     DECLINES (BAML deletes it — semantic deletion is M4c); a COMPLETE value is
+//     coerced through the SAME final leaf coercer (stream == final for a done value).
+//   - map / union: DECLINE (deferred — over-decline is safe).
+//
+// Every path either reproduces BAML's exact partial output or DECLINES
+// (ErrDeBAMLParseUnsupported → fall back to BAML). It never claims a value BAML
+// would delete, wrap in StreamState, or produce differently.
+func coerceStream(b *schema.Bundle, t schema.Type, input value) (json.RawMessage, error) {
+	switch t.Kind {
+	case schema.TypePrimitive:
+		if t.Primitive == schema.PrimitiveString {
+			if input.kind == valString {
+				return marshalJSON(input.strV)
+			}
+			return nil, unsupported("stream: non-string into string target (JsonToString deferred)")
+		}
+		return coerceStreamDoneLeaf(b, t, input)
+	case schema.TypeLiteral, schema.TypeEnum:
+		return coerceStreamDoneLeaf(b, t, input)
+	case schema.TypeClass:
+		return coerceStreamClass(b, t.Name, t.Mode, input)
+	case schema.TypeList:
+		return coerceStreamList(b, t.Elem, input)
+	case schema.TypeMap:
+		return nil, unsupported("stream: map target (deferred)")
+	case schema.TypeUnion:
+		return nil, unsupported("stream: union target (deferred)")
+	default:
+		return nil, unsupported(fmt.Sprintf("stream: type kind %q", t.Kind))
+	}
+}
+
+// coerceStreamDoneLeaf coerces a DONE-REQUIRED leaf (int / float / bool / null /
+// enum / literal) in stream mode. An INCOMPLETE value would be DELETED by BAML's
+// semantic streaming (the type requires done), which M4b does not model, so it
+// DECLINES. A COMPLETE value is coerced through the SAME final leaf coercer — for
+// a done value stream and final coercion are identical — and any final decline or
+// proven error DECLINES the whole stream parse (fall back to BAML).
+func coerceStreamDoneLeaf(b *schema.Bundle, t schema.Type, input value) (json.RawMessage, error) {
+	if input.incomplete {
+		return nil, unsupported(fmt.Sprintf("stream: incomplete %s value requires done (semantic deletion deferred)", t.Kind))
+	}
+	out, err := coerce(b, t, input, &coerceFlags{})
+	if err != nil {
+		return nil, unsupported(fmt.Sprintf("stream: done-required leaf did not cleanly coerce: %v", err))
+	}
+	return out, nil
+}
+
+// coerceStreamClass coerces an object into a class in stream mode, porting the
+// slice of coerce_class.rs whose streaming output is an ordinary object: assign
+// present input keys to fields (BAML's input-key-first fuzzy match, keep-first on
+// duplicates, extra keys ignored), coerce each present field's value through
+// coerceStream, and NULL-FILL every field with no present value (BAML's Pending
+// null under raw_is_done=false — emitted as an explicit null in schema declaration
+// order, so it survives the downstream InjectAbsentOptionals + reorder identically
+// to BAML's flattened output).
+//
+// It DECLINES (fall back) for the shapes M4b does not model:
+//   - NON-object input (a scalar/array → class implied-key / inferred-object /
+//     array-to-singular is deferred);
+//   - a class where NO field received a present value — the "open/repaired root
+//     object AFTER ≥1 field value is available" guard: a bare `{`, a key with no
+//     value, a dangling colon, or an all-extra-keys object stays fallback;
+//   - a present field whose value does not cleanly coerce in stream (an incomplete
+//     done-required field, a deferred leaf conversion) — its decline propagates and
+//     the whole class falls back;
+//   - a field-key match that hinges on a non-ASCII case fold native cannot prove
+//     equals BAML.
+func coerceStreamClass(b *schema.Bundle, name string, mode schema.StreamingMode, input value) (json.RawMessage, error) {
+	cls, ok := b.FindClass(name, mode)
+	if !ok {
+		return nil, fmt.Errorf("debaml: unknown class %q", name)
+	}
+	if input.kind != valObject {
+		return nil, unsupported(fmt.Sprintf("stream: class %q from %s (implied-key/inferred/array-to-singular deferred)", name, input.kind))
+	}
+	nF := len(cls.Fields)
+	matched := make([]bool, nF)
+	assigned := make([]value, nF)
+	present := 0
+	// Input-key-first assignment: each key to the FIRST field it fuzzily matches
+	// (no substring); a key matching an already-filled field is a duplicate
+	// (keep-first, ignored); a key matching no field is an extra (ignored).
+	for i := range input.objV {
+		key := input.objV[i].key
+		mf := -1
+		for j := range cls.Fields {
+			m, unc := matchesStringToString(key, cls.Fields[j].Name.RenderedName())
+			if unc {
+				return nil, unsupported(fmt.Sprintf("stream: class %q field-key non-ASCII case-fold uncertainty", name))
+			}
+			if m {
+				mf = j
+				break
+			}
+		}
+		if mf < 0 || matched[mf] {
+			continue
+		}
+		assigned[mf] = input.objV[i].val
+		matched[mf] = true
+		present++
+	}
+	if present == 0 {
+		return nil, unsupported(fmt.Sprintf("stream: class %q has no present field value yet (open root object before ≥1 field)", name))
+	}
+
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	for j := range cls.Fields {
+		if j > 0 {
+			buf.WriteByte(',')
+		}
+		key, err := marshalJSON(cls.Fields[j].Name.Name)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(key)
+		buf.WriteByte(':')
+		if matched[j] {
+			o, err := coerceStream(b, cls.Fields[j].Type, assigned[j])
+			if err != nil {
+				return nil, err
+			}
+			buf.Write(o)
+		} else {
+			buf.WriteString("null") // BAML Pending null for a missing field.
+		}
+	}
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
+}
+
+// coerceStreamList coerces an array into a list in stream mode. Each element is
+// coerced through coerceStream and KEPT; the list is emitted in element order. A
+// list is never done-required, so an unterminated (Incomplete) list is fine as
+// long as every element it contains cleanly coerces.
+//
+// It DECLINES (fall back) for the cases M4b does not model:
+//   - a NON-array input (SingleToArray wrapping is deferred);
+//   - an element that would be DELETED by semantic streaming — coerceStream on the
+//     element declines (an incomplete done-required element, or a value the leaf
+//     coercer cannot cleanly claim / BAML would skip) — so the WHOLE list falls back
+//     rather than reproduce the semantic child deletion (M4c).
+func coerceStreamList(b *schema.Bundle, elem *schema.Type, input value) (json.RawMessage, error) {
+	if elem == nil {
+		return nil, fmt.Errorf("debaml: list type missing element")
+	}
+	if input.kind != valArray {
+		return nil, unsupported(fmt.Sprintf("stream: list from %s (SingleToArray deferred)", input.kind))
+	}
+	var buf bytes.Buffer
+	buf.WriteByte('[')
+	for i := range input.arrV {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		o, err := coerceStream(b, *elem, input.arrV[i])
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(o)
+	}
+	buf.WriteByte(']')
+	return buf.Bytes(), nil
+}

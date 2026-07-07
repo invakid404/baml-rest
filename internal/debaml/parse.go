@@ -50,7 +50,10 @@ func Parse(ctx context.Context, req bamlutils.DeBAMLParseRequest) (bamlutils.DeB
 	_ = ctx // M1 parsing is a local CPU operation; no cancellation points.
 
 	if req.Stream {
-		return bamlutils.DeBAMLParseResult{}, unsupported("stream parse")
+		// M4b: the native STREAMING (raw_is_done=false) path claims the smallest
+		// useful partial surface; everything outside it declines. Final-parse
+		// behavior below is untouched.
+		return parseStream(req)
 	}
 	if req.OutputSchema == nil {
 		return bamlutils.DeBAMLParseResult{}, unsupported("nil output schema")
@@ -96,6 +99,130 @@ func Parse(ctx context.Context, req bamlutils.DeBAMLParseRequest) (bamlutils.DeB
 
 // Compile-time assertion that Parse satisfies the public callback type.
 var _ bamlutils.DeBAMLParseFunc = Parse
+
+// parseStream is the M4b native streaming (raw_is_done=false) parse path. It
+// claims the SMALLEST useful partial surface: ordinary dynamic partials whose
+// observable output is jsonish recovery + class null-filling, with NO stream
+// annotations and NO displayed StreamState. Everything else DECLINES with the
+// unsupported sentinel so BAML parse-stream stays authoritative.
+//
+// The claim boundary is: a dynamic schema inside the SAME structural cut-line as
+// final parse (checkSupported) AND carrying no stream annotations
+// (checkNoStreamAnnotations — defensive, since the dynamic bridge cannot express
+// them), a candidate the streaming extractor can recover
+// (streamExtractCandidate), and a value coerceStream can reproduce byte-exact
+// (open/repaired root objects after ≥1 field value, truncated/markdown-recovered
+// strings, missing-field null fillers, completed scalar/list children). Anything
+// coerceStream cannot prove — a value BAML would delete (incomplete done-required
+// scalar, semantic child deletion), a StreamState wrapper, a map/union target, an
+// implied-key/inferred class, a still-empty open object — declines. See
+// coerceStream for the per-shape boundary. A non-sentinel error is a CLAIMED
+// stream parse failure (surfaced for parity like the final path); today no
+// claimed shape produces one, so every non-claim is the fallback sentinel.
+func parseStream(req bamlutils.DeBAMLParseRequest) (bamlutils.DeBAMLParseResult, error) {
+	if req.OutputSchema == nil {
+		return bamlutils.DeBAMLParseResult{}, unsupported("nil output schema")
+	}
+	bundle, err := schema.FromDynamicOutputSchema(req.OutputSchema, schema.BuildOptions{})
+	if err != nil {
+		return bamlutils.DeBAMLParseResult{}, unsupportedErr("lower schema", err)
+	}
+	if err := bundle.ValidateOutput(); err != nil {
+		return bamlutils.DeBAMLParseResult{}, unsupportedErr("validate schema", err)
+	}
+	// The structural cut-line is IDENTICAL to final parse (recursive/constraint/
+	// out-of-scope-union/map-key rejection, and the direct list<multi-arm-union>
+	// decline that keeps the deferred array union_variant_hint fallback). Anything
+	// finer is decided at coerce time.
+	if err := checkSupported(bundle); err != nil {
+		return bamlutils.DeBAMLParseResult{}, err
+	}
+	if err := checkNoStreamAnnotations(bundle); err != nil {
+		return bamlutils.DeBAMLParseResult{}, err
+	}
+	v, ok := streamExtractCandidate(req.Raw)
+	if !ok {
+		// No cleanly-recoverable candidate (no JSON-looking content, a just-opened
+		// fence, or a construct outside the streaming fixing subset): BAML may still
+		// recover it, so DECLINE (fall back) rather than claim.
+		return bamlutils.DeBAMLParseResult{}, unsupported("stream: no cleanly-claimable JSON candidate")
+	}
+	out, err := coerceStream(bundle, bundle.Target, v)
+	if err != nil {
+		return bamlutils.DeBAMLParseResult{}, err
+	}
+	return bamlutils.DeBAMLParseResult{JSON: out}, nil
+}
+
+// checkNoStreamAnnotations DECLINES any schema carrying BAML stream metadata —
+// @stream.done / @@stream.done (StreamingBehavior.Done), @stream.not_null
+// (Needed / ClassField.StreamingNeeded), or @stream.with_state (State) — at the
+// class, field, or type level. M4b claims only UNANNOTATED partials; an annotated
+// schema keeps the BAML parse-stream path, whose semantic-deletion / not-null /
+// with-state behavior is M4c/M4d. The dynamic output bridge carries no
+// streaming-annotation channel today (every dynamic class is non-streaming with a
+// zero StreamingBehavior), so this is a defensive guard pinning the boundary
+// rather than a reachable path.
+func checkNoStreamAnnotations(b *schema.Bundle) error {
+	if err := checkTypeNoStream(b.Target); err != nil {
+		return err
+	}
+	for i := range b.Classes {
+		c := &b.Classes[i]
+		if !c.Stream.IsZero() {
+			return unsupported("stream: class-level stream annotation (@@stream.done / @stream.not_null / @stream.with_state)")
+		}
+		for j := range c.Fields {
+			if c.Fields[j].StreamingNeeded {
+				return unsupported("stream: field-level @stream.not_null annotation")
+			}
+			if err := checkTypeNoStream(c.Fields[j].Type); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// checkTypeNoStream walks one type tree rejecting any type-level stream
+// annotation (Type.Meta.Stream). Named class/enum refs are leaves — their
+// definitions are validated via the bundle's class slice in
+// checkNoStreamAnnotations.
+func checkTypeNoStream(t schema.Type) error {
+	if !t.Meta.Stream.IsZero() {
+		return unsupported("stream: type-level stream annotation")
+	}
+	switch t.Kind {
+	case schema.TypeList:
+		if t.Elem != nil {
+			return checkTypeNoStream(*t.Elem)
+		}
+	case schema.TypeMap:
+		if t.Key != nil {
+			if err := checkTypeNoStream(*t.Key); err != nil {
+				return err
+			}
+		}
+		if t.Value != nil {
+			return checkTypeNoStream(*t.Value)
+		}
+	case schema.TypeUnion:
+		if t.Union != nil {
+			for i := range t.Union.Variants {
+				if err := checkTypeNoStream(t.Union.Variants[i]); err != nil {
+					return err
+				}
+			}
+		}
+	case schema.TypeTuple:
+		for i := range t.Items {
+			if err := checkTypeNoStream(t.Items[i]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
 
 // checkSupported reports whether every type reachable from the lowered
 // bundle is inside the M1 coercion cut-line. It walks the synthetic

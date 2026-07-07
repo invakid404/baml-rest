@@ -59,6 +59,17 @@ type value struct {
 	strV  string
 	arrV  []value
 	objV  []field
+
+	// incomplete records BAML's jsonish CompletionState::Incomplete for a value
+	// recovered under raw_is_done=false (M4b stream parse). It is set ONLY by the
+	// streaming fixing parser (see streamFix in fix.go): a container/string/scalar
+	// closed by EOF rather than its proper delimiter, and the last (still-building)
+	// value inside an unterminated container, are Incomplete. The final (strict /
+	// M2a fixing) decoders never set it — every value they produce is complete —
+	// so final-parse behavior is unchanged. Stream coercion uses it to DECLINE an
+	// incomplete value whose type requires done (semantic streaming would delete
+	// it), which M4b does not model. See coerceStream in coerce.go.
+	incomplete bool
 }
 
 // field is one ordered object entry. Duplicate keys are allowed (the
