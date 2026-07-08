@@ -388,7 +388,7 @@ func TestParse_MapStringStringify_EndToEnd(t *testing.T) {
 		Keys:   &bamlutils.DynamicTypeSpec{Type: "string"},
 		Values: &bamlutils.DynamicTypeSpec{Type: "string"},
 	})
-	mustParse(t, s, `{"u":{"a":"x","b":5}}`, `{"u":{"a":"x","b":"5"}}`) // fixture 107 shape
+	mustCoerce(t, s, `{"u":{"a":"x","b":5}}`, `{"u":{"a":"x","b":"5"}}`) // fixture 107 shape
 	// null value skipped (proven), the rest kept.
-	mustParse(t, s, `{"u":{"a":"x","b":null}}`, `{"u":{"a":"x"}}`)
+	mustCoerce(t, s, `{"u":{"a":"x","b":null}}`, `{"u":{"a":"x"}}`)
 }

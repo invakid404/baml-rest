@@ -189,8 +189,11 @@ func TestStream_MissingFieldDefaultFillers(t *testing.T) {
 		),
 	}
 	// `{"a":1}` is strict-complete: a=1 kept; tags/scores/note missing → default
-	// fillers (list→[], map→{}, optional→null).
-	mustStream(t, s, `{"a":1}`, `{"a":1,"tags":[],"scores":{},"note":null}`)
+	// fillers (list→[], map→{}, optional→null). Driven via the stream coerce bypass
+	// because the `scores` map makes this a map-containing schema, which parseStream
+	// now declines at the shared checkNoMap gate; the streaming default fill under
+	// test (incl. the map→{} filler) is unchanged.
+	mustStreamCoerce(t, s, `{"a":1}`, `{"a":1,"tags":[],"scores":{},"note":null}`)
 	// A missing required scalar has no default_value → null (b never streamed).
 	s2 := &bamlutils.DynamicOutputSchema{Properties: props(kv("a", intProp()), kv("b", intProp()))}
 	mustStream(t, s2, `{"a":1}`, `{"a":1,"b":null}`)
@@ -207,7 +210,7 @@ func TestStream_MapIntDropsIncompleteValue(t *testing.T) {
 	// a=1 comma-terminated (kept); b=2 incomplete (dropped entry). The space after
 	// the comma keeps the unquoted object value out of streamFix's greedy-comma
 	// decline (an unquoted object value before a TIGHT comma declines).
-	mustStream(t, s, `{"m":{"a":1, "b":2`, `{"m":{"a":1}}`)
+	mustStreamCoerce(t, s, `{"m":{"a":1, "b":2`, `{"m":{"a":1}}`)
 }
 
 // TestStream_NoStructureDeclines pins that raw text with no recoverable JSON

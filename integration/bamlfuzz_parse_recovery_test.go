@@ -184,6 +184,16 @@ func (p perCallTimeoutParser) Parse(ctx context.Context, req bamlfuzz.ParseReque
 // (an unterminated/truncated structure, which BAML recovers but M2a defers)
 // — stay fallback. Cases absent from the map (the streaming-only ones)
 // carry no final leg and are not asserted.
+//
+// MAP PARITY-DECLINE: internal/debaml.Parse now declines EVERY map-containing
+// schema (checkNoMap) because native coerceMap emits entries in parsed input-key
+// order, which cannot be proven equal to BAML's observable map-key order under
+// preserve-order. So any map-containing case FALLS BACK regardless of its pinned
+// value here — runParseRecoveryCase forces the expected disposition to fallback
+// via parseRecoverySchemaContainsMap. The map/enum/class map entries below keep
+// their pre-decline (claimed) pins as documentation of the coerceMap behavior a
+// future PR re-enables behind a proven map-order fixture; the override — not a
+// mass pin flip — is what keeps this differential green today.
 var parseRecoveryNativeClaim = map[string]bool{
 	"markdown_fence_object":    true,
 	"prose_before_after_json":  true,
@@ -715,6 +725,57 @@ func streamPrefixNativeClaim(caseName, prefixName string) bool {
 	return false
 }
 
+// parseRecoverySchemaContainsMap reports whether the schema reaches a map type
+// anywhere — the effective root, any reachable class field, or a nested list /
+// optional / union / map / class-ref edge. It backs the MAP PARITY-DECLINE
+// override: internal/debaml.Parse declines every map-containing schema
+// (checkNoMap), so such a case must fall back regardless of its pinned final /
+// streaming disposition. Class-ref cycles terminate via the visited set.
+func parseRecoverySchemaContainsMap(s bamlfuzz.FuzzSchema) bool {
+	classes := make(map[string]bamlfuzz.FuzzClass, len(s.Classes))
+	for _, c := range s.Classes {
+		classes[c.Name] = c
+	}
+	seen := make(map[string]bool, len(s.Classes))
+	var walkType func(t bamlfuzz.FuzzType) bool
+	var walkClass func(name string) bool
+	walkClass = func(name string) bool {
+		if seen[name] {
+			return false
+		}
+		seen[name] = true
+		c, ok := classes[name]
+		if !ok {
+			return false
+		}
+		for i := range c.Properties {
+			if walkType(c.Properties[i].Type) {
+				return true
+			}
+		}
+		return false
+	}
+	walkType = func(t bamlfuzz.FuzzType) bool {
+		switch t.Kind {
+		case bamlfuzz.KindMap:
+			return true
+		case bamlfuzz.KindOptional, bamlfuzz.KindList:
+			return t.Inner != nil && walkType(*t.Inner)
+		case bamlfuzz.KindUnion:
+			for i := range t.Variants {
+				if walkType(t.Variants[i]) {
+					return true
+				}
+			}
+			return false
+		case bamlfuzz.KindClassRef:
+			return walkClass(t.Ref)
+		}
+		return false
+	}
+	return walkType(s.EffectiveRoot())
+}
+
 // parseRecoveryStats tallies how many final-parse and streaming-prefix legs
 // the native parser claimed vs fell back on, logged as a summary so a shift
 // in the native cut-line is visible even when every case still passes. The
@@ -837,6 +898,12 @@ func runParseRecoveryCase(t *testing.T, baml, native bamlfuzz.Parser, c bamlfuzz
 			if !ok {
 				t.Fatalf("final-parse case %q has no pinned native disposition; add it to parseRecoveryNativeClaim (true=claimed, false=fallback)", c.Name)
 			}
+			// MAP PARITY-DECLINE: a map-containing schema always falls back
+			// (checkNoMap), overriding the pinned pre-decline claim. See
+			// parseRecoverySchemaContainsMap and the parseRecoveryNativeClaim doc.
+			if parseRecoverySchemaContainsMap(c.Schema) {
+				want = false
+			}
 			if claimed {
 				t.Logf("native CLAIMED final parse for %q", c.Name)
 			} else {
@@ -918,6 +985,12 @@ func runParseRecoveryCase(t *testing.T, baml, native bamlfuzz.Parser, c bamlfuzz
 						stats.streamFallback++
 					}
 					want := streamPrefixNativeClaim(c.Name, p.Name)
+					// MAP PARITY-DECLINE: parseStream shares the checkSupported
+					// gate, so a map-containing schema falls back on every prefix,
+					// overriding the pinned pre-decline claim.
+					if parseRecoverySchemaContainsMap(c.Schema) {
+						want = false
+					}
 					if claimed {
 						t.Logf("native CLAIMED stream prefix %q/%q", c.Name, p.Name)
 					} else {
