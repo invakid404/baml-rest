@@ -692,12 +692,26 @@ func (d *DynamicInput) ToWorkerInput() (b []byte, err error) {
 	}
 	*messagesPtr = internalMessages
 
+	preserveOrder := preserveSchemaOrderEnabled(d.PreserveSchemaOrder)
+
 	dynamicTypes := &DynamicTypes{
 		Classes: classes,
 		Enums:   d.OutputSchema.Enums.Clone(),
 	}
-	if preserveSchemaOrderEnabled(d.PreserveSchemaOrder) {
+	if preserveOrder {
 		dynamicTypes.PreserveOrder = true
+	}
+
+	// Schema carried to the native ctx.output_format renderer. When the
+	// caller preserves order it is the raw wire-order schema; otherwise it
+	// is a clone with each class's field order alphabetized, so the native
+	// renderer reproduces BAML's preserve=false fallback (applyDynamicTypes
+	// populates the TypeBuilder in sorted key order) byte-for-byte. The
+	// clone never touches d.OutputSchema, which the response-ordering pass
+	// still reads in wire order.
+	renderSchema := d.OutputSchema
+	if !preserveOrder {
+		renderSchema = normalizeSchemaFieldOrderForRender(d.OutputSchema)
 	}
 
 	internal := map[string]any{
@@ -708,12 +722,12 @@ func (d *DynamicInput) ToWorkerInput() (b []byte, err error) {
 				DynamicTypes: dynamicTypes,
 			},
 			IncludeReasoning: d.IncludeReasoning,
-			// Carry the original output schema so the worker can drive the
-			// native ctx.output_format renderer at the dynamic BuildRequest
-			// seam under BAML_REST_USE_DEBAML. Always carried; only consumed
-			// when the de-BAML flag is on (otherwise it is stored and
-			// ignored, leaving the provider request byte-identical).
-			OutputSchema: d.OutputSchema,
+			// Carry the output schema so the worker can drive the native
+			// ctx.output_format renderer at the dynamic BuildRequest seam
+			// under BAML_REST_USE_DEBAML. Always carried; only consumed when
+			// the de-BAML flag is on (otherwise it is stored and ignored,
+			// leaving the provider request byte-identical).
+			OutputSchema: renderSchema,
 		},
 	}
 	return sonic.Marshal(internal)
