@@ -481,6 +481,116 @@ jobs:
         # direct in-process worker path.
         run: go test -tags=integration -v -count=1 -p 1 -timeout 40m ./integration/...
 
+  integration-tests-debaml:
+    needs: [get-latest-version, warm-images]
+    runs-on: ubuntu-latest
+    # INFORMATIONAL, NON-BLOCKING arm. This job runs the existing integration
+    # suite end-to-end with the whole shared TestEnv flipped onto the de-BAML
+    # native dynamic response-coercion path (BAML_REST_USE_DEBAML=true), to
+    # OBSERVE which integration tests diverge under de-BAML. It is expected to
+    # be RED while de-BAML parity is still landing, so:
+    #   - `continue-on-error: true` lets the whole workflow still conclude green
+    #     for mergeability while this job's failing command/test output stays
+    #     visible in its own distinct log stream; and
+    #   - this job is intentionally NOT added to required status checks /
+    #     branch protection. Do not promote it to blocking until de-BAML parity
+    #     is intentionally graduated from informational.
+    # Fixes for whatever this arm reveals are separate follow-up PRs, never here.
+    continue-on-error: true
+    # Same outer backstop as the other light cells: step timeout-minutes (45m,
+    # below) bounds the go-test step; this job cap = step (45m) + a realistic
+    # pre-test budget (~10m for checkout + Go setup + warm-image load). See #420.
+    timeout-minutes: 55
+    strategy:
+      # Single-cell today, but keep fail-fast off so adding an OFF/ON unary
+      # pair later never masks one cell's failure behind another's.
+      fail-fast: false
+      matrix:
+        # Single cell: latest BAML only, unary server on. http-client is pinned
+        # to `auto` (the default deployment path) in the go-test env below —
+        # de-BAML response coercion is not the llmhttp backend surface, so the
+        # http-client spread adds no de-BAML signal.
+        unary-server: [true]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.0
+
+      - name: Free runner disk before Docker image load
+        # This job runs TestBamlfuzzStaticOracle, which builds a fresh
+        # baml-rest image per static batch. Since #467 made the static prune
+        # failure-only (success path keeps the classic-builder cache warm),
+        # these per-batch images accumulate with no bound — so this cell
+        # needs the same disk headroom the fuzz/baml-source jobs already
+        # have, or it hits "no space left on device" (#467 follow-up).
+        # Placed before the warm-image load (docker-images:true must not
+        # delete them).
+        uses: ./.github/actions/free-disk-space
+
+      - name: Download warm base images
+        # Base images are pulled once by the warm-images job and handed over as
+        # a per-run artifact; this cell only loads them — no Docker Hub login,
+        # no pull (#447).
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: warm-images-${{ github.run_id }}
+          path: warm-images
+
+      - name: Load warm base images
+        # `docker load` the warmed tarballs before the go-test step so
+        # testcontainers' tag-based `FROM` builds reuse them locally instead of
+        # pulling from Docker Hub.
+        run: |
+          set -euo pipefail
+          for tar in warm-images/*.tar; do
+            echo "loading $tar"
+            docker load -i "$tar"
+          done
+          docker image ls
+
+      - name: Set up Go
+        uses: actions/setup-go@v6.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Run Integration Tests (de-BAML, BAML ${{ needs.get-latest-version.outputs.latest }}, unary=${{ matrix.unary-server }}, http-client=auto)
+        # Step timeout (45m) and watchdog (42m) share the go-test origin;
+        # watchdog fires 3m before the step is killed. #420
+        timeout-minutes: 45
+        env:
+          BAML_VERSION: ${{ needs.get-latest-version.outputs.latest }}
+          UNARY_SERVER: ${{ matrix.unary-server }}
+          BAML_REST_HTTP_CLIENT: auto
+          # The umbrella switch under test: flips the WHOLE shared TestEnv onto
+          # the de-BAML native dynamic response-coercion path. Forwarded into
+          # the baml-rest container by testutil.buildContainerEnv (the single
+          # env chokepoint), so cmd/serve and the subprocess cmd/worker both
+          # read it. "true" matches the existing dedicated de-BAML test.
+          BAML_REST_USE_DEBAML: "true"
+          # Step timeout (45m) minus 3m margin.
+          BAML_REST_SUITE_WATCHDOG: 42m
+          # CI-only: skip the testcontainers Ryuk reaper so setup doesn't
+          # pull/create it from Docker Hub (the earliest registry touch
+          # point, which flaked in #426/#427). Safe here because GH runners
+          # are ephemeral and torn down after the job, so leaked containers
+          # are cleaned up regardless. Never set this for local runs.
+          TESTCONTAINERS_RYUK_DISABLED: true
+          # This suite includes TestBamlfuzzStaticOracle. Successful static
+          # env teardown does NOT prune: testcontainers already removes each
+          # tagged final per-batch image, and the classic-builder layer cache
+          # must survive so later batches reuse warm Go toolchain / apt /
+          # goimports layers instead of rebuilding cold (#467). This gate
+          # activates ONLY the failed-setup prune (dangling images + BuildKit
+          # cache), since failed/partial builds are the real residue source.
+          BAMLFUZZ_STATIC_DOCKER_PRUNE_ON_FAILURE: "1"
+        # Same subprocess command as the versioned/light integration cells for
+        # comparability. The `-skip` excludes the de-BAML differential tests
+        # that use the shared TestEnv as a flag-OFF control: under this global
+        # flag-ON job that OFF control is no longer off, so they fail for a
+        # HARNESS reason, not a de-BAML response-coercion parity regression.
+        # Every other test runs so the arm's RED signal is genuine parity.
+        run: go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 40m -skip '^TestDeBAMLRest_MetadataAppearsOnProductionPath$' ./integration/...
+
   build-baml-cffi:
     needs: warm-images
     runs-on: ubuntu-latest
