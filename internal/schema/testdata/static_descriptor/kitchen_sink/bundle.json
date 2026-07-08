@@ -1,0 +1,210 @@
+{
+  "target": {
+    "kind": "class",
+    "name": "Root",
+    "mode": "non_streaming"
+  },
+  "enums": [
+    {
+      "name": {
+        "name": "Status",
+        "alias": "StatusAlias"
+      },
+      "values": [
+        {
+          "name": {
+            "name": "OK"
+          },
+          "description": "okay"
+        },
+        {
+          "name": {
+            "name": "WARN",
+            "alias": "warn"
+          }
+        },
+        {
+          "name": {
+            "name": "BLANK",
+            "alias": ""
+          }
+        }
+      ],
+      "constraints": [
+        {
+          "level": "check",
+          "expression": "this != \"X\""
+        }
+      ]
+    }
+  ],
+  "classes": [
+    {
+      "name": {
+        "name": "Root"
+      },
+      "description": "root object",
+      "mode": "non_streaming",
+      "fields": [
+        {
+          "name": {
+            "name": "id"
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "string"
+          }
+        },
+        {
+          "name": {
+            "name": "label",
+            "alias": "label_alias"
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "string"
+          },
+          "description": "the label"
+        },
+        {
+          "name": {
+            "name": "note",
+            "alias": ""
+          },
+          "type": {
+            "kind": "primitive",
+            "primitive": "string"
+          }
+        },
+        {
+          "name": {
+            "name": "status"
+          },
+          "type": {
+            "kind": "enum",
+            "name": "Status"
+          }
+        },
+        {
+          "name": {
+            "name": "tags"
+          },
+          "type": {
+            "kind": "list",
+            "elem": {
+              "kind": "primitive",
+              "primitive": "string"
+            }
+          }
+        },
+        {
+          "name": {
+            "name": "meta"
+          },
+          "type": {
+            "kind": "map",
+            "key": {
+              "kind": "primitive",
+              "primitive": "string"
+            },
+            "value": {
+              "kind": "primitive",
+              "primitive": "int"
+            }
+          }
+        },
+        {
+          "name": {
+            "name": "maybe"
+          },
+          "type": {
+            "kind": "union",
+            "union": {
+              "variants": [
+                {
+                  "kind": "primitive",
+                  "primitive": "int"
+                }
+              ],
+              "nullable": true
+            }
+          }
+        },
+        {
+          "name": {
+            "name": "kind"
+          },
+          "type": {
+            "kind": "union",
+            "union": {
+              "variants": [
+                {
+                  "kind": "literal",
+                  "literal": {
+                    "kind": "string",
+                    "string": "a"
+                  }
+                },
+                {
+                  "kind": "literal",
+                  "literal": {
+                    "kind": "string",
+                    "string": "b"
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": {
+            "name": "score"
+          },
+          "type": {
+            "kind": "primitive",
+            "meta": {
+              "constraints": [
+                {
+                  "level": "check",
+                  "expression": "this \u003e 0"
+                }
+              ],
+              "stream": {
+                "needed": true
+              }
+            },
+            "primitive": "int"
+          }
+        },
+        {
+          "name": {
+            "name": "child"
+          },
+          "type": {
+            "kind": "union",
+            "union": {
+              "variants": [
+                {
+                  "kind": "class",
+                  "name": "Root",
+                  "mode": "non_streaming"
+                }
+              ],
+              "nullable": true
+            }
+          }
+        }
+      ],
+      "constraints": [
+        {
+          "level": "assert",
+          "expression": "this.id|length \u003e 0",
+          "label": "nonempty"
+        }
+      ]
+    }
+  ],
+  "recursive_classes": [
+    "Root"
+  ]
+}

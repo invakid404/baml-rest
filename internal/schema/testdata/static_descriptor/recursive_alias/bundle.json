@@ -1,0 +1,51 @@
+{
+  "target": {
+    "kind": "recursive_alias",
+    "name": "Json",
+    "mode": "non_streaming"
+  },
+  "structural_recursive_aliases": [
+    {
+      "name": "Json",
+      "target": {
+        "kind": "union",
+        "union": {
+          "variants": [
+            {
+              "kind": "primitive",
+              "primitive": "string"
+            },
+            {
+              "kind": "primitive",
+              "primitive": "bool"
+            },
+            {
+              "kind": "primitive",
+              "primitive": "float"
+            },
+            {
+              "kind": "list",
+              "elem": {
+                "kind": "recursive_alias",
+                "name": "Json",
+                "mode": "non_streaming"
+              }
+            },
+            {
+              "kind": "map",
+              "key": {
+                "kind": "primitive",
+                "primitive": "string"
+              },
+              "value": {
+                "kind": "recursive_alias",
+                "name": "Json",
+                "mode": "non_streaming"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
