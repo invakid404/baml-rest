@@ -1,0 +1,20 @@
+{
+  "name": "baml_error_native_fallback_guard",
+  "description": "M5a FALLBACK-BOUNDARY GUARD (family: error_surface). ERROR-SURFACE PARITY: raw with no JSON-looking content against Root{n:int} (required). Native's extractCandidate finds no cleanly-claimable candidate and DECLINES (falls back) rather than claiming a parse error where BAML also fails to recover a required int — locking the over-claim guard that native must NOT emit a claimed parse error on un-recoverable input (the claimed-error-matches-BAML surface is separately pinned by match_string_ambiguous_substring_error). want live-captured from BAML v0.223 final parse via BAMLFUZZ_PARSE_CAPTURE=1 (placeholder below until captured; expected error).",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "n", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "this text contains no json value",
+  "want": {
+    "status": "error"
+  }
+}

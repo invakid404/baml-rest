@@ -1,0 +1,24 @@
+{
+  "name": "map_string_string_clean_boundary_guard",
+  "description": "M5a FALLBACK-BOUNDARY GUARD (family: map_pre_581). A CLEAN map<string,string> that BAML claims trivially, but native declines EVERY map-containing schema (checkNoMap: coerceMap emits entries in parsed INPUT key order, unproven equal to BAML's observable map-key order under preserve-order). Locks the pre-#581 map parity-decline: the harness force-overrides any map schema to fallback (parseRecoverySchemaContainsMap), and this fresh clean-map guard makes the boundary explicit. want live-captured from BAML v0.223 final parse via BAMLFUZZ_PARSE_CAPTURE=1 (placeholder below until captured).",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "m",
+            "type": {"kind": "map", "key": {"kind": "string"}, "inner": {"kind": "string"}}
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"m\":{\"a\":\"x\",\"b\":\"y\"}}",
+  "want": {
+    "status": "success",
+    "json": {"m": {"a": "x", "b": "y"}}
+  }
+}

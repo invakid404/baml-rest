@@ -574,6 +574,67 @@ var parseRecoveryNativeClaim = map[string]bool{
 	// native models it as a provenError (wraps the fallback sentinel), so native
 	// DECLINES the whole parse rather than claim the error.
 	"primitive_int_array_empty_stays_fallback": false,
+
+	// M5a FALLBACK-BOUNDARY GUARD CORPUS. Each of these LOCKS a current fallback
+	// boundary the default-on native path must not silently broaden: native
+	// DECLINES (SkippedNative) while BAML claims (or, for the error-surface guard,
+	// both fail to recover). They are additionally tracked as a FAMILY aggregate via
+	// parseRecoveryBoundaryFamily so accidental broadening of a whole boundary family
+	// is visible, not just a single-case pin flip. All want values are live-captured
+	// from BAML v0.223 (BAMLFUZZ_PARSE_CAPTURE=1), never hand-written.
+	//
+	// Direct list<multi-arm-union> elements (checkSupportedType decline — the
+	// deferred array union_variant_hint, coerce_array.rs):
+	"list_int_bool_union_stays_fallback":   false,
+	"list_string_int_union_stays_fallback": false,
+	// Unicode case-fold uncertainty (#555 — Go cases.Lower not proven byte-identical
+	// to Rust str::to_lowercase for an uppercase non-ASCII rune; the ASCII corpus
+	// never fired this before, so these are the first case-fold guards):
+	"unicode_literal_casefold_uncertain_stays_fallback":      false,
+	"unicode_list_literal_casefold_uncertain_stays_fallback": false,
+	// Map pre-#581 (checkNoMap parity-decline). Pinned false directly AND
+	// force-overridden by parseRecoverySchemaContainsMap; the explicit false keeps
+	// the guard honest if the map-override is ever narrowed.
+	"map_string_string_clean_boundary_guard": false,
+	// Error-surface parity: native must fall back (not claim an error) on
+	// un-recoverable input where BAML also errors.
+	"baml_error_native_fallback_guard": false,
+}
+
+// parseRecoveryBoundaryFamily tags the fallback-BOUNDARY guard fixtures by the
+// declined feature family each one locks. Membership here is what upgrades a
+// single-case pin (parseRecoveryNativeClaim, which already fails on a
+// fallback->claim flip) into a FAMILY-level over-claim backstop: the harness
+// logs a per-family claimed/fallback disposition, asserts every listed fixture
+// was actually exercised (so a renamed/deleted guard fails loudly instead of
+// silently vanishing), and asserts NO family fixture claimed native. It folds in
+// the pre-existing list-union / number-display guards alongside the new M5a ones
+// so the whole boundary surface is accounted for in one place.
+//
+// SCOPE CEILING: the constraint (@assert/@check), media, recursive-alias, and
+// recursive-class families are DELIBERATELY ABSENT here — the dynamic
+// output_schema bridge (LowerToDynamicSchema) cannot carry them, so there is no
+// "native declines + BAML handles" differential to pin (the #572 dynamic-schema
+// ceiling; recursive classes additionally crash the cgo TypeBuilder). Native's
+// decline for those families is guarded at the internal/debaml unit level
+// (constraints/media/recursive-* build a schema.Bundle/Type directly and assert
+// ErrDeBAMLParseUnsupported) rather than through this differential.
+var parseRecoveryBoundaryFamily = map[string]string{
+	// Direct list<multi-arm-union> elements.
+	"list_int_bool_union_stays_fallback":   "list_multi_arm_union",
+	"list_string_int_union_stays_fallback": "list_multi_arm_union",
+	"list_scalar_union_stays_fallback":     "list_multi_arm_union",
+	// Unicode case-fold uncertainty (#555).
+	"unicode_literal_casefold_uncertain_stays_fallback":      "unicode_casefold",
+	"unicode_list_literal_casefold_uncertain_stays_fallback": "unicode_casefold",
+	// Number-display uncertainty (non-integer serde f64 Display native cannot
+	// prove byte-identical).
+	"primitive_string_number_noninteger_stays_fallback": "number_display",
+	"list_string_noninteger_number_stays_fallback":      "number_display",
+	// Maps declined pre-#581 (checkNoMap parity-decline).
+	"map_string_string_clean_boundary_guard": "map_pre_581",
+	// Error-surface parity (native falls back rather than claim where BAML errors).
+	"baml_error_native_fallback_guard": "error_surface",
 }
 
 // parseRecoveryStreamNativeClaim pins the per-prefix native disposition for
@@ -786,6 +847,62 @@ type parseRecoveryStats struct {
 	fallback       int
 	streamClaimed  int
 	streamFallback int
+
+	// Boundary-family accounting (M5a). boundarySeen records which
+	// parseRecoveryBoundaryFamily fixtures were actually exercised (so a
+	// removed/renamed guard fails loudly); byFamily tallies each family's
+	// native disposition so accidental broadening of a whole family — not just a
+	// single-case pin flip — is surfaced and asserted zero-claimed.
+	boundarySeen map[string]bool
+	byFamily     map[string]*boundaryFamilyCount
+}
+
+// boundaryFamilyCount tallies one boundary family's native dispositions across
+// its guard fixtures. claimed must stay 0 — any claim is accidental broadening.
+type boundaryFamilyCount struct {
+	claimed  int
+	fallback int
+}
+
+// recordBoundaryDisposition folds one boundary guard fixture's native
+// disposition into the family accounting. It is a no-op for a case not listed
+// in parseRecoveryBoundaryFamily, so ordinary corpus cases are unaffected.
+func (s *parseRecoveryStats) recordBoundaryDisposition(caseName string, claimed bool) {
+	family, ok := parseRecoveryBoundaryFamily[caseName]
+	if !ok {
+		return
+	}
+	s.boundarySeen[caseName] = true
+	fc := s.byFamily[family]
+	if fc == nil {
+		fc = &boundaryFamilyCount{}
+		s.byFamily[family] = fc
+	}
+	if claimed {
+		fc.claimed++
+	} else {
+		fc.fallback++
+	}
+}
+
+// assertBoundaryFamilies logs each boundary family's native disposition and
+// fails when (a) a listed guard fixture never ran — a renamed/deleted guard
+// silently dropping coverage — or (b) any family fixture CLAIMED native, which
+// is exactly the accidental fallback->claim broadening this corpus guards
+// against. It runs once, after every case's disposition has been recorded.
+func assertBoundaryFamilies(t *testing.T, s *parseRecoveryStats) {
+	t.Helper()
+	for name, family := range parseRecoveryBoundaryFamily {
+		if !s.boundarySeen[name] {
+			t.Errorf("boundary guard fixture %q (family %q) was not exercised — a fallback-boundary guard was removed or renamed; restore it or update parseRecoveryBoundaryFamily", name, family)
+		}
+	}
+	for family, fc := range s.byFamily {
+		t.Logf("boundary family %q: %d fell back, %d CLAIMED native", family, fc.fallback, fc.claimed)
+		if fc.claimed != 0 {
+			t.Errorf("boundary family %q: %d guard fixture(s) CLAIMED native but must stay fallback — accidental broadening of a declined boundary (see parseRecoveryBoundaryFamily)", family, fc.claimed)
+		}
+	}
 }
 
 // TestBamlfuzzParseRecovery characterizes BAML's JSONish final-parse
@@ -837,7 +954,10 @@ func TestBamlfuzzParseRecovery(t *testing.T) {
 	native := bamlfuzz.RegisteredNativeParser()
 	capture := os.Getenv("BAMLFUZZ_PARSE_CAPTURE") == "1"
 
-	stats := &parseRecoveryStats{}
+	stats := &parseRecoveryStats{
+		boundarySeen: make(map[string]bool),
+		byFamily:     make(map[string]*boundaryFamilyCount),
+	}
 	for i, c := range corpus {
 		i := i
 		c := c
@@ -847,6 +967,12 @@ func TestBamlfuzzParseRecovery(t *testing.T) {
 	}
 	t.Logf("native de-BAML final-parse dispositions: %d claimed, %d fell back to BAML", stats.claimed, stats.fallback)
 	t.Logf("native de-BAML parse-stream dispositions: %d claimed, %d fell back to BAML (M4b claims the basic-partial surface)", stats.streamClaimed, stats.streamFallback)
+	// M5a boundary-family backstop: log each declined family's disposition and
+	// fail on a vanished guard or a family fixture that claimed native. Skipped
+	// in capture mode (dispositions aren't gated while recording want values).
+	if !capture {
+		assertBoundaryFamilies(t, stats)
+	}
 }
 
 // runParseRecoveryCase drives the final and/or streaming legs of one
@@ -892,6 +1018,9 @@ func runParseRecoveryCase(t *testing.T, baml, native bamlfuzz.Parser, c bamlfuzz
 			} else {
 				stats.fallback++
 			}
+			// M5a: fold a fallback-boundary guard fixture's native disposition
+			// into the per-family accounting (no-op for ordinary cases).
+			stats.recordBoundaryDisposition(c.Name, claimed)
 			// Every final-parse fixture MUST pin an expected disposition, so a
 			// new corpus case can't silently skip the cut-line assertion.
 			want, ok := parseRecoveryNativeClaim[c.Name]

@@ -1,0 +1,27 @@
+{
+  "name": "unicode_list_literal_casefold_uncertain_stays_fallback",
+  "description": "M5a FALLBACK-BOUNDARY GUARD (family: unicode_casefold). list<literal \"GRÜN\"> against [\"grün\"]: the element literal match hinges on the case-INSENSITIVE fold of an UPPERCASE non-ASCII rune (Ü), which native cannot prove equals Rust str::to_lowercase, so the list element declines and native DECLINES THE WHOLE LIST (coerce.go list element non-ASCII case-fold uncertainty) — a distinct decline site from the standalone-literal guard (180). BAML commits the fold and keeps the element. want live-captured from BAML v0.223 final parse via BAMLFUZZ_PARSE_CAPTURE=1 (placeholder below until captured).",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "list",
+              "inner": {"kind": "literal", "literal": {"kind": "string", "string": "GRÜN"}}
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":[\"grün\"]}",
+  "want": {
+    "status": "success",
+    "json": {"u": ["GRÜN"]}
+  }
+}

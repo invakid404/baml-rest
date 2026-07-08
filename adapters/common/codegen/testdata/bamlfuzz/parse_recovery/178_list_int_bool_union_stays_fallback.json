@@ -1,0 +1,34 @@
+{
+  "name": "list_int_bool_union_stays_fallback",
+  "description": "M5a FALLBACK-BOUNDARY GUARD (family: list_multi_arm_union). A direct list<int | bool> element is a MULTI-ARM union, which BAML threads across elements via ctx.union_variant_hint (coerce_array.rs) but native has no per-element hint, so checkSupportedType DECLINES the list element (array union_variant_hint deferred past M3d — over-claim risk). This locks the boundary: native must keep falling back while BAML claims. want live-captured from BAML v0.223 final parse via BAMLFUZZ_PARSE_CAPTURE=1 (placeholder below until captured).",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "list",
+              "inner": {
+                "kind": "union",
+                "variants": [
+                  {"kind": "int"},
+                  {"kind": "bool"}
+                ]
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":[1,true,2]}",
+  "want": {
+    "status": "success",
+    "json": {"u": [1, true, 2]}
+  }
+}

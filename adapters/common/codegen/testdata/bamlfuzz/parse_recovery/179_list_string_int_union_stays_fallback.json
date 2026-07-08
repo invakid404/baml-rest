@@ -1,0 +1,34 @@
+{
+  "name": "list_string_int_union_stays_fallback",
+  "description": "M5a FALLBACK-BOUNDARY GUARD (family: list_multi_arm_union). A direct list<string | int> element is a MULTI-ARM union; checkSupportedType DECLINES it (deferred array union_variant_hint — coerce_array.rs threads the previous element's arm as a hint native cannot reproduce). Distinct from 155 (enum|string): a pure scalar-arm list union. Locks native fallback while BAML claims. want live-captured from BAML v0.223 final parse via BAMLFUZZ_PARSE_CAPTURE=1 (placeholder below until captured).",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "list",
+              "inner": {
+                "kind": "union",
+                "variants": [
+                  {"kind": "string"},
+                  {"kind": "int"}
+                ]
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":[\"a\",1]}",
+  "want": {
+    "status": "success",
+    "json": {"u": ["a", 1]}
+  }
+}
