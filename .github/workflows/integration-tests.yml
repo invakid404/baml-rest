@@ -188,31 +188,31 @@ jobs:
       # is restored to disk and the pull step skips it.
       - name: Cache node:22-bookworm tarball
         id: cache-node
-        uses: actions/cache@v6.0.0
+        uses: actions/cache@v6.1.0
         with:
           path: warm-images/node.tar
           key: warm-image-${{ runner.os }}-node-${{ steps.resolve.outputs.node }}
       - name: Cache debian:bookworm-slim tarball
         id: cache-debian
-        uses: actions/cache@v6.0.0
+        uses: actions/cache@v6.1.0
         with:
           path: warm-images/debian.tar
           key: warm-image-${{ runner.os }}-debian-${{ steps.resolve.outputs.debian }}
       - name: Cache golang:1.26.3-alpine tarball
         id: cache-golang
-        uses: actions/cache@v6.0.0
+        uses: actions/cache@v6.1.0
         with:
           path: warm-images/golang.tar
           key: warm-image-${{ runner.os }}-golang-${{ steps.resolve.outputs.golang }}
       - name: Cache alpine:3.19 tarball
         id: cache-alpine
-        uses: actions/cache@v6.0.0
+        uses: actions/cache@v6.1.0
         with:
           path: warm-images/alpine.tar
           key: warm-image-${{ runner.os }}-alpine-${{ steps.resolve.outputs.alpine }}
       - name: Cache rust alias tarball
         id: cache-rust
-        uses: actions/cache@v6.0.0
+        uses: actions/cache@v6.1.0
         with:
           path: warm-images/rust-bookworm.tar
           key: warm-image-${{ runner.os }}-rust-bookworm-${{ steps.rust.outputs.digest }}
@@ -701,7 +701,7 @@ jobs:
 
       - name: Restore prebuilt cffi cache
         id: cache
-        uses: actions/cache@v6.0.0
+        uses: actions/cache@v6.1.0
         with:
           path: prebuilt-cffi
           # Final-artifact cache. The key fully pins the artifact: the BAML
