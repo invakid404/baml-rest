@@ -16,6 +16,7 @@ import (
 	"github.com/dave/jennifer/jen"
 
 	"github.com/invakid404/baml-rest/bamlutils/bamlparser"
+	"github.com/invakid404/baml-rest/bamlutils/schemadescriptor"
 )
 
 // config carries the per-invocation paths and import roots that
@@ -1259,6 +1260,20 @@ type bamlConfig struct {
 	// the config bug (credentials). See bamlValueBedrockOption for the
 	// per-key rationale and the corresponding upstream-BAML behaviours.
 	validationErrors []bamlValidationError
+
+	// staticSchemas holds the per-function static output-schema descriptor
+	// built natively from the parsed .baml type system (de-BAML P3 slice 2,
+	// #586), keyed by function name. Populated by buildStaticSchemas after all
+	// files are parsed; a function appears here only when its WHOLE output
+	// graph lowered + validated (schema.FromStaticDescriptor + ValidateOutput).
+	// NOT consumed by codegen yet — this slice proves the builder; runtime
+	// wiring is a later slice. See schemabuild.go.
+	staticSchemas map[string]schemadescriptor.Bundle
+	// staticSchemaDeclines maps a function name to the stable reason its output
+	// graph could not be represented faithfully (recursion, attributes, media,
+	// tuple, float literal, @@dynamic, @skip, ...). Fail-closed: a declined
+	// function has NO entry in staticSchemas.
+	staticSchemaDeclines map[string]string
 }
 
 // bamlValidationError captures a single semantic-validation failure
@@ -1349,6 +1364,13 @@ func parseBamlSourceDir(dir string) *bamlConfig {
 		bedrockClientOptions: make(map[string]bedrockClientOptions),
 	}
 
+	// parsedFiles retains every successfully parsed file so the static-schema
+	// builder can classify types across the whole project before lowering any
+	// function's output graph (de-BAML P3 slice 2, #586). Config extraction
+	// still runs per-file via processBAMLFile below; the schema build is an
+	// additive second pass and does not change any config behaviour.
+	var parsedFiles []*bamlparser.File
+
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil // skip unreadable entries
@@ -1369,8 +1391,15 @@ func parseBamlSourceDir(dir string) *bamlConfig {
 			return nil
 		}
 		processBAMLFile(cfg, file)
+		parsedFiles = append(parsedFiles, file)
 		return nil
 	})
+
+	// Build the native per-function static schemas from the collected files.
+	// This is fail-closed (per-function decline, never a pipeline error) and is
+	// not yet consumed downstream, so it runs regardless of the walk outcome.
+	cfg.staticSchemas, cfg.staticSchemaDeclines = buildStaticSchemas(parsedFiles)
+
 	if err != nil {
 		// baml_src may not exist during stub generation
 		return cfg

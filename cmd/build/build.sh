@@ -533,9 +533,19 @@ echo "Copying baml_src for introspection..."
 rm -rf ./baml_src
 cp -r "${BAML_WORK}/baml_src" ./baml_src
 
-# Run introspection
+# Run introspection.
+#
+# Use the PACKAGE form (`./cmd/introspect`), NOT a single file
+# (`cmd/introspect/main.go`). The introspect command is a multi-file package —
+# main.go plus schemabuild.go (de-BAML P3 slice 2, #586) and any future
+# siblings — and `go run <file>.go` compiles ONLY the named file, so a symbol
+# defined in a sibling (e.g. buildStaticSchemas) is "undefined" at container
+# build time even though the file ships in the embed.FS. The package form
+# compiles every .go file in the directory, so new introspect files need no
+# change here. (This masked a red CI on PR #590: `go build ./...` compiles the
+# whole package locally and hid the single-file break.)
 echo "Running introspection..."
-go run cmd/introspect/main.go
+go run ./cmd/introspect
 
 # Format and organize imports
 echo "Formatting code and organizing imports..."
