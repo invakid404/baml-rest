@@ -324,19 +324,19 @@ func TestParse_MapStringInt(t *testing.T) {
 	// Clean map<string,int>: object input, string keys, in-scope int values.
 	// Byte-exact on purpose — map output MUST preserve INPUT key order (the
 	// keys here are deliberately out of lexical order), the M2b contract.
-	mustParseExact(t, mapStringIntSchema(),
+	mustCoerceExact(t, mapStringIntSchema(),
 		`{"scores":{"z":1,"a":2,"m":3}}`,
 		`{"scores":{"z":1,"a":2,"m":3}}`)
 	// Empty object is a clean empty map.
-	mustParseExact(t, mapStringIntSchema(), `{"scores":{}}`, `{"scores":{}}`)
+	mustCoerceExact(t, mapStringIntSchema(), `{"scores":{}}`, `{"scores":{}}`)
 }
 
 func TestParse_MapNonObjectFieldDefaults(t *testing.T) {
 	// Mcoerce-d PR 2: a required map class field with a non-object value is a
 	// PROVEN coerce_map error_unexpected_type, so BAML fills the map default {}
 	// (DefaultButHadUnparseableValue) and native now CLAIMS {"scores":{}}.
-	mustParse(t, mapStringIntSchema(), `{"scores":[1,2,3]}`, `{"scores":{}}`)
-	mustParse(t, mapStringIntSchema(), `{"scores":"x"}`, `{"scores":{}}`)
+	mustCoerce(t, mapStringIntSchema(), `{"scores":[1,2,3]}`, `{"scores":{}}`)
+	mustCoerce(t, mapStringIntSchema(), `{"scores":"x"}`, `{"scores":{}}`)
 }
 
 func TestParse_MapBadValuePartialSkip(t *testing.T) {
@@ -345,9 +345,9 @@ func TestParse_MapBadValuePartialSkip(t *testing.T) {
 	// a number in any form (no i64/u64/f64/fraction/extracted match), so
 	// coerce_int errors and BAML skips just that entry, keeping the rest in input
 	// order.
-	mustParseExact(t, mapStringIntSchema(), `{"scores":{"a":1,"b":"x"}}`, `{"scores":{"a":1}}`)
+	mustCoerceExact(t, mapStringIntSchema(), `{"scores":{"a":1,"b":"x"}}`, `{"scores":{"a":1}}`)
 	// All values bad -> {} (still a successful, empty map).
-	mustParseExact(t, mapStringIntSchema(), `{"scores":{"a":"x","b":"y"}}`, `{"scores":{}}`)
+	mustCoerceExact(t, mapStringIntSchema(), `{"scores":{"a":"x","b":"y"}}`, `{"scores":{}}`)
 	// A float map value is NOT "bad": Mcoerce-b rounds 2.5->3 (FloatToInt, a
 	// successful coercion BAML keeps) — see TestParse_MapLenientValueClaimed.
 }
@@ -358,15 +358,15 @@ func TestParse_MapBadValuePartialSkip(t *testing.T) {
 // to BAML. The map's own score ignores the value's FloatToInt flag (score.rs),
 // so this stays a claimable clean map.
 func TestParse_MapLenientValueClaimed(t *testing.T) {
-	mustParse(t, mapStringIntSchema(), `{"scores":{"a":1,"b":2.5}}`, `{"scores":{"a":1,"b":3}}`)
-	mustParse(t, mapStringIntSchema(), `{"scores":{"a":1,"b":"7"}}`, `{"scores":{"a":1,"b":7}}`)
+	mustCoerce(t, mapStringIntSchema(), `{"scores":{"a":1,"b":2.5}}`, `{"scores":{"a":1,"b":3}}`)
+	mustCoerce(t, mapStringIntSchema(), `{"scores":{"a":1,"b":"7"}}`, `{"scores":{"a":1,"b":7}}`)
 }
 
 func TestParse_MapDuplicateKeyDeclines(t *testing.T) {
 	// A duplicate input key would collapse to one output key; BAML's
 	// duplicate insert/overwrite ordering is unproven here, so native
 	// declines rather than claim it.
-	requireUnsupported(t, mapStringIntSchema(), `{"scores":{"a":1,"a":2}}`)
+	requireCoerceUnsupported(t, mapStringIntSchema(), `{"scores":{"a":1,"a":2}}`)
 }
 
 // mapEnumKeySchema is a root class with one map<Key,string> field where Key
@@ -390,7 +390,7 @@ func TestParse_MapEnumKeysExact(t *testing.T) {
 	// Enum keys matched EXACTLY by rendered name; the emitted key is the
 	// ORIGINAL input string (here identical to the canonical name), in input
 	// key order.
-	mustParseExact(t, mapEnumKeySchema(),
+	mustCoerceExact(t, mapEnumKeySchema(),
 		`{"labels":{"A":"one","B":"two"}}`,
 		`{"labels":{"A":"one","B":"two"}}`)
 }
@@ -398,14 +398,14 @@ func TestParse_MapEnumKeysExact(t *testing.T) {
 func TestParse_MapBadEnumKeyDeclines(t *testing.T) {
 	// A key not exactly in the enum: BAML records MapKeyParseError and skips
 	// it (partial map). Native declines the whole map.
-	requireUnsupported(t, mapEnumKeySchema(), `{"labels":{"A":"one","C":"two"}}`)
+	requireCoerceUnsupported(t, mapEnumKeySchema(), `{"labels":{"A":"one","C":"two"}}`)
 }
 
 func TestParse_MapFuzzyEnumKeyClaimed(t *testing.T) {
 	// Mcoerce-a: a case/fuzzy variant ("a" for enum value A) now fuzzy-matches
 	// via match_string and is CLAIMED. The emitted key is the ORIGINAL input
 	// string "a" (maps insert the raw object key), not the canonical enum name.
-	mustParseExact(t, mapEnumKeySchema(), `{"labels":{"a":"one"}}`, `{"labels":{"a":"one"}}`)
+	mustCoerceExact(t, mapEnumKeySchema(), `{"labels":{"a":"one"}}`, `{"labels":{"a":"one"}}`)
 }
 
 func TestParse_MapEnumKeyAlias(t *testing.T) {
@@ -424,7 +424,7 @@ func TestParse_MapEnumKeyAlias(t *testing.T) {
 			}),
 		),
 	}
-	mustParseExact(t, s, `{"labels":{"Verde":"x"}}`, `{"labels":{"Verde":"x"}}`)
+	mustCoerceExact(t, s, `{"labels":{"Verde":"x"}}`, `{"labels":{"Verde":"x"}}`)
 }
 
 func TestParse_MapLiteralUnionKeysExact(t *testing.T) {
@@ -443,11 +443,11 @@ func TestParse_MapLiteralUnionKeysExact(t *testing.T) {
 			Values: &bamlutils.DynamicTypeSpec{Type: "string"},
 		})),
 	}
-	mustParseExact(t, s, `{"m":{"A":"x","B":"y"}}`, `{"m":{"A":"x","B":"y"}}`)
+	mustCoerceExact(t, s, `{"m":{"A":"x","B":"y"}}`, `{"m":{"A":"x","B":"y"}}`)
 	// A key matching NO string-literal-union arm is NOT a native partial skip: the
 	// dynamic bridge KEEPS the non-matching key (live-captured full map), so
 	// native declines the WHOLE map rather than skip an entry BAML keeps.
-	requireUnsupported(t, s, `{"m":{"A":"x","C":"z"}}`)
+	requireCoerceUnsupported(t, s, `{"m":{"A":"x","C":"z"}}`)
 }
 
 // mapStringItemSchema is a root class with one map<string, Item> field; Item
@@ -472,12 +472,12 @@ func TestParse_MapStringClassValues(t *testing.T) {
 	// of schema order in the input. The two ordering policies must coexist:
 	// map keys stay in INPUT order while class fields are re-emitted in SCHEMA
 	// order. Byte-exact on purpose — this is the dual-ordering contract.
-	mustParseExact(t, mapStringItemSchema(),
+	mustCoerceExact(t, mapStringItemSchema(),
 		`{"by_id":{"z":{"label":"zed","id":"3"},"a":{"label":"ay","id":"1"}}}`,
 		`{"by_id":{"z":{"id":"3","label":"zed"},"a":{"id":"1","label":"ay"}}}`)
 	// A map-to-class entry missing a required field DECLINES the whole map:
 	// BAML skips the bad entry (MapValueParseError), native cannot claim it.
-	requireUnsupported(t, mapStringItemSchema(),
+	requireCoerceUnsupported(t, mapStringItemSchema(),
 		`{"by_id":{"a":{"id":"1","label":"ay"},"b":{"id":"2"}}}`)
 }
 
@@ -495,7 +495,7 @@ func TestParse_MapNestedMap(t *testing.T) {
 			},
 		})),
 	}
-	mustParseExact(t, s,
+	mustCoerceExact(t, s,
 		`{"grid":{"r2":{"c1":1,"c0":2},"r1":{"c9":3}}}`,
 		`{"grid":{"r2":{"c1":1,"c0":2},"r1":{"c9":3}}}`)
 }
@@ -504,8 +504,8 @@ func TestParse_MapIncompleteDeclines(t *testing.T) {
 	// An unterminated map has no balanced span; native finds no
 	// cleanly-claimable candidate and DECLINES (BAML closes/recovers at EOF,
 	// which M2a defers) — never a claimed error.
-	requireUnsupported(t, mapStringIntSchema(), `{"scores":{"a":1,"b":`)
-	requireUnsupported(t, mapStringIntSchema(), `{"scores":{"a":1,"b":2`)
+	requireCoerceUnsupported(t, mapStringIntSchema(), `{"scores":{"a":1,"b":`)
+	requireCoerceUnsupported(t, mapStringIntSchema(), `{"scores":{"a":1,"b":2`)
 }
 
 func TestParse_UnsupportedMapIntKey(t *testing.T) {
@@ -518,7 +518,7 @@ func TestParse_UnsupportedMapIntKey(t *testing.T) {
 			Values: &bamlutils.DynamicTypeSpec{Type: "int"},
 		})),
 	}
-	requireUnsupported(t, s, `{"m":{"1":1}}`)
+	requireCoerceUnsupported(t, s, `{"m":{"1":1}}`)
 }
 
 func TestParse_MapScalarUnionValueClaimed(t *testing.T) {
@@ -540,13 +540,13 @@ func TestParse_MapScalarUnionValueClaimed(t *testing.T) {
 			},
 		})),
 	}
-	mustParse(t, s, `{"m":{"a":"x"}}`, `{"m":{"a":"x"}}`)
-	mustParse(t, s, `{"m":{"a":5}}`, `{"m":{"a":5}}`)
+	mustCoerce(t, s, `{"m":{"a":"x"}}`, `{"m":{"a":"x"}}`)
+	mustCoerce(t, s, `{"m":{"a":5}}`, `{"m":{"a":5}}`)
 	// M3d: an ARRAY value now resolves to the INT arm. As a union arm the int's
 	// array-to-singular target is the union, so Int 1 scores 1 (UnionMatch +
 	// FirstMatch) and beats the string arm's JsonToString "[1, 2]" (score 2), so
 	// the map keeps {"a":1}.
-	mustParse(t, s, `{"m":{"a":[1,2]}}`, `{"m":{"a":1}}`)
+	mustCoerce(t, s, `{"m":{"a":[1,2]}}`, `{"m":{"a":1}}`)
 }
 
 // unionSchema wraps a single union property `u` with the given variants.
@@ -945,43 +945,43 @@ func TestParse_NullableScalarMultiUnionScored(t *testing.T) {
 	mustParse(t, s, `{"u":5}`, `{"u":5}`)
 }
 
-func TestParse_NullableSingleArmUnsupportedArmClaimsNull(t *testing.T) {
-	// A nullable single-arm union T | null where T is UNSUPPORTED (here T is a map
-	// whose value is a union with a list-of-MULTI-ARM-UNION arm — string |
-	// list<int|string> — whose list element is a multi-arm union, so its array
-	// union_variant_hint is out of scope and the value union declines). The null
-	// fast path must CLAIM null regardless of the unsupported arm (mirroring BAML's
-	// null arm), consistently with nullable MULTI unions. A NON-null input must
-	// DECLINE: coerceUnionSafe delegates to coerce on the lone arm, which falls
-	// back because the map value union is unsupported.
+func TestParse_NullableUnsupportedArmClaimsNull(t *testing.T) {
+	// A nullable union whose NON-NULL arm set is UNSUPPORTED (string |
+	// list<int|string> | null — the list arm's element is a multi-arm union, so
+	// its array union_variant_hint is out of scope). The null fast path
+	// (coerceUnionSafe case 1) must CLAIM null regardless of the unsupported
+	// non-null arms, mirroring BAML's null arm. A NON-null input must DECLINE:
+	// coerceUnionSafe case 3 re-proves the non-null arm set via
+	// checkSupportedUnionShape, which rejects the list arm.
+	//
+	// This is deliberately MAP-FREE: the earlier version used an optional MAP arm,
+	// but checkNoMap now declines any map-containing schema at the gate for BOTH
+	// null and non-null input, which would mask the null-fast-path property under
+	// test. The multi-arm-union list element reproduces the same "unsupported arm,
+	// null still claims null" shape without a map.
 	s := &bamlutils.DynamicOutputSchema{
 		Properties: props(kv("u", &bamlutils.DynamicProperty{
 			Type: "optional",
 			Inner: &bamlutils.DynamicTypeSpec{
-				Type: "map",
-				Keys: &bamlutils.DynamicTypeSpec{Type: "string"},
-				Values: &bamlutils.DynamicTypeSpec{
-					Type: "union",
-					OneOf: []*bamlutils.DynamicTypeSpec{
-						{Type: "string"},
-						{Type: "list", Items: &bamlutils.DynamicTypeSpec{
-							Type: "union",
-							OneOf: []*bamlutils.DynamicTypeSpec{
-								{Type: "int"},
-								{Type: "string"},
-							},
-						}},
-					},
+				Type: "union",
+				OneOf: []*bamlutils.DynamicTypeSpec{
+					{Type: "string"},
+					{Type: "list", Items: &bamlutils.DynamicTypeSpec{
+						Type: "union",
+						OneOf: []*bamlutils.DynamicTypeSpec{
+							{Type: "int"},
+							{Type: "string"},
+						},
+					}},
 				},
 			},
 		})),
 	}
-	// JSON null → CLAIM null (null fast path), even though the lone arm is
-	// unsupported. Before the gate fix this DECLINED (the len==1 recursion
-	// rejected the unsupported arm before the nullable check).
+	// JSON null → CLAIM null (null fast path), even though the non-null arms are
+	// unsupported.
 	mustParse(t, s, `{"u":null}`, `{"u":null}`)
-	// Non-null → DECLINE (the lone map arm's value union has a list arm).
-	requireUnsupported(t, s, `{"u":{"a":"x"}}`)
+	// Non-null → DECLINE (the list arm's element is a multi-arm union).
+	requireUnsupported(t, s, `{"u":"x"}`)
 }
 
 func TestParse_PrimitiveScalarUnionScored(t *testing.T) {

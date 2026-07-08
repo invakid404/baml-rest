@@ -143,10 +143,10 @@ func TestUnion_MapArm(t *testing.T) {
 		&bamlutils.DynamicTypeSpec{Type: "map", Keys: &bamlutils.DynamicTypeSpec{Type: "string"}, Values: &bamlutils.DynamicTypeSpec{Type: "int"}},
 		&bamlutils.DynamicTypeSpec{Type: "string"},
 	)
-	mustParse(t, msu, `{"u":{"a":1}}`, `{"u":{"a":1}}`)
+	mustCoerce(t, msu, `{"u":{"a":1}}`, `{"u":{"a":1}}`)
 	// A partial-value map: the bad value is skipped (MapValueParseError), the map arm
 	// ({"a":1}) beats the string arm's stringification.
-	mustParse(t, msu, `{"u":{"a":1,"b":"x"}}`, `{"u":{"a":1}}`)
+	mustCoerce(t, msu, `{"u":{"a":1,"b":"x"}}`, `{"u":{"a":1}}`)
 
 	// OVER-CLAIM GUARD: C{a:int} | map<string,int> with an extra key → the MAP wins
 	// (the class try_cast rejects the extra key; the map try_cast keeps it). Without
@@ -163,14 +163,22 @@ func TestUnion_MapArm(t *testing.T) {
 			bamlutils.OrderedKV("C", &bamlutils.DynamicClass{Properties: props(kv("a", intProp()))}),
 		),
 	}
-	mustParse(t, cmu, `{"u":{"a":1,"extra":2}}`, `{"u":{"a":1,"extra":2}}`)
+	mustCoerce(t, cmu, `{"u":{"a":1,"extra":2}}`, `{"u":{"a":1,"extra":2}}`)
 }
 
-// TestUnion_MapArmNonStringKeyDeclines pins the gate: a map arm with an ENUM /
-// literal key stays out of scope in a union (dynamic map-key keep is unproven).
+// TestUnion_MapArmNonStringKeyDeclines pins the COERCE-TIME union-shape reproof
+// for a map union arm with a non-string (ENUM / literal) key. It drives
+// requireCoerceUnsupported — the coerceViaBundle bypass that SKIPS the public
+// checkNoMap gate — so the decline asserted here is NOT the map gate: it is
+// coerceUnionSafe re-proving the arm set via checkSupportedUnionShape, whose
+// checkUnionMapVariant rejects a non-string map key (dynamic map-key keep is
+// unproven). Under the public Parse this same schema would instead decline
+// earlier at checkNoMap (it contains a map at all); this test isolates the
+// deeper union-map-variant reproof that the bypass still exercises.
 func TestUnion_MapArmNonStringKeyDeclines(t *testing.T) {
 	// map<"a"|"b", int> | string — a string-literal-union key is a legal map key but
-	// not a plain string, so the map union arm declines at the gate.
+	// not a plain string, so coerceUnionSafe's checkSupportedUnionShape reproof
+	// (checkUnionMapVariant) declines the union at COERCE time (via the bypass).
 	litKey := &bamlutils.DynamicTypeSpec{
 		Type:  "union",
 		OneOf: []*bamlutils.DynamicTypeSpec{{Type: "literal_string", Value: "a"}, {Type: "literal_string", Value: "b"}},
@@ -179,7 +187,7 @@ func TestUnion_MapArmNonStringKeyDeclines(t *testing.T) {
 		&bamlutils.DynamicTypeSpec{Type: "map", Keys: litKey, Values: &bamlutils.DynamicTypeSpec{Type: "int"}},
 		&bamlutils.DynamicTypeSpec{Type: "string"},
 	)
-	requireUnsupported(t, s, `{"u":{"a":1}}`)
+	requireCoerceUnsupported(t, s, `{"u":{"a":1}}`)
 }
 
 // TestUnion_ListArmTryCast pins THE list-arm phase-1 try_cast (the over-claim the
@@ -214,7 +222,7 @@ func TestUnion_MapValueTryCast(t *testing.T) {
 		&bamlutils.DynamicTypeSpec{Type: "map", Keys: &bamlutils.DynamicTypeSpec{Type: "string"}, Values: &bamlutils.DynamicTypeSpec{Type: "list", Items: &bamlutils.DynamicTypeSpec{Type: "int"}}},
 		&bamlutils.DynamicTypeSpec{Type: "map", Keys: &bamlutils.DynamicTypeSpec{Type: "string"}, Values: &bamlutils.DynamicTypeSpec{Type: "list", Items: &bamlutils.DynamicTypeSpec{Type: "string"}}},
 	)
-	mustParse(t, mlu, `{"u":{"a":["1"]}}`, `{"u":{"a":["1"]}}`)
+	mustCoerce(t, mlu, `{"u":{"a":["1"]}}`, `{"u":{"a":["1"]}}`)
 
 	// map<string,int> | map<string,int|string> with {"a":"1"}: the first map's value
 	// try_cast fails (int rejects "1"), the second's inner int|string try_cast picks
@@ -226,7 +234,7 @@ func TestUnion_MapValueTryCast(t *testing.T) {
 			OneOf: []*bamlutils.DynamicTypeSpec{{Type: "int"}, {Type: "string"}},
 		}},
 	)
-	mustParse(t, muu, `{"u":{"a":"1"}}`, `{"u":{"a":"1"}}`)
+	mustCoerce(t, muu, `{"u":{"a":"1"}}`, `{"u":{"a":"1"}}`)
 }
 
 // TestCheckUnionMapVariant_ConstrainedKeyDeclines pins FIX B: a union map arm with

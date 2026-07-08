@@ -234,8 +234,9 @@ func TestScalarUnion_ListElementUnionDeclines(t *testing.T) {
 	// TOP-LEVEL scalar union still claims (the gate change is list-element-only).
 	mustParse(t, primUnion("string", "int"), `{"u":"x"}`, `{"u":"x"}`)
 
-	// MAP value union still claims — coerce_map resets the hint (enter_scope), so
-	// map<_, union> has no hint gap.
+	// MAP value union still coerces cleanly — coerce_map resets the hint
+	// (enter_scope), so map<_, union> has no hint gap. Driven via the coerce bypass
+	// because Parse now declines every map-containing schema at the checkNoMap gate.
 	mapUnion := &bamlutils.DynamicOutputSchema{
 		Properties: props(kv("m", &bamlutils.DynamicProperty{
 			Type: "map",
@@ -246,7 +247,7 @@ func TestScalarUnion_ListElementUnionDeclines(t *testing.T) {
 			},
 		})),
 	}
-	mustParse(t, mapUnion, `{"m":{"a":"x"}}`, `{"m":{"a":"x"}}`)
+	mustCoerce(t, mapUnion, `{"m":{"a":"x"}}`, `{"m":{"a":"x"}}`)
 }
 
 // TestScalarUnion_LiteralStringSubstringTie_PickFirst pins the pick_best index

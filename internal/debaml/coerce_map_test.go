@@ -70,12 +70,12 @@ func mapStrPairSchema() *bamlutils.DynamicOutputSchema {
 func TestCoerceMap_ValuePartialSkip(t *testing.T) {
 	s := mapStringIntSchema()
 	// "a":1 kept, "b":"bad" skipped (proven int parse error), "c":"7" kept (7).
-	mustParseExact(t, s, `{"scores":{"a":1,"bad":"nope","c":"7"}}`, `{"scores":{"a":1,"c":7}}`)
+	mustCoerceExact(t, s, `{"scores":{"a":1,"bad":"nope","c":"7"}}`, `{"scores":{"a":1,"c":7}}`)
 	// All-bad values -> {}.
-	mustParseExact(t, s, `{"scores":{"a":"x","b":"y"}}`, `{"scores":{}}`)
+	mustCoerceExact(t, s, `{"scores":{"a":"x","b":"y"}}`, `{"scores":{}}`)
 	// Proven non-string value kinds BAML rejects with error_unexpected_type are
 	// also skipped: object, bool, null (a number is always coerced, kept).
-	mustParseExact(t, s, `{"scores":{"a":1,"b":{"x":1},"c":true,"d":null,"e":2}}`, `{"scores":{"a":1,"e":2}}`)
+	mustCoerceExact(t, s, `{"scores":{"a":1,"b":{"x":1},"c":true,"d":null,"e":2}}`, `{"scores":{"a":1,"e":2}}`)
 }
 
 // TestCoerceMap_LenientValuesKept pins that Mcoerce-a/b leaf coercions run
@@ -83,7 +83,7 @@ func TestCoerceMap_ValuePartialSkip(t *testing.T) {
 // fraction, extracted currency), in input key order.
 func TestCoerceMap_LenientValuesKept(t *testing.T) {
 	s := mapStringIntSchema()
-	mustParseExact(t, s, `{"scores":{"a":"1","b":2.6,"c":"3/2","d":"$1,234"}}`, `{"scores":{"a":1,"b":3,"c":2,"d":1234}}`)
+	mustCoerceExact(t, s, `{"scores":{"a":"1","b":2.6,"c":"3/2","d":"$1,234"}}`, `{"scores":{"a":1,"b":3,"c":2,"d":1234}}`)
 }
 
 // TestCoerceMap_ClassValueScalarSkips pins that a multi-field flat class VALUE
@@ -93,12 +93,12 @@ func TestCoerceMap_LenientValuesKept(t *testing.T) {
 func TestCoerceMap_ClassValueScalarSkips(t *testing.T) {
 	s := mapStrPairSchema()
 	// Scalar 5 skipped; the object value kept, its fields in SCHEMA order.
-	mustParseExact(t, s, `{"items":{"k":5,"p":{"b":"y","a":"x"}}}`, `{"items":{"p":{"a":"x","b":"y"}}}`)
+	mustCoerceExact(t, s, `{"items":{"k":5,"p":{"b":"y","a":"x"}}}`, `{"items":{"p":{"a":"x","b":"y"}}}`)
 	// Scalar-only -> {}.
-	mustParseExact(t, s, `{"items":{"k":5}}`, `{"items":{}}`)
+	mustCoerceExact(t, s, `{"items":{"k":5}}`, `{"items":{}}`)
 	// An object value missing a required field is NOT a proven skip (BAML may
 	// default-fill) -> decline the WHOLE map.
-	requireUnsupported(t, s, `{"items":{"a":{"a":"x","b":"y"},"b":{"a":"x"}}}`)
+	requireCoerceUnsupported(t, s, `{"items":{"a":{"a":"x","b":"y"},"b":{"a":"x"}}}`)
 }
 
 // TestCoerceMap_KeyMissDeclines pins that a KEY matching NO string-literal-union
@@ -109,12 +109,12 @@ func TestCoerceMap_ClassValueScalarSkips(t *testing.T) {
 func TestCoerceMap_KeyMissDeclines(t *testing.T) {
 	s := mapLitUnionStrSchema()
 	// All keys match -> claim, keeping ORIGINAL strings in INPUT order.
-	mustParseExact(t, s, `{"u":{"B":"y","A":"x"}}`, `{"u":{"B":"y","A":"x"}}`)
+	mustCoerceExact(t, s, `{"u":{"B":"y","A":"x"}}`, `{"u":{"B":"y","A":"x"}}`)
 	// A fuzzy (case-variant) key still matches via match_string and is KEPT under
 	// its ORIGINAL string, not the canonical literal.
-	mustParseExact(t, s, `{"u":{"a":"x"}}`, `{"u":{"a":"x"}}`)
+	mustCoerceExact(t, s, `{"u":{"a":"x"}}`, `{"u":{"a":"x"}}`)
 	// A key matching no arm -> decline the whole map (dynamic keeps it -> Mcoerce-d).
-	requireUnsupported(t, s, `{"u":{"B":"y","C":"z","A":"x"}}`)
+	requireCoerceUnsupported(t, s, `{"u":{"B":"y","C":"z","A":"x"}}`)
 }
 
 // TestCoerceMap_EnumKeyMissDeclines pins that a MISSED enum key is NOT a partial
@@ -123,8 +123,8 @@ func TestCoerceMap_KeyMissDeclines(t *testing.T) {
 func TestCoerceMap_EnumKeyMissDeclines(t *testing.T) {
 	s := mapEnumKeySchema()
 	// All keys match -> claim; a missed key -> decline (not a partial skip).
-	mustParseExact(t, s, `{"labels":{"A":"one","B":"two"}}`, `{"labels":{"A":"one","B":"two"}}`)
-	requireUnsupported(t, s, `{"labels":{"A":"one","C":"two"}}`)
+	mustCoerceExact(t, s, `{"labels":{"A":"one","B":"two"}}`, `{"labels":{"A":"one","B":"two"}}`)
+	requireCoerceUnsupported(t, s, `{"labels":{"A":"one","C":"two"}}`)
 }
 
 // TestCoerceMap_ValueThenKeyOrder pins BAML's VALUE-first order: an entry with a
@@ -146,7 +146,7 @@ func TestCoerceMap_ValueThenKeyOrder(t *testing.T) {
 		},
 		Values: &bamlutils.DynamicTypeSpec{Type: "int"},
 	})
-	mustParseExact(t, s, `{"u":{"É":"zzz"}}`, `{"u":{}}`)
+	mustCoerceExact(t, s, `{"u":{"É":"zzz"}}`, `{"u":{}}`)
 }
 
 // TestCoerceMap_DeferredValuePreemptsKeySkip pins value-first ordering: a value
@@ -161,7 +161,7 @@ func TestCoerceMap_DeferredValuePreemptsKeySkip(t *testing.T) {
 	// non-matching literal-union keys leniently -> a whole-map decline, not a
 	// partial MapKeyParseError skip; see TestCoerceMap_KeyMissDeclines). Either
 	// way the whole map declines rather than dropping an entry.
-	requireUnsupported(t, mapLitUnionStrSchema(), `{"u":{"C":5}}`)
+	requireCoerceUnsupported(t, mapLitUnionStrSchema(), `{"u":{"C":5}}`)
 }
 
 // TestCoerceMap_StringStringNonStringValueStringified pins the Mcoerce-d PR 1
@@ -171,12 +171,12 @@ func TestCoerceMap_DeferredValuePreemptsKeySkip(t *testing.T) {
 // TestCoerceMap_StringStringNonStringValueDeclines.)
 func TestCoerceMap_StringStringNonStringValueStringified(t *testing.T) {
 	s := mapStrStrSchema()
-	mustParseExact(t, s, `{"u":{"a":"x","b":"y"}}`, `{"u":{"a":"x","b":"y"}}`) // clean claim
+	mustCoerceExact(t, s, `{"u":{"a":"x","b":"y"}}`, `{"u":{"a":"x","b":"y"}}`) // clean claim
 	// Number value -> JsonToString "5", kept (fixture 107 shape).
-	mustParseExact(t, s, `{"u":{"a":"x","b":5}}`, `{"u":{"a":"x","b":"5"}}`)
-	mustParseExact(t, s, `{"u":{"a":true}}`, `{"u":{"a":"true"}}`)
+	mustCoerceExact(t, s, `{"u":{"a":"x","b":5}}`, `{"u":{"a":"x","b":"5"}}`)
+	mustCoerceExact(t, s, `{"u":{"a":true}}`, `{"u":{"a":"true"}}`)
 	// Direct null value is a proven skip; the rest is kept.
-	mustParseExact(t, s, `{"u":{"a":"x","b":null}}`, `{"u":{"a":"x"}}`)
+	mustCoerceExact(t, s, `{"u":{"a":"x","b":null}}`, `{"u":{"a":"x"}}`)
 }
 
 // TestCoerceMap_DuplicateKeyDeclines pins that ANY duplicate original input key
@@ -184,9 +184,9 @@ func TestCoerceMap_StringStringNonStringValueStringified(t *testing.T) {
 // skipped duplicate must not be reasoned to leave the rest safe).
 func TestCoerceMap_DuplicateKeyDeclines(t *testing.T) {
 	s := mapStringIntSchema()
-	requireUnsupported(t, s, `{"scores":{"a":1,"a":2}}`)
+	requireCoerceUnsupported(t, s, `{"scores":{"a":1,"a":2}}`)
 	// Duplicate whose second entry has a (proven-bad) value still declines.
-	requireUnsupported(t, s, `{"scores":{"a":1,"a":"bad"}}`)
+	requireCoerceUnsupported(t, s, `{"scores":{"a":1,"a":"bad"}}`)
 }
 
 // TestCoerceMap_NonObjectFieldDefaults pins the Mcoerce-d PR 2 flip: a REQUIRED
@@ -197,9 +197,9 @@ func TestCoerceMap_DuplicateKeyDeclines(t *testing.T) {
 // declines — only the class-field-default path is claimed here.)
 func TestCoerceMap_NonObjectFieldDefaults(t *testing.T) {
 	s := mapStringIntSchema()
-	mustParse(t, s, `{"scores":[1,2,3]}`, `{"scores":{}}`)
-	mustParse(t, s, `{"scores":"x"}`, `{"scores":{}}`)
-	mustParse(t, s, `{"scores":5}`, `{"scores":{}}`)
+	mustCoerce(t, s, `{"scores":[1,2,3]}`, `{"scores":{}}`)
+	mustCoerce(t, s, `{"scores":"x"}`, `{"scores":{}}`)
+	mustCoerce(t, s, `{"scores":5}`, `{"scores":{}}`)
 }
 
 // TestCoerceMap_NullableScored pins the M3 scored selection for maps: an
@@ -209,11 +209,11 @@ func TestCoerceMap_NonObjectFieldDefaults(t *testing.T) {
 func TestCoerceMap_NullableScored(t *testing.T) {
 	s := optionalMapStrIntSchema()
 	// JSON null -> the null fast path claims null.
-	mustParse(t, s, `{"u":null}`, `{"u":null}`)
+	mustCoerce(t, s, `{"u":null}`, `{"u":null}`)
 	// Object input -> ObjectToMap (score 1 < 110) -> claim the map, clean values.
-	mustParse(t, s, `{"u":{"a":1}}`, `{"u":{"a":1}}`)
+	mustCoerce(t, s, `{"u":{"a":1}}`, `{"u":{"a":1}}`)
 	// Empty object -> ObjectToMap (score 1 < 110) -> claim {}.
-	mustParse(t, s, `{"u":{}}`, `{"u":{}}`)
+	mustCoerce(t, s, `{"u":{}}`, `{"u":{}}`)
 }
 
 // TestProvenMapValueError pins the map-VALUE child classifier delegates to the

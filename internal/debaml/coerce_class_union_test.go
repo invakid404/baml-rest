@@ -201,7 +201,10 @@ func TestClassUnion_HardGuardsStayFallback(t *testing.T) {
 	)
 	requireUnsupported(t, listField, `{"u":{"a":1,"tags":["x"]}}`)
 
-	// A class arm with a MAP field declines at the gate.
+	// A class arm with a MAP field declines. The map is reachable through the
+	// class ref, so checkNoMap now declines it at the map gate (a parity-decline
+	// for map-key order) before the union-class-variant flat-leaf check runs; the
+	// decline is the same either way.
 	mapField := abClassUnionSchema(
 		props(kv("a", intProp()), kv("m", &bamlutils.DynamicProperty{Type: "map", Keys: &bamlutils.DynamicTypeSpec{Type: "string"}, Values: &bamlutils.DynamicTypeSpec{Type: "int"}})),
 		props(kv("c", intProp()), kv("d", strProp())),
