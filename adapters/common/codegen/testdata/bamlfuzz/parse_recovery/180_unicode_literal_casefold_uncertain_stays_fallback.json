@@ -1,0 +1,24 @@
+{
+  "name": "unicode_literal_casefold_uncertain_stays_fallback",
+  "description": "M5a FALLBACK-BOUNDARY GUARD (family: unicode_casefold). A string literal \"GRÜN\" against input \"grün\": exact + accent-fold (removeAccents keeps case: GRUN != grun) both miss, so match_string reaches the case-INSENSITIVE fold. The candidate carries an UPPERCASE non-ASCII rune (Ü), so native marks the fold UNCERTAIN — Go's cases.Lower is not proven byte-identical to Rust str::to_lowercase for every rune (#555) — and DECLINES (coerce.go literal string non-ASCII case-fold uncertainty). BAML commits the fold and matches. This is the first non-ASCII case-fold fixture in the corpus (the rest is ASCII, so caseFoldUncertain never fires there). want live-captured from BAML v0.223 final parse via BAMLFUZZ_PARSE_CAPTURE=1 (placeholder below until captured).",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {"kind": "literal", "literal": {"kind": "string", "string": "GRÜN"}}
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"grün\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": "GRÜN"}
+  }
+}
