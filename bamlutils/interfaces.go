@@ -990,12 +990,17 @@ type RoundRobinAdvancer interface {
 // native seam — it does not select a transport/request-construction
 // route (the BuildRequest route is unconditional as of #537).
 //
-// Default (zero value) is disabled: the dynamic request path renders
-// ctx.output_format through BAML exactly as it does today.
+// The Go zero value is disabled: an unconfigured DeBAMLConfig{} renders
+// ctx.output_format through BAML exactly as it does today. Env resolution,
+// however, is default-ON — DeBAMLConfigFromEnv enables native de-BAML
+// unless BAML_REST_USE_DEBAML is explicitly set to a falsy value — so
+// server builds run native by default while the flag is retained purely as
+// a disable switch.
 type DeBAMLConfig struct {
-	// Enabled turns on every implemented native de-BAML path. When false
-	// (default) no native behaviour is attempted and the dynamic path is
-	// BAML-as-today, byte-for-byte.
+	// Enabled turns on every implemented native de-BAML path. When false no
+	// native behaviour is attempted and the dynamic path is BAML-as-today,
+	// byte-for-byte. The struct zero value is false; DeBAMLConfigFromEnv
+	// resolves it to true by default (see above).
 	Enabled bool
 }
 
@@ -1072,21 +1077,43 @@ const EnvUseDeBAML = "BAML_REST_USE_DEBAML"
 
 // DeBAMLConfigFromEnv resolves BAML_REST_USE_DEBAML into a DeBAMLConfig.
 // Shared by cmd/serve and cmd/worker so both server builds observe the
-// same value; resolved once at startup. Truthy parsing matches the
-// BuildRequest env contract (1/true/yes/on, case-insensitive, no
-// whitespace trimming); every other value (including empty) is disabled.
+// same value; resolved once at startup.
+//
+// De-BAML is DEFAULT-ON: native behaviour is enabled when the umbrella var
+// is UNSET/empty OR set to a truthy value, and DISABLED only when it is
+// explicitly set to a recognized falsy value (0/false/no/off,
+// case-insensitive, no whitespace trimming — the inverse of the
+// IsTruthyEnvValue accept list). The disable path is retained so operators
+// can turn native de-BAML back off with an explicit falsy value while the
+// rollout completes.
 func DeBAMLConfigFromEnv() DeBAMLConfig {
-	return DeBAMLConfig{Enabled: IsTruthyEnvValue(os.Getenv(EnvUseDeBAML))}
+	return DeBAMLConfig{Enabled: !IsFalsyEnvValue(os.Getenv(EnvUseDeBAML))}
 }
 
 // IsTruthyEnvValue is the single truthy-env contract shared across
-// baml-rest's boolean env vars (BAML_REST_USE_DEBAML and the serve-host
-// preserve-order default). Exactly 1/true/yes/on (case-insensitive) are
-// true; every other value — including the empty string and
-// whitespace-padded variants (no trimming) — is false.
+// baml-rest's boolean env vars (the serve-host preserve-order default and,
+// historically, BAML_REST_USE_DEBAML before it went default-on). Exactly
+// 1/true/yes/on (case-insensitive) are true; every other value — including
+// the empty string and whitespace-padded variants (no trimming) — is false.
 func IsTruthyEnvValue(v string) bool {
 	switch strings.ToLower(v) {
 	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+// IsFalsyEnvValue is the inverse of IsTruthyEnvValue: the explicit-falsy
+// accept list for baml-rest's default-ON env vars. Exactly 0/false/no/off
+// (case-insensitive) are true (i.e. recognized as an explicit "disable");
+// every other value — including the empty string, whitespace-padded
+// variants (no trimming), and unrecognized tokens — is false. Use it for
+// default-on switches such as BAML_REST_USE_DEBAML, where a feature stays
+// on unless an operator sets one of these recognized falsy tokens.
+func IsFalsyEnvValue(v string) bool {
+	switch strings.ToLower(v) {
+	case "0", "false", "no", "off":
 		return true
 	default:
 		return false
