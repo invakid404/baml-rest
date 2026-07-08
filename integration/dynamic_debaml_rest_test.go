@@ -20,13 +20,19 @@ import (
 // This test proves the SAME on the REST production path: a dedicated
 // baml-rest container started with BAML_REST_USE_DEBAML=true must emit the
 // native ctx.output_format block (with the metadata BAML's dynamic
-// TypeBuilder drops) into the provider request — and the shared,
-// de-BAML-OFF TestEnv must not. The BuildRequest route is unconditional as
-// of #537, so both containers share the same route and the differential
-// isolates exactly BAML_REST_USE_DEBAML. This guards the gap where the
-// production generated adapter never actually emitted the de-BAML injection
-// (codegen only wired it for dynclient), so BAML_REST_USE_DEBAML was inert
-// for REST traffic.
+// TypeBuilder drops) into the provider request — and a dedicated
+// de-BAML-OFF container (BAML_REST_USE_DEBAML pinned to false) must not.
+// The BuildRequest route is unconditional as of #537, so both containers
+// share the same route and the differential isolates exactly
+// BAML_REST_USE_DEBAML. This guards the gap where the production generated
+// adapter never actually emitted the de-BAML injection (codegen only wired
+// it for dynclient), so BAML_REST_USE_DEBAML was inert for REST traffic.
+//
+// De-BAML is now DEFAULT-ON, so the shared TestEnv can no longer serve as
+// the flag-OFF control (it runs native by default). Both legs therefore use
+// dedicated containers with the umbrella flag pinned explicitly — ON vs OFF,
+// never ON vs the-default — so the differential stays honest regardless of
+// the suite-wide default.
 
 // restMetadataSchema mirrors oracleBSchema in the HTTP/testutil shape:
 // field description + alias, class description (+ a class alias that must
@@ -73,8 +79,9 @@ const restDeBAMLMock = `{"title":"t","addr":{"street":"s","city":"c"},"status":"
 // TestDeBAMLRest_MetadataAppearsOnProductionPath spins a dedicated
 // container with de-BAML on, sends a metadata-bearing dynamic request, and
 // asserts the native metadata is in the captured provider body — the
-// REST-production proof that BAML_REST_USE_DEBAML is live. The shared
-// de-BAML-OFF TestEnv provides the negative leg.
+// REST-production proof that BAML_REST_USE_DEBAML is live. A second
+// dedicated container with the flag pinned OFF provides the negative leg;
+// the shared TestEnv is now default-ON and cannot serve as that control.
 func TestDeBAMLRest_MetadataAppearsOnProductionPath(t *testing.T) {
 	// The native seam exists only on the BuildRequest route (BAML >= 0.219),
 	// which is unconditional as of #537.
@@ -82,33 +89,8 @@ func TestDeBAMLRest_MetadataAppearsOnProductionPath(t *testing.T) {
 		t.Skip("Skipping: de-BAML REST seam requires the BuildRequest route (BAML >= 0.219.0)")
 	}
 
-	// --- de-BAML ON: dedicated container with the de-BAML flag ---
-	opts := matrixSetupOptions()
-	opts.RuntimeEnv = map[string]string{
-		"BAML_REST_USE_DEBAML": "true",
-	}
-
-	setupCtx, setupCancel := context.WithTimeout(context.Background(), testutil.SetupBudget(opts))
-	defer setupCancel()
-
-	env, err := testutil.Setup(setupCtx, opts)
-	if err != nil {
-		t.Fatalf("Failed to setup de-BAML dedicated env: %v", err)
-	}
-	defer func() {
-		termCtx, termCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer termCancel()
-		if err := env.Terminate(termCtx); err != nil {
-			t.Logf("dedicated env Terminate: %v", err)
-		}
-	}()
-
-	onMock := mockllm.NewClient(env.MockLLMURL)
-	onClient := testutil.NewBAMLRestClient(env.BAMLRestURL)
-	onScenario := "test-debaml-rest-on"
-	registerDeBAMLRestScenario(t, onMock, onScenario)
-
-	onBlock := restCaptureBlock(t, onClient, onMock, env.MockLLMInternal, onScenario)
+	// --- de-BAML ON: dedicated container with the flag pinned true ---
+	onBlock := captureDeBAMLRestBlock(t, "true", "test-debaml-rest-on")
 
 	// flag-ON must carry the native metadata BAML-dynamic drops, plus the
 	// canonical class reference (so the metadata check can't be satisfied
@@ -138,14 +120,14 @@ func TestDeBAMLRest_MetadataAppearsOnProductionPath(t *testing.T) {
 		t.Errorf("flag-ON REST block unexpectedly contains class alias %q (canonical names only)\n--- ON ---\n%s", "PostalAddress", onBlock)
 	}
 
-	// de-BAML-OFF differential — the BuildRequest route is unconditional
-	// (#537), so the shared TestEnv runs the SAME route as the dedicated ON
-	// container on BAML >= 0.219 (already guaranteed by the skip above).
-	// The comparison therefore isolates exactly BAML_REST_USE_DEBAML and
-	// never the route.
-	offScenario := "test-debaml-rest-off"
-	registerDeBAMLRestScenario(t, MockClient, offScenario)
-	offBlock := restCaptureBlock(t, BAMLClient, MockClient, TestEnv.MockLLMInternal, offScenario)
+	// de-BAML-OFF differential — a dedicated container with the umbrella flag
+	// pinned OFF. The BuildRequest route is unconditional (#537), so this OFF
+	// container runs the SAME route as the dedicated ON container on
+	// BAML >= 0.219 (already guaranteed by the skip above); the comparison
+	// therefore isolates exactly BAML_REST_USE_DEBAML and never the route. The
+	// flag is pinned explicitly rather than inherited from the shared TestEnv,
+	// which is now default-ON and would make this an on-vs-on comparison.
+	offBlock := captureDeBAMLRestBlock(t, "false", "test-debaml-rest-off")
 
 	for _, tok := range nativeMetadata {
 		if strings.Contains(offBlock, tok.token) {
@@ -163,6 +145,46 @@ func TestDeBAMLRest_MetadataAppearsOnProductionPath(t *testing.T) {
 	if strings.Contains(offBlock, "PostalAddress") {
 		t.Errorf("flag-OFF REST block unexpectedly contains class alias %q\n--- OFF ---\n%s", "PostalAddress", offBlock)
 	}
+}
+
+// captureDeBAMLRestBlock spins a dedicated baml-rest container with the
+// de-BAML umbrella flag pinned explicitly to flagValue ("true" or "false"),
+// registers the REST scenario on that container's own mock, drives a
+// metadata-bearing dynamic request, and returns the first message's rendered
+// output_format block from the captured provider body.
+//
+// The explicit RuntimeEnv pin is load-bearing on BOTH legs now that de-BAML
+// is default-ON: the shared TestEnv is no longer a flag-OFF control, so each
+// leg gets its own container with the flag set to a known value. The
+// container is torn down via t.Cleanup.
+func captureDeBAMLRestBlock(t *testing.T, flagValue, scenarioID string) string {
+	t.Helper()
+
+	opts := matrixSetupOptions()
+	opts.RuntimeEnv = map[string]string{
+		bamlutils.EnvUseDeBAML: flagValue,
+	}
+
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), testutil.SetupBudget(opts))
+	defer setupCancel()
+
+	env, err := testutil.Setup(setupCtx, opts)
+	if err != nil {
+		t.Fatalf("Failed to setup dedicated de-BAML=%s env: %v", flagValue, err)
+	}
+	t.Cleanup(func() {
+		termCtx, termCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer termCancel()
+		if err := env.Terminate(termCtx); err != nil {
+			t.Logf("dedicated env (de-BAML=%s) Terminate: %v", flagValue, err)
+		}
+	})
+
+	mock := mockllm.NewClient(env.MockLLMURL)
+	client := testutil.NewBAMLRestClient(env.BAMLRestURL)
+	registerDeBAMLRestScenario(t, mock, scenarioID)
+
+	return restCaptureBlock(t, client, mock, env.MockLLMInternal, scenarioID)
 }
 
 func registerDeBAMLRestScenario(t *testing.T, client *mockllm.Client, scenarioID string) {

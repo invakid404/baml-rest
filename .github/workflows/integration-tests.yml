@@ -481,28 +481,28 @@ jobs:
         # direct in-process worker path.
         run: go test -tags=integration -v -count=1 -p 1 -timeout 40m ./integration/...
 
-  integration-tests-debaml:
+  integration-tests-debaml-off:
     needs: [get-latest-version, warm-images]
     runs-on: ubuntu-latest
-    # INFORMATIONAL, NON-BLOCKING arm. This job runs the existing integration
-    # suite end-to-end with the whole shared TestEnv flipped onto the de-BAML
-    # native dynamic response-coercion path (BAML_REST_USE_DEBAML=true), to
-    # OBSERVE which integration tests diverge under de-BAML. It is expected to
-    # be RED while de-BAML parity is still landing, so:
-    #   - `continue-on-error: true` lets the whole workflow still conclude green
-    #     for mergeability while this job's failing command/test output stays
-    #     visible in its own distinct log stream; and
+    # DISABLE-PATH arm. De-BAML is now default-ON, so the normal integration
+    # matrix already IS the flag-on suite. This job instead runs the whole
+    # shared TestEnv with de-BAML explicitly DISABLED (BAML_REST_USE_DEBAML=false)
+    # to validate the disable path — pure BAML, BAML-as-today — stays intact
+    # while the umbrella flag remains an operator escape hatch. It is expected
+    # to be GREEN (pure BAML is the long-standing baseline), but is kept
+    # NON-BLOCKING for now:
+    #   - `continue-on-error: true` keeps the job off the merge-blocking path
+    #     while its command/test output stays visible in its own log stream; and
     #   - this job is intentionally NOT added to required status checks /
-    #     branch protection. Do not promote it to blocking until de-BAML parity
-    #     is intentionally graduated from informational.
-    # Fixes for whatever this arm reveals are separate follow-up PRs, never here.
+    #     branch protection. Promote it to blocking in a follow-up once the
+    #     disable path is intentionally graduated to a required gate.
     continue-on-error: true
     # Same outer backstop as the other light cells: step timeout-minutes (45m,
     # below) bounds the go-test step; this job cap = step (45m) + a realistic
     # pre-test budget (~10m for checkout + Go setup + warm-image load). See #420.
     timeout-minutes: 55
     strategy:
-      # Single-cell today, but keep fail-fast off so adding an OFF/ON unary
+      # Single-cell today, but keep fail-fast off so adding a unary OFF/ON
       # pair later never masks one cell's failure behind another's.
       fail-fast: false
       matrix:
@@ -553,7 +553,7 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Run Integration Tests (de-BAML, BAML ${{ needs.get-latest-version.outputs.latest }}, unary=${{ matrix.unary-server }}, http-client=auto)
+      - name: Run Integration Tests (de-BAML OFF, BAML ${{ needs.get-latest-version.outputs.latest }}, unary=${{ matrix.unary-server }}, http-client=auto)
         # Step timeout (45m) and watchdog (42m) share the go-test origin;
         # watchdog fires 3m before the step is killed. #420
         timeout-minutes: 45
@@ -561,12 +561,13 @@ jobs:
           BAML_VERSION: ${{ needs.get-latest-version.outputs.latest }}
           UNARY_SERVER: ${{ matrix.unary-server }}
           BAML_REST_HTTP_CLIENT: auto
-          # The umbrella switch under test: flips the WHOLE shared TestEnv onto
-          # the de-BAML native dynamic response-coercion path. Forwarded into
-          # the baml-rest container by testutil.buildContainerEnv (the single
-          # env chokepoint), so cmd/serve and the subprocess cmd/worker both
-          # read it. "true" matches the existing dedicated de-BAML test.
-          BAML_REST_USE_DEBAML: "true"
+          # The umbrella switch under test: explicitly DISABLES de-BAML for the
+          # WHOLE shared TestEnv, validating the disable path now that de-BAML is
+          # default-ON. Forwarded into the baml-rest container by
+          # testutil.buildContainerEnv (the single env chokepoint), so cmd/serve
+          # and the subprocess cmd/worker both read it. "false" is a recognized
+          # falsy token, so the server resolves de-BAML OFF (pure BAML).
+          BAML_REST_USE_DEBAML: "false"
           # Step timeout (45m) minus 3m margin.
           BAML_REST_SUITE_WATCHDOG: 42m
           # CI-only: skip the testcontainers Ryuk reaper so setup doesn't
@@ -584,12 +585,14 @@ jobs:
           # cache), since failed/partial builds are the real residue source.
           BAMLFUZZ_STATIC_DOCKER_PRUNE_ON_FAILURE: "1"
         # Same subprocess command as the versioned/light integration cells for
-        # comparability. The `-skip` excludes the de-BAML differential tests
-        # that use the shared TestEnv as a flag-OFF control: under this global
-        # flag-ON job that OFF control is no longer off, so they fail for a
-        # HARNESS reason, not a de-BAML response-coercion parity regression.
-        # Every other test runs so the arm's RED signal is genuine parity.
-        run: go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 40m -skip '^TestDeBAMLRest_MetadataAppearsOnProductionPath$' ./integration/...
+        # comparability. No `-skip`: with the shared TestEnv explicitly de-BAML
+        # OFF, TestDeBAMLRest_MetadataAppearsOnProductionPath runs fine — it
+        # already pins BOTH its own legs (a dedicated ON container and a
+        # dedicated OFF container) rather than leaning on the shared TestEnv, so
+        # the suite-wide flag never makes its comparison on-vs-on. The full
+        # suite therefore runs with de-BAML disabled, validating the pure-BAML
+        # disable path end-to-end.
+        run: go test -tags=integration,subprocess -v -count=1 -p 1 -timeout 40m ./integration/...
 
   build-baml-cffi:
     needs: warm-images

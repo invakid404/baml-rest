@@ -672,16 +672,17 @@ const HTTPClientSelectorEnvVar = "BAML_REST_HTTP_CLIENT"
 // never overridden by the host env.
 //
 // The host BAML_REST_USE_DEBAML umbrella switch is forwarded the same way, for
-// the same reason: the informational integration-tests-debaml CI arm sets it on
-// the host go-test process to flip the WHOLE shared TestEnv onto the de-BAML
-// native dynamic response-coercion path. Without forwarding through this single
-// chokepoint the flag would never reach the baml-rest container (cmd/serve and
-// the subprocess cmd/worker both read it from the container env), so the arm
-// would be inert — the shared suite would keep running de-BAML off. Copied
-// before the RuntimeEnv loop so a dedicated test's explicit
-// opts.RuntimeEnv[BAML_REST_USE_DEBAML] pin (e.g. dynamic_debaml_rest_test.go)
-// still wins over the host value; left unset the var stays absent, preserving
-// the default-off behavior.
+// the same reason: the integration-tests-debaml-off CI arm sets it to false on
+// the host go-test process to flip the WHOLE shared TestEnv OFF the de-BAML
+// native path (validating the disable path — pure BAML). Without forwarding
+// through this single chokepoint the flag would never reach the baml-rest
+// container (cmd/serve and the subprocess cmd/worker both read it from the
+// container env), so the arm would be inert — the shared suite would keep
+// running the default. Copied before the RuntimeEnv loop so a dedicated test's
+// explicit opts.RuntimeEnv[BAML_REST_USE_DEBAML] pin (e.g.
+// dynamic_debaml_rest_test.go) still wins over the host value; left unset the
+// var stays absent, so the container inherits the server default, which is
+// de-BAML ON as of the default-on flip.
 //
 // Note: the BuildRequest route is unconditional as of #537, so there is no
 // BAML_REST_USE_BUILD_REQUEST forwarding here — the route is always attempted
@@ -700,7 +701,8 @@ func buildContainerEnv(opts SetupOptions) map[string]string {
 	// Forward the host de-BAML umbrella switch when set (non-empty), same
 	// chokepoint + precedence as the http-client selector: copied before the
 	// RuntimeEnv loop so an explicit RuntimeEnv pin still overrides it, and
-	// left absent when unset so the container stays de-BAML off by default.
+	// left absent when unset so the container inherits the server default
+	// (de-BAML ON as of the default-on flip).
 	if v := os.Getenv(bamlutils.EnvUseDeBAML); v != "" {
 		env[bamlutils.EnvUseDeBAML] = v
 	}

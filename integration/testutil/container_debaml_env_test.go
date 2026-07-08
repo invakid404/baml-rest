@@ -9,12 +9,13 @@ import (
 )
 
 // TestBuildContainerEnvDeBAMLSelector is the regression guard for the
-// informational integration-tests-debaml CI arm. That arm sets
-// BAML_REST_USE_DEBAML on the host go-test process to flip the WHOLE shared
-// TestEnv onto the de-BAML native dynamic response-coercion path. The harness
-// starts baml-rest via testcontainers with an explicit Env map, so unless the
-// flag is forwarded into that map the arm is inert: the shared suite keeps
-// running de-BAML off and the arm is a false signal.
+// integration-tests-debaml-off CI arm. De-BAML is now default-ON, so that arm
+// sets BAML_REST_USE_DEBAML=false on the host go-test process to flip the WHOLE
+// shared TestEnv OFF the de-BAML native dynamic response-coercion path,
+// validating the disable path. The harness starts baml-rest via testcontainers
+// with an explicit Env map, so unless the flag is forwarded into that map the
+// arm is inert: the shared suite keeps running the server default (de-BAML ON)
+// and the arm is a false signal.
 //
 // Forwarding lives in buildContainerEnv — the single chokepoint every
 // baml-rest container's env passes through — with the SAME precedence as the
@@ -54,9 +55,10 @@ func TestBuildContainerEnvDeBAMLSelector(t *testing.T) {
 
 	t.Run("explicit RuntimeEnv pin wins over the host value", func(t *testing.T) {
 		// The dedicated de-BAML differential (dynamic_debaml_rest_test.go) pins
-		// the flag ON via RuntimeEnv for its own container; that must win even
-		// under the arm's global host BAML_REST_USE_DEBAML, and — symmetrically —
-		// a test that pins it OFF must be able to override a host ON.
+		// the flag explicitly via RuntimeEnv for its own containers (both the ON
+		// and OFF legs); that pin must win even under a global host
+		// BAML_REST_USE_DEBAML, in either direction. Here a host ON is overridden
+		// by an OFF pin.
 		t.Setenv(bamlutils.EnvUseDeBAML, "true")
 
 		opts := SetupOptions{RuntimeEnv: map[string]string{bamlutils.EnvUseDeBAML: "false"}}
@@ -68,13 +70,18 @@ func TestBuildContainerEnvDeBAMLSelector(t *testing.T) {
 		}
 	})
 
-	t.Run("host unset leaves the flag absent (default de-BAML off)", func(t *testing.T) {
+	t.Run("host unset leaves the flag absent (container inherits server default, now de-BAML ON)", func(t *testing.T) {
+		// With the host var unset/empty the forwarding must NOT inject the key,
+		// so the container inherits the server default resolved by
+		// DeBAMLConfigFromEnv — which is now de-BAML ON (default-on). Injecting a
+		// value here would override that default and defeat the disable-only
+		// contract.
 		t.Setenv(bamlutils.EnvUseDeBAML, "")
 
 		env := buildContainerEnv(SetupOptions{})
 
 		if _, ok := env[bamlutils.EnvUseDeBAML]; ok {
-			t.Fatalf("container env unexpectedly contains %s when host is unset (breaks default-off)",
+			t.Fatalf("container env unexpectedly contains %s when host is unset — the container must inherit the server default (now de-BAML ON), not a host-pinned value",
 				bamlutils.EnvUseDeBAML)
 		}
 	})
