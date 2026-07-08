@@ -66,10 +66,23 @@ const (
 // intended kind. The Other rule catches any single character that no other
 // rule consumed; it lets the parser walk past unrecognised punctuation
 // inside opaque Other blocks without aborting.
+//
+// The RawString rule matches BAML's 1-to-5-hash raw-string delimiters
+// (`#"..."#` through `#####"..."#####`), tried longest-first so a shorter
+// delimiter cannot truncate a longer one. Widening from the previous
+// single-hash-only rule is needed because constraint expressions and prompt
+// bodies use multi-hash delimiters to embed `"#` sequences verbatim (BAML's
+// string-literal grammar, datamodel.pest:198+). RE2 has no backreferences,
+// so the five hash counts are spelled out as ordered alternatives; the
+// content class stays non-greedy so it stops at the first matching closer.
+// The punctuation class already covers every character the type grammar
+// needs (`<>`, `[]`, `.`, `?`, `|`, `@`, `,`, `:`), and dotted attribute
+// names (`stream.done`) are assembled in-grammar from Ident + `.` tokens,
+// so no additional punctuation rule is required for slice-1 type parsing.
 var bamlLexer = lexer.MustSimple([]lexer.SimpleRule{
 	{Name: tokComment, Pattern: `//[^\n]*`},
 	{Name: tokWS, Pattern: `\s+`},
-	{Name: tokRawString, Pattern: `#"[\s\S]*?"#`},
+	{Name: tokRawString, Pattern: `#####"[\s\S]*?"#####|####"[\s\S]*?"####|###"[\s\S]*?"###|##"[\s\S]*?"##|#"[\s\S]*?"#`},
 	{Name: tokString, Pattern: `"(?:\\.|[^"\\])*"`},
 	{Name: tokEnvRef, Pattern: `env\.[A-Za-z_][A-Za-z0-9_]*`},
 	{Name: tokNumber, Pattern: `-?\d+(?:\.\d+)?`},
@@ -117,13 +130,17 @@ var fieldSubParser = participle.MustBuild[Field](
 	participle.Elide(tokComment, tokWS),
 )
 
-// identType / punctType / rawStringType cache the token type IDs for the
-// kinds the Parseable hooks inspect. Looked up once at init via the lexer's
-// Symbols() table.
+// identType / punctType / rawStringType / etc. cache the token type IDs for
+// the kinds the Parseable hooks and type-grammar helpers inspect. Looked up
+// once at init via the lexer's Symbols() table.
 var (
 	identType     = bamlLexer.Symbols()[tokIdent]
 	punctType     = bamlLexer.Symbols()[tokPunct]
 	rawStringType = bamlLexer.Symbols()[tokRawString]
+	stringType    = bamlLexer.Symbols()[tokString]
+	numberType    = bamlLexer.Symbols()[tokNumber]
+	envRefType    = bamlLexer.Symbols()[tokEnvRef]
+	arrowType     = bamlLexer.Symbols()[tokArrow]
 )
 
 // ParseBytes parses a .baml document from a byte slice. filename is used for
@@ -133,7 +150,7 @@ func ParseBytes(filename string, data []byte) (*File, error) {
 	if err != nil {
 		return nil, err
 	}
-	normalizeFile(f)
+	normalizeFile(f, data)
 	return f, nil
 }
 
@@ -261,9 +278,13 @@ func (fn *FunctionBlock) Parse(lex *lexer.PeekingLexer) error {
 		name = lex.Next().Value
 	}
 
-	// Scan tokens up to (but not consuming) the opening `{` or EOF,
-	// recording whether `(` appeared on the same source line as the
-	// `function` keyword.
+	// Gate (unchanged config-parity contract): a FunctionBlock requires a
+	// `(` on the same source line as the `function` keyword before the body
+	// `{`. Declarations without it drop to Item.Other, matching the
+	// introspect line-walker's posture. Determine the gate by scanning to
+	// `{`/EOF from a checkpoint, then rewind to parse the signature precisely
+	// so Params/Return can be captured without changing the gate behaviour.
+	cp := lex.MakeCheckpoint()
 	sawParenSameLine := false
 	for {
 		t := lex.Peek()
@@ -280,6 +301,27 @@ func (fn *FunctionBlock) Parse(lex *lexer.PeekingLexer) error {
 		// catches the leading `function` token and any following balanced
 		// body. The branch's lexer state is discarded by participle.
 		return participle.NextMatch
+	}
+	lex.LoadCheckpoint(cp)
+
+	// Parse the signature: `( named-args )` then optional `-> return-type`.
+	// The named-argument list and return type feed the P3 type-system AST;
+	// the brace body's Fields (consumed below) are unchanged. Any tokens
+	// between the signature and the body that we don't recognise are skipped
+	// defensively so the body still parses (laxer-than-BAML; #586).
+	if peekPunct(lex, "(") {
+		fn.Params = parseParamList(lex)
+	}
+	if lex.Peek().Type == arrowType {
+		lex.Next() // consume "->"
+		fn.Return = parseTypeChainFromLexer(lex)
+	}
+	for {
+		t := lex.Peek()
+		if t.EOF() || isPunctTok(t, "{") {
+			break
+		}
+		lex.Next()
 	}
 
 	if peekPunct(lex, "{") {
@@ -317,7 +359,13 @@ func (tb *TemplateBlock) Parse(lex *lexer.PeekingLexer) error {
 }
 
 // Parse implements participle.Parseable for TypeBlock. Matches
-// `(class | enum | test) Name? { ... }`. The body is discarded.
+// `(class | enum | test) Name? named_args? { ... }`. For class/enum the body
+// is parsed into members + block attributes; for test the body is
+// balanced-skipped (tests are not schema definitions), preserving the prior
+// metadata-only behaviour. In all cases the block is consumed up to and
+// including its matching `}`, so the token stream after the block is
+// identical to the prior skip-only parser — keeping config-golden parsing of
+// surrounding items unchanged.
 func (tb *TypeBlock) Parse(lex *lexer.PeekingLexer) error {
 	t := lex.Peek()
 	if t.EOF() || t.Type != identType {
@@ -333,9 +381,21 @@ func (tb *TypeBlock) Parse(lex *lexer.PeekingLexer) error {
 	if t := lex.Peek(); t.Type == identType {
 		tb.Name = lex.Next().Value
 	}
-	if peekPunct(lex, "{") {
-		skipBalanced(lex, "{", "}")
+	// Optional named-argument list: `class Foo(x: int) { ... }`. Parsed for
+	// class/enum only (tests have no arg list); retained but not yet
+	// consumed for schema build.
+	if tb.Keyword != "test" && peekPunct(lex, "(") {
+		tb.Args = parseParamList(lex)
 	}
+	if !peekPunct(lex, "{") {
+		return nil
+	}
+	if tb.Keyword == "test" {
+		skipBalanced(lex, "{", "}")
+		return nil
+	}
+	lex.Next() // consume "{"
+	parseTypeMembersUntilClose(lex, tb)
 	return nil
 }
 
@@ -353,6 +413,31 @@ func (ta *TypeAlias) Parse(lex *lexer.PeekingLexer) error {
 	if t := lex.Peek(); t.Type == identType {
 		ta.Name = lex.Next().Value
 	}
+
+	// `type Name = <field_type_with_attr>`. When the `=` is present, parse
+	// the RHS as a type expression; on parse failure fall back to the prior
+	// line-position-terminated scan so a RHS the type grammar cannot model
+	// does not derail parsing of the items that follow.
+	if peekPunct(lex, "=") {
+		lex.Next() // consume "="
+		cp := lex.MakeCheckpoint()
+		if te := parseTypeChainFromLexer(lex); te != nil && lex.RawCursor() != cp.RawCursor() {
+			ta.Expr = te
+			// Alias-level attributes (BAML permits `@check`/`@assert` on
+			// aliases). Trailing attributes fold onto the RHS type via the
+			// type grammar; any remaining field attributes attach here.
+			for isPunctTok(lex.Peek(), "@") && !peekDoubleAt(lex) {
+				a := &Attribute{}
+				if err := a.Parse(lex); err != nil {
+					break
+				}
+				ta.Attributes = append(ta.Attributes, a)
+			}
+			return nil
+		}
+		lex.LoadCheckpoint(cp)
+	}
+
 	for {
 		t := lex.Peek()
 		if t.EOF() {
@@ -452,6 +537,223 @@ func parseBlockFieldsUntilClose(lex *lexer.PeekingLexer) []*Field {
 }
 
 // -----------------------------------------------------------------------
+// Type-system body parsing (P3 slice 1, #586).
+// -----------------------------------------------------------------------
+
+// parseParamList parses a BAML named-argument list `( name (: Type)? , ... )`
+// from the current lexer position (which must be at `(`). Newlines are
+// elided by the lexer, so commas alone delimit parameters; the closing `)`
+// is consumed. Each parameter's type is parsed via the declarative type
+// grammar. Unrecognised tokens inside the list are skipped defensively.
+func parseParamList(lex *lexer.PeekingLexer) []*Param {
+	if !peekPunct(lex, "(") {
+		return nil
+	}
+	lex.Next() // consume "("
+	var params []*Param
+	for {
+		t := lex.Peek()
+		if t.EOF() {
+			return params
+		}
+		if isPunctTok(t, ")") {
+			lex.Next()
+			return params
+		}
+		if isPunctTok(t, ",") {
+			lex.Next()
+			continue
+		}
+		if t.Type == identType {
+			nameTok := lex.Next()
+			p := &Param{Name: nameTok.Value, Span: tokSpan(nameTok)}
+			if peekPunct(lex, ":") {
+				lex.Next() // consume ":"
+				p.Type = parseTypeChainFromLexer(lex)
+			}
+			params = append(params, p)
+			continue
+		}
+		// Unrecognised token inside the arg list; skip defensively.
+		lex.Next()
+	}
+}
+
+// parseTypeMembersUntilClose iterates class/enum members from inside an
+// already-opened brace body until the matching `}` (which it consumes) or
+// EOF. It mirrors skipBalanced's end position exactly — every iteration
+// consumes a member, a block attribute, a balanced nested `{...}`, or a
+// single stray token — so the token stream after the block is identical to
+// the prior skip-only behaviour.
+func parseTypeMembersUntilClose(lex *lexer.PeekingLexer, tb *TypeBlock) {
+	for {
+		t := lex.Peek()
+		if t.EOF() {
+			return
+		}
+		if isPunctTok(t, "}") {
+			lex.Next()
+			return
+		}
+		if isPunctTok(t, "@") {
+			// Block attribute `@@name(...)`. A lone field attribute `@...`
+			// with no preceding member is skipped defensively.
+			if a := parseBlockAttribute(lex); a != nil {
+				tb.Attributes = append(tb.Attributes, a)
+				continue
+			}
+			lex.Next()
+			continue
+		}
+		if isPunctTok(t, "{") {
+			// Nested brace block that is not a leading-`function` method
+			// (e.g. a type_builder block or a stray block). Balanced-skip and
+			// flag the block unsupported so later builder slices decline it.
+			// LAX-VS-BAML: such blocks are not modelled (#586).
+			tb.HasUnsupportedContent = true
+			skipBalanced(lex, "{", "}")
+			continue
+		}
+		if t.Type == identType {
+			// expr_fn / class method. BAML v0.223's type_expression_contents
+			// prioritises expr_fn ahead of type_expression, and expr_fn is
+			// spelled with a leading `function` keyword. Detect and DECLINE it
+			// BEFORE parseTypeMember runs, so the method header
+			// (`function double() -> int`) is never misread into Fields. The
+			// body is balanced-skipped and the method name is recorded on
+			// Methods; nothing is appended to Fields.
+			// LAX-VS-BAML: methods are declined, not modelled (#586).
+			if t.Value == "function" {
+				declineMethod(lex, tb)
+				continue
+			}
+			cp := lex.MakeCheckpoint()
+			m := parseTypeMember(lex)
+			if m != nil && lex.RawCursor() != cp.RawCursor() {
+				// Fail-closed on a typeless CLASS field. Class fields always
+				// carry a type; only enum values omit it (Type == nil). A
+				// class member with no parsed type is malformed/unsupported
+				// (BAML rejects it at validation) — mark it Unsupported rather
+				// than emitting a silent enum-like nil-type field, so later
+				// builder slices decline it. Enum values keep Type == nil.
+				// LAX-VS-BAML: accepted at parse then declined (#586).
+				if tb.Keyword == "class" && m.Type == nil {
+					m.Type = &TypeExpr{
+						Kind:   KindUnsupported,
+						Reason: "class field has no type",
+						Span:   m.Span,
+					}
+					tb.HasUnsupportedContent = true
+				}
+				tb.Fields = append(tb.Fields, m)
+				continue
+			}
+			// Defensive against a degenerate no-progress parse.
+			lex.LoadCheckpoint(cp)
+			lex.Next()
+			continue
+		}
+		// Stray punctuation / other token; skip defensively.
+		lex.Next()
+	}
+}
+
+// declineMethod consumes a class/enum method (`expr_fn`) — `function NAME(
+// args ) -> ret { body }` — from the current lexer position (which must be
+// at the `function` keyword) WITHOUT appending anything to Fields. It records
+// the method name on tb.Methods, sets tb.HasUnsupportedContent, and
+// balanced-skips the method body. A type never contains `{`, so the first
+// `{` after the signature is unambiguously the body opener; if no body is
+// found before the block's closing `}` or EOF (malformed input BAML would
+// reject), it stops without consuming that `}`. The end position matches the
+// prior parser's, so surrounding items still parse identically.
+func declineMethod(lex *lexer.PeekingLexer, tb *TypeBlock) {
+	lex.Next() // consume "function"
+	name := ""
+	if t := lex.Peek(); t.Type == identType {
+		name = lex.Next().Value
+	}
+	for {
+		t := lex.Peek()
+		if t.EOF() || isPunctTok(t, "}") {
+			break
+		}
+		if isPunctTok(t, "{") {
+			skipBalanced(lex, "{", "}")
+			break
+		}
+		lex.Next()
+	}
+	tb.HasUnsupportedContent = true
+	if name != "" {
+		tb.Methods = append(tb.Methods, name)
+	}
+}
+
+// parseTypeMember parses one class field or enum value. The caller ensures
+// the next token is an identifier (the member name). A type expression is
+// parsed only when the next token is on the SAME source line as the name and
+// can begin a type — mirroring BAML, where a type_expression's field_type is
+// newline-terminated, so an enum value on its own line gets no type while a
+// class field (`age int`) does. Field attributes (`@...`, not `@@...`) after
+// the name/type attach to the member; a `@@` block attribute is left for the
+// enclosing member loop.
+func parseTypeMember(lex *lexer.PeekingLexer) *TypeMember {
+	nameTok := lex.Next() // identifier (caller-guaranteed)
+	m := &TypeMember{Name: nameTok.Value, Span: tokSpan(nameTok)}
+
+	if nt := lex.Peek(); !nt.EOF() && nt.Pos.Line == nameTok.Pos.Line && canStartType(nt) {
+		cp := lex.MakeCheckpoint()
+		if te := parseTypeChainFromLexer(lex); te != nil && lex.RawCursor() != cp.RawCursor() {
+			m.Type = te
+		} else {
+			lex.LoadCheckpoint(cp)
+		}
+	}
+
+	for isPunctTok(lex.Peek(), "@") && !peekDoubleAt(lex) {
+		a := &Attribute{}
+		if err := a.Parse(lex); err != nil {
+			break
+		}
+		m.Attributes = append(m.Attributes, a)
+	}
+	return m
+}
+
+// canStartType reports whether t can begin a type expression: an identifier
+// (named type / primitive / map), a quoted string or numeric literal type,
+// or a `(` opening a group/tuple/parenthesized type.
+func canStartType(t *lexer.Token) bool {
+	if t.EOF() {
+		return false
+	}
+	switch t.Type {
+	case identType, stringType, numberType:
+		return true
+	}
+	return isPunctTok(t, "(")
+}
+
+// peekDoubleAt reports whether the next two tokens are `@` `@` (a block
+// attribute), without consuming anything.
+func peekDoubleAt(lex *lexer.PeekingLexer) bool {
+	cp := lex.MakeCheckpoint()
+	if !peekPunct(lex, "@") {
+		return false
+	}
+	lex.Next()
+	res := peekPunct(lex, "@")
+	lex.LoadCheckpoint(cp)
+	return res
+}
+
+// tokSpan returns the source Span covering a single token.
+func tokSpan(t *lexer.Token) Span {
+	return Span{Start: t.Pos.Offset, End: tokenEnd(t), Line: t.Pos.Line, Col: t.Pos.Column}
+}
+
+// -----------------------------------------------------------------------
 // Helpers shared by Parseable hooks.
 // -----------------------------------------------------------------------
 
@@ -524,13 +826,13 @@ func isTopLevelKeyword(s string) bool {
 // String literals retain only the bytes between the quotes, EnvRef values
 // drop the leading `env.` prefix, RawString values drop the `#"` / `"#`
 // delimiters. No escape processing is applied.
-func normalizeFile(f *File) {
+func normalizeFile(f *File, data []byte) {
 	for _, item := range f.Items {
-		normalizeItem(item)
+		normalizeItem(item, data)
 	}
 }
 
-func normalizeItem(it *Item) {
+func normalizeItem(it *Item, data []byte) {
 	switch {
 	case it.Generator != nil:
 		normalizeFields(it.Generator.Fields)
@@ -538,8 +840,59 @@ func normalizeItem(it *Item) {
 		normalizeFields(it.Client.Fields)
 	case it.Function != nil:
 		normalizeFields(it.Function.Fields)
+		for _, p := range it.Function.Params {
+			normalizeTypeExpr(p.Type, data)
+		}
+		normalizeTypeExpr(it.Function.Return, data)
 	case it.RetryPolicy != nil:
 		normalizeFields(it.RetryPolicy.Fields)
+	case it.TypeBlock != nil:
+		for _, m := range it.TypeBlock.Fields {
+			normalizeTypeExpr(m.Type, data)
+			normalizeAttributes(m.Attributes, data)
+		}
+		for _, p := range it.TypeBlock.Args {
+			normalizeTypeExpr(p.Type, data)
+		}
+		normalizeAttributes(it.TypeBlock.Attributes, data)
+	case it.TypeAlias != nil:
+		normalizeTypeExpr(it.TypeAlias.Expr, data)
+		normalizeAttributes(it.TypeAlias.Attributes, data)
+	}
+}
+
+// normalizeTypeExpr recursively fills attribute raw-argument slices and
+// normalises structured attribute-argument Values across a type expression
+// and all its children.
+func normalizeTypeExpr(t *TypeExpr, data []byte) {
+	if t == nil {
+		return
+	}
+	normalizeAttributes(t.Attributes, data)
+	normalizeTypeExpr(t.Elem, data)
+	normalizeTypeExpr(t.Key, data)
+	normalizeTypeExpr(t.Value, data)
+	normalizeTypeExpr(t.Inner, data)
+	for _, v := range t.Variants {
+		normalizeTypeExpr(v, data)
+	}
+	for _, i := range t.Items {
+		normalizeTypeExpr(i, data)
+	}
+}
+
+// normalizeAttributes resolves each attribute's raw-argument source slice
+// (captured as byte offsets during parse — the Parseable hook only sees the
+// lexer, not the source) and normalises its best-effort structured Values so
+// they follow the same delimiter-stripped contract as config Values.
+func normalizeAttributes(attrs []*Attribute, data []byte) {
+	for _, a := range attrs {
+		if a.HasParens && a.argStart >= 0 && a.argEnd >= a.argStart && a.argEnd <= len(data) {
+			a.RawArgs = string(data[a.argStart:a.argEnd])
+		}
+		for _, v := range a.Args {
+			normalizeValue(v)
+		}
 	}
 }
 
@@ -586,11 +939,22 @@ func stripStringQuotes(s string) string {
 	return s
 }
 
-// stripRawString removes the `#"` opener and `"#` closer from a RawString
-// token, returning the content verbatim.
+// stripRawString removes the raw-string delimiters, returning the content
+// verbatim. It handles BAML's 1-to-5-hash delimiters: the opener is N `#`
+// then `"`, the closer is `"` then N `#`, so N+1 bytes are trimmed from
+// each end. Falls back to returning s unchanged if the shape is unexpected.
 func stripRawString(s string) string {
-	if len(s) >= 4 && s[0] == '#' && s[1] == '"' && s[len(s)-2] == '"' && s[len(s)-1] == '#' {
-		return s[2 : len(s)-2]
+	n := 0
+	for n < len(s) && s[n] == '#' {
+		n++
+	}
+	if n == 0 || n >= len(s) || s[n] != '"' {
+		return s
+	}
+	// Trim N hashes + 1 quote from the front and 1 quote + N hashes from the
+	// back. Guard against a token too short to contain both delimiters.
+	if len(s) >= 2*(n+1) {
+		return s[n+1 : len(s)-(n+1)]
 	}
 	return s
 }

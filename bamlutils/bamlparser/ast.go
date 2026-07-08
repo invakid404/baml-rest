@@ -66,10 +66,14 @@ type ClientBlock struct {
 	Fields    []*Field
 }
 
-// FunctionBlock corresponds to `function Name(...) -> Type { ... }`. Only the
-// declared name is preserved; the signature between the parentheses and the
-// return type are discarded by the parser because no downstream consumer in
-// baml-rest depends on them.
+// FunctionBlock corresponds to `function Name(...) -> Type { ... }`.
+//
+// Config extraction reads only Name and Fields (the brace-body key/value
+// entries). Those are unchanged from the prior parser. As of de-BAML P3
+// slice 1 (#586) the parser additionally retains the parsed signature:
+// Params holds the named arguments and Return holds the parsed return type
+// expression (nil when no `-> Type` is present). These type-system fields
+// are not yet consumed downstream; they feed later descriptor-build slices.
 //
 // Parsing is implemented via Parseable in bamlparser.go because grammar
 // tags cannot express the same-line `(` requirement that distinguishes
@@ -78,6 +82,11 @@ type ClientBlock struct {
 type FunctionBlock struct {
 	Name   string
 	Fields []*Field
+
+	// Params and Return are the parsed signature (P3 slice 1). Return is
+	// nil when the declaration omits `-> Type`.
+	Params []*Param
+	Return *TypeExpr
 }
 
 // RetryPolicyBlock corresponds to `retry_policy Name { ... }`.
@@ -104,31 +113,68 @@ type TemplateBlock struct {
 }
 
 // TypeBlock corresponds to `class Name { ... }`, `enum Name { ... }`, or
-// `test Name { ... }` declarations — leading keyword + name + brace body
-// shapes that baml-rest doesn't model semantically. Keyword carries the
-// leading word (e.g. "class", "enum", "test") for callers that want to
-// differentiate; Name carries the declaration name. The brace body is
-// consumed during parsing and not retained; consumers that need a
-// verbatim copy must read the source bytes directly.
+// `test Name { ... }` declarations. Keyword carries the leading word
+// ("class", "enum", or "test") and also serves as the block kind; Name
+// carries the declaration name.
 //
-// Parsing is implemented via Parseable in bamlparser.go because the body
-// is discarded — there is no AST field to hold the captured fields, so
-// declarative tags cannot express the metadata-only contract.
+// As of de-BAML P3 slice 1 (#586) class and enum bodies are parsed instead
+// of discarded:
+//   - Fields holds the members. For a class each member has a non-nil Type;
+//     for an enum each value has Type == nil (matching BAML's grammar where
+//     the field_type_chain is optional and enum values omit it).
+//   - Args holds a named-argument list (`class Foo(x: int) { ... }`), parsed
+//     but not yet used for schema build.
+//   - Attributes holds block attributes (`@@dynamic`, `@@assert`, ...).
+//   - Methods holds the names of any class methods (`expr_fn`,
+//     `function name(...) -> ... { ... }`) declared in the body. BAML's
+//     grammar prioritises expr_fn ahead of type_expression, so a method is
+//     detected and DECLINED before it can be misread as a member: its body
+//     is balanced-skipped and nothing is appended to Fields. Recording the
+//     name (rather than a full stub) is enough for later builder slices to
+//     decline the block with a useful diagnostic.
+//   - HasUnsupportedContent is set when the body contained a shape the
+//     slice-1 member parser could not model precisely — a method (see
+//     Methods) or any other nested `{ }` block (type_builder, stray blocks),
+//     which are balanced-skipped; later builder slices decline such blocks.
+//
+// `test` blocks are NOT static schema definitions; their body is
+// balanced-skipped and Fields/Args/Attributes/Methods are left empty,
+// preserving the prior metadata-only behaviour for tests.
+//
+// Parsing is implemented via Parseable in bamlparser.go because member
+// boundaries are newline-terminated in BAML, but the shared lexer elides
+// newlines; the hook uses token line positions to decide where a member's
+// type ends and the next member begins — something struct tags cannot
+// express. The type expressions themselves are parsed via the declarative
+// participle type grammar (typeparse.go).
 type TypeBlock struct {
-	Keyword string
-	Name    string
+	Keyword    string
+	Name       string
+	Args       []*Param
+	Fields     []*TypeMember
+	Attributes []*Attribute
+	Methods    []string
+
+	HasUnsupportedContent bool
 }
 
 // TypeAlias corresponds to `type Name = expression`. Name carries the alias
-// name; the right-hand-side expression is consumed during parsing and not
-// retained on the AST.
+// name. As of de-BAML P3 slice 1 (#586) the right-hand side is parsed:
+// Expr holds the parsed type expression and Attributes holds any attributes
+// attached to the RHS (BAML permits `@check`/`@assert` on aliases). Expr is
+// nil when the RHS could not be parsed as a type expression (the hook then
+// falls back to the prior line-position-terminated scan so config parsing of
+// surrounding items is unaffected).
 //
-// Parsing is implemented via Parseable in bamlparser.go: the right-hand
-// side is line-position-terminated (continues until the next line begins
-// with a top-level keyword), which grammar tags cannot express without
-// keeping newline tokens in the grammar.
+// Parsing is implemented via Parseable in bamlparser.go: the leading
+// `type Name =` prefix and the fall-back RHS scan (continue until the next
+// line begins with a top-level keyword) are position-sensitive in ways
+// grammar tags cannot express without retaining newline tokens; the RHS type
+// expression itself is parsed via the declarative participle type grammar.
 type TypeAlias struct {
-	Name string
+	Name       string
+	Expr       *TypeExpr
+	Attributes []*Attribute
 }
 
 // Other captures metadata for a top-level construct that doesn't match any
