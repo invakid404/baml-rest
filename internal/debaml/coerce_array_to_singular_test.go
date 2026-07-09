@@ -169,12 +169,12 @@ func TestUnion_MapArm(t *testing.T) {
 // TestUnion_MapArmNonStringKeyDeclines pins the COERCE-TIME union-shape reproof
 // for a map union arm with a non-string (ENUM / literal) key. It drives
 // requireCoerceUnsupported — the coerceViaBundle bypass that SKIPS the public
-// checkNoMap gate — so the decline asserted here is NOT the map gate: it is
+// checkSupported gate — so the decline asserted here is the coerce-time reproof:
 // coerceUnionSafe re-proving the arm set via checkSupportedUnionShape, whose
 // checkUnionMapVariant rejects a non-string map key (dynamic map-key keep is
-// unproven). Under the public Parse this same schema would instead decline
-// earlier at checkNoMap (it contains a map at all); this test isolates the
-// deeper union-map-variant reproof that the bypass still exercises.
+// unproven). Under the public Parse this same union declines at that same gate
+// (checkSupportedUnionShape → checkUnionMapVariant) before coercion; this test
+// isolates the deeper coerce-time reproof that the bypass still exercises.
 func TestUnion_MapArmNonStringKeyDeclines(t *testing.T) {
 	// map<"a"|"b", int> | string — a string-literal-union key is a legal map key but
 	// not a plain string, so coerceUnionSafe's checkSupportedUnionShape reproof

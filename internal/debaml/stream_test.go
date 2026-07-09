@@ -190,9 +190,7 @@ func TestStream_MissingFieldDefaultFillers(t *testing.T) {
 	}
 	// `{"a":1}` is strict-complete: a=1 kept; tags/scores/note missing → default
 	// fillers (list→[], map→{}, optional→null). Driven via the stream coerce bypass
-	// because the `scores` map makes this a map-containing schema, which parseStream
-	// now declines at the shared checkNoMap gate; the streaming default fill under
-	// test (incl. the map→{} filler) is unchanged.
+	// to isolate the streaming default fill (incl. the map→{} filler) directly.
 	mustStreamCoerce(t, s, `{"a":1}`, `{"a":1,"tags":[],"scores":{},"note":null}`)
 	// A missing required scalar has no default_value → null (b never streamed).
 	s2 := &bamlutils.DynamicOutputSchema{Properties: props(kv("a", intProp()), kv("b", intProp()))}

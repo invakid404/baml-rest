@@ -3,6 +3,8 @@ package bamlutils
 import (
 	"strings"
 	"testing"
+
+	"github.com/bytedance/sonic"
 )
 
 // reorder is the per-test convenience wrapper that fails fast on
@@ -622,5 +624,54 @@ func TestReorderDynamicOutputBySchema_PreserveOffSortGate(t *testing.T) {
 	}
 	if string(out) != `{"a":1,"b":true,"c":"x"}` {
 		t.Fatalf("preserve-off sort: got %s", out)
+	}
+}
+
+// TestDecodeOrderedAny pins the order-preserving JSON decoder that backs the
+// native de-BAML dynamic-output seam: nested object (and MAP) keys keep their
+// wire order across a decode+marshal round-trip — the property a plain
+// map[string]any decode loses — and number tokens survive exactly.
+func TestDecodeOrderedAny(t *testing.T) {
+	cases := []string{
+		`{"counts":{"c":3,"a":1,"b":2}}`,
+		`{"by_id":{"z":{"label":"zeta"},"a":{"label":"alpha"}}}`,
+		`{"big":9223372036854775807,"f":1.5,"neg":-42,"s":"x","b":true,"n":null,"arr":[{"y":2,"x":1},3]}`,
+		`{}`,
+		`{"m":{}}`,
+	}
+	for _, in := range cases {
+		v, err := DecodeOrderedAny([]byte(in))
+		if err != nil {
+			t.Fatalf("DecodeOrderedAny(%s): %v", in, err)
+		}
+		gotBytes, err := sonic.Marshal(v)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		got := string(gotBytes)
+		if got != in {
+			t.Errorf("DecodeOrderedAny round-trip not order-stable:\n got %s\nwant %s", got, in)
+		}
+	}
+
+	// A nested object value is an OrderedMap[any] (the seam's ordered-ranger
+	// carrier), not a Go map — the invariant that keeps UnwrapDynamicValue from
+	// scrambling map keys.
+	v, err := DecodeOrderedAny([]byte(`{"m":{"k":1}}`))
+	if err != nil {
+		t.Fatalf("DecodeOrderedAny: %v", err)
+	}
+	top, ok := v.(OrderedMap[any])
+	if !ok {
+		t.Fatalf("top-level type = %T, want OrderedMap[any]", v)
+	}
+	inner, _ := top.Get("m")
+	if _, ok := inner.(OrderedMap[any]); !ok {
+		t.Errorf("nested value type = %T, want OrderedMap[any]", inner)
+	}
+
+	// Duplicate keys are rejected (mirrors the coerceMap decline).
+	if _, err := DecodeOrderedAny([]byte(`{"a":1,"a":2}`)); err == nil {
+		t.Errorf("DecodeOrderedAny: expected duplicate-key error")
 	}
 }
