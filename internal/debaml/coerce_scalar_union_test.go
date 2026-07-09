@@ -236,7 +236,7 @@ func TestScalarUnion_ListElementUnionDeclines(t *testing.T) {
 
 	// MAP value union still coerces cleanly — coerce_map resets the hint
 	// (enter_scope), so map<_, union> has no hint gap. Driven via the coerce bypass
-	// because Parse now declines every map-containing schema at the checkNoMap gate.
+	// to isolate the map-value union coercion directly.
 	mapUnion := &bamlutils.DynamicOutputSchema{
 		Properties: props(kv("m", &bamlutils.DynamicProperty{
 			Type: "map",

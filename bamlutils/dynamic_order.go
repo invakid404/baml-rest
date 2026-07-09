@@ -166,6 +166,95 @@ func cloneBytes(b []byte) []byte {
 	return out
 }
 
+// DecodeOrderedAny decodes a JSON payload into an order-preserving `any` tree:
+// objects become OrderedMap[any] (wire key order retained, duplicate keys
+// rejected), arrays become []any, numbers become stdjson.Number (the exact
+// source token, so i64-boundary integers and float spellings survive a marshal
+// round-trip), and strings/bools/null decode to their Go values.
+//
+// It backs the native de-BAML dynamic-output seam. A parsed native result must
+// be carried into the generated DynamicProperties (baml.OrderedFields) as values
+// that re-serialize in wire order. Decoding a nested object through `any` (what a
+// stdlib decode or OrderedMap[any].UnmarshalJSON produces) yields a Go
+// map[string]any, which re-marshals its keys in RANDOM order — silently
+// reordering nested MAP keys, the observable map-key order native must preserve
+// to match BAML's parse. OrderedMap[any] instead satisfies the seam's ordered
+// ranger interface (Range / RangeAny), so a value produced here survives the
+// UnwrapDynamicValue pass and the final marshal with its key order intact.
+func DecodeOrderedAny(data []byte) (any, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("empty JSON payload")
+	}
+	switch trimmed[0] {
+	case '{':
+		var om OrderedMap[stdjson.RawMessage]
+		if err := om.UnmarshalJSON(data); err != nil {
+			return nil, err
+		}
+		out := OrderedMap[any]{}
+		var decodeErr error
+		om.Range(func(k string, raw stdjson.RawMessage) bool {
+			child, err := DecodeOrderedAny(raw)
+			if err != nil {
+				decodeErr = fmt.Errorf("%s: %w", k, err)
+				return false
+			}
+			// om already rejected duplicate keys, so this insert cannot collide.
+			_ = out.Set(k, child)
+			return true
+		})
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		return out, nil
+	case '[':
+		var raws []stdjson.RawMessage
+		if err := sonic.Unmarshal(data, &raws); err != nil {
+			return nil, err
+		}
+		out := make([]any, 0, len(raws))
+		for i, r := range raws {
+			child, err := DecodeOrderedAny(r)
+			if err != nil {
+				return nil, fmt.Errorf("[%d]: %w", i, err)
+			}
+			out = append(out, child)
+		}
+		return out, nil
+	case 'n':
+		if bytes.Equal(trimmed, []byte("null")) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("invalid JSON token")
+	case 't':
+		if bytes.Equal(trimmed, []byte("true")) {
+			return true, nil
+		}
+		return nil, fmt.Errorf("invalid JSON token")
+	case 'f':
+		if bytes.Equal(trimmed, []byte("false")) {
+			return false, nil
+		}
+		return nil, fmt.Errorf("invalid JSON token")
+	case '"':
+		var s string
+		if err := sonic.Unmarshal(data, &s); err != nil {
+			return nil, err
+		}
+		return s, nil
+	default:
+		if !sonic.Valid(trimmed) {
+			return nil, fmt.Errorf("invalid JSON number")
+		}
+		// Preserve the exact number token so a marshal round-trip cannot
+		// reformat it (i64-boundary integers, float spellings). stdjson.Number
+		// re-marshals as a bare number and passes through UnwrapDynamicValue
+		// unchanged (its reflect kind is String, not Slice/Map).
+		return stdjson.Number(string(trimmed)), nil
+	}
+}
+
 // appendTo writes the node's JSON representation into buf. Object keys
 // are emitted from the node's keys slice, so the reorder applied by
 // the walker is what reaches the wire.

@@ -185,15 +185,16 @@ func (p perCallTimeoutParser) Parse(ctx context.Context, req bamlfuzz.ParseReque
 // — stay fallback. Cases absent from the map (the streaming-only ones)
 // carry no final leg and are not asserted.
 //
-// MAP PARITY-DECLINE: internal/debaml.Parse now declines EVERY map-containing
-// schema (checkNoMap) because native coerceMap emits entries in parsed input-key
-// order, which cannot be proven equal to BAML's observable map-key order under
-// preserve-order. So any map-containing case FALLS BACK regardless of its pinned
-// value here — runParseRecoveryCase forces the expected disposition to fallback
-// via parseRecoverySchemaContainsMap. The map/enum/class map entries below keep
-// their pre-decline (claimed) pins as documentation of the coerceMap behavior a
-// future PR re-enables behind a proven map-order fixture; the override — not a
-// mass pin flip — is what keeps this differential green today.
+// MAP RE-ENABLE (#581): internal/debaml.Parse now CLAIMS a map in a proven
+// position — clean object input, an exact string / enum / string-literal(-union)
+// KEY match, and an in-scope value — emitting entries in parsed input-key order,
+// which this differential proves equals BAML's observable map-key order under
+// preserve_schema_order (maps keep insertion order; only class fields reorder, so
+// the order-sensitive SchemaOrderDiff holds). The map pins below take effect
+// directly now — no blanket override. Shapes the differential cannot prove (a
+// missed enum/literal key BAML keeps leniently, a duplicate key, an
+// unterminated/incomplete map, a non-string-keyed map in a union arm or stream)
+// stay pinned false and fall back.
 var parseRecoveryNativeClaim = map[string]bool{
 	"markdown_fence_object":    true,
 	"prose_before_after_json":  true,
@@ -592,10 +593,10 @@ var parseRecoveryNativeClaim = map[string]bool{
 	// never fired this before, so these are the first case-fold guards):
 	"unicode_literal_casefold_uncertain_stays_fallback":      false,
 	"unicode_list_literal_casefold_uncertain_stays_fallback": false,
-	// Map pre-#581 (checkNoMap parity-decline). Pinned false directly AND
-	// force-overridden by parseRecoverySchemaContainsMap; the explicit false keeps
-	// the guard honest if the map-override is ever narrowed.
-	"map_string_string_clean_boundary_guard": false,
+	// #581 map re-enable: a clean map<string,string> is now CLAIMED (object input,
+	// string keys, in-scope values) in input key order, matching BAML. Was the
+	// pre-#581 checkNoMap parity-decline guard; flipped to claimed with the gate.
+	"map_string_string_clean_boundary_guard": true,
 	// Error-surface parity: native must fall back (not claim an error) on
 	// un-recoverable input where BAML also errors.
 	"baml_error_native_fallback_guard": false,
@@ -631,8 +632,9 @@ var parseRecoveryBoundaryFamily = map[string]string{
 	// prove byte-identical).
 	"primitive_string_number_noninteger_stays_fallback": "number_display",
 	"list_string_noninteger_number_stays_fallback":      "number_display",
-	// Maps declined pre-#581 (checkNoMap parity-decline).
-	"map_string_string_clean_boundary_guard": "map_pre_581",
+	// (The pre-#581 map_pre_581 guard is gone: #581 re-enables clean maps, so
+	// map_string_string_clean_boundary_guard now CLAIMS rather than guarding a
+	// fallback boundary — see its pin above.)
 	// Error-surface parity (native falls back rather than claim where BAML errors).
 	"baml_error_native_fallback_guard": "error_surface",
 }
@@ -784,57 +786,6 @@ func streamPrefixNativeClaim(caseName, prefixName string) bool {
 		return m[prefixName]
 	}
 	return false
-}
-
-// parseRecoverySchemaContainsMap reports whether the schema reaches a map type
-// anywhere — the effective root, any reachable class field, or a nested list /
-// optional / union / map / class-ref edge. It backs the MAP PARITY-DECLINE
-// override: internal/debaml.Parse declines every map-containing schema
-// (checkNoMap), so such a case must fall back regardless of its pinned final /
-// streaming disposition. Class-ref cycles terminate via the visited set.
-func parseRecoverySchemaContainsMap(s bamlfuzz.FuzzSchema) bool {
-	classes := make(map[string]bamlfuzz.FuzzClass, len(s.Classes))
-	for _, c := range s.Classes {
-		classes[c.Name] = c
-	}
-	seen := make(map[string]bool, len(s.Classes))
-	var walkType func(t bamlfuzz.FuzzType) bool
-	var walkClass func(name string) bool
-	walkClass = func(name string) bool {
-		if seen[name] {
-			return false
-		}
-		seen[name] = true
-		c, ok := classes[name]
-		if !ok {
-			return false
-		}
-		for i := range c.Properties {
-			if walkType(c.Properties[i].Type) {
-				return true
-			}
-		}
-		return false
-	}
-	walkType = func(t bamlfuzz.FuzzType) bool {
-		switch t.Kind {
-		case bamlfuzz.KindMap:
-			return true
-		case bamlfuzz.KindOptional, bamlfuzz.KindList:
-			return t.Inner != nil && walkType(*t.Inner)
-		case bamlfuzz.KindUnion:
-			for i := range t.Variants {
-				if walkType(t.Variants[i]) {
-					return true
-				}
-			}
-			return false
-		case bamlfuzz.KindClassRef:
-			return walkClass(t.Ref)
-		}
-		return false
-	}
-	return walkType(s.EffectiveRoot())
 }
 
 // parseRecoveryStats tallies how many final-parse and streaming-prefix legs
@@ -1027,12 +978,6 @@ func runParseRecoveryCase(t *testing.T, baml, native bamlfuzz.Parser, c bamlfuzz
 			if !ok {
 				t.Fatalf("final-parse case %q has no pinned native disposition; add it to parseRecoveryNativeClaim (true=claimed, false=fallback)", c.Name)
 			}
-			// MAP PARITY-DECLINE: a map-containing schema always falls back
-			// (checkNoMap), overriding the pinned pre-decline claim. See
-			// parseRecoverySchemaContainsMap and the parseRecoveryNativeClaim doc.
-			if parseRecoverySchemaContainsMap(c.Schema) {
-				want = false
-			}
 			if claimed {
 				t.Logf("native CLAIMED final parse for %q", c.Name)
 			} else {
@@ -1114,12 +1059,6 @@ func runParseRecoveryCase(t *testing.T, baml, native bamlfuzz.Parser, c bamlfuzz
 						stats.streamFallback++
 					}
 					want := streamPrefixNativeClaim(c.Name, p.Name)
-					// MAP PARITY-DECLINE: parseStream shares the checkSupported
-					// gate, so a map-containing schema falls back on every prefix,
-					// overriding the pinned pre-decline claim.
-					if parseRecoverySchemaContainsMap(c.Schema) {
-						want = false
-					}
 					if claimed {
 						t.Logf("native CLAIMED stream prefix %q/%q", c.Name, p.Name)
 					} else {

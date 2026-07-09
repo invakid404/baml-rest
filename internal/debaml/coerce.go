@@ -2641,6 +2641,23 @@ func coerceUnionSafe(b *schema.Bundle, u *schema.UnionType, input value, cf *coe
 	// since a non-nullable single variant collapses to the bare type in
 	// simplifyUnion). Score the lone arm against the null arm.
 	if len(u.Variants) == 1 {
+		// Re-prove the lone non-null arm structurally before claiming NON-NULL
+		// input. The gate's nullable fast path (checkSupportedType's
+		// `if u.Nullable { return nil }`) accepts the schema WITHOUT walking this
+		// arm, so a value tree that only checkSupportedType declines — not
+		// coerce — would otherwise slip through here. The canonical case is a
+		// direct list<multi-arm-union> under an OPTIONAL map value: its
+		// isMultiArmUnion guard lives only in checkSupportedType's TypeList arm
+		// (the array union_variant_hint decline) and has NO coerce-time
+		// equivalent (coerceList/coerceMapValueChild would happily coerce it),
+		// so an optional map<string, list<int|string>> would over-claim. This is
+		// the SAME structural guard a non-optional field gets at the gate, so a
+		// supported arm (optional map<string,string>, optional int, an optional
+		// class) still passes and claims; a JSON-null input already returned via
+		// case 1, so this reproof only gates the NON-NULL claim.
+		if err := checkSupportedType(b, u.Variants[0]); err != nil {
+			return nil, err
+		}
 		w, err := selectUnionArms(1, true, func(i int) (json.RawMessage, *coerceFlags, error) {
 			armF := &coerceFlags{targetIsUnion: true}
 			out, e := coerce(b, u.Variants[0], input, armF)

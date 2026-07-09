@@ -954,11 +954,10 @@ func TestParse_NullableUnsupportedArmClaimsNull(t *testing.T) {
 	// coerceUnionSafe case 3 re-proves the non-null arm set via
 	// checkSupportedUnionShape, which rejects the list arm.
 	//
-	// This is deliberately MAP-FREE: the earlier version used an optional MAP arm,
-	// but checkNoMap now declines any map-containing schema at the gate for BOTH
-	// null and non-null input, which would mask the null-fast-path property under
-	// test. The multi-arm-union list element reproduces the same "unsupported arm,
-	// null still claims null" shape without a map.
+	// This is deliberately MAP-FREE: an optional MAP arm would now CLAIM the map on
+	// non-null input (#581), masking the "non-null DECLINES" property under test. A
+	// list<multi-arm-union> arm is one native still declines, so it reproduces the
+	// "unsupported arm, null still claims null, non-null declines" shape.
 	s := &bamlutils.DynamicOutputSchema{
 		Properties: props(kv("u", &bamlutils.DynamicProperty{
 			Type: "optional",

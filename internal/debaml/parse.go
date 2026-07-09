@@ -29,15 +29,18 @@ import (
 //   - Stream parses (req.Stream==true) — native stream semantics are M4.
 //   - Schemas that cannot be lowered/validated, or that use general
 //     (multi-variant) unions, constraints, or recursive aliases.
-//   - A MAP in ANY reachable position (class field, list element, map
-//     value, union arm — including the non-null arm of an optional map).
-//     Native coerceMap emits entries in parsed input-key order, which
-//     cannot be PROVEN to equal BAML's observable map-key order under
-//     preserve-order, so every map-containing schema DECLINES at the gate
-//     (checkNoMap) rather than over-claim a map order native cannot prove.
-//     This is a parity-decline: the map coerce machinery (coerceMap,
-//     checkSupportedMapKey, tryCastMap) is retained UNCHANGED but is
-//     unreachable from Parse until a proven map-order fixture re-enables it.
+//   - A MAP whose key/value falls outside the proven map subset (see
+//     checkSupportedMapKey and coerceMap). Clean maps — a JSON-object input, an
+//     exact string / enum / string-literal(-union) KEY match, and an in-scope
+//     value — are CLAIMED in input key order (#581): native coerceMap emits
+//     entries in parsed input-key order, which the bamlfuzz parse-recovery
+//     differential (order-sensitive, under preserve_schema_order) proves equal
+//     to BAML's observable map-key order — maps preserve insertion order, so
+//     preserve_schema_order reorders only class fields, never map keys. A map
+//     whose order or key/value coercion native cannot prove still DECLINES and
+//     falls back: a missed enum/literal key BAML would keep leniently, a
+//     duplicate input key, a Unicode case-fold-uncertain key (#555), a value
+//     that could defer to a lenient Mcoerce-d success, or a non-object input.
 //   - Raw text whose JSON-looking candidate needs a repair outside the
 //     conservative M2a fixing subset — comments, escapes, missing commas,
 //     unterminated structures, multiple top-level values, … — which stays
@@ -273,59 +276,7 @@ func checkSupported(b *schema.Bundle) error {
 			return unsupported("class constraints")
 		}
 		for j := range c.Fields {
-			// PARITY-DECLINE: reject any reachable map BEFORE the general
-			// cut-line check. checkNoMap is a separate, broader walk than
-			// checkSupportedType's TypeMap arm because it must also catch a map
-			// hidden behind the checkSupportedType nullable-union fast path (an
-			// optional map `map<K,V>?`, where checkSupportedType returns nil
-			// without recursing into the arm). See checkNoMap.
-			if err := checkNoMap(c.Fields[j].Type); err != nil {
-				return err
-			}
 			if err := checkSupportedType(b, c.Fields[j].Type); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// checkNoMap DECLINES any type tree containing a schema.TypeMap in ANY
-// position — a list element, map value, tuple item, or union variant
-// (INCLUDING the non-null arm of an optional/nullable union, which
-// checkSupportedType's `if u.Nullable { return nil }` fast path would wave
-// through). Named class/enum refs are leaves: every reachable class is its own
-// b.Classes entry, so checkSupported walks each class's fields separately and a
-// map anywhere in the reachable graph is caught without recursing through refs.
-//
-// Why decline instead of coerce: native coerceMap emits map entries in parsed
-// INPUT key order (coerce.go), which cannot be proven to equal BAML's
-// observable map-key order under preserve-order — a semantically-equal value
-// whose ORDER native cannot prove is still an over-claim. Declining here makes
-// the generated seam (codegen_debaml.go maybeParseDeBAMLFinal) fall back to
-// BAML CFFI, which owns the authoritative map order. coerceMap and the map gate
-// (checkSupportedMapKey, checkUnionMapVariant, tryCastMap) are retained
-// UNCHANGED for a future PR that re-enables maps behind a proven map-order
-// fixture; they are simply unreachable from Parse today.
-func checkNoMap(t schema.Type) error {
-	switch t.Kind {
-	case schema.TypeMap:
-		return unsupported("map-containing schema (native map-key order unproven vs BAML preserve-order — parity-decline until a map-order fixture is added)")
-	case schema.TypeList:
-		if t.Elem != nil {
-			return checkNoMap(*t.Elem)
-		}
-	case schema.TypeUnion:
-		if t.Union != nil {
-			for i := range t.Union.Variants {
-				if err := checkNoMap(t.Union.Variants[i]); err != nil {
-					return err
-				}
-			}
-		}
-	case schema.TypeTuple:
-		for i := range t.Items {
-			if err := checkNoMap(t.Items[i]); err != nil {
 				return err
 			}
 		}
@@ -401,15 +352,21 @@ func checkSupportedType(b *schema.Bundle, t schema.Type) error {
 		// flat disjoint-key class union); checkSupportedUnionShape proves it.
 		return checkSupportedUnionShape(b, u)
 	case schema.TypeMap:
-		// NOTE: checkNoMap (run first in checkSupported) currently declines
-		// EVERY map-containing schema for map-key order parity, so this arm is
-		// unreachable from Parse today. It is retained intact for the future
-		// map re-enable PR (which narrows/removes checkNoMap behind a proven
-		// map-order fixture); the M2b claim logic below stays valid for then.
+		// #581 map re-enable: this arm is the NARROWER map guard that replaced
+		// the blanket checkNoMap parity-decline. It CLAIMS clean maps — a
+		// JSON-object input coerced under a map-key-safe key type and a value
+		// type that itself passes the cut-line — whose input-key order the
+		// bamlfuzz parse-recovery differential proves equal to BAML's observable
+		// order. Everything the differential cannot prove declines at COERCE
+		// time (coerceMap): a missed enum/literal key, a duplicate key, a
+		// case-fold-uncertain key/value, a deferred Mcoerce-d value, or a
+		// non-object input. An optional map `map<K,V>?` reaches this arm only for
+		// a directly-typed field; behind the nullable-union fast path (`if
+		// u.Nullable { return nil }`) the gate claims it and coerceMap still
+		// declines any unsupported key/value on non-null input — a safe
+		// coerce-time fallback, never an over-claim.
 		//
-		// M2b CLAIMS clean maps: a JSON-object input coerced under a
-		// map-key-safe key type and a value type that itself passes the
-		// cut-line. The key must be checked SPECIALLY — not via the general
+		// The key must be checked SPECIALLY — not via the general
 		// checkSupportedType, which rejects every union — because a
 		// non-nullable union of string literals is a legal map key while
 		// being an out-of-scope union everywhere else.

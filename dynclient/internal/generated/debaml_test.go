@@ -257,6 +257,35 @@ func TestMaybeParseDeBAMLFinal_ClaimsValidObject(t *testing.T) {
 	}
 }
 
+// TestWrapDeBAMLDynamicOutput_PreservesNestedMapOrder pins the #581/#579 fix: a
+// native parse result whose nested MAP keys are in a NON-alphabetical input order
+// must keep that order through the wrap + newResultFn unwrap + marshal path. The
+// pre-fix seam decoded nested objects into Go maps, so UnwrapDynamicValue and the
+// final marshal re-emitted map keys in random order — semantically equal but a
+// user-visible map-key-order divergence from BAML (which preserves LLM input
+// order). Class fields self-heal via the downstream schema reorder; maps do not,
+// so this order must be intact BEFORE the reorder pass sees it.
+func TestWrapDeBAMLDynamicOutput_PreservesNestedMapOrder(t *testing.T) {
+	// counts: a non-alphabetical map; by_id: a map of nested objects (map<_,class>).
+	flat := []byte(`{"counts":{"c":3,"a":1,"b":2},"by_id":{"z":{"label":"zeta"},"a":{"label":"alpha"}}}`)
+	out, err := wrapDeBAMLDynamicOutput(flat)
+	if err != nil {
+		t.Fatalf("wrapDeBAMLDynamicOutput: %v", err)
+	}
+	// newResultFn runs this unwrap on the claimed final envelope before it is
+	// marshaled onto the wire; it is the step that (pre-fix) collapsed ordered
+	// carriers back into Go maps.
+	unwrapDynamicBamlRestDynamicOutputFinal(&out)
+	got, err := out.DynamicProperties.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON: %v", err)
+	}
+	want := `{"counts":{"c":3,"a":1,"b":2},"by_id":{"z":{"label":"zeta"},"a":{"label":"alpha"}}}`
+	if string(got) != want {
+		t.Errorf("nested map key order not preserved through wrap+unwrap:\n got %s\nwant %s", got, want)
+	}
+}
+
 // TestMaybeParseDeBAMLFinal_UnsupportedFallsBack pins that the sentinel — and
 // only the sentinel — declines (ok=false, err=nil) so the caller falls back
 // to BAML.

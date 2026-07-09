@@ -1,6 +1,6 @@
 {
   "name": "map_string_string_clean_boundary_guard",
-  "description": "M5a FALLBACK-BOUNDARY GUARD (family: map_pre_581). A CLEAN map<string,string> that BAML claims trivially, but native declines EVERY map-containing schema (checkNoMap: coerceMap emits entries in parsed INPUT key order, unproven equal to BAML's observable map-key order under preserve-order). Locks the pre-#581 map parity-decline: the harness force-overrides any map schema to fallback (parseRecoverySchemaContainsMap), and this fresh clean-map guard makes the boundary explicit. want live-captured from BAML v0.223 final parse via BAMLFUZZ_PARSE_CAPTURE=1 (placeholder below until captured).",
+  "description": "#581 map re-enable: a CLEAN map<string,string> — object input, string keys, in-scope values — now CLAIMED by native in INPUT key order, matching BAML's observable order (maps keep insertion order; preserve_schema_order reorders only class fields). Was the pre-#581 checkNoMap parity-decline boundary guard; re-enabling native maps flipped it to a claimed case (pin true, dropped from the boundary family). want live-captured from BAML v0.223 final parse via BAMLFUZZ_PARSE_CAPTURE=1.",
   "preserve_schema_order": false,
   "schema": {
     "classes": [

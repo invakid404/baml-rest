@@ -224,16 +224,44 @@ func maybeParseDeBAMLFinal(ctx context.Context, adapter bamlutils.Adapter, raw s
 	return out, true, nil
 }
 
+// decodeDeBAMLDynamicFields decodes the flattened native parse JSON into an
+// ORDER-PRESERVING field map. Nested objects (a map value, a nested class) become
+// bamlutils.OrderedMap[any], NOT Go maps: a Go map value re-marshals its keys in
+// random order, which would silently reorder a nested MAP's keys — the observable
+// map-key order native must preserve to match BAML. OrderedMap[any] satisfies the
+// DynamicProperties ordered-ranger contract, so a value stored from here survives
+// the UnwrapDynamicValue pass and the final marshal with its key order intact; the
+// downstream reorder/sort pass remains the order authority for class fields.
+func decodeDeBAMLDynamicFields(flat []byte) (bamlutils.OrderedMap[any], error) {
+	decoded, err := bamlutils.DecodeOrderedAny(flat)
+	if err != nil {
+		return bamlutils.OrderedMap[any]{}, err
+	}
+	fields, ok := decoded.(bamlutils.OrderedMap[any])
+	if !ok {
+		return bamlutils.OrderedMap[any]{}, fmt.Errorf("de-BAML parse result is not a JSON object")
+	}
+	return fields, nil
+}
+
 // wrapDeBAMLDynamicOutput wraps the flattened native parse JSON into the
 // generated dynamic-output envelope so the existing newResultFn /
 // FlattenDynamicOutput / InjectAbsentOptionals / ordering pipeline runs
-// unchanged. DynamicProperties decodes in wire order; the downstream
-// reorder/sort pass remains the order authority.
+// unchanged. Fields decode in wire order through order-preserving carriers (see
+// decodeDeBAMLDynamicFields); the downstream reorder/sort pass remains the order
+// authority.
 func wrapDeBAMLDynamicOutput(flat []byte) (types.Baml_Rest_DynamicOutput, error) {
 	var out types.Baml_Rest_DynamicOutput
-	if err := out.DynamicProperties.UnmarshalJSON(flat); err != nil {
+	fields, err := decodeDeBAMLDynamicFields(flat)
+	if err != nil {
 		return types.Baml_Rest_DynamicOutput{}, err
 	}
+	fields.Range(func(k string, v any) bool {
+		// decodeDeBAMLDynamicFields already rejected duplicate keys, so Set
+		// cannot collide.
+		_ = out.DynamicProperties.Set(k, v)
+		return true
+	})
 	return out, nil
 }
 
@@ -305,13 +333,19 @@ func maybeParseDeBAMLStream(ctx context.Context, adapter bamlutils.Adapter, raw 
 // generated STREAMING dynamic-output envelope (streamtypes.Baml_Rest_DynamicOutput,
 // the type BAML's ParseStream returns), so the existing newResultFn stream-unwrap /
 // partial-emission pipeline runs unchanged. It is the parse-stream twin of
-// wrapDeBAMLDynamicOutput; both decode DynamicProperties in wire order and the
-// downstream reorder/sort pass remains the order authority.
+// wrapDeBAMLDynamicOutput; both decode fields in wire order through
+// order-preserving carriers and the downstream reorder/sort pass remains the
+// order authority.
 func wrapDeBAMLDynamicOutputStream(flat []byte) (streamtypes.Baml_Rest_DynamicOutput, error) {
 	var out streamtypes.Baml_Rest_DynamicOutput
-	if err := out.DynamicProperties.UnmarshalJSON(flat); err != nil {
+	fields, err := decodeDeBAMLDynamicFields(flat)
+	if err != nil {
 		return streamtypes.Baml_Rest_DynamicOutput{}, err
 	}
+	fields.Range(func(k string, v any) bool {
+		_ = out.DynamicProperties.Set(k, v)
+		return true
+	})
 	return out, nil
 }
 

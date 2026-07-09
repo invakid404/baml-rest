@@ -186,8 +186,9 @@ func TestCoerceClass_RequiredDefaults(t *testing.T) {
 	listS := nestedClassSchema("C", props(kv("items", listProp(&bamlutils.DynamicTypeSpec{Type: "int"}))))
 	mustParse(t, listS, `{"u":{}}`, `{"u":{"items":[]}}`)
 
-	// Required map field absent -> {}. (Via the coerce bypass: a map-containing
-	// schema declines at the checkNoMap gate, so Parse never reaches coerceClass.)
+	// Required map field absent -> {} (driven via the coerce bypass to isolate
+	// coerceClass's map default-fill; Parse claims map schemas end-to-end too —
+	// see TestParse_MapContainingSchemasClaim).
 	mapS := nestedClassSchema("C", props(kv("m", mapProp(&bamlutils.DynamicTypeSpec{Type: "int"}))))
 	mustCoerce(t, mapS, `{"u":{}}`, `{"u":{"m":{}}}`)
 
@@ -240,9 +241,8 @@ func TestCoerceClass_ScalarMultiFieldAllDefaultable(t *testing.T) {
 		kv("a", listProp(&bamlutils.DynamicTypeSpec{Type: "int"})),
 		kv("b", mapProp(&bamlutils.DynamicTypeSpec{Type: "int"})),
 	))
-	// Via the coerce bypass: the map field `b` makes this a map-containing schema,
-	// which Parse declines at the checkNoMap gate; the scalar-into-multi-field
-	// default-fill under test is unchanged and exercised through coerceViaBundle.
+	// Driven via the coerce bypass to isolate the scalar-into-multi-field
+	// default-fill (the class has a list and a map field, both filled to []/{}).
 	mustCoerce(t, s, `{"u":5}`, `{"u":{"a":[],"b":{}}}`)
 	// An empty object behaves the same (no keys -> all defaults).
 	mustCoerce(t, s, `{"u":{}}`, `{"u":{"a":[],"b":{}}}`)
