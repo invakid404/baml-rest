@@ -24,10 +24,14 @@ func TestBuildStaticSchemasIntegrationCorpus(t *testing.T) {
 
 	// Supported: plain classes/enums/lists, plus media-INPUT functions whose
 	// OUTPUT is a bare string (media is an input, not part of the output graph).
+	// Recursion is now lowered (slice 5): a recursive class (ParseTree/TreeNode)
+	// and a structural recursive alias reached via a class field
+	// (ParseJson/JsonContainer -> JsonValue) both build.
 	supported := []string{
 		"GetGreeting", "GetSimple", "GetPerson", "GetPersonWithAddress",
 		"GetPeople", "GetCategory", "GetComprehensive",
 		"DescribeImage", "DescribeImages", "DescribeImageWithCaption",
+		"ParseTree", "ParseJson",
 	}
 	for _, name := range supported {
 		if _, ok := cfg.staticSchemas[name]; !ok {
@@ -35,14 +39,13 @@ func TestBuildStaticSchemasIntegrationCorpus(t *testing.T) {
 		}
 	}
 
-	// Declined: @@dynamic class/enum, recursive class, recursive+media, and the
-	// recursive JSON alias.
+	// Declined: @@dynamic class/enum, and a recursive class whose output graph
+	// reaches MEDIA (MediaTreeNode) — a legal recursive class, but media output
+	// is rejected by ValidateOutput.
 	declined := map[string]string{
 		"GetDynamic":     "block attribute",
 		"GetDynamicEnum": "block attribute",
-		"ParseTree":      "recursive",
-		"ParseMediaTree": "recursive",
-		"ParseJson":      "recursive type alias",
+		"ParseMediaTree": "media is not usable as an output type",
 	}
 	for name, sub := range declined {
 		if _, ok := cfg.staticSchemas[name]; ok {

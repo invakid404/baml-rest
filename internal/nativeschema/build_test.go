@@ -9,6 +9,7 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/bamlparser"
 	sd "github.com/invakid404/baml-rest/bamlutils/schemadescriptor"
 	"github.com/invakid404/baml-rest/internal/schema"
+	"github.com/invakid404/baml-rest/internal/schema/outputformat"
 )
 
 // typeDefs mirrors the supported shapes from
@@ -807,6 +808,199 @@ func TestBuildStaticSchemasUnionNormalization(t *testing.T) {
 
 // TestBuildStaticSchemasDeclines proves every unsupported shape is declined
 // with a non-empty, informative reason and emits NO descriptor.
+// renderNative lowers a built descriptor and renders its ctx.output_format with
+// RenderOptions::default, the same path the integration parity oracle exercises.
+func renderNative(t *testing.T, b sd.Bundle) string {
+	t.Helper()
+	internal, err := schema.FromStaticDescriptor(b)
+	if err != nil {
+		t.Fatalf("FromStaticDescriptor: %v", err)
+	}
+	got, err := outputformat.Render(internal, outputformat.Options{})
+	if err != nil {
+		t.Fatalf("outputformat.Render: %v", err)
+	}
+	return got
+}
+
+// TestBuildStaticSchemasRecursion proves the slice-5 recursion detection +
+// lowering: a recursive class (TreeNode via a list<TreeNode> field), a
+// structural recursive alias (JsonValue recursing through list + map), and
+// mutual class recursion (A -> B -> A). Each builds SUPPORTED, populates
+// RecursiveClasses / StructuralRecursiveAliases in BAML order, and renders the
+// output_format the way BAML v0.223 does (the integration harness proves the
+// bytes against the real oracle; here the expected strings pin the shape).
+func TestBuildStaticSchemasRecursion(t *testing.T) {
+	t.Run("recursive class via list field", func(t *testing.T) {
+		src := `class TreeNode {
+    value string
+    children TreeNodeList?
+}
+type TreeNodeList = TreeNode[]
+` + fn("ParseTree", "TreeNode")
+
+		bundles, declines := buildFromSource(t, src)
+		if reason, ok := declines["ParseTree"]; ok {
+			t.Fatalf("ParseTree declined, want supported: %s", reason)
+		}
+		b := bundles["ParseTree"]
+		// TreeNode is the only recursive class; TreeNodeList is a non-recursive
+		// alias that inlines to TreeNode[], so no structural alias is emitted.
+		if got := b.RecursiveClasses; !reflect.DeepEqual(got, []string{"TreeNode"}) {
+			t.Errorf("RecursiveClasses = %v, want [TreeNode]", got)
+		}
+		if len(b.StructuralRecursiveAliases) != 0 {
+			t.Errorf("StructuralRecursiveAliases = %v, want none", b.StructuralRecursiveAliases)
+		}
+		// The recursive field references TreeNode as a class (inlined alias),
+		// never re-descending into a fresh copy.
+		tn := findClass(b, "TreeNode")
+		if tn == nil {
+			t.Fatalf("TreeNode class not collected")
+		}
+		children := findField(tn, "children")
+		if children == nil || children.Type.Kind != sd.TypeUnion || children.Type.Union == nil {
+			t.Fatalf("children field = %+v, want nullable union", children)
+		}
+		want := "TreeNode {\n  value: string,\n  children: TreeNode[] or null,\n}\n\nAnswer in JSON using this schema: TreeNode"
+		if got := renderNative(t, b); got != want {
+			t.Errorf("render mismatch\n got: %q\nwant: %q", got, want)
+		}
+	})
+
+	t.Run("structural recursive alias through list and map", func(t *testing.T) {
+		src := `type JsonValue = int | float | bool | string | null | JsonValue[] | map<string, JsonValue>
+class JsonContainer {
+    data JsonValue
+}
+` + fn("GetJson", "JsonContainer")
+
+		bundles, declines := buildFromSource(t, src)
+		if reason, ok := declines["GetJson"]; ok {
+			t.Fatalf("GetJson declined, want supported: %s", reason)
+		}
+		b := bundles["GetJson"]
+		if len(b.RecursiveClasses) != 0 {
+			t.Errorf("RecursiveClasses = %v, want none", b.RecursiveClasses)
+		}
+		if len(b.StructuralRecursiveAliases) != 1 || b.StructuralRecursiveAliases[0].Name != "JsonValue" {
+			t.Fatalf("StructuralRecursiveAliases = %+v, want [JsonValue]", b.StructuralRecursiveAliases)
+		}
+		// JsonContainer.data references the alias by a TypeRecursiveAlias node.
+		jc := findClass(b, "JsonContainer")
+		if jc == nil {
+			t.Fatalf("JsonContainer not collected")
+		}
+		data := findField(jc, "data")
+		if data == nil || data.Type.Kind != sd.TypeRecursiveAlias || data.Type.Name != "JsonValue" {
+			t.Fatalf("data field type = %+v, want recursive_alias JsonValue", data)
+		}
+		want := "JsonValue = int or float or bool or string or JsonValue[] or map<string, JsonValue> or null\n\nAnswer in JSON using this schema:\n{\n  data: JsonValue,\n}"
+		if got := renderNative(t, b); got != want {
+			t.Errorf("render mismatch\n got: %q\nwant: %q", got, want)
+		}
+	})
+
+	t.Run("mutual class recursion A -> B -> A", func(t *testing.T) {
+		src := `class A {
+    b B
+}
+class B {
+    a A
+}
+` + fn("GetA", "A")
+
+		bundles, declines := buildFromSource(t, src)
+		if reason, ok := declines["GetA"]; ok {
+			t.Fatalf("GetA declined, want supported: %s", reason)
+		}
+		b := bundles["GetA"]
+		// A and B share one SCC; BAML's recursive_classes carries them in cycle
+		// (Tarjan min-id-first) order = declaration order [A, B].
+		if got := b.RecursiveClasses; !reflect.DeepEqual(got, []string{"A", "B"}) {
+			t.Errorf("RecursiveClasses = %v, want [A, B]", got)
+		}
+		want := "A {\n  b: B,\n}\n\nB {\n  a: A,\n}\n\nAnswer in JSON using this schema: A"
+		if got := renderNative(t, b); got != want {
+			t.Errorf("render mismatch\n got: %q\nwant: %q", got, want)
+		}
+	})
+
+	t.Run("two independent structural recursive aliases (disjoint SCCs)", func(t *testing.T) {
+		// ListNode and StrMap are DISJOINT single-alias structural cycles (each
+		// recurses through its own container), both reached from one holder. This
+		// exercises MULTI-entry StructuralRecursiveAliases ordering: the holder's
+		// fields are [a: ListNode, b: StrMap] in declaration order, so BAML's LIFO
+		// reachability pops the last field first and emits [StrMap, ListNode] —
+		// reverse of reference. A single-alias test could not catch a mis-ordering
+		// here (the exact gap CodeRabbit flagged on PR #594).
+		src := `type ListNode = ListNode[]
+type StrMap = map<string, StrMap>
+class TwoRecursions {
+    a ListNode
+    b StrMap
+}
+` + fn("GetTwoAliases", "TwoRecursions")
+
+		bundles, declines := buildFromSource(t, src)
+		if reason, ok := declines["GetTwoAliases"]; ok {
+			t.Fatalf("GetTwoAliases declined, want supported: %s", reason)
+		}
+		b := bundles["GetTwoAliases"]
+		if len(b.RecursiveClasses) != 0 {
+			t.Errorf("RecursiveClasses = %v, want none", b.RecursiveClasses)
+		}
+		// BOTH disjoint SCCs detected, in reverse-of-reference (LIFO) order.
+		var aliasNames []string
+		for _, a := range b.StructuralRecursiveAliases {
+			aliasNames = append(aliasNames, a.Name)
+		}
+		if !reflect.DeepEqual(aliasNames, []string{"StrMap", "ListNode"}) {
+			t.Errorf("StructuralRecursiveAliases order = %v, want [StrMap, ListNode]", aliasNames)
+		}
+		want := "StrMap = map<string, StrMap>\nListNode = ListNode[]\n\nAnswer in JSON using this schema:\n{\n  a: ListNode,\n  b: StrMap,\n}"
+		if got := renderNative(t, b); got != want {
+			t.Errorf("render mismatch\n got: %q\nwant: %q", got, want)
+		}
+	})
+
+	t.Run("two disjoint recursive classes", func(t *testing.T) {
+		// SelfA and SelfB are two INDEPENDENT self-recursive classes (disjoint
+		// single-class SCCs) reached from one holder. This exercises MULTI-entry
+		// RecursiveClasses ordering: fields [a: SelfA, b: SelfB] pop last-first,
+		// so recursive_classes hoists as [SelfB, SelfA] — reverse of reference.
+		src := `class SelfA {
+    self_a SelfA?
+    x int
+}
+class SelfB {
+    self_b SelfB?
+    y int
+}
+class TwoSelfHolder {
+    a SelfA
+    b SelfB
+}
+` + fn("GetTwoSelf", "TwoSelfHolder")
+
+		bundles, declines := buildFromSource(t, src)
+		if reason, ok := declines["GetTwoSelf"]; ok {
+			t.Fatalf("GetTwoSelf declined, want supported: %s", reason)
+		}
+		b := bundles["GetTwoSelf"]
+		if got := b.RecursiveClasses; !reflect.DeepEqual(got, []string{"SelfB", "SelfA"}) {
+			t.Errorf("RecursiveClasses = %v, want [SelfB, SelfA] (reverse-of-reference)", got)
+		}
+		if len(b.StructuralRecursiveAliases) != 0 {
+			t.Errorf("StructuralRecursiveAliases = %v, want none", b.StructuralRecursiveAliases)
+		}
+		want := "SelfB {\n  self_b: SelfB or null,\n  y: int,\n}\n\nSelfA {\n  self_a: SelfA or null,\n  x: int,\n}\n\nAnswer in JSON using this schema:\n{\n  a: SelfA,\n  b: SelfB,\n}"
+		if got := renderNative(t, b); got != want {
+			t.Errorf("render mismatch\n got: %q\nwant: %q", got, want)
+		}
+	})
+}
+
 func TestBuildStaticSchemasDeclines(t *testing.T) {
 	cases := []struct {
 		name          string
@@ -815,26 +1009,55 @@ func TestBuildStaticSchemasDeclines(t *testing.T) {
 		wantReasonSub string
 	}{
 		{
-			name:   "recursive class",
-			fnName: "GetNode",
-			src: `class Node {
-    value string
-    next Node?
-}
-` + fn("GetNode", "Node"),
-			wantReasonSub: "recursive class",
-		},
-		{
-			name:          "recursive alias (structural)",
-			fnName:        "GetLoop",
-			src:           "type Loop = Loop[]\n" + fn("GetLoop", "Loop"),
-			wantReasonSub: "recursive type alias",
-		},
-		{
+			// A cycle NOT mediated by a list/map is invalid (BAML rejects it at
+			// validation). The builder declines it fail-closed rather than
+			// emitting an approximation. Recursive CLASSES and STRUCTURAL
+			// recursive aliases (through list/map) are now SUPPORTED — see
+			// TestBuildStaticSchemasRecursion.
 			name:          "direct alias cycle",
 			fnName:        "GetSelf",
 			src:           "type Self = Self\n" + fn("GetSelf", "Self"),
-			wantReasonSub: "recursive type alias",
+			wantReasonSub: "direct/degenerate alias cycle",
+		},
+		{
+			// A cycle through a union (not a list/map) is also degenerate/invalid.
+			name:          "union alias cycle",
+			fnName:        "GetUnionCycle",
+			src:           "type UC = int | UC\n" + fn("GetUnionCycle", "UC"),
+			wantReasonSub: "direct/degenerate alias cycle",
+		},
+		{
+			// A direct optional self-cycle (`type A = A?`) is not mediated by a
+			// list/map either — invalid.
+			name:          "optional self alias cycle",
+			fnName:        "GetOptCycle",
+			src:           "type OC = OC?\n" + fn("GetOptCycle", "OC"),
+			wantReasonSub: "direct/degenerate alias cycle",
+		},
+		{
+			// A structural cycle spanning TWO aliases (P = Q[], Q = P[]) is valid
+			// structural recursion in BAML, but slice 5 lowers only single-alias
+			// structural cycles; a multi-alias cycle declines fail-closed (its
+			// hoist order is not oracle-proven here).
+			name:          "multi-alias structural cycle",
+			fnName:        "GetMultiAlias",
+			src:           "type PA = QA[]\ntype QA = PA[]\n" + fn("GetMultiAlias", "PA"),
+			wantReasonSub: "not supported yet",
+		},
+		{
+			// A recursive class whose output graph reaches MEDIA still declines:
+			// media output is rejected by ValidateOutput even though the class is
+			// a legal recursive class (MediaTreeNode-style).
+			name:   "recursion reaching media output",
+			fnName: "GetMediaTree",
+			src: `class MediaTreeNode {
+    label string
+    thumbnail image?
+    children MediaTreeList?
+}
+type MediaTreeList = MediaTreeNode[]
+` + fn("GetMediaTree", "MediaTreeNode"),
+			wantReasonSub: "media is not usable as an output type",
 		},
 		{
 			name:   "class block attribute @@dynamic",
@@ -1173,8 +1396,9 @@ class EnumStreamOut {
 
 // TestBuildStaticSchemasPerFunctionIsolation proves a single unsupported
 // function does not poison sibling functions in the same file: supported
-// functions still build even when the file also declares recursion, media,
-// and @@dynamic outputs.
+// functions still build even when the file also declares media and @@dynamic
+// outputs. A recursive class (ParseTree/TreeNode) is now SUPPORTED, so it is
+// asserted to BUILD alongside the plain supported functions.
 func TestBuildStaticSchemasPerFunctionIsolation(t *testing.T) {
 	src := typeDefs + `
 class TreeNode {
@@ -1195,18 +1419,18 @@ class DynamicOutput {
 ` +
 		fn("GetSimple", "SimpleOutput") + // supported
 		fn("GetPerson", "Person") + // supported
-		fn("ParseTree", "TreeNode") + // declined: recursion
+		fn("ParseTree", "TreeNode") + // supported: recursive class
 		fn("DescribeCaption", "ImageWithCaption") + // declined: media
 		fn("GetDynamic", "DynamicOutput") // declined: @@dynamic
 
 	bundles, declines := buildFromSource(t, src)
 
-	for _, ok := range []string{"GetSimple", "GetPerson"} {
+	for _, ok := range []string{"GetSimple", "GetPerson", "ParseTree"} {
 		if _, built := bundles[ok]; !built {
 			t.Errorf("supported function %q was not built (reason: %q)", ok, declines[ok])
 		}
 	}
-	for _, bad := range []string{"ParseTree", "DescribeCaption", "GetDynamic"} {
+	for _, bad := range []string{"DescribeCaption", "GetDynamic"} {
 		if _, built := bundles[bad]; built {
 			t.Errorf("unsupported function %q was built, want decline", bad)
 		}

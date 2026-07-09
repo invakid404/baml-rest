@@ -231,3 +231,71 @@ class Mixed {
     status Category @description("the status category")
     @@assert(ok, {{ this.full_name|length > 0 }})
 }
+
+// === slice-5: recursion ==================================================
+//
+// Recursive classes + structural recursive aliases. The native builder detects
+// the cycles (an SCC over class->field->class edges for classes; alias cycles
+// that recurse THROUGH a list/map for structural aliases), emits recursive
+// classes normally but lists them in Bundle.RecursiveClasses (so the renderer
+// HOISTS them the way BAML does), and emits structural recursive aliases as
+// hoisted `Name = <target>` definitions referenced by a recursive-alias node.
+// Each must render byte-identically to BAML v0.223 (that is what this oracle
+// proves). A direct/degenerate alias cycle (NOT through a list/map) is invalid
+// and DECLINES — covered by the internal/nativeschema unit tests, not here (the
+// oracle corpus is all-supported).
+
+// --- recursive class via a list<Self> field ------------------------------
+//
+// RecursiveTreeNode.children is RecursiveTreeList? = RecursiveTreeNode[]?, so
+// the class references itself through a list => a recursive class, always
+// hoisted as a top-level definition. RecursiveTreeList is a NON-recursive alias
+// (it points at a class, not another alias), so it inlines to RecursiveTreeNode[]
+// and is not emitted as a structural alias.
+class RecursiveTreeNode {
+    value string
+    children RecursiveTreeList?
+}
+type RecursiveTreeList = RecursiveTreeNode[]
+
+// --- mutual class recursion (A -> B -> A) --------------------------------
+//
+// MutualA and MutualB share one SCC. BAML's recursive_classes carries a cycle
+// in min-declaration-id-first (Tarjan) order, so both hoist as [MutualA, MutualB]
+// (MutualA is declared first). A declaration-order-only build would still get
+// this two-class case right, but the SCC detection is what makes it recursive.
+class MutualA {
+    label string
+    b MutualB?
+}
+class MutualB {
+    a MutualA
+}
+
+// --- structural recursive alias (JSON value) -----------------------------
+//
+// JsonValue recurses through BOTH a list (JsonValue[]) and a map
+// (map<string, JsonValue>), so it is a STRUCTURAL recursive alias (valid), NOT
+// an invalid direct cycle. It is emitted as a hoisted `JsonValue = ...`
+// definition and referenced by name. Held as a class FIELD because a bare-alias
+// return type is outside the codegen-safe class/class[]/primitive set.
+type JsonValue = int | float | bool | string | null | JsonValue[] | map<string, JsonValue>
+class JsonHolder {
+    data JsonValue
+}
+
+// --- two DISJOINT structural recursive aliases in one schema --------------
+//
+// RecStrList and RecStrMap are independent single-alias structural cycles (one
+// recurses through a list, the other through a map), both reached from one
+// holder. This pins MULTI-entry StructuralRecursiveAliases ordering against the
+// oracle: the holder's fields are [list_field, map_field] in declaration order,
+// so BAML's LIFO reachability pops the LAST field first and hoists the alias
+// definitions as [RecStrMap, RecStrList] — reverse of reference. A single-alias
+// fixture cannot prove this cross-entry order (the disjoint-SCC edge).
+type RecStrList = RecStrList[]
+type RecStrMap = map<string, RecStrMap>
+class DualAliasHolder {
+    list_field RecStrList
+    map_field RecStrMap
+}

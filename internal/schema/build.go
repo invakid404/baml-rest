@@ -154,8 +154,10 @@ func FromDynamicOutputSchema(s *bamlutils.DynamicOutputSchema, opts BuildOptions
 	// yields the enum and class definitions in BAML's hoist order
 	// (reverse-of-reference DFS) and prunes anything the target cannot
 	// reach. Assign the ordered slices, then rebuild the indexes ONCE on
-	// the final source-of-truth slices.
-	bundle.Enums, bundle.Classes = orderByReachability(bundle.Target, enumDefs, classDefs)
+	// the final source-of-truth slices. The dynamic input surface produces no
+	// structural recursive aliases, so aliasTargets is nil and the returned
+	// alias order is empty.
+	bundle.Enums, bundle.Classes, _ = orderByReachability(bundle.Target, enumDefs, classDefs, nil)
 
 	if err := bundle.RebuildIndexes(); err != nil {
 		return nil, err

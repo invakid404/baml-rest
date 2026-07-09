@@ -100,3 +100,29 @@ function ParityMixed(input: string) -> Mixed {
     client TestClient
     prompt #"{{ ctx.output_format }}"#
 }
+
+// --- slice-5: recursion. Recursive class, mutual class recursion, and a
+// structural recursive alias (through list + map) — each must render
+// byte-identically to BAML v0.223.
+
+function ParityTree(input: string) -> RecursiveTreeNode {
+    client TestClient
+    prompt #"{{ ctx.output_format }}"#
+}
+
+function ParityMutual(input: string) -> MutualA {
+    client TestClient
+    prompt #"{{ ctx.output_format }}"#
+}
+
+function ParityJson(input: string) -> JsonHolder {
+    client TestClient
+    prompt #"{{ ctx.output_format }}"#
+}
+
+// Two DISJOINT structural recursive aliases reached from one holder — pins
+// multi-entry StructuralRecursiveAliases hoist order (reverse-of-reference).
+function ParityDualAlias(input: string) -> DualAliasHolder {
+    client TestClient
+    prompt #"{{ ctx.output_format }}"#
+}
