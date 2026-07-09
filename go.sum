@@ -235,6 +235,8 @@ github.com/mattn/go-isatty v0.0.22 h1:j8l17JJ9i6VGPUFUYoTUKPSgKe/83EYU2zBC7YNKMw
 github.com/mattn/go-isatty v0.0.22/go.mod h1:ZXfXG4SQHsB/w3ZeOYbR0PrPwLy+n6xiMrJlRFqopa4=
 github.com/mitchellh/hashstructure/v2 v2.0.2 h1:vGKWl0YJqUNxE8d+h8f6NJLcCJrgbhC4NcD46KavDd4=
 github.com/mitchellh/hashstructure/v2 v2.0.2/go.mod h1:MG3aRVU/N29oo/V/IhBX8GR/zz4kQkprJgF2EVszyDE=
+github.com/mitsuhiko/minijinja/minijinja-go/v2 v2.16.0 h1:NC/dIXF3yDMk/BRRlfyqq2wh5t+eM62ZdKm0AdyGX9A=
+github.com/mitsuhiko/minijinja/minijinja-go/v2 v2.16.0/go.mod h1:nfRUY950h3qI2abjyHpuFSLgcyWI/yy3l0/ZDmbXjOA=
 github.com/moby/buildkit v0.31.0 h1:hMUAbQGgjtzJDDOZ6o7MQk5XBZkBTyzLWEvnjguHHQI=
 github.com/moby/buildkit v0.31.0/go.mod h1:YM5iNEbNCc6L1Zt3YWFB/aXNLufvf4Rcu0DPlc9HwQg=
 github.com/moby/docker-image-spec v1.3.1 h1:jMKff3w6PgbfSa69GfNg+zN/XLhfXJGnEx3Nl2EsFP0=

@@ -27,6 +27,7 @@ require (
 	github.com/invakid404/baml-rest/pool v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/worker v0.0.48
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
+	github.com/mitsuhiko/minijinja/minijinja-go/v2 v2.16.0
 	github.com/moby/buildkit v0.31.0
 	github.com/moby/moby/api v1.55.0
 	github.com/moby/moby/client v0.5.0
