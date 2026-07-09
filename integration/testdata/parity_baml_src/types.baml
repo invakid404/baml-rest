@@ -299,3 +299,38 @@ class DualAliasHolder {
     list_field RecStrList
     map_field RecStrMap
 }
+
+// === slice-6: @skip ======================================================
+//
+// @skip DROPS a class field / enum value EXACTLY as BAML does: its
+// find_existing_class_field / find_enum_value returns None BEFORE the definition
+// is built, so the skipped member never renders in ctx.output_format AND its type
+// is never pushed onto the reachability stack. A class reachable ONLY through a
+// skipped field therefore disappears from the output_format entirely. This is the
+// load-bearing byte-parity proof for slice 6 — the rendered block must carry ONLY
+// the kept members (mirrors BAML's own render_output_format unit tests
+// skipped_class_fields_are_not_rendered / skipped_variants_are_not_rendered).
+//
+// BAML VALIDATION requires a @skip class field to be OPTIONAL ("Class field with
+// @skip attribute must be optional"), so the skipped fields are nullable — this
+// keeps the fixture BAML-valid so the oracle container compiles.
+
+enum SkipEnum {
+    KEEP_A
+    DROP_B @skip
+    KEEP_C
+}
+
+// OnlyViaSkip is referenced ONLY by SkipHolder.secret (a @skip field). Dropping
+// that field must also drop OnlyViaSkip from the rendered output_format — the
+// oracle proves BAML never renders it either.
+class OnlyViaSkip {
+    ghost string
+}
+
+class SkipHolder {
+    kept string
+    dropped string? @skip
+    category SkipEnum
+    secret OnlyViaSkip? @skip
+}

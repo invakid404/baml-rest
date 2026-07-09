@@ -126,3 +126,12 @@ function ParityDualAlias(input: string) -> DualAliasHolder {
     client TestClient
     prompt #"{{ ctx.output_format }}"#
 }
+
+// --- slice-6: @skip. A skipped class field (SkipHolder.dropped/secret) and a
+// skipped enum value (SkipEnum.DROP_B) are DROPPED, and OnlyViaSkip — reachable
+// only through a skipped field — disappears entirely. Byte-identical to BAML
+// v0.223 (which filters skipped fields/values before the definition is built).
+function ParitySkip(input: string) -> SkipHolder {
+    client TestClient
+    prompt #"{{ ctx.output_format }}"#
+}
