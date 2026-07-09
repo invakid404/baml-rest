@@ -1,0 +1,74 @@
+// Parity oracle functions. EVERY prompt is ONLY `{{ ctx.output_format }}` so
+// the captured first-message text is exactly BAML's rendered output-format
+// block and nothing else — the ground truth the native renderer must match
+// byte-for-byte. The native side parses these SAME .baml bytes, builds the
+// static descriptor for each function's output type, and renders it.
+//
+// Every function here MUST be SUPPORTED by the native builder (the corpus is
+// all-supported by design); declines are covered by the unit tests in
+// internal/nativeschema, not by this oracle.
+//
+// RETURN TYPES are restricted to class / class[] / primitive because BAML's Go
+// generator emits invalid code for a function returning a bare map<...> type.
+// Maps, unions, optionals, and literal-unions are exercised as class FIELDS
+// (MapHolder / UnionHolder); the rendered output-format is identical either way.
+
+function ParitySimpleOutput(input: string) -> SimpleOutput {
+    client TestClient
+    prompt #"{{ ctx.output_format }}"#
+}
+
+function ParityPerson(input: string) -> Person {
+    client TestClient
+    prompt #"{{ ctx.output_format }}"#
+}
+
+function ParityPersonWithAddress(input: string) -> PersonWithAddress {
+    client TestClient
+    prompt #"{{ ctx.output_format }}"#
+}
+
+function ParityPeople(input: string) -> Person[] {
+    client TestClient
+    prompt #"{{ ctx.output_format }}"#
+}
+
+function ParityCategorized(input: string) -> CategorizedItem {
+    client TestClient
+    prompt #"{{ ctx.output_format }}"#
+}
+
+function ParityInt(input: string) -> int {
+    client TestClient
+    prompt #"{{ ctx.output_format }}"#
+}
+
+function ParityLiterals(input: string) -> LiteralBag {
+    client TestClient
+    prompt #"{{ ctx.output_format }}"#
+}
+
+function ParityMaps(input: string) -> MapHolder {
+    client TestClient
+    prompt #"{{ ctx.output_format }}"#
+}
+
+function ParityEnumKeyMap(input: string) -> EnumKeyMapHolder {
+    client TestClient
+    prompt #"{{ ctx.output_format }}"#
+}
+
+function ParityUnions(input: string) -> UnionHolder {
+    client TestClient
+    prompt #"{{ ctx.output_format }}"#
+}
+
+function ParityStyled(input: string) -> Styled {
+    client TestClient
+    prompt #"{{ ctx.output_format }}"#
+}
+
+function ParityProfile(input: string) -> Profile {
+    client TestClient
+    prompt #"{{ ctx.output_format }}"#
+}

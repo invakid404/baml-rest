@@ -32,6 +32,47 @@ import (
 //     types are pushed in field order, so LIFO processes the last field
 //     first.
 
+// ReachableOrder walks the bundle's target type graph the way BAML's
+// relevant_data_models does and returns the enum names and class keys
+// reachable from the target, in BAML output-format hoist order
+// (reverse-of-reference DFS). Unreachable definitions are omitted, matching
+// BAML and [orderByReachability].
+//
+// This is the exported seam a native static-schema builder uses to emit its
+// descriptor's enum/class slices in BAML order. The dynamic path gets that
+// order for free inside [FromDynamicOutputSchema], which calls
+// [orderByReachability] directly; a static builder that lowers a
+// declaration-ordered descriptor lowers it here, then reorders the descriptor
+// by this result before storing it (FromStaticDescriptor preserves order
+// verbatim and never reruns reachability). It relies on the same single source
+// of truth for the traversal, so the two paths cannot drift.
+//
+// The bundle's exported slices are the inputs; the unexported indexes are not
+// consulted, so ReachableOrder is safe to call on a freshly lowered bundle
+// whether or not [Bundle.RebuildIndexes] has run.
+func (b *Bundle) ReachableOrder() ([]string, []ClassKey) {
+	enumDefs := make(map[string]EnumDef, len(b.Enums))
+	for i := range b.Enums {
+		enumDefs[b.Enums[i].Name.Name] = b.Enums[i]
+	}
+	classDefs := make(map[ClassKey]ClassDef, len(b.Classes))
+	for i := range b.Classes {
+		classDefs[ClassKey{Name: b.Classes[i].Name.Name, Mode: b.Classes[i].Mode}] = b.Classes[i]
+	}
+
+	enums, classes := orderByReachability(b.Target, enumDefs, classDefs)
+
+	enumNames := make([]string, 0, len(enums))
+	for i := range enums {
+		enumNames = append(enumNames, enums[i].Name.Name)
+	}
+	classKeys := make([]ClassKey, 0, len(classes))
+	for i := range classes {
+		classKeys = append(classKeys, ClassKey{Name: classes[i].Name.Name, Mode: classes[i].Mode})
+	}
+	return enumNames, classKeys
+}
+
 // orderByReachability walks the type graph rooted at target the way BAML's
 // relevant_data_models does and returns the enum and class definitions in
 // the order BAML would hoist them. enumDefs and classDefs are the lowered

@@ -17,6 +17,7 @@ import (
 
 	"github.com/invakid404/baml-rest/bamlutils/bamlparser"
 	"github.com/invakid404/baml-rest/bamlutils/schemadescriptor"
+	"github.com/invakid404/baml-rest/internal/nativeschema"
 )
 
 // config carries the per-invocation paths and import roots that
@@ -1369,7 +1370,7 @@ func parseBamlSourceDir(dir string) *bamlConfig {
 	// function's output graph (de-BAML P3 slice 2, #586). Config extraction
 	// still runs per-file via processBAMLFile below; the schema build is an
 	// additive second pass and does not change any config behaviour.
-	var parsedFiles []*bamlparser.File
+	var parsedFiles []nativeschema.SourceFile
 
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -1391,14 +1392,16 @@ func parseBamlSourceDir(dir string) *bamlConfig {
 			return nil
 		}
 		processBAMLFile(cfg, file)
-		parsedFiles = append(parsedFiles, file)
+		// Carry the raw source alongside the parsed File so the native builder
+		// can detect `///` doc comments by declaration span (see #586 D6).
+		parsedFiles = append(parsedFiles, nativeschema.SourceFile{File: file, Source: data})
 		return nil
 	})
 
 	// Build the native per-function static schemas from the collected files.
 	// This is fail-closed (per-function decline, never a pipeline error) and is
 	// not yet consumed downstream, so it runs regardless of the walk outcome.
-	cfg.staticSchemas, cfg.staticSchemaDeclines = buildStaticSchemas(parsedFiles)
+	cfg.staticSchemas, cfg.staticSchemaDeclines = nativeschema.BuildStaticSchemas(parsedFiles)
 
 	if err != nil {
 		// baml_src may not exist during stub generation
