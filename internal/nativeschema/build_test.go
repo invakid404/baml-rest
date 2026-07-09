@@ -598,6 +598,165 @@ class Streamed {
 	}
 }
 
+// TestBuildStaticSchemasSkip proves @skip DROPS a class field / enum value
+// exactly as BAML does (find_existing_class_field / find_enum_value return
+// Ok(None) before the definition is built — #586 D11): the skipped member never
+// appears in the descriptor or the rendered output_format, and a class reachable
+// ONLY through a skipped field vanishes entirely (its type is never reached).
+// This mirrors BAML's own render_output_format unit tests
+// (skipped_class_fields_are_not_rendered / skipped_variants_are_not_rendered),
+// and the ParitySkip integration fixture proves the exact bytes against the real
+// v0.223 oracle. @skip fields are optional here because BAML requires it
+// (validation "Class field with @skip attribute must be optional"); our parser is
+// laxer, but the fixtures stay BAML-valid so the oracle compiles.
+func TestBuildStaticSchemasSkip(t *testing.T) {
+	src := `
+enum SkipEnum {
+    KEEP_A
+    DROP_B @skip
+    KEEP_C
+}
+
+// OnlyViaSkip is referenced ONLY by SkipHolder.secret, which is @skip, so it
+// must disappear from the output_format entirely (its type is never reached).
+class OnlyViaSkip {
+    ghost string
+}
+
+class SkipHolder {
+    kept string
+    dropped string? @skip
+    category SkipEnum
+    secret OnlyViaSkip? @skip
+}
+` + fn("GetSkip", "SkipHolder")
+
+	bundles, declines := buildFromSource(t, src)
+	if reason, declined := declines["GetSkip"]; declined {
+		t.Fatalf("GetSkip declined, want supported (@skip DROPS, it does not decline): %s", reason)
+	}
+	b, ok := bundles["GetSkip"]
+	if !ok {
+		t.Fatalf("GetSkip built no descriptor")
+	}
+
+	// Skipped field dropped; kept fields remain in source order.
+	holder := findClass(b, "SkipHolder")
+	if holder == nil {
+		t.Fatalf("SkipHolder class not found")
+	}
+	var names []string
+	for i := range holder.Fields {
+		names = append(names, holder.Fields[i].Name.Name)
+	}
+	if want := []string{"kept", "category"}; !reflect.DeepEqual(names, want) {
+		t.Errorf("SkipHolder fields = %v, want %v (dropped + secret @skip removed)", names, want)
+	}
+
+	// A class reached ONLY through the skipped `secret` field must not be
+	// collected at all — @skip stops reachability, matching BAML (it never pushes
+	// the skipped field's type onto the stack).
+	if findClass(b, "OnlyViaSkip") != nil {
+		t.Errorf("OnlyViaSkip should be dropped (reachable only via a @skip field)")
+	}
+
+	// Skipped enum value dropped; kept values remain in source order.
+	e := findEnum(b, "SkipEnum")
+	if e == nil {
+		t.Fatalf("SkipEnum not found")
+	}
+	var vals []string
+	for i := range e.Values {
+		vals = append(vals, e.Values[i].Name.Name)
+	}
+	if want := []string{"KEEP_A", "KEEP_C"}; !reflect.DeepEqual(vals, want) {
+		t.Errorf("SkipEnum values = %v, want %v (DROP_B @skip removed)", vals, want)
+	}
+
+	// The rendered output_format carries no skipped member and no only-via-skip
+	// type (the container oracle proves the exact bytes; this pins the shape).
+	got := renderNative(t, b)
+	for _, banned := range []string{"dropped", "secret", "OnlyViaSkip", "ghost", "DROP_B"} {
+		if strings.Contains(got, banned) {
+			t.Errorf("rendered output_format contains skipped token %q:\n%s", banned, got)
+		}
+	}
+	for _, wantTok := range []string{"kept", "category", "KEEP_A", "KEEP_C"} {
+		if !strings.Contains(got, wantTok) {
+			t.Errorf("rendered output_format missing kept token %q:\n%s", wantTok, got)
+		}
+	}
+}
+
+// TestBuildStaticSchemasStreamingNotEmitted is the slice-6 static-streaming
+// decline-boundary (#586 D12). Static streaming partialization is a parity-
+// DECLINE (kept as the BAML fallback): BAML NEVER renders a streaming
+// output_format into the prompt — the Jinja RenderContext carries a single
+// output_format populated with the NON-streaming definitions
+// (engine/.../prompt_renderer/mod.rs render_prompt, line 149), while the
+// partialized/streaming OutputFormatContent (output.to_streaming_type)
+// feeds ONLY the partial-response JSONish parser (mod.rs parse, allow_partials).
+// So `{{ ctx.output_format }}` resolves to the non-streaming block for streaming
+// AND non-streaming calls, and there is no streaming output_format artifact for
+// the byte-parity oracle to compare against. The builder therefore emits ONLY the
+// non-streaming descriptor: no bundle sets Bundle.Stream and every class is under
+// StreamingMode::NonStreaming — even for a function whose output carries @stream.*
+// (those lower as metadata on the FINAL non-streaming descriptor, slice 4, and do
+// NOT spawn a streaming-mode class). This pins that no partialized descriptor
+// leaks into the static build.
+func TestBuildStaticSchemasStreamingNotEmitted(t *testing.T) {
+	src := `
+class Streamed {
+    ready bool @stream.done
+    value string @stream.not_null @stream.with_state
+    plain int
+    @@stream.done
+}
+enum StreamEnum {
+    A
+    B
+}
+class Nested {
+    e StreamEnum
+}
+class Holder {
+    s Streamed
+    n Nested
+    items Streamed[]
+}
+` + fn("GetStreamed", "Streamed") + fn("GetHolder", "Holder")
+
+	bundles, declines := buildFromSource(t, src)
+	for _, name := range []string{"GetStreamed", "GetHolder"} {
+		if reason, declined := declines[name]; declined {
+			t.Fatalf("%s declined, want supported: %s", name, reason)
+		}
+		b, ok := bundles[name]
+		if !ok {
+			t.Fatalf("%s built no descriptor", name)
+		}
+		// D12: no streaming (partialized) descriptor is emitted.
+		if b.Stream {
+			t.Errorf("%s: Bundle.Stream = true, want false (static streaming is a parity-decline, D12)", name)
+		}
+		if b.Target.Mode == sd.Streaming {
+			t.Errorf("%s: target mode = Streaming, want NonStreaming", name)
+		}
+		for _, c := range b.Classes {
+			if c.Mode != sd.NonStreaming {
+				t.Errorf("%s: class %q mode = %q, want NonStreaming (no streaming-mode class emitted, D12)", name, c.Name.Name, c.Mode)
+			}
+		}
+	}
+
+	// Sanity: declining STREAMING partialization does not drop the @stream.*
+	// FLAGS — they are still carried on the final non-streaming descriptor
+	// (slice-4 behavior), just never used to render a distinct streaming block.
+	if cls := findClass(bundles["GetStreamed"], "Streamed"); cls == nil || cls.Stream.IsZero() {
+		t.Errorf("GetStreamed: @@stream.* metadata should ride on the non-streaming descriptor")
+	}
+}
+
 // TestBuildStaticSchemasDocCommentsNoOp proves a `///` doc comment is captured
 // as a NO-OP: BAML's output_format renderer never reads doc comments (only
 // @description renders — #586 D6, oracle-confirmed), so a doc-commented class/
@@ -1083,19 +1242,6 @@ class DynEnumOut {
 			wantReasonSub: "block attribute",
 		},
 		{
-			name:   "enum value @skip",
-			fnName: "GetSkip",
-			src: `enum SkipEnum {
-    KEEP
-    HIDE @skip
-}
-class SkipOut {
-    v SkipEnum
-}
-` + fn("GetSkip", "SkipOut"),
-			wantReasonSub: "attribute",
-		},
-		{
 			name:   "alias with non-string argument",
 			fnName: "GetBadAlias",
 			src: `class BadAlias {
@@ -1349,15 +1495,6 @@ class EnumStreamOut {
 }
 ` + fn("GetNestedBlock", "WithNested"),
 			wantReasonSub: "unsupported body content",
-		},
-		{
-			name:   "class field @skip",
-			fnName: "GetFieldSkip",
-			src: `class FieldSkip {
-    a string @skip
-}
-` + fn("GetFieldSkip", "FieldSkip"),
-			wantReasonSub: "attribute",
 		},
 		// NOTE: descriptor kinds TypeTop and TypeArrow have NO corresponding
 		// bamlparser TypeExpr node (the AST union is Unsupported/Primitive/Media/

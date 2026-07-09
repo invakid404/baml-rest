@@ -25,7 +25,8 @@
 // container introspection step fails to compile a sibling symbol as
 // "undefined". See #586 and the slice-2 build fix.
 //
-// SCOPE (slice 5 — recursion, on top of slices 1-4):
+// SCOPE (slice 6 — @skip + streaming decline, on top of slices 1-5; the FINAL
+// P3-static slice):
 //   - Lower primitives, named class/enum refs, non-recursive aliases (inlined),
 //     lists, maps, optionals, unions, and string/int/bool literals, and emit
 //     Enums/Classes in BAML output-format reachability order (see
@@ -44,10 +45,29 @@
 //     A DIRECT/degenerate alias cycle (not mediated by a list/map, e.g.
 //     `type A = A` / `type A = A | int` / `type A = A?`) is INVALID and DECLINES
 //     fail-closed; a multi-alias structural cycle DECLINES too (single-alias
-//     structural cycles only in this slice); recursion whose output graph reaches
-//     media/tuple still DECLINES via ValidateOutput. @@dynamic recursive overlays,
-//     streaming partialization of recursive types, and @skip stay DECLINED
-//     (slice 6).
+//     structural cycles only); recursion whose output graph reaches media/tuple
+//     still DECLINES via ValidateOutput.
+//   - @skip (slice 6, D11): a @skip-marked class field / enum value is DROPPED
+//     exactly as BAML does (find_existing_class_field / find_enum_value return
+//     Ok(None) before the definition is built), so it never renders and its type
+//     is never reachable. This replaces the slice-2..5 @skip DECLINE. See
+//     ensureClass / ensureEnum / hasSkipAttribute.
+//   - STATIC STREAMING (slice 6, D12): stays a parity-DECLINE (BAML fallback).
+//     The builder emits ONLY the NonStreaming descriptor. BAML never renders a
+//     streaming output_format into the prompt: the Jinja RenderContext carries a
+//     single output_format populated with the NON-streaming definitions
+//     (engine/.../prompt_renderer/mod.rs render_prompt, line 149), while the
+//     partialized/streaming OutputFormatContent (to_streaming_type partialize)
+//     feeds ONLY the partial-response JSONish parser (mod.rs parse, allow_partials
+//     branch). So `{{ ctx.output_format }}` resolves to the non-streaming block
+//     for streaming AND non-streaming calls alike — there is NO streaming
+//     output_format artifact for the byte-parity oracle to compare against.
+//     Streaming partialization belongs to the response-PARSING subsystem
+//     (internal/debaml partial coercion), not this output_format builder; see
+//     #586 D12. @@dynamic recursive overlays stay DECLINED.
+//   - @@dynamic (slice 6): stays fail-closed DECLINED. It is tied to runtime
+//     TypeBuilder / dynamic schema mutation, NOT a static-schema feature, so it
+//     is out of P3-static scope until the native runtime front-end owns it.
 //   - Lower @alias -> Name.Alias and @description -> Description on class fields,
 //     enum values, and class/enum-level block attributes.
 //   - Lower @assert/@check -> opaque [schemadescriptor.Constraint] carrying the
@@ -60,20 +80,20 @@
 //   - Lower @stream.done/@stream.not_null/@stream.with_state into the descriptor
 //     streaming fields exactly as BAML models them: a field stream attribute
 //     reassociates onto the field's TYPE (Type.Meta.Stream), a class-level
-//     @@stream.* goes on ClassDef.Stream. Static STREAMING partialization +
-//     streaming output_format parity stay DECLINED (slice 6); this slice only
-//     carries the flags on the FINAL (non-streaming) descriptor.
+//     @@stream.* goes on ClassDef.Stream. Static STREAMING partialization stays
+//     a parity-DECLINE (D12 below); the builder only carries these flags on the
+//     FINAL (non-streaming) descriptor.
 //   - Validate STRUCTURALLY via FromStaticDescriptor + ValidateOutput. Constraints
 //     and streaming flags are metadata: they do NOT change the rendered
 //     ctx.output_format (the parity harness proves this byte-for-byte).
-//   - @@dynamic and @skip stay DECLINED (slice 6).
 //
 // Lax-vs-BAML / decline decisions logged here are also recorded on #586:
 //
 //	D1. A reachable output node may carry @alias/@description (everywhere),
-//	    @assert/@check, and @stream.* (where the descriptor can represent them).
-//	    ANY OTHER attribute (@skip, @@dynamic, or an unknown attribute) DECLINES
-//	    the function fail-closed rather than being silently dropped. Enum-LEVEL
+//	    @assert/@check, and @stream.* (where the descriptor can represent them),
+//	    and a class field / enum value may carry @skip (which DROPS it — D11).
+//	    ANY OTHER attribute (@@dynamic or an unknown attribute) DECLINES the
+//	    function fail-closed rather than being silently dropped. Enum-LEVEL
 //	    @@check/@@assert DO lower (to EnumDef.Constraints, as class @@check/@@assert
 //	    lower to ClassDef.Constraints); but a constraint or stream attribute on a
 //	    node with no descriptor home for it DECLINES: any @check/@assert/@stream.*
@@ -129,10 +149,43 @@
 //	    order is not oracle-proven in this slice); (c) recursion whose output
 //	    graph reaches media/tuple declines via ValidateOutput (a recursive class
 //	    is legal, but media/tuple output is not); (d) @@dynamic recursive
-//	    overlays, streaming partialization of recursive types, and @skip stay
-//	    DECLINED (slice 6). recursion.go reproduces BAML's finite_recursive_cycles
-//	    (class SCC) + recursive_alias_cycles (alias SCC through list/map) +
-//	    non-structural alias graph (invalid-cycle detection).
+//	    overlays and streaming partialization of recursive types stay DECLINED
+//	    (@skip on a recursive-class field is DROPPED as anywhere — D11).
+//	    recursion.go reproduces BAML's finite_recursive_cycles (class SCC) +
+//	    recursive_alias_cycles (alias SCC through list/map) + non-structural alias
+//	    graph (invalid-cycle detection); the class dependency graph is built from
+//	    ALL fields (skip-inclusive, matching BAML's finalize_dependencies), so
+//	    @skip does not change recursion classification.
+//	D11. @skip (slice 6) — IMPLEMENTED. A @skip-marked class field
+//	    (find_existing_class_field) or enum value (find_enum_value) is DROPPED
+//	    before the definition is built: it does not render, and its type is never
+//	    collected/reachable, so a class/enum reachable ONLY through a skipped
+//	    field disappears from ctx.output_format — exactly as BAML does. skip is a
+//	    field/value attribute taking no arguments; skip is checked first, so a
+//	    skipped field's other attributes are irrelevant. This replaces the
+//	    slice-2..5 @skip DECLINE. Site: ensureClass / ensureEnum /
+//	    hasSkipAttribute. Proven byte-exact by the ParitySkip oracle fixture.
+//	D12. STATIC STREAMING (slice 6) — parity-DECLINED, kept as BAML fallback.
+//	    The builder produces ONLY the NonStreaming descriptor (Bundle.Stream is
+//	    never set true, no class is emitted under StreamingMode::Streaming).
+//	    Reason (not an approximation dodge — an architectural fact): BAML NEVER
+//	    renders a streaming output_format into the prompt. render_prompt builds a
+//	    Jinja RenderContext whose single output_format field is the NON-streaming
+//	    definitions (prompt_renderer/mod.rs:149); the partialized/streaming
+//	    OutputFormatContent (output.to_streaming_type(ir), render_output_format.rs
+//	    relevant_data_models partialize=true) is built but consumed ONLY by the
+//	    partial-response JSONish parser (mod.rs parse(), allow_partials branch),
+//	    never injected into `{{ ctx.output_format }}`. So a streaming call's
+//	    prompt carries the identical non-streaming output_format, and the static
+//	    output_format byte-parity oracle has NO streaming artifact to compare
+//	    against — "streaming output_format parity" is unprovable because the thing
+//	    it would prove is never emitted. Streaming partialization affects only
+//	    response PARSING (internal/debaml partial coercion), a separate subsystem
+//	    out of this output_format builder's scope. Implementing partialization
+//	    here would produce a descriptor whose streaming render BAML never emits,
+//	    so per the parity-decline discipline it is deferred, not approximated. A
+//	    decline-boundary test (TestBuildStaticSchemasStreamingNotEmitted) pins
+//	    that the builder emits only the non-streaming descriptor.
 package nativeschema
 
 import (
@@ -445,8 +498,9 @@ func (b *descriptorBuilder) reachableRecursiveClasses() []string {
 // and in BAML order; every returned name therefore resolves in the builder's
 // by-name maps. The builder never emits a streaming-MODE class (streaming is
 // carried as metadata on the final descriptor, not as a separate streaming-mode
-// class — static streaming mode is slice 6), so a class key's mode is always
-// NonStreaming and looking classes up by canonical name is sufficient.
+// class — static streaming partialization is a parity-DECLINE, see #586 D12), so
+// a class key's mode is always NonStreaming and looking classes up by canonical
+// name is sufficient.
 func (b *descriptorBuilder) reorderByReachability(bundle *sd.Bundle, internal *schema.Bundle) {
 	enumNames, classKeys, aliasNames := internal.ReachableOrder()
 
@@ -867,8 +921,9 @@ func (b *descriptorBuilder) lowerNameRef(t *bamlparser.TypeExpr) (sd.Type, error
 // attributes lower to the class's alias/description/constraints/streaming; any
 // other block attribute (@@dynamic, ...) declines. A field's @alias/@description
 // lower to the field, and its reassociated @check/@assert/@stream.* lower onto
-// the field's TYPE metadata; any other field attribute declines. A `///` doc
-// comment is captured as a no-op (BAML never renders it — see #586 D6).
+// the field's TYPE metadata; a field's @skip DROPS it (D11); any other field
+// attribute declines. A `///` doc comment is captured as a no-op (BAML never
+// renders it — see #586 D6).
 func (b *descriptorBuilder) ensureClass(name string, tb *bamlparser.TypeBlock) error {
 	if _, done := b.classes[name]; done {
 		return nil
@@ -907,7 +962,19 @@ func (b *descriptorBuilder) ensureClass(name string, tb *bamlparser.TypeBlock) e
 		if m.Type == nil {
 			return fmt.Errorf("class %q field %q has no type", name, m.Name)
 		}
-		fm, err := extractFieldMeta(memberAttributes(m))
+		attrs := memberAttributes(m)
+		// D11: @skip DROPS the field exactly as BAML does. BAML's
+		// find_existing_class_field returns Ok(None) for a @skip-marked field
+		// BEFORE the class definition is built, so the field never renders in
+		// ctx.output_format AND its type is never pushed onto the reachability
+		// stack (a class/enum reachable ONLY through a skipped field correctly
+		// disappears from the output_format). The skipped field's other
+		// attributes are irrelevant — skip is checked first — so we drop it
+		// without lowering its type or metadata.
+		if hasSkipAttribute(attrs) {
+			continue
+		}
+		fm, err := extractFieldMeta(attrs)
 		if err != nil {
 			return fmt.Errorf("class %q field %q: %w", name, m.Name, err)
 		}
@@ -947,8 +1014,8 @@ func (b *descriptorBuilder) ensureClass(name string, tb *bamlparser.TypeBlock) e
 // OutputFormatContent) has no enum-level description or streaming home for them.
 // An enum value's @alias/@description lower to the value; @check/@assert/
 // @stream.* on a value decline (EnumValue carries no constraints/streaming
-// field); any other value attribute (@skip, ...) declines. A `///` doc comment
-// is captured as a no-op (BAML never renders it — see #586 D6).
+// field); a value's @skip DROPS it (D11); any other value attribute declines. A
+// `///` doc comment is captured as a no-op (BAML never renders it — see #586 D6).
 func (b *descriptorBuilder) ensureEnum(name string, tb *bamlparser.TypeBlock) error {
 	if _, done := b.enums[name]; done {
 		return nil
@@ -980,6 +1047,12 @@ func (b *descriptorBuilder) ensureEnum(name string, tb *bamlparser.TypeBlock) er
 	for _, m := range tb.Fields {
 		if m.Type != nil {
 			return fmt.Errorf("enum %q value %q unexpectedly carries a type", name, m.Name)
+		}
+		// D11: @skip DROPS the value exactly as BAML does — find_enum_value
+		// returns Ok(None) for a @skip-marked value before the enum definition
+		// is built, so the value never renders in ctx.output_format.
+		if hasSkipAttribute(m.Attributes) {
+			continue
 		}
 		alias, desc, err := extractMemberMeta(m.Attributes)
 		if err != nil {
@@ -1097,6 +1170,24 @@ func memberAttributes(m *bamlparser.TypeMember) []*bamlparser.Attribute {
 	return out
 }
 
+// hasSkipAttribute reports whether attrs carries a @skip field/value marker
+// (D11). BAML models @skip as a field/value attribute — never reassociated onto
+// the type (it is NOT in BAML's TYPE_ATTRIBUTE_NAMES) and taking no arguments
+// (set_skip -> Some(true)) — and filters a skipped field/value out
+// (find_existing_class_field / find_enum_value return Ok(None)) BEFORE the
+// class/enum definition is built. Treating any non-block @skip as the marker is
+// laxer-than-BAML-safe: production only ever sees BAML-valid input, where @skip
+// is always the bare argument-less form. A @@skip block form is not a BAML
+// construct; it is left to decline via extractBlockMeta.
+func hasSkipAttribute(attrs []*bamlparser.Attribute) bool {
+	for _, a := range attrs {
+		if !a.Block && a.Name == "skip" {
+			return true
+		}
+	}
+	return false
+}
+
 // fieldMeta is a class field's lowered attribute metadata. BAML routes
 // @alias/@description to the field itself and reassociates @assert/@check and
 // @stream.* onto the field's TYPE, so the caller attaches constraints/stream to
@@ -1111,9 +1202,10 @@ type fieldMeta struct {
 // extractFieldMeta partitions a class field's attributes: @alias/@description
 // (field metadata), @assert/@check (opaque constraints, reassociated to the
 // type), and @stream.done/@stream.not_null/@stream.with_state (streaming, also
-// reassociated to the type). It DECLINES fail-closed on any other attribute
-// (@skip/unknown), a duplicate @alias/@description, or a stray @@ block attribute
-// (malformed on a field). Constraints are collected in source order.
+// reassociated to the type). It DECLINES fail-closed on any other (unknown)
+// attribute, a duplicate @alias/@description, or a stray @@ block attribute
+// (malformed on a field). Constraints are collected in source order. @skip never
+// reaches here: a skipped field is dropped by ensureClass before this call (D11).
 func extractFieldMeta(attrs []*bamlparser.Attribute) (fieldMeta, error) {
 	var m fieldMeta
 	for _, a := range attrs {
@@ -1156,9 +1248,10 @@ func extractFieldMeta(attrs []*bamlparser.Attribute) (fieldMeta, error) {
 
 // extractMemberMeta partitions an ENUM VALUE's attributes into the supported
 // metadata (@alias, @description) and everything else. An EnumValue carries no
-// constraints or streaming field, so @check/@assert/@stream.* — like @skip and
-// unknowns — DECLINE fail-closed; a repeated @alias/@description and a stray @@
-// block attribute also decline.
+// constraints or streaming field, so @check/@assert/@stream.* — like unknown
+// attributes — DECLINE fail-closed; a repeated @alias/@description and a stray @@
+// block attribute also decline. @skip never reaches here: a skipped value is
+// dropped by ensureEnum before this call (D11).
 func extractMemberMeta(attrs []*bamlparser.Attribute) (alias, description *string, err error) {
 	for _, a := range attrs {
 		if a.Block {
@@ -1376,14 +1469,17 @@ func attributeStringArg(a *bamlparser.Attribute) (string, error) {
 // declineAttribute produces the stable per-function decline error for an
 // attribute this slice does not lower on this node. The substrings "attribute"
 // (field) and "block attribute" (block) are load-bearing for the decline-reason
-// tests. Reached for @skip / @@dynamic / unknown attributes, a constraint or
-// stream attribute on a node with no descriptor home (an enum value / enum-level
-// block), and any attribute on a nested type node.
+// tests. Reached for @@dynamic / unknown attributes, a constraint or stream
+// attribute on a node with no descriptor home (an enum value / enum-level
+// block), and any attribute on a nested type node. @skip is NOT reached here for
+// a class field / enum value: it is intercepted and DROPS the member (D11)
+// before this point; a @skip on a nested type node (invalid BAML) still declines
+// here.
 func declineAttribute(a *bamlparser.Attribute) error {
 	if a.Block {
 		return fmt.Errorf("block attribute @@%s is not supported here (@@dynamic and unknown block attributes are declined; @@alias/@@description/@@check/@@assert/@@stream.* are lowered where the descriptor can represent them)", a.Name)
 	}
-	return fmt.Errorf("attribute @%s is not supported here (@skip and unknown attributes are declined, and @check/@assert/@stream.* have no home on this node; @alias/@description are lowered everywhere and constraints/streaming where representable)", a.Name)
+	return fmt.Errorf("attribute @%s is not supported here (unknown attributes are declined, and @check/@assert/@stream.* have no home on this node; @alias/@description are lowered everywhere, constraints/streaming where representable, and @skip drops a class field / enum value)", a.Name)
 }
 
 // attrDisplayName renders an attribute's name with its @/@@ sigil for messages.

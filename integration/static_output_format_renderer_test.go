@@ -65,13 +65,17 @@ import (
 // (ParityDocComments, and ParityDocVsDesc where @description wins), @assert/
 // @check constraints (ParityConstraints), and @stream.* flags (ParityStream,
 // ParityMixed) must not change a byte — BAML captures them but its output_format
-// renderer never reads them (see #586 D6-D8), and neither does ours. The
-// expected function set is asserted independently (P2) so a silently-skipped
-// fixture cannot false-pass, and the run is pinned to the exact 0.223.0 oracle
-// (P3). The corpus here is all-supported (a `///` doc comment is SUPPORTED as a
-// no-op, not a decline); genuine declines (recursion, @@dynamic, @skip, media/
-// tuple output, ...) are covered by the unit tests in internal/nativeschema, not
-// by this oracle.
+// renderer never reads them (see #586 D6-D8), and neither does ours. @skip
+// (ParitySkip, slice 6) is the inverse: it DOES change the block (a skipped
+// class field / enum value is DROPPED, and a class reachable only through a
+// skipped field disappears), and the native side must drop exactly the same
+// bytes BAML does (#586 D11). The expected function set is asserted independently
+// (P2) so a silently-skipped fixture cannot false-pass, and the run is pinned to
+// the exact 0.223.0 oracle (P3). The corpus here is all-supported (a `///` doc
+// comment is a no-op and @skip DROPS, neither is a decline); genuine declines
+// (invalid recursion cycles, @@dynamic, static streaming, media/tuple output,
+// ...) are covered by the unit tests in internal/nativeschema, not by this
+// oracle.
 func TestNativeStaticOutputFormatParity(t *testing.T) {
 	// P3: this is the load-bearing v0.223.0 parity proof, so it asserts the
 	// EXACT oracle version rather than a >=0.219 floor. The de-BAML=false render
