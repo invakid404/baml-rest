@@ -72,3 +72,31 @@ function ParityProfile(input: string) -> Profile {
     client TestClient
     prompt #"{{ ctx.output_format }}"#
 }
+
+// --- slice-4: attributes + constraints. Each proves a metadata construct
+// (doc comment / constraint / stream flag) does NOT change ctx.output_format.
+
+function ParityDocComments(input: string) -> DocCommented {
+    client TestClient
+    prompt #"{{ ctx.output_format }}"#
+}
+
+function ParityDocVsDesc(input: string) -> DocVsDesc {
+    client TestClient
+    prompt #"{{ ctx.output_format }}"#
+}
+
+function ParityConstraints(input: string) -> Constrained {
+    client TestClient
+    prompt #"{{ ctx.output_format }}"#
+}
+
+function ParityStream(input: string) -> Streamed {
+    client TestClient
+    prompt #"{{ ctx.output_format }}"#
+}
+
+function ParityMixed(input: string) -> Mixed {
+    client TestClient
+    prompt #"{{ ctx.output_format }}"#
+}

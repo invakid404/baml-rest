@@ -25,25 +25,49 @@
 // container introspection step fails to compile a sibling symbol as
 // "undefined". See #586 and the slice-2 build fix.
 //
-// SCOPE (slice 3 — structural build + reachability ordering + alias/description):
+// SCOPE (slice 4 — attributes + constraints, on top of slices 1-3):
 //   - Lower primitives, named class/enum refs, non-recursive aliases (inlined),
-//     lists, maps, optionals, unions, and string/int/bool literals.
-//   - Emit Enums/Classes in BAML output-format reachability order (see
+//     lists, maps, optionals, unions, and string/int/bool literals, and emit
+//     Enums/Classes in BAML output-format reachability order (see
 //     [descriptorBuilder.reorderByReachability]); FromStaticDescriptor preserves
 //     order verbatim, so the STORED descriptor must already be in BAML order for
 //     the renderer to match byte-for-byte.
 //   - Lower @alias -> Name.Alias and @description -> Description on class fields,
-//     enum values, and class/enum-level block attributes. Constraints
-//     (@assert/@check), streaming (@stream.*), @@dynamic, and @skip stay
-//     DECLINED (slices 4-6).
-//   - Validate STRUCTURALLY via FromStaticDescriptor + ValidateOutput.
+//     enum values, and class/enum-level block attributes.
+//   - Lower @assert/@check -> opaque [schemadescriptor.Constraint] carrying the
+//     level, optional label, and verbatim Jinja expression text, NEVER
+//     evaluated. Repeated constraints are supported. A field constraint
+//     reassociates onto the field's TYPE
+//     (Type.Meta.Constraints, exactly as BAML's reassociate_type_attributes
+//     does); a class/enum block constraint goes on ClassDef.Constraints /
+//     EnumDef.Constraints.
+//   - Lower @stream.done/@stream.not_null/@stream.with_state into the descriptor
+//     streaming fields exactly as BAML models them: a field stream attribute
+//     reassociates onto the field's TYPE (Type.Meta.Stream), a class-level
+//     @@stream.* goes on ClassDef.Stream. Static STREAMING partialization +
+//     streaming output_format parity stay DECLINED (slice 6); this slice only
+//     carries the flags on the FINAL (non-streaming) descriptor.
+//   - Validate STRUCTURALLY via FromStaticDescriptor + ValidateOutput. Constraints
+//     and streaming flags are metadata: they do NOT change the rendered
+//     ctx.output_format (the parity harness proves this byte-for-byte).
+//   - @@dynamic and @skip stay DECLINED (slice 6); recursion stays DECLINED
+//     (slice 5).
 //
 // Lax-vs-BAML / decline decisions logged here are also recorded on #586:
 //
-//	D1. Only @alias and @description are lowered from a reachable output node
-//	    (slice 3). ANY OTHER attribute (@assert/@check/@stream.*/@@dynamic/@skip,
-//	    or an unknown attribute) still DECLINES the function fail-closed rather
-//	    than being silently dropped. This is a parity-decline, not input laxness.
+//	D1. A reachable output node may carry @alias/@description (everywhere),
+//	    @assert/@check, and @stream.* (where the descriptor can represent them).
+//	    ANY OTHER attribute (@skip, @@dynamic, or an unknown attribute) DECLINES
+//	    the function fail-closed rather than being silently dropped. Enum-LEVEL
+//	    @@check/@@assert DO lower (to EnumDef.Constraints, as class @@check/@@assert
+//	    lower to ClassDef.Constraints); but a constraint or stream attribute on a
+//	    node with no descriptor home for it DECLINES: any @check/@assert/@stream.*
+//	    on an enum VALUE (EnumValue has neither field), and an enum-LEVEL @@stream.*
+//	    (EnumDef has no streaming field). An attribute on a NESTED type node (e.g.
+//	    the inner `int` of `map<string, int @check>`, or a bare union variant)
+//	    declines too: reassociation of nested / union-variant attributes is not
+//	    performed — this slice handles only the field's OUTERMOST type, plus block
+//	    and enum-value metadata.
 //	D2. media and tuple output are lowered FAITHFULLY into the descriptor and
 //	    left for ValidateOutput to reject (it errors on tuple/arrow/top/media),
 //	    so the single authority on output-legality stays internal/schema.
@@ -54,14 +78,32 @@
 //	    outcome overrides an earlier one), matching the config walker.
 //	D5. @alias/@description arguments must be a SINGLE plain string (a quoted
 //	    string or a raw string). A missing, multi-valued, or non-string argument
-//	    (e.g. a Jinja description) declines the function — slice 3 renders the
-//	    description verbatim, so an argument it cannot reproduce byte-for-byte
-//	    fails closed rather than guessing. Slice 4 revisits richer descriptions.
-//	D6. /// doc comments are NOT captured as descriptions yet: the shared lexer
-//	    elides all //-prefixed comments, so the builder never sees them. Class/
-//	    enum/field/value descriptions come from @description only in slice 3.
-//	    Capturing /// needs a lexer change gated on byte-identical config
-//	    goldens; deferred to a fast-follow. Logged on #586.
+//	    (e.g. a Jinja description) declines the function — the description is
+//	    rendered verbatim, so an argument it cannot reproduce byte-for-byte fails
+//	    closed rather than guessing.
+//	D6. /// doc comments are CAPTURED-as-no-op. BAML lowers `///` to a docstring
+//	    that its output_format renderer NEVER reads — only @description renders,
+//	    confirmed against the v0.223 oracle (a doc-commented node byte-matches the
+//	    same node without the comment). So a `///` doc comment contributes NOTHING
+//	    to the descriptor, and a doc-commented class/field/enum/enum-value now
+//	    builds SUPPORTED. This CORRECTS slice 3, which fail-closed DECLINED doc
+//	    comments on the (then-untested) assumption they rendered as a description.
+//	    @description always wins over a doc comment because it is the sole source;
+//	    the doc comment never overrides or concatenates.
+//	D7. @assert/@check are stored OPAQUELY. The expression is the verbatim inner
+//	    text between {{ and }} (braces excluded, not trimmed) — matching BAML's
+//	    stored JinjaExpression content except we skip BAML's backslash-doubling
+//	    normalization (the value is never parsed or evaluated; evaluation is out
+//	    of scope, deferred). The optional label is the bare leading identifier. A
+//	    shape that cannot be split into (label?, {{expr}}) declines fail-closed.
+//	D8. @stream.* map, exactly as BAML's IR does: a field @stream.done/not_null/
+//	    with_state reassociates onto the field TYPE -> Type.Meta.Stream.{Done,
+//	    Needed,State}; a class @@stream.* -> ClassDef.Stream. ClassField.
+//	    StreamingNeeded is BAML's override-derived per-field bool (defaults false)
+//	    and is NOT set by a static attribute, so the builder leaves it unset.
+//	D9. type-alias RHS attributes (BAML permits @check/@assert on aliases) remain
+//	    DECLINED: alias constraint inlining is deferred (not in the slice-4
+//	    corpus), so an attributed alias fails closed rather than being dropped.
 package nativeschema
 
 import (
@@ -75,16 +117,17 @@ import (
 	"github.com/invakid404/baml-rest/internal/schema"
 )
 
-// SourceFile pairs a parsed .baml [bamlparser.File] with its raw source bytes.
-// The builder needs the source to detect `///` doc comments by declaration
-// span (see #586 D6): BAML lowers `///` to a rendered Description, but the
-// shared lexer elides all `//`-prefixed comments so the AST never retains them.
-// Carrying the source lets the builder DECLINE fail-closed on a reachable
-// doc-commented node instead of silently emitting a descriptor with a missing
-// description.
+// SourceFile wraps a parsed .baml [bamlparser.File]. It is a struct (rather than
+// a bare *File) so the builder's input contract can grow without churning every
+// caller.
+//
+// It no longer carries the raw source bytes. Slice 3 threaded the source in to
+// DETECT `///` doc comments (which the shared lexer elides) and decline them;
+// slice 4 confirmed against the v0.223 oracle that BAML's output_format renderer
+// never reads doc comments (only @description renders — see #586 D6), so a
+// doc-commented node builds byte-identically without any source inspection.
 type SourceFile struct {
-	File   *bamlparser.File
-	Source []byte
+	File *bamlparser.File
 }
 
 // BuildStaticSchemas builds a native static output-schema descriptor for every
@@ -139,18 +182,10 @@ func BuildStaticSchemas(files []SourceFile) (map[string]sd.Bundle, map[string]st
 // recorded in ambiguous; the builder declines any function that reaches a
 // poisoned name (D3) rather than silently last-wins-ing type definitions.
 type schemaTypeIndex struct {
-	classes   map[string]*typeDecl
-	enums     map[string]*typeDecl
+	classes   map[string]*bamlparser.TypeBlock
+	enums     map[string]*bamlparser.TypeBlock
 	aliases   map[string]*bamlparser.TypeAlias
 	ambiguous map[string]struct{}
-}
-
-// typeDecl is a class/enum declaration plus the raw source of its file, so the
-// builder can inspect the bytes around the declaration span (for `///` doc
-// comment detection).
-type typeDecl struct {
-	tb  *bamlparser.TypeBlock
-	src []byte
 }
 
 func (i *schemaTypeIndex) isAmbiguous(name string) bool {
@@ -163,8 +198,8 @@ func (i *schemaTypeIndex) isAmbiguous(name string) bool {
 // metadata-only posture for them.
 func buildSchemaTypeIndex(files []SourceFile) *schemaTypeIndex {
 	idx := &schemaTypeIndex{
-		classes:   make(map[string]*typeDecl),
-		enums:     make(map[string]*typeDecl),
+		classes:   make(map[string]*bamlparser.TypeBlock),
+		enums:     make(map[string]*bamlparser.TypeBlock),
 		aliases:   make(map[string]*bamlparser.TypeAlias),
 		ambiguous: make(map[string]struct{}),
 	}
@@ -179,10 +214,10 @@ func buildSchemaTypeIndex(files []SourceFile) *schemaTypeIndex {
 			switch {
 			case it.TypeBlock != nil && it.TypeBlock.Name != "" && it.TypeBlock.Keyword == "class":
 				counts[it.TypeBlock.Name]++
-				idx.classes[it.TypeBlock.Name] = &typeDecl{tb: it.TypeBlock, src: sf.Source}
+				idx.classes[it.TypeBlock.Name] = it.TypeBlock
 			case it.TypeBlock != nil && it.TypeBlock.Name != "" && it.TypeBlock.Keyword == "enum":
 				counts[it.TypeBlock.Name]++
-				idx.enums[it.TypeBlock.Name] = &typeDecl{tb: it.TypeBlock, src: sf.Source}
+				idx.enums[it.TypeBlock.Name] = it.TypeBlock
 			case it.TypeAlias != nil && it.TypeAlias.Name != "":
 				counts[it.TypeAlias.Name]++
 				idx.aliases[it.TypeAlias.Name] = it.TypeAlias
@@ -307,8 +342,10 @@ func (b *descriptorBuilder) orderedEnums() []sd.EnumDef {
 // builder collected exactly the reachable definition set (it only lowers what a
 // reachable reference names), so ReachableOrder returns each collected name once
 // and in BAML order; every returned name therefore resolves in the builder's
-// by-name maps. Slice 3 never emits streaming classes, so a class key's mode is
-// always NonStreaming and looking classes up by canonical name is sufficient.
+// by-name maps. The builder never emits a streaming-MODE class (streaming is
+// carried as metadata on the final descriptor, not as a separate streaming-mode
+// class — static streaming mode is slice 6), so a class key's mode is always
+// NonStreaming and looking classes up by canonical name is sufficient.
 func (b *descriptorBuilder) reorderByReachability(bundle *sd.Bundle, internal *schema.Bundle) {
 	enumNames, classKeys := internal.ReachableOrder()
 
@@ -339,19 +376,20 @@ func (b *descriptorBuilder) reorderByReachability(bundle *sd.Bundle, internal *s
 
 // lowerType lowers one parsed TypeExpr into a descriptor Type, collecting any
 // reachable class/enum definitions along the way. It returns a decline error
-// for any construct slice 3 cannot represent faithfully.
+// for any construct this slice cannot represent faithfully.
 func (b *descriptorBuilder) lowerType(t *bamlparser.TypeExpr) (sd.Type, error) {
 	if t == nil {
 		return sd.Type{}, fmt.Errorf("missing type expression")
 	}
 
-	// D1: attributes on a type node decline the function. @alias/@description
-	// that belong to an enclosing class field or enum value are consumed and
-	// STRIPPED by the member handler before it calls lowerFieldType, so by the
-	// time lowerType sees a node with attributes, they are either constraints/
-	// streaming/unknown attributes (declined here) or metadata on a NESTED type
-	// (which slice 3 does not support — declined here fail-closed rather than
-	// silently dropped).
+	// D1: attributes on a type node reaching here decline the function. A class
+	// field's / enum value's own metadata (@alias/@description) and its
+	// reassociated type metadata (@check/@assert/@stream.*) are consumed and the
+	// field's OUTERMOST attributes are STRIPPED by the member handler before it
+	// calls lowerFieldType. So by the time lowerType sees a node that still
+	// carries attributes, they are on a NESTED type node (e.g. `map<string,
+	// int @check>` or a bare union variant) — a shape this slice does not
+	// reassociate — and it declines fail-closed rather than silently dropping.
 	if len(t.Attributes) > 0 {
 		return sd.Type{}, declineAttribute(t.Attributes[0])
 	}
@@ -401,11 +439,13 @@ func (b *descriptorBuilder) lowerType(t *bamlparser.TypeExpr) (sd.Type, error) {
 }
 
 // lowerFieldType lowers a class-field type after its field-level metadata
-// (@alias/@description) has been consumed by the caller ([extractMemberMeta],
-// which declines any non-metadata attribute). The remaining attributes on the
-// OUTERMOST node are therefore all metadata; they are dropped via a shallow
-// copy (never mutating the shared AST, which other functions also reference)
-// before lowering. Nested-node attributes are untouched and still decline in
+// (@alias/@description) and its reassociated type metadata (@check/@assert/
+// @stream.*) have been consumed by the caller ([extractFieldMeta], which
+// declines any other attribute). The remaining attributes on the OUTERMOST node
+// are therefore all recognized metadata; they are dropped via a shallow copy
+// (never mutating the shared AST, which other functions also reference) before
+// lowering, and the caller re-attaches the constraints/streaming to the lowered
+// type's Meta. Nested-node attributes are untouched and still decline in
 // lowerType.
 func (b *descriptorBuilder) lowerFieldType(t *bamlparser.TypeExpr) (sd.Type, error) {
 	if t == nil {
@@ -655,14 +695,14 @@ func (b *descriptorBuilder) lowerNameRef(t *bamlparser.TypeExpr) (sd.Type, error
 		return sd.Type{}, fmt.Errorf("type name %q is declared more than once (duplicate class/enum/alias)", name)
 	}
 
-	if decl, ok := b.index.classes[name]; ok {
-		if err := b.ensureClass(name, decl); err != nil {
+	if tb, ok := b.index.classes[name]; ok {
+		if err := b.ensureClass(name, tb); err != nil {
 			return sd.Type{}, err
 		}
 		return sd.Type{Kind: sd.TypeClass, Name: name, Mode: sd.NonStreaming}, nil
 	}
-	if decl, ok := b.index.enums[name]; ok {
-		if err := b.ensureEnum(name, decl); err != nil {
+	if tb, ok := b.index.enums[name]; ok {
+		if err := b.ensureEnum(name, tb); err != nil {
 			return sd.Type{}, err
 		}
 		return sd.Type{Kind: sd.TypeEnum, Name: name}, nil
@@ -676,32 +716,27 @@ func (b *descriptorBuilder) lowerNameRef(t *bamlparser.TypeExpr) (sd.Type, error
 // ensureClass lowers a class definition into the collected set exactly once.
 // It declines unsupported body content (methods / nested blocks), named-argument
 // (generic) class blocks, and recursion (a class re-entered while on the active
-// path). Class-level @@alias/@@description block attributes lower to the class's
-// alias/description; any other block attribute (@@dynamic, ...) declines. Field
-// @alias/@description lower to the field's alias/description; any other field
-// attribute declines.
-func (b *descriptorBuilder) ensureClass(name string, decl *typeDecl) error {
+// path). Class-level @@alias/@@description/@@check/@@assert/@@stream.* block
+// attributes lower to the class's alias/description/constraints/streaming; any
+// other block attribute (@@dynamic, ...) declines. A field's @alias/@description
+// lower to the field, and its reassociated @check/@assert/@stream.* lower onto
+// the field's TYPE metadata; any other field attribute declines. A `///` doc
+// comment is captured as a no-op (BAML never renders it — see #586 D6).
+func (b *descriptorBuilder) ensureClass(name string, tb *bamlparser.TypeBlock) error {
 	if _, done := b.classes[name]; done {
 		return nil
 	}
 	if b.classVisiting[name] {
 		return fmt.Errorf("recursive class %q is not supported yet (slice 5)", name)
 	}
-	tb := decl.tb
 	if tb.HasUnsupportedContent {
 		return fmt.Errorf("class %q has unsupported body content (methods or nested blocks)", name)
 	}
 	if len(tb.Args) > 0 {
 		return fmt.Errorf("class %q has a named-argument list (parameterized classes are not supported)", name)
 	}
-	// D6: a `///` doc comment on the class renders a Description in BAML, which
-	// slice 3 does not capture — decline fail-closed rather than emit a
-	// descriptor with a missing description.
-	if hasDocCommentBefore(decl.src, tb.Span.Start) {
-		return fmt.Errorf("class %q carries a /// doc comment (doc-comment descriptions are not supported yet — see #586 D6)", name)
-	}
 
-	classAlias, classDesc, err := extractBlockMeta(tb.Attributes)
+	block, err := extractBlockMeta(tb.Attributes)
 	if err != nil {
 		return fmt.Errorf("class %q: %w", name, err)
 	}
@@ -714,10 +749,7 @@ func (b *descriptorBuilder) ensureClass(name string, decl *typeDecl) error {
 		if m.Type == nil {
 			return fmt.Errorf("class %q field %q has no type", name, m.Name)
 		}
-		if hasDocCommentBefore(decl.src, m.Span.Start) {
-			return fmt.Errorf("class %q field %q carries a /// doc comment (doc-comment descriptions are not supported yet — see #586 D6)", name, m.Name)
-		}
-		alias, desc, err := extractMemberMeta(memberAttributes(m))
+		fm, err := extractFieldMeta(memberAttributes(m))
 		if err != nil {
 			return fmt.Errorf("class %q field %q: %w", name, m.Name, err)
 		}
@@ -725,18 +757,26 @@ func (b *descriptorBuilder) ensureClass(name string, decl *typeDecl) error {
 		if err != nil {
 			return fmt.Errorf("class %q field %q: %w", name, m.Name, err)
 		}
+		// BAML reassociates @check/@assert/@stream.* from the field onto its
+		// TYPE, so the constraints/streaming ride on the field type's Meta, not
+		// the field itself. The lowered type here is metadata-free (any nested
+		// attribute already declined), so assigning Meta cannot clobber anything.
+		ft.Meta.Constraints = fm.constraints
+		ft.Meta.Stream = fm.stream
 		fields = append(fields, sd.ClassField{
-			Name:        sd.Name{Name: m.Name, Alias: alias},
+			Name:        sd.Name{Name: m.Name, Alias: fm.alias},
 			Type:        ft,
-			Description: desc,
+			Description: fm.description,
 		})
 	}
 
 	b.classes[name] = sd.ClassDef{
-		Name:        sd.Name{Name: name, Alias: classAlias},
-		Description: classDesc,
+		Name:        sd.Name{Name: name, Alias: block.alias},
+		Description: block.description,
 		Mode:        sd.NonStreaming,
 		Fields:      fields,
+		Constraints: block.constraints,
+		Stream:      block.stream,
 	}
 	b.classOrder = append(b.classOrder, name)
 	return nil
@@ -744,46 +784,44 @@ func (b *descriptorBuilder) ensureClass(name string, decl *typeDecl) error {
 
 // ensureEnum lowers an enum definition into the collected set exactly once. It
 // declines unsupported body content and named-argument enum blocks. Enum-level
-// @@alias/@@description block attributes lower to the enum's alias/description;
-// any other block attribute (@@dynamic, ...) declines. Enum-value @alias/
-// @description lower to the value's alias/description; any other value attribute
-// (@skip, ...) declines.
-func (b *descriptorBuilder) ensureEnum(name string, decl *typeDecl) error {
+// @@alias lowers to the enum's alias and @@check/@@assert to its constraints;
+// @@description and @@stream.* decline because the descriptor (like BAML's
+// OutputFormatContent) has no enum-level description or streaming home for them.
+// An enum value's @alias/@description lower to the value; @check/@assert/
+// @stream.* on a value decline (EnumValue carries no constraints/streaming
+// field); any other value attribute (@skip, ...) declines. A `///` doc comment
+// is captured as a no-op (BAML never renders it — see #586 D6).
+func (b *descriptorBuilder) ensureEnum(name string, tb *bamlparser.TypeBlock) error {
 	if _, done := b.enums[name]; done {
 		return nil
 	}
-	tb := decl.tb
 	if tb.HasUnsupportedContent {
 		return fmt.Errorf("enum %q has unsupported body content", name)
 	}
 	if len(tb.Args) > 0 {
 		return fmt.Errorf("enum %q has a named-argument list (parameterized enums are not supported)", name)
 	}
-	// D6: a `///` doc comment on the enum renders a Description in BAML, which
-	// slice 3 does not capture — decline fail-closed.
-	if hasDocCommentBefore(decl.src, tb.Span.Start) {
-		return fmt.Errorf("enum %q carries a /// doc comment (doc-comment descriptions are not supported yet — see #586 D6)", name)
-	}
 
-	enumAlias, enumDesc, err := extractBlockMeta(tb.Attributes)
+	block, err := extractBlockMeta(tb.Attributes)
 	if err != nil {
 		return fmt.Errorf("enum %q: %w", name, err)
 	}
 	// The descriptor model (and BAML's OutputFormatContent) has no enum-LEVEL
-	// description — only enum VALUES carry one, and BAML renders no enum-level
-	// description in ctx.output_format. An @@description on an enum is therefore
+	// description or streaming — only enum VALUES carry a description, and BAML
+	// renders neither an enum-level description nor enum-level streaming in
+	// ctx.output_format. An @@description / @@stream.* on an enum is therefore
 	// not representable; decline fail-closed rather than silently drop it.
-	if enumDesc != nil {
+	if block.description != nil {
 		return fmt.Errorf("enum %q carries @@description, which has no rendered representation (only enum values carry descriptions)", name)
+	}
+	if !block.stream.IsZero() {
+		return fmt.Errorf("enum %q carries an @@stream.* attribute, which has no enum-level representation", name)
 	}
 
 	values := make([]sd.EnumValue, 0, len(tb.Fields))
 	for _, m := range tb.Fields {
 		if m.Type != nil {
 			return fmt.Errorf("enum %q value %q unexpectedly carries a type", name, m.Name)
-		}
-		if hasDocCommentBefore(decl.src, m.Span.Start) {
-			return fmt.Errorf("enum %q value %q carries a /// doc comment (doc-comment descriptions are not supported yet — see #586 D6)", name, m.Name)
 		}
 		alias, desc, err := extractMemberMeta(m.Attributes)
 		if err != nil {
@@ -796,24 +834,27 @@ func (b *descriptorBuilder) ensureEnum(name string, decl *typeDecl) error {
 	}
 
 	b.enums[name] = sd.EnumDef{
-		Name:   sd.Name{Name: name, Alias: enumAlias},
-		Values: values,
+		Name:        sd.Name{Name: name, Alias: block.alias},
+		Values:      values,
+		Constraints: block.constraints,
 	}
 	b.enumOrder = append(b.enumOrder, name)
 	return nil
 }
 
 // resolveAlias inlines a non-recursive alias by lowering its right-hand side in
-// place (BAML substitutes non-recursive aliases). It declines alias attributes
-// (slice 3 supports none, including the @check/@assert BAML permits on
-// aliases), an unparsed RHS, and recursion (an alias re-entered while on the
-// active path — a structural recursive alias is slice 5).
+// place (BAML substitutes non-recursive aliases). D9: it declines alias
+// attributes — BAML permits @check/@assert on aliases, but inlining a
+// constraint-bearing alias onto its use sites is deferred (not in the slice-4
+// corpus), so an attributed alias fails closed rather than dropping the
+// constraint. It also declines an unparsed RHS and recursion (an alias
+// re-entered while on the active path — a structural recursive alias is slice 5).
 func (b *descriptorBuilder) resolveAlias(name string, alias *bamlparser.TypeAlias) (sd.Type, error) {
 	if b.aliasVisiting[name] {
 		return sd.Type{}, fmt.Errorf("recursive type alias %q is not supported yet (slice 5)", name)
 	}
 	if len(alias.Attributes) > 0 {
-		return sd.Type{}, fmt.Errorf("type alias %q carries attribute @%s (alias attributes are not supported yet — slice 4)", name, alias.Attributes[0].Name)
+		return sd.Type{}, fmt.Errorf("type alias %q carries attribute @%s (alias constraint inlining is deferred — see #586 D9)", name, alias.Attributes[0].Name)
 	}
 	if alias.Expr == nil {
 		return sd.Type{}, fmt.Errorf("type alias %q has an unparsed right-hand side", name)
@@ -825,11 +866,14 @@ func (b *descriptorBuilder) resolveAlias(name string, alias *bamlparser.TypeAlia
 }
 
 // memberAttributes returns the field-level attributes of a class member: the
-// member's own attributes plus the trailing field attributes the slice-1 parser
-// attaches to the OUTERMOST type node (it does not reassociate field-vs-type
-// attributes, so @alias/@description on `name string @alias("x")` land on the
-// string node). Both are field metadata; nested-node attributes are NOT
-// included (they decline in lowerType).
+// member's own attributes plus the trailing field attributes the parser attaches
+// to the OUTERMOST type node (it does not reassociate field-vs-type attributes,
+// so both @alias/@description AND @check/@assert/@stream.* on `name string
+// @alias("x") @check(...)` land on the string node). [extractFieldMeta] routes
+// each by name — @alias/@description to the field, @check/@stream.* to the
+// field's type — reproducing BAML's reassociate_type_attributes without needing
+// the parser to have done it. Nested-node attributes are NOT included (they
+// decline in lowerType).
 func memberAttributes(m *bamlparser.TypeMember) []*bamlparser.Attribute {
 	if m.Type == nil || len(m.Type.Attributes) == 0 {
 		return m.Attributes
@@ -843,12 +887,68 @@ func memberAttributes(m *bamlparser.TypeMember) []*bamlparser.Attribute {
 	return out
 }
 
-// extractMemberMeta partitions a field's / enum value's attributes into the
-// slice-3-supported metadata (@alias, @description) and everything else. It
-// returns the alias and description (nil when absent) and DECLINES fail-closed
-// on any other attribute (@assert/@check/@stream.*/@skip/unknown) or a repeated
-// @alias/@description. These are single-@ FIELD attributes; a stray @@ block
-// attribute here is malformed and also declines.
+// fieldMeta is a class field's lowered attribute metadata. BAML routes
+// @alias/@description to the field itself and reassociates @assert/@check and
+// @stream.* onto the field's TYPE, so the caller attaches constraints/stream to
+// the lowered field-type's Meta and alias/description to the field.
+type fieldMeta struct {
+	alias       *string
+	description *string
+	constraints []sd.Constraint
+	stream      sd.StreamingBehavior
+}
+
+// extractFieldMeta partitions a class field's attributes: @alias/@description
+// (field metadata), @assert/@check (opaque constraints, reassociated to the
+// type), and @stream.done/@stream.not_null/@stream.with_state (streaming, also
+// reassociated to the type). It DECLINES fail-closed on any other attribute
+// (@skip/unknown), a duplicate @alias/@description, or a stray @@ block attribute
+// (malformed on a field). Constraints are collected in source order.
+func extractFieldMeta(attrs []*bamlparser.Attribute) (fieldMeta, error) {
+	var m fieldMeta
+	for _, a := range attrs {
+		if a.Block {
+			return fieldMeta{}, declineAttribute(a)
+		}
+		switch {
+		case a.Name == "alias":
+			v, err := attributeStringArg(a)
+			if err != nil {
+				return fieldMeta{}, err
+			}
+			if m.alias != nil {
+				return fieldMeta{}, fmt.Errorf("duplicate @alias attribute")
+			}
+			m.alias = &v
+		case a.Name == "description":
+			v, err := attributeStringArg(a)
+			if err != nil {
+				return fieldMeta{}, err
+			}
+			if m.description != nil {
+				return fieldMeta{}, fmt.Errorf("duplicate @description attribute")
+			}
+			m.description = &v
+		case isConstraintAttr(a.Name):
+			c, err := constraintFromAttribute(a)
+			if err != nil {
+				return fieldMeta{}, err
+			}
+			m.constraints = append(m.constraints, c)
+		case applyStreamAttribute(&m.stream, a):
+			// flag set in place
+		default:
+			return fieldMeta{}, declineAttribute(a)
+		}
+	}
+	return m, nil
+}
+
+// extractMemberMeta partitions an ENUM VALUE's attributes into the supported
+// metadata (@alias, @description) and everything else. An EnumValue carries no
+// constraints or streaming field, so @check/@assert/@stream.* — like @skip and
+// unknowns — DECLINE fail-closed; a repeated @alias/@description and a stray @@
+// block attribute also decline.
 func extractMemberMeta(attrs []*bamlparser.Attribute) (alias, description *string, err error) {
 	for _, a := range attrs {
 		if a.Block {
@@ -880,45 +980,173 @@ func extractMemberMeta(attrs []*bamlparser.Attribute) (alias, description *strin
 	return alias, description, nil
 }
 
-// extractBlockMeta is extractMemberMeta's counterpart for class/enum-level block
-// attributes (@@alias, @@description). Any other block attribute (@@dynamic, a
-// stray non-block attribute, an unknown block attribute) declines fail-closed.
-func extractBlockMeta(attrs []*bamlparser.Attribute) (alias, description *string, err error) {
+// blockMeta is a class/enum-level block's lowered attribute metadata.
+type blockMeta struct {
+	alias       *string
+	description *string
+	constraints []sd.Constraint
+	stream      sd.StreamingBehavior
+}
+
+// extractBlockMeta partitions a class/enum-level block's attributes: @@alias
+// (name alias), @@description (description), @@check/@@assert (constraints), and
+// @@stream.* (streaming). The enum caller further declines @@description /
+// @@stream.* because an enum has no descriptor home for them. Any non-block
+// attribute here is malformed, and @@dynamic / an unknown block attribute
+// decline fail-closed.
+func extractBlockMeta(attrs []*bamlparser.Attribute) (blockMeta, error) {
+	var m blockMeta
 	for _, a := range attrs {
 		if !a.Block {
-			return nil, nil, declineAttribute(a)
+			return blockMeta{}, declineAttribute(a)
 		}
-		switch a.Name {
-		case "alias":
-			v, e := attributeStringArg(a)
-			if e != nil {
-				return nil, nil, e
+		switch {
+		case a.Name == "alias":
+			v, err := attributeStringArg(a)
+			if err != nil {
+				return blockMeta{}, err
 			}
-			if alias != nil {
-				return nil, nil, fmt.Errorf("duplicate @@alias attribute")
+			if m.alias != nil {
+				return blockMeta{}, fmt.Errorf("duplicate @@alias attribute")
 			}
-			alias = &v
-		case "description":
-			v, e := attributeStringArg(a)
-			if e != nil {
-				return nil, nil, e
+			m.alias = &v
+		case a.Name == "description":
+			v, err := attributeStringArg(a)
+			if err != nil {
+				return blockMeta{}, err
 			}
-			if description != nil {
-				return nil, nil, fmt.Errorf("duplicate @@description attribute")
+			if m.description != nil {
+				return blockMeta{}, fmt.Errorf("duplicate @@description attribute")
 			}
-			description = &v
+			m.description = &v
+		case isConstraintAttr(a.Name):
+			c, err := constraintFromAttribute(a)
+			if err != nil {
+				return blockMeta{}, err
+			}
+			m.constraints = append(m.constraints, c)
+		case applyStreamAttribute(&m.stream, a):
+			// flag set in place
 		default:
-			return nil, nil, declineAttribute(a)
+			return blockMeta{}, declineAttribute(a)
 		}
 	}
-	return alias, description, nil
+	return m, nil
+}
+
+// isConstraintAttr reports whether name is a constraint attribute (@check or
+// @assert, block or field).
+func isConstraintAttr(name string) bool {
+	return name == "check" || name == "assert"
+}
+
+// applyStreamAttribute sets the streaming flag named by a @stream.* / @@stream.*
+// attribute on sb and reports whether a was a stream attribute at all (so a
+// switch arm can both match and apply in one call). Stream markers take no
+// arguments; any are ignored (harmless — BAML-valid input never carries them).
+func applyStreamAttribute(sb *sd.StreamingBehavior, a *bamlparser.Attribute) bool {
+	switch a.Name {
+	case "stream.done":
+		sb.Done = true
+	case "stream.not_null":
+		sb.Needed = true
+	case "stream.with_state":
+		sb.State = true
+	default:
+		return false
+	}
+	return true
+}
+
+// constraintFromAttribute lowers a @check/@assert (field or block) attribute
+// into an opaque [sd.Constraint]. D7: the Jinja expression is preserved verbatim
+// (the raw inner text between {{ and }}) and NEVER parsed or evaluated —
+// evaluation is out of scope (deferred). A shape that is not (label?, {{expr}})
+// declines fail-closed.
+func constraintFromAttribute(a *bamlparser.Attribute) (sd.Constraint, error) {
+	var level sd.ConstraintLevel
+	switch a.Name {
+	case "assert":
+		level = sd.ConstraintAssert
+	case "check":
+		level = sd.ConstraintCheck
+	default:
+		return sd.Constraint{}, fmt.Errorf("attribute @%s is not a constraint", a.Name)
+	}
+	if !a.HasParens {
+		return sd.Constraint{}, fmt.Errorf("@%s requires a ({{ expression }}) argument", a.Name)
+	}
+	label, expr, err := splitConstraintArgs(a.RawArgs)
+	if err != nil {
+		return sd.Constraint{}, fmt.Errorf("@%s: %w", a.Name, err)
+	}
+	return sd.Constraint{Level: level, Label: label, Expression: expr}, nil
+}
+
+// splitConstraintArgs splits a @check/@assert argument list into its optional
+// leading label (a bare identifier) and its mandatory `{{ ... }}` Jinja
+// expression, reading the RAW source between the attribute's parentheses so the
+// Jinja text survives byte-for-byte. It never parses or evaluates the expression
+// (D7 — evaluation is deferred).
+//
+// BAML's grammar is `@check(label, {{ expr }})` or a lone `@assert({{ expr }})`
+// (a lone @check is a BAML validation error, but laxer-than-BAML is fine here:
+// we only ever see BAML-valid input in production). The stored expression is the
+// verbatim inner text between {{ and }} (braces excluded, not trimmed), matching
+// BAML's JinjaExpression content modulo BAML's backslash-doubling normalization,
+// which is deliberately skipped (the value is opaque and never evaluated).
+func splitConstraintArgs(rawArgs string) (label *string, expression string, err error) {
+	open := strings.Index(rawArgs, "{{")
+	if open < 0 {
+		return nil, "", fmt.Errorf("constraint expression must be a {{ ... }} Jinja block")
+	}
+	rest := rawArgs[open+2:]
+	closeRel := strings.Index(rest, "}}")
+	if closeRel < 0 {
+		return nil, "", fmt.Errorf("constraint expression is missing its closing }}")
+	}
+	expression = rest[:closeRel]
+	// The Jinja block is the LAST argument; anything after its closing }} is an
+	// unsupported shape (BAML permits at most a label plus one expression).
+	if trailing := strings.TrimSpace(rest[closeRel+2:]); trailing != "" {
+		return nil, "", fmt.Errorf("unexpected trailing argument after the {{ ... }} expression")
+	}
+	labelPart := strings.TrimSpace(rawArgs[:open])
+	labelPart = strings.TrimSpace(strings.TrimSuffix(labelPart, ","))
+	if labelPart == "" {
+		return nil, expression, nil
+	}
+	if !isBareIdentifier(labelPart) {
+		return nil, "", fmt.Errorf("constraint label %q must be a bare identifier", labelPart)
+	}
+	l := labelPart
+	return &l, expression, nil
+}
+
+// isBareIdentifier reports whether s is a single BAML-style identifier
+// (`[A-Za-z_][A-Za-z0-9_]*`), used to validate a constraint label.
+func isBareIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '_':
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z':
+		case c >= '0' && c <= '9' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // attributeStringArg extracts the single plain-string argument of an @alias/
 // @description attribute (a quoted string or a raw string; both arrive with
 // their delimiters stripped by the parser's normalization pass). D5: a missing,
-// multi-valued, or non-string argument declines — slice 3 renders the alias/
-// description verbatim, so an argument it cannot reproduce byte-for-byte fails
+// multi-valued, or non-string argument declines — the alias/description is
+// rendered verbatim, so an argument it cannot reproduce byte-for-byte fails
 // closed rather than guessing.
 func attributeStringArg(a *bamlparser.Attribute) (string, error) {
 	if len(a.Args) != 1 {
@@ -935,53 +1163,17 @@ func attributeStringArg(a *bamlparser.Attribute) (string, error) {
 	}
 }
 
-// hasDocCommentBefore reports whether the physical source line immediately
-// above the declaration at byte offset `start` is a BAML `///` doc comment.
-//
-// BAML lowers `///` to a Description that renders in ctx.output_format, but the
-// shared lexer elides all `//`-prefixed comments (#586 D6), so the AST never
-// retains them. Rather than silently emit a descriptor with a MISSING
-// description — the wrong failure mode for a parity slice — the builder uses
-// this DETECTION (not capture) to DECLINE fail-closed any reachable class /
-// field / enum / enum-value that carries a doc comment. Capturing `///` and
-// lowering it to a Description is a documented fast-follow.
-//
-// It inspects only the single physical line directly above the declaration:
-// BAML doc comments sit immediately above (no blank line in between), and a
-// multi-line `///` block still has a `///` line directly above the
-// declaration, so one line is sufficient for presence detection. A `///`
-// prefix (three-or-more slashes) is a doc comment; a bare `//` is an ordinary
-// comment and is ignored, matching BAML's doc_comment-before-comment grammar.
-func hasDocCommentBefore(src []byte, start int) bool {
-	if start <= 0 || start > len(src) {
-		return false
-	}
-	// Rewind to the start of the declaration's own line.
-	lineStart := start
-	for lineStart > 0 && src[lineStart-1] != '\n' {
-		lineStart--
-	}
-	if lineStart == 0 {
-		return false // declaration is on the first line; nothing precedes it
-	}
-	// The preceding physical line is [prevStart, prevEnd), where prevEnd is the
-	// '\n' that terminates it (at lineStart-1).
-	prevEnd := lineStart - 1
-	prevStart := prevEnd
-	for prevStart > 0 && src[prevStart-1] != '\n' {
-		prevStart--
-	}
-	return strings.HasPrefix(strings.TrimSpace(string(src[prevStart:prevEnd])), "///")
-}
-
 // declineAttribute produces the stable per-function decline error for an
-// attribute slice 3 does not lower. The substrings "attribute" (field) and
-// "block attribute" (block) are load-bearing for the decline-reason tests.
+// attribute this slice does not lower on this node. The substrings "attribute"
+// (field) and "block attribute" (block) are load-bearing for the decline-reason
+// tests. Reached for @skip / @@dynamic / unknown attributes, a constraint or
+// stream attribute on a node with no descriptor home (an enum value / enum-level
+// block), and any attribute on a nested type node.
 func declineAttribute(a *bamlparser.Attribute) error {
 	if a.Block {
-		return fmt.Errorf("block attribute @@%s is not supported yet (slice 3 lowers only @@alias/@@description; @@dynamic and other block attributes are declined)", a.Name)
+		return fmt.Errorf("block attribute @@%s is not supported here (@@dynamic and unknown block attributes are declined; @@alias/@@description/@@check/@@assert/@@stream.* are lowered where the descriptor can represent them)", a.Name)
 	}
-	return fmt.Errorf("attribute @%s is not supported yet (slice 3 lowers only @alias/@description; constraints, streaming, and @skip are declined)", a.Name)
+	return fmt.Errorf("attribute @%s is not supported here (@skip and unknown attributes are declined, and @check/@assert/@stream.* have no home on this node; @alias/@description are lowered everywhere and constraints/streaming where representable)", a.Name)
 }
 
 // attrDisplayName renders an attribute's name with its @/@@ sigil for messages.

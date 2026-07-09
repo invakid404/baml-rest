@@ -149,3 +149,85 @@ class Profile {
     status StatusEnum
     note string?
 }
+
+// === slice-4: attributes + constraints ===================================
+//
+// The output_format is the FINAL (non-streaming) schema. Constraints
+// (@check/@assert) are metadata and stream flags (@stream.*) affect streaming
+// mode, not the final block — so NONE of the constructs below may change the
+// rendered ctx.output_format. Each doc-comment / constraint / stream fixture
+// must render byte-identically to the same shape without them, which is exactly
+// what the native builder produces (it captures the metadata into the descriptor
+// but the renderer ignores it). This is the load-bearing proof for slice 4.
+
+// --- /// doc comments are CAPTURED AS A NO-OP -----------------------------
+//
+// BAML lowers `///` to a docstring its output_format renderer NEVER reads (only
+// @description renders — confirmed by THIS oracle). A doc-commented class /
+// field / enum / enum-value must therefore render with NO `//` description
+// lines. If BAML rendered doc comments, DocStatus would gain descriptions and
+// HOIST (changing the whole block), and DocCommented would grow `//` lines —
+// either would break byte-parity, so this fixture is the empirical proof.
+
+/// A documented enum (its enum-level doc comment must NOT render).
+enum DocStatus {
+    /// the active value (this doc comment must NOT render)
+    ACTIVE
+    INACTIVE
+}
+
+/// A documented output class.
+/// Second doc line — still must NOT render.
+class DocCommented {
+    /// the identifier field (must NOT render)
+    id string
+    /// how many items (must NOT render)
+    count int
+    status DocStatus
+}
+
+// --- doc comment vs @description precedence -------------------------------
+//
+// With BOTH a `///` and an @description on one node, @description is the SOLE
+// rendered source; the doc comment is invisible. Only "the real title" may
+// appear as a `//` line for `title`.
+
+class DocVsDesc {
+    /// doc comment on title (must NOT render)
+    title string @description("the real title")
+    body string
+}
+
+// --- @assert / @check constraints (repeated, field + block level) ---------
+//
+// Opaque constraints, never rendered. Byte-identical to a constraint-free class.
+
+class Constrained {
+    score int @check(positive, {{ this > 0 }}) @assert(bounded, {{ this < 100 }})
+    label string @assert({{ this|length > 0 }})
+    note string?
+    @@assert(consistent, {{ this.score < 100 }})
+}
+
+// --- @stream.* flags (field-level reassociated to type + class level) -----
+//
+// Streaming flags affect STREAMING mode, not the FINAL non-streaming
+// output_format this oracle renders — so byte-identical to a stream-free class.
+
+class Streamed {
+    ready bool @stream.done
+    payload string @stream.not_null @stream.with_state
+    tail int
+    @@stream.done
+}
+
+// --- mixed @alias + @description + @check + @stream on one field ----------
+//
+// Only @alias (renders as the field NAME) and @description (renders as a `//`
+// line) affect output_format; the @check and @stream.done do not.
+
+class Mixed {
+    full_name string @alias("name") @description("the full name") @check(nonempty, {{ this|length > 0 }}) @stream.done
+    status Category @description("the status category")
+    @@assert(ok, {{ this.full_name|length > 0 }})
+}
