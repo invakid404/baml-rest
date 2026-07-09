@@ -33,24 +33,30 @@ import (
 //     first.
 
 // ReachableOrder walks the bundle's target type graph the way BAML's
-// relevant_data_models does and returns the enum names and class keys
-// reachable from the target, in BAML output-format hoist order
-// (reverse-of-reference DFS). Unreachable definitions are omitted, matching
-// BAML and [orderByReachability].
+// relevant_data_models does and returns the enum names, class keys, and
+// structural-recursive-alias names reachable from the target, in BAML
+// output-format hoist order (reverse-of-reference DFS). Unreachable
+// definitions are omitted, matching BAML and [orderByReachability].
 //
 // This is the exported seam a native static-schema builder uses to emit its
-// descriptor's enum/class slices in BAML order. The dynamic path gets that
-// order for free inside [FromDynamicOutputSchema], which calls
+// descriptor's enum/class/alias slices in BAML order. The dynamic path gets
+// that order for free inside [FromDynamicOutputSchema], which calls
 // [orderByReachability] directly; a static builder that lowers a
 // declaration-ordered descriptor lowers it here, then reorders the descriptor
 // by this result before storing it (FromStaticDescriptor preserves order
 // verbatim and never reruns reachability). It relies on the same single source
 // of truth for the traversal, so the two paths cannot drift.
 //
+// The alias-name slice is the discovery order of [TypeRecursiveAlias] nodes:
+// the order the first reference to each structural recursive alias is popped.
+// A native builder emitting structural recursive aliases uses it to order
+// Bundle.StructuralRecursiveAliases exactly as BAML's structural_recursive_aliases
+// IndexMap is ordered (see [orderByReachability]).
+//
 // The bundle's exported slices are the inputs; the unexported indexes are not
 // consulted, so ReachableOrder is safe to call on a freshly lowered bundle
 // whether or not [Bundle.RebuildIndexes] has run.
-func (b *Bundle) ReachableOrder() ([]string, []ClassKey) {
+func (b *Bundle) ReachableOrder() ([]string, []ClassKey, []string) {
 	enumDefs := make(map[string]EnumDef, len(b.Enums))
 	for i := range b.Enums {
 		enumDefs[b.Enums[i].Name.Name] = b.Enums[i]
@@ -59,8 +65,12 @@ func (b *Bundle) ReachableOrder() ([]string, []ClassKey) {
 	for i := range b.Classes {
 		classDefs[ClassKey{Name: b.Classes[i].Name.Name, Mode: b.Classes[i].Mode}] = b.Classes[i]
 	}
+	aliasTargets := make(map[string]Type, len(b.StructuralRecursiveAliases))
+	for i := range b.StructuralRecursiveAliases {
+		aliasTargets[b.StructuralRecursiveAliases[i].Name] = b.StructuralRecursiveAliases[i].Target
+	}
 
-	enums, classes := orderByReachability(b.Target, enumDefs, classDefs)
+	enums, classes, aliasNames := orderByReachability(b.Target, enumDefs, classDefs, aliasTargets)
 
 	enumNames := make([]string, 0, len(enums))
 	for i := range enums {
@@ -70,22 +80,32 @@ func (b *Bundle) ReachableOrder() ([]string, []ClassKey) {
 	for i := range classes {
 		classKeys = append(classKeys, ClassKey{Name: classes[i].Name.Name, Mode: classes[i].Mode})
 	}
-	return enumNames, classKeys
+	return enumNames, classKeys, aliasNames
 }
 
 // orderByReachability walks the type graph rooted at target the way BAML's
-// relevant_data_models does and returns the enum and class definitions in
-// the order BAML would hoist them. enumDefs and classDefs are the lowered
-// definition bodies keyed by canonical name and (name, mode); a reference
-// with no local body (a resolver-classified external ref) contributes no
-// definition but is still marked checked, exactly as the construction
-// contract requires — Validate catches the dangling reference later.
+// relevant_data_models does and returns the enum and class definitions, plus
+// the structural-recursive-alias names, in the order BAML would hoist them.
+// enumDefs and classDefs are the lowered definition bodies keyed by canonical
+// name and (name, mode); aliasTargets maps each structural recursive alias
+// name to its target type (nil/empty when the graph has no recursive aliases,
+// as on the dynamic path). A reference with no local body (a resolver-
+// classified external ref) contributes no definition but is still marked
+// checked, exactly as the construction contract requires — Validate catches the
+// dangling reference later.
+//
+// A [TypeRecursiveAlias] node is appended to the returned alias-name slice on
+// first pop and its target is pushed onto the stack, reproducing BAML's
+// RecursiveTypeAlias arm (which inserts the alias into structural_recursive_aliases
+// and pushes its target). This both orders the alias definitions and lets the
+// traversal discover any enum/class reachable only through an alias target.
 //
 // Unreachable declared definitions are intentionally absent from the
 // result: relevant_data_models only returns what the target reaches.
-func orderByReachability(target Type, enumDefs map[string]EnumDef, classDefs map[ClassKey]ClassDef) ([]EnumDef, []ClassDef) {
+func orderByReachability(target Type, enumDefs map[string]EnumDef, classDefs map[ClassKey]ClassDef, aliasTargets map[string]Type) ([]EnumDef, []ClassDef, []string) {
 	var enumsOut []EnumDef
 	var classesOut []ClassDef
+	var aliasesOut []string
 
 	// checked mirrors BAML's checked_types: a type's display key is
 	// inserted the first time the type is popped (for the inserting kinds),
@@ -182,14 +202,32 @@ func orderByReachability(target Type, enumDefs map[string]EnumDef, classDefs map
 				pushIfUnchecked(&stack, checked, t.Items[i])
 			}
 
+		case TypeRecursiveAlias:
+			// BAML's RecursiveTypeAlias arm inserts the alias into
+			// structural_recursive_aliases (an IndexMap, first-insert wins) and
+			// pushes its target. Reproduce that: record the name on first pop
+			// (the alias-definition hoist order) and push its target so any
+			// enum/class reachable only through the alias body is discovered.
+			// displayKey is the bare alias name, so a second reference dedups.
+			key := displayKey(t)
+			if _, seen := checked[key]; seen {
+				continue
+			}
+			checked[key] = struct{}{}
+			aliasesOut = append(aliasesOut, t.Name)
+			if tgt, ok := aliasTargets[t.Name]; ok {
+				pushIfUnchecked(&stack, checked, tgt)
+			}
+
 		default:
-			// Primitives, literals, recursive aliases, arrow, and top are
-			// no-ops in this traversal: they insert nothing and push nothing.
-			// (The dynamic path produces none of alias/arrow/top.)
+			// Primitives, literals, arrow, and top are no-ops in this
+			// traversal: they insert nothing and push nothing. (The dynamic
+			// path produces none of arrow/top; recursive aliases are handled by
+			// the TypeRecursiveAlias case above.)
 		}
 	}
 
-	return enumsOut, classesOut
+	return enumsOut, classesOut, aliasesOut
 }
 
 // pushIfUnchecked pushes t onto the stack only when its display key is not

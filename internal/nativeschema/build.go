@@ -25,13 +25,29 @@
 // container introspection step fails to compile a sibling symbol as
 // "undefined". See #586 and the slice-2 build fix.
 //
-// SCOPE (slice 4 — attributes + constraints, on top of slices 1-3):
+// SCOPE (slice 5 — recursion, on top of slices 1-4):
 //   - Lower primitives, named class/enum refs, non-recursive aliases (inlined),
 //     lists, maps, optionals, unions, and string/int/bool literals, and emit
 //     Enums/Classes in BAML output-format reachability order (see
 //     [descriptorBuilder.reorderByReachability]); FromStaticDescriptor preserves
 //     order verbatim, so the STORED descriptor must already be in BAML order for
 //     the renderer to match byte-for-byte.
+//   - Detect RECURSIVE CLASSES (class-reference cycles, an SCC over
+//     class->field->class edges) and structural RECURSIVE ALIASES (alias cycles
+//     that recurse THROUGH a list/map) via recursion.go's Tarjan SCC, mirroring
+//     BAML's finite_recursive_cycles / recursive_alias_cycles. A recursive class
+//     is emitted normally in Classes but listed in Bundle.RecursiveClasses (so
+//     the renderer hoists it as BAML does); a structural recursive alias is
+//     emitted as a Bundle.StructuralRecursiveAliases entry and referenced via a
+//     TypeRecursiveAlias node. Both slices are ordered by reachability
+//     (RecursiveClasses in BAML cycle-hit order, aliases in first-pop order).
+//     A DIRECT/degenerate alias cycle (not mediated by a list/map, e.g.
+//     `type A = A` / `type A = A | int` / `type A = A?`) is INVALID and DECLINES
+//     fail-closed; a multi-alias structural cycle DECLINES too (single-alias
+//     structural cycles only in this slice); recursion whose output graph reaches
+//     media/tuple still DECLINES via ValidateOutput. @@dynamic recursive overlays,
+//     streaming partialization of recursive types, and @skip stay DECLINED
+//     (slice 6).
 //   - Lower @alias -> Name.Alias and @description -> Description on class fields,
 //     enum values, and class/enum-level block attributes.
 //   - Lower @assert/@check -> opaque [schemadescriptor.Constraint] carrying the
@@ -50,8 +66,7 @@
 //   - Validate STRUCTURALLY via FromStaticDescriptor + ValidateOutput. Constraints
 //     and streaming flags are metadata: they do NOT change the rendered
 //     ctx.output_format (the parity harness proves this byte-for-byte).
-//   - @@dynamic and @skip stay DECLINED (slice 6); recursion stays DECLINED
-//     (slice 5).
+//   - @@dynamic and @skip stay DECLINED (slice 6).
 //
 // Lax-vs-BAML / decline decisions logged here are also recorded on #586:
 //
@@ -104,6 +119,20 @@
 //	D9. type-alias RHS attributes (BAML permits @check/@assert on aliases) remain
 //	    DECLINED: alias constraint inlining is deferred (not in the slice-4
 //	    corpus), so an attributed alias fails closed rather than being dropped.
+//	D10. RECURSION (slice 5). Recursive classes + structural recursive aliases
+//	    (cycles through a list/map) are lowered and hoisted in BAML order (see
+//	    recursion.go for the Tarjan detection and SCOPE above). The declines are
+//	    fail-closed and never approximate: (a) a DIRECT/degenerate alias cycle
+//	    (not mediated by a list/map — BAML rejects it at validation) declines;
+//	    (b) a MULTI-alias structural cycle declines (only single-alias structural
+//	    cycles, the JSON-value shape, are lowered here — a larger cycle's hoist
+//	    order is not oracle-proven in this slice); (c) recursion whose output
+//	    graph reaches media/tuple declines via ValidateOutput (a recursive class
+//	    is legal, but media/tuple output is not); (d) @@dynamic recursive
+//	    overlays, streaming partialization of recursive types, and @skip stay
+//	    DECLINED (slice 6). recursion.go reproduces BAML's finite_recursive_cycles
+//	    (class SCC) + recursive_alias_cycles (alias SCC through list/map) +
+//	    non-structural alias graph (invalid-cycle detection).
 package nativeschema
 
 import (
@@ -186,6 +215,20 @@ type schemaTypeIndex struct {
 	enums     map[string]*bamlparser.TypeBlock
 	aliases   map[string]*bamlparser.TypeAlias
 	ambiguous map[string]struct{}
+
+	// classDeclOrder and aliasDeclOrder record canonical declaration order
+	// (file order, then item order within a file) for classes and aliases. They
+	// are the stable node-id spaces the recursion analysis (recursion.go) feeds
+	// into Tarjan's SCC, reproducing BAML's TypeExpId / TypeAliasId ordering so
+	// recursive-class and structural-recursive-alias cycles hoist in BAML order.
+	// A duplicate (ambiguous) name is recorded once, at its first declaration.
+	classDeclOrder []string
+	aliasDeclOrder []string
+
+	// rec is the lazily-computed recursion classification over the whole
+	// project (recursive classes, structural recursive aliases, invalid alias
+	// cycles). See [schemaTypeIndex.recursion].
+	rec *recursionInfo
 }
 
 func (i *schemaTypeIndex) isAmbiguous(name string) bool {
@@ -205,6 +248,8 @@ func buildSchemaTypeIndex(files []SourceFile) *schemaTypeIndex {
 	}
 
 	counts := make(map[string]int)
+	seenClass := make(map[string]struct{})
+	seenAlias := make(map[string]struct{})
 	for _, sf := range files {
 		f := sf.File
 		if f == nil {
@@ -215,12 +260,20 @@ func buildSchemaTypeIndex(files []SourceFile) *schemaTypeIndex {
 			case it.TypeBlock != nil && it.TypeBlock.Name != "" && it.TypeBlock.Keyword == "class":
 				counts[it.TypeBlock.Name]++
 				idx.classes[it.TypeBlock.Name] = it.TypeBlock
+				if _, ok := seenClass[it.TypeBlock.Name]; !ok {
+					seenClass[it.TypeBlock.Name] = struct{}{}
+					idx.classDeclOrder = append(idx.classDeclOrder, it.TypeBlock.Name)
+				}
 			case it.TypeBlock != nil && it.TypeBlock.Name != "" && it.TypeBlock.Keyword == "enum":
 				counts[it.TypeBlock.Name]++
 				idx.enums[it.TypeBlock.Name] = it.TypeBlock
 			case it.TypeAlias != nil && it.TypeAlias.Name != "":
 				counts[it.TypeAlias.Name]++
 				idx.aliases[it.TypeAlias.Name] = it.TypeAlias
+				if _, ok := seenAlias[it.TypeAlias.Name]; !ok {
+					seenAlias[it.TypeAlias.Name] = struct{}{}
+					idx.aliasDeclOrder = append(idx.aliasDeclOrder, it.TypeAlias.Name)
+				}
 			}
 		}
 	}
@@ -254,8 +307,10 @@ func buildFunctionDescriptor(idx *schemaTypeIndex, fn *bamlparser.FunctionBlock)
 		Target:  target,
 		// Discovery order for now; reorderByReachability below rewrites these
 		// into BAML output-format order once the graph is lowered + validated.
-		Enums:   b.orderedEnums(),
-		Classes: b.orderedClasses(),
+		Enums:                      b.orderedEnums(),
+		Classes:                    b.orderedClasses(),
+		RecursiveClasses:           b.reachableRecursiveClasses(),
+		StructuralRecursiveAliases: b.orderedStructuralAliases(),
 	}
 
 	// Lower into the internal model (fails closed on unresolved refs, malformed
@@ -287,6 +342,10 @@ func buildFunctionDescriptor(idx *schemaTypeIndex, fn *bamlparser.FunctionBlock)
 // definition sets are scoped to that function's reachable graph.
 type descriptorBuilder struct {
 	index *schemaTypeIndex
+	// rec is the project-wide recursion classification (recursion.go): which
+	// classes are recursive, which aliases are structural recursive vs invalid.
+	// Shared across all functions (it is a whole-project property).
+	rec *recursionInfo
 
 	// classes/enums are the collected definitions (the reachable set), keyed by
 	// canonical name and deduplicated. classOrder/enumOrder record discovery
@@ -297,21 +356,34 @@ type descriptorBuilder struct {
 	enums      map[string]sd.EnumDef
 	enumOrder  []string
 
-	// classVisiting / aliasVisiting are the active DFS paths, used to detect
-	// recursion (declined until slice 5). A name on the path that is re-entered
-	// is a cycle; a name already fully collected is a DAG re-reference and
-	// resolves normally.
+	// structuralAliases collects the lowered target of each STRUCTURAL recursive
+	// alias reached from the output (keyed by canonical name);
+	// structuralAliasOrder records discovery order. References to a structural
+	// alias lower to a TypeRecursiveAlias node (never inlined), and its target is
+	// lowered once into this set — reproducing BAML's structural_recursive_aliases
+	// map. reorderByReachability rewrites the emitted order into BAML order.
+	structuralAliases    map[string]sd.Type
+	structuralAliasOrder []string
+
+	// classVisiting / aliasVisiting are the active DFS paths. classVisiting
+	// re-entry is a class cycle (the class is recursive: the reference is emitted
+	// as a TypeClass and the cycle stops, with recursive_classes populated from
+	// the analysis). aliasVisiting backstops the INLINING of non-recursive
+	// aliases (structural/invalid aliases never inline), catching a detection
+	// inconsistency rather than looping.
 	classVisiting map[string]bool
 	aliasVisiting map[string]bool
 }
 
 func newDescriptorBuilder(idx *schemaTypeIndex) *descriptorBuilder {
 	return &descriptorBuilder{
-		index:         idx,
-		classes:       make(map[string]sd.ClassDef),
-		enums:         make(map[string]sd.EnumDef),
-		classVisiting: make(map[string]bool),
-		aliasVisiting: make(map[string]bool),
+		index:             idx,
+		rec:               idx.recursion(),
+		classes:           make(map[string]sd.ClassDef),
+		enums:             make(map[string]sd.EnumDef),
+		structuralAliases: make(map[string]sd.Type),
+		classVisiting:     make(map[string]bool),
+		aliasVisiting:     make(map[string]bool),
 	}
 }
 
@@ -337,7 +409,36 @@ func (b *descriptorBuilder) orderedEnums() []sd.EnumDef {
 	return out
 }
 
-// reorderByReachability rewrites bundle.Enums and bundle.Classes into the BAML
+// orderedStructuralAliases returns the collected structural recursive alias
+// definitions in discovery order. reorderByReachability rewrites the emitted
+// order into BAML output-format order once the graph is validated.
+func (b *descriptorBuilder) orderedStructuralAliases() []sd.RecursiveAliasDef {
+	if len(b.structuralAliasOrder) == 0 {
+		return nil
+	}
+	out := make([]sd.RecursiveAliasDef, 0, len(b.structuralAliasOrder))
+	for _, name := range b.structuralAliasOrder {
+		out = append(out, sd.RecursiveAliasDef{Name: name, Target: b.structuralAliases[name]})
+	}
+	return out
+}
+
+// reachableRecursiveClasses returns the recursive classes reachable from the
+// output, in discovery order. Only membership matters here — Validate checks
+// each name resolves to a class — because reorderByReachability rewrites the
+// slice into BAML recursive_classes order after validation.
+func (b *descriptorBuilder) reachableRecursiveClasses() []string {
+	var out []string
+	for _, name := range b.classOrder {
+		if b.rec.recursiveClass[name] {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// reorderByReachability rewrites bundle.Enums, bundle.Classes,
+// bundle.RecursiveClasses, and bundle.StructuralRecursiveAliases into the BAML
 // output-format hoist order reported by the validated internal bundle. The
 // builder collected exactly the reachable definition set (it only lowers what a
 // reachable reference names), so ReachableOrder returns each collected name once
@@ -347,7 +448,7 @@ func (b *descriptorBuilder) orderedEnums() []sd.EnumDef {
 // class — static streaming mode is slice 6), so a class key's mode is always
 // NonStreaming and looking classes up by canonical name is sufficient.
 func (b *descriptorBuilder) reorderByReachability(bundle *sd.Bundle, internal *schema.Bundle) {
-	enumNames, classKeys := internal.ReachableOrder()
+	enumNames, classKeys, aliasNames := internal.ReachableOrder()
 
 	if len(enumNames) == 0 {
 		bundle.Enums = nil
@@ -372,6 +473,50 @@ func (b *descriptorBuilder) reorderByReachability(bundle *sd.Bundle, internal *s
 		}
 		bundle.Classes = classes
 	}
+
+	bundle.RecursiveClasses = b.orderRecursiveClasses(classKeys)
+	bundle.StructuralRecursiveAliases = b.orderStructuralAliases(aliasNames)
+}
+
+// orderRecursiveClasses reproduces BAML's recursive_classes IndexSet order. In
+// relevant_data_models BAML extends recursive_classes with a class's WHOLE cycle
+// the first time any cycle member is popped, deduping via the IndexSet — so the
+// order is: walk the classes in reachability pop order (classKeys, which is
+// append-on-pop), and for each recursive class emit its cycle members (Tarjan
+// order) once. Every cycle member is reachable (an SCC is mutually reachable),
+// so all appear in classKeys and were collected. Returns nil when no recursive
+// class is reachable.
+func (b *descriptorBuilder) orderRecursiveClasses(classKeys []schema.ClassKey) []string {
+	emitted := make(map[string]bool)
+	var out []string
+	for _, key := range classKeys {
+		for _, member := range b.rec.classCycleOf[key.Name] {
+			if !emitted[member] {
+				emitted[member] = true
+				out = append(out, member)
+			}
+		}
+	}
+	return out
+}
+
+// orderStructuralAliases reproduces BAML's structural_recursive_aliases IndexMap
+// order: the discovery (first-pop) order of the reachable structural recursive
+// aliases, which ReachableOrder returns as aliasNames. The builder supports only
+// single-alias structural cycles (resolveAlias declines larger ones), so each
+// alias is its own cycle and the discovery order is the final order. Returns nil
+// when no structural recursive alias is reachable.
+func (b *descriptorBuilder) orderStructuralAliases(aliasNames []string) []sd.RecursiveAliasDef {
+	if len(aliasNames) == 0 {
+		return nil
+	}
+	out := make([]sd.RecursiveAliasDef, 0, len(aliasNames))
+	for _, name := range aliasNames {
+		if target, ok := b.structuralAliases[name]; ok {
+			out = append(out, sd.RecursiveAliasDef{Name: name, Target: target})
+		}
+	}
+	return out
 }
 
 // lowerType lowers one parsed TypeExpr into a descriptor Type, collecting any
@@ -714,9 +859,11 @@ func (b *descriptorBuilder) lowerNameRef(t *bamlparser.TypeExpr) (sd.Type, error
 }
 
 // ensureClass lowers a class definition into the collected set exactly once.
-// It declines unsupported body content (methods / nested blocks), named-argument
-// (generic) class blocks, and recursion (a class re-entered while on the active
-// path). Class-level @@alias/@@description/@@check/@@assert/@@stream.* block
+// It declines unsupported body content (methods / nested blocks) and
+// named-argument (generic) class blocks. A RECURSIVE class re-entered on the
+// active DFS path stops the recursion (the reference is emitted as a TypeClass
+// and recursive_classes is populated from the cycle analysis) rather than
+// declining. Class-level @@alias/@@description/@@check/@@assert/@@stream.* block
 // attributes lower to the class's alias/description/constraints/streaming; any
 // other block attribute (@@dynamic, ...) declines. A field's @alias/@description
 // lower to the field, and its reassociated @check/@assert/@stream.* lower onto
@@ -727,7 +874,18 @@ func (b *descriptorBuilder) ensureClass(name string, tb *bamlparser.TypeBlock) e
 		return nil
 	}
 	if b.classVisiting[name] {
-		return fmt.Errorf("recursive class %q is not supported yet (slice 5)", name)
+		// Re-entry on the active DFS path: `name` participates in a class cycle,
+		// so it is a recursive class. Stop the recursion here — the reference is
+		// emitted as a TypeClass by lowerNameRef and the class body is collected
+		// by the outer ensureClass call; recursive_classes is populated from the
+		// cycle analysis (reorderByReachability), so the class hoists correctly.
+		// A cycle the analysis did NOT classify recursive is a detection
+		// inconsistency: fail closed rather than emit a class ref that would
+		// render-loop (a non-hoisted recursive class recurses forever).
+		if !b.rec.recursiveClass[name] {
+			return fmt.Errorf("class %q recursed during lowering but was not detected as recursive (recursion-analysis inconsistency)", name)
+		}
+		return nil
 	}
 	if tb.HasUnsupportedContent {
 		return fmt.Errorf("class %q has unsupported body content (methods or nested blocks)", name)
@@ -842,27 +1000,79 @@ func (b *descriptorBuilder) ensureEnum(name string, tb *bamlparser.TypeBlock) er
 	return nil
 }
 
-// resolveAlias inlines a non-recursive alias by lowering its right-hand side in
-// place (BAML substitutes non-recursive aliases). D9: it declines alias
-// attributes — BAML permits @check/@assert on aliases, but inlining a
-// constraint-bearing alias onto its use sites is deferred (not in the slice-4
-// corpus), so an attributed alias fails closed rather than dropping the
-// constraint. It also declines an unparsed RHS and recursion (an alias
-// re-entered while on the active path — a structural recursive alias is slice 5).
+// resolveAlias lowers a reference to a type alias, dispatching on the project's
+// recursion classification (recursion.go):
+//
+//   - a STRUCTURAL recursive alias (a cycle THROUGH a list/map) lowers to a
+//     TypeRecursiveAlias reference and its target is collected once into
+//     StructuralRecursiveAliases (see ensureStructuralAlias);
+//   - an INVALID (direct/degenerate) alias cycle — one not mediated by a list or
+//     map (`type A = A`, `type A = A | int`, `type A = A?`) — declines
+//     fail-closed. BAML rejects these at validation, so production never
+//     produces one; the builder never emits an approximation for one either;
+//   - a NON-recursive alias is inlined by lowering its right-hand side in place
+//     (BAML substitutes non-recursive aliases).
+//
+// D9: alias RHS attributes remain declined — BAML permits @check/@assert on
+// aliases, but inlining a constraint-bearing alias onto its use sites is
+// deferred, so an attributed alias fails closed rather than dropping the
+// constraint.
 func (b *descriptorBuilder) resolveAlias(name string, alias *bamlparser.TypeAlias) (sd.Type, error) {
-	if b.aliasVisiting[name] {
-		return sd.Type{}, fmt.Errorf("recursive type alias %q is not supported yet (slice 5)", name)
-	}
 	if len(alias.Attributes) > 0 {
 		return sd.Type{}, fmt.Errorf("type alias %q carries attribute @%s (alias constraint inlining is deferred — see #586 D9)", name, alias.Attributes[0].Name)
+	}
+	if b.rec.invalidAlias[name] {
+		return sd.Type{}, fmt.Errorf("type alias %q forms an invalid recursive cycle (a direct/degenerate alias cycle not mediated by a list or map)", name)
+	}
+	if b.rec.structuralAlias[name] {
+		// Only single-alias structural cycles (the JSON-value shape) are lowered
+		// in slice 5; a multi-alias structural cycle's hoist order is not
+		// oracle-proven here, so decline it fail-closed rather than guess.
+		if size := b.rec.structuralAliasCycleSize[name]; size > 1 {
+			return sd.Type{}, fmt.Errorf("structural recursive alias %q participates in a %d-alias cycle, which is not supported yet (only single-alias structural cycles are lowered in slice 5)", name, size)
+		}
+		if err := b.ensureStructuralAlias(name, alias); err != nil {
+			return sd.Type{}, err
+		}
+		return sd.Type{Kind: sd.TypeRecursiveAlias, Name: name, Mode: sd.NonStreaming}, nil
+	}
+
+	// Non-recursive alias: inline. aliasVisiting backstops a detection
+	// inconsistency (a non-recursive alias is acyclic, so it never re-enters).
+	if b.aliasVisiting[name] {
+		return sd.Type{}, fmt.Errorf("type alias %q recursed while inlining but was not detected as recursive (recursion-analysis inconsistency)", name)
 	}
 	if alias.Expr == nil {
 		return sd.Type{}, fmt.Errorf("type alias %q has an unparsed right-hand side", name)
 	}
-
 	b.aliasVisiting[name] = true
 	defer delete(b.aliasVisiting, name)
 	return b.lowerType(alias.Expr)
+}
+
+// ensureStructuralAlias lowers a structural recursive alias's target into the
+// collected StructuralRecursiveAliases set exactly once. The slot is reserved
+// BEFORE the target is lowered so a self-reference inside the target resolves to
+// a TypeRecursiveAlias (via resolveAlias) instead of recursing forever; the
+// placeholder is overwritten with the real target once lowering completes. A
+// target-lowering failure (e.g. a reachable media/tuple node) propagates and
+// declines the whole function — the per-function builder is discarded on error,
+// so the reserved placeholder never leaks.
+func (b *descriptorBuilder) ensureStructuralAlias(name string, alias *bamlparser.TypeAlias) error {
+	if _, done := b.structuralAliases[name]; done {
+		return nil
+	}
+	if alias.Expr == nil {
+		return fmt.Errorf("structural recursive alias %q has an unparsed right-hand side", name)
+	}
+	b.structuralAliases[name] = sd.Type{}
+	b.structuralAliasOrder = append(b.structuralAliasOrder, name)
+	target, err := b.lowerType(alias.Expr)
+	if err != nil {
+		return err
+	}
+	b.structuralAliases[name] = target
+	return nil
 }
 
 // memberAttributes returns the field-level attributes of a class member: the
