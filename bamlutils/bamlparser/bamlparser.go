@@ -378,7 +378,6 @@ func (tb *TypeBlock) Parse(lex *lexer.PeekingLexer) error {
 	}
 	kwTok := lex.Next()
 	tb.Keyword = kwTok.Value
-	tb.Span = tokSpan(kwTok)
 
 	if t := lex.Peek(); t.Type == identType {
 		tb.Name = lex.Next().Value

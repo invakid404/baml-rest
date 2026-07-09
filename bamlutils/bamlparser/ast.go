@@ -156,12 +156,6 @@ type TypeBlock struct {
 	Methods    []string
 
 	HasUnsupportedContent bool
-
-	// Span covers the declaration keyword (`class`/`enum`/`test`). It lets a
-	// later slice locate the declaration in the source — e.g. to detect a `///`
-	// doc comment on the line above (see #586: the builder declines a reachable
-	// class/enum carrying a `///` description until doc-comment capture lands).
-	Span Span
 }
 
 // TypeAlias corresponds to `type Name = expression`. Name carries the alias

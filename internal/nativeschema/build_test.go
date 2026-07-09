@@ -2,6 +2,7 @@ package nativeschema
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -102,15 +103,14 @@ func fn(name, ret string) string {
 }
 
 // buildFromSource parses src as a single .baml file and runs the native
-// static-schema builder over it (carrying the source so `///` doc-comment
-// detection has the bytes it needs).
+// static-schema builder over it.
 func buildFromSource(t *testing.T, src string) (map[string]sd.Bundle, map[string]string) {
 	t.Helper()
 	file, err := bamlparser.ParseString("build_test.baml", src)
 	if err != nil {
 		t.Fatalf("parse failed: %v", err)
 	}
-	return BuildStaticSchemas([]SourceFile{{File: file, Source: []byte(src)}})
+	return BuildStaticSchemas([]SourceFile{{File: file}})
 }
 
 // TestBuildStaticSchemasSupported proves the supported corpus builds a
@@ -408,6 +408,304 @@ class Item {
 	}
 }
 
+// TestBuildStaticSchemasConstraints proves @assert/@check lower into opaque
+// schemadescriptor.Constraints on the right descriptor nodes — field
+// constraints reassociate onto the field's TYPE (Type.Meta.Constraints), class/
+// enum block constraints onto ClassDef/EnumDef.Constraints — with the level,
+// nil-vs-present label, and verbatim {{ }} inner expression preserved, repeated
+// constraints kept in order, and the whole thing round-tripping through
+// FromStaticDescriptor (which must preserve every constraint) + ValidateOutput.
+func TestBuildStaticSchemasConstraints(t *testing.T) {
+	src := `
+enum Ranked {
+    LOW
+    HIGH
+    @@assert(has_values, {{ this|length > 0 }})
+}
+class Constrained {
+    score int @check(positive, {{ this > 0 }}) @assert(bounded, {{ this < 100 }})
+    name string @assert({{ this|length > 0 }})
+    rank Ranked
+    @@assert(class_ok, {{ this.score < 100 }})
+}
+` + fn("GetConstrained", "Constrained")
+
+	bundles, declines := buildFromSource(t, src)
+	if reason, declined := declines["GetConstrained"]; declined {
+		t.Fatalf("GetConstrained declined, want supported: %s", reason)
+	}
+	b := bundles["GetConstrained"]
+
+	cls := findClass(b, "Constrained")
+	if cls == nil {
+		t.Fatalf("Constrained class not found: %+v", b.Classes)
+	}
+	// Class-level @@assert(class_ok, {{ ... }}).
+	if len(cls.Constraints) != 1 {
+		t.Fatalf("class constraints = %+v, want 1", cls.Constraints)
+	}
+	assertConstraint(t, "class Constrained", cls.Constraints[0], sd.ConstraintAssert, ptr("class_ok"), " this.score < 100 ")
+
+	// Field `score`: two constraints in source order, both on the field TYPE.
+	score := findField(cls, "score")
+	if score == nil {
+		t.Fatalf("score field not found: %+v", cls.Fields)
+	}
+	if len(score.Type.Meta.Constraints) != 2 {
+		t.Fatalf("score type constraints = %+v, want 2", score.Type.Meta.Constraints)
+	}
+	assertConstraint(t, "score[0]", score.Type.Meta.Constraints[0], sd.ConstraintCheck, ptr("positive"), " this > 0 ")
+	assertConstraint(t, "score[1]", score.Type.Meta.Constraints[1], sd.ConstraintAssert, ptr("bounded"), " this < 100 ")
+
+	// Field `name`: a lone-expression @assert (no label).
+	nameField := findField(cls, "name")
+	if nameField == nil {
+		t.Fatalf("name field not found: %+v", cls.Fields)
+	}
+	if len(nameField.Type.Meta.Constraints) != 1 {
+		t.Fatalf("name type constraints = %+v, want 1", nameField.Type.Meta.Constraints)
+	}
+	assertConstraint(t, "name[0]", nameField.Type.Meta.Constraints[0], sd.ConstraintAssert, nil, " this|length > 0 ")
+
+	// Field `rank` (enum ref) carries no constraint metadata.
+	rank := findField(cls, "rank")
+	if rank == nil || len(rank.Type.Meta.Constraints) != 0 {
+		t.Fatalf("rank field should carry no constraints: %+v", rank)
+	}
+
+	// Enum-level @@assert(has_values, {{ ... }}).
+	enm := findEnum(b, "Ranked")
+	if enm == nil || len(enm.Constraints) != 1 {
+		t.Fatalf("Ranked enum constraints = %+v, want 1", enm)
+	}
+	assertConstraint(t, "enum Ranked", enm.Constraints[0], sd.ConstraintAssert, ptr("has_values"), " this|length > 0 ")
+
+	// Round-trip: FromStaticDescriptor must preserve every constraint, and the
+	// bundle must still validate as an output.
+	internal, err := schema.FromStaticDescriptor(b)
+	if err != nil {
+		t.Fatalf("FromStaticDescriptor: %v", err)
+	}
+	if err := internal.ValidateOutput(); err != nil {
+		t.Fatalf("ValidateOutput: %v", err)
+	}
+	iCls, ok := internal.FindClass("Constrained", schema.NonStreaming)
+	if !ok {
+		t.Fatalf("internal Constrained class not found")
+	}
+	if len(iCls.Constraints) != 1 || iCls.Constraints[0].Expression != " this.score < 100 " {
+		t.Errorf("internal class constraint not preserved: %+v", iCls.Constraints)
+	}
+	var iScore *schema.ClassField
+	for i := range iCls.Fields {
+		if iCls.Fields[i].Name.Name == "score" {
+			iScore = &iCls.Fields[i]
+		}
+	}
+	if iScore == nil || len(iScore.Type.Meta.Constraints) != 2 {
+		t.Fatalf("internal score field constraints not preserved: %+v", iScore)
+	}
+	if iScore.Type.Meta.Constraints[0].Expression != " this > 0 " || iScore.Type.Meta.Constraints[1].Expression != " this < 100 " {
+		t.Errorf("internal score constraints not preserved in order: %+v", iScore.Type.Meta.Constraints)
+	}
+	iEnum, ok := internal.FindEnum("Ranked")
+	if !ok || len(iEnum.Constraints) != 1 || iEnum.Constraints[0].Expression != " this|length > 0 " {
+		t.Errorf("internal enum constraint not preserved: %+v", iEnum)
+	}
+}
+
+// TestBuildStaticSchemasStreaming proves @stream.done/@stream.not_null/
+// @stream.with_state lower into the descriptor streaming fields exactly as BAML
+// models them: a field stream attribute reassociates onto the field's TYPE
+// (Type.Meta.Stream), a class-level @@stream.* onto ClassDef.Stream, while
+// ClassField.StreamingNeeded stays unset (BAML's override-derived bool, D8). It
+// round-trips through FromStaticDescriptor.
+func TestBuildStaticSchemasStreaming(t *testing.T) {
+	src := `
+class Streamed {
+    ready bool @stream.done
+    value string @stream.not_null @stream.with_state
+    plain int
+    @@stream.done
+    @@stream.with_state
+}
+` + fn("GetStreamed", "Streamed")
+
+	bundles, declines := buildFromSource(t, src)
+	if reason, declined := declines["GetStreamed"]; declined {
+		t.Fatalf("GetStreamed declined, want supported: %s", reason)
+	}
+	b := bundles["GetStreamed"]
+	cls := findClass(b, "Streamed")
+	if cls == nil {
+		t.Fatalf("Streamed class not found")
+	}
+
+	if want := (sd.StreamingBehavior{Done: true, State: true}); cls.Stream != want {
+		t.Errorf("class Stream = %+v, want %+v", cls.Stream, want)
+	}
+
+	ready := findField(cls, "ready")
+	if want := (sd.StreamingBehavior{Done: true}); ready == nil || ready.Type.Meta.Stream != want {
+		t.Errorf("ready field type Stream = %+v, want %+v", ready, want)
+	}
+	value := findField(cls, "value")
+	if value == nil {
+		t.Fatalf("value field not found: %+v", cls.Fields)
+	}
+	if want := (sd.StreamingBehavior{Needed: true, State: true}); value.Type.Meta.Stream != want {
+		t.Errorf("value field type Stream = %+v, want %+v", value.Type.Meta.Stream, want)
+	}
+	// D8: @stream.not_null goes on the TYPE, NOT the override-derived
+	// ClassField.StreamingNeeded bool, which a static attribute never sets.
+	if value.StreamingNeeded {
+		t.Errorf("value.StreamingNeeded = true, want false (override-derived per D8)")
+	}
+	plain := findField(cls, "plain")
+	if plain == nil || !plain.Type.Meta.Stream.IsZero() {
+		t.Errorf("plain field should carry no streaming: %+v", plain)
+	}
+
+	// Round-trip: FromStaticDescriptor preserves the streaming triple.
+	internal, err := schema.FromStaticDescriptor(b)
+	if err != nil {
+		t.Fatalf("FromStaticDescriptor: %v", err)
+	}
+	if err := internal.ValidateOutput(); err != nil {
+		t.Fatalf("ValidateOutput: %v", err)
+	}
+	iCls, ok := internal.FindClass("Streamed", schema.NonStreaming)
+	if !ok {
+		t.Fatalf("internal Streamed class not found")
+	}
+	if want := (schema.StreamingBehavior{Done: true, State: true}); iCls.Stream != want {
+		t.Errorf("internal class Stream = %+v, want %+v", iCls.Stream, want)
+	}
+	// REQUIRE the round-tripped `value` field to exist rather than only asserting
+	// when found — a dropped/renamed field must fail loudly, not silently pass.
+	var iValue *schema.ClassField
+	for i := range iCls.Fields {
+		if iCls.Fields[i].Name.Name == "value" {
+			iValue = &iCls.Fields[i]
+		}
+	}
+	if iValue == nil {
+		t.Fatalf("internal Streamed.value field not found: %+v", iCls.Fields)
+	}
+	if want := (schema.StreamingBehavior{Needed: true, State: true}); iValue.Type.Meta.Stream != want {
+		t.Errorf("internal value type Stream = %+v, want %+v", iValue.Type.Meta.Stream, want)
+	}
+}
+
+// TestBuildStaticSchemasDocCommentsNoOp proves a `///` doc comment is captured
+// as a NO-OP: BAML's output_format renderer never reads doc comments (only
+// @description renders — #586 D6, oracle-confirmed), so a doc-commented class/
+// field/enum/enum-value builds SUPPORTED, produces NO description, and yields a
+// descriptor byte-identical to the same shapes without doc comments. It also
+// pins the precedence: with BOTH a `///` and an @description on one node, the
+// @description wins (the doc comment is invisible).
+func TestBuildStaticSchemasDocCommentsNoOp(t *testing.T) {
+	docSrc := `
+/// A documented class.
+/// Second line.
+class Doc {
+    /// the value field
+    value string
+    plain int
+}
+/// A documented enum.
+enum DocEnum {
+    /// the first value
+    A
+    B
+}
+class DocOut {
+    d Doc
+    e DocEnum
+}
+` + fn("GetDoc", "DocOut")
+
+	plainSrc := `
+class Doc {
+    value string
+    plain int
+}
+enum DocEnum {
+    A
+    B
+}
+class DocOut {
+    d Doc
+    e DocEnum
+}
+` + fn("GetDoc", "DocOut")
+
+	docBundles, docDeclines := buildFromSource(t, docSrc)
+	if reason, declined := docDeclines["GetDoc"]; declined {
+		t.Fatalf("doc-commented GetDoc declined, want supported (doc comments are no-ops): %s", reason)
+	}
+	plainBundles, plainDeclines := buildFromSource(t, plainSrc)
+	if reason, declined := plainDeclines["GetDoc"]; declined {
+		t.Fatalf("plain GetDoc declined: %s", reason)
+	}
+
+	// No description came from any /// doc comment.
+	docCls := findClass(docBundles["GetDoc"], "Doc")
+	if docCls == nil {
+		t.Fatalf("Doc class not found")
+	}
+	if docCls.Description != nil {
+		t.Errorf("class Doc got description %q from a /// doc comment; want nil", *docCls.Description)
+	}
+	for i := range docCls.Fields {
+		if docCls.Fields[i].Description != nil {
+			t.Errorf("field %q got description %q from a /// doc comment; want nil", docCls.Fields[i].Name.Name, *docCls.Fields[i].Description)
+		}
+	}
+	docEnum := findEnum(docBundles["GetDoc"], "DocEnum")
+	if docEnum == nil {
+		t.Fatalf("DocEnum not found")
+	}
+	for i := range docEnum.Values {
+		if docEnum.Values[i].Description != nil {
+			t.Errorf("enum value %q got a description from a /// doc comment; want nil", docEnum.Values[i].Name.Name)
+		}
+	}
+
+	// The doc-commented descriptor must be byte-identical to the plain one, so
+	// the rendered output_format cannot differ (proven end-to-end by the oracle).
+	if !reflect.DeepEqual(docBundles["GetDoc"], plainBundles["GetDoc"]) {
+		t.Errorf("doc-commented descriptor differs from the plain one:\n doc:   %+v\n plain: %+v", docBundles["GetDoc"], plainBundles["GetDoc"])
+	}
+}
+
+// TestBuildStaticSchemasDocVsDescriptionPrecedence proves that when a node
+// carries BOTH a `///` doc comment and an @description, the @description is the
+// sole source of the rendered description (the doc comment is invisible — D6).
+func TestBuildStaticSchemasDocVsDescriptionPrecedence(t *testing.T) {
+	src := `
+class DocVsDesc {
+    /// doc comment on the field
+    field string @description("the real description")
+    plain int
+}
+` + fn("GetDocVsDesc", "DocVsDesc")
+
+	bundles, declines := buildFromSource(t, src)
+	if reason, declined := declines["GetDocVsDesc"]; declined {
+		t.Fatalf("GetDocVsDesc declined, want supported: %s", reason)
+	}
+	cls := findClass(bundles["GetDocVsDesc"], "DocVsDesc")
+	if cls == nil {
+		t.Fatalf("DocVsDesc class not found")
+	}
+	f := findField(cls, "field")
+	if f == nil {
+		t.Fatalf("field not found: %+v", cls.Fields)
+	}
+	assertDesc(t, "field with both /// and @description", f.Description, "the real description")
+}
+
 // TestBuildStaticSchemasUnionNormalization proves that union members which
 // lower into their own union (a non-recursive alias or a parenthesized group)
 // or into a bare null (an alias to null) are flattened/hoisted so the
@@ -539,24 +837,6 @@ func TestBuildStaticSchemasDeclines(t *testing.T) {
 			wantReasonSub: "recursive type alias",
 		},
 		{
-			name:   "field constraint attribute",
-			fnName: "GetChecked",
-			src: `class Checked {
-    name string @check(non_empty, {{ this|length > 0 }})
-}
-` + fn("GetChecked", "Checked"),
-			wantReasonSub: "attribute",
-		},
-		{
-			name:   "field stream attribute",
-			fnName: "GetStreamed",
-			src: `class Streamed {
-    value string @stream.done
-}
-` + fn("GetStreamed", "Streamed"),
-			wantReasonSub: "attribute",
-		},
-		{
 			name:   "class block attribute @@dynamic",
 			fnName: "GetDynamic",
 			src: `class DynamicOutput {
@@ -619,54 +899,6 @@ class SkipOut {
 }
 ` + fn("GetCollide", "Collide"),
 			wantReasonSub: "duplicate",
-		},
-		{
-			name:   "class-level /// doc comment",
-			fnName: "GetDocClass",
-			src: `/// A documented class.
-class DocClass {
-    value string
-}
-` + fn("GetDocClass", "DocClass"),
-			wantReasonSub: "doc comment",
-		},
-		{
-			name:   "field-level /// doc comment",
-			fnName: "GetDocField",
-			src: `class DocField {
-    /// the value field
-    value string
-}
-` + fn("GetDocField", "DocField"),
-			wantReasonSub: "doc comment",
-		},
-		{
-			name:   "enum-level /// doc comment",
-			fnName: "GetDocEnum",
-			src: `/// A documented enum.
-enum DocEnum {
-    A
-    B
-}
-class DocEnumOut {
-    e DocEnum
-}
-` + fn("GetDocEnum", "DocEnumOut"),
-			wantReasonSub: "doc comment",
-		},
-		{
-			name:   "enum-value /// doc comment",
-			fnName: "GetDocValue",
-			src: `enum DocValueEnum {
-    /// the first value
-    A
-    B
-}
-class DocValueOut {
-    e DocValueEnum
-}
-` + fn("GetDocValue", "DocValueOut"),
-			wantReasonSub: "doc comment",
 		},
 		{
 			name:          "tuple output",
@@ -805,6 +1037,73 @@ class DupValueOut {
 			wantReasonSub: "attribute",
 		},
 		{
+			name:   "enum value constraint (no descriptor home)",
+			fnName: "GetValConstraint",
+			src: `enum ValConstraint {
+    A @check(pos, {{ this }})
+    B
+}
+class ValConstraintOut {
+    v ValConstraint
+}
+` + fn("GetValConstraint", "ValConstraintOut"),
+			wantReasonSub: "attribute",
+		},
+		{
+			name:   "enum value stream attribute (no descriptor home)",
+			fnName: "GetValStream",
+			src: `enum ValStream {
+    A @stream.done
+    B
+}
+class ValStreamOut {
+    v ValStream
+}
+` + fn("GetValStream", "ValStreamOut"),
+			wantReasonSub: "attribute",
+		},
+		{
+			name:   "enum-level @@stream block attribute (no descriptor home)",
+			fnName: "GetEnumStream",
+			src: `enum EnumStream {
+    A
+    B
+    @@stream.done
+}
+class EnumStreamOut {
+    v EnumStream
+}
+` + fn("GetEnumStream", "EnumStreamOut"),
+			wantReasonSub: "stream",
+		},
+		{
+			name:   "nested-type constraint (reassociation not performed)",
+			fnName: "GetNestedConstraint",
+			src: `class NestedConstraint {
+    m map<string, int @check(pos, {{ this > 0 }})>
+}
+` + fn("GetNestedConstraint", "NestedConstraint"),
+			wantReasonSub: "attribute",
+		},
+		{
+			name:   "constraint missing {{ }} expression",
+			fnName: "GetBadConstraint",
+			src: `class BadConstraint {
+    x int @assert(foo)
+}
+` + fn("GetBadConstraint", "BadConstraint"),
+			wantReasonSub: "Jinja",
+		},
+		{
+			name:   "constraint label is not a bare identifier",
+			fnName: "GetBadLabel",
+			src: `class BadLabel {
+    x int @check("lbl", {{ this > 0 }})
+}
+` + fn("GetBadLabel", "BadLabel"),
+			wantReasonSub: "identifier",
+		},
+		{
 			name:   "class method / expr_fn",
 			fnName: "GetMethodClass",
 			src: `class WithMethod {
@@ -918,9 +1217,11 @@ class DynamicOutput {
 }
 
 // TestBuildStaticSchemasRegularCommentNotDeclined proves an ordinary `//`
-// comment (two slashes) is NOT mistaken for a `///` doc comment: it does not
-// decline, and the function builds normally. This pins that the doc-comment
-// decline is specific to the three-slash BAML doc-comment form.
+// comment (two slashes) does not perturb the build: the shared lexer elides it,
+// so a class/enum/field/value preceded by a regular comment builds normally.
+// A `///` doc comment is likewise a no-op — NOT a decline — captured by BAML but
+// never rendered in ctx.output_format (see TestBuildStaticSchemasDocCommentsNoOp
+// and #586 D6); neither comment form affects the built descriptor.
 func TestBuildStaticSchemasRegularCommentNotDeclined(t *testing.T) {
 	src := `// a regular comment, not a doc comment
 class Commented {
@@ -982,6 +1283,38 @@ func findEnum(b sd.Bundle, name string) *sd.EnumDef {
 		}
 	}
 	return nil
+}
+
+func findField(c *sd.ClassDef, name string) *sd.ClassField {
+	for i := range c.Fields {
+		if c.Fields[i].Name.Name == name {
+			return &c.Fields[i]
+		}
+	}
+	return nil
+}
+
+// ptr returns a pointer to s, for building expected nil-vs-present values.
+func ptr(s string) *string { return &s }
+
+// assertConstraint checks a constraint's level, expression, and nil-vs-present
+// label against expectations.
+func assertConstraint(t *testing.T, what string, c sd.Constraint, level sd.ConstraintLevel, label *string, expr string) {
+	t.Helper()
+	if c.Level != level {
+		t.Errorf("%s: level = %q, want %q", what, c.Level, level)
+	}
+	if c.Expression != expr {
+		t.Errorf("%s: expression = %q, want %q", what, c.Expression, expr)
+	}
+	switch {
+	case label == nil && c.Label != nil:
+		t.Errorf("%s: label = %q, want nil", what, *c.Label)
+	case label != nil && c.Label == nil:
+		t.Errorf("%s: label = nil, want %q", what, *label)
+	case label != nil && c.Label != nil && *label != *c.Label:
+		t.Errorf("%s: label = %q, want %q", what, *c.Label, *label)
+	}
 }
 
 func assertAlias(t *testing.T, what string, n sd.Name, want string) {

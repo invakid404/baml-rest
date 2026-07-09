@@ -21,8 +21,8 @@ import (
 	"github.com/invakid404/baml-rest/internal/schema/outputformat"
 )
 
-// TestNativeStaticOutputFormatParity is the de-BAML P3 slice-3 load-bearing
-// correctness proof: the native STATIC-schema pipeline must reproduce BAML's
+// TestNativeStaticOutputFormatParity is the de-BAML P3 load-bearing correctness
+// proof (slices 3-4): the native STATIC-schema pipeline must reproduce BAML's
 // real ctx.output_format byte-for-byte for a corpus of static .baml functions.
 //
 // It is the static-schema analogue of TestNativeOutputFormatRendererParity
@@ -54,17 +54,24 @@ import (
 //     outputformat.Render(bundle, outputformat.Options{}) — RenderOptions::default,
 //     matching the template's bare {{ ctx.output_format }}.
 //
-// The byte-exact comparison is the parity criterion. It proves the whole
-// slice-3 chain — parse -> reachability ordering -> @alias/@description
-// lowering -> FromStaticDescriptor -> render — matches BAML for every covered
-// function, including map KEY shapes (string, enum, literal-union) and the
-// key-then-value reachability order pinned by ParityEnumKeyMap (a hoisted
-// value-enum block renders before the hoisted key-enum block). The expected
-// function set is asserted independently (P2) so a silently-skipped fixture
-// cannot false-pass, and the run is pinned to the exact 0.223.0 oracle (P3).
-// Declines (unsupported constructs, e.g. `///` doc comments) are covered by the
-// unit tests in internal/nativeschema, not by this oracle; the corpus here is
-// all-supported.
+// The byte-exact comparison is the parity criterion. It proves the whole static
+// chain — parse -> reachability ordering -> attribute lowering (@alias/
+// @description/@assert/@check/@stream.*) -> FromStaticDescriptor -> render —
+// matches BAML for every covered function, including map KEY shapes (string,
+// enum, literal-union) and the key-then-value reachability order pinned by
+// ParityEnumKeyMap (a hoisted value-enum block renders before the hoisted
+// key-enum block). It also pins that metadata BAML does NOT render in the final
+// output_format stays invisible on the native side too: `///` doc comments
+// (ParityDocComments, and ParityDocVsDesc where @description wins), @assert/
+// @check constraints (ParityConstraints), and @stream.* flags (ParityStream,
+// ParityMixed) must not change a byte — BAML captures them but its output_format
+// renderer never reads them (see #586 D6-D8), and neither does ours. The
+// expected function set is asserted independently (P2) so a silently-skipped
+// fixture cannot false-pass, and the run is pinned to the exact 0.223.0 oracle
+// (P3). The corpus here is all-supported (a `///` doc comment is SUPPORTED as a
+// no-op, not a decline); genuine declines (recursion, @@dynamic, @skip, media/
+// tuple output, ...) are covered by the unit tests in internal/nativeschema, not
+// by this oracle.
 func TestNativeStaticOutputFormatParity(t *testing.T) {
 	// P3: this is the load-bearing v0.223.0 parity proof, so it asserts the
 	// EXACT oracle version rather than a >=0.219 floor. The de-BAML=false render
@@ -227,7 +234,7 @@ func buildNativeParityBundles(t *testing.T, dir string) map[string]sd.Bundle {
 		if err != nil {
 			t.Fatalf("parse %s: %v", path, err)
 		}
-		files = append(files, nativeschema.SourceFile{File: f, Source: data})
+		files = append(files, nativeschema.SourceFile{File: f})
 	}
 
 	bundles, declines := nativeschema.BuildStaticSchemas(files)

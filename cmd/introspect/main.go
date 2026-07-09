@@ -1392,9 +1392,7 @@ func parseBamlSourceDir(dir string) *bamlConfig {
 			return nil
 		}
 		processBAMLFile(cfg, file)
-		// Carry the raw source alongside the parsed File so the native builder
-		// can detect `///` doc comments by declaration span (see #586 D6).
-		parsedFiles = append(parsedFiles, nativeschema.SourceFile{File: file, Source: data})
+		parsedFiles = append(parsedFiles, nativeschema.SourceFile{File: file})
 		return nil
 	})
 
