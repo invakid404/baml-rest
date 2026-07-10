@@ -208,8 +208,15 @@ import (
 // slice 4 confirmed against the v0.223 oracle that BAML's output_format renderer
 // never reads doc comments (only @description renders — see #586 D6), so a
 // doc-commented node builds byte-identically without any source inspection.
+//
+// Path is the .baml file path the File was parsed from. BuildStaticSchemas
+// ignores it (schema reachability is path-independent), but the prompt
+// descriptor builder (prompt.go) uses it for stable macro source-order
+// diagnostics and to stamp each retained template string's SourcePath. It is
+// optional: an empty Path does not change any build outcome.
 type SourceFile struct {
 	File *bamlparser.File
+	Path string
 }
 
 // BuildStaticSchemas builds a native static output-schema descriptor for every
