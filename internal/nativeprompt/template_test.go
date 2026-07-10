@@ -29,15 +29,16 @@ func TestDynamicTemplateDriftGuard(t *testing.T) {
 		if item.Function == nil || item.Function.Name != "Baml_Rest_Dynamic" {
 			continue
 		}
-		for _, f := range item.Function.Fields {
-			if f.Key == "prompt" && f.Value != nil {
-				promptRaw = f.Value.Raw
-			}
-		}
+		// Read the dedicated PromptRaw projection (P1 slice 1, #586) rather than
+		// reaching through the generic ordered Fields. PromptRaw is the final
+		// source-ordered prompt field's raw body with only the raw-string
+		// delimiters removed (no dedent/trim), which is exactly what this drift
+		// guard needs.
+		promptRaw = item.Function.PromptRaw
 	}
 
 	if promptRaw == nil {
-		t.Fatal("Baml_Rest_Dynamic prompt field not found in cmd/build/dynamic.baml")
+		t.Fatal("Baml_Rest_Dynamic prompt (PromptRaw) not found in cmd/build/dynamic.baml")
 	}
 	if *promptRaw != rawDynamicPrompt {
 		t.Errorf("dynamic prompt drift: the checked-in template no longer matches rawDynamicPrompt.\n--- parsed ---\n%q\n--- constant ---\n%q", *promptRaw, rawDynamicPrompt)

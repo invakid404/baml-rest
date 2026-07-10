@@ -4,10 +4,11 @@
 // semantically: class/enum/test declarations are represented as TypeBlock,
 // type aliases as TypeAlias, template_string declarations as TemplateBlock,
 // and unknown leading-identifier or leading-punctuation forms as Other.
-// These metadata-only nodes preserve source order while their bodies
-// (brace bodies, expression right-hand-sides) are consumed and not
-// retained, so the parser tolerates the full upstream BAML surface
-// without erroring.
+// These nodes preserve source order; genuinely unmodelled bodies (opaque
+// brace bodies, expression right-hand-sides) are consumed and not retained,
+// while recognised nodes (TypeBlock, TemplateBlock) retain the
+// members/args/body that later descriptor slices consume. The parser
+// tolerates the full upstream BAML surface without erroring.
 //
 // The Value type encodes literal-vs-env.IDENT provenance at parse time as a
 // first-class node. Downstream code reads Value.Literal vs Value.EnvRef to
@@ -87,7 +88,16 @@ var bamlLexer = lexer.MustSimple([]lexer.SimpleRule{
 	{Name: tokEnvRef, Pattern: `env\.[A-Za-z_][A-Za-z0-9_]*`},
 	{Name: tokNumber, Pattern: `-?\d+(?:\.\d+)?`},
 	{Name: tokArrow, Pattern: `->`},
-	{Name: tokIdent, Pattern: `[A-Za-z_][A-Za-z0-9_\-/]*`},
+	// FIX-EVENTUALLY (#586): the optional leading `$` admits BAML's
+	// dollar-prefixed identifier form as a single Ident token (previously the
+	// `$` fell to tokOther and split the identifier). This is a declarative
+	// lexer widening, not a hand parser, and is laxer than BAML if that syntax
+	// changed between the non-authoritative v0.222 shape check and the v0.223
+	// parity target; a build-only v0.223 grammar/acceptance fixture is the
+	// intended merge guard before any grammar-parity claim. The raw-string
+	// rule intentionally stays ahead of this rule so a `#"..."#` body is never
+	// truncated into an identifier.
+	{Name: tokIdent, Pattern: `\$?[A-Za-z_][A-Za-z0-9_\-/]*`},
 	{Name: tokPunct, Pattern: `[{}()\[\]<>,.:?=|&!*@;]`},
 	{Name: tokOther, Pattern: `.`},
 })
@@ -336,23 +346,68 @@ func (fn *FunctionBlock) Parse(lex *lexer.PeekingLexer) error {
 }
 
 // Parse implements participle.Parseable for TemplateBlock. Matches
-// `template_string Name? (params)? ( #"..."# | { ... } )`. The body is
-// metadata-only: only Name is retained.
+// `(template_string | string_template) Name? (args)? =? ( #"..."# | { ... } )`.
+// The keyword spelling, named-argument list, and raw body are retained (P1
+// slice 1, #586); a brace body is balanced-skipped for recovery and flagged
+// HasUnsupportedBody. The raw body's delimiters are stripped later in
+// normalizeItem via stripRawString — no dedent/trim happens here.
 func (tb *TemplateBlock) Parse(lex *lexer.PeekingLexer) error {
-	if !peekIdentLiteral(lex, "template_string") {
+	// FIX-EVENTUALLY (#586): `string_template` is a tolerated historical alias
+	// for `template_string`. The non-authoritative v0.222 shape check accepts
+	// both spellings; v0.223 is the parity target and a build-only v0.223
+	// grammar/acceptance fixture is the intended merge guard before any
+	// grammar-parity claim. Accepting the alias is harmlessly laxer than BAML
+	// (BAML gates invalid input at build); the retained spelling lets a later
+	// slice diagnose which form was used.
+	var keyword string
+	switch {
+	case peekIdentLiteral(lex, "template_string"):
+		keyword = "template_string"
+	case peekIdentLiteral(lex, "string_template"):
+		keyword = "string_template"
+	default:
 		return participle.NextMatch
 	}
-	lex.Next() // consume "template_string"
+	lex.Next() // consume the keyword
+	tb.Keyword = keyword
 
 	if t := lex.Peek(); t.Type == identType {
 		tb.Name = lex.Next().Value
 	}
+	// Named-argument list, parsed via the shared parseParamList (typed and
+	// bare arguments both accepted). parseParamList consumes through the
+	// matching `)`, so the post-signature token position matches the prior
+	// skipBalanced("(", ")") recovery exactly.
 	if peekPunct(lex, "(") {
-		skipBalanced(lex, "(", ")")
+		tb.Args = parseParamList(lex)
+	}
+	// FIX-EVENTUALLY (#586): consume an optional `=` before the body
+	// (`template_string Name = #"..."#`). The non-authoritative v0.222 shape
+	// check permits the optional equals; v0.223 is the parity target and a
+	// build-only v0.223 grammar/acceptance fixture is the intended merge guard
+	// before any grammar-parity claim. Accepting both the equals and
+	// equals-less forms is harmlessly laxer than BAML (BAML gates invalid input
+	// at build). Consumed when present; absent forms are unaffected.
+	if peekPunct(lex, "=") {
+		lex.Next()
 	}
 	if t := lex.Peek(); t.Type == rawStringType {
-		lex.Next()
+		// Retain the raw body token verbatim; normalizeItem strips only the
+		// raw-string delimiters. An empty raw body (`#""#`) yields a non-nil
+		// pointer to the empty string, distinct from a nil (absent) Body.
+		bodyTok := lex.Next()
+		body := bodyTok.Value
+		tb.Body = &body
 	} else if peekPunct(lex, "{") {
+		// FIX-EVENTUALLY (#586): a brace-bodied template declaration is a
+		// current parser tolerance, NOT a valid BAML raw-string template body.
+		// Retain the historical balanced-skip recovery so the following
+		// declaration still parses, but mark the body unsupported and leave
+		// Body nil so the later descriptor slice declines it rather than
+		// fabricating a string. This is laxer than BAML, which requires a
+		// raw-string body; a build-only v0.223 acceptance fixture is the
+		// intended merge guard before any grammar-parity claim.
+		tb.HasUnsupportedBody = true
 		skipBalanced(lex, "{", "}")
 	}
 	return nil
@@ -546,6 +601,11 @@ func parseBlockFieldsUntilClose(lex *lexer.PeekingLexer) []*Field {
 // elided by the lexer, so commas alone delimit parameters; the closing `)`
 // is consumed. Each parameter's type is parsed via the declarative type
 // grammar. Unrecognised tokens inside the list are skipped defensively.
+//
+// Shared by every named-argument site: function signatures
+// (FunctionBlock.Params), class/enum block arguments (TypeBlock.Args), and
+// template declarations (TemplateBlock.Args). A bare argument with no `:Type`
+// annotation has Type == nil, matching BAML's named_argument grammar.
 func parseParamList(lex *lexer.PeekingLexer) []*Param {
 	if !peekPunct(lex, "(") {
 		return nil
@@ -808,11 +868,13 @@ func skipBalanced(lex *lexer.PeekingLexer, open, close string) {
 
 // isTopLevelKeyword reports whether s is one of the keywords that introduces
 // a top-level declaration. Used by TypeAlias.Parse to terminate its RHS
-// scan when the next line begins with a known top-level construct.
+// scan when the next line begins with a known top-level construct. Both
+// template keyword spellings are included so a preceding alias scan cannot
+// consume a following template declaration (#586).
 func isTopLevelKeyword(s string) bool {
 	switch s {
 	case "generator", "client", "function", "retry_policy",
-		"template_string", "class", "enum", "test", "type":
+		"template_string", "string_template", "class", "enum", "test", "type":
 		return true
 	}
 	return false
@@ -845,6 +907,15 @@ func normalizeItem(it *Item, data []byte) {
 			normalizeTypeExpr(p.Type, data)
 		}
 		normalizeTypeExpr(it.Function.Return, data)
+		// Project the final source-ordered prompt field AFTER field values are
+		// delimiter-stripped, so PromptRaw points at the already-normalised
+		// raw bytes.
+		projectFunctionPrompt(it.Function)
+	case it.Template != nil:
+		normalizeTemplateBody(it.Template)
+		for _, p := range it.Template.Args {
+			normalizeTypeExpr(p.Type, data)
+		}
 	case it.RetryPolicy != nil:
 		normalizeFields(it.RetryPolicy.Fields)
 	case it.TypeBlock != nil:
@@ -906,6 +977,43 @@ func normalizeFields(fields []*Field) {
 			normalizeFields(f.Block.Fields)
 		}
 	}
+}
+
+// projectFunctionPrompt fills FunctionBlock.PromptRaw/HasPrompt from the
+// already-normalised Fields. It scans in source order and takes the FINAL
+// `prompt` field (last-field-wins, matching BAML's duplicate-key semantics).
+// HasPrompt records that a final prompt field is present at all; PromptRaw is
+// set only when that final field carries a raw-string value, so a final
+// non-raw prompt sets HasPrompt but leaves PromptRaw nil — an earlier raw
+// prompt is never resurrected. The ordered Fields slice is left untouched and
+// remains the lossless source-order record.
+func projectFunctionPrompt(fn *FunctionBlock) {
+	var last *Field
+	for _, f := range fn.Fields {
+		if f.Key == "prompt" {
+			last = f
+		}
+	}
+	if last == nil {
+		return
+	}
+	fn.HasPrompt = true
+	if last.Value != nil && last.Value.Raw != nil {
+		fn.PromptRaw = last.Value.Raw
+	}
+}
+
+// normalizeTemplateBody strips the raw-string delimiters from a retained
+// template body with stripRawString ONLY — no dedent, trim, unescape, or
+// re-indent (Phase 3's renderer owns those). An empty raw body (`#""#`)
+// normalises to a non-nil pointer to the empty string. A nil Body (absent or
+// brace-tolerated body) is left nil.
+func normalizeTemplateBody(tb *TemplateBlock) {
+	if tb.Body == nil {
+		return
+	}
+	s := stripRawString(*tb.Body)
+	tb.Body = &s
 }
 
 func normalizeValue(v *Value) {

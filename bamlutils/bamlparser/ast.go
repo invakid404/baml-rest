@@ -14,12 +14,14 @@ type File struct {
 //
 // Recognised semantic blocks (Generator, Client, Function, RetryPolicy)
 // carry their parsed Fields and are consumed by the semantic walker.
-// Tolerated declarations that baml-rest currently doesn't model are
-// represented by metadata-only nodes: class/enum/test → TypeBlock, type
+// Tolerated declarations that baml-rest doesn't model semantically are
+// represented by dedicated nodes: class/enum/test → TypeBlock, type
 // aliases → TypeAlias, template_string → TemplateBlock, and anything else
-// → Other. Those nodes carry the declaration keyword/name only; the
-// brace body or expression right-hand-side is consumed during parsing
-// and not retained on the AST.
+// → Other. These nodes retain as much of the declaration as later
+// descriptor slices need — TypeBlock members, TemplateBlock args/body —
+// while genuinely unmodelled brace bodies and expression right-hand-sides
+// are consumed during parsing and not retained. Other carries only the
+// leading keyword.
 //
 // The alternative order is load-bearing: keyword-shaped declarations are
 // tried first, with Other last as the catch-all so unknown punctuation /
@@ -87,6 +89,27 @@ type FunctionBlock struct {
 	// nil when the declaration omits `-> Type`.
 	Params []*Param
 	Return *TypeExpr
+
+	// PromptRaw and HasPrompt are a post-parse semantic projection of the
+	// function's `prompt` field, filled during normalisation (P1 slice 1,
+	// #586). They mirror BAML's last-field-wins behaviour without disturbing
+	// the ordered Fields slice, which remains the lossless source-order record
+	// of every field:
+	//
+	//   - HasPrompt is true when a `prompt` field is present at all — the
+	//     FINAL one in source order, since duplicate keys are last-wins. It
+	//     distinguishes an absent prompt field from a final prompt field whose
+	//     value was non-raw or otherwise unusable.
+	//   - PromptRaw points at the delimiter-stripped bytes of that final
+	//     prompt field ONLY when it is a raw-string literal. A final non-raw
+	//     prompt therefore sets HasPrompt but leaves PromptRaw nil; an earlier
+	//     raw prompt is never resurrected.
+	//
+	// PromptRaw is a convenience projection over Fields, not a replacement for
+	// it; the raw bytes are those already retained on the final prompt Field's
+	// Value.Raw (only the raw-string delimiters are removed).
+	PromptRaw *string
+	HasPrompt bool
 }
 
 // RetryPolicyBlock corresponds to `retry_policy Name { ... }`.
@@ -99,17 +122,41 @@ type RetryPolicyBlock struct {
 	Fields []*Field
 }
 
-// TemplateBlock corresponds to `template_string Name(...) #"..."#` and the
-// `template_string Name { ... }` form. The body is intentionally not parsed;
-// callers either ignore TemplateBlock entirely (introspect's posture today)
-// or read Name for documentation/index purposes.
+// TemplateBlock corresponds to a `template_string` (or the tolerated
+// historical `string_template` alias) declaration, e.g.
+// `template_string Name(args) #"body"#`. As of de-BAML P1 slice 1 (#586) the
+// declaration is retained instead of discarded:
 //
-// Parsing is implemented via Parseable in bamlparser.go because the body
-// is discarded — there is no AST field to hold the parsed parameter list
-// or body — and the body alternates between a raw string token and a
-// balanced brace block.
+//   - Keyword is the leading word as spelled in source: "template_string" or
+//     the "string_template" alias (retained spelling, not canonicalised).
+//   - Name is the declaration name.
+//   - Args holds the named-argument list, parsed via the shared parseParamList
+//     helper. Both typed (`x: string`) and bare (`x`) argument forms are
+//     accepted; a bare argument has Type == nil, exactly like a function
+//     signature parameter.
+//   - Body is the raw template body with ONLY the raw-string delimiters
+//     removed (via stripRawString). It is NOT dedented, trimmed, unescaped,
+//     re-indented, or otherwise normalised — Phase 3's renderer owns
+//     render-time dedent/trim. An empty raw body (`#""#`) is a non-nil pointer
+//     to the empty string. Body is nil when the declaration carried no raw
+//     body.
+//   - HasUnsupportedBody marks a tolerated non-raw body shape — currently the
+//     historical brace form `template_string Name { ... }`, which is
+//     balanced-skipped for parser recovery but is NOT a valid BAML raw-string
+//     template body. A brace body is never fabricated into a Body string; the
+//     later descriptor slice declines any declaration whose Body is nil or
+//     whose HasUnsupportedBody is set.
+//
+// Parsing is implemented via Parseable in bamlparser.go because the leading
+// keyword/alias, the optional `=` before the body, and the raw-vs-brace body
+// alternation are position-sensitive in ways grammar tags cannot express. The
+// argument types are parsed via the declarative participle type grammar.
 type TemplateBlock struct {
-	Name string
+	Keyword            string
+	Name               string
+	Args               []*Param
+	Body               *string
+	HasUnsupportedBody bool
 }
 
 // TypeBlock corresponds to `class Name { ... }`, `enum Name { ... }`, or

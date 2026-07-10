@@ -1053,12 +1053,16 @@ class C {
 // -----------------------------------------------------------------------
 
 func TestLexer_MultiHashRawString(t *testing.T) {
-	// A double-hash raw string can embed a `"#` sequence verbatim.
+	// A double-hash raw string can embed a `"#` sequence verbatim, both in a
+	// function prompt (Field.Raw + the PromptRaw projection) and in a retained
+	// template body (TemplateBlock.Body).
 	src := `
 function F(x: string) -> string {
     client C
     prompt ##"contains "# inside"##
 }
+
+template_string M(x: string) ##"body "# still"##
 `
 	f := mustParse(t, src)
 	fn := findFunction(f, "F")
@@ -1071,6 +1075,18 @@ function F(x: string) -> string {
 	}
 	if *pr.Value.Raw != `contains "# inside` {
 		t.Errorf("multi-hash raw content = %q, want %q", *pr.Value.Raw, `contains "# inside`)
+	}
+	// The PromptRaw projection keeps the embedded quote-hash text too.
+	if fn.PromptRaw == nil || *fn.PromptRaw != `contains "# inside` {
+		t.Errorf("PromptRaw = %v, want %q", fn.PromptRaw, `contains "# inside`)
+	}
+	// The retained template body keeps its embedded quote-hash text.
+	tb := findTemplate(f, "M")
+	if tb == nil {
+		t.Fatalf("template M not parsed")
+	}
+	if tb.Body == nil || *tb.Body != `body "# still` {
+		t.Errorf("template Body = %v, want %q", tb.Body, `body "# still`)
 	}
 }
 
