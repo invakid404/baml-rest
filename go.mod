@@ -5,7 +5,7 @@ go 1.26.5
 require (
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/bytedance/sonic v1.15.2
-	github.com/containerd/containerd/v2 v2.3.2
+	github.com/containerd/containerd/v2 v2.3.3
 	github.com/containerd/platforms v1.0.0-rc.4
 	github.com/dave/jennifer v1.7.1
 	github.com/docker/buildx v0.35.0
