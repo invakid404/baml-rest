@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: ${{ github.event.head_commit.author.name != 'github-actions[bot]' }}
 
 env:
-  GO_VERSION: "1.26.3"
+  GO_VERSION: "1.26.5"
 
 jobs:
   sync:

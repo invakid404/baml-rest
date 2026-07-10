@@ -1,6 +1,6 @@
 module github.com/invakid404/baml-rest/adapters/adapter_v0_215_0
 
-go 1.26.3
+go 1.26.5
 
 require (
 	github.com/boundaryml/baml v0.215.0

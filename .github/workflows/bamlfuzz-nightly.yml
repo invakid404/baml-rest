@@ -51,7 +51,7 @@ permissions:
   actions: read
 
 env:
-  GO_VERSION: "1.26.3"
+  GO_VERSION: "1.26.5"
 
 jobs:
   get-versions:
@@ -195,7 +195,7 @@ jobs:
         with:
           path: warm-images/debian.tar
           key: warm-image-${{ runner.os }}-debian-${{ steps.resolve.outputs.debian }}
-      - name: Cache golang:1.26.3-alpine tarball
+      - name: Cache golang:1.26.5-alpine tarball
         id: cache-golang
         uses: actions/cache@v6.1.0
         with:
