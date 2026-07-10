@@ -1,6 +1,6 @@
 module github.com/invakid404/baml-rest/dynclient
 
-go 1.26.3
+go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2

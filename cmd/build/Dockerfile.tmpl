@@ -1,5 +1,5 @@
 # Go version (defined once, re-declared in each stage that needs it)
-ARG GO_VERSION=1.26.3
+ARG GO_VERSION=1.26.5
 
 {{- if and .bamlSource (not .prebuiltCffi) }}
 # Rust builder stage: Build BAML CFFI library and CLI from source.
