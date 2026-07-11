@@ -1,10 +1,12 @@
-// Package nativeprompt is a de-BAML spike: a native Go reimplementation of
-// BAML's dynamic prompt template renderer, built on the first-party
-// minijinja-Go port (github.com/mitsuhiko/minijinja/minijinja-go/v2).
+// Package nativeprompt is a de-BAML spike: a native Go dynamic parity
+// implementation of BAML's prompt template renderer plus a test-only narrow
+// static candidate, both built on the first-party minijinja-Go port
+// (github.com/mitsuhiko/minijinja/minijinja-go/v2).
 //
-// It renders exactly one template — the generated dynamic function
-// Baml_Rest_Dynamic (cmd/build/dynamic.baml) — reproducing BAML v0.223's
-// jinja-runtime behaviour for that template's feature surface:
+// The dynamic renderer ([Render]/[Supports]) renders exactly one template — the
+// generated dynamic function Baml_Rest_Dynamic (cmd/build/dynamic.baml) —
+// reproducing BAML v0.223's jinja-runtime behaviour for that template's feature
+// surface:
 //
 //   - trim_blocks + lstrip_blocks whitespace control;
 //   - the top-level none -> "null" custom formatter;
@@ -20,12 +22,22 @@
 //   - the prompt dedent-by-minimum-leading-whitespace + trim preprocessing;
 //   - the RenderedPrompt Completion-vs-Chat decision.
 //
+// The static candidate ([RenderStatic]/[SupportsStatic]) consumes a retained
+// promptdescriptor.Function plus primitive arguments and renders a deliberately
+// narrow static surface — literal text with direct primitive interpolation,
+// fixed text-only _.role/_.chat blocks, and bare ctx.output_format — through the
+// SAME environment, dedent/trim, and lowering as the dynamic path.
+// [SupportsStatic] is a CLOSED allowlist: it accepts only the exact expression
+// forms it proves and declines everything else through the shared
+// ErrUnsupported/Decline contract. It makes no parity-complete claim on its own
+// and is not wired anywhere; slice 2 adds the BAML v0.223 differential proof.
+//
 // This package is TEST-ONLY plumbing for the front-end de-BAML arc. It is NOT
 // wired into production request building — the served request path stays BAML.
 // A companion build-only differential harness (see the //go:build integration
-// oracle test) proves this renderer byte-exact against BAML's real runtime
-// across a seeded corpus; a fail-closed [Supports] predicate declines any
-// prompt shape or media kind the spike does not prove.
+// oracle test) proves the dynamic renderer byte-exact against BAML's real
+// runtime across a seeded corpus; a fail-closed [Supports] predicate declines
+// any prompt shape or media kind the spike does not prove.
 //
 // Version pinning: minijinja-Go is pinned to v2.16.0, the exact minijinja
 // version BAML v0.223 depends on (BoundaryML's fork is one commit — "add
