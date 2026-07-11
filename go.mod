@@ -4,6 +4,7 @@ go 1.26.5
 
 require (
 	github.com/bmatcuk/doublestar/v4 v4.10.0
+	github.com/boundaryml/baml v0.223.0
 	github.com/bytedance/sonic v1.15.2
 	github.com/containerd/containerd/v2 v2.3.2
 	github.com/containerd/platforms v1.0.0-rc.4

@@ -43,6 +43,18 @@ codegen/testdata
 # the server binary's embed.FS, mirroring codegen/testdata above.
 internal/schema/outputformat/testdata
 
+# de-BAML Phase 3 slice-2 STATIC differential oracle fixture: the claimed
+# .baml project (baml_src) plus its UNTOUCHED stock BAML v0.223.0 generated Go
+# client (baml_client). This is a test-only oracle artifact consumed solely by
+# the //go:build integration test in internal/nativeprompt/staticoracle; it must
+# NEVER enter the customer/container source bundle. In particular the generated
+# baml_client imports the stock github.com/boundaryml/baml runtime, so embedding
+# it would make the root server binary ship a SECOND generated BAML client.
+# Excluded here (cmd/embed includes testdata dirs by default — see
+# internal/schema/testdata in embed.go) so the root embed manifest stays
+# unchanged, mirroring internal/schema/outputformat/testdata above.
+internal/nativeprompt/testdata/static_oracle
+
 # bamlfuzz lives publicly under codegen/ (not internal/) so the
 # root-module integration test can import it without coupling
 # adapters/common to integration/testutil. The package is test
