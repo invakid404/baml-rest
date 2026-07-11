@@ -73,11 +73,17 @@ import (
 // enrichShorthandClientProviders (it needs the enriched clientProvider map). The
 // return bundle a descriptor carries is the EXACT ordered [sd.Bundle] from
 // BuildStaticSchemas — its class/enum order is preserved verbatim.
+// clientConfigs is the passive per-client body configuration built by
+// [BuildClientConfigs] from the same files. It is stamped onto each eligible
+// function's descriptor (de-BAML Phase 4a); a nil map (or a missing client
+// entry) yields a Present==false ClientConfig, preserving Version-1 behavior for
+// callers that do not supply it.
 func BuildPromptDescriptors(
 	files []SourceFile,
 	schemas map[string]sd.Bundle,
 	schemaDeclines map[string]string,
 	clientProvider map[string]string,
+	clientConfigs map[string]promptdescriptor.ClientConfig,
 ) (map[string]promptdescriptor.Function, map[string]string) {
 	idx := buildSchemaTypeIndex(files)
 	rec := idx.recursion()
@@ -91,6 +97,7 @@ func BuildPromptDescriptors(
 		schemas:        schemas,
 		schemaDeclines: schemaDeclines,
 		clientProvider: clientProvider,
+		clientConfigs:  clientConfigs,
 		idx:            idx,
 		rec:            rec,
 		macros:         macros,
@@ -134,6 +141,7 @@ type promptBuilder struct {
 	schemas        map[string]sd.Bundle
 	schemaDeclines map[string]string
 	clientProvider map[string]string
+	clientConfigs  map[string]promptdescriptor.ClientConfig
 	idx            *schemaTypeIndex
 	rec            *recursionInfo
 	macros         []promptdescriptor.TemplateString
@@ -218,6 +226,14 @@ func (pb *promptBuilder) buildFunction(fn *bamlparser.FunctionBlock) (promptdesc
 		return promptdescriptor.Function{}, err
 	}
 
+	// (Phase 4a) Stamp the passive client/options config. A missing entry (a
+	// shorthand/enriched-only client with no declared block) yields the zero
+	// ClientConfig (Present==false). Name/Provider are set to the resolved values
+	// so ClientConfig.Provider always equals Function.Provider.
+	clientConfig := pb.clientConfigs[clientName]
+	clientConfig.Name = clientName
+	clientConfig.Provider = provider
+
 	return promptdescriptor.Function{
 		Version:  promptdescriptor.Version,
 		Method:   fn.Name,
@@ -229,7 +245,8 @@ func (pb *promptBuilder) buildFunction(fn *bamlparser.FunctionBlock) (promptdesc
 		// Every eligible function carries the whole project macro set (BAML
 		// injects all template strings ahead of the selected prompt). The slice
 		// is shared read-only; the descriptor is passive and never mutates it.
-		Macros: pb.macros,
+		Macros:       pb.macros,
+		ClientConfig: clientConfig,
 	}, nil
 }
 
