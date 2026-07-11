@@ -42,6 +42,21 @@ const (
 	FeatureUnsupportedMediaKind = "unsupported_media_kind"
 	FeatureInvalidMedia         = "invalid_media"
 	FeatureNilOutputSchema      = "nil_output_schema"
+
+	// Static feature keys for the test-only narrow static candidate
+	// (SupportsStatic / RenderStatic). They name the boundary of the static
+	// claim: a static prompt, function envelope, or argument that uses any of
+	// them is outside the proven surface and declines through the same
+	// ErrUnsupported/Decline contract. See static_support.go / static_render.go.
+	FeatureStaticDescriptor  = "static_descriptor"
+	FeatureStaticArgType     = "static_argument_type"
+	FeatureStaticArgValue    = "static_argument_value"
+	FeatureRoleCallShape     = "role_call_shape"
+	FeatureChatLayout        = "chat_layout"
+	FeatureEnumClassValue    = "enum_or_class_value"
+	FeatureEnumComparison    = "enum_or_class_comparison"
+	FeatureUnsupportedCtx    = "unsupported_ctx"
+	FeatureReservedDelimiter = "reserved_delimiter"
 )
 
 // outputFormatPlaceholder is the literal token the dynamic template's content

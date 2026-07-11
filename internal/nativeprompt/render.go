@@ -46,17 +46,7 @@ func Render(msgs []Message, outputSchema *bamlutils.DynamicOutputSchema) (*Rende
 	}
 
 	env := buildEnv(outputFormat)
-	tmpl, err := env.TemplateFromString(dynamicTemplate)
-	if err != nil {
-		return nil, fmt.Errorf("nativeprompt: compile dynamic template: %w", err)
-	}
-
-	rendered, err := tmpl.Render(map[string]any{"messages": messagesToValue(msgs)})
-	if err != nil {
-		return nil, fmt.Errorf("nativeprompt: render dynamic template: %w", err)
-	}
-
-	return lower(rendered)
+	return renderTemplate(env, dynamicTemplate, "dynamic", map[string]any{"messages": messagesToValue(msgs)})
 }
 
 // renderOutputFormat lowers the dynamic output schema and renders the native
