@@ -56,3 +56,15 @@ codegen/bamlfuzz
 # fresh checkout's cmd/embed output deterministic regardless of
 # whether the operator has session notes on disk.
 notes
+
+# Root-level command build artifacts. `go build ./cmd/introspect` and
+# `go build ./cmd/schema` default their output to `./introspect` and
+# `./schema` at the module root; both are gitignored (see .gitignore's
+# /introspect and /schema) and are never committed. Excluding them here
+# keeps cmd/embed's manifest deterministic regardless of whether an
+# operator has a stray build artifact on disk — the same rationale as
+# `notes` above. Without this, a locally-built binary is silently added
+# to the root //go:embed directive and the manifest then fails on a
+# clean checkout with "pattern introspect: no matching files found".
+introspect
+schema

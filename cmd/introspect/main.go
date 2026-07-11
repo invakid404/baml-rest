@@ -16,6 +16,7 @@ import (
 	"github.com/dave/jennifer/jen"
 
 	"github.com/invakid404/baml-rest/bamlutils/bamlparser"
+	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
 	"github.com/invakid404/baml-rest/bamlutils/schemadescriptor"
 	"github.com/invakid404/baml-rest/internal/nativeschema"
 )
@@ -1271,10 +1272,31 @@ type bamlConfig struct {
 	// wiring is a later slice. See schemabuild.go.
 	staticSchemas map[string]schemadescriptor.Bundle
 	// staticSchemaDeclines maps a function name to the stable reason its output
-	// graph could not be represented faithfully (recursion, attributes, media,
-	// tuple, float literal, @@dynamic, @skip, ...). Fail-closed: a declined
-	// function has NO entry in staticSchemas.
+	// graph could not be represented faithfully (recursion, unsupported/unknown
+	// attributes, media, tuple, float literal, @@dynamic, ...). @skip is NOT a
+	// schema decline: as of slice 6 (D11) a @skip-marked field/value is DROPPED
+	// exactly as BAML does. Fail-closed: a declined function has NO entry in
+	// staticSchemas.
 	staticSchemaDeclines map[string]string
+
+	// staticPromptDescriptors holds the per-function native PROMPT descriptor
+	// built after the static schemas and client/provider normalization (de-BAML
+	// P1 slice 2), keyed by function name. Populated by BuildPromptDescriptors; a
+	// function appears here only when it is an eligible LLM function whose return
+	// bundle, shape, and reachable input/return/macro type graphs all pass the
+	// decline contract. Like staticSchemas this is a BUILD-ONLY sidecar: it is
+	// NOT emitted into introspected.go and reaches no request path in this phase.
+	staticPromptDescriptors map[string]promptdescriptor.Function
+	// staticPromptDeclines maps a function name to the stable reason it is not an
+	// eligible prompt descriptor (return bundle unavailable, no usable LLM
+	// function shape, reachable @skip/@@dynamic, an unresolvable input/macro type
+	// graph, or a bad/duplicate template string). Mutually exclusive with
+	// staticPromptDescriptors, exactly like staticSchemaDeclines vs staticSchemas.
+	// Note the prompt scan is intentionally STRICTER than the schema builder for
+	// @skip: a @skip reachable from a function input/return/macro-arg type
+	// declines here even though the schema builder (D11) drops skipped OUTPUT
+	// fields — native prompt rendering has not proven BAML's skip semantics yet.
+	staticPromptDeclines map[string]string
 }
 
 // bamlValidationError captures a single semantic-validation failure
@@ -1392,7 +1414,10 @@ func parseBamlSourceDir(dir string) *bamlConfig {
 			return nil
 		}
 		processBAMLFile(cfg, file)
-		parsedFiles = append(parsedFiles, nativeschema.SourceFile{File: file})
+		// Retain Path: BuildStaticSchemas ignores it, but the prompt descriptor
+		// builder stamps each retained macro's SourcePath and orders macros by
+		// parsed source-file order for stable cross-file diagnostics.
+		parsedFiles = append(parsedFiles, nativeschema.SourceFile{File: file, Path: path})
 		return nil
 	})
 
@@ -1401,12 +1426,22 @@ func parseBamlSourceDir(dir string) *bamlConfig {
 	// not yet consumed downstream, so it runs regardless of the walk outcome.
 	cfg.staticSchemas, cfg.staticSchemaDeclines = nativeschema.BuildStaticSchemas(parsedFiles)
 
-	if err != nil {
-		// baml_src may not exist during stub generation
-		return cfg
+	// Enrich shorthand client providers before the prompt descriptor build so
+	// descriptor Client/Provider match the existing introspection conventions
+	// for named and shorthand clients. Skipped on a missing baml_src (walk
+	// error): there are no parsed files, so it would be a no-op anyway.
+	if err == nil {
+		enrichShorthandClientProviders(cfg)
 	}
 
-	enrichShorthandClientProviders(cfg)
+	// Build the native per-function PROMPT descriptors AFTER the static schemas
+	// and enrichShorthandClientProviders (de-BAML P1 slice 2, #586). Fail-closed
+	// per function; a BUILD-ONLY sidecar not consumed by codegen — see the
+	// non-emission boundary documented in generateBamlConfigVars. Always returns
+	// non-nil maps, matching staticSchemas above.
+	cfg.staticPromptDescriptors, cfg.staticPromptDeclines = nativeschema.BuildPromptDescriptors(
+		parsedFiles, cfg.staticSchemas, cfg.staticSchemaDeclines, cfg.clientProvider)
+
 	return cfg
 }
 
@@ -2301,6 +2336,18 @@ func generateBamlConfigVars(out *jen.File, cliCfg *config) {
 		}
 		out.Var().Id("BedrockClientOptionsByName").Op("=").Map(jen.String()).Id("BedrockClientOptions").Values(entries...)
 	}
+
+	// Non-emission boundary (de-BAML P1 slice 2, #586). cfg.staticSchemas /
+	// cfg.staticSchemaDeclines AND cfg.staticPromptDescriptors /
+	// cfg.staticPromptDeclines are INTENTIONALLY NOT emitted into introspected.go
+	// here, and no generated imports are added for them. They are build-only
+	// sidecars: emitting the prompt descriptor would require a large generated Go
+	// literal serializer for TypeExpr and the schemadescriptor.Bundle, would put
+	// raw prompt bytes into generated source (a security surface, see the scope's
+	// R6), and would create a runtime surface this representation-only phase must
+	// not add. A later metadata-runtime plumbing slice may transport these
+	// descriptors into the generated package without redesigning them; until then
+	// they stay in-process on *bamlConfig and reach no request path.
 }
 
 // bedrockOptionValueLit renders a bedrockOptionValue as the
