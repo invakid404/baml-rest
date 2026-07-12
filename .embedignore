@@ -55,6 +55,17 @@ internal/schema/outputformat/testdata
 # unchanged, mirroring internal/schema/outputformat/testdata above.
 internal/nativeprompt/testdata/static_oracle
 
+# de-BAML Phase 4b gated nanollm Prepare validation: a SEPARATE, test-only Go
+# module (github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare)
+# excluded from go.work so the PRIVATE github.com/viktordanov/nanollm/go
+# dependency stays out of the root/default module graph. It carries a nanollm
+# require + a doubly build-tagged _test.go and is never a customer-build input.
+# Excluded here so cmd/embed does NOT discover it as an embeddable module (which
+# would add a nanollmprepare import + Sources loop to the root embed.go manifest
+# AND generate a nested embed.go), keeping the root embed manifest unchanged —
+# mirroring internal/nativeprompt/testdata/static_oracle above.
+internal/nativebody/nanollmprepare
+
 # bamlfuzz lives publicly under codegen/ (not internal/) so the
 # root-module integration test can import it without coupling
 # adapters/common to integration/testutil. The package is test
