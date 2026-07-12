@@ -344,7 +344,7 @@ func TestDescriptorSetMatchesSource(t *testing.T) {
 	files := readFixtureFiles(t)
 
 	schemas, schemaDeclines := nativeschema.BuildStaticSchemas(files)
-	descriptors, promptDeclines := nativeschema.BuildPromptDescriptors(files, schemas, schemaDeclines, fixtureClientProvider)
+	descriptors, promptDeclines := nativeschema.BuildPromptDescriptors(files, schemas, schemaDeclines, fixtureClientProvider, nativeschema.BuildClientConfigs(files))
 
 	if len(schemaDeclines) != 0 {
 		t.Errorf("expected zero BuildStaticSchemas declines, got %v", schemaDeclines)
@@ -663,7 +663,7 @@ func buildDescriptors(t *testing.T) map[string]promptdescriptor.Function {
 	t.Helper()
 	files := readFixtureFiles(t)
 	schemas, schemaDeclines := nativeschema.BuildStaticSchemas(files)
-	descriptors, promptDeclines := nativeschema.BuildPromptDescriptors(files, schemas, schemaDeclines, fixtureClientProvider)
+	descriptors, promptDeclines := nativeschema.BuildPromptDescriptors(files, schemas, schemaDeclines, fixtureClientProvider, nativeschema.BuildClientConfigs(files))
 	if len(schemaDeclines) != 0 {
 		t.Fatalf("unexpected BuildStaticSchemas declines: %v", schemaDeclines)
 	}

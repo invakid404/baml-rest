@@ -56,7 +56,7 @@ func buildOne(t *testing.T, name, src string) (map[string]promptdescriptor.Funct
 	}
 	files := []nativeschema.SourceFile{{File: f, Path: name + ".baml"}}
 	schemas, schemaDeclines := nativeschema.BuildStaticSchemas(files)
-	descriptors, promptDeclines := nativeschema.BuildPromptDescriptors(files, schemas, schemaDeclines, declineClientProvider)
+	descriptors, promptDeclines := nativeschema.BuildPromptDescriptors(files, schemas, schemaDeclines, declineClientProvider, nativeschema.BuildClientConfigs(files))
 	return descriptors, promptDeclines
 }
 

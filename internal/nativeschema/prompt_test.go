@@ -33,7 +33,7 @@ func buildPrompts(t *testing.T, clientProvider map[string]string, files ...promp
 		sfs = append(sfs, SourceFile{File: f, Path: pf.path})
 	}
 	schemas, schemaDeclines := BuildStaticSchemas(sfs)
-	descs, declines := BuildPromptDescriptors(sfs, schemas, schemaDeclines, clientProvider)
+	descs, declines := BuildPromptDescriptors(sfs, schemas, schemaDeclines, clientProvider, BuildClientConfigs(sfs))
 	return descs, declines, schemas
 }
 
@@ -445,7 +445,7 @@ function DeclinedThenEligible(x: string) -> Person {
 // TestBuildPromptDescriptorsNonNilMaps proves the builder always returns non-nil
 // maps, even with no input.
 func TestBuildPromptDescriptorsNonNilMaps(t *testing.T) {
-	descs, declines := BuildPromptDescriptors(nil, nil, nil, nil)
+	descs, declines := BuildPromptDescriptors(nil, nil, nil, nil, nil)
 	if descs == nil || declines == nil {
 		t.Fatalf("BuildPromptDescriptors must return non-nil maps, got descs=%v declines=%v", descs, declines)
 	}

@@ -1434,13 +1434,21 @@ func parseBamlSourceDir(dir string) *bamlConfig {
 		enrichShorthandClientProviders(cfg)
 	}
 
+	// Extract the passive per-client body configuration (model + ordered
+	// request_body tree + transport/body-affecting option split) from the same
+	// parsed files (de-BAML P4a). Like the descriptors below it is a BUILD-ONLY
+	// sidecar: NOT emitted into introspected.go, reaches no request path.
+	clientConfigs := nativeschema.BuildClientConfigs(parsedFiles)
+
 	// Build the native per-function PROMPT descriptors AFTER the static schemas
 	// and enrichShorthandClientProviders (de-BAML P1 slice 2, #586). Fail-closed
 	// per function; a BUILD-ONLY sidecar not consumed by codegen — see the
 	// non-emission boundary documented in generateBamlConfigVars. Always returns
-	// non-nil maps, matching staticSchemas above.
+	// non-nil maps, matching staticSchemas above. The clientConfigs are threaded
+	// in (P4a) so each descriptor carries its client's passive body config; this
+	// changes only the sidecar descriptors, not any generated/served output.
 	cfg.staticPromptDescriptors, cfg.staticPromptDeclines = nativeschema.BuildPromptDescriptors(
-		parsedFiles, cfg.staticSchemas, cfg.staticSchemaDeclines, cfg.clientProvider)
+		parsedFiles, cfg.staticSchemas, cfg.staticSchemaDeclines, cfg.clientProvider, clientConfigs)
 
 	return cfg
 }
