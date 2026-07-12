@@ -72,14 +72,17 @@ jobs:
           #
           # internal/nativebody/nanollmprepare is skipped for the same
           # workspace-membership reason: it's a SEPARATE, test-only module
-          # (de-BAML Phase 4b) deliberately excluded from go.work so its
-          # PRIVATE github.com/viktordanov/nanollm/go dependency stays out of
+          # (de-BAML Phase 4b + 5.1) deliberately excluded from go.work so its
+          # PUBLIC github.com/viktordanov/nanollm-ffi/go dependency — a cgo
+          # module that embeds + links a prebuilt Rust archive — stays out of
           # the default module graph (see its go.mod). Running its `./...`
           # here would fail ("directory prefix . does not contain modules
-          # listed in go.work"), and forcing GOWORK=off would load the
-          # private nanollm require with no credential. Its SOLE execution is
-          # the gated, credentialed nanollm-prepare.yml (GOWORK=off + the
-          # prebuilt ffi bundle) — nanollm must never block normal CI.
+          # listed in go.work"), and it is cgo/platform-bound, so it does not
+          # belong in this pure-Go loop. Its SOLE execution is the gated
+          # nanollm-prepare.yml (GOWORK=off, NO secret/credential and NO release
+          # bundle — the public module is proxy/sumdb-resolvable and self-links
+          # its embedded archive), which now runs unconditionally on every PR
+          # incl. forks — nanollm must never block normal CI.
           find . -name go.mod -not -path '*/adapters/adapter_*' -not -path '*/dynclient/baml-patched/*' -not -path '*/internal/nativebody/nanollmprepare/*' -exec dirname {} \; | while read dir; do
             echo "=== Testing $dir ==="
             if [ "$dir" = "./adapters/common" ]; then

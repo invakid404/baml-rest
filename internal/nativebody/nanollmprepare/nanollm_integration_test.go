@@ -1,4 +1,4 @@
-//go:build nanollm_prebuilt && nanollm_integration
+//go:build nanollm_integration
 
 package nanollmprepare
 
@@ -14,25 +14,22 @@ package nanollmprepare
 // authoritative parity proof.
 //
 // It lives in a SEPARATE, test-only module (see go.mod) excluded from go.work,
-// so the private github.com/viktordanov/nanollm/go dependency stays entirely
+// so the public github.com/viktordanov/nanollm-ffi/go dependency stays entirely
 // out of the root/default module graph — a cold `go build ./...` /
-// `go test ./...` (no tags, no credentials) never needs nanollm. On top of that
-// isolation, this file is DOUBLY GATED by
-// `//go:build nanollm_prebuilt && nanollm_integration`:
+// `go test ./...` (no tags) never needs nanollm, cgo, or a C toolchain. On top
+// of that isolation, this file is GATED by `//go:build nanollm_integration`:
 //
-//   - nanollm_prebuilt selects nanollm's prebuilt-artifact CGO linkage
-//     (go/internal/ffi/link_prebuilt.go): the consumer supplies CGO_CFLAGS /
-//     CGO_LDFLAGS pointing at an unpacked, sha256-verified ffi/v0.3.0 release
-//     bundle (libnanollm_ffi.a + nanollm.h + native-static-libs.txt).
-//   - nanollm_integration additionally opts this file in.
+//   - The public nanollm-ffi module embeds its prebuilt Rust FFI archive
+//     per-platform and links it automatically
+//     (go/internal/ffi/link_embedded.go), so NO nanollm_prebuilt tag,
+//     CGO_CFLAGS, or CGO_LDFLAGS is needed. It is still a cgo package, so
+//     CGO_ENABLED=1 and a working C toolchain/linker are required.
+//   - nanollm_integration opts this file in.
 //
-// Run it (local macOS ARM) with, from an extracted aarch64-apple-darwin bundle
-// at $ART, from inside this module directory:
+// Run it (local macOS ARM, which links the committed aarch64-apple-darwin
+// archive) from inside this module directory:
 //
-//	CGO_ENABLED=1 \
-//	CGO_CFLAGS="-I$ART" \
-//	CGO_LDFLAGS="$ART/libnanollm_ffi.a $(cat $ART/native-static-libs.txt)" \
-//	GOWORK=off go test -tags "nanollm_prebuilt nanollm_integration" ./...
+//	CGO_ENABLED=1 GOWORK=off go test -tags "nanollm_integration" ./...
 //
 // It calls ONLY Client.Prepare — never HTTPRequest, never Do/DoStream, never a
 // send. baml-rest keeps retry/fallback/round-robin ownership; nanollm Fallbacks
@@ -45,7 +42,7 @@ import (
 
 	"github.com/invakid404/baml-rest/internal/nativebody"
 	"github.com/invakid404/baml-rest/internal/nativeprompt"
-	nanollm "github.com/viktordanov/nanollm/go"
+	nanollm "github.com/viktordanov/nanollm-ffi/go"
 )
 
 const (

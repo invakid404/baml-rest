@@ -1,11 +1,14 @@
 // This is a SEPARATE, TEST-ONLY Go module for de-BAML Phase 4b's gated,
 // no-send nanollm OpenAI Prepare validation. It exists solely to keep the
-// PRIVATE github.com/viktordanov/nanollm/go dependency OUT of the root
-// module's go.mod/go.sum and out of the workspace module graph, so a cold,
-// credential-less `go build ./...` / `go test ./...` (no tags) never needs
-// nanollm at all. It is deliberately NOT a go.work member (see ../../../go.work),
-// mirroring how dynclient/baml-patched and the adapters are excluded and
-// resolved via replace directives.
+// PUBLIC github.com/viktordanov/nanollm-ffi/go dependency OUT of the root
+// module's go.mod/go.sum and out of the workspace module graph. That module is
+// public and proxy/sumdb-resolvable, but it is still a CGO package that links a
+// substantial prebuilt Rust static archive committed per-platform inside the
+// module itself, so isolating it keeps a cold `go build ./...` /
+// `go test ./...` (no tags) from ever needing nanollm, cgo, or a C toolchain.
+// It is deliberately NOT a go.work member (see ../../../go.work), mirroring how
+// dynclient/baml-patched and the adapters are excluded and resolved via replace
+// directives.
 module github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare
 
 go 1.26.5
@@ -15,7 +18,7 @@ require (
 	github.com/invakid404/baml-rest v0.0.48
 	github.com/invakid404/baml-rest/bamlutils v0.0.48
 	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
-	github.com/viktordanov/nanollm/go v0.3.0
+	github.com/viktordanov/nanollm-ffi/go v0.3.2
 	golang.org/x/mod v0.37.0
 )
 

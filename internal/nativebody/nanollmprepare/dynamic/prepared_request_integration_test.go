@@ -1,4 +1,4 @@
-//go:build integration && nanollm_prebuilt && nanollm_integration
+//go:build integration && nanollm_integration
 
 package dynamic
 
@@ -34,8 +34,9 @@ package dynamic
 //     retry budget; the plan is unsigned (SignedAt/ExpiresAt nil, !Expired()).
 //
 // Runs in the SEPARATE, go.work-excluded nanollmprepare module; links the patched
-// BAML runtime (dynclient/baml-patched) and nanollm's Rust FFI, and must never
-// share a binary with the stock-BAML static leg (../static).
+// BAML runtime (dynclient/baml-patched) and the public nanollm-ffi module's
+// automatically-selected embedded Rust FFI archive, and must never share a binary
+// with the stock-BAML static leg (../static).
 
 import (
 	"bytes"
@@ -55,7 +56,7 @@ import (
 	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/planassert"
 	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/testutil"
 	"github.com/invakid404/baml-rest/internal/nativeprompt"
-	nanollm "github.com/viktordanov/nanollm/go"
+	nanollm "github.com/viktordanov/nanollm-ffi/go"
 )
 
 // The literal auth/environment fence (scope "Concrete auth/environment fence"),

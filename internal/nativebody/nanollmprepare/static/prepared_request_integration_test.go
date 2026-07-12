@@ -1,4 +1,4 @@
-//go:build integration && nanollm_prebuilt && nanollm_integration
+//go:build integration && nanollm_integration
 
 package static
 
@@ -35,8 +35,9 @@ package static
 // A version guard pins the loaded CFFI + module to stock v0.223.0.
 //
 // Runs in the SEPARATE, go.work-excluded nanollmprepare module; links stock BAML
-// v0.223.0 and nanollm's Rust FFI, and must never share a binary with the
-// patched-BAML dynamic leg (../dynamic).
+// v0.223.0 and the public nanollm-ffi module's automatically-selected embedded
+// Rust FFI archive, and must never share a binary with the patched-BAML dynamic
+// leg (../dynamic).
 
 import (
 	"bytes"
@@ -60,7 +61,7 @@ import (
 	"github.com/invakid404/baml-rest/internal/nativeprompt"
 	bamlclient "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/static_oracle/baml_client"
 	"github.com/invakid404/baml-rest/internal/nativeschema"
-	nanollm "github.com/viktordanov/nanollm/go"
+	nanollm "github.com/viktordanov/nanollm-ffi/go"
 )
 
 // The literal auth/environment fence (scope "Concrete auth/environment fence"),
