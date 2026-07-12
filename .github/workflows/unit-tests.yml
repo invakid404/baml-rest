@@ -69,7 +69,18 @@ jobs:
           # `GOWORK=off go test ./...` from inside it; the patched
           # module's behavior is additionally exercised transitively
           # through ./dynclient in this workspace-mode loop.
-          find . -name go.mod -not -path '*/adapters/adapter_*' -not -path '*/dynclient/baml-patched/*' -exec dirname {} \; | while read dir; do
+          #
+          # internal/nativebody/nanollmprepare is skipped for the same
+          # workspace-membership reason: it's a SEPARATE, test-only module
+          # (de-BAML Phase 4b) deliberately excluded from go.work so its
+          # PRIVATE github.com/viktordanov/nanollm/go dependency stays out of
+          # the default module graph (see its go.mod). Running its `./...`
+          # here would fail ("directory prefix . does not contain modules
+          # listed in go.work"), and forcing GOWORK=off would load the
+          # private nanollm require with no credential. Its SOLE execution is
+          # the gated, credentialed nanollm-prepare.yml (GOWORK=off + the
+          # prebuilt ffi bundle) — nanollm must never block normal CI.
+          find . -name go.mod -not -path '*/adapters/adapter_*' -not -path '*/dynclient/baml-patched/*' -not -path '*/internal/nativebody/nanollmprepare/*' -exec dirname {} \; | while read dir; do
             echo "=== Testing $dir ==="
             if [ "$dir" = "./adapters/common" ]; then
               (cd "$dir" && GOWORK=off go test -race -count=100 -timeout 20m ./...)
