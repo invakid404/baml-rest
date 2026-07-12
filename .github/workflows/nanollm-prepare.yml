@@ -1,21 +1,37 @@
 name: nanollm Prepare (gated)
 
-# De-BAML Phase 4b: gated, no-send nanollm OpenAI Prepare validation.
+# De-BAML Phase 4b + Phase 5.1: gated, no-send nanollm OpenAI Prepare validation
+# AND the OpenAI prepared-request differential vs BAML.
 #
-# This workflow proves that the EXACT, already-BAML-byte-proven Phase-4a
-# canonical OpenAI chat-completions body (internal/nativebody.BuildOpenAIChat)
-# is ACCEPTED and PLANNED by nanollm's openai provider Prepare — with NO
-# network and NO send. It links nanollm's Rust FFI archive via the
-# `nanollm_prebuilt` build tag against a provenance-pinned prebuilt RELEASE
-# bundle and runs the doubly-gated
-# `//go:build nanollm_prebuilt && nanollm_integration` test.
+# Phase 4b proves the EXACT, already-BAML-byte-proven Phase-4a canonical OpenAI
+# chat-completions body (internal/nativebody.BuildOpenAIChat) is ACCEPTED and
+# PLANNED by nanollm's openai provider Prepare — with NO network and NO send.
 #
-# The gated test + its nanollm dependency live in a SEPARATE, test-only module
+# Phase 5.1 adds the prepared-request DIFFERENTIAL: for every Phase-4a-admitted
+# fixture it proves nanollm's PreparedRequest (from Client.Prepare on the native
+# 4a body) matches BAML's ACTUAL provider request — method, URL, raw body bytes,
+# and semantic headers — across TWO SEPARATE test binaries:
+#   - internal/nativebody/nanollmprepare/dynamic  drives BAML's PATCHED runtime
+#     (dynclient) and captures the intercepted *http.Request (no send);
+#   - internal/nativebody/nanollmprepare/static   drives STOCK BAML v0.223.0 via
+#     the generated Request.<Fn>() pre-send request.
+# A BAML-free comparator (nanollmprepare/testutil) normalizes both legs; it
+# NEVER imports either BAML runtime. Still NO HTTPRequest / Do / DoStream / send.
+#
+# It links nanollm's Rust FFI archive via the `nanollm_prebuilt` build tag
+# against a provenance-pinned prebuilt RELEASE bundle and runs the triply-gated
+# `//go:build integration && nanollm_prebuilt && nanollm_integration` tests. The
+# `integration` tag makes the BAML CFFI dependency of both legs explicit; each
+# BAML runtime is pre-provisioned and version-checked below so a fresh runner
+# never surprise-downloads a CFFI during the no-send test.
+#
+# The gated tests + their nanollm dependency live in a SEPARATE, test-only module
 # (internal/nativebody/nanollmprepare) that is EXCLUDED from go.work, so the
 # PRIVATE github.com/viktordanov/nanollm dependency is entirely absent from the
 # root/default module graph. A cold, credential-less `go build ./...` /
 # `go test ./...` (no tags) never resolves, fetches, or compiles nanollm — that
-# module and this job are the only places it appears.
+# module and this job are the only places it appears. (Stock BAML is a normal
+# public dependency already pinned by the root; the module pins it too.)
 #
 # DELIBERATELY SEPARATE and NON-BLOCKING: it is its own workflow, NOT part of
 # the default required check matrix (Unit Tests / Integration Tests). nanollm is
@@ -53,6 +69,11 @@ env:
   # ffi/v0.3.0. Asserted against the release's published .sha256, then the
   # downloaded bundle is verified against it.
   NANOLLM_FFI_SHA256: "bfec52d66c2c2580a5a98857a76571170919342e0abfb55280586d5b9f409fdc"
+  # The stock BAML runtime version both differential legs must load (Phase 5.1).
+  # The dynamic leg links the PATCHED runtime (dynclient/baml-patched) and the
+  # static leg links stock github.com/boundaryml/baml — both are v0.223.0-based.
+  # The static leg's TestBAMLVersionPinned asserts the loaded CFFI reports this.
+  NANOLLM_BAML_VERSION: "v0.223.0"
 
 jobs:
   nanollm-prepare:
@@ -98,15 +119,30 @@ jobs:
             url."https://x-access-token:${NANOLLM_FFI_TOKEN}@github.com/viktordanov/".insteadOf \
             "https://github.com/viktordanov/"
 
-      - name: Assert the test module pins nanollm @ v0.3.0
+      - name: Assert module pins (nanollm @ v0.3.0, stock BAML @ v0.223.0) + zero-root-nanollm
         if: ${{ env.NANOLLM_FFI_TOKEN != '' }}
         run: |
+          set -euo pipefail
+          gomod=internal/nativebody/nanollmprepare/go.mod
+          # EXACT-version pin assertion (not a substring): the version token must be
+          # followed by whitespace or end-of-line, so a prerelease like v0.223.0-rc1
+          # can NOT satisfy the pin. Dots are escaped so they match literally. This
+          # is a fast pre-flight gate; TestBAMLVersionPinned re-checks authoritatively
+          # in-binary via golang.org/x/mod/modfile + the loaded CFFI version.
+          exact_pin() { # <module_path> <version>
+            local esc; esc="$(printf '%s' "$2" | sed 's/[.]/\\./g')"
+            grep -qE "(^|[[:space:]])$1[[:space:]]+${esc}([[:space:]]|\$)" "$gomod"
+          }
           # Provenance: the linked FFI must match the required module version.
           # nanollm is required ONLY by the separate test-only module, never the
           # root — the root go.mod must have zero nanollm reference.
-          grep -qF "github.com/viktordanov/nanollm/go ${NANOLLM_GO_VERSION}" \
-            internal/nativebody/nanollmprepare/go.mod \
-            || { echo "test module does not pin nanollm/go ${NANOLLM_GO_VERSION}"; exit 1; }
+          exact_pin "github.com/viktordanov/nanollm/go" "${NANOLLM_GO_VERSION}" \
+            || { echo "test module does not pin nanollm/go at exactly ${NANOLLM_GO_VERSION}"; exit 1; }
+          # Phase 5.1: the static differential leg links the STOCK BAML module, so
+          # the test-only module must pin it at exactly v0.223.0 (its loaded CFFI
+          # is version-checked by TestBAMLVersionPinned at runtime).
+          exact_pin "github.com/boundaryml/baml" "${NANOLLM_BAML_VERSION}" \
+            || { echo "test module does not pin boundaryml/baml at exactly ${NANOLLM_BAML_VERSION}"; exit 1; }
           if grep -q "github.com/viktordanov/nanollm" go.mod go.sum; then
             echo "root go.mod/go.sum must NOT reference nanollm (default-build isolation)"; exit 1
           fi
@@ -153,14 +189,48 @@ jobs:
             echo "CGO_LDFLAGS=$work/lib/libnanollm_ffi.a $native_libs"
           } >> "$GITHUB_ENV"
 
-      - name: Run gated nanollm Prepare validation (no send)
+      - name: Pre-provision + version-check both BAML CFFI runtimes
         if: ${{ env.NANOLLM_FFI_TOKEN != '' }}
         run: |
-          # Doubly gated: nanollm_prebuilt selects the prebuilt CGO linkage,
-          # nanollm_integration opts the 4b test in. No send / no HTTPRequest /
-          # no Do/DoStream — Prepare only. Runs inside the SEPARATE test module
-          # with GOWORK=off so its go.mod (the only one that requires nanollm) is
-          # the build list — the workspace/root never sees nanollm.
+          set -euo pipefail
+          # Phase 5.1 crosses BOTH the stock BAML (static leg) and the patched
+          # BAML (dynamic leg) CFFI runtimes. Pre-provision them into a pinned
+          # cache HERE, with download enabled, so the no-send test below can run
+          # with downloads DISABLED and can never surprise-download a CFFI.
+          #
+          # Export the cache dir so the run step shares it. Warming = running one
+          # test per leg (each a separate test binary / process): the static
+          # version-pin test loads + asserts the stock v0.223.0 CFFI, and one
+          # dynamic row loads the patched runtime.
+          cache="$RUNNER_TEMP/baml-cache"
+          mkdir -p "$cache"
+          echo "BAML_CACHE_DIR=$cache" >> "$GITHUB_ENV"
+
           cd internal/nativebody/nanollmprepare
-          GOWORK=off go test -tags "nanollm_prebuilt nanollm_integration" \
+          # Static leg: version-check the loaded stock CFFI AND warm it with a real
+          # request build (a completion row builds a BAML HTTPRequest).
+          BAML_CACHE_DIR="$cache" GOWORK=off go test \
+            -tags "integration nanollm_prebuilt nanollm_integration" \
+            -count=1 -run 'TestBAMLVersionPinned|TestStaticPreparedRequestParity/StaticCompletion/ascii' ./static/
+          # Dynamic leg: warm the patched runtime with one real captured request.
+          BAML_CACHE_DIR="$cache" GOWORK=off go test \
+            -tags "integration nanollm_prebuilt nanollm_integration" \
+            -count=1 -run 'TestDynamicPreparedRequestParity/single_user_message' ./dynamic/
+
+      - name: Run gated nanollm prepared-request differential (no send)
+        if: ${{ env.NANOLLM_FFI_TOKEN != '' }}
+        run: |
+          # Triply gated: `integration` makes the BAML CFFI dependency explicit,
+          # nanollm_prebuilt selects the prebuilt CGO linkage, nanollm_integration
+          # opts the tests in. No send / no HTTPRequest / no Do/DoStream — Prepare
+          # + BAML request capture only. Runs inside the SEPARATE test module with
+          # GOWORK=off so its go.mod (the only one that requires nanollm) is the
+          # build list — the workspace/root never sees nanollm. `go test ./...`
+          # runs each package's test binary as a SEPARATE PROCESS, so the stock
+          # and patched BAML runtimes never share an address space. Downloads are
+          # DISABLED: the CFFIs were pre-provisioned above, so a fresh runner
+          # cannot silently fetch a runtime mid-test.
+          cd internal/nativebody/nanollmprepare
+          BAML_LIBRARY_DISABLE_DOWNLOAD=true GOWORK=off go test \
+            -tags "integration nanollm_prebuilt nanollm_integration" \
             -count=1 -v ./...
