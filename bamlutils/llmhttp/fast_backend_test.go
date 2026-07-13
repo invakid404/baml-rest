@@ -228,18 +228,30 @@ func TestFastExecute_HeadersForwardedCasePreserved(t *testing.T) {
 }
 
 func TestFastExecute_ConnectionRefused(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	// Keep withFastClient so the public ClientModeFastHTTP selection seam stays
+	// covered, then preinstall a decisionFast cache entry whose fasthttp
+	// dialers fail with the injected refusal. executeBorrow finds the entry
+	// (no probe/DNS/proxy), context.Background + onSuccess==nil selects the
+	// buffered unaryHost lane, and its DoDeadline hits connectionRefusedDial.
+	// Injecting the refusal (not dialing a just-freed ephemeral port) makes
+	// this deterministic — see errTestConnectionRefused.
+	const target = "http://connection-refused.invalid/"
+	c := withFastClient(t, nil)
+
+	origin, err := parseOrigin(target)
 	if err != nil {
 		t.Fatal(err)
 	}
-	addr := ln.Addr().String()
-	ln.Close()
+	// Set DialTimeout on both fast lanes before install: entries are treated as
+	// immutable once published, and the two lanes should stay consistent even
+	// though this buffered path uses only unaryHost.
+	entry := c.cache.buildEntry(origin, decisionFast)
+	entry.host.DialTimeout = connectionRefusedDial
+	entry.unaryHost.DialTimeout = connectionRefusedDial
+	c.cache.install(origin.key, entry)
 
-	c := withFastClient(t, nil)
-	_, err = c.Execute(context.Background(), &Request{URL: "http://" + addr, Method: "POST", Body: `{}`}, nil)
-	if err == nil {
-		t.Fatal("expected connection-refused error")
-	}
+	_, err = c.Execute(context.Background(), &Request{URL: target, Method: "POST", Body: `{}`}, nil)
+	requireConnectionRefused(t, err)
 }
 
 // --- Streaming under ClientModeFastHTTP routes through net/http (Stage 1) ---
