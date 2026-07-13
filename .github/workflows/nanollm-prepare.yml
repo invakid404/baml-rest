@@ -69,6 +69,12 @@ env:
   # static leg links stock github.com/boundaryml/baml — both are v0.223.0-based.
   # The static leg's TestBAMLVersionPinned asserts the loaded CFFI reports this.
   NANOLLM_BAML_VERSION: "v0.223.0"
+  # The PUBLIC go-mocklm version pinned as a Go tool in the isolated module. The
+  # Phase-6 Slice 6c LIVE differential (dynamic/live_*_integration_test.go) drives
+  # BOTH legs against a go-mocklm subprocess as the second loopback responder, and
+  # the already-merged Slice-2/6b execute suite (also picked up by ./... below)
+  # uses it too. Built once as MOCKLM_BINARY so no test rebuilds it on demand.
+  GO_MOCKLM_VERSION: "v0.4.0"
 
 jobs:
   nanollm-prepare:
@@ -97,7 +103,7 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Assert module pins (nanollm-ffi @ v0.3.2, stock BAML @ v0.223.0) + zero-root-nanollm
+      - name: Assert module pins (nanollm-ffi @ v0.3.2, stock BAML @ v0.223.0, go-mocklm @ v0.4.0) + zero-root-nanollm
         run: |
           set -euo pipefail
           gomod=internal/nativebody/nanollmprepare/go.mod
@@ -119,11 +125,29 @@ jobs:
           # is version-checked by TestBAMLVersionPinned at runtime).
           exact_pin "github.com/boundaryml/baml" "${NANOLLM_BAML_VERSION}" \
             || { echo "test module does not pin boundaryml/baml at exactly ${NANOLLM_BAML_VERSION}"; exit 1; }
-          # Default-build isolation: the root must reference NEITHER the old
-          # nanollm nor the new nanollm-ffi module path (the prefix matches both).
-          if grep -q "github.com/viktordanov/nanollm" go.mod go.sum; then
-            echo "root go.mod/go.sum must NOT reference nanollm (default-build isolation)"; exit 1
-          fi
+          # Phase 6 Slice 6c: the live differential's go-mocklm responder is pinned
+          # at exactly v0.4.0 AND declared as a Go tool (the tool directive is what
+          # `go install tool` below builds).
+          exact_pin "github.com/viktordanov/go-mocklm" "${GO_MOCKLM_VERSION}" \
+            || { echo "test module does not pin go-mocklm at exactly ${GO_MOCKLM_VERSION}"; exit 1; }
+          # Semantic check (not a brittle text grep): `go list tool` reports the
+          # module's declared tool packages regardless of whether the tool
+          # directive is serialized one-line (`tool <path>`) or as a parenthesized
+          # `tool ( ... )` block, so the block form can never trip a false failure.
+          # Verified on the pinned Go 1.26.5 toolchain to return the go-mocklm path.
+          ( cd internal/nativebody/nanollmprepare && GOWORK=off go list tool ) \
+            | grep -qF "github.com/viktordanov/go-mocklm" \
+            || { echo "test module does not declare go-mocklm as a Go tool"; exit 1; }
+          # Default-build isolation: the root must reference NEITHER the nanollm
+          # module (the prefix matches nanollm-ffi too) NOR go-mocklm.
+          for f in go.mod go.sum go.work go.work.sum; do
+            if grep -q "github.com/viktordanov/nanollm" "$f"; then
+              echo "root $f must NOT reference nanollm (default-build isolation)"; exit 1
+            fi
+            if grep -q "github.com/viktordanov/go-mocklm" "$f"; then
+              echo "root $f must NOT reference go-mocklm (default-build isolation)"; exit 1
+            fi
+          done
 
       - name: Clean public-install smoke (scratch module, no flags)
         run: |
@@ -158,6 +182,19 @@ jobs:
           cd internal/nativebody/nanollmprepare
           GOWORK=off go mod download
 
+      - name: Build the pinned go-mocklm tool
+        run: |
+          set -euo pipefail
+          # The Phase-6 Slice 6c live differential (and the merged Slice-2/6b send
+          # suite, also run by ./... below) launches go-mocklm as a loopback
+          # subprocess. Build the module's declared tool ONCE into $RUNNER_TEMP/bin
+          # and export MOCKLM_BINARY so no test rebuilds it on demand mid-run. This
+          # mirrors nanollm-send.yml; MOCKLM_BINARY is authoritative in CI and the
+          # harness only falls back to an on-demand build when it is unset.
+          cd internal/nativebody/nanollmprepare
+          GOBIN="$RUNNER_TEMP/bin" GOWORK=off go install tool
+          echo "MOCKLM_BINARY=$RUNNER_TEMP/bin/go-mocklm" >> "$GITHUB_ENV"
+
       - name: Pre-provision + version-check both BAML CFFI runtimes
         run: |
           set -euo pipefail
@@ -185,19 +222,25 @@ jobs:
             -tags "integration nanollm_integration" \
             -count=1 -run 'TestDynamicPreparedRequestParity/single_user_message' ./dynamic/
 
-      - name: Run gated nanollm prepared-request differential (no send)
+      - name: Run gated nanollm prepared-request + live-loopback differential
         run: |
           # Doubly gated: `integration` makes the BAML CFFI dependency explicit and
           # `nanollm_integration` opts the tests in. The public nanollm-ffi module
           # embeds + links its prebuilt CGO archive automatically — no
-          # nanollm_prebuilt tag, no CGO_CFLAGS/CGO_LDFLAGS. No send / no HTTPRequest
-          # / no Do/DoStream — Prepare + BAML request capture only. Runs inside the
-          # SEPARATE test module with GOWORK=off so its go.mod (the only one that
-          # requires nanollm) is the build list — the workspace/root never sees
-          # nanollm. `go test ./...` runs each package's test binary as a SEPARATE
-          # PROCESS, so the stock and patched BAML runtimes never share an address
-          # space. Downloads are DISABLED: the CFFIs were pre-provisioned above, so
-          # a fresh runner cannot silently fetch a runtime mid-test.
+          # nanollm_prebuilt tag, no CGO_CFLAGS/CGO_LDFLAGS. This ./... run covers
+          # BOTH the Phase-4b/5.1 NO-SEND Prepare+capture differential (root /
+          # static / dynamic prepared-request parity) AND the Phase-6 Slice 6c LIVE
+          # differential (dynamic/live_*): two sequential real-loopback legs per
+          # fixture — BAML-as-served (de-BAML false) and the native 6a+6b path —
+          # against a baml-rest capture server and a go-mocklm subprocess, plus the
+          # Slice-2/6b execute send suite. Runs inside the SEPARATE test module with
+          # GOWORK=off so its go.mod (the only one that requires nanollm/go-mocklm)
+          # is the build list — the workspace/root never sees either. `go test ./...`
+          # runs each package's test binary as a SEPARATE PROCESS, so the stock and
+          # patched BAML runtimes never share an address space. BAML downloads are
+          # DISABLED (CFFIs pre-provisioned above); go-mocklm is MOCKLM_BINARY
+          # (pre-built above), and all live traffic stays on 127.0.0.1 behind each
+          # transport's loopback dial guard.
           cd internal/nativebody/nanollmprepare
           BAML_LIBRARY_DISABLE_DOWNLOAD=true GOWORK=off go test \
             -tags "integration nanollm_integration" \
