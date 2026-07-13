@@ -1,19 +1,20 @@
-//go:build nanollm_prebuilt && nanollm_integration
+//go:build nanollm_integration
 
 package planassert
 
 // The SHARED nanollm-plan client + assertions for both Phase 5.1 legs. Gated by
-// `nanollm_prebuilt && nanollm_integration` (the CGO/FFI linkage tags): this file
-// imports nanollm, so it is only compiled when a leg's gated test binary links
-// the prebuilt FFI. It imports NO BAML runtime, so sharing it never links the two
-// legs' distinct BAML runtimes into one binary.
+// `nanollm_integration` (the opt-in tag): this file imports nanollm, so it is
+// only compiled when a leg's gated test binary links the public nanollm-ffi
+// module's automatically-selected embedded prebuilt FFI archive. It imports NO
+// BAML runtime, so sharing it never links the two legs' distinct BAML runtimes
+// into one binary.
 
 import (
 	"testing"
 
 	"github.com/invakid404/baml-rest/internal/nativebody"
 	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/testutil"
-	nanollm "github.com/viktordanov/nanollm/go"
+	nanollm "github.com/viktordanov/nanollm-ffi/go"
 )
 
 // NewPrepareClient builds a nanollm engine with ONE openai alias configured to

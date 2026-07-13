@@ -79,10 +79,13 @@ jobs:
           # populate-then-validate sequence is identical on both passes.
           # internal/nativebody/nanollmprepare is excluded for the same reason
           # as dynclient/baml-patched: it's a SEPARATE, test-only module
-          # outside go.work (de-BAML Phase 4b), so a workspace-mode `go list`
-          # here fails, and forcing GOWORK=off would load its PRIVATE nanollm
-          # require with no credential. It carries no Renovate-managed public
-          # deps that need workspace-checksum population.
+          # outside go.work (de-BAML Phase 4b + 5.1), so a workspace-mode
+          # `go list` here fails, and it is cgo/platform-bound. Its public
+          # nanollm-ffi dependency (github.com/viktordanov/nanollm-ffi/go@v0.3.2),
+          # like the module's other direct requires, is pinned in its own
+          # go.mod/go.sum where Renovate tracks it; because the module is outside
+          # go.work its checksums never enter go.work.sum, so it needs no
+          # workspace-checksum population here.
           populate_workspace_checksums() {
             find . -name go.mod -not -path '*/adapters/adapter_*' -not -path '*/dynclient/baml-patched/*' -not -path '*/internal/nativebody/nanollmprepare/*' -exec dirname {} \; | while read -r dir; do
               if [ "$dir" = "./adapters/common" ]; then

@@ -12,9 +12,9 @@
 // it never couples the two legs to a shared BAML binary.
 //
 // The nanollm-touching helpers live in the build-tagged asserts.go
-// (`nanollm_prebuilt && nanollm_integration`); this file carries only the
-// dependency-free fence constants and the package doc, so a default, tag-less
-// `go build ./...` compiles this package with ZERO nanollm/CGO — preserving the
+// (`nanollm_integration`); this file carries only the dependency-free fence
+// constants and the package doc, so a default, tag-less `go build ./...`
+// compiles this package with ZERO nanollm/CGO — preserving the
 // root/default-build isolation.
 package planassert
 
