@@ -1,17 +1,30 @@
-// Package execute holds de-BAML Slice 2's gated, TEST-ONLY functional-send
-// suite for nanollm. It proves that a baml-rest-native OpenAI chat body (built
-// once by internal/nativebody.BuildOpenAIChat) round-trips through nanollm's
-// REAL executor — Do/DoStream, across the CGO/Rust translation core — to a
-// provider-native HTTP endpoint and back to an OpenAI-shaped caller result.
+// Package execute holds two gated, TEST-ONLY de-BAML nanollm suites.
 //
-// The whole suite is build-tagged `//go:build nanollm_integration`; the proof
-// lives in the tagged mocklm_integration_test.go (subprocess/admin/loopback
-// harness) and send_integration_test.go (the Do parity + DoStream matrix).
-// This file is deliberately UNTAGGED and IMPORT-FREE so that default, tagless
-// tooling (`go build ./...` / `go vet ./...` / editors) sees a normal, entirely
-// nanollm-free and go-mocklm-free package with exactly one non-test source file
-// — never an empty package, and never a reason to resolve, fetch, or link the
-// cgo nanollm-ffi archive or the go-mocklm tool.
+// Slice 2's FUNCTIONAL-SEND suite proves that a baml-rest-native OpenAI chat body
+// (built once by internal/nativebody.BuildOpenAIChat) round-trips through
+// nanollm's REAL executor — Do/DoStream, across the CGO/Rust translation core —
+// to a provider-native HTTP endpoint and back to an OpenAI-shaped caller result
+// (send_integration_test.go, over the go-mocklm harness in
+// mocklm_integration_test.go).
+//
+// Slice 6b's PREPARED-REQUEST adapter (attempt.go + prepared_*_test.go) proves
+// the OTHER, Option-B send path: a fresh, Phase-5-admitted nanollm.PreparedRequest
+// executed ONCE through baml-rest's own exact transport primitive (bamlutils/
+// llmhttp ExactExecutor — ordered headers, raw bytes, one RoundTrip), then
+// nanollm.TranslateResponse(prep.Meta.ModelAlias, ...) -> OpenAI assistant-text
+// extraction -> internal/debaml.Parse (native SAP). It uses NO Do/DoStream, no
+// fallback, and no same-model retry — exactly one attempt per call. Its
+// wire-fidelity oracle is a baml-rest-owned loopback capture server
+// (prepared_capture_test.go); prepared_mocklm_test.go reuses the same Slice-2
+// go-mocklm subprocess for a provider-native validity check.
+//
+// Every nanollm-touching file in the package — the adapter attempt.go and all
+// the _test.go files — carries `//go:build nanollm_integration`. This file
+// (doc.go) is the deliberate exception: it is the sole UNTAGGED, IMPORT-FREE
+// source, so that default, tagless tooling (`go build ./...` / `go vet ./...` /
+// editors) sees a normal, entirely nanollm-free and go-mocklm-free package with
+// exactly one non-test source file — never an empty package, and never a reason
+// to resolve, fetch, or link the cgo nanollm-ffi archive or the go-mocklm tool.
 //
 // Invariants this package upholds (asserted concretely by the tagged tests):
 //
