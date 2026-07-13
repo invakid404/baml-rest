@@ -213,24 +213,22 @@ func TestExecuteStreamHeadersForwarded(t *testing.T) {
 }
 
 func TestExecuteStreamConnectionRefused(t *testing.T) {
-	// Grab a free port, then close the listener so the port is guaranteed closed
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	ln.Close()
-
-	client := NewClient(nil)
-	_, err = client.ExecuteStream(context.Background(), &Request{
-		URL:    "http://" + addr,
+	// ExecuteStream unconditionally routes through net/http (openStream ->
+	// http.Client.Do), so inject the refusal into the net/http RoundTripper.
+	// The explicit ClientModeNetHTTP documents the contract and keeps this
+	// connection-failure test off any environment-driven construction. Using
+	// a synthetic refusal (not a just-freed ephemeral port) makes it
+	// deterministic — see errTestConnectionRefused.
+	client := NewClientWithOptions(ClientOptions{
+		Mode:          ClientModeNetHTTP,
+		NetHTTPClient: connectionRefusedHTTPClient(),
+	})
+	_, err := client.ExecuteStream(context.Background(), &Request{
+		URL:    "http://connection-refused.invalid/",
 		Method: "POST",
 		Body:   `{}`,
 	})
-
-	if err == nil {
-		t.Fatal("expected error for connection refused")
-	}
+	requireConnectionRefused(t, err)
 }
 
 func TestExecuteStreamInvalidURL(t *testing.T) {
@@ -550,23 +548,21 @@ func TestExecuteHeadersForwarded(t *testing.T) {
 }
 
 func TestExecuteConnectionRefused(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	ln.Close()
-
-	client := NewClient(nil)
-	_, err = client.Execute(context.Background(), &Request{
-		URL:    "http://" + addr,
+	// Pin ClientModeNetHTTP so executeBorrow skips the fast cache entry and
+	// reaches c.httpClient.Do — Auto mode would resolve a plain-http origin to
+	// fasthttp, so this generic test would otherwise never exercise the unary
+	// net/http path. The refusal is injected into the RoundTripper (no socket),
+	// making it deterministic instead of racing a just-freed ephemeral port.
+	client := NewClientWithOptions(ClientOptions{
+		Mode:          ClientModeNetHTTP,
+		NetHTTPClient: connectionRefusedHTTPClient(),
+	})
+	_, err := client.Execute(context.Background(), &Request{
+		URL:    "http://connection-refused.invalid/",
 		Method: "POST",
 		Body:   `{}`,
 	}, nil)
-
-	if err == nil {
-		t.Fatal("expected error for connection refused")
-	}
+	requireConnectionRefused(t, err)
 }
 
 func TestExecuteNilClient(t *testing.T) {
@@ -942,6 +938,62 @@ func TestExecuteOnSuccessNotFiredOnError(t *testing.T) {
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// errTestConnectionRefused is the private sentinel the connection-refused
+// tests inject into their transport seams. It wraps syscall.ECONNREFUSED so
+// the production classifier maps it to TransportFlakeConnectionRefused, and
+// its own identity lets the assertions prove the configured seam — not an
+// unrelated DNS/proxy/socket error — was what surfaced. These tests inject a
+// synthetic refusal instead of dialing a just-freed ephemeral port: closing a
+// port-0 listener and then dialing it is a TOCTOU race (a concurrent test
+// server can bind the released port and answer 2xx, making Execute return a
+// nil error), which is exactly what flaked under -race -count=100.
+var errTestConnectionRefused = fmt.Errorf(
+	"test-injected connection refusal: %w", syscall.ECONNREFUSED,
+)
+
+// connectionRefusedHTTPClient returns an *http.Client whose RoundTripper
+// always fails with errTestConnectionRefused, exercising the net/http Execute
+// and ExecuteStream paths without touching the network.
+func connectionRefusedHTTPClient() *http.Client {
+	return &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errTestConnectionRefused
+	})}
+}
+
+// connectionRefusedDial is a fasthttp DialFuncWithTimeout that always fails
+// with errTestConnectionRefused, exercising the fasthttp backend's dial path
+// without touching the network.
+func connectionRefusedDial(_ string, _ time.Duration) (net.Conn, error) {
+	return nil, errTestConnectionRefused
+}
+
+// requireConnectionRefused asserts that err is the fully classified
+// connection-refused transport error: it originated from the injected
+// sentinel, carries syscall.ECONNREFUSED and the ErrTransportFlake umbrella,
+// and is a *TransportError categorised as TransportFlakeConnectionRefused.
+func requireConnectionRefused(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected connection-refused error")
+	}
+	if !errors.Is(err, errTestConnectionRefused) {
+		t.Fatalf("error did not come from the injected refusal: %v", err)
+	}
+	if !errors.Is(err, syscall.ECONNREFUSED) {
+		t.Fatalf("errors.Is(err, syscall.ECONNREFUSED) = false: %v", err)
+	}
+	if !errors.Is(err, ErrTransportFlake) {
+		t.Fatalf("errors.Is(err, ErrTransportFlake) = false: %v", err)
+	}
+	var te *TransportError
+	if !errors.As(err, &te) {
+		t.Fatalf("error is not *TransportError: %T: %v", err, err)
+	}
+	if te.Category != TransportFlakeConnectionRefused {
+		t.Fatalf("category = %v, want %v", te.Category, TransportFlakeConnectionRefused)
+	}
+}
 
 // scriptedReader emits a fixed prefix on its first Read calls and then
 // returns finalErr once the prefix has been drained. Used to simulate a
