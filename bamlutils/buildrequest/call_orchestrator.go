@@ -103,6 +103,33 @@ type CallConfig struct {
 	// Stream.Method + FunctionLog capture identically to the streaming
 	// callback — raw comes from FunctionLog.RawLLMResponse().
 	LegacyCallChild LegacyCallChildFunc
+
+	// --- Native child-attempt seam (de-BAML cutover Slice 1) ---
+	//
+	// These three fields are the NEUTRAL, HARD-OFF plumbing for injecting a
+	// native (non-BAML) child-attempt implementation into tryOneChild. They
+	// are zero (nil / false) in every production constructor, so the seam is
+	// off and every request path is byte-identical to today. A LATER slice
+	// installs the real nanollm-backed callback via the worker. See
+	// native_callback.go for the full tri-state ownership contract.
+
+	// NativeAttempt is the optional native child-attempt callback. When both
+	// this is non-nil AND NativeAttemptEnabled is true, the orchestrator
+	// invokes it as the FIRST operation for each selected non-legacy child,
+	// before any BAML build/send. Legacy children never reach it. Nil in
+	// production (hard off).
+	NativeAttempt NativeCallAttemptFunc
+
+	// NativeAttemptEnabled is the neutral "enabled" predicate gating the
+	// native seam — the resolved umbrella-flag decision, passed in by the
+	// caller. The orchestrator itself resolves no flag; it only honours this
+	// boolean alongside a non-nil NativeAttempt. False in production.
+	NativeAttemptEnabled bool
+
+	// NativeOutputSchema is an opaque, engine-specific handle to the method's
+	// output schema, forwarded verbatim into NativeCallAttempt.OutputSchema.
+	// The generic orchestrator never inspects it. Nil in production.
+	NativeOutputSchema any
 }
 
 // LegacyCallChildFunc runs one child of a mixed-mode fallback chain via
@@ -347,12 +374,91 @@ func RunCallOrchestration(
 		winnerClient   string
 		winnerProvider string
 		winnerPath     string
+		// winnerEngine marks WHICH engine produced the result. Empty for the
+		// ordinary BAML build/send and legacy paths (so outcome metadata is
+		// byte-identical to today); set to the native marker only when the
+		// native seam succeeds. See the native seam in tryOneChild.
+		winnerEngine string
 	}
 
 	startTime := time.Now()
 
 	// tryOneChild builds, executes, extracts, and parses a single child.
 	tryOneChild := func(provider, clientOverride string) (*callAttemptResult, error) {
+		// Native child-attempt seam (de-BAML cutover Slice 1), HARD-OFF unless
+		// a caller both installs the callback AND flips the neutral enabled
+		// gate. It runs as the FIRST operation for each selected non-legacy
+		// child: legacy children are dispatched by attemptFull and never call
+		// tryOneChild, so they never reach here. With the callback nil (every
+		// production constructor) this block is skipped entirely and the
+		// attempt is byte-identical to today.
+		if config.NativeAttempt != nil && config.NativeAttemptEnabled {
+			outcome := config.NativeAttempt(ctx, NativeCallAttempt{
+				Provider:         provider,
+				ClientOverride:   clientOverride,
+				NeedsRaw:         config.NeedsRaw,
+				IncludeReasoning: config.IncludeReasoning,
+				OutputSchema:     config.NativeOutputSchema,
+				// Hand the native transport the SAME idempotent first-2xx
+				// liveness signal the BAML path gets via ExecuteBorrowed's
+				// onSuccess. A native impl must call this the instant it reads
+				// 2xx response headers (before buffering the body) so the pool's
+				// hung detector sees liveness on a slow body and does not
+				// retry/restart a worker whose provider request is already in
+				// flight. Idempotent + best-effort — see NativeCallAttempt.
+				SendHeartbeat: sendHeartbeat,
+			})
+			switch outcome.Disposition {
+			case NativeCallSucceeded:
+				// Native produced the final value over a completed send. Return
+				// it as an ordinary attempt result. raw/reasoning are gated on
+				// NeedsRaw exactly like the BAML path; the callback owns them
+				// (no borrowed transport buffer to clone — see the ownership
+				// contract on NativeCallOutcome), so they cross the attempt
+				// boundary as-is.
+				var rawOut, reasoningOut string
+				if config.NeedsRaw {
+					rawOut = outcome.Raw
+					reasoningOut = outcome.Reasoning
+				}
+				return &callAttemptResult{
+					finalResult:    outcome.FinalResult,
+					raw:            rawOut,
+					reasoning:      reasoningOut,
+					winnerProvider: provider,
+					winnerPath:     "buildrequest",
+					winnerEngine:   nativeEngineMarker,
+				}, nil
+			case NativeCallFailed:
+				// A native socket may have opened; the error is terminal for
+				// this child attempt. Hand it to the outer fallback/retry loop
+				// exactly like a BAML attempt error — NEVER fall through to a
+				// second BAML build/send for the same child.
+				//
+				// Normalize a nil error HERE, not just in FailNativeCall:
+				// NativeCallOutcome is public and directly constructible, so a
+				// literal NativeCallOutcome{Disposition: NativeCallFailed}
+				// reaches this case with a nil Err. Returning (nil, nil) would
+				// look like success to retry.Execute and then panic on the nil
+				// *callAttemptResult. The sentinel keeps the failure terminal
+				// and typed.
+				if outcome.Err == nil {
+					return nil, errNativeCallFailedNil
+				}
+				return nil, outcome.Err
+			case NativeCallDeclined:
+				// The callback guarantees no socket occurred. Fall through to
+				// the existing BAML build/send for the SAME child in the SAME
+				// retry iteration below — no extra retry consumed, no fallback
+				// advance.
+			default:
+				// An out-of-contract disposition can't assert "no socket", so
+				// treat it as terminal rather than risk a hidden second
+				// same-child send. Unreachable for the closed NativeCall* set.
+				return nil, fmt.Errorf("buildrequest: native call attempt returned unknown disposition %d", outcome.Disposition)
+			}
+		}
+
 		req, err := buildRequest(ctx, clientOverride)
 		if err != nil {
 			return nil, fmt.Errorf("buildrequest: failed to build request: %w", err)
@@ -589,6 +695,11 @@ func RunCallOrchestration(
 		outcome.WinnerClient = winningResult.winnerClient
 		outcome.WinnerProvider = winningResult.winnerProvider
 		outcome.WinnerPath = winningResult.winnerPath
+		// WinnerEngine is empty on the BAML build/send and legacy paths, so
+		// this assignment leaves the outcome frame byte-identical to today for
+		// every production (nil-callback) request; it is non-empty only when
+		// the native seam won the attempt.
+		outcome.WinnerEngine = winningResult.winnerEngine
 		dur := time.Since(startTime).Milliseconds()
 		outcome.UpstreamDurMs = &dur
 
