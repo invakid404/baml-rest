@@ -163,7 +163,24 @@ if [ "${SUBPROCESS:-true}" = "true" ]; then
 else
     echo "In-process Build: enabled"
 fi
+if [ "${NATIVE_WORKER:-false}" = "true" ]; then
+    echo "Native Worker (BAML+nanollm, from isolated module): enabled"
+else
+    echo "Native Worker: disabled (BAML-only worker; immediate-reversal default)"
+fi
 echo "============================================"
+
+# The native worker is a SUBPROCESS-only capability by construction: nanollm
+# links only into the worker subprocess, never the host. An in-process build
+# has no separate worker process, so honouring NATIVE_WORKER there would mean
+# linking nanollm into the host — exactly the invariant this slice preserves.
+# Fail loudly rather than silently producing a BAML-only in-process host.
+if [ "${NATIVE_WORKER:-false}" = "true" ] && [ "${SUBPROCESS:-true}" != "true" ]; then
+    echo "ERROR: NATIVE_WORKER=true requires SUBPROCESS=true — the native (nanollm)" >&2
+    echo "       runtime links only into the worker subprocess and must never enter" >&2
+    echo "       the in-process host link graph." >&2
+    exit 1
+fi
 
 # Set up Go build tags
 BUILD_TAGS=""
@@ -572,9 +589,72 @@ if [ -n "${BAML_REST_BASE_URL_REWRITES:-}" ]; then
 fi
 
 if [ "${SUBPROCESS:-true}" = "true" ]; then
-    # Build worker binary first (this imports baml and loads the shared library)
-    echo "Building worker binary..."
-    go build ${GO_BUILD_TAGS} ${WORKER_LDFLAGS:+-ldflags "${WORKER_LDFLAGS}"} -o cmd/serve/worker ./cmd/worker/
+    # Build worker binary first (this imports baml and loads the shared library).
+    # The host embeds these bytes at cmd/serve/worker below; whichever variant
+    # we build here becomes the embedded worker payload. The host link graph is
+    # identical either way — it only embeds an opaque byte slice.
+    if [ "${NATIVE_WORKER:-false}" = "true" ]; then
+        # de-BAML cutover Slice 2 (option b): build the BAML+nanollm worker FROM
+        # the isolated, out-of-go.work internal/nativebody/nanollmprepare module
+        # with GOWORK=off + CGO so the nanollm static archive links ONLY into the
+        # worker subprocess. The host/root module graph is never consulted for
+        # this build (GOWORK=off makes the module's own go.mod authoritative), so
+        # it stays zero-nanollm and CGO-free. Output goes to the SAME embed
+        # location so the host build below is unchanged. STILL UNROUTED: the
+        # worker stores a native capability but the orchestrator callback is
+        # nil/hard-off, so serving behaviour is byte-identical to the BAML-only
+        # worker.
+        # The isolated module is EXCLUDED from the embed source bundle
+        # (.embedignore) so cmd/embed never imports it into the root link graph;
+        # it rides along as the opaque tar cmd/build/nativeworker_module.tar
+        # (which ships in the bundle under the already-embedded cmd/build dir).
+        # Restore it here, AFTER the embed regen above (so cmd/embed never
+        # discovers a nanollm module), into its canonical path. Full-checkout
+        # builds already have the directory; extracting over it is a no-op on
+        # content because the tar is the authoritative committed snapshot.
+        if [ ! -f cmd/build/nativeworker_module.tar ]; then
+            echo "ERROR: NATIVE_WORKER=true but cmd/build/nativeworker_module.tar is missing from the build context" >&2
+            exit 1
+        fi
+        echo "Restoring isolated nanollm worker module from opaque asset (cmd/build/nativeworker_module.tar)..."
+        tar -xf cmd/build/nativeworker_module.tar
+
+        # Overlay the extracted module's OWN go.mod so it can resolve this build's
+        # generated ./baml_client and use the selected/custom BAML under
+        # GOWORK=off (the isolated module never sees the builder's go.work, where
+        # `go work use ./baml_client` and any custom-BAML replace live). The
+        # overlay edits ONLY the throwaway extracted go.mod — root go.mod/go.work
+        # are untouched, so the host stays zero-nanollm/CGO-free. It also drops
+        # replaces whose targets this server bundle trimmed (dynclient, unselected
+        # adapters). Root's generated InitBamlRuntime imports baml_client, so the
+        # worker (via root) transitively needs it.
+        echo "Overlaying isolated worker module go.mod (baml_client + BAML selection)..."
+        NATIVE_WORKER_OVERLAY_ARGS=(
+            --module-dir internal/nativebody/nanollmprepare
+            --baml-client ../../../baml_client
+            --baml-version "${BAML_VERSION}"
+        )
+        if [ -n "${CUSTOM_BAML_GO_LIB:-}" ]; then
+            NATIVE_WORKER_OVERLAY_ARGS+=(--custom-baml-lib "${CUSTOM_BAML_GO_LIB}")
+        fi
+        go run ./cmd/build/nativeworker-overlay "${NATIVE_WORKER_OVERLAY_ARGS[@]}"
+
+        echo "Building BAML+nanollm worker binary (native-capable, from isolated nanollmprepare module)..."
+        WORKER_OUT="$(pwd)/cmd/serve/worker"
+        (
+            cd internal/nativebody/nanollmprepare
+            # -mod=mod so the overlay's baml_client (local) transitive deps and any
+            # aligned BAML version can populate this module's go.sum during the
+            # build; the root module's go.sum is never consulted (GOWORK=off).
+            GOWORK=off GOFLAGS=-mod=mod CGO_ENABLED=1 go build ${GO_BUILD_TAGS} ${WORKER_LDFLAGS:+-ldflags "${WORKER_LDFLAGS}"} -o "${WORKER_OUT}" ./cmd/worker/
+        )
+    else
+        # Default / immediate-reversal build: the BAML-only worker from the root
+        # module (imports baml, loads its shared library; no nanollm). This is
+        # what keeps "BAML-only worker = 100% BAML" a build-level kill switch.
+        echo "Building worker binary (BAML-only)..."
+        go build ${GO_BUILD_TAGS} ${WORKER_LDFLAGS:+-ldflags "${WORKER_LDFLAGS}"} -o cmd/serve/worker ./cmd/worker/
+    fi
 else
     echo "Skipping worker binary build (in-process mode)..."
 fi

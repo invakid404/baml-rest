@@ -74,6 +74,17 @@ type Config struct {
 	// the dynamic final-parse seam has no native parser and stays
 	// BAML-as-today even when DeBAML.Enabled.
 	DeBAMLParse bamlutils.DeBAMLParseFunc
+
+	// NativeCapability is the neutral, opaque handle to this worker binary's
+	// linked native-send engine (de-BAML cutover Slice 2). Non-nil ONLY in the
+	// isolated BAML+nanollm worker built from the out-of-go.work nanollmprepare
+	// module; the BAML-only worker and every in-process host leave it nil. It is
+	// STORED (see Handler.NativeCapability) and reported at startup as a build
+	// capability, but is NOT routed: the orchestrator's native child-attempt
+	// callback stays nil/hard-off in this slice, so its presence changes no
+	// serving behaviour. A later slice turns a present capability into an
+	// installed, enabled native attempt.
+	NativeCapability NativeCapability
 }
 
 // deBAMLRendererSetter is the narrow optional interface the adapter
@@ -116,6 +127,12 @@ type Handler struct {
 	deBAMLRender    bamlutils.DeBAMLRenderFunc
 	deBAMLParse     bamlutils.DeBAMLParseFunc
 
+	// nativeCapability is the neutral native-send capability linked into this
+	// worker binary, or nil for the BAML-only worker. Stored at construction
+	// and read back via NativeCapability; never wired to the orchestrator in
+	// this slice (the native child-attempt callback stays nil/hard-off).
+	nativeCapability NativeCapability
+
 	sharedStateHook hookStorage
 
 	noSharedStateWarnOnce    sync.Once
@@ -138,20 +155,31 @@ func New(cfg Config) (*Handler, error) {
 		metricsReg = NewMetricsRegistry()
 	}
 	h := &Handler{
-		runtime:         cfg.Runtime,
-		logger:          cfg.Logger,
-		metricsReg:      metricsReg,
-		clientDefaults:  cfg.ClientDefaults,
-		baseURLRewrites: cfg.BaseURLRewrites,
-		httpClient:      cfg.HTTPClient,
-		deBAML:          cfg.DeBAML,
-		deBAMLRender:    cfg.DeBAMLRender,
-		deBAMLParse:     cfg.DeBAMLParse,
+		runtime:          cfg.Runtime,
+		logger:           cfg.Logger,
+		metricsReg:       metricsReg,
+		clientDefaults:   cfg.ClientDefaults,
+		baseURLRewrites:  cfg.BaseURLRewrites,
+		httpClient:       cfg.HTTPClient,
+		deBAML:           cfg.DeBAML,
+		deBAMLRender:     cfg.DeBAMLRender,
+		deBAMLParse:      cfg.DeBAMLParse,
+		nativeCapability: cfg.NativeCapability,
 	}
 	if cfg.SharedState != nil {
 		h.SetSharedStateHook(cfg.SharedState)
 	}
 	return h, nil
+}
+
+// NativeCapability returns the neutral native-send capability linked into this
+// worker binary, or nil when the binary is BAML-only. It is the getter twin of
+// Config.NativeCapability, following the render/parser storage pattern. In this
+// slice callers use it only for the startup capability diagnostic; the
+// orchestrator's native child-attempt callback stays nil/hard-off, so a
+// non-nil capability changes no serving behaviour.
+func (h *Handler) NativeCapability() NativeCapability {
+	return h.nativeCapability
 }
 
 // configureAdapter installs the per-handler HTTP client and de-BAML
