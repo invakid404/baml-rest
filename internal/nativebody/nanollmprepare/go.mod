@@ -24,6 +24,9 @@ require (
 	github.com/invakid404/baml-rest/bamlutils v0.0.48
 	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
 	github.com/invakid404/baml-rest/worker v0.0.48
+	github.com/invakid404/baml-rest/workerplugin v0.0.48
+	github.com/prometheus/client_golang v1.23.2
+	github.com/prometheus/client_model v0.6.2
 	github.com/viktordanov/nanollm-ffi/go v0.3.2
 	golang.org/x/mod v0.37.0
 )
@@ -71,7 +74,6 @@ require (
 	github.com/invakid404/baml-rest/dynclient/baml-patched v0.0.48 // indirect
 	github.com/invakid404/baml-rest/introspected v0.0.48 // indirect
 	github.com/invakid404/baml-rest/pool v0.0.0-00010101000000-000000000000 // indirect
-	github.com/invakid404/baml-rest/workerplugin v0.0.48 // indirect
 	github.com/klauspost/compress v1.19.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
@@ -79,8 +81,6 @@ require (
 	github.com/mitsuhiko/minijinja/minijinja-go/v2 v2.16.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/oklog/run v1.1.0 // indirect
-	github.com/prometheus/client_golang v1.23.2 // indirect
-	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.69.0 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
 	github.com/rs/zerolog v1.35.1 // indirect
