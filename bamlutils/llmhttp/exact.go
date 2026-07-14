@@ -297,34 +297,150 @@ func (e *ExactExecutor) Execute(ctx context.Context, req *ExactAttemptRequest) (
 	}, nil
 }
 
-// buildExactRequest converts an ExactAttemptRequest into an *http.Request,
-// declining ambiguous or transport-controlled header shapes before any socket
-// is opened. The body is defensively copied at this ownership boundary so
-// neither the executor nor the transport aliases the caller's slice — the
-// carrier's "these are the exact bytes; do not mutate" contract.
-func buildExactRequest(ctx context.Context, req *ExactAttemptRequest) (*http.Request, error) {
-	// Scan headers first so a decline never opens a socket. A single Host is
-	// routed to http.Request.Host below; a duplicate Host is ambiguous.
-	var host string
+// tokenChar is the RFC 7230 header-field-name token character set. net/http's
+// Transport rejects a name outside it at RoundTrip; the exact lane declines it
+// pre-socket instead.
+var tokenChar = func() [256]bool {
+	var t [256]bool
+	const specials = "!#$%&'*+-.^_`|~"
+	for c := 'a'; c <= 'z'; c++ {
+		t[c] = true
+	}
+	for c := 'A'; c <= 'Z'; c++ {
+		t[c] = true
+	}
+	for c := '0'; c <= '9'; c++ {
+		t[c] = true
+	}
+	for i := 0; i < len(specials); i++ {
+		t[specials[i]] = true
+	}
+	return t
+}()
+
+// ValidHeaderName reports whether name is a valid HTTP/1 header field name — a
+// non-empty RFC 7230 token. It mirrors the check net/http's Transport applies at
+// RoundTrip, so the exact lane can decline a malformed name before any socket.
+func ValidHeaderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		if !tokenChar[name[i]] {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidHeaderValue reports whether v is a valid HTTP/1 header field value: it
+// carries no control byte other than horizontal tab (DEL and any byte < 0x20
+// except HTAB are rejected). This mirrors what net/http enforces at RoundTrip,
+// so an Authorization or any header value bearing an embedded NUL/CR/LF/control
+// byte is declined pre-socket instead of being rejected mid-attempt by the
+// transport. Bytes ≥ 0x80 are permitted, matching net/http.
+func ValidHeaderValue(v string) bool {
+	for i := 0; i < len(v); i++ {
+		b := v[i]
+		if (b < 0x20 && b != '\t') || b == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// PreflightHeaders runs the exact lane's full header-admissibility scan WITHOUT
+// constructing an *http.Request or opening a socket — the validation-only half
+// of buildExactRequest. It returns an *ExactDeclineError (wrapping
+// ErrExactDeclined) when a header field name is not a valid token, a header
+// field value carries a control byte net/http would reject at RoundTrip, a
+// transport-controlled header (Content-Length, Transfer-Encoding, Connection,
+// proxy/framing fields, …) is present, or a duplicate Host is ambiguous; and nil
+// when every header is forwardable verbatim. Only header NAMES appear in a
+// decline; values are never echoed, so a decline diagnostic can never leak a
+// secret.
+//
+// It exists so a planner can prove a prepared plan is exact-transport-admissible
+// as a pre-send admission step (the "exact-transport header validation succeeds
+// before RoundTrip" gate) while still opening zero sockets. Execute's own
+// buildExactRequest calls it first, so the executor and a preflighting planner
+// share one source of truth for what the exact lane forwards.
+func (r *ExactAttemptRequest) PreflightHeaders() error {
 	hostCount := 0
-	for _, h := range req.Headers {
+	for _, h := range r.Headers {
+		if !ValidHeaderName(h.Name) {
+			return &ExactDeclineError{
+				Field:  h.Name,
+				Reason: "header field name is not a valid HTTP token",
+			}
+		}
+		if !ValidHeaderValue(h.Value) {
+			// The value is never echoed — only the name — so a control-bearing
+			// secret can never leak through this diagnostic.
+			return &ExactDeclineError{
+				Field:  h.Name,
+				Reason: "header field value carries a control byte net/http rejects at RoundTrip",
+			}
+		}
 		lower := strings.ToLower(h.Name)
 		if lower == "host" {
 			hostCount++
-			host = h.Value
 			continue
 		}
 		if _, controlled := exactControlledHeaders[lower]; controlled {
-			return nil, &ExactDeclineError{
+			return &ExactDeclineError{
 				Field:  h.Name,
 				Reason: "transport-controlled header is not forwarded verbatim by the exact lane",
 			}
 		}
 	}
 	if hostCount > 1 {
-		return nil, &ExactDeclineError{
+		return &ExactDeclineError{
 			Field:  "Host",
 			Reason: "ambiguous duplicate Host header",
+		}
+	}
+	return nil
+}
+
+// Preflight proves req is exact-transport-admissible WITHOUT opening a socket or
+// performing a RoundTrip: it runs the same construction + header scan
+// buildExactRequest performs (the checks net/http would otherwise enforce at
+// RoundTrip) and discards the built *http.Request without ever dialing it. It
+// returns the same decline Execute would refuse to send on, and nil when the
+// plan is admissible. A planner uses it to prove admissibility at the
+// exact-transport boundary with a hard guarantee of zero sockets — the executor
+// it is called on is the very one a later send would use, so a stray RoundTrip
+// would be observable on that executor's transport.
+func (e *ExactExecutor) Preflight(req *ExactAttemptRequest) error {
+	if e == nil {
+		return fmt.Errorf("llmhttp: nil ExactExecutor")
+	}
+	if req == nil {
+		return fmt.Errorf("llmhttp: nil ExactAttemptRequest")
+	}
+	_, err := buildExactRequest(context.Background(), req)
+	return err
+}
+
+// buildExactRequest converts an ExactAttemptRequest into an *http.Request,
+// declining ambiguous or transport-controlled header shapes before any socket
+// is opened. The body is defensively copied at this ownership boundary so
+// neither the executor nor the transport aliases the caller's slice — the
+// carrier's "these are the exact bytes; do not mutate" contract.
+func buildExactRequest(ctx context.Context, req *ExactAttemptRequest) (*http.Request, error) {
+	// Scan headers first so a decline never opens a socket — the shared
+	// PreflightHeaders gate a preflighting planner also uses. A single Host is
+	// routed to http.Request.Host below; a duplicate Host is ambiguous.
+	if err := req.PreflightHeaders(); err != nil {
+		return nil, err
+	}
+	var host string
+	hostCount := 0
+	for _, h := range req.Headers {
+		if strings.EqualFold(h.Name, "host") {
+			hostCount++
+			host = h.Value
 		}
 	}
 
