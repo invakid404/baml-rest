@@ -67,7 +67,7 @@ func mapDynamicClient(reg *bamlutils.ClientRegistry, alias string) (*nanollm.Cli
 
 	if cp.Provider != nativebody.ProviderOpenAI {
 		return nil, clientFacts{}, declinef(StageProvider, ReasonProviderNotOpenAI,
-			"selected client provider %q is not the admitted openai surface", cp.Provider), nil
+			"selected client provider is not the admitted openai surface"), nil
 	}
 
 	// Reject any option beyond the transport trio BEFORE reading the trio values,
@@ -84,7 +84,7 @@ func mapDynamicClient(reg *bamlutils.ClientRegistry, alias string) (*nanollm.Cli
 		sort.Strings(extra)
 		key := extra[0]
 		return nil, clientFacts{}, declinef(StageClientOption, classifyClientOption(key),
-			"selected client carries unproven option %q beyond the transport trio", key), nil
+			"selected client carries an unproven option beyond the transport trio"), nil
 	}
 
 	// The transport trio: model is a resolved literal target (StageClientSelection);

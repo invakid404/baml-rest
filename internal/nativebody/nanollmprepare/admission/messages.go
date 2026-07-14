@@ -87,9 +87,9 @@ func validatePart(msgIdx, partIdx int, p *bamlutils.DynamicContentPart) *Decline
 		}
 		return nil
 	case "image", "audio", "pdf", "video":
-		return declinef(StageMessage, ReasonMediaPart, "message %d part %d is a %s media part outside the proven text-only claim", msgIdx, partIdx, p.Type)
+		return declinef(StageMessage, ReasonMediaPart, "message %d part %d is a media part outside the proven text-only claim", msgIdx, partIdx)
 	default:
-		return declinef(StageMessage, ReasonUnknownPart, "message %d part %d has unproven type %q", msgIdx, partIdx, p.Type)
+		return declinef(StageMessage, ReasonUnknownPart, "message %d part %d has an unproven part type", msgIdx, partIdx)
 	}
 }
 
