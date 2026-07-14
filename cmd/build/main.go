@@ -174,6 +174,7 @@ var (
 	debugBuild      bool
 	unaryServer     bool
 	inProcess       bool
+	nativeWorker    bool
 	prettyLogs      bool
 	baseURLRewrites []string
 )
@@ -210,6 +211,7 @@ func init() {
 	rootCmd.Flags().BoolVar(&debugBuild, "debug", false, "Enable debug endpoints in the built binary (/_debug/gc)")
 	rootCmd.Flags().BoolVar(&unaryServer, "unary-server", false, "Enable the chi-based unary HTTP server for client-disconnect cancellation")
 	rootCmd.Flags().BoolVar(&inProcess, "inprocess", false, "Build a single-process server with the BAML worker linked in (no go-plugin subprocess)")
+	rootCmd.Flags().BoolVar(&nativeWorker, "native-worker", false, "Build the subprocess worker with nanollm linked (BAML+nanollm) from the isolated nanollmprepare module. Subprocess only; the host stays zero-nanollm/CGO-free. de-BAML cutover Slice 2: still UNROUTED (native routing hard-off)")
 	rootCmd.Flags().StringVar(&bamlSource, "baml-source", "", "Path to local BAML source repository for building from unreleased versions")
 	rootCmd.Flags().BoolVar(&prettyLogs, "pretty", false, "Use pretty console logging instead of structured JSON")
 	rootCmd.Flags().StringArrayVar(&baseURLRewrites, "base-url-rewrite", nil, "Rewrite base URLs in .baml files (format: from=to, repeatable). Also reads BAML_REST_BASE_URL_REWRITES env var (semicolon-separated)")
@@ -225,6 +227,7 @@ func init() {
 	_ = viper.BindPFlag("debug", rootCmd.Flags().Lookup("debug"))
 	_ = viper.BindPFlag("unary-server", rootCmd.Flags().Lookup("unary-server"))
 	_ = viper.BindPFlag("inprocess", rootCmd.Flags().Lookup("inprocess"))
+	_ = viper.BindPFlag("native-worker", rootCmd.Flags().Lookup("native-worker"))
 	_ = viper.BindPFlag("baml-source", rootCmd.Flags().Lookup("baml-source"))
 }
 
@@ -245,6 +248,7 @@ var rootCmd = &cobra.Command{
 		debugBuild = viper.GetBool("debug")
 		unaryServer = viper.GetBool("unary-server")
 		inProcess = viper.GetBool("inprocess")
+		nativeWorker = viper.GetBool("native-worker")
 		bamlSource = viper.GetString("baml-source")
 
 		// Validate mode
@@ -255,6 +259,15 @@ var rootCmd = &cobra.Command{
 		// Validate required flags based on mode
 		if buildMode == "docker" && targetImage == "" {
 			return fmt.Errorf("--target-image is required for docker mode")
+		}
+
+		// The native (BAML+nanollm) worker is a subprocess-only capability: nanollm
+		// links only into the worker subprocess, never the host. An in-process
+		// build has no separate worker, so honouring --native-worker there would
+		// mean linking nanollm into the host — exactly the invariant Slice 2
+		// preserves. Reject the combination up front.
+		if nativeWorker && inProcess {
+			return fmt.Errorf("--native-worker is incompatible with --inprocess: nanollm links only into the worker subprocess and must never enter the host link graph")
 		}
 
 		// Set default output path for native mode
@@ -473,14 +486,14 @@ var rootCmd = &cobra.Command{
 
 		// Dispatch to appropriate build function
 		if buildMode == "docker" {
-			return buildDocker(bamlSrcPath, detectedVersion, adapterInfo.Path, keepSource, parsedPlatform, customBamlLib, customBamlGoLib, debugBuild, unaryServer, inProcess, bamlSource, rewriteRules)
+			return buildDocker(bamlSrcPath, detectedVersion, adapterInfo.Path, keepSource, parsedPlatform, customBamlLib, customBamlGoLib, debugBuild, unaryServer, inProcess, nativeWorker, bamlSource, rewriteRules)
 		} else {
-			return buildNative(bamlSrcPath, detectedVersion, adapterInfo.Path, keepSource, customBamlLib, customBamlGoLib, debugBuild, unaryServer, inProcess, bamlLibraryPath, bamlCliPath, rewriteRules)
+			return buildNative(bamlSrcPath, detectedVersion, adapterInfo.Path, keepSource, customBamlLib, customBamlGoLib, debugBuild, unaryServer, inProcess, nativeWorker, bamlLibraryPath, bamlCliPath, rewriteRules)
 		}
 	},
 }
 
-func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, platform *ocispec.Platform, customBamlLib string, customBamlGoLib string, debugBuild bool, unaryServer bool, inProcess bool, bamlSource string, rewriteRules []urlrewrite.Rule) error {
+func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, platform *ocispec.Platform, customBamlLib string, customBamlGoLib string, debugBuild bool, unaryServer bool, inProcess bool, nativeWorker bool, bamlSource string, rewriteRules []urlrewrite.Rule) error {
 	fmt.Printf("\n=== Docker Build Mode ===\n\n")
 
 	if platform != nil {
@@ -513,6 +526,7 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 		"debugBuild":      debugBuild,
 		"unaryServer":     unaryServer,
 		"inProcess":       inProcess,
+		"nativeWorker":    nativeWorker,
 		"bamlSource":      bamlSource != "",
 		"baseURLRewrites": formatRewriteRulesForEnv(rewriteRules),
 	}
@@ -828,7 +842,7 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 	return nil
 }
 
-func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, customBamlLib string, customBamlGoLib string, debugBuild bool, unaryServer bool, inProcess bool, bamlLibraryPath string, bamlCliPath string, rewriteRules []urlrewrite.Rule) error {
+func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource string, customBamlLib string, customBamlGoLib string, debugBuild bool, unaryServer bool, inProcess bool, nativeWorker bool, bamlLibraryPath string, bamlCliPath string, rewriteRules []urlrewrite.Rule) error {
 	fmt.Printf("\n=== Native Build Mode ===\n\n")
 
 	// Check prerequisites
@@ -966,6 +980,11 @@ func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 		env = append(env, "SUBPROCESS=false")
 	} else {
 		env = append(env, "SUBPROCESS=true")
+	}
+	if nativeWorker {
+		// build.sh extracts the embedded nanollmprepare source (nativeworker_module.tar)
+		// into the context and builds the worker from it with GOWORK=off + CGO.
+		env = append(env, "NATIVE_WORKER=true")
 	}
 	if bamlLibraryPath != "" {
 		env = append(env, fmt.Sprintf("BAML_LIBRARY_PATH=%s", bamlLibraryPath))

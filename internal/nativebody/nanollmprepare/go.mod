@@ -23,6 +23,7 @@ require (
 	github.com/invakid404/baml-rest v0.0.48
 	github.com/invakid404/baml-rest/bamlutils v0.0.48
 	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
+	github.com/invakid404/baml-rest/worker v0.0.48
 	github.com/viktordanov/nanollm-ffi/go v0.3.2
 	golang.org/x/mod v0.37.0
 )
@@ -53,6 +54,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/cloudwego/gjson v0.1.1 // indirect
+	github.com/dave/jennifer v1.7.1 // indirect
 	github.com/enriquebris/goconcurrentqueue v0.7.0 // indirect
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
@@ -62,8 +64,13 @@ require (
 	github.com/hashicorp/go-hclog v1.6.3 // indirect
 	github.com/hashicorp/go-plugin v1.8.0 // indirect
 	github.com/hashicorp/yamux v0.1.2 // indirect
+	github.com/invakid404/baml-rest/adapters/adapter_v0_204_0 v0.0.0-00010101000000-000000000000 // indirect
+	github.com/invakid404/baml-rest/adapters/adapter_v0_215_0 v0.0.0-00010101000000-000000000000 // indirect
+	github.com/invakid404/baml-rest/adapters/adapter_v0_219_0 v0.0.0-00010101000000-000000000000 // indirect
+	github.com/invakid404/baml-rest/adapters/common v0.0.48 // indirect
 	github.com/invakid404/baml-rest/dynclient/baml-patched v0.0.48 // indirect
-	github.com/invakid404/baml-rest/worker v0.0.48 // indirect
+	github.com/invakid404/baml-rest/introspected v0.0.48 // indirect
+	github.com/invakid404/baml-rest/pool v0.0.0-00010101000000-000000000000 // indirect
 	github.com/invakid404/baml-rest/workerplugin v0.0.48 // indirect
 	github.com/klauspost/compress v1.19.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
@@ -76,6 +83,7 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.69.0 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
+	github.com/rs/zerolog v1.35.1 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect

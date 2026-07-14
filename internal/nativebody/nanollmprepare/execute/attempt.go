@@ -1,5 +1,3 @@
-//go:build nanollm_integration
-
 package execute
 
 // De-BAML Slice 6b adapter: the BAML-free PreparedRequest -> exact transport ->
@@ -27,9 +25,13 @@ package execute
 //     DECLINES (ErrDeBAMLParseUnsupported) is a parity-decline recorded as data;
 //     any OTHER (claimed) parse error propagates unchanged so a fallback can
 //     never masquerade as a native success.
-//   - This changes NO serving behavior: it is a gated, test-only pipeline in the
-//     out-of-workspace nanollmprepare module and is unreachable from production
-//     routing.
+//   - This changes NO serving behavior. As of de-BAML cutover Slice 2 this
+//     bridge is UNTAGGED production code (it links into the BAML+nanollm worker
+//     built from this out-of-go.work module), but it is still UNREACHABLE from
+//     production routing: the worker stores a native capability yet the
+//     orchestrator's native child-attempt callback stays nil/hard-off. The
+//     expensive Phase-5/6 oracle + go-mocklm suites that exercise it remain
+//     `nanollm_integration`-gated. A later slice wires it behind the callback.
 
 import (
 	"context"

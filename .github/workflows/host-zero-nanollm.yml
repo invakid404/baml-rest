@@ -1,0 +1,55 @@
+name: Host Zero-Nanollm
+
+# de-BAML cutover Slice 2 host-isolation gate. Proves the host stays
+# zero-nanollm / CGO-free even though the distributed worker may embed a
+# nanollm-linked payload (owner-settled option b). Runs in the DEFAULT build
+# environment: no nanollm module, no CGO, no C toolchain beyond the runner's
+# stock setup. This is the complement to the gated nanollm-prepare / nanollm-send
+# lanes, which build + boot the BAML+nanollm worker from the isolated module.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: host-zero-nanollm-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: this is a checkout-only validation workflow — it reads the
+# repo, builds, and asserts. It needs no write scopes and no persisted token.
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.5"
+
+jobs:
+  host-zero-nanollm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Regression-test the nanollm-match helpers (fail-closed)
+        run: |
+          # Proves the gate's match helpers fail CLOSED — including a nanollm
+          # reference followed by >64 KiB of trailing data, the case a
+          # `printf | grep -q` pipeline would SIGPIPE-miss under pipefail.
+          bash scripts/check-host-zero-nanollm_test.sh
+
+      - name: Assert host stays zero-nanollm / CGO-free
+        run: |
+          # Four payload-independent assertions: root module/workspace files
+          # reference no nanollm/go-mocklm; the subprocess host import graph is
+          # zero-nanollm; CGO_ENABLED=0 default + subprocess-host builds succeed;
+          # and the compiled host has no nanollm symbols. See the script header.
+          bash scripts/check-host-zero-nanollm.sh
