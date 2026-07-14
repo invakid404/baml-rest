@@ -17,7 +17,8 @@ package main
 //     grpc|`) — emitted only AFTER InitRuntime (BAML), ProbeRuntime (nanollm),
 //     worker.New, and goplugin.Serve all succeed, i.e. the handler is serving;
 //   - stderr carries the native-capability startup diagnostic naming engine
-//     "nanollm" with routing off — the build capability, hard-off.
+//     "nanollm" with native serving off and rollout mode off — the build
+//     capability, hard-off (this worker installs no shadow comparator).
 //
 // Gated by nanollm_integration so the default (no-tag) build never needs nanollm
 // or a C toolchain; it runs in the nanollm-prepare / nanollm-send lanes.
@@ -116,13 +117,20 @@ func TestBAMLNanollmWorkerBootSmoke(t *testing.T) {
 		}
 		// Handshake proves the handler is serving. Now assert the startup
 		// diagnostic reported the native (nanollm) build capability, hard-off.
+		// The Slice-4 startup contract reports the build capability via
+		// native_engine, native serving via native_serving (the field that
+		// replaced the old native_routing token now that a shadow profile can
+		// install a never-serving callback), and the deploy profile via
+		// rollout_mode — "off" here since this S2 worker installs no comparator.
 		errLog := stderr.String()
-		if !strings.Contains(errLog, "native send capability linked") ||
-			!strings.Contains(errLog, `"native_engine":"nanollm"`) {
+		if !strings.Contains(errLog, `"native_engine":"nanollm"`) {
 			t.Fatalf("worker booted but did not report the nanollm native capability; stderr:\n%s", errLog)
 		}
-		if !strings.Contains(errLog, `"native_routing":"off"`) {
-			t.Fatalf("native routing must be reported off (hard-off in this slice); stderr:\n%s", errLog)
+		if !strings.Contains(errLog, `"native_serving":"off"`) {
+			t.Fatalf("native serving must be reported off (hard-off in this slice); stderr:\n%s", errLog)
+		}
+		if !strings.Contains(errLog, `"rollout_mode":"off"`) {
+			t.Fatalf("this native worker installs no shadow comparator; rollout_mode must be off; stderr:\n%s", errLog)
 		}
 	case <-runCtx.Done():
 		join()

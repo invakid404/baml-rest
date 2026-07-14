@@ -1059,6 +1059,41 @@ func (me *methodEmitter) emitBuildCallRequest() {
 		),
 	)
 
+	// De-BAML one-send SHADOW comparator install (Slice 4). Emitted only for the
+	// dynamic method; a no-op unless a shadow-profile worker injected a comparator
+	// AND the umbrella flag is enabled (see maybeInstallNativeShadowCall). It sets
+	// the Slice-1 CallConfig.NativeAttempt to a callback that builds+compares the
+	// native and BAML request plans without a socket, then DECLINES to BAML. The
+	// strategy facts are derived from this attempt's plan: the single-provider
+	// preferred route resolves exactly one leaf (fallbackChain empty), a chain
+	// call resolves more, and a top-level round-robin is described by
+	// plannedMetadata.RoundRobin. The effective send client's rewrite/proxy
+	// predicate is passed as a method VALUE on __httpClient (the exact client BAML
+	// would send through, which applies rewrites/proxying at execution time) —
+	// __httpClient.WouldRewriteOrProxy, a func(effectiveURL string) bool. The helper
+	// forwards it to the comparator, and admission invokes it against the effective
+	// target it resolves, so the flag-off / default BAML-only path never calls the
+	// caller-supplied Transport.Proxy resolver. The proxy decision is exact for the
+	// tuned default transport's URL-only http.ProxyFromEnvironment (its own resolver
+	// against the real target) and fails closed for a caller-supplied resolver that
+	// could inspect other request fields. A resolved retry override is read inside
+	// the helper from callConfig.RetryPolicy. Either declines the unproven shape
+	// before a plan is built or compared.
+	if me.isDeBAMLMethod() {
+		buildCallRequestBody = append(buildCallRequestBody,
+			jen.Id("maybeInstallNativeShadowCall").Call(
+				jen.Id("adapter"),
+				jen.Id("callConfig"),
+				jen.Id(me.deBAMLConvertedVar()),
+				jen.Len(jen.Id("fallbackChain")).Op("==").Lit(0),
+				jen.Len(jen.Id("fallbackChain")).Op(">").Lit(0),
+				jen.Id("plannedMetadata").Op("!=").Nil().Op("&&").
+					Id("plannedMetadata").Dot("RoundRobin").Op("!=").Nil(),
+				jen.Id("__httpClient").Dot("WouldRewriteOrProxy"),
+			),
+		)
+	}
+
 	// Seed_OmitAsyncDefer relocates the release defer to the outer
 	// buildCallRequest function body so it fires when the outer
 	// function returns, racing the orchestration goroutine's reads.

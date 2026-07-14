@@ -84,9 +84,35 @@ const (
 // families stay bounded-cardinality. A nil *Metrics is a valid no-op receiver so
 // the predicate can run without a registry in lightweight tests.
 type Metrics struct {
-	declines *prometheus.CounterVec
-	attempts *prometheus.CounterVec
+	declines    *prometheus.CounterVec
+	attempts    *prometheus.CounterVec
+	planCompare *prometheus.CounterVec
 }
+
+// PlanCompareResult is the bounded result label for the plan_compare metric: a
+// per-field native-vs-BAML request-plan comparison either matches or mismatches.
+type PlanCompareResult string
+
+const (
+	PlanCompareMatch    PlanCompareResult = "match"
+	PlanCompareMismatch PlanCompareResult = "mismatch"
+)
+
+// PlanCompareField is the bounded field label for the plan_compare metric. It
+// names WHICH facet of the request plan was compared; the set is fixed so the
+// family stays bounded-cardinality. `meta` is the catch-all for a structural
+// comparison result not attributable to a single wire field (e.g. BAML's plan
+// could not be built for comparison).
+type PlanCompareField string
+
+const (
+	PlanCompareFieldMethod  PlanCompareField = "method"
+	PlanCompareFieldTarget  PlanCompareField = "target"
+	PlanCompareFieldHost    PlanCompareField = "host"
+	PlanCompareFieldHeaders PlanCompareField = "headers"
+	PlanCompareFieldBody    PlanCompareField = "body"
+	PlanCompareFieldMeta    PlanCompareField = "meta"
+)
 
 // NewMetrics constructs the collectors and registers them on reg. It fails if a
 // family is already registered, surfacing a double-registration instead of
@@ -101,11 +127,18 @@ func NewMetrics(reg prometheus.Registerer) (*Metrics, error) {
 			Name: "baml_rest_debaml_attempts_total",
 			Help: "de-BAML native admission attempts, by bounded mode/engine/provider/outcome.",
 		}, []string{"mode", "engine", "provider", "outcome"}),
+		planCompare: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "baml_rest_debaml_plan_compare_total",
+			Help: "de-BAML one-send shadow native-vs-BAML request-plan comparisons, by bounded result/field. NO values.",
+		}, []string{"result", "field"}),
 	}
 	if err := reg.Register(m.declines); err != nil {
 		return nil, err
 	}
 	if err := reg.Register(m.attempts); err != nil {
+		return nil, err
+	}
+	if err := reg.Register(m.planCompare); err != nil {
 		return nil, err
 	}
 	return m, nil
@@ -130,4 +163,15 @@ func (m *Metrics) recordAttempt(mode Mode, provider providerLabel, outcome Outco
 		return
 	}
 	m.attempts.WithLabelValues(string(normalizeMode(mode)), engineNative, string(provider), string(outcome)).Inc()
+}
+
+// RecordPlanCompare increments the plan_compare family for one field's
+// native-vs-BAML comparison result. It records only the bounded (result, field)
+// enum pair — NEVER a value (no header value, body byte, URL, alias, or token).
+// A nil *Metrics is a valid no-op receiver.
+func (m *Metrics) RecordPlanCompare(result PlanCompareResult, field PlanCompareField) {
+	if m == nil {
+		return
+	}
+	m.planCompare.WithLabelValues(string(result), string(field)).Inc()
 }

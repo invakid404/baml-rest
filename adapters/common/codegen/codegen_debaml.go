@@ -47,6 +47,7 @@ import (
 	"strings"
 
 	bamlutils "{{.InterfacesPkg}}"
+	buildrequest "{{.BuildRequestPkg}}"
 	streamtypes "{{.StreamTypesPkg}}"
 	types "{{.TypesPkg}}"
 )
@@ -357,6 +358,172 @@ func logDeBAMLParseFallback(adapter bamlutils.Adapter, stage string, err error) 
 		logger.Warn("de-BAML parse fallback to BAML parse", "stage", stage, "err", err.Error())
 	}
 }
+
+// nativeShadowGetter is the narrow optional interface the adapter implements to
+// expose the native one-send SHADOW comparator (de-BAML cutover Slice 4). Like
+// deBAMLRendererGetter it keeps the generated package free of any native-engine
+// dependency: a shadow-profile worker injects the nanollm-backed comparator and
+// the generated code drives it only through this public-typed seam. Absent /
+// nil in every default production build.
+type nativeShadowGetter interface {
+	NativeShadowComparator() bamlutils.NativeShadowFunc
+}
+
+// maybeInstallNativeShadowCall installs the Slice-1 native child-attempt callback
+// (CallConfig.NativeAttempt) as a one-send SHADOW comparator, but ONLY when a
+// shadow-profile worker injected a comparator AND the umbrella de-BAML flag is
+// enabled. In every default production build the getter is absent or returns
+// nil, so the callback stays nil/hard-off and the call path is byte-identical to
+// today (flag-off is zero native: no plan build, no FFI, no socket).
+//
+// The installed callback runs as the orchestrator's FIRST operation for the
+// selected child: it hands the neutral request description (effective registry,
+// generated messages, output schema, resolved provider/leaf, mode, and the
+// TRUTHFUL whole-plan strategy facts) plus att.BuildBAMLRequest — BAML's
+// no-socket plan builder for the SAME child — to the injected comparator, which
+// builds the native plan, compares, records plan_compare (no values), and
+// returns. The callback then ALWAYS DECLINES so the orchestrator runs the
+// ordinary BAML build/send for the same child in the same retry iteration.
+// Native NEVER RoundTrips.
+//
+// wouldRewriteOrProxy is the effective send client's rewrite/proxy predicate
+// (llmhttp.Client.WouldRewriteOrProxy). It is forwarded to the comparator, which
+// hands it to the admission predicate; admission invokes it against the EFFECTIVE
+// TARGET it resolves (base_url + /chat/completions). The proxy decision is exact for
+// the tuned default transport's URL-only http.ProxyFromEnvironment (its own cached
+// resolver against the real target, not an env re-read) and FAILS CLOSED for a
+// caller-supplied resolver that could inspect other request fields. It is never
+// invoked here on the default BAML-only / flag-off path (the callback is not
+// installed). Together with cfg.RetryPolicy (any resolved request retry policy) it
+// forwards TRUTHFULLY: BAML applies URL rewrites and proxying at execution time,
+// AFTER the plan handed to the comparator is built, and the single-attempt exact
+// lane bypasses a retry override — so either shape is unproven and MUST decline
+// before a native plan is prepared, BAML's plan is obtained, or a plan_compare is
+// recorded.
+func maybeInstallNativeShadowCall(
+	adapter bamlutils.Adapter,
+	cfg *buildrequest.CallConfig,
+	msgs []types.Baml_Rest_Message,
+	singleLeaf bool,
+	hasFallbackChain bool,
+	hasRoundRobin bool,
+	wouldRewriteOrProxy func(effectiveURL string) bool,
+) {
+	if !adapter.DeBAMLConfig().Enabled {
+		return
+	}
+	getter, ok := adapter.(nativeShadowGetter)
+	if !ok {
+		return
+	}
+	shadow := getter.NativeShadowComparator()
+	if shadow == nil {
+		return
+	}
+	registry := adapter.OriginalClientRegistry()
+	outputSchema := adapter.DeBAMLOutputSchema()
+	neutralMsgs := nativeShadowMessages(msgs)
+	mode := bamlutils.NativeShadowModeCall
+	if cfg.NeedsRaw {
+		mode = bamlutils.NativeShadowModeCallWithRaw
+	}
+	// Evaluate the retry-override fact ONLY now that both hard-off gates have passed
+	// (flag enabled AND a comparator present). A resolved retry policy is a request
+	// retry override the single-attempt exact lane would bypass. The rewrite/proxy
+	// predicate is forwarded (not evaluated here): admission invokes it against the
+	// effective target it resolves, and it must never run on the default BAML-only /
+	// flag-off path (the callback below is not installed there).
+	hasRequestRetryOverride := cfg.RetryPolicy != nil
+	cfg.NativeAttemptEnabled = true
+	cfg.NativeOutputSchema = outputSchema
+	cfg.NativeAttempt = func(ctx context.Context, att buildrequest.NativeCallAttempt) buildrequest.NativeCallOutcome {
+		res := shadow(ctx, bamlutils.NativeShadowRequest{
+			Registry:         registry,
+			Messages:         neutralMsgs,
+			OutputSchema:     outputSchema,
+			Provider:         att.Provider,
+			ClientOverride:   att.ClientOverride,
+			Mode:             mode,
+			SingleLeaf:       singleLeaf,
+			HasFallbackChain: hasFallbackChain,
+			HasRoundRobin:    hasRoundRobin,
+			// TRUTHFUL parity facts: a request retry override (a resolved retry
+			// policy the single-attempt exact lane bypasses) and the effective
+			// send client's rewrite/proxy predicate (evaluated by admission against
+			// the effective target — the transforms BAML applies at execution time,
+			// AFTER this plan is built). Either declines before the native plan /
+			// BAML plan / plan_compare.
+			HasRequestRetryOverride: hasRequestRetryOverride,
+			WouldRewriteOrProxy:     wouldRewriteOrProxy,
+			BuildBAMLRequest:        att.BuildBAMLRequest,
+		})
+		// The comparator NEVER serves a native result in this slice: it always
+		// declines so BAML serves the same child. Stage/Reason are stable,
+		// secret-free observability tokens carried only for the decline metric.
+		return buildrequest.DeclineNativeCall(
+			buildrequest.NativeDeclineStage(res.Stage),
+			buildrequest.NativeDeclineReason(res.Reason),
+		)
+	}
+}
+
+// nativeShadowMessages converts the generated dynamic messages into the neutral
+// bamlutils.DynamicMessage shape the shadow comparator's native admission
+// consumes. It is a faithful structural conversion of the FIXED dynamic message
+// type (role, string content, ordered parts, and the presence of message
+// metadata / media payloads) so an unproven shape reaches — and is DECLINED by —
+// the native admission predicate rather than being silently dropped. Output-
+// format markers are carried through verbatim (the native renderer substitutes
+// them exactly as BAML's de-BAML render did). Media payload CONTENTS are not
+// decoded: only the presence of a media part matters, since admission declines
+// any media before a plan is built and native never sends in this slice.
+func nativeShadowMessages(msgs []types.Baml_Rest_Message) []bamlutils.DynamicMessage {
+	out := make([]bamlutils.DynamicMessage, 0, len(msgs))
+	for i := range msgs {
+		m := &msgs[i]
+		dm := bamlutils.DynamicMessage{Role: m.Role}
+		if m.Metadata != nil {
+			// Any non-nil metadata declines at the message stage; a bare marker
+			// carries that presence (no field contents are needed downstream).
+			dm.Metadata = &bamlutils.MessageMetadata{}
+		}
+		switch {
+		case m.Parts != nil:
+			parts := *m.Parts
+			dm.PartsContent = make([]bamlutils.DynamicContentPart, 0, len(parts))
+			for j := range parts {
+				dm.PartsContent = append(dm.PartsContent, nativeShadowPart(&parts[j]))
+			}
+		case m.Content != nil:
+			dm.TextContent = m.Content
+		}
+		out = append(out, dm)
+	}
+	return out
+}
+
+// nativeShadowPart converts one generated content part into the neutral shape. A
+// media part is carried as its neutral kind with a bare (empty) media payload so
+// admission declines it as a media part; the payload contents are never decoded.
+func nativeShadowPart(p *types.Baml_Rest_ContentPart) bamlutils.DynamicContentPart {
+	switch {
+	case p.Output_format != nil && *p.Output_format:
+		return bamlutils.DynamicContentPart{Type: "output_format"}
+	case p.Text != nil:
+		return bamlutils.DynamicContentPart{Type: "text", Text: p.Text}
+	case p.Img != nil:
+		return bamlutils.DynamicContentPart{Type: "image", Image: &bamlutils.MediaInput{}}
+	case p.Aud != nil:
+		return bamlutils.DynamicContentPart{Type: "audio", Audio: &bamlutils.MediaInput{}}
+	case p.Doc != nil:
+		return bamlutils.DynamicContentPart{Type: "pdf", PDF: &bamlutils.MediaInput{}}
+	case p.Vid != nil:
+		return bamlutils.DynamicContentPart{Type: "video", Video: &bamlutils.MediaInput{}}
+	default:
+		// An unknown / empty part declines as an unknown part.
+		return bamlutils.DynamicContentPart{}
+	}
+}
 `
 
 // deBAMLHelperData parameterizes deBAMLHelperTemplate. Pkg is the
@@ -364,10 +531,11 @@ func logDeBAMLParseFallback(adapter bamlutils.Adapter, stage string, err error) 
 // the bamlutils, per-build BAML final-types, and per-build BAML
 // streaming-types import paths.
 type deBAMLHelperData struct {
-	Pkg            string
-	InterfacesPkg  string
-	TypesPkg       string
-	StreamTypesPkg string
+	Pkg             string
+	InterfacesPkg   string
+	BuildRequestPkg string
+	TypesPkg        string
+	StreamTypesPkg  string
 }
 
 // deBAMLHelperPath returns the path the helper is written to: debaml.go
@@ -401,10 +569,11 @@ func (g *generator) maybeWriteDeBAMLHelper() {
 	}
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, deBAMLHelperData{
-		Pkg:            g.pkgs.OutputPkgName,
-		InterfacesPkg:  g.pkgs.InterfacesPkg,
-		TypesPkg:       g.pkgs.GeneratedClientPkg + "/types",
-		StreamTypesPkg: g.pkgs.GeneratedClientPkg + "/stream_types",
+		Pkg:             g.pkgs.OutputPkgName,
+		InterfacesPkg:   g.pkgs.InterfacesPkg,
+		BuildRequestPkg: g.pkgs.BuildRequestPkg,
+		TypesPkg:        g.pkgs.GeneratedClientPkg + "/types",
+		StreamTypesPkg:  g.pkgs.GeneratedClientPkg + "/stream_types",
 	}); err != nil {
 		panic(fmt.Sprintf("codegen: execute de-BAML helper template: %v", err))
 	}

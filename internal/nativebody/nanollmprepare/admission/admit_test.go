@@ -258,6 +258,54 @@ func TestAdmitPositive(t *testing.T) {
 	}
 }
 
+// TestAdmit_WouldRewriteOrProxyDeclinesAgainstEffectiveTarget proves the effective
+// send-path rewrite/proxy parity gate: once the effective client is mapped (so the
+// exact target is known), a WouldRewriteOrProxy predicate reporting that the target
+// is rewritten/proxied declines at the strategy stage — evaluated against the EXACT
+// effective target (base_url + /chat/completions), and BEFORE the plan is prepared
+// (no admitted attempt). A nil predicate is the default admit path (proven by the
+// clean-admit test above). This is what keeps the proxy decision equivalent to the
+// transport's own resolver against the real target rather than an env re-read.
+func TestAdmit_WouldRewriteOrProxyDeclinesAgainstEffectiveTarget(t *testing.T) {
+	ct := &countingTransport{}
+	reg := prometheus.NewRegistry()
+	m, err := NewMetrics(reg)
+	if err != nil {
+		t.Fatalf("NewMetrics: %v", err)
+	}
+	a := NewAdmitter(m, llmhttp.NewExactExecutor(ct))
+
+	in := validInput()
+	var gotURL string
+	in.WouldRewriteOrProxy = func(effectiveURL string) bool {
+		gotURL = effectiveURL
+		return true
+	}
+
+	admitted, err := a.Admit(context.Background(), in)
+	assertNoSocket(t, ct)
+	if admitted != nil {
+		t.Fatal("expected a rewrite/proxy decline, got an admitted plan")
+	}
+	var d *Decline
+	if !errors.As(err, &d) {
+		t.Fatalf("expected a *Decline, got %v", err)
+	}
+	if d.Stage != StageStrategy || d.Reason != ReasonURLRewriteOrProxy {
+		t.Fatalf("expected strategy/url_rewrite_or_proxy, got %s/%s", d.Stage, d.Reason)
+	}
+	if gotURL != wantURL {
+		t.Errorf("WouldRewriteOrProxy evaluated against %q, want the effective target %q", gotURL, wantURL)
+	}
+	// Declined before the plan was prepared: no admitted attempt was recorded.
+	if got := counterVal(t, reg, "baml_rest_debaml_attempts_total", map[string]string{"mode": "call", "engine": "native", "provider": "openai", "outcome": "admitted"}); got != 0 {
+		t.Errorf("attempts{admitted} = %v, want 0 (declined before prepare)", got)
+	}
+	if got := counterVal(t, reg, "baml_rest_debaml_declines_total", map[string]string{"stage": "strategy", "reason": "url_rewrite_or_proxy"}); got != 1 {
+		t.Errorf("declines{strategy,url_rewrite_or_proxy} = %v, want 1", got)
+	}
+}
+
 // TestMetricsRegisterOnWorkerRegistry proves the collectors register cleanly on
 // the worker's private Prometheus registry (the real construction the worker
 // uses), coexisting with the Go/process collectors already on it.
@@ -339,7 +387,6 @@ func TestAdmitDeclineMatrix(t *testing.T) {
 		{"round_robin", func(in *Input) { in.HasRoundRobin = true }, StageStrategy, ReasonRoundRobin, "openai"},
 		{"legacy_child", func(in *Input) { in.IsLegacyChild = true }, StageStrategy, ReasonLegacyChild, "openai"},
 		{"request_retry_override", func(in *Input) { in.HasRequestRetryOverride = true }, StageStrategy, ReasonRequestRetryOverride, "openai"},
-		{"url_rewrite_or_proxy", func(in *Input) { in.HasURLRewriteOrProxy = true }, StageStrategy, ReasonURLRewriteOrProxy, "openai"},
 		{"resolved_provider_not_openai", func(in *Input) { in.ResolvedProvider = "anthropic" }, StageProvider, ReasonProviderNotOpenAI, "other"},
 		// --- layer 3: effective dynamic client ---
 		{"nil_registry", func(in *Input) { in.Registry = nil }, StageClientSelection, ReasonNoRegistry, "openai"},

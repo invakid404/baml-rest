@@ -219,7 +219,7 @@ func TestValidateExactTransport(t *testing.T) {
 // client engine from the fence trio and safely Closes it, resolving the target
 // and base URL while never retaining the api key in the returned facts.
 func TestMapDynamicClient(t *testing.T) {
-	client, facts, dec, err := mapDynamicClient(validRegistry(), fenceAlias)
+	client, facts, dec, err := mapDynamicClient(validRegistry(), fenceAlias, nil)
 	if err != nil {
 		t.Fatalf("mapDynamicClient planner error: %v", err)
 	}

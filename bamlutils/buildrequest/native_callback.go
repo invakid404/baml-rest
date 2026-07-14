@@ -3,6 +3,8 @@ package buildrequest
 import (
 	"context"
 	"errors"
+
+	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 )
 
 // Native child-attempt seam (de-BAML cutover Slice 1) — NEUTRAL, HARD-OFF.
@@ -103,6 +105,16 @@ type NativeCallAttempt struct {
 	// generic orchestrator never inspects it. Nil unless a caller installs a
 	// native implementation.
 	OutputSchema any
+	// BuildBAMLRequest builds BAML's request plan for THIS selected child WITHOUT
+	// sending — the same per-attempt build closure the orchestrator would use for
+	// the send, pre-bound to this attempt's clientOverride. It is the neutral
+	// resolution of the cutover CRUX: a shadow comparator obtains BAML's built
+	// plan for the same child to compare against the native plan, without opening
+	// a socket, issuing a second provider request, or importing nanollm into the
+	// generic orchestrator. It opens NO socket; the returned *llmhttp.Request is
+	// a built-but-unsent plan (method/URL/headers/body). Non-nil only while the
+	// seam is on.
+	BuildBAMLRequest func(ctx context.Context) (*llmhttp.Request, error)
 	// SendHeartbeat is the neutral first-2xx liveness signal, the native twin
 	// of the onSuccess callback the BAML path hands to llmhttp on the same
 	// attempt. The native transport MUST call it the instant it reads 2xx

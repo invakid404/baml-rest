@@ -83,6 +83,16 @@ type BamlAdapter struct {
 	// BAML-as-today.
 	deBAMLParser bamlutils.DeBAMLParseFunc
 
+	// nativeShadow is the native one-send SHADOW comparator (de-BAML
+	// cutover Slice 4), injected by a shadow deploy profile's worker for
+	// the same module-boundary reason as deBAMLRenderer/deBAMLParser.
+	// Non-nil ONLY in the shadow build; nil in every default production
+	// build, leaving the orchestrator's native child-attempt callback
+	// nil/hard-off. The generated dynamic call seam installs it via the
+	// Slice-1 CallConfig.NativeAttempt callback only when it is non-nil
+	// and DeBAMLConfig().Enabled.
+	nativeShadow bamlutils.NativeShadowFunc
+
 	// rrAdvancer is the per-request round-robin Advancer installed by the
 	// worker; nil falls back to the introspected Coordinator.
 	rrAdvancer bamlutils.RoundRobinAdvancer
@@ -248,6 +258,12 @@ func (b *BamlAdapter) SetDeBAMLParser(fn bamlutils.DeBAMLParseFunc) {
 }
 func (b *BamlAdapter) DeBAMLParser() bamlutils.DeBAMLParseFunc {
 	return b.deBAMLParser
+}
+func (b *BamlAdapter) SetNativeShadowComparator(fn bamlutils.NativeShadowFunc) {
+	b.nativeShadow = fn
+}
+func (b *BamlAdapter) NativeShadowComparator() bamlutils.NativeShadowFunc {
+	return b.nativeShadow
 }
 func (b *BamlAdapter) SetRoundRobinAdvancer(advancer bamlutils.RoundRobinAdvancer) {
 	b.rrAdvancer = advancer

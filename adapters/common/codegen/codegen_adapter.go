@@ -181,6 +181,16 @@ func emitFrameworkAdapter(out *jen.File, opts Options) {
 		jen.Comment("BAML-as-today."),
 		jen.Id("deBAMLParser").Qual(bamlutilsPkg, "DeBAMLParseFunc"),
 		jen.Line(),
+		jen.Comment("nativeShadow is the native one-send SHADOW comparator (de-BAML"),
+		jen.Comment("cutover Slice 4), injected by a shadow deploy profile's worker for"),
+		jen.Comment("the same module-boundary reason as deBAMLRenderer/deBAMLParser."),
+		jen.Comment("Non-nil ONLY in the shadow build; nil in every default production"),
+		jen.Comment("build, leaving the orchestrator's native child-attempt callback"),
+		jen.Comment("nil/hard-off. The generated dynamic call seam installs it via the"),
+		jen.Comment("Slice-1 CallConfig.NativeAttempt callback only when it is non-nil"),
+		jen.Comment("and DeBAMLConfig().Enabled."),
+		jen.Id("nativeShadow").Qual(bamlutilsPkg, "NativeShadowFunc"),
+		jen.Line(),
 		jen.Comment("rrAdvancer is the per-request round-robin Advancer installed by the"),
 		jen.Comment("worker; nil falls back to the introspected Coordinator."),
 		jen.Id("rrAdvancer").Qual(bamlutilsPkg, "RoundRobinAdvancer"),
@@ -586,6 +596,23 @@ func emitFrameworkAdapterDeBAML(out *jen.File, bamlutilsPkg string) {
 		Id("DeBAMLParser").Params().Qual(bamlutilsPkg, "DeBAMLParseFunc").
 		Block(
 			jen.Return(jen.Id("b").Dot("deBAMLParser")),
+		)
+
+	// SetNativeShadowComparator / NativeShadowComparator satisfy the narrow
+	// optional interfaces the shadow-profile worker and the generated dynamic
+	// call seam use to install and read the native one-send shadow comparator
+	// (de-BAML cutover Slice 4). Kept off the bamlutils.Adapter interface for the
+	// same reason as the renderer/parser accessors. nil in every default build.
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("SetNativeShadowComparator").Params(jen.Id("fn").Qual(bamlutilsPkg, "NativeShadowFunc")).
+		Block(
+			jen.Id("b").Dot("nativeShadow").Op("=").Id("fn"),
+		)
+
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("NativeShadowComparator").Params().Qual(bamlutilsPkg, "NativeShadowFunc").
+		Block(
+			jen.Return(jen.Id("b").Dot("nativeShadow")),
 		)
 }
 

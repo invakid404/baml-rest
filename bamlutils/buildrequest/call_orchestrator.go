@@ -399,6 +399,16 @@ func RunCallOrchestration(
 				NeedsRaw:         config.NeedsRaw,
 				IncludeReasoning: config.IncludeReasoning,
 				OutputSchema:     config.NativeOutputSchema,
+				// BuildBAMLRequest is the SAME per-attempt build closure the BAML
+				// path uses below, pre-bound to this child's clientOverride. A
+				// shadow comparator calls it to obtain BAML's built plan for the
+				// same child WITHOUT sending; it opens no socket. On DECLINE the
+				// orchestrator still runs buildRequest(ctx, clientOverride) itself
+				// below (a second, cheap no-socket build), so the BAML send path is
+				// byte-identical to today.
+				BuildBAMLRequest: func(bctx context.Context) (*llmhttp.Request, error) {
+					return buildRequest(bctx, clientOverride)
+				},
 				// Hand the native transport the SAME idempotent first-2xx
 				// liveness signal the BAML path gets via ExecuteBorrowed's
 				// onSuccess. A native impl must call this the instant it reads

@@ -31,14 +31,16 @@ type Option func(*config) error
 // configurations like "forced net/http with fasthttp tuning" even when
 // the tuning value would otherwise look like a zero value.
 type config struct {
-	deBAML          bamlutils.DeBAMLConfig
-	deBAMLRender    bamlutils.DeBAMLRenderFunc
-	deBAMLParse     bamlutils.DeBAMLParseFunc
-	baseURLRewrites []urlrewrite.Rule
-	logger          bamlutils.Logger
-	metrics         *prometheus.Registry
-	clientDefaults  *clientdefaults.Config
-	sharedState     *workerplugin.SharedStateStore
+	deBAML               bamlutils.DeBAMLConfig
+	deBAMLRender         bamlutils.DeBAMLRenderFunc
+	deBAMLParse          bamlutils.DeBAMLParseFunc
+	nativeShadow         bamlutils.NativeShadowFunc
+	requestRetryOverride *bamlutils.RetryConfig
+	baseURLRewrites      []urlrewrite.Rule
+	logger               bamlutils.Logger
+	metrics              *prometheus.Registry
+	clientDefaults       *clientdefaults.Config
+	sharedState          *workerplugin.SharedStateStore
 
 	clientMode    llmhttp.ClientMode
 	clientModeSet bool
@@ -97,6 +99,40 @@ func WithDeBAMLRenderer(render bamlutils.DeBAMLRenderFunc) Option {
 func WithDeBAMLParser(parse bamlutils.DeBAMLParseFunc) Option {
 	return func(c *config) error {
 		c.deBAMLParse = parse
+		return nil
+	}
+}
+
+// WithNativeShadowComparator injects the native one-send SHADOW comparator
+// (de-BAML cutover Slice 4). dynclient lives in a separate Go module and cannot
+// import the out-of-go.work nanollm bridge, so a caller supplies the concrete
+// nanollm-backed comparator (e.g. from the nanollmprepare shadow package). It is
+// installed on every adapter; the generated dynamic call seam turns it into the
+// Slice-1 native child-attempt callback only when it is non-nil AND WithDeBAML is
+// enabled, and that callback ALWAYS declines to BAML after a no-socket plan
+// comparison. Without it (or with WithDeBAML off) the dynamic call path stays
+// BAML-as-today with zero native FFI / socket / plan build. It is the shadow
+// deploy profile's equivalent for direct dynclient callers (tests, tooling).
+func WithNativeShadowComparator(shadow bamlutils.NativeShadowFunc) Option {
+	return func(c *config) error {
+		c.nativeShadow = shadow
+		return nil
+	}
+}
+
+// WithRequestRetryOverride sets a per-request retry override applied to every
+// dynamic call this client makes, threaded through __baml_options__.retry — the
+// same seam a REST caller uses. The worker's option decoder installs it via
+// adapter.SetRetryConfig, so the strategy-aware resolver returns a non-nil request
+// retry policy (RetryConfigToPolicy). Passing nil (the default) leaves the worker
+// input byte-identical and retry resolution unchanged. Direct Go callers use this
+// to exercise the resolved-retry-policy request shape without a REST round-trip;
+// under the shadow comparator (WithNativeShadowComparator + WithDeBAML) such a
+// request is a truthful retry-override the single-attempt exact lane bypasses, so
+// the comparator declines at the S3 strategy gate before building any plan.
+func WithRequestRetryOverride(retry *RetryConfig) Option {
+	return func(c *config) error {
+		c.requestRetryOverride = retry
 		return nil
 	}
 }
