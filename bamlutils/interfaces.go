@@ -106,10 +106,18 @@ type Metadata struct {
 	// runtime owns retry behaviour internally and that count is surfaced via
 	// BamlCallCount instead.
 	RetryCount     *int   `json:"retry_count,omitempty"`
-	WinnerClient   string `json:"winner_client,omitempty"`        // actual client that produced the final result; absent for legacy strategy routes when funcLog.SelectedCall yields no data
-	WinnerProvider string `json:"winner_provider,omitempty"`      // provider of the winner
-	WinnerPath     string `json:"winner_path,omitempty"`          // "buildrequest" or "legacy" (latter for pure legacy or a legacy child inside a mixed chain)
-	UpstreamDurMs  *int64 `json:"upstream_duration_ms,omitempty"` // upstream wall time in ms (orchestrator entry to outcome emission)
+	WinnerClient   string `json:"winner_client,omitempty"`   // actual client that produced the final result; absent for legacy strategy routes when funcLog.SelectedCall yields no data
+	WinnerProvider string `json:"winner_provider,omitempty"` // provider of the winner
+	WinnerPath     string `json:"winner_path,omitempty"`     // "buildrequest" or "legacy" (latter for pure legacy or a legacy child inside a mixed chain)
+	// WinnerEngine names which engine produced the result, orthogonal to
+	// WinnerPath. Empty (omitted) for the ordinary BAML build/send and legacy
+	// paths — so today's outcome frames are unchanged — and set to a bounded
+	// token ("native") only when the de-BAML native seam wins the attempt.
+	// Kept separate from Path/WinnerPath so dashboards can distinguish native
+	// from BAML on the buildrequest route without overloading the existing
+	// X-BAML-Path contract.
+	WinnerEngine  string `json:"winner_engine,omitempty"`
+	UpstreamDurMs *int64 `json:"upstream_duration_ms,omitempty"` // upstream wall time in ms (orchestrator entry to outcome emission)
 	// BamlCallCount is the number of *additional* LLM calls BAML made beyond
 	// the first, computed as max(len(FunctionLog.Calls())-1, 0). It collapses
 	// BAML-internal retries (per-client retry policy) and BAML-internal
