@@ -258,6 +258,59 @@ func TestAdmitPositive(t *testing.T) {
 	}
 }
 
+// TestAdmitPlannerError proves an unexpected native construction failure
+// inside mapDynamicClient — nanollm.New rejecting an unresolved `${VAR}`
+// api_key under the mapper's fixed request-scoped config (Env nil,
+// UseProcessEnv false) — surfaces through Admit as a non-decline planner
+// error (OutcomePlannerError), not a parity-decline. nanollm.New's `${VAR}`
+// resolution is pure, synchronous config validation (it never dials to
+// resolve a variable), so this is deterministic and opens zero sockets: the
+// unresolved-var failure fires identically regardless of what the real OS
+// process environment contains, because UseProcessEnv is false.
+func TestAdmitPlannerError(t *testing.T) {
+	ct := &countingTransport{}
+	reg := prometheus.NewRegistry()
+	m, err := NewMetrics(reg)
+	if err != nil {
+		t.Fatalf("NewMetrics: %v", err)
+	}
+	a := NewAdmitter(m, llmhttp.NewExactExecutor(ct))
+
+	in := validInput()
+	// A present, non-empty string — it clears every admission validation layer
+	// up to nanollm.New unchanged — but nanollm's own config validator declines
+	// an unresolved ${VAR} literal synchronously when Env is nil and
+	// UseProcessEnv is false.
+	in.Registry.Clients[0].Options["api_key"] = "${NANOLLMPREPARE_ADMISSION_TEST_UNSET_VAR}"
+
+	admitted, err := a.Admit(context.Background(), in)
+	assertNoSocket(t, ct)
+
+	if admitted != nil {
+		t.Fatalf("expected a planner error, got an admitted plan")
+	}
+	if err == nil {
+		t.Fatal("expected a non-nil planner error")
+	}
+	var d *Decline
+	if errors.As(err, &d) {
+		t.Fatalf("expected a non-decline planner error, got a *Decline: %v", d)
+	}
+	if !strings.Contains(err.Error(), "nanollm.New") {
+		t.Errorf("planner error is missing its nanollm.New context: %v", err)
+	}
+
+	// Metrics: exactly one planner_error attempt, zero declines — a planner
+	// error is availability-first (BAML still serves) but distinguished from
+	// ordinary unsupported traffic so it can alert.
+	if got := counterVal(t, reg, "baml_rest_debaml_attempts_total", map[string]string{"mode": "call", "engine": "native", "provider": "openai", "outcome": "planner_error"}); got != 1 {
+		t.Errorf("attempts{planner_error} = %v, want 1", got)
+	}
+	if got := familySeriesCount(t, reg, "baml_rest_debaml_declines_total"); got != 0 {
+		t.Errorf("declines family has %d series, want 0 on a planner error", got)
+	}
+}
+
 // TestMetricsRegisterOnWorkerRegistry proves the collectors register cleanly on
 // the worker's private Prometheus registry (the real construction the worker
 // uses), coexisting with the Go/process collectors already on it.
