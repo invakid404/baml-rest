@@ -166,7 +166,7 @@ fi
 if [ "${SHADOW_WORKER:-false}" = "true" ]; then
     echo "Shadow Worker (BAML+nanollm + one-send shadow comparator, from isolated module): enabled"
 elif [ "${NATIVE_WORKER:-false}" = "true" ]; then
-    echo "Native Worker (BAML+nanollm, from isolated module): enabled"
+    echo "Native Worker (BAML+nanollm, serve-capable behind BAML_REST_USE_DEBAML, from isolated module): enabled"
 else
     echo "Native Worker: disabled (BAML-only worker; immediate-reversal default)"
 fi
@@ -607,9 +607,12 @@ if [ "${SUBPROCESS:-true}" = "true" ]; then
         # location so the host build below is unchanged.
         #
         # Two isolated-module worker profiles select which package is built:
-        #   - NATIVE_WORKER: cmd/worker — STILL UNROUTED (S2). The worker stores a
-        #     native capability but the orchestrator callback is nil/hard-off, so
-        #     serving behaviour is byte-identical to the BAML-only worker.
+        #   - NATIVE_WORKER: cmd/worker — the SERVE-CAPABLE profile (de-BAML cutover
+        #     Slice 6). While BAML_REST_USE_DEBAML is enabled it installs the native
+        #     serve callback and actually serves an admitted unary `_dynamic` /call
+        #     natively (one exact provider RoundTrip); unsupported traffic declines
+        #     pre-socket to BAML. Flag-off is ZERO native (no FFI/callback/socket),
+        #     byte-identical to the BAML-only worker — the immediate kill switch.
         #   - SHADOW_WORKER: cmd/worker-shadow — the one-send SHADOW profile (S4).
         #     It additionally installs the native shadow comparator, which (only
         #     while the umbrella flag is enabled) compares native vs BAML request

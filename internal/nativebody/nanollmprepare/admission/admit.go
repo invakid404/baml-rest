@@ -119,8 +119,57 @@ func NewAdmitter(m *Metrics, exec *llmhttp.ExactExecutor) *Admitter {
 	return &Admitter{m: m, exec: exec}
 }
 
+// Claim is an Admitted native plan whose request-scoped nanollm client is kept
+// ALIVE so a serving path can call TranslateResponse on the SAME client that
+// Prepare produced the plan on — avoiding a second nanollm.New/Close cycle per
+// served request. The caller OWNS the client's lifecycle and MUST Close the Claim
+// on EVERY return path (success, error, panic, cancel). The no-send shadow path
+// uses Admit (which closes immediately); only the serve path retains a Claim.
+//
+// SENSITIVE — a Claim embeds an Admitted (see its secret contract) plus a live
+// engine; it MUST NEVER be logged, serialized, or emitted.
+type Claim struct {
+	Admitted
+	client *nanollm.Client
+}
+
+// Client returns the request-scoped nanollm engine the admitted plan was Prepared
+// on, still open so the serve path can TranslateResponse on it.
+func (c *Claim) Client() *nanollm.Client {
+	if c == nil {
+		return nil
+	}
+	return c.client
+}
+
+// PlanExpired reports whether the admitted prepared plan's signature window has
+// passed. Admission already proved the plan non-expiring at claim time
+// (validatePlanExpiry), but the serve path re-checks it immediately before the
+// socket so that a plan which expired DURING the (BAML-plan-build + compare)
+// window is caught as a provably PRE-SOCKET condition and declined to BAML rather
+// than claimed. Always false for the admitted never-expiring OpenAI surface;
+// guards the seam for the signed-plan providers a later phase adds.
+func (c *Claim) PlanExpired() bool {
+	if c == nil || c.Prepared == nil {
+		return false
+	}
+	return c.Prepared.Expired()
+}
+
+// Close releases the request-scoped nanollm engine. Idempotent-safe against a nil
+// receiver / nil client; the caller must call it on every path.
+func (c *Claim) Close() {
+	if c == nil || c.client == nil {
+		return
+	}
+	c.client.Close()
+	c.client = nil
+}
+
 // Admit runs the FULL pre/post-Prepare no-send native admission predicate for
-// one unary OpenAI `_dynamic` call. It returns:
+// one unary OpenAI `_dynamic` call and returns the admitted plan with its
+// request-scoped engine ALREADY Closed (the no-send shadow path never needs the
+// engine to outlive the call). It returns:
 //
 //   - (*Admitted, nil) when every layer is proven up to the exact RoundTrip — the
 //     plan is READY to send but is deliberately NOT sent (no serving change);
@@ -130,18 +179,54 @@ func NewAdmitter(m *Metrics, exec *llmhttp.ExactExecutor) *Admitter {
 //     any socket (counted as OutcomePlannerError so it can alert, not read as
 //     ordinary unsupported traffic).
 //
-// It opens ZERO sockets and performs ZERO RoundTrips on every path. The
-// request-scoped nanollm engine is created and safely Closed within the call.
+// It opens ZERO sockets and performs ZERO RoundTrips on every path.
 func (a *Admitter) Admit(ctx context.Context, in Input) (*Admitted, error) {
+	// The no-send path records the terminal OutcomeAdmitted and closes the engine
+	// immediately — it is the whole disposition for shadow.
+	claim, err := a.admitClaim(ctx, in, true)
+	if err != nil {
+		return nil, err
+	}
+	defer claim.Close()
+	adm := claim.Admitted
+	return &adm, nil
+}
+
+// AdmitClaim runs the SAME full no-send admission predicate as Admit but returns
+// a Claim whose request-scoped nanollm engine is kept ALIVE, so the serve path
+// can call TranslateResponse on the identical client Prepare ran on. The caller
+// MUST Close the returned Claim on every path. It does NOT record the terminal
+// OutcomeAdmitted — the serve path records exactly one terminal serving outcome
+// (success/transport_error/…) instead, so admission is never double-counted as a
+// served success. Declines / planner errors are recorded exactly as Admit does.
+//
+// It opens ZERO sockets and performs ZERO RoundTrips on every path.
+func (a *Admitter) AdmitClaim(ctx context.Context, in Input) (*Claim, error) {
+	return a.admitClaim(ctx, in, false)
+}
+
+// admitClaim is the shared admission core. recordAdmitted controls whether the
+// terminal OutcomeAdmitted is recorded (true for the no-send Admit path, false
+// for the serving AdmitClaim path). On success it returns a Claim holding the
+// OPEN request-scoped engine; on every decline/error/panic AFTER the engine is
+// created it Closes the engine before returning (via the closeClient guard).
+func (a *Admitter) admitClaim(ctx context.Context, in Input, recordAdmitted bool) (*Claim, error) {
 	provider := providerFromResolved(in.ResolvedProvider)
 
-	decline := func(d *Decline) (*Admitted, error) {
+	decline := func(d *Decline) (*Claim, error) {
 		a.m.recordDecline(in.Mode, provider, d)
 		return nil, d
 	}
-	plannerErr := func(err error) (*Admitted, error) {
+	plannerErr := func(err error) (*Claim, error) {
 		a.m.recordAttempt(in.Mode, provider, OutcomePlannerError)
 		return nil, err
+	}
+	// ctxDecline is the PRE-SOCKET decline for a request cancelled/expired around a
+	// non-context FFI boundary (New / render / Prepare). It declines to BAML — the
+	// ordinary BAML attempt then surfaces the same context error to the caller —
+	// rather than counting a planner error or opening a socket.
+	ctxDecline := func() (*Claim, error) {
+		return decline(declinef(StageContext, ReasonContextCancelled, "request context cancelled during admission"))
 	}
 
 	// --- Layer 1: build / flag / route ------------------------------------
@@ -183,6 +268,10 @@ func (a *Admitter) Admit(ctx context.Context, in Input) (*Admitted, error) {
 	// request-scoped engine — a rewrite or a proxied effective target declines at
 	// the strategy stage there, before the engine, the plan, BAML's plan, or a
 	// plan_compare.
+	// Cancellation gate BEFORE nanollm.New (mapDynamicClient constructs the engine).
+	if err := ctx.Err(); err != nil {
+		return ctxDecline()
+	}
 	client, facts, dec, err := mapDynamicClient(in.Registry, in.Alias, in.WouldRewriteOrProxy)
 	if err != nil {
 		return plannerErr(err)
@@ -190,9 +279,23 @@ func (a *Admitter) Admit(ctx context.Context, in Input) (*Admitted, error) {
 	if dec != nil {
 		return decline(dec)
 	}
-	// Request-scoped: safely Close the engine on EVERY return path below. The
-	// plan is bytes, so the no-send path never needs the engine to outlive Admit.
-	defer client.Close()
+	// Request-scoped engine: closed on EVERY decline/error/panic path below via the
+	// closeClient guard; on SUCCESS ownership passes to the returned Claim (the
+	// serve path Closes it after TranslateResponse; the no-send Admit path Closes
+	// it immediately). A defer (rather than an inline close before each return)
+	// preserves the "close on panic/cancel" contract.
+	closeClient := true
+	defer func() {
+		if closeClient {
+			client.Close()
+		}
+	}()
+
+	// Cancellation gate AFTER nanollm.New (the engine is now open; the closeClient
+	// guard above closes it) and BEFORE render.
+	if err := ctx.Err(); err != nil {
+		return ctxDecline()
+	}
 
 	// --- Layer 4: prompt + canonical body ---------------------------------
 	if d := validateMessages(in.Messages); d != nil {
@@ -230,6 +333,11 @@ func (a *Admitter) Admit(ctx context.Context, in Input) (*Admitted, error) {
 		return decline(d)
 	}
 
+	// Cancellation gate AFTER render / BEFORE the Prepare FFI.
+	if err := ctx.Err(); err != nil {
+		return ctxDecline()
+	}
+
 	// --- Layer 5: prepared plan, revalidated immediately after Prepare ----
 	prep, perr := client.Prepare(nanollm.Request{
 		Model:  in.Alias,
@@ -237,6 +345,11 @@ func (a *Admitter) Admit(ctx context.Context, in Input) (*Admitted, error) {
 		Type:   nanollm.ChatCompletion,
 		Stream: false,
 	})
+	// Cancellation gate AFTER the Prepare FFI, before the (fast, local) plan
+	// validations that finish admission.
+	if err := ctx.Err(); err != nil {
+		return ctxDecline()
+	}
 	if perr != nil {
 		// Prepare could not prove a plan: a parity-decline to BAML (no socket).
 		return decline(declinef(StagePrepare, ReasonPrepareError, "nanollm Prepare could not prove a plan"))
@@ -258,14 +371,21 @@ func (a *Admitter) Admit(ctx context.Context, in Input) (*Admitted, error) {
 		return decline(d)
 	}
 
-	// Proven up to — but NOT including — the RoundTrip. Do NOT send.
-	a.m.recordAttempt(in.Mode, provider, OutcomeAdmitted)
-	return &Admitted{
-		Prepared:     prep,
-		ExactRequest: exactReq,
-		Alias:        in.Alias,
-		Target:       facts.target,
-		Provider:     facts.provider,
+	// Proven up to — but NOT including — the RoundTrip. Do NOT send here.
+	if recordAdmitted {
+		a.m.recordAttempt(in.Mode, provider, OutcomeAdmitted)
+	}
+	// Hand engine ownership to the Claim: the deferred guard no longer closes it.
+	closeClient = false
+	return &Claim{
+		Admitted: Admitted{
+			Prepared:     prep,
+			ExactRequest: exactReq,
+			Alias:        in.Alias,
+			Target:       facts.target,
+			Provider:     facts.provider,
+		},
+		client: client,
 	}, nil
 }
 

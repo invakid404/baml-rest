@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
 	"github.com/invakid404/baml-rest/dynclient/internal/generated/adapter"
 	streamtypes "github.com/invakid404/baml-rest/dynclient/internal/generated/baml_client/stream_types"
 	types "github.com/invakid404/baml-rest/dynclient/internal/generated/baml_client/types"
@@ -254,6 +255,47 @@ func TestMaybeParseDeBAMLFinal_ClaimsValidObject(t *testing.T) {
 	}
 	if v, present := out.DynamicProperties.Get("answer"); !present || v != "hi" {
 		t.Errorf("envelope DynamicProperties.answer = %v (present=%v), want %q", v, present, "hi")
+	}
+}
+
+// TestMaybeInstallNativeCall_ServeWrapFailureRetainsRaw pins the Slice-6 wrapper-
+// error branch (de-BAML cutover): when a serve implementation CLAIMS a native
+// success whose flattened JSON cannot be wrapped (a bare scalar — the same shape
+// class TestMaybeParseDeBAMLFinal_WrapFailurePropagates covers), the generated
+// installer FAILS the attempt (never a hidden BAML resend) and retains the success
+// result's OWNED raw assistant text (res.Raw), NOT the empty res.RawDiagnostic, as
+// details.raw. Regression for the res.RawDiagnostic->res.Raw fix.
+func TestMaybeInstallNativeCall_ServeWrapFailureRetainsRaw(t *testing.T) {
+	a := &adapter.BamlAdapter{}
+	a.SetDeBAMLConfig(bamlutils.DeBAMLConfig{Enabled: true})
+	a.SetDeBAMLOutputSchema(simpleSchema())
+	// A stub serve implementation (no nanollm) claiming a native SUCCESS whose
+	// FinalJSON is a bare scalar — wrapDeBAMLDynamicOutput rejects it because
+	// decodeDeBAMLDynamicFields requires a JSON object.
+	a.SetNativeServeComparator(func(context.Context, bamlutils.NativeServeRequest) bamlutils.NativeServeResult {
+		return bamlutils.NativeServeResult{
+			Disposition:  bamlutils.NativeServeSucceeded,
+			FinalJSON:    []byte(`"not an object"`),
+			Raw:          "owned raw assistant text",
+			WinnerEngine: bamlutils.NativeServeEngineNative,
+		}
+	})
+
+	cfg := &buildrequest.CallConfig{}
+	maybeInstallNativeCall(a, cfg, nil, true, false, false, nil)
+	if cfg.NativeAttempt == nil {
+		t.Fatal("serve callback not installed (flag on + serve comparator present)")
+	}
+
+	outcome := cfg.NativeAttempt(context.Background(), buildrequest.NativeCallAttempt{Provider: "openai"})
+	if outcome.Disposition != buildrequest.NativeCallFailed {
+		t.Fatalf("disposition = %v, want failed on an unwrappable native final (no BAML resend)", outcome.Disposition)
+	}
+	if !errors.Is(outcome.Err, buildrequest.ErrOutputParse) {
+		t.Errorf("err = %v, want ErrOutputParse", outcome.Err)
+	}
+	if outcome.Raw != "owned raw assistant text" {
+		t.Errorf("raw = %q, want the owned res.Raw retained as details.raw (not the empty RawDiagnostic)", outcome.Raw)
 	}
 }
 

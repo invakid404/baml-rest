@@ -71,6 +71,11 @@ const (
 	// StageExactTransport: the exact-transport header validation succeeds before
 	// any RoundTrip (layer 5).
 	StageExactTransport Stage = "exact_transport"
+	// StageContext: the request context was cancelled/expired mid-admission,
+	// around a non-context FFI boundary (New / render / Prepare). It is a
+	// PRE-SOCKET decline to BAML — no native plan is sent — so the ordinary BAML
+	// attempt surfaces the same context error to the caller.
+	StageContext Stage = "context"
 )
 
 // Reason is the FIXED enum of secret-free decline reason codes. Every Decline
@@ -170,6 +175,8 @@ const (
 	ReasonDuplicateHost             Reason = "duplicate_host"
 	ReasonInvalidHeaderName         Reason = "invalid_header_name"
 	ReasonInvalidHeaderValue        Reason = "invalid_header_value"
+	// context
+	ReasonContextCancelled Reason = "context_cancelled"
 )
 
 // ErrDeclined is the umbrella sentinel for a native admission parity-decline:

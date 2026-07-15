@@ -130,6 +130,14 @@ type CallConfig struct {
 	// output schema, forwarded verbatim into NativeCallAttempt.OutputSchema.
 	// The generic orchestrator never inspects it. Nil in production.
 	NativeOutputSchema any
+
+	// PlannedEngine is an optional bounded, secret-free routing-metadata token
+	// recorded as planned_engine on the OUTCOME frame — "native" when a native
+	// SERVE callback was installed and native was considered for this request.
+	// Empty on every default/BAML/shadow/flag-off path, so the outcome metadata
+	// JSON stays byte-identical to today (planned_engine is omitempty). Set only
+	// by the generated serve installer; never inspected by the orchestrator.
+	PlannedEngine string
 }
 
 // LegacyCallChildFunc runs one child of a mixed-mode fallback chain via
@@ -441,13 +449,19 @@ func RunCallOrchestration(
 					rawOut = outcome.Raw
 					reasoningOut = outcome.Reasoning
 				}
+				// WinnerEngine is folded to the DECLARED bounded set (defaulting
+				// empty / arbitrary input to the base native marker), so a serving
+				// implementation's chosen token — "native_baml_parse" when native
+				// owned the socket but BAML parse-only produced the final — reaches
+				// metadata, but no unbounded string ever can.
+				winnerEngine := allowedWinnerEngine(outcome.WinnerEngine)
 				return &callAttemptResult{
 					finalResult:    outcome.FinalResult,
 					raw:            rawOut,
 					reasoning:      reasoningOut,
 					winnerProvider: provider,
 					winnerPath:     "buildrequest",
-					winnerEngine:   nativeEngineMarker,
+					winnerEngine:   winnerEngine,
 				}, nil
 			case NativeCallFailed:
 				// A native socket may have opened; the error is terminal for
@@ -461,11 +475,20 @@ func RunCallOrchestration(
 				// reaches this case with a nil Err. Returning (nil, nil) would
 				// look like success to retry.Execute and then panic on the nil
 				// *callAttemptResult. The sentinel keeps the failure terminal
-				// and typed.
-				if outcome.Err == nil {
-					return nil, errNativeCallFailedNil
+				// and typed. Normalize FIRST, then ALWAYS route through
+				// newRawError so an owned raw diagnostic on a directly-constructed
+				// nil-Err failed outcome is still retained as details.raw (rather
+				// than being lost by an early sentinel return).
+				failErr := outcome.Err
+				if failErr == nil {
+					failErr = errNativeCallFailedNil
 				}
-				return nil, outcome.Err
+				// Retain an owned raw diagnostic across the retry boundary so the
+				// outer emission forwards it as details.raw (per #256), exactly as
+				// the BAML build/send path wraps its extraction/parse errors below.
+				// newRawError no-ops on an empty raw, so a transport failure (which
+				// carries no body) stays byte-identical to a bare typed error.
+				return nil, newRawError(failErr, outcome.Raw)
 			case NativeCallDeclined:
 				// The callback guarantees no socket occurred. Fall through to
 				// the existing BAML build/send for the SAME child in the SAME
@@ -745,6 +768,12 @@ func RunCallOrchestration(
 		// every production (nil-callback) request; it is non-empty only when
 		// the native seam won the attempt.
 		outcome.WinnerEngine = winningResult.winnerEngine
+		// PlannedEngine is empty on every default/BAML/shadow/flag-off path
+		// (CallConfig.PlannedEngine defaults to ""), so planned_engine stays
+		// omitted and the outcome JSON is byte-identical to today; it is
+		// "native" only when a serve callback was installed for this request.
+		// Folded to the declared bounded set so only the legal token can appear.
+		outcome.PlannedEngine = allowedPlannedEngine(config.PlannedEngine)
 		dur := time.Since(startTime).Milliseconds()
 		outcome.UpstreamDurMs = &dur
 

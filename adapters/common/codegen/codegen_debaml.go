@@ -370,38 +370,50 @@ type nativeShadowGetter interface {
 	NativeShadowComparator() bamlutils.NativeShadowFunc
 }
 
-// maybeInstallNativeShadowCall installs the Slice-1 native child-attempt callback
-// (CallConfig.NativeAttempt) as a one-send SHADOW comparator, but ONLY when a
-// shadow-profile worker injected a comparator AND the umbrella de-BAML flag is
-// enabled. In every default production build the getter is absent or returns
+// nativeServeGetter is the serve-side twin of nativeShadowGetter: the narrow
+// optional interface the adapter implements to expose the native SERVE
+// implementation (de-BAML cutover Slice 6). A serve-profile worker injects the
+// nanollm-backed implementation and the generated code drives it only through
+// this public-typed seam. Absent / nil in every default production build.
+type nativeServeGetter interface {
+	NativeServeComparator() bamlutils.NativeServeFunc
+}
+
+// maybeInstallNativeCall installs the Slice-1 native child-attempt callback
+// (CallConfig.NativeAttempt) — as a native SERVE implementation (Slice 6) when a
+// serve-profile worker injected one, else as a one-send SHADOW comparator (Slice
+// 4) — but ONLY when a comparator is injected AND the umbrella de-BAML flag is
+// enabled. In every default production build both getters are absent or return
 // nil, so the callback stays nil/hard-off and the call path is byte-identical to
-// today (flag-off is zero native: no plan build, no FFI, no socket).
+// today (flag-off is zero native: no plan build, no FFI, no socket). A worker
+// installs AT MOST ONE of the two (workerboot enforces the mutual exclusion);
+// serve takes precedence here so a mis-wired both-present adapter can never run
+// the non-serving shadow path.
 //
 // The installed callback runs as the orchestrator's FIRST operation for the
-// selected child: it hands the neutral request description (effective registry,
-// generated messages, output schema, resolved provider/leaf, mode, and the
-// TRUTHFUL whole-plan strategy facts) plus att.BuildBAMLRequest — BAML's
-// no-socket plan builder for the SAME child — to the injected comparator, which
-// builds the native plan, compares, records plan_compare (no values), and
-// returns. The callback then ALWAYS DECLINES so the orchestrator runs the
-// ordinary BAML build/send for the same child in the same retry iteration.
-// Native NEVER RoundTrips.
+// selected child. It hands the neutral request description (effective registry,
+// generated messages, output schema, resolved provider/leaf, mode, the TRUTHFUL
+// whole-plan strategy facts, and — for serve — IncludeReasoning + the first-2xx
+// SendHeartbeat) plus att.BuildBAMLRequest (BAML's no-socket plan builder for the
+// SAME child) and the BAML-only parse closure to the injected implementation.
+//   - SHADOW: builds the native plan, compares, records plan_compare, and ALWAYS
+//     DECLINES so the orchestrator runs the ordinary BAML build/send. Native never
+//     RoundTrips.
+//   - SERVE: runs admission + the S4 plan-compare precondition and, on a match,
+//     CLAIMS one native RoundTrip, then returns a native SUCCESS (wrapped via
+//     wrapDeBAMLDynamicOutput), a typed FAILURE (handed to the outer policy — no
+//     hidden resend), or a pre-socket DECLINE to BAML.
 //
 // wouldRewriteOrProxy is the effective send client's rewrite/proxy predicate
-// (llmhttp.Client.WouldRewriteOrProxy). It is forwarded to the comparator, which
-// hands it to the admission predicate; admission invokes it against the EFFECTIVE
-// TARGET it resolves (base_url + /chat/completions). The proxy decision is exact for
-// the tuned default transport's URL-only http.ProxyFromEnvironment (its own cached
-// resolver against the real target, not an env re-read) and FAILS CLOSED for a
-// caller-supplied resolver that could inspect other request fields. It is never
-// invoked here on the default BAML-only / flag-off path (the callback is not
-// installed). Together with cfg.RetryPolicy (any resolved request retry policy) it
-// forwards TRUTHFULLY: BAML applies URL rewrites and proxying at execution time,
-// AFTER the plan handed to the comparator is built, and the single-attempt exact
-// lane bypasses a retry override — so either shape is unproven and MUST decline
-// before a native plan is prepared, BAML's plan is obtained, or a plan_compare is
-// recorded.
-func maybeInstallNativeShadowCall(
+// (llmhttp.Client.WouldRewriteOrProxy). It is forwarded to the implementation,
+// which hands it to the admission predicate; admission invokes it against the
+// EFFECTIVE TARGET it resolves (base_url + /chat/completions). The proxy decision
+// is exact for the tuned default transport's URL-only http.ProxyFromEnvironment and
+// FAILS CLOSED for a caller-supplied resolver. It is never invoked here on the
+// default BAML-only / flag-off path (the callback is not installed). Together with
+// cfg.RetryPolicy (any resolved request retry policy) it forwards TRUTHFULLY so
+// either unproven shape declines before a native plan/BAML plan/plan_compare/socket.
+func maybeInstallNativeCall(
 	adapter bamlutils.Adapter,
 	cfg *buildrequest.CallConfig,
 	msgs []types.Baml_Rest_Message,
@@ -413,36 +425,37 @@ func maybeInstallNativeShadowCall(
 	if !adapter.DeBAMLConfig().Enabled {
 		return
 	}
-	getter, ok := adapter.(nativeShadowGetter)
-	if !ok {
+	// Resolve AT MOST ONE native implementation, serve taking precedence. Both
+	// getters are read before any registry/message/parse-closure work so a build
+	// with the flag on but no comparator injected still does zero native work.
+	var serve bamlutils.NativeServeFunc
+	if g, ok := adapter.(nativeServeGetter); ok {
+		serve = g.NativeServeComparator()
+	}
+	var shadow bamlutils.NativeShadowFunc
+	if serve == nil {
+		if g, ok := adapter.(nativeShadowGetter); ok {
+			shadow = g.NativeShadowComparator()
+		}
+	}
+	if serve == nil && shadow == nil {
 		return
 	}
-	shadow := getter.NativeShadowComparator()
-	if shadow == nil {
-		return
-	}
+
 	registry := adapter.OriginalClientRegistry()
 	outputSchema := adapter.DeBAMLOutputSchema()
 	neutralMsgs := nativeShadowMessages(msgs)
-	mode := bamlutils.NativeShadowModeCall
-	if cfg.NeedsRaw {
-		mode = bamlutils.NativeShadowModeCallWithRaw
-	}
 	// Evaluate the retry-override fact ONLY now that both hard-off gates have passed
 	// (flag enabled AND a comparator present). A resolved retry policy is a request
-	// retry override the single-attempt exact lane would bypass. The rewrite/proxy
-	// predicate is forwarded (not evaluated here): admission invokes it against the
-	// effective target it resolves, and it must never run on the default BAML-only /
-	// flag-off path (the callback below is not installed there).
+	// retry override the single-attempt exact lane would bypass.
 	hasRequestRetryOverride := cfg.RetryPolicy != nil
-	// bamlOnlyParse is the explicit BAML-ONLY final-parse closure for the
-	// same-response shadow oracle (de-BAML cutover Slice 5). It runs ONLY BAML's
-	// parser — never the native-first hybrid parseFinalFn uses for serving, so
-	// there is no native->BAML->native recursion — then unwraps and marshals to
-	// the SAME flattened JSON shape native SAP produces, so the oracle compares
-	// the two parses INDEPENDENTLY. It parses already-fetched text only: no socket,
-	// no provider request. The ordinary BAML route keeps its hybrid closure; this
-	// one exists solely for the oracle.
+	// bamlOnlyParse is the explicit BAML-ONLY final-parse closure (de-BAML cutover
+	// Slice 5). It runs ONLY BAML's parser — never the native-first hybrid
+	// parseFinalFn uses for serving, so there is no native->BAML->native recursion —
+	// then unwraps and marshals to the SAME flattened JSON shape native SAP produces.
+	// The shadow oracle uses it for the same-response compare; the serve path uses
+	// it for the same-response safety compare AND as the parse-only fallback. It
+	// parses already-fetched text only: no socket, no provider request.
 	bamlOnlyParse := func(pctx context.Context, raw string) ([]byte, error) {
 		opts, oerr := makeOptionsFromAdapter(adapter)
 		if oerr != nil {
@@ -459,6 +472,81 @@ func maybeInstallNativeShadowCall(
 	}
 	cfg.NativeAttemptEnabled = true
 	cfg.NativeOutputSchema = outputSchema
+
+	if serve != nil {
+		serveMode := bamlutils.NativeServeModeCall
+		if cfg.NeedsRaw {
+			serveMode = bamlutils.NativeServeModeCallWithRaw
+		}
+		// planned_engine="native": a serve callback was installed and native was
+		// considered for this request. Recorded on the OUTCOME frame only; empty on
+		// every default/BAML/shadow/flag-off path so metadata stays byte-identical.
+		cfg.PlannedEngine = "native"
+		cfg.NativeAttempt = func(ctx context.Context, att buildrequest.NativeCallAttempt) buildrequest.NativeCallOutcome {
+			res := serve(ctx, bamlutils.NativeServeRequest{
+				Registry:                registry,
+				Messages:                neutralMsgs,
+				OutputSchema:            outputSchema,
+				Provider:                att.Provider,
+				ClientOverride:          att.ClientOverride,
+				Mode:                    serveMode,
+				IncludeReasoning:        att.IncludeReasoning,
+				SingleLeaf:              singleLeaf,
+				HasFallbackChain:        hasFallbackChain,
+				HasRoundRobin:           hasRoundRobin,
+				HasRequestRetryOverride: hasRequestRetryOverride,
+				WouldRewriteOrProxy:     wouldRewriteOrProxy,
+				BuildBAMLRequest:        att.BuildBAMLRequest,
+				BAMLOnlyParse:           bamlOnlyParse,
+				// The merged S5 first-2xx heartbeat: the native transport fires it the
+				// instant it reads 2xx headers so pool hung-detection sees liveness.
+				SendHeartbeat: att.SendHeartbeat,
+			})
+			switch res.Disposition {
+			case bamlutils.NativeServeSucceeded:
+				// Wrap the flattened dynamic-output JSON into the generated envelope
+				// (the SAME wrap the BAML serving path applies) and return the native
+				// final with owned raw/reasoning + the bounded winner-engine token.
+				wrapped, werr := wrapDeBAMLDynamicOutput(res.FinalJSON)
+				if werr != nil {
+					// A post-claim wrap failure cannot fall through to a BAML resend;
+					// FAIL, retaining the succeeded result's OWNED raw assistant text
+					// (res.RawDiagnostic is empty on a success — the raw channel is
+					// res.Raw) as details.raw.
+					return buildrequest.FailNativeCallWithRaw(&buildrequest.OutputParseError{Err: werr}, res.Raw)
+				}
+				outcome := buildrequest.SucceedNativeCall(wrapped, res.Raw, res.Reasoning)
+				outcome.WinnerEngine = res.WinnerEngine
+				return outcome
+			case bamlutils.NativeServeFailed:
+				// Post-claim failure: the typed error goes to the outer policy with an
+				// owned raw diagnostic (retained as details.raw). NEVER a resend.
+				return buildrequest.FailNativeCallWithRaw(res.Err, res.RawDiagnostic)
+			case bamlutils.NativeServeDeclined:
+				// Pre-socket decline: the orchestrator runs the ordinary BAML build/
+				// send for the same child in the same retry iteration.
+				return buildrequest.DeclineNativeCall(
+					buildrequest.NativeDeclineStage(res.Stage),
+					buildrequest.NativeDeclineReason(res.Reason),
+				)
+			default:
+				// Out-of-contract disposition (the result is public + integer-backed).
+				// It CANNOT assert "no socket", so fail closed rather than risk a
+				// hidden second same-child BAML send. Unreachable for the closed
+				// NativeServe* set.
+				return buildrequest.FailNativeCall(
+					fmt.Errorf("native serve returned unknown disposition %d", res.Disposition),
+				)
+			}
+		}
+		return
+	}
+
+	// SHADOW (unchanged behavior): always declines after a no-socket plan compare.
+	mode := bamlutils.NativeShadowModeCall
+	if cfg.NeedsRaw {
+		mode = bamlutils.NativeShadowModeCallWithRaw
+	}
 	cfg.NativeAttempt = func(ctx context.Context, att buildrequest.NativeCallAttempt) buildrequest.NativeCallOutcome {
 		res := shadow(ctx, bamlutils.NativeShadowRequest{
 			Registry:         registry,
@@ -483,9 +571,9 @@ func maybeInstallNativeShadowCall(
 			// fetched response, independently of native SAP.
 			BAMLOnlyParse: bamlOnlyParse,
 		})
-		// The comparator NEVER serves a native result in this slice: it always
-		// declines so BAML serves the same child. Stage/Reason are stable,
-		// secret-free observability tokens carried only for the decline metric.
+		// The comparator NEVER serves a native result: it always declines so BAML
+		// serves the same child. Stage/Reason are stable, secret-free observability
+		// tokens carried only for the decline metric.
 		outcome := buildrequest.DeclineNativeCall(
 			buildrequest.NativeDeclineStage(res.Stage),
 			buildrequest.NativeDeclineReason(res.Reason),

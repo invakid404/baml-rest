@@ -191,6 +191,16 @@ func emitFrameworkAdapter(out *jen.File, opts Options) {
 		jen.Comment("and DeBAMLConfig().Enabled."),
 		jen.Id("nativeShadow").Qual(bamlutilsPkg, "NativeShadowFunc"),
 		jen.Line(),
+		jen.Comment("nativeServe is the native SERVE implementation (de-BAML cutover"),
+		jen.Comment("Slice 6), injected by a serve deploy profile's worker for the same"),
+		jen.Comment("module-boundary reason as nativeShadow. Non-nil ONLY in the serve"),
+		jen.Comment("build with the flag on; nil in every default/shadow/flag-off build,"),
+		jen.Comment("leaving the orchestrator's native child-attempt callback nil/hard-off."),
+		jen.Comment("The generated dynamic call seam installs it (taking precedence over"),
+		jen.Comment("nativeShadow) via the Slice-1 CallConfig.NativeAttempt callback only"),
+		jen.Comment("when it is non-nil and DeBAMLConfig().Enabled."),
+		jen.Id("nativeServe").Qual(bamlutilsPkg, "NativeServeFunc"),
+		jen.Line(),
 		jen.Comment("rrAdvancer is the per-request round-robin Advancer installed by the"),
 		jen.Comment("worker; nil falls back to the introspected Coordinator."),
 		jen.Id("rrAdvancer").Qual(bamlutilsPkg, "RoundRobinAdvancer"),
@@ -613,6 +623,23 @@ func emitFrameworkAdapterDeBAML(out *jen.File, bamlutilsPkg string) {
 		Id("NativeShadowComparator").Params().Qual(bamlutilsPkg, "NativeShadowFunc").
 		Block(
 			jen.Return(jen.Id("b").Dot("nativeShadow")),
+		)
+
+	// SetNativeServeComparator / NativeServeComparator are the serve-side twins
+	// (de-BAML cutover Slice 6): the narrow optional interfaces the serve-profile
+	// worker and the generated dynamic call seam use to install and read the native
+	// SERVE implementation. Kept off bamlutils.Adapter like the shadow accessors.
+	// nil in every default build.
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("SetNativeServeComparator").Params(jen.Id("fn").Qual(bamlutilsPkg, "NativeServeFunc")).
+		Block(
+			jen.Id("b").Dot("nativeServe").Op("=").Id("fn"),
+		)
+
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("NativeServeComparator").Params().Qual(bamlutilsPkg, "NativeServeFunc").
+		Block(
+			jen.Return(jen.Id("b").Dot("nativeServe")),
 		)
 }
 

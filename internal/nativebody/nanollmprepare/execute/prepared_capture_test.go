@@ -472,8 +472,27 @@ func TestPreparedDeclineVsClaimedParseError(t *testing.T) {
 		if errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
 			t.Fatalf("err is the decline sentinel, want a CLAIMED parse error: %v", err)
 		}
-		if res != nil {
-			t.Errorf("result = %s, want nil when a claimed parse error propagates", resultSummary(res))
+		// Post-response error contract (de-BAML cutover Slice 6): a CLAIMED parse
+		// error propagates alongside the RETAINED response context (non-nil result)
+		// so the serving mapper can attach the extracted assistant text as
+		// details.raw and classify the failure without parsing error strings.
+		if res == nil {
+			t.Fatalf("result = nil, want the retained response context on a claimed parse error")
+		}
+		if !res.SAPInvoked {
+			t.Errorf("SAPInvoked = false, want true (SAP ran, then claimed)")
+		}
+		if res.ProviderStatus != 200 {
+			t.Errorf("ProviderStatus = %d, want 200 (response context retained)", res.ProviderStatus)
+		}
+		if len(res.ProviderBody) == 0 {
+			t.Errorf("ProviderBody empty, want the raw provider body retained")
+		}
+		// res.Raw is the extracted assistant text — the value the serving mapper
+		// attaches as details.raw on a claimed parse_error. It must be the assistant
+		// JSON from the 2xx body, not empty.
+		if res.Raw != `{"animal":"cat dog"}` {
+			t.Errorf("res.Raw = %q, want the extracted assistant text %q (details.raw source)", res.Raw, `{"animal":"cat dog"}`)
 		}
 		if spy.calls != 1 {
 			t.Errorf("parser calls = %d, want 1 (SAP invoked, then claimed)", spy.calls)

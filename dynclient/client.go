@@ -128,6 +128,7 @@ func newWithRuntime(rt worker.Runtime, init func(), opts ...Option) (*Client, er
 		DeBAMLRender:           cfg.deBAMLRender,
 		DeBAMLParse:            cfg.deBAMLParse,
 		NativeShadowComparator: cfg.nativeShadow,
+		NativeServeComparator:  cfg.nativeServe,
 		BaseURLRewrites:        cfg.baseURLRewrites,
 		HTTPClient:             httpClient,
 	}

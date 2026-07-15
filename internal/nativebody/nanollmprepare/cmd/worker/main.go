@@ -1,34 +1,65 @@
-// Command worker is the BAML+nanollm subprocess worker (de-BAML cutover Slice
-// 2). It is the isolated twin of the root cmd/worker (the BAML-only worker):
-// both delegate startup to the shared internal/workerboot bootstrap, so their
-// behaviour is identical apart from the native capability injected here.
+// Command worker is the BAML+nanollm subprocess worker and, as of de-BAML cutover
+// Slice 6, the native SERVE deploy profile: on a native-capable worker with the
+// umbrella flag ON it actually SERVES an admitted unary OpenAI `_dynamic` call
+// natively — one exact provider RoundTrip, native translate/extract/parse, the S4
+// plan-compare pre-socket precondition + the S5 same-response BAML-parse safety
+// compare, and the native final returned through the merged Slice-1 tryOneChild
+// seam. Unsupported traffic (streaming, non-openai, fallback/RR, call-with-raw,
+// static, …) declines PRE-SOCKET and BAML serves it on the same instance.
 //
-// This binary is built FROM the out-of-go.work nanollmprepare module with
-// GOWORK=off + CGO so the nanollm static archive links into it (via the
-// nativeworker import) while the root/host module graph stays zero-nanollm and
-// CGO-free. cmd/build/build.sh builds it and drops it at cmd/serve/worker (the
-// host embed location) only under the opt-in NATIVE_WORKER variant; the default
-// build keeps the BAML-only worker, preserving "BAML-only worker = 100% BAML"
-// as an immediate build-level reversal.
+// It is built FROM the out-of-go.work nanollmprepare module with GOWORK=off + CGO
+// so the nanollm static archive links into it (via the nativeworker/canary
+// imports) while the root/host module graph stays zero-nanollm and CGO-free.
+// cmd/build/build.sh builds it and drops it at cmd/serve/worker under the opt-in
+// NATIVE_WORKER variant; the default build keeps the BAML-only worker, preserving
+// "BAML-only worker = 100% BAML" as an immediate build-level reversal.
 //
-// It links nanollm but does NOT route to it: the injected capability is stored
-// and reported at startup, while the orchestrator's native child-attempt
-// callback stays nil/hard-off. Serving behaviour is byte-identical to the
-// BAML-only worker in this slice.
+// FLAG-FIRST, ZERO-NATIVE WHEN OFF: the umbrella flag is resolved BEFORE any
+// native wiring is evaluated. With BAML_REST_USE_DEBAML falsy this binary executes
+// NO nanollm FFI at boot (no capability Version probe, no runtime init, no serve
+// factory), installs no serve callback, opens no socket, and serves 100% BAML —
+// identical to the BAML-only worker, so a flag flip is an immediate, total
+// reversal (the kill switch). It still advertises a STATIC build capability
+// (native_build_capable=true, engine name from a compile-time constant) so the
+// startup diagnostic is unambiguous without touching nanollm.
 package main
 
 import (
+	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/canary"
 	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/nativeworker"
 	"github.com/invakid404/baml-rest/internal/workerboot"
 )
 
 func main() {
+	// Resolve the umbrella flag FIRST. NewCapability() (nanollm.Version) and
+	// ProbeRuntime (nanollm.New) are the two boot-time FFI touch points, so they
+	// are constructed ONLY inside the enabled branch. With the flag off we hand
+	// workerboot a static build-capability advertisement and NOTHING else — no
+	// FFI, no serve factory, no native runtime init — so the serve-capable binary
+	// behaves exactly like cmd/worker (BAML-only) even though the archive is linked.
+	if !bamlutils.DeBAMLConfigFromEnv().Enabled {
+		workerboot.Run(workerboot.Options{
+			// Static build fact (no FFI): report the linked engine so the startup
+			// diagnostic shows native_build_capable=true, runtime uninitialized,
+			// rollout_mode=off, native_serving=off.
+			NativeBuildCapable: true,
+			NativeEngineName:   nativeworker.EngineName,
+		})
+		return
+	}
+
 	workerboot.Run(workerboot.Options{
-		// Presence of a non-nil capability is the build capability the startup
-		// diagnostic reports. NativeInit proves the nanollm runtime initializes
-		// alongside BAML before the handler serves; a failure exits non-zero and
-		// fails the go-plugin handshake.
+		// Native capability + startup init: a present capability is reported at
+		// startup and the nanollm runtime is proven to come up alongside BAML
+		// before the handler serves.
 		NativeCapability: nativeworker.NewCapability(),
 		NativeInit:       nativeworker.ProbeRuntime,
+		// The serve factory: registers the bounded de-BAML collectors on the
+		// worker's private registry and returns the neutral bamlutils.NativeServeFunc
+		// the generated dynamic call seam installs as the Slice-1 native
+		// child-attempt callback — which actually serves admitted unary `_dynamic`
+		// calls natively.
+		NativeServeFactory: canary.NewServeFunc,
 	})
 }
