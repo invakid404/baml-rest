@@ -385,6 +385,16 @@ func RunCallOrchestration(
 
 	// tryOneChild builds, executes, extracts, and parses a single child.
 	tryOneChild := func(provider, clientOverride string) (*callAttemptResult, error) {
+		// onResponseShadow is the optional SAME-response shadow continuation a
+		// DECLINED native attempt may install (de-BAML cutover Slice 5). It stays
+		// nil on every non-shadow path (every production constructor, and the
+		// shadow profile when the request-plan comparison did not match), so the
+		// BAML send below is byte-identical to today. When set, it is invoked ONCE
+		// after a 2xx BAML send with BAML's already-fetched status+body for a
+		// no-transport native-vs-BAML response-parity comparison — it never
+		// RoundTrips and never changes the served result.
+		var onResponseShadow func(ctx context.Context, status int, body []byte)
+
 		// Native child-attempt seam (de-BAML cutover Slice 1), HARD-OFF unless
 		// a caller both installs the callback AND flips the neutral enabled
 		// gate. It runs as the FIRST operation for each selected non-legacy
@@ -460,7 +470,10 @@ func RunCallOrchestration(
 				// The callback guarantees no socket occurred. Fall through to
 				// the existing BAML build/send for the SAME child in the SAME
 				// retry iteration below — no extra retry consumed, no fallback
-				// advance.
+				// advance. Capture an optional SAME-response shadow continuation
+				// to run against BAML's fetched response below; nil on every
+				// non-shadow path, so the send stays byte-identical to today.
+				onResponseShadow = outcome.OnResponseShadow
 			default:
 				// An out-of-contract disposition can't assert "no socket", so
 				// treat it as terminal rather than risk a hidden second
@@ -492,6 +505,28 @@ func RunCallOrchestration(
 		// consumed within the attempt — parseable feeding parseFinal — stays
 		// borrowed.
 		defer resp.Release()
+
+		// SAME-response shadow oracle (de-BAML cutover Slice 5), declined native
+		// attempt only. BAML has already fetched this 2xx response; hand its
+		// status + raw body to the response-parity comparator WITHOUT any
+		// transport or second provider request. It is strictly non-authoritative:
+		// panic-guarded (a shadow FFI/parse panic must never fail an otherwise
+		// BAML-served request) and does not touch the served result — BAML's
+		// envelope is returned byte-identical regardless. nil on every non-shadow
+		// path.
+		//
+		// Invoked SYNCHRONOUSLY on the attempt path by design (see
+		// NativeCallOutcome.OnResponseShadow): the comparator's BAML-only parse
+		// closure captures the per-request adapter + BAML CFFI runtime, which are
+		// recycled once this serving goroutine returns, so detached/off-path
+		// execution would risk a use-after-free / concurrent-CFFI race. The parity
+		// CPU/latency is an accepted, shadow-profile-only cost removed by deployment
+		// stage, not a latency-neutral production path. The body is cloned so the
+		// comparator never aliases the borrowed
+		// transport buffer this attempt's deferred Release recycles.
+		if onResponseShadow != nil {
+			runResponseShadow(ctx, onResponseShadow, resp.StatusCode, responseBodyClone(resp))
+		}
 
 		// Extractor routing — three lanes, gated on how the transport owns the
 		// body, falling back to the always-present string extractor:
@@ -727,4 +762,30 @@ func RunCallOrchestration(
 	trySend(newResult(bamlutils.StreamResultKindFinal, nil, winningResult.finalResult, rawForFinal, reasoningForFinal, nil, false))
 
 	return nil
+}
+
+// runResponseShadow invokes a declined native attempt's SAME-response shadow
+// continuation, guarding against a panic in the shadow oracle. The shadow work
+// (native TranslateResponse / SAP / an independent BAML parse) is strictly
+// non-authoritative: it must never fail an otherwise BAML-served request, so a
+// panic is swallowed here (the comparator records its own error facet). It opens
+// no socket and returns no value — BAML's envelope is served regardless.
+func runResponseShadow(ctx context.Context, fn func(context.Context, int, []byte), status int, body []byte) {
+	defer func() { _ = recover() }()
+	fn(ctx, status, body)
+}
+
+// responseBodyClone returns an owned copy of the response body across all three
+// transport lanes (borrowed / owned-bytes / string view). The SAME-response
+// shadow oracle runs synchronously before this attempt's deferred Release, but
+// the clone keeps it defensively independent of the pooled/borrowed buffer so no
+// aliasing view can outlive Release.
+func responseBodyClone(resp *llmhttp.Response) []byte {
+	if bb := resp.BorrowedBytes(); bb != nil {
+		return append([]byte(nil), bb...)
+	}
+	if rb := resp.BodyBytes(); rb != nil {
+		return append([]byte(nil), rb...)
+	}
+	return append([]byte(nil), resp.BodyString()...)
 }

@@ -140,8 +140,21 @@ type AttemptResult struct {
 	Usage *nanollm.Usage
 
 	// AssistantText is the OpenAI assistant text extracted from a 2xx body and
-	// fed to SAP (empty for provider outcomes, where extraction never runs).
+	// fed to SAP (empty for provider outcomes, where extraction never runs). It
+	// is the text-only parseable channel — the same value the BAML final parser
+	// consumes — never reasoning.
 	AssistantText string
+
+	// Raw / Reasoning are the /call-with-raw extractor channels split from the
+	// SAME 2xx translated body AssistantText comes from: Raw is the text-only
+	// assistant channel exposed on /call-with-raw's Raw(); Reasoning carries the
+	// provider reasoning/thinking text when the caller opted in (cfg.IncludeReasoning).
+	// Both are empty on provider outcomes (non-2xx / invalid-2xx), where extraction
+	// never runs. They are retained so the same-response oracle can compare the
+	// FULL native-vs-BAML /call-with-raw envelope (structured + raw + reasoning),
+	// not just structured output (extends the Phase 6c differential).
+	Raw       string
+	Reasoning string
 
 	// Structured is the flattened native structured output on OutcomeStructured
 	// (nil otherwise) — the same flattened shape the generated wrapper consumes.
@@ -165,6 +178,35 @@ type AttemptConfig struct {
 	Client           *nanollm.Client
 	Prepared         *nanollm.PreparedRequest
 	Executor         *llmhttp.ExactExecutor
+	Parse            bamlutils.DeBAMLParseFunc
+	OutputSchema     *bamlutils.DynamicOutputSchema
+	IncludeReasoning bool
+
+	// SendHeartbeat, when non-nil, is the first-2xx liveness signal forwarded to
+	// the exact executor (ExecuteWithHeartbeat): it fires the instant the provider
+	// returns 2xx headers, before the body is buffered, so a pool hung-detector
+	// sees liveness on a slow body. It is a pre-canary compatibility hook — the
+	// native transport twin of the onSuccess callback the BAML send path gets — and
+	// never mutates the request. Nil in the no-heartbeat callers (the gated 6b/6c
+	// oracles), where it is a no-op.
+	SendHeartbeat func()
+}
+
+// ConsumeConfig is the input to ConsumeResponse: the SAME-response consumer that
+// runs native TranslateResponse -> assistant/raw/reasoning extraction -> native
+// SAP over an ALREADY-COMPLETED (status, body) that some OTHER agent fetched —
+// with NO transport, NO RoundTrip, and NO second provider request. It is the
+// response side of RunAttempt factored out of the transport, so the de-BAML
+// same-response shadow oracle can feed it BAML's already-fetched status+body
+// while BAML remains the sole provider send.
+//
+// Client + Alias are the request-scoped nanollm client and the EXACT attempted
+// alias TranslateResponse is called with (never a primary alias); Parse is the
+// native SAP; OutputSchema is the carried dynamic output schema; IncludeReasoning
+// gates the reasoning extraction channel.
+type ConsumeConfig struct {
+	Client           *nanollm.Client
+	Alias            string
 	Parse            bamlutils.DeBAMLParseFunc
 	OutputSchema     *bamlutils.DynamicOutputSchema
 	IncludeReasoning bool
@@ -234,19 +276,65 @@ func RunAttempt(ctx context.Context, cfg AttemptConfig) (*AttemptResult, error) 
 	// RoundTrip and returns status + raw body as data for EVERY status; a Go
 	// error here is a non-response failure (transport-controlled-header decline,
 	// request construction, cancellation/timeout, transport, or body-read).
-	resp, err := cfg.Executor.Execute(ctx, exactReq)
+	// cfg.SendHeartbeat (nil in the gated oracles) is the first-2xx liveness hook
+	// the exact lane fires before buffering the body — never mutating the request.
+	resp, err := cfg.Executor.ExecuteWithHeartbeat(ctx, exactReq, cfg.SendHeartbeat)
 	if err != nil {
 		return nil, err
 	}
 
+	// (5-7) The transport is done; the response side owns NO transport. Hand the
+	// already-completed status+body to the same-response consumer with the EXACT
+	// attempted alias — the identical pipeline the de-BAML shadow oracle drives
+	// over BAML's already-fetched response.
+	return ConsumeResponse(ctx, ConsumeConfig{
+		Client:           cfg.Client,
+		Alias:            prep.Meta.ModelAlias,
+		Parse:            cfg.Parse,
+		OutputSchema:     cfg.OutputSchema,
+		IncludeReasoning: cfg.IncludeReasoning,
+	}, resp.StatusCode, resp.Body)
+}
+
+// ConsumeResponse runs the SAME-response native pipeline —
+// TranslateResponse(attempted alias) -> assistant/raw/reasoning extraction ->
+// native SAP — over an ALREADY-COMPLETED (status, body) that some OTHER agent
+// fetched. It owns NO transport: it opens no socket, issues no RoundTrip, and
+// makes no second provider request. RunAttempt calls it after its own single
+// exact send; the de-BAML same-response shadow oracle calls it with BAML's
+// already-fetched status+body so BAML stays the sole provider send.
+//
+// The error-vs-data contract is identical to RunAttempt's response side:
+//
+//   - An invalid-2xx (nanollm *InvalidBodyError) maps to OutcomeInvalidBody with
+//     the synthesized 502/uniform-envelope Response — SAP is NEVER invoked.
+//   - An ordinary non-2xx maps to OutcomeProviderError (uniform envelope) — SAP is
+//     NEVER invoked.
+//   - A clean 2xx whose assistant text SAP CLAIMS is OutcomeStructured; a 2xx SAP
+//     DECLINES (ErrDeBAMLParseUnsupported) is OutcomeParseDeclined — both returned
+//     as (*AttemptResult, nil).
+//   - A translate error other than *InvalidBodyError, a non-JSON 2xx, an
+//     assistant-extraction failure, and a CLAIMED (non-decline) SAP error all
+//     propagate as Go errors.
+func ConsumeResponse(ctx context.Context, cfg ConsumeConfig, status int, body []byte) (*AttemptResult, error) {
+	if cfg.Client == nil {
+		return nil, fmt.Errorf("nanollmprepare: nil nanollm client")
+	}
+	if cfg.Parse == nil {
+		return nil, fmt.Errorf("nanollmprepare: nil parse function")
+	}
+	if cfg.OutputSchema == nil {
+		return nil, fmt.Errorf("nanollmprepare: nil output schema")
+	}
+
 	res := &AttemptResult{
-		AttemptedAlias: prep.Meta.ModelAlias,
-		ProviderStatus: resp.StatusCode,
-		ProviderBody:   resp.Body,
+		AttemptedAlias: cfg.Alias,
+		ProviderStatus: status,
+		ProviderBody:   body,
 	}
 
 	// (5) Translate with the EXACT attempted alias.
-	translated, terr := cfg.Client.TranslateResponse(prep.Meta.ModelAlias, resp.StatusCode, resp.Body)
+	translated, terr := cfg.Client.TranslateResponse(cfg.Alias, status, body)
 	if terr != nil {
 		// An invalid-2xx surfaces as the typed *InvalidBodyError carrying the
 		// (caller-facing status, uniform envelope) pair. Map it into the SAME
@@ -264,7 +352,7 @@ func RunAttempt(ctx context.Context, cfg AttemptConfig) (*AttemptResult, error) 
 		}
 		// Any other translate failure is a genuine error (not a provider
 		// outcome, not SAP-eligible) and propagates.
-		return nil, fmt.Errorf("nanollmprepare: TranslateResponse(%s): %w", prep.Meta.ModelAlias, terr)
+		return nil, fmt.Errorf("nanollmprepare: TranslateResponse(%s): %w", cfg.Alias, terr)
 	}
 
 	res.Translated = translated
@@ -279,16 +367,20 @@ func RunAttempt(ctx context.Context, cfg AttemptConfig) (*AttemptResult, error) 
 	}
 
 	// (7) Unary 2xx: require a valid JSON body, extract the OpenAI assistant
-	// text (translated.Body is OpenAI-format regardless of the original
-	// provider), and feed it to the native parser.
+	// text + raw + reasoning (translated.Body is OpenAI-format regardless of the
+	// original provider), and feed the assistant text to the native parser. Raw
+	// and reasoning are retained on the result so the same-response oracle can
+	// compare the full /call-with-raw envelope, not just structured output.
 	if !translated.BodyIsJSON {
 		return nil, fmt.Errorf("nanollmprepare: 2xx translated response is not JSON (status %d)", translated.Status)
 	}
-	parseable, _, _, xerr := buildrequest.ExtractResponseContentBytes("openai", translated.Body, cfg.IncludeReasoning)
+	parseable, raw, reasoning, xerr := buildrequest.ExtractResponseContentBytes("openai", translated.Body, cfg.IncludeReasoning)
 	if xerr != nil {
 		return nil, fmt.Errorf("nanollmprepare: extracting assistant text: %w", xerr)
 	}
 	res.AssistantText = parseable
+	res.Raw = raw
+	res.Reasoning = reasoning
 
 	// SAP is invoked exactly here and nowhere else on the 2xx path.
 	res.SAPInvoked = true

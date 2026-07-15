@@ -110,6 +110,20 @@ type NativeShadowRequest struct {
 	// opens NO socket. It is the orchestrator's per-attempt build closure, threaded
 	// through from NativeCallAttempt.
 	BuildBAMLRequest func(ctx context.Context) (*llmhttp.Request, error)
+
+	// BAMLOnlyParse is the explicit BAML-ONLY final-parse closure for the
+	// same-response shadow oracle (de-BAML cutover Slice 5). Given the assistant
+	// text extracted from BAML's fetched response, it runs ONLY BAML's parser —
+	// never the native-first hybrid the ordinary serving parseFinal uses — and
+	// returns the flattened structured JSON, so the oracle compares native-parse
+	// vs BAML-parse INDEPENDENTLY with no native->BAML->native recursion. The
+	// ordinary BAML route keeps its hybrid closure; this one exists solely for the
+	// oracle. Non-nil only while the shadow seam is on. It opens no socket and
+	// issues no provider request — it only parses already-fetched text.
+	//
+	// SENSITIVE: the returned JSON is parsed provider output; treat like the
+	// response body — never log or emit it, only redacted/secret-free views.
+	BAMLOnlyParse func(ctx context.Context, raw string) ([]byte, error)
 }
 
 // NativeShadowResult is the neutral, secret-free outcome of a shadow comparison.
@@ -120,6 +134,16 @@ type NativeShadowRequest struct {
 type NativeShadowResult struct {
 	Stage  string
 	Reason string
+
+	// OnResponse is the optional SAME-response continuation (de-BAML cutover
+	// Slice 5). It is set ONLY when the request-plan comparison MATCHED — on a
+	// mismatch it stays nil and response parity is skipped. The generated seam
+	// forwards it verbatim onto the declined NativeCallOutcome.OnResponseShadow,
+	// so the orchestrator invokes it once with BAML's already-fetched status +
+	// raw body: the comparator then runs native TranslateResponse + SAP and the
+	// independent BAML-only parse on the SAME body, records response_compare (NO
+	// values), and returns. It opens NO socket and NEVER changes what BAML serves.
+	OnResponse func(ctx context.Context, status int, body []byte)
 }
 
 // NativeShadowFunc runs one no-socket native-vs-BAML request-plan shadow
