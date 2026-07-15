@@ -163,7 +163,9 @@ if [ "${SUBPROCESS:-true}" = "true" ]; then
 else
     echo "In-process Build: enabled"
 fi
-if [ "${NATIVE_WORKER:-false}" = "true" ]; then
+if [ "${SHADOW_WORKER:-false}" = "true" ]; then
+    echo "Shadow Worker (BAML+nanollm + one-send shadow comparator, from isolated module): enabled"
+elif [ "${NATIVE_WORKER:-false}" = "true" ]; then
     echo "Native Worker (BAML+nanollm, from isolated module): enabled"
 else
     echo "Native Worker: disabled (BAML-only worker; immediate-reversal default)"
@@ -174,11 +176,13 @@ echo "============================================"
 # links only into the worker subprocess, never the host. An in-process build
 # has no separate worker process, so honouring NATIVE_WORKER there would mean
 # linking nanollm into the host — exactly the invariant this slice preserves.
-# Fail loudly rather than silently producing a BAML-only in-process host.
-if [ "${NATIVE_WORKER:-false}" = "true" ] && [ "${SUBPROCESS:-true}" != "true" ]; then
-    echo "ERROR: NATIVE_WORKER=true requires SUBPROCESS=true — the native (nanollm)" >&2
-    echo "       runtime links only into the worker subprocess and must never enter" >&2
-    echo "       the in-process host link graph." >&2
+# Fail loudly rather than silently producing a BAML-only in-process host. The
+# SHADOW_WORKER profile (de-BAML cutover Slice 4) is a native worker too, so it
+# carries the same subprocess-only requirement.
+if { [ "${NATIVE_WORKER:-false}" = "true" ] || [ "${SHADOW_WORKER:-false}" = "true" ]; } && [ "${SUBPROCESS:-true}" != "true" ]; then
+    echo "ERROR: NATIVE_WORKER/SHADOW_WORKER=true requires SUBPROCESS=true — the native" >&2
+    echo "       (nanollm) runtime links only into the worker subprocess and must never" >&2
+    echo "       enter the in-process host link graph." >&2
     exit 1
 fi
 
@@ -593,17 +597,28 @@ if [ "${SUBPROCESS:-true}" = "true" ]; then
     # The host embeds these bytes at cmd/serve/worker below; whichever variant
     # we build here becomes the embedded worker payload. The host link graph is
     # identical either way — it only embeds an opaque byte slice.
-    if [ "${NATIVE_WORKER:-false}" = "true" ]; then
+    if [ "${NATIVE_WORKER:-false}" = "true" ] || [ "${SHADOW_WORKER:-false}" = "true" ]; then
         # de-BAML cutover Slice 2 (option b): build the BAML+nanollm worker FROM
         # the isolated, out-of-go.work internal/nativebody/nanollmprepare module
         # with GOWORK=off + CGO so the nanollm static archive links ONLY into the
         # worker subprocess. The host/root module graph is never consulted for
         # this build (GOWORK=off makes the module's own go.mod authoritative), so
         # it stays zero-nanollm and CGO-free. Output goes to the SAME embed
-        # location so the host build below is unchanged. STILL UNROUTED: the
-        # worker stores a native capability but the orchestrator callback is
-        # nil/hard-off, so serving behaviour is byte-identical to the BAML-only
-        # worker.
+        # location so the host build below is unchanged.
+        #
+        # Two isolated-module worker profiles select which package is built:
+        #   - NATIVE_WORKER: cmd/worker — STILL UNROUTED (S2). The worker stores a
+        #     native capability but the orchestrator callback is nil/hard-off, so
+        #     serving behaviour is byte-identical to the BAML-only worker.
+        #   - SHADOW_WORKER: cmd/worker-shadow — the one-send SHADOW profile (S4).
+        #     It additionally installs the native shadow comparator, which (only
+        #     while the umbrella flag is enabled) compares native vs BAML request
+        #     plans with NO socket and then declines, so BAML still serves every
+        #     request byte-identically. SHADOW_WORKER takes precedence.
+        NATIVE_WORKER_PKG="./cmd/worker/"
+        if [ "${SHADOW_WORKER:-false}" = "true" ]; then
+            NATIVE_WORKER_PKG="./cmd/worker-shadow/"
+        fi
         # The isolated module is EXCLUDED from the embed source bundle
         # (.embedignore) so cmd/embed never imports it into the root link graph;
         # it rides along as the opaque tar cmd/build/nativeworker_module.tar
@@ -639,14 +654,14 @@ if [ "${SUBPROCESS:-true}" = "true" ]; then
         fi
         go run ./cmd/build/nativeworker-overlay "${NATIVE_WORKER_OVERLAY_ARGS[@]}"
 
-        echo "Building BAML+nanollm worker binary (native-capable, from isolated nanollmprepare module)..."
+        echo "Building BAML+nanollm worker binary (${NATIVE_WORKER_PKG}, from isolated nanollmprepare module)..."
         WORKER_OUT="$(pwd)/cmd/serve/worker"
         (
             cd internal/nativebody/nanollmprepare
             # -mod=mod so the overlay's baml_client (local) transitive deps and any
             # aligned BAML version can populate this module's go.sum during the
             # build; the root module's go.sum is never consulted (GOWORK=off).
-            GOWORK=off GOFLAGS=-mod=mod CGO_ENABLED=1 go build ${GO_BUILD_TAGS} ${WORKER_LDFLAGS:+-ldflags "${WORKER_LDFLAGS}"} -o "${WORKER_OUT}" ./cmd/worker/
+            GOWORK=off GOFLAGS=-mod=mod CGO_ENABLED=1 go build ${GO_BUILD_TAGS} ${WORKER_LDFLAGS:+-ldflags "${WORKER_LDFLAGS}"} -o "${WORKER_OUT}" "${NATIVE_WORKER_PKG}"
         )
     else
         # Default / immediate-reversal build: the BAML-only worker from the root

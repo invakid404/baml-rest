@@ -1007,6 +1007,7 @@ func bamlRestDynamicBuildCallRequest(adapter bamlutils.Adapter, rawInput any, ou
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	maybeInstallNativeShadowCall(adapter, callConfig, __struct_messages, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, __httpClient.WouldRewriteOrProxy)
 	go func() {
 		defer close(out)
 		defer __releaseConverted()

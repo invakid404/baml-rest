@@ -16,6 +16,12 @@ import (
 // dynamicMethod is the ONE internal method the native unary surface admits.
 const dynamicMethod = "Baml_Rest_Dynamic"
 
+// chatCompletionsPath is the fixed path the admitted OpenAI chat surface appends
+// to the client base_url to form the effective request target. It is the target
+// the prepared-plan URL is checked against and the target the send-path
+// rewrite/proxy parity is evaluated against.
+const chatCompletionsPath = "/chat/completions"
+
 // Input is the whole set of request-wide + payload facts the native unary
 // callback would receive from the orchestrator. In this cutover the callback is
 // nil/hard-off and Input is supplied by the gated tests; nothing in production
@@ -36,15 +42,25 @@ type Input struct {
 
 	// Whole orchestration plan (layer 2). SingleLeaf is "exactly one resolved
 	// client/leaf"; the Has* flags mark a fallback chain, round-robin strategy,
-	// legacy child, request-retry override, or a URL rewrite/proxy the exact lane
-	// would bypass. ResolvedProvider is the orchestrator-resolved leaf provider.
+	// legacy child, or request-retry override the exact lane would bypass.
+	// ResolvedProvider is the orchestrator-resolved leaf provider.
 	SingleLeaf              bool
 	HasFallbackChain        bool
 	HasRoundRobin           bool
 	IsLegacyChild           bool
 	HasRequestRetryOverride bool
-	HasURLRewriteOrProxy    bool
 	ResolvedProvider        string
+
+	// WouldRewriteOrProxy, when non-nil, reports whether the effective send client
+	// would rewrite the outbound URL or route the EFFECTIVE TARGET through an HTTP
+	// proxy — the send-path transforms the exact lane would bypass. It is evaluated
+	// against the target Admit itself resolves (base_url + /chat/completions), AFTER
+	// the effective client is mapped, so the proxy decision is the transport's own
+	// resolver against the real target rather than an env re-read; a true result
+	// declines at the strategy stage before the native plan is prepared, BAML's plan
+	// is obtained, or a plan_compare is recorded. Nil disables the check (lightweight
+	// tests that carry no send client).
+	WouldRewriteOrProxy func(effectiveURL string) bool
 
 	// Effective dynamic client + payload (layers 3-4). Registry is the effective
 	// one-client registry; Alias is the SEPARATE internal nanollm alias (never the
@@ -162,7 +178,12 @@ func (a *Admitter) Admit(ctx context.Context, in Input) (*Admitted, error) {
 	}
 
 	// --- Layer 3: effective dynamic client (+ request-scoped engine) ------
-	client, facts, dec, err := mapDynamicClient(in.Registry, in.Alias)
+	// mapDynamicClient resolves the effective target (base_url + /chat/completions)
+	// and evaluates in.WouldRewriteOrProxy against it BEFORE constructing the
+	// request-scoped engine — a rewrite or a proxied effective target declines at
+	// the strategy stage there, before the engine, the plan, BAML's plan, or a
+	// plan_compare.
+	client, facts, dec, err := mapDynamicClient(in.Registry, in.Alias, in.WouldRewriteOrProxy)
 	if err != nil {
 		return plannerErr(err)
 	}
@@ -277,8 +298,6 @@ func admitStrategy(in Input) *Decline {
 		return declinef(StageStrategy, ReasonLegacyChild, "selected child is a legacy child")
 	case in.HasRequestRetryOverride:
 		return declinef(StageStrategy, ReasonRequestRetryOverride, "request carries a retry override")
-	case in.HasURLRewriteOrProxy:
-		return declinef(StageStrategy, ReasonURLRewriteOrProxy, "a URL rewrite/proxy would be bypassed by the exact lane")
 	}
 	return nil
 }

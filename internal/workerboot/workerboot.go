@@ -22,6 +22,7 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	goplugin "github.com/hashicorp/go-plugin"
+	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -55,6 +56,20 @@ type Options struct {
 	// go-plugin's handshake and surfaces to the host's pool startup — exactly
 	// like a fatal BAML/config error below. nil in the BAML-only worker.
 	NativeInit func() error
+
+	// NativeShadowFactory, when non-nil, builds the native one-send SHADOW
+	// comparator (de-BAML cutover Slice 4) the SHADOW deploy profile's worker
+	// injects. It is called ONCE at startup with the worker's private Prometheus
+	// registry so the comparator registers its bounded de-BAML collectors
+	// (declines / attempts / plan_compare) on the same registry the host gathers;
+	// the returned NativeShadowFunc is installed on every adapter. The generated
+	// dynamic call seam turns it into the Slice-1 native child-attempt callback
+	// only when it is non-nil AND the umbrella flag is enabled, and that callback
+	// ALWAYS declines to BAML after a no-socket plan comparison. A returned error
+	// exits the process non-zero (fails the go-plugin handshake). nil in the
+	// BAML-only worker and the S2 native-capable worker, so those serve 100% BAML
+	// with the callback hard-off.
+	NativeShadowFactory func(reg prometheus.Registerer) (bamlutils.NativeShadowFunc, error)
 }
 
 // Run boots the subprocess worker and serves it over go-plugin. It never
@@ -91,14 +106,40 @@ func Run(opts Options) {
 			os.Exit(1)
 		}
 	}
+
+	// Resolve the umbrella flag HERE (each worker resolves its OWN environment —
+	// the subprocess host's in-process runtimeCfg is deliberately ignored), so the
+	// startup diagnostic below reports the flag ALONGSIDE the build capability and
+	// the rollout mode. Any host/worker configuration disagreement is therefore
+	// visible in this per-worker line. deBAMLConfig flows unchanged into worker.New.
+	deBAMLConfig := bamlutils.DeBAMLConfigFromEnv()
+
+	// Rollout mode is a deployment PROFILE, not a second application flag:
+	//   - "shadow" when this build injected a shadow comparator (the shadow
+	//     deploy profile). It runs a no-socket native-vs-BAML plan comparison per
+	//     admitted dynamic call ONLY while the umbrella flag is enabled, then
+	//     declines — BAML still serves every request.
+	//   - "off" otherwise (BAML-only worker and the S2 native-capable worker): no
+	//     native child-attempt callback is installed, 100% BAML.
+	// Native serving stays OFF in every profile here; a later slice adds it.
+	rolloutMode := "off"
+	if opts.NativeShadowFactory != nil {
+		rolloutMode = "shadow"
+	}
 	if nc := opts.NativeCapability; nc != nil {
-		logger.Info("native send capability linked (build capability; routing hard-off in this build)",
+		logger.Info("de-BAML worker startup: native capability + resolved flag + rollout mode",
 			"native_engine", nc.NativeEngine(),
 			"native_engine_version", nc.NativeEngineVersion(),
-			"native_routing", "off")
+			"debaml_flag_enabled", deBAMLConfig.Enabled,
+			"rollout_mode", rolloutMode,
+			"native_serving", "off",
+			"config_source", "worker_env")
 	} else {
-		logger.Info("native send capability not linked (BAML-only worker)",
-			"native_routing", "off")
+		logger.Info("de-BAML worker startup: no native capability (BAML-only worker)",
+			"debaml_flag_enabled", deBAMLConfig.Enabled,
+			"rollout_mode", rolloutMode,
+			"native_serving", "off",
+			"config_source", "worker_env")
 	}
 
 	// Resolve env-driven config once at startup. The resulting values
@@ -115,7 +156,7 @@ func Run(opts Options) {
 	// duplicate the messages once per pooled worker subprocess, so the
 	// worker stays silent on both. Neither var affects routing, so the
 	// worker has nothing to resolve from them.
-	deBAMLConfig := bamlutils.DeBAMLConfigFromEnv()
+	// (deBAMLConfig was resolved above with the startup diagnostic.)
 	baseURLRewrites := urlrewrite.LoadDefaultRules()
 	streamIdleTimeout := llmhttp.StreamIdleTimeoutFromEnv()
 	clientMode := llmhttp.ClientModeFromEnv()
@@ -180,10 +221,36 @@ func Run(opts Options) {
 		}
 	}
 
+	// Build the worker's private metrics registry once so a shadow comparator can
+	// register its de-BAML collectors on the SAME registry the host gathers.
+	metricsReg := worker.NewMetricsRegistry()
+
+	// Build the native one-send SHADOW comparator (nil except in the shadow deploy
+	// profile). The factory registers the bounded de-BAML collectors on the
+	// worker registry; a failure is fatal (fails the go-plugin handshake) so a
+	// misconfigured shadow build never silently serves with the comparator off.
+	// A factory that is PRESENT (rollout_mode already logged "shadow" above) but
+	// returns a nil comparator without an error is equally fatal: continuing would
+	// serve all-BAML while reporting shadow mode — a silent shadow-cohort
+	// misconfiguration, not a benign hard-off (that path leaves the factory nil).
+	var nativeShadow bamlutils.NativeShadowFunc
+	if opts.NativeShadowFactory != nil {
+		fn, err := opts.NativeShadowFactory(metricsReg)
+		if err != nil {
+			logger.Error("failed to build native shadow comparator", "err", err.Error())
+			os.Exit(1)
+		}
+		if fn == nil {
+			logger.Error("native shadow comparator factory returned a nil comparator without an error; a shadow-profile worker must not run all-BAML while reporting rollout_mode=shadow")
+			os.Exit(1)
+		}
+		nativeShadow = fn
+	}
+
 	handler, err := worker.New(worker.Config{
 		Runtime:         rt,
 		Logger:          logger,
-		Metrics:         worker.NewMetricsRegistry(),
+		Metrics:         metricsReg,
 		ClientDefaults:  clientDefaults,
 		BaseURLRewrites: baseURLRewrites,
 		HTTPClient:      httpClient,
@@ -191,8 +258,13 @@ func Run(opts Options) {
 		DeBAMLRender:    debaml.Render,
 		DeBAMLParse:     debaml.Parse,
 		// Store the neutral native-send capability (nil for the BAML-only
-		// worker). Storage + getter only in this slice — not wired to routing.
+		// worker). Storage + getter only — not wired to native serving.
 		NativeCapability: opts.NativeCapability,
+		// Install the native one-send SHADOW comparator (nil except in the
+		// shadow deploy profile's worker). When non-nil AND the umbrella flag is
+		// enabled it drives a no-socket native-vs-BAML plan comparison per
+		// admitted dynamic call, then declines so BAML still serves.
+		NativeShadowComparator: nativeShadow,
 	})
 	if err != nil {
 		logger.Error("failed to construct worker handler", "err", err.Error())

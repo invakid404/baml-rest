@@ -85,6 +85,18 @@ type Config struct {
 	// serving behaviour. A later slice turns a present capability into an
 	// installed, enabled native attempt.
 	NativeCapability NativeCapability
+
+	// NativeShadowComparator is the neutral native one-send SHADOW comparator
+	// (de-BAML cutover Slice 4), injected as a public-typed callback for the same
+	// module-boundary reason as DeBAMLRender/DeBAMLParse: the worker package
+	// cannot import the out-of-go.work nanollm bridge, so the shadow worker's
+	// entry point supplies the concrete nanollm-backed comparator. Non-nil ONLY
+	// in the SHADOW deploy profile's worker; the DEFAULT production worker (and
+	// the S2 native-capable worker) leave it nil, so the generated dynamic call
+	// seam installs no native child-attempt callback and every request stays
+	// byte-identical to today. It is installed on every adapter via the narrow
+	// nativeShadowSetter interface, gated by DeBAMLConfig().Enabled at the seam.
+	NativeShadowComparator bamlutils.NativeShadowFunc
 }
 
 // deBAMLRendererSetter is the narrow optional interface the adapter
@@ -101,6 +113,15 @@ type deBAMLRendererSetter interface {
 // bamlutils.Adapter.
 type deBAMLParserSetter interface {
 	SetDeBAMLParser(bamlutils.DeBAMLParseFunc)
+}
+
+// nativeShadowSetter is the narrow optional interface the adapter implements to
+// receive the native one-send SHADOW comparator (de-BAML cutover Slice 4). Kept
+// off the bamlutils.Adapter interface like the renderer/parser setters so test
+// doubles and non-dynamic adapters need not implement it; the generated dynclient
+// adapter does. nil comparator ⇒ nothing installed ⇒ callback hard-off.
+type nativeShadowSetter interface {
+	SetNativeShadowComparator(bamlutils.NativeShadowFunc)
 }
 
 // ErrRuntimeRequired is returned by New when Config.Runtime is nil.
@@ -132,6 +153,12 @@ type Handler struct {
 	// and read back via NativeCapability; never wired to the orchestrator in
 	// this slice (the native child-attempt callback stays nil/hard-off).
 	nativeCapability NativeCapability
+
+	// nativeShadow is the neutral native one-send SHADOW comparator, injected only
+	// in the shadow deploy profile (nil in every default build). Installed on
+	// every adapter in configureAdapter; the generated dynamic call seam gates it
+	// on DeBAMLConfig().Enabled and otherwise leaves the callback nil/hard-off.
+	nativeShadow bamlutils.NativeShadowFunc
 
 	sharedStateHook hookStorage
 
@@ -165,6 +192,7 @@ func New(cfg Config) (*Handler, error) {
 		deBAMLRender:     cfg.DeBAMLRender,
 		deBAMLParse:      cfg.DeBAMLParse,
 		nativeCapability: cfg.NativeCapability,
+		nativeShadow:     cfg.NativeShadowComparator,
 	}
 	if cfg.SharedState != nil {
 		h.SetSharedStateHook(cfg.SharedState)
@@ -200,6 +228,12 @@ func (h *Handler) configureAdapter(adapter bamlutils.Adapter) {
 	}
 	if setter, ok := adapter.(deBAMLParserSetter); ok {
 		setter.SetDeBAMLParser(h.deBAMLParse)
+	}
+	// Install the native one-send shadow comparator (nil in every default build,
+	// so this is a no-op there). The generated dynamic call seam only builds a
+	// native child-attempt callback when this is non-nil AND DeBAMLConfig().Enabled.
+	if setter, ok := adapter.(nativeShadowSetter); ok {
+		setter.SetNativeShadowComparator(h.nativeShadow)
 	}
 }
 

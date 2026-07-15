@@ -58,6 +58,10 @@ type Client struct {
 	// config again. Defaults to true; WithPreserveSchemaOrderDefault
 	// flips it.
 	preserveSchemaOrderDefault bool
+	// requestRetryOverride is the optional per-request retry override
+	// (WithRequestRetryOverride) spliced into __baml_options__.retry on every
+	// dynamic call. nil (the default) leaves the worker input byte-identical.
+	requestRetryOverride *bamlutils.RetryConfig
 }
 
 // errNilClient is returned by Client methods when called on a nil
@@ -116,15 +120,16 @@ func newWithRuntime(rt worker.Runtime, init func(), opts ...Option) (*Client, er
 	httpClient := newLLMHTTPClient(cfg)
 
 	workerCfg := worker.Config{
-		Runtime:         rt,
-		Logger:          cfg.logger,
-		Metrics:         cfg.metrics,
-		ClientDefaults:  cfg.clientDefaults,
-		DeBAML:          cfg.deBAML,
-		DeBAMLRender:    cfg.deBAMLRender,
-		DeBAMLParse:     cfg.deBAMLParse,
-		BaseURLRewrites: cfg.baseURLRewrites,
-		HTTPClient:      httpClient,
+		Runtime:                rt,
+		Logger:                 cfg.logger,
+		Metrics:                cfg.metrics,
+		ClientDefaults:         cfg.clientDefaults,
+		DeBAML:                 cfg.deBAML,
+		DeBAMLRender:           cfg.deBAMLRender,
+		DeBAMLParse:            cfg.deBAMLParse,
+		NativeShadowComparator: cfg.nativeShadow,
+		BaseURLRewrites:        cfg.baseURLRewrites,
+		HTTPClient:             httpClient,
 	}
 	if cfg.sharedState != nil {
 		workerCfg.SharedState = worker.NewStoreSharedStateHook(cfg.sharedState)
@@ -140,6 +145,7 @@ func newWithRuntime(rt worker.Runtime, init func(), opts ...Option) (*Client, er
 		store:                      cfg.sharedState,
 		logger:                     cfg.logger,
 		preserveSchemaOrderDefault: cfg.preserveSchemaOrderDefault,
+		requestRetryOverride:       cfg.requestRetryOverride,
 	}, nil
 }
 
@@ -188,7 +194,7 @@ func (c *Client) DynamicCall(ctx context.Context, req Request) (*CallResult, err
 	if err := req.Validate(); err != nil {
 		return nil, fmt.Errorf("dynclient: dynamic call: %w", err)
 	}
-	input, err := req.ToWorkerInput()
+	input, err := req.ToWorkerInputWithRetry(c.requestRetryOverride)
 	if err != nil {
 		return nil, fmt.Errorf("dynclient: dynamic call: %w", err)
 	}
@@ -234,7 +240,7 @@ func (c *Client) DynamicCallRaw(ctx context.Context, req Request) (*CallRawResul
 	if err := req.Validate(); err != nil {
 		return nil, fmt.Errorf("dynclient: dynamic call raw: %w", err)
 	}
-	input, err := req.ToWorkerInput()
+	input, err := req.ToWorkerInputWithRetry(c.requestRetryOverride)
 	if err != nil {
 		return nil, fmt.Errorf("dynclient: dynamic call raw: %w", err)
 	}
@@ -346,7 +352,7 @@ func (c *Client) openStream(ctx context.Context, req Request, mode bamlutils.Str
 	if err := req.Validate(); err != nil {
 		return nil, fmt.Errorf("dynclient: %s: %w", errLabel, err)
 	}
-	input, err := req.ToWorkerInput()
+	input, err := req.ToWorkerInputWithRetry(c.requestRetryOverride)
 	if err != nil {
 		return nil, fmt.Errorf("dynclient: %s: %w", errLabel, err)
 	}

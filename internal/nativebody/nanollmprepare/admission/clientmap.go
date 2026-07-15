@@ -52,7 +52,7 @@ var transportTrio = map[string]struct{}{
 // construction failure returns a non-decline error (a planner error), not a
 // parity-decline, so it can be alerted instead of counted as ordinary
 // unsupported traffic.
-func mapDynamicClient(reg *bamlutils.ClientRegistry, alias string) (*nanollm.Client, clientFacts, *Decline, error) {
+func mapDynamicClient(reg *bamlutils.ClientRegistry, alias string, wouldRewriteOrProxy func(effectiveURL string) bool) (*nanollm.Client, clientFacts, *Decline, error) {
 	cp, dec := selectOneClient(reg)
 	if dec != nil {
 		return nil, clientFacts{}, dec, nil
@@ -114,6 +114,21 @@ func mapDynamicClient(reg *bamlutils.ClientRegistry, alias string) (*nanollm.Cli
 	if alias == "" || alias == target || alias == cp.Name {
 		return nil, clientFacts{}, declinef(StageClientSelection, ReasonInvalidAlias,
 			"internal alias is empty or collides with the resolved target model or the selected client name"), nil
+	}
+
+	// Effective send-path rewrite/proxy parity — evaluated NOW that the effective
+	// target is known (base_url + /chat/completions) and BEFORE the engine is
+	// constructed. BAML's llmhttp client applies URL rewrites and HTTP proxying at
+	// EXECUTION time, on the built request — AFTER the plan the comparator captures.
+	// wouldRewriteOrProxy is the send client's own rewrite config plus its
+	// transport's own Proxy resolver evaluated against THAT exact target — the same
+	// function (and cached env snapshot) the transport uses at send — so a rewrite
+	// or a proxied target is an unproven shape that declines here, before the engine,
+	// the prepared plan, BAML's plan, or a plan_compare. A nil predicate (lightweight
+	// tests that carry no send client) skips the check.
+	if wouldRewriteOrProxy != nil && wouldRewriteOrProxy(baseURL+chatCompletionsPath) {
+		return nil, clientFacts{}, declinef(StageStrategy, ReasonURLRewriteOrProxy,
+			"the effective send path would rewrite or proxy the request target"), nil
 	}
 
 	// Request-scoped engine: ONE openai model under the internal alias, the

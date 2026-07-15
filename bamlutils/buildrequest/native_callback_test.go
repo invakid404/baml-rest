@@ -786,3 +786,90 @@ func collectMetadataFrom(results []bamlutils.StreamResult, t *testing.T) (planne
 	}
 	return planned, outcome, nil, nil
 }
+
+// TestNativeSeam_BuildBAMLRequestNoSocket proves the de-BAML Slice-4 CRUX
+// resolution: the attempt context carries a BuildBAMLRequest closure that
+// returns BAML's built request plan for the SAME selected child WITHOUT opening a
+// socket, so a shadow comparator can obtain BAML's plan to compare against the
+// native plan. Calling it opens no socket; on decline the orchestrator still runs
+// the ordinary BAML build/send exactly once and returns BAML's result.
+func TestNativeSeam_BuildBAMLRequestNoSocket(t *testing.T) {
+	var buildCount atomic.Int32
+	var serverHits atomic.Int32
+	var overrides []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"baml served"}}]}`)
+	}))
+	defer server.Close()
+
+	var (
+		builtPlan       *llmhttp.Request
+		buildErr        error
+		hitsAtBuildTime int32
+		sawBuilder      bool
+	)
+	cb := func(ctx context.Context, attempt NativeCallAttempt) NativeCallOutcome {
+		sawBuilder = attempt.BuildBAMLRequest != nil
+		if attempt.BuildBAMLRequest != nil {
+			// Obtain BAML's built plan for comparison; this must NOT open a socket.
+			builtPlan, buildErr = attempt.BuildBAMLRequest(ctx)
+			hitsAtBuildTime = serverHits.Load()
+		}
+		return DeclineNativeCall(testDeclineStage, testDeclineReason)
+	}
+	out := make(chan bamlutils.StreamResult, 100)
+	config := &CallConfig{
+		Provider:             "openai",
+		ClientOverride:       "selected-leaf",
+		NativeAttempt:        cb,
+		NativeAttemptEnabled: true,
+	}
+	err := RunCallOrchestration(
+		context.Background(), out, config, llmhttp.NewClient(server.Client()),
+		countingBuildFn(server.URL, &buildCount, &overrides),
+		identityParseFinal,
+		ExtractResponseContent, ExtractResponseContentBytes, nil, newTestResult,
+	)
+	close(out)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !sawBuilder {
+		t.Fatal("attempt context must carry a non-nil BuildBAMLRequest closure")
+	}
+	if buildErr != nil {
+		t.Fatalf("BuildBAMLRequest returned an error: %v", buildErr)
+	}
+	if builtPlan == nil {
+		t.Fatal("BuildBAMLRequest returned a nil plan")
+	}
+	// It is BAML's built plan (method/URL/body from the injected build closure).
+	if builtPlan.Method != "POST" || builtPlan.URL != server.URL || builtPlan.Body != `{"model":"gpt-4","stream":false}` {
+		t.Errorf("BuildBAMLRequest plan mismatch: method=%q url=%q body=%q", builtPlan.Method, builtPlan.URL, builtPlan.Body)
+	}
+	// Building BAML's plan for comparison opened NO socket.
+	if hitsAtBuildTime != 0 {
+		t.Errorf("BuildBAMLRequest opened a socket: server had %d hits at build time, want 0", hitsAtBuildTime)
+	}
+	// The plan was built twice (once for comparison, once for the actual send),
+	// but the provider socket opened exactly once (the BAML send after decline).
+	if buildCount.Load() != 2 {
+		t.Errorf("expected 2 plan builds (comparison + send), got %d", buildCount.Load())
+	}
+	if serverHits.Load() != 1 {
+		t.Errorf("expected exactly one provider socket (the BAML send), got %d", serverHits.Load())
+	}
+	if !slices.Equal(overrides, []string{"selected-leaf", "selected-leaf"}) {
+		t.Errorf("both builds must target the same selected child, got %v", overrides)
+	}
+	// BAML served the request byte-identically.
+	results := nativeDrain(out)
+	final := results[len(results)-1]
+	if final.Kind() != bamlutils.StreamResultKindFinal || final.Final() != "baml served" {
+		t.Fatalf("expected BAML final 'baml served' after decline, got kind=%v final=%v", final.Kind(), final.Final())
+	}
+}

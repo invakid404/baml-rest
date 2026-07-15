@@ -528,8 +528,10 @@ func tlsConfigFromHTTPClient(c *http.Client) *tls.Config {
 	if c == nil || c.Transport == nil {
 		return nil
 	}
+	// A typed-nil (*http.Transport)(nil) is a non-nil interface, so the assertion
+	// succeeds with a nil pointer; reading a field off it would panic.
 	t, ok := c.Transport.(*http.Transport)
-	if !ok {
+	if !ok || t == nil {
 		return nil
 	}
 	return t.TLSClientConfig
@@ -542,7 +544,9 @@ func tlsConfigFromHTTPClient(c *http.Client) *tls.Config {
 // net/http backend itself does.
 func proxyFuncFromHTTPClient(c *http.Client) func(*http.Request) (*url.URL, error) {
 	if c != nil && c.Transport != nil {
-		if t, ok := c.Transport.(*http.Transport); ok && t.Proxy != nil {
+		// A typed-nil (*http.Transport)(nil) asserts successfully with a nil
+		// pointer; guard t != nil before reading t.Proxy so it cannot panic.
+		if t, ok := c.Transport.(*http.Transport); ok && t != nil && t.Proxy != nil {
 			return t.Proxy
 		}
 	}
@@ -985,6 +989,105 @@ func (c *Client) resolveRequestURL(req *Request) string {
 		return urlrewrite.ApplyToURL(req.URL, rules)
 	}
 	return req.URL
+}
+
+// WouldRewriteOrProxy reports whether this Client would, at send time, rewrite the
+// outbound request URL (via its per-Client / global rewrite rules) or route a
+// request to effectiveURL through an HTTP proxy — EITHER of which changes the
+// effective destination AFTER a request plan is built.
+//
+// It exists for the de-BAML one-send shadow comparator's parity-decline: BAML's
+// llmhttp.Client applies these transforms at EXECUTION time, on the *built*
+// request the comparator has already captured, so a comparison that ignored them
+// could record a native/BAML "match" while BAML actually sends elsewhere. The
+// exact/native lane performs no rewrite and no proxying, so any rewrite or proxy on
+// the BAML send path is an unproven shape the comparator must decline BEFORE it
+// builds or compares a plan. It is a parity-time query, never on the hot path.
+//
+// effectiveURL is the exact request target BAML will send to (base_url +
+// /chat/completions for the admitted openai surface). PROXY detection is exact ONLY
+// for a resolver we KNOW inspects nothing but the request URL — this package's tuned
+// default transport, whose Proxy is http.ProxyFromEnvironment: it is evaluated
+// against effectiveURL using the same function and cached environment snapshot the
+// transport consults at send, so the verdict is PROVABLY EQUIVALENT to the real
+// send (no independent env parsing, so no selector/trim mismatch; no per-scheme/
+// NO_PROXY approximation; no divergence from the cached snapshot). Any OTHER non-nil
+// Proxy resolver (a caller-supplied callback that may read headers/context/other
+// request fields a URL-only preflight cannot faithfully populate) FAILS CLOSED — an
+// explicit nil Proxy remains the documented never-proxy shape. REWRITE detection
+// mirrors resolveRequestURL (per-Client rules, or the GlobalRules fallback only for
+// the legacy NewClient seam); any configured rule is conservatively treated as a
+// rewrite (the exact lane performs none).
+//
+// A nil *Client FAILS CLOSED (true): its rewrite config and transport are
+// unknowable, so — consistent with the whole classification's fail-closed contract —
+// it must not be classified proxy-free and reach comparison. Normal generated wiring
+// substitutes llmhttp.DefaultClient (never nil), so this only guards a nil-bound
+// public method value.
+func (c *Client) WouldRewriteOrProxy(effectiveURL string) bool {
+	if c == nil {
+		return true
+	}
+	rules := c.rewriteRules
+	if rules == nil && c.useGlobalRewriteRules {
+		rules = urlrewrite.GlobalRules()
+	}
+	if len(rules) > 0 {
+		return true
+	}
+	return httpClientProxiesURL(c.httpClient, effectiveURL)
+}
+
+// httpClientProxiesURL reports — FAILING CLOSED — whether hc's transport would route
+// a request to rawURL through an HTTP proxy.
+//
+//   - nil hc: net/http would use http.DefaultClient → http.DefaultTransport, whose
+//     proxy decision is not ours to evaluate here ⇒ fail closed (true).
+//   - nil Transport, a TYPED-NIL (*http.Transport)(nil) (the assertion succeeds but
+//     the pointer is nil, so its fields cannot be read), or a non-*http.Transport
+//     RoundTripper: net/http falls back to http.DefaultTransport, or the
+//     RoundTripper's proxy behaviour is unknowable ⇒ fail closed (true).
+//   - *http.Transport with a nil Proxy resolver: net/http's documented "never
+//     proxy" ⇒ false.
+//   - THIS package's tuned defaultLLMTransport (pointer identity): its Proxy is
+//     http.ProxyFromEnvironment, a resolver we KNOW inspects nothing but the
+//     request URL. A bare preflight carrying only rawURL therefore reproduces
+//     EXACTLY its send-time decision, using the same function and the same cached
+//     environment snapshot the transport consults at send — provably equivalent,
+//     with no independent env reading and no per-scheme/NO_PROXY approximation. A
+//     non-nil proxy URL (or a resolver error, or a rawURL that will not parse) ⇒
+//     true; an explicit (nil, nil) — this exact target is not proxied ⇒ false.
+//   - any OTHER *http.Transport with a non-nil Proxy resolver: a caller-supplied
+//     resolver MAY inspect the request headers, context, method, or other fields a
+//     URL-only preflight cannot faithfully populate, so its preflight verdict is not
+//     provably its send-time verdict — and feeding a real (secret-bearing) request
+//     into an arbitrary callback would be its own hazard. Fail closed (true).
+//
+// Consulted only by the de-BAML shadow parity-decline, for the GENUINE effective
+// target; never on the hot path and never for a synthesized/foreign host.
+func httpClientProxiesURL(hc *http.Client, rawURL string) bool {
+	if hc == nil {
+		return true
+	}
+	t, ok := hc.Transport.(*http.Transport)
+	if !ok || t == nil {
+		return true
+	}
+	if t.Proxy == nil {
+		return false
+	}
+	if t != defaultLLMTransport {
+		return true
+	}
+	req, err := http.NewRequest(http.MethodPost, rawURL, nil)
+	if err != nil {
+		return true
+	}
+	proxyURL, err := t.Proxy(req)
+	if err != nil {
+		return true
+	}
+	return proxyURL != nil
 }
 
 // buildHTTPRequest converts a Request into a standard *http.Request using a

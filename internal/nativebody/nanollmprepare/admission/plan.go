@@ -82,7 +82,7 @@ func validatePlanHeaders(prep *nanollm.PreparedRequest, baseURL string) *Decline
 	if prep.Method != "POST" {
 		return declinef(StagePlanHeaders, ReasonMethodNotPost, "plan method %q is not POST", prep.Method)
 	}
-	wantURL := baseURL + "/chat/completions"
+	wantURL := baseURL + chatCompletionsPath
 	if prep.URL != wantURL {
 		return declinef(StagePlanHeaders, ReasonURLMismatch, "plan URL is not the admitted base + /chat/completions")
 	}

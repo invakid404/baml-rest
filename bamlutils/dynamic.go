@@ -665,6 +665,20 @@ func (d *DynamicInput) Validate() error {
 // marshalers to sonic removes the known trigger; the recover keeps
 // future encoder regressions from re-introducing the same outage.
 func (d *DynamicInput) ToWorkerInput() (b []byte, err error) {
+	return d.toWorkerInput(nil)
+}
+
+// ToWorkerInputWithRetry is ToWorkerInput with a per-request retry override
+// spliced into __baml_options__.retry (the same seam the REST body carries so
+// the worker's option decoder applies it via adapter.SetRetryConfig). A nil
+// retry is byte-identical to ToWorkerInput. dynclient's WithRequestRetryOverride
+// routes through here so a direct Go caller can exercise a resolved-retry-policy
+// request without a REST round-trip.
+func (d *DynamicInput) ToWorkerInputWithRetry(retry *RetryConfig) (b []byte, err error) {
+	return d.toWorkerInput(retry)
+}
+
+func (d *DynamicInput) toWorkerInput(retry *RetryConfig) (b []byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("dynamic input marshal panic: %v", r)
@@ -722,6 +736,12 @@ func (d *DynamicInput) ToWorkerInput() (b []byte, err error) {
 				DynamicTypes: dynamicTypes,
 			},
 			IncludeReasoning: d.IncludeReasoning,
+			// Optional per-request retry override. nil (the default) is omitted by
+			// BamlOptions' omitempty tag, so the worker input stays byte-identical
+			// for callers that do not set one; when present the worker applies it
+			// via adapter.SetRetryConfig (worker/options.go), which the
+			// strategy-aware resolver returns as a non-nil request retry policy.
+			Retry: retry,
 			// Carry the output schema so the worker can drive the native
 			// ctx.output_format renderer at the dynamic BuildRequest seam
 			// under BAML_REST_USE_DEBAML. Always carried; only consumed when
