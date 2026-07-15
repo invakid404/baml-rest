@@ -214,6 +214,25 @@ func NewExactExecutor(rt http.RoundTripper) *ExactExecutor {
 // explicitly NOT claimed (net/http does not expose them, and HTTP/2 has no
 // equivalent), so this executor makes no promise about them.
 func (e *ExactExecutor) Execute(ctx context.Context, req *ExactAttemptRequest) (*ExactAttemptResponse, error) {
+	return e.ExecuteWithHeartbeat(ctx, req, nil)
+}
+
+// ExecuteWithHeartbeat is Execute with an optional first-2xx liveness callback.
+// onSuccess, when non-nil, is invoked EXACTLY ONCE the instant the provider
+// returns a 2xx status line — AFTER RoundTrip observes the response headers but
+// BEFORE the (possibly large/slow) body is buffered — so a pool hung-detector
+// sees liveness while the body still streams and never judges the worker hung on
+// a slow body. It is the exact-lane twin of the onSuccess callback the legacy
+// Client.ExecuteBorrowed hands the BAML send path; it is a pre-canary
+// compatibility requirement so unary hung-detection is unchanged when the native
+// lane later transports (de-BAML cutover Slice 6).
+//
+// The callback observes ONLY liveness: it is called with no arguments and MUST
+// NOT be able to mutate the request, the response, or the plan. It never fires on
+// a non-2xx status (which is returned as ordinary data) nor on any pre-body error
+// (decline, construction, transport). A nil onSuccess makes this identical to
+// Execute.
+func (e *ExactExecutor) ExecuteWithHeartbeat(ctx context.Context, req *ExactAttemptRequest, onSuccess func()) (*ExactAttemptResponse, error) {
 	if e == nil {
 		return nil, fmt.Errorf("llmhttp: nil ExactExecutor")
 	}
@@ -265,6 +284,15 @@ func (e *ExactExecutor) Execute(ctx context.Context, req *ExactAttemptRequest) (
 	defer resp.Body.Close()
 
 	success := resp.StatusCode >= 200 && resp.StatusCode < 300
+
+	// First-2xx liveness: fire the heartbeat the instant the 2xx status line is
+	// observed, BEFORE the body is read, so a slow/large body cannot stall
+	// hung-detection. Never fires on a non-2xx (returned as data) or any pre-body
+	// failure above. The request is never mutated — onSuccess takes no arguments.
+	if success && onSuccess != nil {
+		onSuccess()
+	}
+
 	limit := int64(MaxResponseBodyBytes)
 	if !success {
 		limit = int64(MaxExactErrorBodyBytes)

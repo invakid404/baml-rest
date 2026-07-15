@@ -110,7 +110,22 @@ func (c *Comparator) Compare(ctx context.Context, req bamlutils.NativeShadowRequ
 
 	cmp := comparePlans(bamlReq, admitted.ExactRequest)
 	c.recordComparison(cmp)
-	return bamlutils.NativeShadowResult{Stage: stageShadow, Reason: reasonServedBAML}
+
+	// Assign the named return (not a new var — `result` is the named result of
+	// Compare, guarded by the deferred recover above).
+	result = bamlutils.NativeShadowResult{Stage: stageShadow, Reason: reasonServedBAML}
+	// Same-response parity (de-BAML cutover Slice 5) runs ONLY when the
+	// request-plan comparison MATCHED every facet: an unproven request shape must
+	// never have its response parity recorded. On a match, install the OnResponse
+	// continuation the generated seam forwards onto the declined outcome — the
+	// orchestrator invokes it with BAML's already-fetched status+body AFTER BAML
+	// serves. It opens no socket and never changes what BAML serves.
+	if cmp.allMatch() {
+		result.OnResponse = func(rctx context.Context, status int, body []byte) {
+			c.compareResponse(rctx, req, status, body)
+		}
+	}
+	return result
 }
 
 // recordComparison records one plan_compare series per compared field, so a

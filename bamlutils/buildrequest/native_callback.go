@@ -145,6 +145,38 @@ type NativeCallOutcome struct {
 	DeclineStage  NativeDeclineStage
 	DeclineReason NativeDeclineReason
 
+	// Declined-only: the optional SAME-response shadow continuation. When set on a
+	// DECLINED outcome, the orchestrator — after it runs the ordinary BAML
+	// build/send for this child and the provider returns 2xx — hands BAML's
+	// ALREADY-FETCHED status + raw body to this callback for a no-transport
+	// native-vs-BAML response-parity comparison. It NEVER RoundTrips, issues a
+	// second provider request, or influences the served result: BAML's envelope is
+	// returned byte-identical regardless. It runs at most once per attempt, only on
+	// a 2xx BAML send (a non-2xx surfaces as *HTTPError before this fires), and the
+	// orchestrator guards it so a panic in the shadow oracle can never fail an
+	// otherwise BAML-served request. Nil (every production build, and even in the
+	// shadow profile when the request-plan comparison did not match) means no
+	// response parity runs and the path is byte-identical to today.
+	//
+	// SYNCHRONOUS BY DESIGN — the orchestrator invokes this inline on the attempt
+	// path, so a shadowed 2xx attempt pays the comparator's CFFI parity cost before
+	// the served response is emitted. This is deliberate and correct for the SHADOW
+	// deploy profile, which is a temporary rollout stage, NOT a latency-neutral
+	// production path: the cutover scope accepts this parity CPU/latency and removes
+	// it "by deployment stage" (stop deploying the shadow profile), not by async
+	// plumbing. Detached/off-path execution is deliberately avoided: the concrete
+	// callback's BAML-only parse closure captures the per-request generated adapter
+	// and drives the BAML CFFI runtime, both of which are recycled/reused once the
+	// serving goroutine returns — running it after the response is served would risk
+	// a use-after-free / concurrent-CFFI race and make the parity metric
+	// nondeterministic. A later canary slice may revisit off-path parity once the
+	// oracle no longer depends on per-request adapter state.
+	//
+	// SENSITIVE: body is the provider's raw response bytes. The orchestrator hands
+	// them straight through; a callback must treat them as read-only and never log
+	// or emit them (only redacted, secret-free views).
+	OnResponseShadow func(ctx context.Context, status int, body []byte)
+
 	// Succeeded-only: the generated final value plus owned raw/reasoning text.
 	//
 	// Ownership contract: these strings MUST NOT alias any transport buffer once

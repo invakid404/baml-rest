@@ -84,9 +84,10 @@ const (
 // families stay bounded-cardinality. A nil *Metrics is a valid no-op receiver so
 // the predicate can run without a registry in lightweight tests.
 type Metrics struct {
-	declines    *prometheus.CounterVec
-	attempts    *prometheus.CounterVec
-	planCompare *prometheus.CounterVec
+	declines        *prometheus.CounterVec
+	attempts        *prometheus.CounterVec
+	planCompare     *prometheus.CounterVec
+	responseCompare *prometheus.CounterVec
 }
 
 // PlanCompareResult is the bounded result label for the plan_compare metric: a
@@ -114,6 +115,42 @@ const (
 	PlanCompareFieldMeta    PlanCompareField = "meta"
 )
 
+// ResponseCompareResult is the bounded result label for the response_compare
+// metric: a per-field native-vs-BAML SAME-response comparison either matches or
+// mismatches. It shares the string values with PlanCompareResult but is a
+// distinct type so the two comparison families cannot be crossed by accident.
+type ResponseCompareResult string
+
+const (
+	ResponseCompareMatch    ResponseCompareResult = "match"
+	ResponseCompareMismatch ResponseCompareResult = "mismatch"
+)
+
+// ResponseCompareField is the bounded field label for the response_compare
+// metric. It names WHICH facet of the SAME (BAML-fetched) response was compared
+// native-vs-BAML; the set is fixed so the family stays bounded-cardinality:
+//
+//   - translate:  native TranslateResponse produced a comparable 2xx JSON body;
+//   - assistant:  the extracted assistant (parseable) text matched;
+//   - structured: the final structured output matched semantically (key order ignored);
+//   - order:      the structured output's schema field order matched;
+//   - raw:        the /call-with-raw raw channel matched;
+//   - reasoning:  the /call-with-raw reasoning channel matched;
+//   - error:      the comparison pipeline itself errored (native or BAML leg) — a
+//     catch-all recorded as a mismatch so a broken oracle leg is observable, never
+//     silently counted as a match.
+type ResponseCompareField string
+
+const (
+	ResponseCompareFieldTranslate  ResponseCompareField = "translate"
+	ResponseCompareFieldAssistant  ResponseCompareField = "assistant"
+	ResponseCompareFieldStructured ResponseCompareField = "structured"
+	ResponseCompareFieldOrder      ResponseCompareField = "order"
+	ResponseCompareFieldRaw        ResponseCompareField = "raw"
+	ResponseCompareFieldReasoning  ResponseCompareField = "reasoning"
+	ResponseCompareFieldError      ResponseCompareField = "error"
+)
+
 // NewMetrics constructs the collectors and registers them on reg. It fails if a
 // family is already registered, surfacing a double-registration instead of
 // silently shadowing it. Pass the worker's private registry.
@@ -131,6 +168,10 @@ func NewMetrics(reg prometheus.Registerer) (*Metrics, error) {
 			Name: "baml_rest_debaml_plan_compare_total",
 			Help: "de-BAML one-send shadow native-vs-BAML request-plan comparisons, by bounded result/field. NO values.",
 		}, []string{"result", "field"}),
+		responseCompare: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "baml_rest_debaml_response_compare_total",
+			Help: "de-BAML same-response shadow native-vs-BAML response comparisons (translate/assistant/structured/order/raw/reasoning/error), by bounded result/field. NO values.",
+		}, []string{"result", "field"}),
 	}
 	if err := reg.Register(m.declines); err != nil {
 		return nil, err
@@ -139,6 +180,9 @@ func NewMetrics(reg prometheus.Registerer) (*Metrics, error) {
 		return nil, err
 	}
 	if err := reg.Register(m.planCompare); err != nil {
+		return nil, err
+	}
+	if err := reg.Register(m.responseCompare); err != nil {
 		return nil, err
 	}
 	return m, nil
@@ -174,4 +218,16 @@ func (m *Metrics) RecordPlanCompare(result PlanCompareResult, field PlanCompareF
 		return
 	}
 	m.planCompare.WithLabelValues(string(result), string(field)).Inc()
+}
+
+// RecordResponseCompare increments the response_compare family for one field's
+// native-vs-BAML SAME-response comparison result. Like RecordPlanCompare it
+// records only the bounded (result, field) enum pair — NEVER a value (no
+// assistant text, structured output, raw/reasoning bytes, or token). A nil
+// *Metrics is a valid no-op receiver.
+func (m *Metrics) RecordResponseCompare(result ResponseCompareResult, field ResponseCompareField) {
+	if m == nil {
+		return
+	}
+	m.responseCompare.WithLabelValues(string(result), string(field)).Inc()
 }

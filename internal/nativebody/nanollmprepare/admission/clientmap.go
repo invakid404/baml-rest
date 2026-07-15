@@ -155,6 +155,30 @@ func mapDynamicClient(reg *bamlutils.ClientRegistry, alias string, wouldRewriteO
 	return client, clientFacts{provider: cp.Provider, target: target, baseURL: baseURL}, nil, nil
 }
 
+// NewResponseClient rebuilds the request-scoped nanollm engine for the SAME
+// effective client the plan phase admitted, so the de-BAML same-response shadow
+// oracle can call TranslateResponse(alias, …) on BAML's already-fetched response.
+// It reuses the EXACT mapping mapDynamicClient uses (identical alias -> openai/
+// target config, zero retries, no ambient env), so the translation is faithful to
+// what the admitted plan would have translated with — but it performs NO
+// rewrite/proxy check (that gate already decided routing in the plan phase and is
+// irrelevant to a pure response translation) and NO Prepare (no plan is built or
+// sent). The returned client is OPEN; the caller owns Close. It never opens a
+// socket. It is only invoked AFTER the plan phase already admitted this exact
+// client, so a decline/error here is unexpected and surfaces as an error.
+func NewResponseClient(reg *bamlutils.ClientRegistry, alias string) (*nanollm.Client, string, error) {
+	client, facts, dec, err := mapDynamicClient(reg, alias, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	if dec != nil {
+		// *Decline is an error (unwraps to ErrDeclined); return it so a caller can
+		// classify a surprising re-map failure without a second bespoke type.
+		return nil, "", dec
+	}
+	return client, facts.target, nil
+}
+
 // selectOneClient resolves the effective client of a dynamic registry: the
 // Primary by name when set, else the sole client when exactly one is present.
 // It reuses ClientRegistry.Validate (the same first-wins/last-wins ambiguity

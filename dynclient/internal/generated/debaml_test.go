@@ -286,6 +286,48 @@ func TestWrapDeBAMLDynamicOutput_PreservesNestedMapOrder(t *testing.T) {
 	}
 }
 
+// TestDeBAMLOracleFlattenedShapeContract is the de-BAML cutover Slice 5
+// public-envelope golden: it pins the EXACT shape the same-response shadow
+// oracle's BAML-only parse closure produces from a BAML parse result. That
+// closure runs bamlclient.Parse -> unwrapDynamicBamlRestDynamicOutputFinal ->
+// DynamicProperties.MarshalJSON(), and the oracle then compares those bytes
+// against native SAP's flattened JSON. This test drives the SAME unwrap+marshal
+// path over a wrapped envelope (the BAML CFFI parse is exercised in the gated
+// live differential) and asserts the flattened bytes round-trip byte-for-byte —
+// scalars, nested class, and list preserved in input order — so the oracle's two
+// legs are directly comparable and a wrap/unwrap/marshal contract change can
+// never silently skew the response comparison.
+func TestDeBAMLOracleFlattenedShapeContract(t *testing.T) {
+	cases := []struct {
+		name string
+		flat string
+	}{
+		{"scalars", `{"answer":"hi","n":42,"ok":true}`},
+		{"nested class", `{"person":{"name":"Ada","age":36}}`},
+		{"list of scalars", `{"tags":["a","b","c"]}`},
+		{"list of objects, field order", `{"rows":[{"z":1,"a":2},{"z":3,"a":4}]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// wrapDeBAMLDynamicOutput stands in for the parse result envelope; the
+			// unwrap+marshal below is byte-identical to what the oracle's BAML-only
+			// closure runs on the real bamlclient.Parse output.
+			out, err := wrapDeBAMLDynamicOutput([]byte(tc.flat))
+			if err != nil {
+				t.Fatalf("wrapDeBAMLDynamicOutput: %v", err)
+			}
+			unwrapDynamicBamlRestDynamicOutputFinal(&out)
+			got, err := out.DynamicProperties.MarshalJSON()
+			if err != nil {
+				t.Fatalf("MarshalJSON: %v", err)
+			}
+			if string(got) != tc.flat {
+				t.Errorf("oracle BAML-only flattened shape drifted:\n got %s\nwant %s", got, tc.flat)
+			}
+		})
+	}
+}
+
 // TestMaybeParseDeBAMLFinal_UnsupportedFallsBack pins that the sentinel — and
 // only the sentinel — declines (ok=false, err=nil) so the caller falls back
 // to BAML.

@@ -48,6 +48,7 @@ import (
 
 	bamlutils "{{.InterfacesPkg}}"
 	buildrequest "{{.BuildRequestPkg}}"
+	bamlclient "{{.ClientPkg}}"
 	streamtypes "{{.StreamTypesPkg}}"
 	types "{{.TypesPkg}}"
 )
@@ -434,6 +435,28 @@ func maybeInstallNativeShadowCall(
 	// effective target it resolves, and it must never run on the default BAML-only /
 	// flag-off path (the callback below is not installed there).
 	hasRequestRetryOverride := cfg.RetryPolicy != nil
+	// bamlOnlyParse is the explicit BAML-ONLY final-parse closure for the
+	// same-response shadow oracle (de-BAML cutover Slice 5). It runs ONLY BAML's
+	// parser — never the native-first hybrid parseFinalFn uses for serving, so
+	// there is no native->BAML->native recursion — then unwraps and marshals to
+	// the SAME flattened JSON shape native SAP produces, so the oracle compares
+	// the two parses INDEPENDENTLY. It parses already-fetched text only: no socket,
+	// no provider request. The ordinary BAML route keeps its hybrid closure; this
+	// one exists solely for the oracle.
+	bamlOnlyParse := func(pctx context.Context, raw string) ([]byte, error) {
+		opts, oerr := makeOptionsFromAdapter(adapter)
+		if oerr != nil {
+			return nil, oerr
+		}
+		out, perr := bamlclient.Parse.Baml_Rest_Dynamic(pctx, raw, opts...)
+		if perr != nil {
+			return nil, perr
+		}
+		// The same unwrap the serving newResultFn runs before marshaling, so the
+		// flattened bytes match native SAP's shape (nested map key order intact).
+		unwrapDynamicBamlRestDynamicOutputFinal(&out)
+		return out.DynamicProperties.MarshalJSON()
+	}
 	cfg.NativeAttemptEnabled = true
 	cfg.NativeOutputSchema = outputSchema
 	cfg.NativeAttempt = func(ctx context.Context, att buildrequest.NativeCallAttempt) buildrequest.NativeCallOutcome {
@@ -456,14 +479,23 @@ func maybeInstallNativeShadowCall(
 			HasRequestRetryOverride: hasRequestRetryOverride,
 			WouldRewriteOrProxy:     wouldRewriteOrProxy,
 			BuildBAMLRequest:        att.BuildBAMLRequest,
+			// The BAML-only parse closure the same-response oracle runs on BAML's
+			// fetched response, independently of native SAP.
+			BAMLOnlyParse: bamlOnlyParse,
 		})
 		// The comparator NEVER serves a native result in this slice: it always
 		// declines so BAML serves the same child. Stage/Reason are stable,
 		// secret-free observability tokens carried only for the decline metric.
-		return buildrequest.DeclineNativeCall(
+		outcome := buildrequest.DeclineNativeCall(
 			buildrequest.NativeDeclineStage(res.Stage),
 			buildrequest.NativeDeclineReason(res.Reason),
 		)
+		// Forward the same-response continuation the comparator installed on a
+		// plan-match (nil on a plan mismatch or an admission decline). The
+		// orchestrator invokes it once after BAML's 2xx send with BAML's fetched
+		// status+body — no socket, no second provider request, no serving change.
+		outcome.OnResponseShadow = res.OnResponse
+		return outcome
 	}
 }
 
@@ -534,6 +566,7 @@ type deBAMLHelperData struct {
 	Pkg             string
 	InterfacesPkg   string
 	BuildRequestPkg string
+	ClientPkg       string
 	TypesPkg        string
 	StreamTypesPkg  string
 }
@@ -572,6 +605,7 @@ func (g *generator) maybeWriteDeBAMLHelper() {
 		Pkg:             g.pkgs.OutputPkgName,
 		InterfacesPkg:   g.pkgs.InterfacesPkg,
 		BuildRequestPkg: g.pkgs.BuildRequestPkg,
+		ClientPkg:       g.pkgs.GeneratedClientPkg,
 		TypesPkg:        g.pkgs.GeneratedClientPkg + "/types",
 		StreamTypesPkg:  g.pkgs.GeneratedClientPkg + "/stream_types",
 	}); err != nil {
