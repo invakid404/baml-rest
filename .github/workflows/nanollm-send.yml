@@ -60,7 +60,7 @@ env:
   # The PUBLIC nanollm-ffi Go module version; must match the test module's
   # go.mod require. It embeds + links its prebuilt Rust FFI archive per-platform,
   # so there is no separate release-bundle tag to pin.
-  NANOLLM_GO_VERSION: "v0.3.2"
+  NANOLLM_GO_VERSION: "v0.4.3"
   # The PUBLIC go-mocklm version pinned as a Go tool in the isolated module.
   GO_MOCKLM_VERSION: "v0.4.0"
 
@@ -88,19 +88,23 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Assert pins (nanollm-ffi @ v0.3.2, go-mocklm @ v0.4.0) + zero-root isolation
+      - name: Assert pins (nanollm-ffi @ v0.4.3, go-mocklm @ v0.4.0) + zero-root isolation
         run: |
           set -euo pipefail
           gomod=nativeserve/go.mod
-          # EXACT-version pin assertion (not a substring): the version token must
-          # be followed by whitespace or end-of-line, so a prerelease cannot
-          # satisfy the pin. Dots are escaped so they match literally.
+          # EXACT-version pin assertion via PARSED go.mod (NOT a text/ERE grep):
+          # `go mod edit -json` emits the require list as structured data, so the
+          # module path is matched by exact string equality — its dots are literal,
+          # never regex wildcards (the #625 fix) — and the version must EQUAL the
+          # pin, so a prerelease like v0.4.3-rc1 can never satisfy it.
           exact_pin() { # <module_path> <version>
-            local esc; esc="$(printf '%s' "$2" | sed 's/[.]/\\./g')"
-            grep -qE "(^|[[:space:]])$1[[:space:]]+${esc}([[:space:]]|\$)" "$gomod"
+            local got
+            got="$(go mod edit -json "$gomod" \
+              | jq -r --arg p "$1" '.Require[]? | select(.Path == $p) | .Version')"
+            [ "$got" = "$2" ]
           }
           # The PUBLIC nanollm-ffi module is required by the isolated nativeserve
-          # module, at exactly v0.3.2.
+          # module, at exactly v0.4.3.
           exact_pin "github.com/viktordanov/nanollm-ffi/go" "${NANOLLM_GO_VERSION}" \
             || { echo "test module does not pin nanollm-ffi/go at exactly ${NANOLLM_GO_VERSION}"; exit 1; }
           # go-mocklm is pinned at exactly v0.4.0 AND declared as a Go tool (the

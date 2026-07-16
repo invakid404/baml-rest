@@ -27,7 +27,7 @@ package execute
 //   - uniform Do error envelope: a non-2xx is normalized into the ONE uniform
 //     JSON error envelope (classified OpenAI-safe error.type, native type under
 //     error.code, bounded raw + status/provider under details);
-//   - DoStream stream-start non-2xx: the deliberate v0.3.2 "D11" divergence —
+//   - DoStream stream-start non-2xx: the deliberate v0.4.3 "D11" divergence —
 //     no envelope, a wrapped *ProviderStatusError carrying the bounded raw
 //     provider-native error body — pinned here as the contract.
 //
@@ -110,7 +110,7 @@ const (
 
 func sp(s string) *string { return &s }
 
-// newFallbackClient builds a v0.3.2 client whose OpenAI primary names the
+// newFallbackClient builds a v0.4.3 client whose OpenAI primary names the
 // Anthropic backup in its Fallbacks, so FallbackChain(primary) == [primary,
 // backup]. MaxRetries:0 on both aliases keeps the observation a CROSS-model
 // advance (never a hidden same-model retry); UseProcessEnv:false forbids
@@ -135,6 +135,10 @@ func newFallbackClient(t *testing.T, mockBase string) *nanollm.Client {
 				MaxRetries: 0,
 			},
 		},
+		// v0.4.3 defaults an empty TransformMode to the native Anthropic route;
+		// pin the jq oracle so this gated Anthropic Do/DoStream stays byte-identical
+		// to v0.3.2 (native only falls back to jq on error — no shadow byte-compare).
+		TransformMode: "jq",
 		Env:           nil,
 		UseProcessEnv: false,
 	})
@@ -145,7 +149,7 @@ func newFallbackClient(t *testing.T, mockBase string) *nanollm.Client {
 	return c
 }
 
-// newFaultClient builds a v0.3.2 client with a single Anthropic alias and NO
+// newFaultClient builds a v0.4.3 client with a single Anthropic alias and NO
 // fallbacks, so a returned non-2xx surfaces at the API boundary (uniform
 // envelope for Do, *ProviderStatusError for DoStream) rather than advancing a
 // chain. Used by the uniform-envelope and DoStream-divergence rows.
@@ -161,6 +165,10 @@ func newFaultClient(t *testing.T, mockBase string) *nanollm.Client {
 				MaxRetries: 0,
 			},
 		},
+		// v0.4.3 defaults an empty TransformMode to the native Anthropic route;
+		// pin the jq oracle so this gated Anthropic Do/DoStream stays byte-identical
+		// to v0.3.2 (native only falls back to jq on error — no shadow byte-compare).
+		TransformMode: "jq",
 		Env:           nil,
 		UseProcessEnv: false,
 	})
@@ -179,7 +187,7 @@ func timeoutClient(d time.Duration) *http.Client {
 	return &http.Client{Transport: loopbackTransport(), Timeout: d}
 }
 
-// newSendClient builds a v0.3.2 client with the two literal, fake aliases bound
+// newSendClient builds a v0.4.3 client with the two literal, fake aliases bound
 // to the mock's loopback base. MaxRetries:0 keeps attempt counts unambiguous;
 // UseProcessEnv:false forbids process-env secret resolution.
 func newSendClient(t *testing.T, mockBase string) *nanollm.Client {
@@ -201,6 +209,10 @@ func newSendClient(t *testing.T, mockBase string) *nanollm.Client {
 				MaxRetries: 0,
 			},
 		},
+		// v0.4.3 defaults an empty TransformMode to the native Anthropic route;
+		// pin the jq oracle so this gated Anthropic Do/DoStream stays byte-identical
+		// to v0.3.2 (native only falls back to jq on error — no shadow byte-compare).
+		TransformMode: "jq",
 		Env:           nil,
 		UseProcessEnv: false,
 	})
@@ -572,7 +584,7 @@ func TestStreamAnthropic(t *testing.T) {
 // TestFallbackReturned503 — row 4: a RETURNED provider non-2xx advances a
 // configured chain. The OpenAI primary is armed to return 503 on its first (and
 // only) attempt; the healthy Anthropic backup then answers 200 and its exact
-// content is what the caller sees. This proves v0.3.2's rule that a returned
+// content is what the caller sees. This proves v0.4.3's rule that a returned
 // non-2xx advances a configured chain — it deliberately does NOT claim the 503
 // status was itself "retryable" (that is the separate classification concern
 // exercised by row 5).
@@ -835,7 +847,7 @@ func TestUniformErrorEnvelopeDo(t *testing.T) {
 }
 
 // TestStreamStartProviderStatusError — row 7: the DoStream companion to row 6,
-// documenting the DELIBERATE v0.3.2 "D11" divergence. On a stream-start non-2xx,
+// documenting the DELIBERATE v0.4.3 "D11" divergence. On a stream-start non-2xx,
 // DoStream does NOT normalize into the uniform envelope; it returns a wrapped
 // *nanollm.ProviderStatusError carrying the bounded, provider-NATIVE Anthropic
 // error body (<= 64 KiB). This is Viktor-confirmed intended behavior, pinned

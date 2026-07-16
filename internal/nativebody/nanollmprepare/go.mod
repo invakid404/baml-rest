@@ -27,7 +27,7 @@ require (
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
-	github.com/viktordanov/nanollm-ffi/go v0.3.2
+	github.com/viktordanov/nanollm-ffi/go v0.4.3
 	golang.org/x/mod v0.37.0
 )
 

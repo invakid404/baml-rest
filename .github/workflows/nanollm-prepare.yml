@@ -63,7 +63,7 @@ env:
   # The PUBLIC nanollm-ffi Go module version; must match the test module's
   # go.mod require. The module embeds + links its prebuilt Rust FFI archive
   # per-platform, so there is no separate release-bundle tag to pin.
-  NANOLLM_GO_VERSION: "v0.3.2"
+  NANOLLM_GO_VERSION: "v0.4.3"
   # The stock BAML runtime version both differential legs must load (Phase 5.1).
   # The dynamic leg links the PATCHED runtime (dynclient/baml-patched) and the
   # static leg links stock github.com/boundaryml/baml — both are v0.223.0-based.
@@ -103,18 +103,22 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Assert module pins (nanollm-ffi @ v0.3.2, stock BAML @ v0.223.0, go-mocklm @ v0.4.0) + zero-root-nanollm
+      - name: Assert module pins (nanollm-ffi @ v0.4.3, stock BAML @ v0.223.0, go-mocklm @ v0.4.0) + zero-root-nanollm
         run: |
           set -euo pipefail
           gomod=internal/nativebody/nanollmprepare/go.mod
-          # EXACT-version pin assertion (not a substring): the version token must be
-          # followed by whitespace or end-of-line, so a prerelease like v0.223.0-rc1
-          # can NOT satisfy the pin. Dots are escaped so they match literally. This
-          # is a fast pre-flight gate; TestBAMLVersionPinned re-checks authoritatively
+          # EXACT-version pin assertion via PARSED go.mod (NOT a text/ERE grep):
+          # `go mod edit -json` emits the require list as structured data, so each
+          # module path is matched by exact string equality — its dots are literal,
+          # never regex wildcards (the #625 fix) — and the version must EQUAL the
+          # pin, so a prerelease like v0.223.0-rc1 can NOT satisfy it. This is a
+          # fast pre-flight gate; TestBAMLVersionPinned re-checks authoritatively
           # in-binary via golang.org/x/mod/modfile + the loaded CFFI version.
           exact_pin() { # <module_path> <version>
-            local esc; esc="$(printf '%s' "$2" | sed 's/[.]/\\./g')"
-            grep -qE "(^|[[:space:]])$1[[:space:]]+${esc}([[:space:]]|\$)" "$gomod"
+            local got
+            got="$(go mod edit -json "$gomod" \
+              | jq -r --arg p "$1" '.Require[]? | select(.Path == $p) | .Version')"
+            [ "$got" = "$2" ]
           }
           # The PUBLIC nanollm-ffi module is required ONLY by the separate test-only
           # module, never the root — the root go.mod must have zero nanollm reference.

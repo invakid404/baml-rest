@@ -67,7 +67,7 @@ const (
 	p6bTimeout = 30 * time.Second
 )
 
-// newPreparedClient builds a v0.3.2 client with ONE openai alias bound to the
+// newPreparedClient builds a v0.4.3 client with ONE openai alias bound to the
 // given loopback base (a literal 127.0.0.1 URL from a running test server).
 // MaxRetries:0 keeps the attempt count unambiguous; UseProcessEnv:false / Env:nil
 // forbid process-env secret resolution.
