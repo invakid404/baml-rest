@@ -5,7 +5,7 @@
 // final through the already-merged Slice-1 tryOneChild seam. It is the serving
 // twin of the shadow comparator (which always declines with BAML still serving).
 //
-// It lives in the out-of-go.work nanollmprepare module and links nanollm (through
+// It lives in the out-of-go.work nativeserve module and links nanollm (through
 // admission + execute), so nothing here can enter the host/root link graph — the
 // host stays zero-nanollm and CGO-free. A SERVE deploy profile's worker injects it
 // as a neutral bamlutils.NativeServeFunc; every default build and every flag-off
@@ -30,9 +30,9 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/internal/debaml"
-	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/admission"
-	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/execute"
-	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/parity"
+	"github.com/invakid404/baml-rest/nativeserve/admission"
+	"github.com/invakid404/baml-rest/nativeserve/execute"
+	"github.com/invakid404/baml-rest/nativeserve/parity"
 )
 
 // canaryInternalAlias is the fixed, secret-free internal nanollm alias the serve
@@ -62,12 +62,12 @@ const (
 
 // errNativeServePanic backstops a panic AFTER the claim: a socket may have opened,
 // so the attempt FAILS (never declines) rather than risk a hidden BAML resend.
-var errNativeServePanic = errors.New("nanollmprepare/canary: native serve attempt panicked after claim")
+var errNativeServePanic = errors.New("nativeserve/canary: native serve attempt panicked after claim")
 
 // errNoBAMLOnlyParse marks a serve attempt that reached the response phase without
 // a BAML-only parse closure. The generated serve seam always threads one, so this
 // is a wiring bug; post-claim it FAILS (never serves an unverified native final).
-var errNoBAMLOnlyParse = errors.New("nanollmprepare/canary: same-response compare missing BAML-only parse closure")
+var errNoBAMLOnlyParse = errors.New("nativeserve/canary: same-response compare missing BAML-only parse closure")
 
 // Server runs the native serve implementation. Construct it with NewServer (or the
 // NewServeFunc factory the serve worker uses). It holds the S3 admitter (which
@@ -294,7 +294,7 @@ func (s *Server) mapAttempt(ctx context.Context, req bamlutils.NativeServeReques
 	default:
 		// Unreachable for the closed Outcome set; fail conservatively (never serve).
 		s.metrics.RecordServeOutcome(toAdmissionMode(req.Mode), req.Provider, admission.OutcomeParseError)
-		return failResult(fmt.Errorf("nanollmprepare/canary: unexpected attempt outcome %v", res.Outcome), "")
+		return failResult(fmt.Errorf("nativeserve/canary: unexpected attempt outcome %v", res.Outcome), "")
 	}
 }
 

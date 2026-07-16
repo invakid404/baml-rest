@@ -56,10 +56,15 @@ func BenchmarkNanollmNewClose(b *testing.B) {
 func BenchmarkAdmit(b *testing.B) {
 	a := NewAdmitter(nil, nil)
 	ctx := context.Background()
+	// Build the fixture ONCE, before timing, so the benchmark measures the
+	// admission path (map+New, render, body, Prepare, revalidate, Close) and not
+	// the per-iteration cost of constructing validInput(). Admit is read-only on
+	// its Input, so a single value is safe to reuse across iterations.
+	in := validInput()
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := a.Admit(ctx, validInput()); err != nil {
+		if _, err := a.Admit(ctx, in); err != nil {
 			b.Fatalf("Admit: %v", err)
 		}
 	}

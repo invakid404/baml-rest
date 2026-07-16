@@ -43,8 +43,8 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/internal/nativebody"
-	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/testutil"
 	"github.com/invakid404/baml-rest/internal/nativeprompt"
+	"github.com/invakid404/baml-rest/nativeserve/testutil"
 	nanollm "github.com/viktordanov/nanollm-ffi/go"
 )
 

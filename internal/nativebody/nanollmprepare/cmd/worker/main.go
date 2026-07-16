@@ -26,9 +26,9 @@ package main
 
 import (
 	"github.com/invakid404/baml-rest/bamlutils"
-	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/canary"
 	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/nativeworker"
 	"github.com/invakid404/baml-rest/internal/workerboot"
+	"github.com/invakid404/baml-rest/nativeserve"
 )
 
 func main() {
@@ -59,7 +59,10 @@ func main() {
 		// worker's private registry and returns the neutral bamlutils.NativeServeFunc
 		// the generated dynamic call seam installs as the Slice-1 native
 		// child-attempt callback — which actually serves admitted unary `_dynamic`
-		// calls natively.
-		NativeServeFactory: canary.NewServeFunc,
+		// calls natively. This is the SAME public constructor an in-process dynclient
+		// consumer passes to dynclient.WithNativeServeComparator (#624), so the
+		// subprocess serve worker and the in-process path are at transport parity by
+		// construction.
+		NativeServeFactory: nativeserve.New,
 	})
 }

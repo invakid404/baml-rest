@@ -149,7 +149,7 @@ func mapDynamicClient(reg *bamlutils.ClientRegistry, alias string, wouldRewriteO
 	if err != nil {
 		// Unexpected native construction failure — a planner error, not a
 		// parity-decline. Secret-free: nanollm.New's error never echoes the key.
-		return nil, clientFacts{}, nil, fmt.Errorf("nanollmprepare/admission: nanollm.New: %w", err)
+		return nil, clientFacts{}, nil, fmt.Errorf("nativeserve/admission: nanollm.New: %w", err)
 	}
 
 	return client, clientFacts{provider: cp.Provider, target: target, baseURL: baseURL}, nil, nil

@@ -28,13 +28,15 @@ func main() {
 
 func run() error {
 	// Resolve the repo root: this generator is meant to run from it, so CWD is
-	// the root. Validate by checking the isolated module's go.mod is present.
+	// the root. Validate by checking every packaged module's go.mod is present.
 	repoRoot, err := os.Getwd()
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(nativeworkersrc.ModuleRelPath + "/go.mod"); err != nil {
-		return fmt.Errorf("run from the repo root: %s/go.mod not found (%w)", nativeworkersrc.ModuleRelPath, err)
+	for _, modRel := range nativeworkersrc.ModuleRelPaths {
+		if _, err := os.Stat(modRel + "/go.mod"); err != nil {
+			return fmt.Errorf("run from the repo root: %s/go.mod not found (%w)", modRel, err)
+		}
 	}
 
 	data, err := nativeworkersrc.BuildTar(repoRoot)

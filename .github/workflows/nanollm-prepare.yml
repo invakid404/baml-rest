@@ -185,9 +185,11 @@ jobs:
       - name: Build the pinned go-mocklm tool
         run: |
           set -euo pipefail
-          # The Phase-6 Slice 6c live differential (and the merged Slice-2/6b send
-          # suite, also run by ./... below) launches go-mocklm as a loopback
-          # subprocess. Build the module's declared tool ONCE into $RUNNER_TEMP/bin
+          # The Phase-6 Slice 6c live differential (dynamic/live_*, run by ./...
+          # below) launches go-mocklm as a loopback subprocess. (The Slice-2/6b
+          # functional-send suite moved with ./execute to the nativeserve module in
+          # #624 and is now run by nanollm-send.yml.) Build the module's declared
+          # tool ONCE into $RUNNER_TEMP/bin
           # and export MOCKLM_BINARY so no test rebuilds it on demand mid-run. This
           # mirrors nanollm-send.yml; MOCKLM_BINARY is authoritative in CI and the
           # harness only falls back to an on-demand build when it is unset.
@@ -232,8 +234,9 @@ jobs:
           # static / dynamic prepared-request parity) AND the Phase-6 Slice 6c LIVE
           # differential (dynamic/live_*): two sequential real-loopback legs per
           # fixture — BAML-as-served (de-BAML false) and the native 6a+6b path —
-          # against a baml-rest capture server and a go-mocklm subprocess, plus the
-          # Slice-2/6b execute send suite. Runs inside the SEPARATE test module with
+          # against a baml-rest capture server and a go-mocklm subprocess. (The
+          # Slice-2/6b execute send suite moved to the nativeserve module in #624 and
+          # now runs in nanollm-send.yml.) Runs inside the SEPARATE test module with
           # GOWORK=off so its go.mod (the only one that requires nanollm/go-mocklm)
           # is the build list — the workspace/root never sees either. `go test ./...`
           # runs each package's test binary as a SEPARATE PROCESS, so the stock and

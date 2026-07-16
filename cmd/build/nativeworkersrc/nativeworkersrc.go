@@ -33,16 +33,35 @@ import (
 )
 
 const (
-	// ModuleRelPath is the isolated module's path relative to the repo root.
-	// Tar entries are prefixed with it so extraction at the repo root drops the
-	// module back into place.
+	// ModuleRelPath is the isolated nanollm WORKER module's path relative to the
+	// repo root — the module whose ./cmd/worker is the native-serve binary. It is
+	// the first entry of ModuleRelPaths and is kept as a named constant because the
+	// generator / freshness test / build.sh overlay validate against it directly.
 	ModuleRelPath = "internal/nativebody/nanollmprepare"
+
+	// NativeServeModuleRelPath is the PUBLIC nanollm-linked serve-core module the
+	// worker imports (de-BAML #624). It is out-of-go.work + .embedignore'd (like the
+	// worker module) so it never enters the root/host link graph, so it too must
+	// ride along in the opaque tar for the isolated worker build to resolve the
+	// `=> ../../../nativeserve` replace.
+	NativeServeModuleRelPath = "nativeserve"
 
 	// TarRelPath is where the committed opaque tar lives relative to the repo
 	// root. It sits under cmd/build (already embedded), so it ships in the
 	// standard source bundle without any change to the embed manifest.
 	TarRelPath = "cmd/build/nativeworker_module.tar"
 )
+
+// ModuleRelPaths lists EVERY out-of-go.work module packaged into the opaque worker
+// tar, in a fixed order. The isolated worker module (cmd/worker) plus every sibling
+// module it links that is excluded from the root embed bundle (the nanollm serve
+// core) must all be restored into the build context so the isolated GOWORK=off
+// build resolves their filesystem replaces. Entry names are prefixed with each
+// module's rel path, so `tar -xf` at the repo root drops every module back in place.
+var ModuleRelPaths = []string{
+	ModuleRelPath,
+	NativeServeModuleRelPath,
+}
 
 // fixedModTime is the single timestamp stamped on every tar entry so the
 // archive is byte-reproducible regardless of the checkout's file mtimes.
@@ -98,25 +117,54 @@ func collectFiles(moduleDir string) ([]string, error) {
 	return files, nil
 }
 
-// BuildTar packages the isolated module rooted at repoRoot into a deterministic
-// tar. Entry names are ModuleRelPath + "/" + <module-relative path>, so `tar -xf`
-// at the repo root restores the module in place.
+// BuildTar packages every module in ModuleRelPaths rooted at repoRoot into a
+// single deterministic tar. Entry names are <moduleRelPath> + "/" +
+// <module-relative path>, so `tar -xf` at the repo root restores every module in
+// place.
 func BuildTar(repoRoot string) ([]byte, error) {
-	moduleDir := filepath.Join(repoRoot, filepath.FromSlash(ModuleRelPath))
-	files, err := collectFiles(moduleDir)
-	if err != nil {
-		return nil, err
+	return BuildTarForModules(repoRoot, ModuleRelPaths)
+}
+
+// tarEntry is one file destined for the opaque tar: its full (module-prefixed)
+// entry name and the absolute source path to read.
+type tarEntry struct {
+	name    string
+	absPath string
+}
+
+// BuildTarForModules packages the given modules (each a repo-root-relative module
+// path) into a single deterministic tar. Entries across all modules are sorted by
+// their full entry name so the archive is byte-reproducible regardless of module
+// order or checkout mtimes. Exposed (beyond BuildTar) so unit tests can exercise a
+// single synthetic module without materializing every production module.
+func BuildTarForModules(repoRoot string, modules []string) ([]byte, error) {
+	var entries []tarEntry
+	for _, modRel := range modules {
+		moduleDir := filepath.Join(repoRoot, filepath.FromSlash(modRel))
+		files, err := collectFiles(moduleDir)
+		if err != nil {
+			return nil, err
+		}
+		for _, rel := range files {
+			entries = append(entries, tarEntry{
+				name:    modRel + "/" + rel,
+				absPath: filepath.Join(moduleDir, filepath.FromSlash(rel)),
+			})
+		}
 	}
+	// Global sort by entry name keeps the archive byte-identical regardless of the
+	// module ordering passed in.
+	sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
 
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
-	for _, rel := range files {
-		data, err := os.ReadFile(filepath.Join(moduleDir, filepath.FromSlash(rel)))
+	for _, e := range entries {
+		data, err := os.ReadFile(e.absPath)
 		if err != nil {
 			return nil, err
 		}
 		hdr := &tar.Header{
-			Name:    ModuleRelPath + "/" + rel,
+			Name:    e.name,
 			Mode:    0o644,
 			Size:    int64(len(data)),
 			ModTime: fixedModTime,

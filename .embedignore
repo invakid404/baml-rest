@@ -69,6 +69,19 @@ internal/nativeprompt/testdata/static_oracle
 # mirroring internal/nativeprompt/testdata/static_oracle above.
 internal/nativebody/nanollmprepare
 
+# de-BAML #624 PUBLIC native-serve module (github.com/invakid404/baml-rest/nativeserve):
+# the go-get-able, nanollm-linked serve core the subprocess worker AND an in-process
+# dynclient consumer both link. Like the nanollmprepare worker module above it is a
+# SEPARATE, out-of-go.work Go module that requires the PUBLIC
+# github.com/viktordanov/nanollm-ffi/go (a cgo module linking a prebuilt Rust
+# archive), so it MUST stay out of the root/default module graph and the host link
+# graph. Excluded here so cmd/embed never discovers it as an embeddable module (which
+# would add a nativeserve import to the root embed.go manifest, dragging nanollm/CGO
+# into the host). It rides along to the isolated worker build inside the same opaque
+# tar as nanollmprepare (see cmd/build/nativeworkersrc: ModuleRelPaths), so the
+# worker's `=> ../../../nativeserve` replace still resolves under GOWORK=off.
+nativeserve
+
 # bamlfuzz lives publicly under codegen/ (not internal/) so the
 # root-module integration test can import it without coupling
 # adapters/common to integration/testutil. The package is test

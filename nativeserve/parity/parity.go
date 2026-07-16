@@ -21,7 +21,7 @@ import (
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
-	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/testutil"
+	"github.com/invakid404/baml-rest/nativeserve/testutil"
 )
 
 // PlanComparison is the per-field native-vs-BAML request-plan comparison result.

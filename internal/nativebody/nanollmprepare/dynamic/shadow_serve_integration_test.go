@@ -41,8 +41,8 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/dynclient"
 	"github.com/invakid404/baml-rest/internal/debaml"
-	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/admission"
 	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/shadow"
+	"github.com/invakid404/baml-rest/nativeserve/admission"
 )
 
 // shadowExecCounter is an http.RoundTripper that COUNTS RoundTrips without
