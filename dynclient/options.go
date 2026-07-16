@@ -35,6 +35,7 @@ type config struct {
 	deBAMLRender         bamlutils.DeBAMLRenderFunc
 	deBAMLParse          bamlutils.DeBAMLParseFunc
 	nativeShadow         bamlutils.NativeShadowFunc
+	nativeServe          bamlutils.NativeServeFunc
 	requestRetryOverride *bamlutils.RetryConfig
 	baseURLRewrites      []urlrewrite.Rule
 	logger               bamlutils.Logger
@@ -116,6 +117,25 @@ func WithDeBAMLParser(parse bamlutils.DeBAMLParseFunc) Option {
 func WithNativeShadowComparator(shadow bamlutils.NativeShadowFunc) Option {
 	return func(c *config) error {
 		c.nativeShadow = shadow
+		return nil
+	}
+}
+
+// WithNativeServeComparator injects the native SERVE implementation (de-BAML
+// cutover Slice 6). dynclient lives in a separate Go module and cannot import the
+// out-of-go.work nanollm bridge, so a caller supplies the concrete nanollm-backed
+// implementation (e.g. from the nanollmprepare canary package). It is installed on
+// every adapter; the generated dynamic call seam turns it into the Slice-1 native
+// child-attempt callback only when it is non-nil AND WithDeBAML is enabled, and
+// that callback actually SERVES an admitted unary `_dynamic` call natively (one
+// exact RoundTrip) or declines pre-socket to BAML. Without it (or with WithDeBAML
+// off) the dynamic call path stays BAML-as-today with zero native FFI / socket /
+// plan build. It is the serve deploy profile's equivalent for direct dynclient
+// callers (tests, tooling) and MUST NOT be combined with WithNativeShadowComparator
+// — a caller installs at most one native callback.
+func WithNativeServeComparator(serve bamlutils.NativeServeFunc) Option {
+	return func(c *config) error {
+		c.nativeServe = serve
 		return nil
 	}
 }

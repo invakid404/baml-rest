@@ -26,9 +26,7 @@ package shadow
 // reasoning envelope.
 
 import (
-	"bytes"
 	"context"
-	stdjson "encoding/json"
 	"errors"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -36,6 +34,7 @@ import (
 	"github.com/invakid404/baml-rest/internal/debaml"
 	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/admission"
 	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/execute"
+	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/parity"
 )
 
 // errNoBAMLOnlyParse marks a same-response comparison that reached the response
@@ -141,80 +140,10 @@ func responseResult(match bool) admission.ResponseCompareResult {
 	return admission.ResponseCompareMismatch
 }
 
-// compareStructured compares the native SAP flattened JSON against the BAML-only
-// flattened JSON. Both are normalized identically before comparison so a
-// difference is attributable to the PARSE, not to representation:
-//
-//   - structured: absent optionals injected on both (so an omitted-optional
-//     asymmetry does not read as a value drift), then a key-order-insensitive
-//     deep-equal;
-//   - order: additionally reordered to schema field order on both and compared
-//     byte-for-byte, so a class field reorder or a nested-map key-order drift is
-//     caught (the reorder pass normalizes class order, so a residual byte diff is
-//     a real map-order/content divergence).
-//
-// Both are secret-free structured outputs, but they are still never surfaced —
-// only the bounded match/mismatch pair is recorded.
+// compareStructured delegates to the shared parity.CompareStructured so the
+// shadow oracle and the native serve path apply the IDENTICAL structured/order
+// comparison policy (absent-optional injection + key-order-insensitive deep-equal
+// for structured, schema-reordered byte compare for order).
 func compareStructured(nativeFlat, bamlFlat []byte, schema *bamlutils.DynamicOutputSchema) (structuredMatch, orderMatch bool) {
-	nInj, e1 := bamlutils.InjectAbsentOptionals(nativeFlat, schema)
-	bInj, e2 := bamlutils.InjectAbsentOptionals(bamlFlat, schema)
-	if e1 != nil || e2 != nil {
-		return false, false
-	}
-	structuredMatch = jsonSemEqual(nInj, bInj)
-
-	nOrd, e3 := bamlutils.ReorderDynamicOutputBySchema(nInj, schema)
-	bOrd, e4 := bamlutils.ReorderDynamicOutputBySchema(bInj, schema)
-	if e3 != nil || e4 != nil {
-		return structuredMatch, false
-	}
-	orderMatch = bytes.Equal(nOrd, bOrd)
-	return structuredMatch, orderMatch
-}
-
-// jsonSemEqual reports whether two JSON documents are semantically equal —
-// object key order ignored, arrays order-sensitive, scalars by value. It mirrors
-// the Phase 6c differential's liveJSONSemEqual so the shadow oracle and the gated
-// differential agree on what "structurally equal" means.
-func jsonSemEqual(a, b []byte) bool {
-	var av, bv any
-	if err := stdjson.Unmarshal(a, &av); err != nil {
-		return false
-	}
-	if err := stdjson.Unmarshal(b, &bv); err != nil {
-		return false
-	}
-	return jsonDeepEqual(av, bv)
-}
-
-// jsonDeepEqual recursively compares two decoded JSON values ignoring object key
-// order.
-func jsonDeepEqual(a, b any) bool {
-	switch av := a.(type) {
-	case map[string]any:
-		bv, ok := b.(map[string]any)
-		if !ok || len(av) != len(bv) {
-			return false
-		}
-		for k, va := range av {
-			vb, ok := bv[k]
-			if !ok || !jsonDeepEqual(va, vb) {
-				return false
-			}
-		}
-		return true
-	case []any:
-		bv, ok := b.([]any)
-		if !ok || len(av) != len(bv) {
-			return false
-		}
-		for i := range av {
-			if !jsonDeepEqual(av[i], bv[i]) {
-				return false
-			}
-		}
-		return true
-	default:
-		return a == b
-	}
+	return parity.CompareStructured(nativeFlat, bamlFlat, schema)
 }

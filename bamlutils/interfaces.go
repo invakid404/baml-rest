@@ -116,7 +116,14 @@ type Metadata struct {
 	// Kept separate from Path/WinnerPath so dashboards can distinguish native
 	// from BAML on the buildrequest route without overloading the existing
 	// X-BAML-Path contract.
-	WinnerEngine  string `json:"winner_engine,omitempty"`
+	WinnerEngine string `json:"winner_engine,omitempty"`
+	// PlannedEngine names which engine was PLANNED/considered for this request,
+	// orthogonal to the realised WinnerEngine. Empty (omitted) on every default
+	// BAML build/send, legacy, shadow, and flag-off path — so today's outcome
+	// frames stay byte-identical — and set to the bounded token "native" only
+	// when a native SERVE callback was installed and native was considered.
+	// Bounded enum-like token; never free-form text or a secret.
+	PlannedEngine string `json:"planned_engine,omitempty"`
 	UpstreamDurMs *int64 `json:"upstream_duration_ms,omitempty"` // upstream wall time in ms (orchestrator entry to outcome emission)
 	// BamlCallCount is the number of *additional* LLM calls BAML made beyond
 	// the first, computed as max(len(FunctionLog.Calls())-1, 0). It collapses

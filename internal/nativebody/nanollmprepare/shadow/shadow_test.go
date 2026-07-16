@@ -272,7 +272,9 @@ func TestComparePlans_RedactsSecretsInDiffs(t *testing.T) {
 }
 
 func TestComparePlans_BodyDiffNeverPrintsBytes(t *testing.T) {
-	// Bodies carry prompt text in production; a diff must show only a digest.
+	// Bodies carry prompt text in production; a diff must show only a bounded byte
+	// LENGTH — never the bytes AND never a content-derived hash/digest (even a
+	// truncated digest can confirm/correlate body content).
 	baml := bamlExact(`{"secret_prompt":"do not log me"}`, nil)
 	cmp := comparePlans(baml, nativeExact(`{"model":"m"}`))
 	if cmp.Body {
@@ -282,8 +284,22 @@ func TestComparePlans_BodyDiffNeverPrintsBytes(t *testing.T) {
 	if strings.Contains(joined, "do not log me") {
 		t.Fatalf("body diff leaked prompt bytes: %q", joined)
 	}
-	if !strings.Contains(joined, "sha256:") {
-		t.Fatalf("expected a body digest in the diff, got %q", joined)
+	// Assert the COMPLETE body-diff entry is EXACTLY the two bounded byte-length
+	// fields and nothing else — no bytes, no hash/digest, and no extra
+	// content-derived field appended. An exact-match (rather than substring)
+	// assertion fails closed if any future field is added to the body diff.
+	var bodyDiffs []string
+	for _, d := range cmp.Diffs {
+		if strings.HasPrefix(d, "body:") {
+			bodyDiffs = append(bodyDiffs, d)
+		}
+	}
+	if len(bodyDiffs) != 1 {
+		t.Fatalf("expected exactly one body diff entry, got %d: %v", len(bodyDiffs), cmp.Diffs)
+	}
+	const wantBodyDiff = `body: baml=33B native=13B`
+	if bodyDiffs[0] != wantBodyDiff {
+		t.Fatalf("body diff = %q, want EXACTLY %q (bounded lengths only — any extra field/hash/body-derived value must fail)", bodyDiffs[0], wantBodyDiff)
 	}
 }
 

@@ -2,23 +2,28 @@
 
 package main
 
-// BAML+nanollm worker startup smoke test (de-BAML cutover Slice 2).
+// BAML+nanollm SERVE-capable worker startup smoke test (de-BAML cutover Slice 6).
 //
-// It proves the PACKAGING claim end to end: the isolated worker built from this
-// out-of-go.work module (GOWORK=off + CGO, nanollm linked) boots, initializes
-// BOTH native runtimes at startup, reports itself native-capable, and serves the
-// go-plugin handler — with NO request routing. It intentionally does not send a
-// request: routing stays hard-off in this slice.
+// It proves the PACKAGING + flag-gating claim end to end: the isolated worker
+// built from this out-of-go.work module (GOWORK=off + CGO, nanollm linked) boots,
+// serves the go-plugin handler, and reports the correct startup diagnostic for
+// BOTH umbrella-flag states:
 //
-// Mechanism (no gRPC client needed): build the worker, exec it with the
-// go-plugin magic cookie, and assert two facts:
+//   - FLAG ON (default / unset): both native runtimes initialize at startup, the
+//     serve factory is installed, and the diagnostic reports
+//     native_build_capable=true, native_runtime_initialized=true,
+//     rollout_mode=serve, native_serving=eligible, engine "nanollm".
+//   - FLAG OFF (BAML_REST_USE_DEBAML=0): ZERO native FFI at boot (no capability
+//     Version probe, no runtime init, no serve factory) — yet the binary still
+//     advertises a STATIC build capability, so the diagnostic reports
+//     native_build_capable=true, native_runtime_initialized=false,
+//     rollout_mode=off, native_serving=off. This is the flag-off kill switch:
+//     the serve-capable binary behaves exactly like the BAML-only worker.
 //
-//   - stdout carries the go-plugin handshake line (`<core>|<app>|<net>|<addr>|
-//     grpc|`) — emitted only AFTER InitRuntime (BAML), ProbeRuntime (nanollm),
-//     worker.New, and goplugin.Serve all succeed, i.e. the handler is serving;
-//   - stderr carries the native-capability startup diagnostic naming engine
-//     "nanollm" with native serving off and rollout mode off — the build
-//     capability, hard-off (this worker installs no shadow comparator).
+// Mechanism (no gRPC client needed): build the worker once, exec it with the
+// go-plugin magic cookie under each flag state, and assert the handshake line
+// (`<core>|<app>|<net>|<addr>|grpc|`, emitted only after startup succeeds) plus
+// the startup diagnostic fields.
 //
 // Gated by nanollm_integration so the default (no-tag) build never needs nanollm
 // or a C toolchain; it runs in the nanollm-prepare / nanollm-send lanes.
@@ -37,34 +42,56 @@ import (
 	"github.com/invakid404/baml-rest/workerplugin"
 )
 
-func TestBAMLNanollmWorkerBootSmoke(t *testing.T) {
-	if testing.Short() {
-		t.Skip("boot smoke builds + execs a worker binary; skipped in -short")
-	}
-
+// buildNativeWorker builds the serve-capable BAML+nanollm worker exactly as
+// build.sh's NATIVE_WORKER variant does (GOWORK=off + CGO + subprocess tag) and
+// returns its path.
+func buildNativeWorker(t *testing.T) string {
+	t.Helper()
 	bin := filepath.Join(t.TempDir(), "worker-native")
-
-	// Build the BAML+nanollm worker exactly as build.sh's NATIVE_WORKER variant
-	// does: from this module with GOWORK=off + CGO and the subprocess tag. The
-	// nanollm archive links via the nativeworker import; no nanollm_integration
-	// tag is needed because the bridge is untagged production code now.
-	buildCtx, cancelBuild := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancelBuild()
+	buildCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
 	build := exec.CommandContext(buildCtx, "go", "build", "-tags=subprocess", "-o", bin, ".")
 	build.Env = append(os.Environ(), "GOWORK=off", "CGO_ENABLED=1")
 	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("building BAML+nanollm worker failed: %v\n%s", err, out)
+		t.Fatalf("building serve-capable BAML+nanollm worker failed: %v\n%s", err, out)
 	}
+	return bin
+}
 
+// envWithoutClientDefaults returns os.Environ() with any BAML_REST_CLIENT_DEFAULTS
+// entry removed, so an inherited (developer/CI) value can't reach the worker under
+// test. workerboot.Run parses that var before the go-plugin handshake and exits on
+// a malformed value; filtering it keeps the boot-smoke test's outcome independent
+// of the ambient environment. Every other inherited variable is preserved.
+func envWithoutClientDefaults() []string {
+	src := os.Environ()
+	out := make([]string, 0, len(src))
+	for _, kv := range src {
+		if strings.HasPrefix(kv, "BAML_REST_CLIENT_DEFAULTS=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+// bootWorkerStderr execs bin with the go-plugin magic cookie plus extraEnv, waits
+// for the handshake line to prove the handler is serving, and returns the startup
+// diagnostic stderr.
+func bootWorkerStderr(t *testing.T, bin string, extraEnv ...string) string {
+	t.Helper()
 	runCtx, cancelRun := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancelRun()
 	cmd := exec.CommandContext(runCtx, bin)
-	// go-plugin refuses to serve unless the magic cookie is present; supply it
-	// (and nothing else — the worker resolves defaults with no env), so the
-	// handshake proves an unconfigured worker still boots.
-	cmd.Env = append(os.Environ(),
+	// Inherit the ambient env EXCEPT BAML_REST_CLIENT_DEFAULTS: workerboot.Run
+	// parses that var BEFORE the go-plugin handshake and EXITS on a malformed
+	// value, so a malformed developer/CI ambient value would spuriously fail this
+	// packaging/flag boot-smoke test before it reaches the handshake. Every other
+	// inherited variable is preserved.
+	cmd.Env = append(envWithoutClientDefaults(),
 		workerplugin.Handshake.MagicCookieKey+"="+workerplugin.Handshake.MagicCookieValue,
 	)
+	cmd.Env = append(cmd.Env, extraEnv...)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -72,33 +99,24 @@ func TestBAMLNanollmWorkerBootSmoke(t *testing.T) {
 	}
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
-
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("starting worker: %v", err)
 	}
-	// Read stdout until the go-plugin handshake line appears or the pipe closes.
-	// scanDone closes when the scanner goroutine has finished reading the pipe,
-	// so join() can safely reap the command without racing an in-flight read.
+
 	handshakeCh := make(chan string, 1)
 	scanDone := make(chan struct{})
 	go func() {
 		defer close(scanDone)
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
-			line := scanner.Text()
-			if strings.Contains(line, "|grpc|") {
+			if line := scanner.Text(); strings.Contains(line, "|grpc|") {
 				handshakeCh <- line
 				return
 			}
 		}
-		close(handshakeCh) // EOF without a handshake (early exit/crash)
+		close(handshakeCh)
 	}()
 
-	// join reaps the process AND joins os/exec's stderr-copy goroutine so the
-	// captured stderr is safe to read afterward: kill the (long-serving) worker,
-	// wait for the stdout scanner to finish reading, then cmd.Wait(). Using
-	// cmd.Wait() (not Process.Wait()) is what joins the stderr copier. Idempotent
-	// so the deferred safety-net call and the explicit pre-read calls are safe.
 	var joinOnce sync.Once
 	join := func() {
 		joinOnce.Do(func() {
@@ -115,25 +133,55 @@ func TestBAMLNanollmWorkerBootSmoke(t *testing.T) {
 		if !ok || line == "" {
 			t.Fatalf("worker exited before emitting a go-plugin handshake; stderr:\n%s", stderr.String())
 		}
-		// Handshake proves the handler is serving. Now assert the startup
-		// diagnostic reported the native (nanollm) build capability, hard-off.
-		// The Slice-4 startup contract reports the build capability via
-		// native_engine, native serving via native_serving (the field that
-		// replaced the old native_routing token now that a shadow profile can
-		// install a never-serving callback), and the deploy profile via
-		// rollout_mode — "off" here since this S2 worker installs no comparator.
-		errLog := stderr.String()
-		if !strings.Contains(errLog, `"native_engine":"nanollm"`) {
-			t.Fatalf("worker booted but did not report the nanollm native capability; stderr:\n%s", errLog)
-		}
-		if !strings.Contains(errLog, `"native_serving":"off"`) {
-			t.Fatalf("native serving must be reported off (hard-off in this slice); stderr:\n%s", errLog)
-		}
-		if !strings.Contains(errLog, `"rollout_mode":"off"`) {
-			t.Fatalf("this native worker installs no shadow comparator; rollout_mode must be off; stderr:\n%s", errLog)
-		}
+		return stderr.String()
 	case <-runCtx.Done():
 		join()
 		t.Fatalf("timed out waiting for worker handshake; stderr:\n%s", stderr.String())
+		return ""
 	}
+}
+
+func TestServeCapableWorkerBootSmoke(t *testing.T) {
+	if testing.Short() {
+		t.Skip("boot smoke builds + execs a worker binary; skipped in -short")
+	}
+	bin := buildNativeWorker(t)
+
+	t.Run("flag on serves", func(t *testing.T) {
+		// Explicit BAML_REST_USE_DEBAML=1 (not merely relying on the default-on
+		// resolution) so an inherited BAML_REST_USE_DEBAML=0 in CI/dev can't select
+		// the flag-off branch and fail this case. The serve factory is installed and
+		// both runtimes initialize.
+		errLog := bootWorkerStderr(t, bin, "BAML_REST_USE_DEBAML=1")
+		for _, want := range []string{
+			`"debaml_flag_enabled":true`,
+			`"native_engine":"nanollm"`,
+			`"native_build_capable":true`,
+			`"native_runtime_initialized":true`,
+			`"rollout_mode":"serve"`,
+			`"native_serving":"eligible"`,
+		} {
+			if !strings.Contains(errLog, want) {
+				t.Fatalf("flag-on serve diagnostic missing %s; stderr:\n%s", want, errLog)
+			}
+		}
+	})
+
+	t.Run("flag off is zero-native kill switch", func(t *testing.T) {
+		// BAML_REST_USE_DEBAML=0 => flag off: no serve factory, no runtime init, no
+		// FFI — but the static build capability is still advertised.
+		errLog := bootWorkerStderr(t, bin, "BAML_REST_USE_DEBAML=0")
+		for _, want := range []string{
+			`"native_engine":"nanollm"`,
+			`"native_build_capable":true`,
+			`"native_runtime_initialized":false`,
+			`"rollout_mode":"off"`,
+			`"native_serving":"off"`,
+			`"debaml_flag_enabled":false`,
+		} {
+			if !strings.Contains(errLog, want) {
+				t.Fatalf("flag-off diagnostic missing %s; stderr:\n%s", want, errLog)
+			}
+		}
+	})
 }

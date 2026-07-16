@@ -1059,11 +1059,13 @@ func (me *methodEmitter) emitBuildCallRequest() {
 		),
 	)
 
-	// De-BAML one-send SHADOW comparator install (Slice 4). Emitted only for the
-	// dynamic method; a no-op unless a shadow-profile worker injected a comparator
-	// AND the umbrella flag is enabled (see maybeInstallNativeShadowCall). It sets
-	// the Slice-1 CallConfig.NativeAttempt to a callback that builds+compares the
-	// native and BAML request plans without a socket, then DECLINES to BAML. The
+	// De-BAML native child-attempt install (Slice 4 SHADOW / Slice 6 SERVE).
+	// Emitted only for the dynamic method; a no-op unless a shadow- or serve-profile
+	// worker injected an implementation AND the umbrella flag is enabled (see
+	// maybeInstallNativeCall). It sets the Slice-1 CallConfig.NativeAttempt to a
+	// callback that builds+compares the native and BAML request plans without a
+	// socket, then either DECLINES to BAML (shadow, always) or CLAIMS one native
+	// RoundTrip and serves natively (serve, on a plan match). The
 	// strategy facts are derived from this attempt's plan: the single-provider
 	// preferred route resolves exactly one leaf (fallbackChain empty), a chain
 	// call resolves more, and a top-level round-robin is described by
@@ -1081,7 +1083,7 @@ func (me *methodEmitter) emitBuildCallRequest() {
 	// before a plan is built or compared.
 	if me.isDeBAMLMethod() {
 		buildCallRequestBody = append(buildCallRequestBody,
-			jen.Id("maybeInstallNativeShadowCall").Call(
+			jen.Id("maybeInstallNativeCall").Call(
 				jen.Id("adapter"),
 				jen.Id("callConfig"),
 				jen.Id(me.deBAMLConvertedVar()),

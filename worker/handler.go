@@ -97,6 +97,20 @@ type Config struct {
 	// byte-identical to today. It is installed on every adapter via the narrow
 	// nativeShadowSetter interface, gated by DeBAMLConfig().Enabled at the seam.
 	NativeShadowComparator bamlutils.NativeShadowFunc
+
+	// NativeServeComparator is the neutral native SERVE implementation (de-BAML
+	// cutover Slice 6), injected as a public-typed callback for the same
+	// module-boundary reason as NativeShadowComparator. Non-nil ONLY in the SERVE
+	// deploy profile's worker with the umbrella flag on; the DEFAULT production
+	// worker, the S2 native-capable worker, the SHADOW worker, and every flag-off
+	// build leave it nil, so the generated dynamic call seam installs no native
+	// child-attempt callback and every request stays byte-identical to today. It
+	// is installed on every adapter via the narrow nativeServeSetter interface,
+	// gated by DeBAMLConfig().Enabled at the seam. A worker MUST NOT supply BOTH a
+	// serve and a shadow comparator — the entry point enforces that mutual
+	// exclusion (workerboot fails startup if both factories are set), so the
+	// generated installer only ever sees one.
+	NativeServeComparator bamlutils.NativeServeFunc
 }
 
 // deBAMLRendererSetter is the narrow optional interface the adapter
@@ -124,11 +138,27 @@ type nativeShadowSetter interface {
 	SetNativeShadowComparator(bamlutils.NativeShadowFunc)
 }
 
+// nativeServeSetter is the serve-side twin of nativeShadowSetter: the narrow
+// optional interface the adapter implements to receive the native SERVE
+// implementation (de-BAML cutover Slice 6). Same rationale for keeping it off
+// bamlutils.Adapter. nil implementation ⇒ nothing installed ⇒ callback hard-off.
+type nativeServeSetter interface {
+	SetNativeServeComparator(bamlutils.NativeServeFunc)
+}
+
 // ErrRuntimeRequired is returned by New when Config.Runtime is nil.
 // Surfaced as a sentinel so callers (subprocess startup, in-process
 // WorkerFactory) can distinguish the misconfiguration from runtime
 // errors raised later.
 var ErrRuntimeRequired = errors.New("worker: Config.Runtime is required")
+
+// ErrNativeCallbackConflict is returned by New when BOTH a serve and a shadow
+// comparator are supplied. A worker installs AT MOST ONE native child-attempt
+// callback; workerboot already enforces this at the factory level, but Config is
+// public so New re-validates it so a direct or dynclient caller cannot bypass the
+// invariant (which would otherwise silently rely on the generated installer's
+// serve-precedence tie-break).
+var ErrNativeCallbackConflict = errors.New("worker: NativeServeComparator and NativeShadowComparator are mutually exclusive")
 
 // Handler is the worker-side request handler extracted from
 // cmd/worker/main.go. It satisfies workerplugin.Worker so the subprocess
@@ -160,6 +190,13 @@ type Handler struct {
 	// on DeBAMLConfig().Enabled and otherwise leaves the callback nil/hard-off.
 	nativeShadow bamlutils.NativeShadowFunc
 
+	// nativeServe is the neutral native SERVE implementation, injected only in the
+	// serve deploy profile with the flag on (nil in every default/shadow/flag-off
+	// build). Installed on every adapter in configureAdapter; the generated dynamic
+	// call seam gates it on DeBAMLConfig().Enabled and otherwise leaves the callback
+	// nil/hard-off. Mutually exclusive with nativeShadow at the entry point.
+	nativeServe bamlutils.NativeServeFunc
+
 	sharedStateHook hookStorage
 
 	noSharedStateWarnOnce    sync.Once
@@ -177,6 +214,11 @@ func New(cfg Config) (*Handler, error) {
 	if cfg.Runtime == nil {
 		return nil, ErrRuntimeRequired
 	}
+	// A worker installs at most one native child-attempt callback. Reject both
+	// BEFORE storing anything so an invalid config yields no handler.
+	if cfg.NativeServeComparator != nil && cfg.NativeShadowComparator != nil {
+		return nil, ErrNativeCallbackConflict
+	}
 	metricsReg := cfg.Metrics
 	if metricsReg == nil {
 		metricsReg = NewMetricsRegistry()
@@ -193,6 +235,7 @@ func New(cfg Config) (*Handler, error) {
 		deBAMLParse:      cfg.DeBAMLParse,
 		nativeCapability: cfg.NativeCapability,
 		nativeShadow:     cfg.NativeShadowComparator,
+		nativeServe:      cfg.NativeServeComparator,
 	}
 	if cfg.SharedState != nil {
 		h.SetSharedStateHook(cfg.SharedState)
@@ -234,6 +277,14 @@ func (h *Handler) configureAdapter(adapter bamlutils.Adapter) {
 	// native child-attempt callback when this is non-nil AND DeBAMLConfig().Enabled.
 	if setter, ok := adapter.(nativeShadowSetter); ok {
 		setter.SetNativeShadowComparator(h.nativeShadow)
+	}
+	// Install the native SERVE implementation (nil in every default/shadow/flag-off
+	// build, so this is a no-op there). The generated dynamic call seam builds a
+	// serving native child-attempt callback when this is non-nil AND
+	// DeBAMLConfig().Enabled; it takes precedence over shadow, and the entry point
+	// guarantees the two are never both non-nil.
+	if setter, ok := adapter.(nativeServeSetter); ok {
+		setter.SetNativeServeComparator(h.nativeServe)
 	}
 }
 

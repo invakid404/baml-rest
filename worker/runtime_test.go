@@ -29,6 +29,36 @@ func TestHandlerNewRequiresRuntime(t *testing.T) {
 	}
 }
 
+// TestHandlerNewRejectsServeShadowConflict pins the mutual-exclusion contract:
+// supplying BOTH a native serve and a native shadow comparator to New is a
+// construction error, so a direct or dynclient caller cannot bypass workerboot's
+// factory-level check and install two native child-attempt callbacks. Either
+// comparator alone is accepted.
+func TestHandlerNewRejectsServeShadowConflict(t *testing.T) {
+	t.Parallel()
+
+	serve := func(context.Context, bamlutils.NativeServeRequest) bamlutils.NativeServeResult {
+		return bamlutils.NativeServeResult{}
+	}
+	shadow := func(context.Context, bamlutils.NativeShadowRequest) bamlutils.NativeShadowResult {
+		return bamlutils.NativeShadowResult{}
+	}
+
+	if _, err := New(Config{
+		Runtime:                &fakeRuntime{},
+		NativeServeComparator:  serve,
+		NativeShadowComparator: shadow,
+	}); !errors.Is(err, ErrNativeCallbackConflict) {
+		t.Fatalf("expected ErrNativeCallbackConflict for both comparators, got %v", err)
+	}
+	if _, err := New(Config{Runtime: &fakeRuntime{}, NativeServeComparator: serve}); err != nil {
+		t.Fatalf("serve-only New must succeed, got %v", err)
+	}
+	if _, err := New(Config{Runtime: &fakeRuntime{}, NativeShadowComparator: shadow}); err != nil {
+		t.Fatalf("shadow-only New must succeed, got %v", err)
+	}
+}
+
 // TestHandlerCallStreamUsesInjectedRuntime asserts CallStream looks up
 // the method on the injected Runtime (not the root baml_rest package)
 // and consults the runtime's MakeAdapter for the per-request adapter.

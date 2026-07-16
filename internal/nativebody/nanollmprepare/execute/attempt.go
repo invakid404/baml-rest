@@ -316,6 +316,19 @@ func RunAttempt(ctx context.Context, cfg AttemptConfig) (*AttemptResult, error) 
 //   - A translate error other than *InvalidBodyError, a non-JSON 2xx, an
 //     assistant-extraction failure, and a CLAIMED (non-decline) SAP error all
 //     propagate as Go errors.
+//
+// POST-RESPONSE ERROR CONTRACT (de-BAML cutover Slice 6): on those propagated
+// errors the returned *AttemptResult is NON-NIL, carrying the response context
+// fetched before the failure — ProviderStatus + ProviderBody always, plus
+// Translated / AssistantText / Raw / Reasoning / SAPInvoked as far as the
+// pipeline got. This lets the serving mapper distinguish a pre-claim decline
+// (never reaches here) from a post-claim failure WITHOUT parsing error strings,
+// retain details.raw (the raw upstream body, or the extracted assistant text on a
+// CLAIMED SAP failure where SAPInvoked==true), and never fall through to a hidden
+// BAML resend. A pre-response failure (nil client/parse/schema guard) still
+// returns (nil, err) — there is no response context to preserve. Callers that
+// only branch on `err != nil` (the shadow oracle, the 6b/6c differentials) are
+// unaffected: they never dereference the result on error.
 func ConsumeResponse(ctx context.Context, cfg ConsumeConfig, status int, body []byte) (*AttemptResult, error) {
 	if cfg.Client == nil {
 		return nil, fmt.Errorf("nanollmprepare: nil nanollm client")
@@ -333,8 +346,20 @@ func ConsumeResponse(ctx context.Context, cfg ConsumeConfig, status int, body []
 		ProviderBody:   body,
 	}
 
+	// Cancellation gate BEFORE the non-context TranslateResponse FFI: a request
+	// cancelled while the socket was completing returns the typed context error
+	// (with the response context on res retained), never a provider/parse outcome.
+	if err := ctx.Err(); err != nil {
+		return res, err
+	}
+
 	// (5) Translate with the EXACT attempted alias.
 	translated, terr := cfg.Client.TranslateResponse(cfg.Alias, status, body)
+	// Cancellation gate AFTER TranslateResponse (non-context FFI): a cancel that
+	// raced translation wins over any translate error/outcome.
+	if err := ctx.Err(); err != nil {
+		return res, err
+	}
 	if terr != nil {
 		// An invalid-2xx surfaces as the typed *InvalidBodyError carrying the
 		// (caller-facing status, uniform envelope) pair. Map it into the SAME
@@ -351,8 +376,9 @@ func ConsumeResponse(ctx context.Context, cfg ConsumeConfig, status int, body []
 			return res, nil
 		}
 		// Any other translate failure is a genuine error (not a provider
-		// outcome, not SAP-eligible) and propagates.
-		return nil, fmt.Errorf("nanollmprepare: TranslateResponse(%s): %w", cfg.Alias, terr)
+		// outcome, not SAP-eligible) and propagates — with the response context
+		// (status + raw body) retained on res for the serving mapper's details.raw.
+		return res, fmt.Errorf("nanollmprepare: TranslateResponse(%s): %w", cfg.Alias, terr)
 	}
 
 	res.Translated = translated
@@ -372,15 +398,22 @@ func ConsumeResponse(ctx context.Context, cfg ConsumeConfig, status int, body []
 	// and reasoning are retained on the result so the same-response oracle can
 	// compare the full /call-with-raw envelope, not just structured output.
 	if !translated.BodyIsJSON {
-		return nil, fmt.Errorf("nanollmprepare: 2xx translated response is not JSON (status %d)", translated.Status)
+		return res, fmt.Errorf("nanollmprepare: 2xx translated response is not JSON (status %d)", translated.Status)
 	}
 	parseable, raw, reasoning, xerr := buildrequest.ExtractResponseContentBytes("openai", translated.Body, cfg.IncludeReasoning)
 	if xerr != nil {
-		return nil, fmt.Errorf("nanollmprepare: extracting assistant text: %w", xerr)
+		return res, fmt.Errorf("nanollmprepare: extracting assistant text: %w", xerr)
 	}
 	res.AssistantText = parseable
 	res.Raw = raw
 	res.Reasoning = reasoning
+
+	// Cancellation gate BEFORE the native SAP FFI (the production parser discards
+	// ctx internally), so a cancel that raced the post-2xx pipeline returns the
+	// typed context error with the response context retained, not a parse outcome.
+	if err := ctx.Err(); err != nil {
+		return res, err
+	}
 
 	// SAP is invoked exactly here and nowhere else on the 2xx path.
 	res.SAPInvoked = true
@@ -389,6 +422,11 @@ func ConsumeResponse(ctx context.Context, cfg ConsumeConfig, status int, body []
 		OutputSchema: cfg.OutputSchema,
 		Stream:       false,
 	})
+	// Cancellation gate AFTER SAP: a cancel that raced the parser wins over any
+	// parse decline/error/success classification.
+	if err := ctx.Err(); err != nil {
+		return res, err
+	}
 	if perr != nil {
 		// A clean decline is a parity-decline recorded as data (no fallback
 		// rejoined here — no serving change in this phase). Any OTHER parse
@@ -399,7 +437,10 @@ func ConsumeResponse(ctx context.Context, cfg ConsumeConfig, status int, body []
 			res.DeclineReason = perr.Error()
 			return res, nil
 		}
-		return nil, perr
+		// A CLAIMED (non-decline) native parse failure. res carries the response
+		// context — AssistantText/Raw/Reasoning (SAPInvoked==true) — so the serving
+		// mapper can attach the extracted assistant text as details.raw.
+		return res, perr
 	}
 
 	res.Outcome = OutcomeStructured

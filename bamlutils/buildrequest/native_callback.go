@@ -33,12 +33,43 @@ import (
 //                   existing outer fallback/retry loop — the orchestrator NEVER
 //                   falls through to a second BAML send for the same child.
 
-// nativeEngineMarker is the winner-engine token the orchestrator records on an
-// attempt result produced by the native seam. It is an opaque, stable,
-// secret-free enum value; bamlutils assigns it no further meaning and only
-// carries it through to outcome metadata so dashboards can tell a native
-// attempt apart from a BAML one.
+// nativeEngineMarker is the DEFAULT winner-engine token the orchestrator records
+// on an attempt result produced by the native seam when the succeeded outcome
+// leaves WinnerEngine empty. It is an opaque, stable, secret-free enum value;
+// bamlutils assigns it no further meaning and only carries it through to outcome
+// metadata so dashboards can tell a native attempt apart from a BAML one. A
+// serving implementation may override it with another bounded token (e.g.
+// "native_baml_parse" when native owned the socket but BAML parse-only produced
+// the final) via NativeCallOutcome.WinnerEngine.
 const nativeEngineMarker = "native"
+
+// nativeBAMLParseEngineMarker is the other declared winner-engine token: native
+// owned the single provider request but BAML parse-only produced the served final.
+const nativeBAMLParseEngineMarker = "native_baml_parse"
+
+// allowedWinnerEngine folds an engine token from a (public, directly-constructible)
+// native outcome to the DECLARED bounded set, defaulting anything else — including
+// the empty string — to the base "native" marker. This keeps winner_engine a
+// bounded enum in outcome metadata even if a mis-built callback supplies arbitrary
+// text.
+func allowedWinnerEngine(e string) string {
+	switch e {
+	case nativeEngineMarker, nativeBAMLParseEngineMarker:
+		return e
+	default:
+		return nativeEngineMarker
+	}
+}
+
+// allowedPlannedEngine folds a planned-engine token to the DECLARED bounded set,
+// omitting (empty) anything but the one legal value so arbitrary input can never
+// reach the planned_engine metadata label.
+func allowedPlannedEngine(e string) string {
+	if e == nativeEngineMarker {
+		return e
+	}
+	return ""
+}
 
 // NativeCallDisposition is the tri-state outcome of a native child attempt.
 //
@@ -184,14 +215,27 @@ type NativeCallOutcome struct {
 	// BAML path clones raw/reasoning out of borrowed storage before releasing
 	// it. The orchestrator therefore carries them across the attempt boundary
 	// without an extra copy.
+	//
+	// On a FAILED outcome, Raw is reused as the owned raw DIAGNOSTIC (the raw
+	// provider body or extracted assistant text) so a translate/extract/SAP
+	// failure retains details.raw through retry.Execute; see FailNativeCallWithRaw.
 	FinalResult any
 	Raw         string
 	Reasoning   string
 
+	// Succeeded-only: an optional bounded, secret-free winner-engine token that
+	// OVERRIDES the default nativeEngineMarker on the recorded outcome metadata.
+	// Empty means the default ("native"); a serving implementation sets it to
+	// another bounded token (e.g. "native_baml_parse" when native owned the one
+	// provider request but BAML parse-only produced the served final). Never
+	// free-form text or a secret.
+	WinnerEngine string
+
 	// Failed-only: the typed error handed to the outer fallback/retry loop. Use
 	// existing typed error classes (e.g. llmhttp transport/HTTP errors, output
 	// parse errors) so the outer policy behaves exactly as it does for a BAML
-	// attempt.
+	// attempt. When Raw is non-empty on a failed outcome the orchestrator wraps
+	// this error so the raw survives the retry boundary as details.raw.
 	Err error
 }
 
@@ -236,6 +280,18 @@ func FailNativeCall(err error) NativeCallOutcome {
 		Disposition: NativeCallFailed,
 		Err:         err,
 	}
+}
+
+// FailNativeCallWithRaw is FailNativeCall carrying an owned raw diagnostic (the
+// raw provider body, or the extracted assistant text on a parse failure) so a
+// post-claim translate/extract/SAP failure retains details.raw through
+// retry.Execute — the orchestrator wraps the error with the raw at the failed
+// arm exactly as the BAML build/send path wraps its own extraction/parse errors.
+// An empty raw is equivalent to FailNativeCall.
+func FailNativeCallWithRaw(err error, raw string) NativeCallOutcome {
+	o := FailNativeCall(err)
+	o.Raw = raw
+	return o
 }
 
 // NativeCallAttemptFunc is the optional native child-attempt callback. When

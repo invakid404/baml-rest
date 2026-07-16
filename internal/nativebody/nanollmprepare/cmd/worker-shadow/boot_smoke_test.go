@@ -102,6 +102,23 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// envWithoutClientDefaults returns os.Environ() with any BAML_REST_CLIENT_DEFAULTS
+// entry removed, so an inherited (developer/CI) value can't reach the worker under
+// test. workerboot.Run parses that var before the go-plugin handshake and exits on
+// a malformed value; filtering it keeps the boot-smoke test's outcome independent
+// of the ambient environment. Every other inherited variable is preserved.
+func envWithoutClientDefaults() []string {
+	src := os.Environ()
+	out := make([]string, 0, len(src))
+	for _, kv := range src {
+		if strings.HasPrefix(kv, "BAML_REST_CLIENT_DEFAULTS=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 // bootShadowWorker boots the shadow worker with the supplied extra environment,
 // reusing the suite-shared build, and returns the go-plugin handshake line (empty
 // if the worker exited before handshaking) and the captured stderr.
@@ -113,7 +130,11 @@ func bootShadowWorker(t *testing.T, extraEnv ...string) (handshake, stderrOut st
 	runCtx, cancelRun := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancelRun()
 	cmd := exec.CommandContext(runCtx, bin)
-	cmd.Env = append(os.Environ(),
+	// Inherit the ambient env EXCEPT BAML_REST_CLIENT_DEFAULTS: workerboot.Run
+	// parses that var BEFORE the go-plugin handshake and EXITS on a malformed
+	// value, so a malformed ambient value would spuriously fail this boot-smoke
+	// test before it reaches the handshake. Every other inherited var is preserved.
+	cmd.Env = append(envWithoutClientDefaults(),
 		workerplugin.Handshake.MagicCookieKey+"="+workerplugin.Handshake.MagicCookieValue,
 	)
 	cmd.Env = append(cmd.Env, extraEnv...)

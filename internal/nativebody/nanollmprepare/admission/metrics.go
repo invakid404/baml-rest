@@ -75,6 +75,12 @@ const (
 	OutcomeTranslateError Outcome = "translate_error"
 	OutcomeParseDecline   Outcome = "parse_decline"
 	OutcomeParseError     Outcome = "parse_error"
+	// OutcomeInternalError: an UNEXPECTED post-claim panic (in the executor,
+	// translation, or parser) that the serve guard turned into a terminal failure.
+	// It is a distinct bounded label so a pre-parse panic (e.g. an executor/
+	// transport panic) is never misclassified as parse_error — a panic anywhere in
+	// the claimed pipeline reads honestly as an internal error to alert on.
+	OutcomeInternalError Outcome = "internal_error"
 )
 
 // Metrics are the bounded-enum de-BAML admission collectors, registered on the
@@ -88,7 +94,48 @@ type Metrics struct {
 	attempts        *prometheus.CounterVec
 	planCompare     *prometheus.CounterVec
 	responseCompare *prometheus.CounterVec
+	nativeSockets   *prometheus.CounterVec
+	fallback        *prometheus.CounterVec
 }
+
+// NativeSocketFlag is the bounded flag label for the native_sockets metric. It
+// records whether the umbrella flag was resolved on or off when a socket was
+// claimed. It is ALWAYS "on" at the only increment site (RecordNativeSocket) —
+// the serve path is installed only when the flag is enabled — so any "off"
+// increment is an invariant violation that is UNREACHABLE by construction, not
+// merely alertable. The "off" series is pre-initialized to zero so the paging
+// alert expression `increase(...{flag="off"}[window]) > 0` is well-defined.
+type NativeSocketFlag string
+
+const (
+	SocketFlagOn  NativeSocketFlag = "on"
+	SocketFlagOff NativeSocketFlag = "off"
+)
+
+// NativeSocketOutcome is the bounded outcome label for the native_sockets metric:
+// whether the single claimed exact attempt produced an HTTP response (any status)
+// or failed at the transport layer (dial/reset/timeout/read — a socket may still
+// have opened, so it is counted).
+type NativeSocketOutcome string
+
+const (
+	// NativeSocketResponded: the exact attempt produced an HTTP response (2xx or
+	// non-2xx) — the socket completed a round trip.
+	NativeSocketResponded NativeSocketOutcome = "responded"
+	// NativeSocketTransportError: the exact attempt failed at the transport layer
+	// (dial refusal/reset/timeout/body-read). Counted as a socket-possible attempt.
+	NativeSocketTransportError NativeSocketOutcome = "transport_error"
+)
+
+// FallbackKind is the bounded kind label for the fallback metric. The first
+// serving surface records only parse_only — native owned the one provider request
+// but BAML parse-only produced the final (native SAP declined, or structured
+// output drifted and BAML's parse is served for safety).
+type FallbackKind string
+
+const (
+	FallbackParseOnly FallbackKind = "parse_only"
+)
 
 // PlanCompareResult is the bounded result label for the plan_compare metric: a
 // per-field native-vs-BAML request-plan comparison either matches or mismatches.
@@ -172,6 +219,14 @@ func NewMetrics(reg prometheus.Registerer) (*Metrics, error) {
 			Name: "baml_rest_debaml_response_compare_total",
 			Help: "de-BAML same-response shadow native-vs-BAML response comparisons (translate/assistant/structured/order/raw/reasoning/error), by bounded result/field. NO values.",
 		}, []string{"result", "field"}),
+		nativeSockets: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "baml_rest_debaml_native_sockets_total",
+			Help: "de-BAML native provider sockets claimed, by bounded flag/outcome. flag is always \"on\" (the serve path is unreachable while the umbrella flag is off); any flag=\"off\" increment is a paging invariant violation.",
+		}, []string{"flag", "outcome"}),
+		fallback: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "baml_rest_debaml_fallback_total",
+			Help: "de-BAML native-served requests that fell back to a BAML parse of the same response bytes, by bounded kind.",
+		}, []string{"kind"}),
 	}
 	if err := reg.Register(m.declines); err != nil {
 		return nil, err
@@ -185,6 +240,18 @@ func NewMetrics(reg prometheus.Registerer) (*Metrics, error) {
 	if err := reg.Register(m.responseCompare); err != nil {
 		return nil, err
 	}
+	if err := reg.Register(m.nativeSockets); err != nil {
+		return nil, err
+	}
+	if err := reg.Register(m.fallback); err != nil {
+		return nil, err
+	}
+	// Pre-initialize the invariant flag="off" series to zero so the paging alert
+	// `increase(baml_rest_debaml_native_sockets_total{flag="off"}[window]) > 0`
+	// is well-defined and provably flat. No code path ever increments them — the
+	// only increment site (RecordNativeSocket) hardcodes flag="on".
+	m.nativeSockets.WithLabelValues(string(SocketFlagOff), string(NativeSocketResponded))
+	m.nativeSockets.WithLabelValues(string(SocketFlagOff), string(NativeSocketTransportError))
 	return m, nil
 }
 
@@ -230,4 +297,41 @@ func (m *Metrics) RecordResponseCompare(result ResponseCompareResult, field Resp
 		return
 	}
 	m.responseCompare.WithLabelValues(string(result), string(field)).Inc()
+}
+
+// RecordServeOutcome records ONE terminal serving outcome on the attempts family
+// for a native serve attempt that got past admission (a claimed attempt or a
+// post-claim failure). It folds the arbitrary resolved provider string into the
+// bounded provider label internally, so callers outside the package need not
+// spell the unexported providerLabel. The S3 admission `admitted` outcome is NOT
+// recorded on the serve path, so success is never double-counted. A nil *Metrics
+// is a valid no-op receiver.
+func (m *Metrics) RecordServeOutcome(mode Mode, resolvedProvider string, outcome Outcome) {
+	if m == nil {
+		return
+	}
+	m.attempts.WithLabelValues(string(normalizeMode(mode)), engineNative, string(providerFromResolved(resolvedProvider)), string(outcome)).Inc()
+}
+
+// RecordNativeSocket increments the native_sockets family EXACTLY ONCE per
+// claimed exact attempt (including transport/dial failures). The flag label is
+// hardcoded "on": this recorder is reachable ONLY from the serve path, which is
+// installed only when the umbrella flag is enabled, so a flag="off" increment is
+// UNREACHABLE by construction (the "off" series stays at the zero pre-initialized
+// in NewMetrics). A nil *Metrics is a valid no-op receiver.
+func (m *Metrics) RecordNativeSocket(outcome NativeSocketOutcome) {
+	if m == nil {
+		return
+	}
+	m.nativeSockets.WithLabelValues(string(SocketFlagOn), string(outcome)).Inc()
+}
+
+// RecordFallback increments the fallback family for one native-served request
+// that fell back to a BAML parse of the same response bytes. A nil *Metrics is a
+// valid no-op receiver.
+func (m *Metrics) RecordFallback(kind FallbackKind) {
+	if m == nil {
+		return
+	}
+	m.fallback.WithLabelValues(string(kind)).Inc()
 }

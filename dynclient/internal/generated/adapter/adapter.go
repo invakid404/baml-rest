@@ -93,6 +93,16 @@ type BamlAdapter struct {
 	// and DeBAMLConfig().Enabled.
 	nativeShadow bamlutils.NativeShadowFunc
 
+	// nativeServe is the native SERVE implementation (de-BAML cutover
+	// Slice 6), injected by a serve deploy profile's worker for the same
+	// module-boundary reason as nativeShadow. Non-nil ONLY in the serve
+	// build with the flag on; nil in every default/shadow/flag-off build,
+	// leaving the orchestrator's native child-attempt callback nil/hard-off.
+	// The generated dynamic call seam installs it (taking precedence over
+	// nativeShadow) via the Slice-1 CallConfig.NativeAttempt callback only
+	// when it is non-nil and DeBAMLConfig().Enabled.
+	nativeServe bamlutils.NativeServeFunc
+
 	// rrAdvancer is the per-request round-robin Advancer installed by the
 	// worker; nil falls back to the introspected Coordinator.
 	rrAdvancer bamlutils.RoundRobinAdvancer
@@ -264,6 +274,12 @@ func (b *BamlAdapter) SetNativeShadowComparator(fn bamlutils.NativeShadowFunc) {
 }
 func (b *BamlAdapter) NativeShadowComparator() bamlutils.NativeShadowFunc {
 	return b.nativeShadow
+}
+func (b *BamlAdapter) SetNativeServeComparator(fn bamlutils.NativeServeFunc) {
+	b.nativeServe = fn
+}
+func (b *BamlAdapter) NativeServeComparator() bamlutils.NativeServeFunc {
+	return b.nativeServe
 }
 func (b *BamlAdapter) SetRoundRobinAdvancer(advancer bamlutils.RoundRobinAdvancer) {
 	b.rrAdvancer = advancer
