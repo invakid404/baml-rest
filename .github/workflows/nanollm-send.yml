@@ -29,8 +29,9 @@ name: nanollm Send (gated)
 # here.
 #
 # The gated tests + their nanollm and go-mocklm dependencies live entirely in the
-# SEPARATE, out-of-workspace test module (internal/nativebody/nanollmprepare), so
-# the root/default build never resolves, fetches, or links either module: a cold
+# SEPARATE, out-of-workspace module (nativeserve — the de-BAML #624 serve core that
+# now hosts the relocated execute/admission/parity/canary suites), so the
+# root/default build never resolves, fetches, or links either module: a cold
 # `go build ./...` / `go test ./...` (no tags) needs no nanollm, no go-mocklm, no
 # cgo, and no C toolchain. The preflight below asserts that isolation.
 #
@@ -90,7 +91,7 @@ jobs:
       - name: Assert pins (nanollm-ffi @ v0.3.2, go-mocklm @ v0.4.0) + zero-root isolation
         run: |
           set -euo pipefail
-          gomod=internal/nativebody/nanollmprepare/go.mod
+          gomod=nativeserve/go.mod
           # EXACT-version pin assertion (not a substring): the version token must
           # be followed by whitespace or end-of-line, so a prerelease cannot
           # satisfy the pin. Dots are escaped so they match literally.
@@ -98,8 +99,8 @@ jobs:
             local esc; esc="$(printf '%s' "$2" | sed 's/[.]/\\./g')"
             grep -qE "(^|[[:space:]])$1[[:space:]]+${esc}([[:space:]]|\$)" "$gomod"
           }
-          # The PUBLIC nanollm-ffi module is required ONLY by the isolated
-          # test-only module, at exactly v0.3.2.
+          # The PUBLIC nanollm-ffi module is required by the isolated nativeserve
+          # module, at exactly v0.3.2.
           exact_pin "github.com/viktordanov/nanollm-ffi/go" "${NANOLLM_GO_VERSION}" \
             || { echo "test module does not pin nanollm-ffi/go at exactly ${NANOLLM_GO_VERSION}"; exit 1; }
           # go-mocklm is pinned at exactly v0.4.0 AND declared as a Go tool (the
@@ -118,10 +119,10 @@ jobs:
               echo "root $f must NOT reference go-mocklm (default-build isolation)"; exit 1
             fi
           done
-          # The isolated module must NOT be a go.work member (it stays out of the
-          # workspace so the cgo nanollm archive never enters the default graph).
-          if grep -q "nanollmprepare" go.work; then
-            echo "nanollmprepare must NOT be a go.work member"; exit 1
+          # Neither nanollm-linked module may be a go.work member — both stay out of
+          # the workspace so the cgo nanollm archive never enters the default graph.
+          if grep -qE "(^|[[:space:]./])(nativeserve|internal/nativebody/nanollmprepare)([[:space:]/]|\$)" go.work; then
+            echo "nativeserve and internal/nativebody/nanollmprepare must NOT be go.work members"; exit 1
           fi
 
       - name: Resolve isolated-module dependencies (pinned)
@@ -131,7 +132,7 @@ jobs:
           # nanollm-ffi + go-mocklm requires are already pinned in go.mod/go.sum,
           # so download them with GOWORK=off (the module's own go.mod is
           # authoritative). Do NOT `go get` here — that would mutate the pins.
-          cd internal/nativebody/nanollmprepare
+          cd nativeserve
           GOWORK=off go mod download
 
       - name: Build the pinned go-mocklm tool
@@ -141,7 +142,7 @@ jobs:
           # is the only tool, so this produces $RUNNER_TEMP/bin/go-mocklm, which
           # the tests launch as a subprocess via MOCKLM_BINARY (authoritative in
           # CI — the harness only falls back to building on demand when unset).
-          cd internal/nativebody/nanollmprepare
+          cd nativeserve
           GOBIN="$RUNNER_TEMP/bin" GOWORK=off go install tool
           echo "MOCKLM_BINARY=$RUNNER_TEMP/bin/go-mocklm" >> "$GITHUB_ENV"
 
@@ -151,14 +152,16 @@ jobs:
           # pinned nanollm OpenAPI closure before writing it — a native-wire oracle.
           MOCKLM_VALIDATE_RESPONSES: "1"
         run: |
-          # Singly gated by `nanollm_integration` (no `integration` tag: this
-          # package has no BAML CFFI). The public nanollm-ffi module embeds +
-          # links its prebuilt CGO archive automatically — no nanollm_prebuilt
-          # tag, no CGO_CFLAGS/CGO_LDFLAGS. Run inside the SEPARATE test module
-          # with GOWORK=off so its go.mod (the only one requiring nanollm +
-          # go-mocklm) is the build list — the workspace/root never sees either.
-          # Package-scoped to ./execute so the P4b/P5 Prepare packages are not
-          # rebuilt or rerun in this lane.
-          cd internal/nativebody/nanollmprepare
+          # Singly gated by `nanollm_integration` (no `integration` tag: nativeserve
+          # links NO BAML CFFI — it is the de-BAML native serve core). The public
+          # nanollm-ffi module embeds + links its prebuilt CGO archive automatically
+          # — no nanollm_prebuilt tag, no CGO_CFLAGS/CGO_LDFLAGS. Run inside the
+          # SEPARATE nativeserve module with GOWORK=off so its go.mod (the only one
+          # requiring nanollm + go-mocklm) is the build list — the workspace/root
+          # never sees either. `./...` covers the whole relocated serve core: the
+          # functional-send suite (./execute), admission, plan/response compare
+          # (./parity), the serve disposition mapper (./canary), the compare helper
+          # (./testutil), and the public constructor smoke test (nativeserve.New).
+          cd nativeserve
           GOWORK=off go test -tags "nanollm_integration" \
-            -count=1 -v ./execute/
+            -count=1 -v ./...

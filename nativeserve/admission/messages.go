@@ -61,6 +61,20 @@ func validateMessages(msgs []bamlutils.DynamicMessage) *Decline {
 			if !utf8.ValidString(*m.TextContent) {
 				return declinef(StageMessage, ReasonInvalidUTF8, "message %d content is not valid UTF-8", i)
 			}
+			// Defense-in-depth backstop for a non-nil-but-EMPTY plain content.
+			// DynamicInput.Validate ALREADY rejects this at the input boundary
+			// (bamlutils/dynamic.go: `TextContent != nil && *TextContent == ""` ->
+			// "content is required"), so no request that passed the input contract
+			// reaches here with empty plain content — this guard never fires on a
+			// servable shape and therefore does NOT change the byte-identical worker.
+			// It is kept only as a fail-closed backstop so a direct in-process caller
+			// that skips the input contract still declines (never serves) an empty
+			// plain message. NOTE: unlike a text PART, an empty plain content cannot
+			// coexist with renderable content, so declining it never drops a message
+			// S6 would have rendered non-empty.
+			if *m.TextContent == "" {
+				return declinef(StageMessage, ReasonEmptyMessage, "message %d has empty text content", i)
+			}
 		default:
 			return declinef(StageMessage, ReasonEmptyMessage, "message %d has no content", i)
 		}
@@ -89,6 +103,15 @@ func validatePart(msgIdx, partIdx int, p *bamlutils.DynamicContentPart) *Decline
 		if !utf8.ValidString(*p.Text) {
 			return declinef(StageMessage, ReasonInvalidUTF8, "message %d part %d text is not valid UTF-8", msgIdx, partIdx)
 		}
+		// A non-nil-but-EMPTY text part is ADMITTED here on purpose: it mirrors the
+		// original Slice-6 normalization. The shared prompt template drops empty
+		// segments (`{% if p.text %}`) and native lowering does the same, so an empty
+		// part coexisting with any renderable content (another text part, an
+		// output_format part) renders to a non-empty message that S6 served natively
+		// — declining it per-part here would wrongly fall back to BAML and break the
+		// byte-identical worker. A message that renders WHOLLY empty is still declined,
+		// but downstream by the native body support gate (nativebody.SupportsOpenAIChat),
+		// exactly as on master — not by an over-broad per-part guard.
 		return nil
 	case "output_format":
 		if p.Text != nil || mediaSet {

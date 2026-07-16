@@ -83,7 +83,14 @@ jobs:
           # bundle — the public module is proxy/sumdb-resolvable and self-links
           # its embedded archive), which now runs unconditionally on every PR
           # incl. forks — nanollm must never block normal CI.
-          find . -name go.mod -not -path '*/adapters/adapter_*' -not -path '*/dynclient/baml-patched/*' -not -path '*/internal/nativebody/nanollmprepare/*' -exec dirname {} \; | while read dir; do
+          #
+          # nativeserve is skipped for the SAME reason (de-BAML #624): it is the
+          # PUBLIC, out-of-go.work, nanollm-linked serve-core module the subprocess
+          # worker AND an in-process dynclient consumer both import. Like
+          # nanollmprepare it requires the cgo nanollm-ffi module and is excluded
+          # from go.work, so `./...` here would fail the same way; its cgo gated
+          # coverage runs in nanollm-send.yml (GOWORK=off).
+          find . -name go.mod -not -path '*/adapters/adapter_*' -not -path '*/dynclient/baml-patched/*' -not -path '*/internal/nativebody/nanollmprepare/*' -not -path '*/nativeserve/*' -exec dirname {} \; | while read dir; do
             echo "=== Testing $dir ==="
             if [ "$dir" = "./adapters/common" ]; then
               (cd "$dir" && GOWORK=off go test -race -count=100 -timeout 20m ./...)

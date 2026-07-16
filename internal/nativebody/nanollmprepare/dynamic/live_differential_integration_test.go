@@ -77,9 +77,9 @@ import (
 	"github.com/invakid404/baml-rest/dynclient"
 	"github.com/invakid404/baml-rest/internal/debaml"
 	"github.com/invakid404/baml-rest/internal/nativebody"
-	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/execute"
-	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/testutil"
 	"github.com/invakid404/baml-rest/internal/nativeprompt"
+	"github.com/invakid404/baml-rest/nativeserve/execute"
+	"github.com/invakid404/baml-rest/nativeserve/testutil"
 	nanollm "github.com/viktordanov/nanollm-ffi/go"
 )
 

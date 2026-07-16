@@ -626,26 +626,32 @@ if [ "${SUBPROCESS:-true}" = "true" ]; then
         # (.embedignore) so cmd/embed never imports it into the root link graph;
         # it rides along as the opaque tar cmd/build/nativeworker_module.tar
         # (which ships in the bundle under the already-embedded cmd/build dir).
-        # Restore it here, AFTER the embed regen above (so cmd/embed never
-        # discovers a nanollm module), into its canonical path. Full-checkout
-        # builds already have the directory; extracting over it is a no-op on
-        # content because the tar is the authoritative committed snapshot.
+        # As of de-BAML #624 that SAME tar also carries the sibling public
+        # nativeserve module (the nanollm-linked serve core cmd/worker imports); it
+        # is likewise .embedignore'd, so extraction restores BOTH modules into their
+        # canonical paths. Restore here, AFTER the embed regen above (so cmd/embed
+        # never discovers a nanollm module). Full-checkout builds already have the
+        # directories; extracting over them is a no-op on content because the tar is
+        # the authoritative committed snapshot.
         if [ ! -f cmd/build/nativeworker_module.tar ]; then
             echo "ERROR: NATIVE_WORKER=true but cmd/build/nativeworker_module.tar is missing from the build context" >&2
             exit 1
         fi
-        echo "Restoring isolated nanollm worker module from opaque asset (cmd/build/nativeworker_module.tar)..."
+        echo "Restoring isolated nanollm worker + nativeserve modules from opaque asset (cmd/build/nativeworker_module.tar)..."
         tar -xf cmd/build/nativeworker_module.tar
 
-        # Overlay the extracted module's OWN go.mod so it can resolve this build's
-        # generated ./baml_client and use the selected/custom BAML under
+        # Overlay the extracted WORKER module's OWN go.mod so it can resolve this
+        # build's generated ./baml_client and use the selected/custom BAML under
         # GOWORK=off (the isolated module never sees the builder's go.work, where
         # `go work use ./baml_client` and any custom-BAML replace live). The
         # overlay edits ONLY the throwaway extracted go.mod — root go.mod/go.work
         # are untouched, so the host stays zero-nanollm/CGO-free. It also drops
         # replaces whose targets this server bundle trimmed (dynclient, unselected
         # adapters). Root's generated InitBamlRuntime imports baml_client, so the
-        # worker (via root) transitively needs it.
+        # worker (via root) transitively needs it. Only the WORKER module (the build's
+        # main module) needs the overlay: nativeserve is a DEPENDENCY here, and Go
+        # ignores a dependency module's replace directives, so its own trimmed-target
+        # replaces never dangle and it needs no baml_client (it imports none).
         echo "Overlaying isolated worker module go.mod (baml_client + BAML selection)..."
         NATIVE_WORKER_OVERLAY_ARGS=(
             --module-dir internal/nativebody/nanollmprepare

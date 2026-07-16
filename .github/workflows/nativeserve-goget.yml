@@ -1,0 +1,117 @@
+name: nativeserve go-get (external consumer)
+
+# De-BAML #624 EXTERNAL-RESOLVABILITY guard for the public nativeserve module.
+#
+# The whole point of nativeserve is to be `go get`-able by a THIRD-PARTY dynclient
+# consumer that owns a different link graph. Every OTHER lane that touches
+# nativeserve (nanollm-send, unit-tests) builds it from inside this checkout, where
+# the local `replace` directives in nativeserve/go.mod resolve the first-party
+# siblings from the working tree — which MASKS whether nativeserve's require
+# versions are actually resolvable off a clean checkout. Those replaces do NOT
+# propagate to an external consumer.
+#
+# This lane is the unmasked proof: from a FRESH temp module OUTSIDE the repo (no
+# repo checkout, no go.work, no replace directives), it `go get`s
+# github.com/invakid404/baml-rest/nativeserve at the exact commit under test and
+# builds a trivial program that imports the public constructor nativeserve.New. If
+# nativeserve/go.mod required an unpublished first-party version (e.g. a root
+# `v0.0.48` that has no release tag), the `go get` would fail with
+# `unknown revision`, and this lane goes red.
+#
+# GOPRIVATE is set for github.com/invakid404/baml-rest so the first-party modules
+# resolve straight from the origin (via the proxy's direct fallback) without a
+# checksum-db lookup: the commit under test lives on a PR/feature branch, so its
+# pseudo-version is not yet in sum.golang.org. Third-party deps (prometheus,
+# nanollm-ffi, …) still resolve through the normal proxy + sumdb. A tagged release
+# would need neither GOPRIVATE nor the pseudo-versions.
+#
+# nativeserve links the PUBLIC github.com/viktordanov/nanollm-ffi/go (cgo + a
+# prebuilt Rust archive), so the consumer build runs with CGO_ENABLED=1 — proving
+# the documented CGO build recipe end to end. Fork-safe + de-secreted: read-only,
+# no token, all modules fetched from public origins.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: nativeserve-goget-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.5"
+
+jobs:
+  nativeserve-goget:
+    # FORK GUARD: this lane `go get`s the UPSTREAM module path
+    # github.com/invakid404/baml-rest/nativeserve@<head-sha>. On a FORK PR the head
+    # SHA lives on the fork, not on the upstream repo, so it is not a resolvable
+    # upstream revision and the probe would fail spuriously. Run it ONLY for pushes
+    # and SAME-REPO (non-fork) PRs — precisely the cases whose head SHA is a real
+    # upstream revision. This preserves the no-checkout / no-replace external-consumer
+    # proof for the upstream case (the whole point of the lane) while never red-flagging
+    # a fork contributor's PR for an infrastructure reason outside their control.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # nativeserve links nanollm-ffi (cgo + prebuilt archive) — the consumer build
+      # exercises the real CGO path, not a stub.
+      CGO_ENABLED: "1"
+      # First-party modules resolve direct (no sumdb) because the commit under test
+      # is on a branch, not a tagged/sumdb-indexed release.
+      GOPRIVATE: "github.com/invakid404/baml-rest"
+    steps:
+      - name: Set up Go
+        uses: actions/setup-go@v6.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Resolve the exact commit under test
+        run: |
+          set -euo pipefail
+          # pull_request: the branch head (a real, fetchable commit). push: the
+          # commit just landed on master. github.sha on pull_request is an ephemeral
+          # merge commit that go get cannot resolve, so prefer head.sha.
+          sha="${{ github.event.pull_request.head.sha || github.sha }}"
+          echo "TIP_SHA=${sha}" >> "$GITHUB_ENV"
+          echo "Resolving github.com/invakid404/baml-rest/nativeserve@${sha}"
+
+      - name: External consumer resolves + builds nativeserve.New (no checkout, no replace, no workspace)
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          cd "$work"
+          go mod init external.consumer/probe
+          cat > main.go <<'GOEOF'
+          // A minimal third-party consumer: import the public constructor and use it.
+          package main
+
+          import (
+          	"fmt"
+
+          	"github.com/prometheus/client_golang/prometheus"
+
+          	"github.com/invakid404/baml-rest/nativeserve"
+          )
+
+          func main() {
+          	fn, err := nativeserve.New(prometheus.NewRegistry())
+          	if err != nil {
+          		panic(err)
+          	}
+          	if fn == nil {
+          		panic("nativeserve.New returned a nil serve func")
+          	}
+          	fmt.Println("ok: nativeserve.New resolved + built as an external consumer")
+          }
+          GOEOF
+          # No go.work, no replace directives — a genuinely external consumer. If any
+          # first-party require in nativeserve/go.mod is unpublished, `go get` fails here.
+          GOWORK=off GOFLAGS= go get "github.com/invakid404/baml-rest/nativeserve@${TIP_SHA}"
+          GOWORK=off GOFLAGS= go build ./...
+          GOWORK=off GOFLAGS= go run ./...

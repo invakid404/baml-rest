@@ -228,23 +228,21 @@ func NewMetrics(reg prometheus.Registerer) (*Metrics, error) {
 			Help: "de-BAML native-served requests that fell back to a BAML parse of the same response bytes, by bounded kind.",
 		}, []string{"kind"}),
 	}
-	if err := reg.Register(m.declines); err != nil {
-		return nil, err
-	}
-	if err := reg.Register(m.attempts); err != nil {
-		return nil, err
-	}
-	if err := reg.Register(m.planCompare); err != nil {
-		return nil, err
-	}
-	if err := reg.Register(m.responseCompare); err != nil {
-		return nil, err
-	}
-	if err := reg.Register(m.nativeSockets); err != nil {
-		return nil, err
-	}
-	if err := reg.Register(m.fallback); err != nil {
-		return nil, err
+	// Register every collector in a fixed order, rolling back the ones already
+	// registered if a later Register fails, so a partial-registration error never
+	// leaves stray de-BAML collectors on a reused registry. The success path is
+	// unchanged (all six register in the same order as before).
+	registered := make([]prometheus.Collector, 0, 6)
+	for _, c := range []prometheus.Collector{
+		m.declines, m.attempts, m.planCompare, m.responseCompare, m.nativeSockets, m.fallback,
+	} {
+		if err := reg.Register(c); err != nil {
+			for _, done := range registered {
+				reg.Unregister(done)
+			}
+			return nil, err
+		}
+		registered = append(registered, c)
 	}
 	// Pre-initialize the invariant flag="off" series to zero so the paging alert
 	// `increase(baml_rest_debaml_native_sockets_total{flag="off"}[window]) > 0`

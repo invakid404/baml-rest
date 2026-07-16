@@ -26,7 +26,7 @@ import (
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
-	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/admission"
+	"github.com/invakid404/baml-rest/nativeserve/admission"
 )
 
 // openAIBody builds a minimal openai chat 2xx body whose assistant content is the

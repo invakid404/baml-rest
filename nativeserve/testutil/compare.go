@@ -29,8 +29,10 @@
 //
 // Diagnostics never print a raw secret. Only an allowlist of safe header names
 // (mirroring nanollm's own §11.3 allowlist) prints its value; every other value —
-// notably `authorization` — renders as "<redacted>". Fixture bodies are safe to
-// print (they carry no real credential), so a body mismatch shows both bodies.
+// notably `authorization` — renders as "<redacted>". The URL and body can carry
+// secrets (an api key in a query parameter; a credential in a request body), so a
+// URL or body mismatch reports LENGTH ONLY — never the raw value, and (per the
+// NativeServeRequest secret contract) never a content-derived hash/digest.
 //
 // # What stays with the caller
 //
@@ -170,8 +172,10 @@ func RedactValue(name, value string) string {
 // The `a` snapshot is the BAML oracle capture and `b` is the nanollm plan
 // (labeled "baml"/"nanollm" in messages). Header comparison is over the semantic
 // set only; header VALUES that differ are reported redacted unless the name is on
-// the safe allowlist. Header order and casing are never compared. Bodies are
-// printed in full on mismatch (fixtures carry no real credential).
+// the safe allowlist. Header order and casing are never compared. A URL or body
+// mismatch reports LENGTH ONLY (never the raw value, and never a content-derived
+// hash/digest) — both can carry secrets — while still emitting the "url:" / "body:"
+// prefix so a mismatch on either field is detectable.
 func Diff(a, b Snapshot) []string {
 	var diffs []string
 
@@ -179,10 +183,16 @@ func Diff(a, b Snapshot) []string {
 		diffs = append(diffs, fmt.Sprintf("method: baml=%q nanollm=%q", a.Method, b.Method))
 	}
 	if a.URL != b.URL {
-		diffs = append(diffs, fmt.Sprintf("url: baml=%q nanollm=%q", a.URL, b.URL))
+		// The URL can carry a secret (e.g. an api key in a query parameter), so the
+		// raw values are NEVER emitted — report only that the URLs differ and their
+		// lengths. Per the NativeServeRequest secret contract, no content-derived
+		// hash/digest is emitted either; a length is a coarse, non-reversible signal.
+		diffs = append(diffs, fmt.Sprintf("url: differ (baml_len=%d nanollm_len=%d)", len(a.URL), len(b.URL)))
 	}
 	if !bytes.Equal(a.Body, b.Body) {
-		diffs = append(diffs, fmt.Sprintf("body:\n--- baml ---\n%s\n--- nanollm ---\n%s", a.Body, b.Body))
+		// Body bytes can carry a secret; emit LENGTH ONLY — never the content, and
+		// (per the secret contract) never a content-derived hash/digest.
+		diffs = append(diffs, fmt.Sprintf("body: differ (baml_len=%d nanollm_len=%d)", len(a.Body), len(b.Body)))
 	}
 	diffs = append(diffs, diffHeaders(a.Headers, b.Headers)...)
 

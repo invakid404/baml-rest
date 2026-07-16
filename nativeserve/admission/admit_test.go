@@ -29,7 +29,7 @@ import (
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
-	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/planassert"
+	"github.com/invakid404/baml-rest/nativeserve/planassert"
 	"github.com/invakid404/baml-rest/worker"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
@@ -448,6 +448,15 @@ func TestAdmitDeclineMatrix(t *testing.T) {
 			in.Messages[0] = bamlutils.DynamicMessage{Role: "user", PartsContent: []bamlutils.DynamicContentPart{{Type: "output_format", Text: sp("leak")}}}
 		}, StageMessage, ReasonMixedPayload, "openai"},
 		{"invalid_utf8", func(in *Input) { in.Messages[0].TextContent = sp("bad\xff\xfeutf8") }, StageMessage, ReasonInvalidUTF8, "openai"},
+		// Fail-closed BACKSTOP for a non-nil-but-empty PLAIN content: DynamicInput.Validate
+		// already rejects this at the input boundary, so it never reaches admission on a
+		// contract-checked path; this asserts the direct-caller backstop still declines it.
+		// (An empty text PART is deliberately NOT declined here — admission admits it and
+		// the original S6 normalization drops the empty segment at render, so a part that
+		// coexists with renderable content still serves natively; a WHOLLY-empty-rendered
+		// message is declined downstream by the native body support gate. Both are proven
+		// by the gated dynclient e2e parity test, not this pre-render admission matrix.)
+		{"empty_text_content", func(in *Input) { in.Messages[0].TextContent = sp("") }, StageMessage, ReasonEmptyMessage, "openai"},
 	}
 
 	for _, tc := range cases {

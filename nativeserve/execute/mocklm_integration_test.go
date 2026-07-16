@@ -90,12 +90,15 @@ func startMock(t *testing.T) *mockServer {
 
 	logs := &lockedBuffer{}
 	cmd := exec.Command(bin)
-	cmd.Env = append(os.Environ(),
-		"CONFIG_PATH="+cfgPath,
+	// go-mocklm reads only these four variables; pass a scoped env (NOT the test
+	// process's full os.Environ()) so no ambient/inherited variable can influence
+	// the loopback mock's behavior.
+	cmd.Env = []string{
+		"CONFIG_PATH=" + cfgPath,
 		"MOCKLM_HTTP_ENABLED=1",
 		"MOCKLM_TLS_ENABLED=0",
 		"MOCKLM_VALIDATE_RESPONSES=1",
-	)
+	}
 	cmd.Stdout = logs
 	cmd.Stderr = logs
 	if err := cmd.Start(); err != nil {

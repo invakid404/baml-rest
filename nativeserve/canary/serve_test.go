@@ -12,8 +12,8 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
-	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/admission"
-	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/execute"
+	"github.com/invakid404/baml-rest/nativeserve/admission"
+	"github.com/invakid404/baml-rest/nativeserve/execute"
 )
 
 // newTestServer builds a Server over a fresh private registry so a test can read

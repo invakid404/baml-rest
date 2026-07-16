@@ -51,13 +51,13 @@ import (
 // to this transport adapter, so an expired plan is rejected rather than silently
 // re-signed. (OpenAI plans are unsigned and never expire; this guards the seam
 // for the signed-plan providers a later phase adds.)
-var ErrPlanExpired = errors.New("nanollmprepare: prepared plan expired before attempt")
+var ErrPlanExpired = errors.New("nativeserve: prepared plan expired before attempt")
 
 // ErrAttemptUnsupported is the umbrella sentinel for a parity-decline: the
 // native support decision refused a plan BEFORE opening a socket, so native
 // never out-claims BAML on a shape it has not proven. Recover the stable
 // stage/reason via errors.As(&UnsupportedError{}).
-var ErrAttemptUnsupported = errors.New("nanollmprepare: prepared plan not supported by the native unary attempt")
+var ErrAttemptUnsupported = errors.New("nativeserve: prepared plan not supported by the native unary attempt")
 
 // UnsupportedError carries a stable, secret-free stage/reason for a
 // parity-decline (the "deferral record" the scope asks every decline to leave).
@@ -68,7 +68,7 @@ type UnsupportedError struct {
 }
 
 func (e *UnsupportedError) Error() string {
-	return fmt.Sprintf("nanollmprepare: unsupported attempt (%s): %s", e.Stage, e.Reason)
+	return fmt.Sprintf("nativeserve: unsupported attempt (%s): %s", e.Stage, e.Reason)
 }
 
 func (e *UnsupportedError) Unwrap() error { return ErrAttemptUnsupported }
@@ -228,19 +228,19 @@ type ConsumeConfig struct {
 //     nil) — provider/parse OUTCOMES, not errors.
 func RunAttempt(ctx context.Context, cfg AttemptConfig) (*AttemptResult, error) {
 	if cfg.Client == nil {
-		return nil, fmt.Errorf("nanollmprepare: nil nanollm client")
+		return nil, fmt.Errorf("nativeserve: nil nanollm client")
 	}
 	if cfg.Prepared == nil {
-		return nil, fmt.Errorf("nanollmprepare: nil prepared request")
+		return nil, fmt.Errorf("nativeserve: nil prepared request")
 	}
 	if cfg.Executor == nil {
-		return nil, fmt.Errorf("nanollmprepare: nil exact executor")
+		return nil, fmt.Errorf("nativeserve: nil exact executor")
 	}
 	if cfg.Parse == nil {
-		return nil, fmt.Errorf("nanollmprepare: nil parse function")
+		return nil, fmt.Errorf("nativeserve: nil parse function")
 	}
 	if cfg.OutputSchema == nil {
-		return nil, fmt.Errorf("nanollmprepare: nil output schema")
+		return nil, fmt.Errorf("nativeserve: nil output schema")
 	}
 
 	prep := cfg.Prepared
@@ -331,13 +331,13 @@ func RunAttempt(ctx context.Context, cfg AttemptConfig) (*AttemptResult, error) 
 // unaffected: they never dereference the result on error.
 func ConsumeResponse(ctx context.Context, cfg ConsumeConfig, status int, body []byte) (*AttemptResult, error) {
 	if cfg.Client == nil {
-		return nil, fmt.Errorf("nanollmprepare: nil nanollm client")
+		return nil, fmt.Errorf("nativeserve: nil nanollm client")
 	}
 	if cfg.Parse == nil {
-		return nil, fmt.Errorf("nanollmprepare: nil parse function")
+		return nil, fmt.Errorf("nativeserve: nil parse function")
 	}
 	if cfg.OutputSchema == nil {
-		return nil, fmt.Errorf("nanollmprepare: nil output schema")
+		return nil, fmt.Errorf("nativeserve: nil output schema")
 	}
 
 	res := &AttemptResult{
@@ -378,7 +378,7 @@ func ConsumeResponse(ctx context.Context, cfg ConsumeConfig, status int, body []
 		// Any other translate failure is a genuine error (not a provider
 		// outcome, not SAP-eligible) and propagates — with the response context
 		// (status + raw body) retained on res for the serving mapper's details.raw.
-		return res, fmt.Errorf("nanollmprepare: TranslateResponse(%s): %w", cfg.Alias, terr)
+		return res, fmt.Errorf("nativeserve: TranslateResponse(%s): %w", cfg.Alias, terr)
 	}
 
 	res.Translated = translated
@@ -398,11 +398,11 @@ func ConsumeResponse(ctx context.Context, cfg ConsumeConfig, status int, body []
 	// and reasoning are retained on the result so the same-response oracle can
 	// compare the full /call-with-raw envelope, not just structured output.
 	if !translated.BodyIsJSON {
-		return res, fmt.Errorf("nanollmprepare: 2xx translated response is not JSON (status %d)", translated.Status)
+		return res, fmt.Errorf("nativeserve: 2xx translated response is not JSON (status %d)", translated.Status)
 	}
 	parseable, raw, reasoning, xerr := buildrequest.ExtractResponseContentBytes("openai", translated.Body, cfg.IncludeReasoning)
 	if xerr != nil {
-		return res, fmt.Errorf("nanollmprepare: extracting assistant text: %w", xerr)
+		return res, fmt.Errorf("nativeserve: extracting assistant text: %w", xerr)
 	}
 	res.AssistantText = parseable
 	res.Raw = raw

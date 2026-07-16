@@ -77,17 +77,17 @@ jobs:
           # Defined once and called after EVERY ./scripts/sync.sh run (the
           # initial step above and the non-fast-forward retry below), so the
           # populate-then-validate sequence is identical on both passes.
-          # internal/nativebody/nanollmprepare is excluded for the same reason
-          # as dynclient/baml-patched: it's a SEPARATE, test-only module
-          # outside go.work (de-BAML Phase 4b + 5.1), so a workspace-mode
-          # `go list` here fails, and it is cgo/platform-bound. Its public
-          # nanollm-ffi dependency (github.com/viktordanov/nanollm-ffi/go@v0.3.2),
-          # like the module's other direct requires, is pinned in its own
-          # go.mod/go.sum where Renovate tracks it; because the module is outside
-          # go.work its checksums never enter go.work.sum, so it needs no
+          # internal/nativebody/nanollmprepare AND nativeserve are excluded for the
+          # same reason as dynclient/baml-patched: both are SEPARATE modules outside
+          # go.work (de-BAML Phase 4b + 5.1, and the #624 public serve core), so a
+          # workspace-mode `go list` here fails, and both are cgo/platform-bound.
+          # Their public nanollm-ffi dependency (github.com/viktordanov/nanollm-ffi/go@v0.3.2),
+          # like each module's other direct requires, is pinned in its own
+          # go.mod/go.sum where Renovate tracks it; because the modules are outside
+          # go.work their checksums never enter go.work.sum, so they need no
           # workspace-checksum population here.
           populate_workspace_checksums() {
-            find . -name go.mod -not -path '*/adapters/adapter_*' -not -path '*/dynclient/baml-patched/*' -not -path '*/internal/nativebody/nanollmprepare/*' -exec dirname {} \; | while read -r dir; do
+            find . -name go.mod -not -path '*/adapters/adapter_*' -not -path '*/dynclient/baml-patched/*' -not -path '*/internal/nativebody/nanollmprepare/*' -not -path '*/nativeserve/*' -exec dirname {} \; | while read -r dir; do
               if [ "$dir" = "./adapters/common" ]; then
                 (cd "$dir" && GOWORK=off go list -deps -test ./... >/dev/null)
               else

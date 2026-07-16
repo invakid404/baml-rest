@@ -40,8 +40,8 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/dynclient"
 	"github.com/invakid404/baml-rest/internal/debaml"
-	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/admission"
-	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/canary"
+	"github.com/invakid404/baml-rest/nativeserve/admission"
+	"github.com/invakid404/baml-rest/nativeserve/canary"
 )
 
 // panicRoundTripper panics inside RoundTrip, to drive a post-claim panic in the

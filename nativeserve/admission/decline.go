@@ -183,7 +183,7 @@ const (
 // the predicate refused a request BEFORE any socket, so native never out-claims
 // BAML on a shape it has not proven. Callers gate on errors.Is(err, ErrDeclined)
 // and recover the stable stage/reason via errors.As(&Decline{}).
-var ErrDeclined = errors.New("nanollmprepare/admission: native admission declined to BAML")
+var ErrDeclined = errors.New("nativeserve/admission: native admission declined to BAML")
 
 // Decline is a stable, secret-free native-admission decline: the fixed-enum
 // Stage + Reason that name WHICH proof failed, plus a short Detail for redacted
@@ -197,7 +197,7 @@ type Decline struct {
 }
 
 func (d *Decline) Error() string {
-	return fmt.Sprintf("nanollmprepare/admission: declined at %s (%s): %s", d.Stage, d.Reason, d.Detail)
+	return fmt.Sprintf("nativeserve/admission: declined at %s (%s): %s", d.Stage, d.Reason, d.Detail)
 }
 
 func (d *Decline) Unwrap() error { return ErrDeclined }

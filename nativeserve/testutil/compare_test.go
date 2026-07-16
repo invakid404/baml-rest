@@ -8,6 +8,7 @@ package testutil
 // comparator itself is correct and fail closed.
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -144,20 +145,31 @@ func TestDiffDetectsMethodURLBodyDifferences(t *testing.T) {
 		t.Errorf("method mutation not detected: %v", d)
 	}
 
-	// URL mutation.
+	// URL mutation carrying a secret marker: the diff must be EXACTLY the length-only
+	// diagnostic (no raw value, no content-derived hash) — which both detects the
+	// mismatch (the "url:" prefix) and proves the raw URL / its secret never leak. A
+	// URL can carry a credential in a query parameter.
 	a, b = base()
-	b.URL = "u2"
-	if d := Diff(a, b); len(d) == 0 || !containsPrefix(d, "url:") {
-		t.Errorf("url mutation not detected: %v", d)
+	const urlSecret = "SECRET_URL_apikey=sk-must-not-leak"
+	b.URL = "https://host/v1/chat?" + urlSecret
+	wantURL := fmt.Sprintf("url: differ (baml_len=%d nanollm_len=%d)", len(a.URL), len(b.URL))
+	if d := Diff(a, b); len(d) != 1 || d[0] != wantURL {
+		t.Errorf("url diff = %v, want exactly [%q]", d, wantURL)
+	} else if strings.Contains(d[0], urlSecret) { // belt-and-suspenders non-leak check
+		t.Errorf("url diagnostic leaked the raw URL (secret marker present): %v", d)
 	}
 
-	// One-byte body mutation.
+	// Body mutation carrying a secret marker: the diff must be EXACTLY the length-only
+	// diagnostic — detects the mismatch (the "body:" prefix) without leaking the body
+	// bytes or emitting any content-derived digest.
 	a, b = base()
-	mutated := append([]byte(nil), b.Body...)
-	mutated[0] ^= 0x20
-	b.Body = mutated
-	if d := Diff(a, b); len(d) == 0 || !containsPrefix(d, "body:") {
-		t.Errorf("body mutation not detected: %v", d)
+	const bodySecret = "SECRET_BODY_token=super-secret-must-not-leak"
+	b.Body = []byte(bodySecret)
+	wantBody := fmt.Sprintf("body: differ (baml_len=%d nanollm_len=%d)", len(a.Body), len(b.Body))
+	if d := Diff(a, b); len(d) != 1 || d[0] != wantBody {
+		t.Errorf("body diff = %v, want exactly [%q]", d, wantBody)
+	} else if strings.Contains(d[0], bodySecret) { // belt-and-suspenders non-leak check
+		t.Errorf("body diagnostic leaked the raw body (secret marker present): %v", d)
 	}
 }
 

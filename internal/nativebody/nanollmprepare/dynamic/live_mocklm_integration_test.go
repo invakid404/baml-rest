@@ -38,7 +38,7 @@ import (
 	"time"
 
 	"github.com/invakid404/baml-rest/bamlutils"
-	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/execute"
+	"github.com/invakid404/baml-rest/nativeserve/execute"
 )
 
 const (

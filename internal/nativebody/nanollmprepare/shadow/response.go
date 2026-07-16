@@ -32,9 +32,9 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
 	"github.com/invakid404/baml-rest/internal/debaml"
-	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/admission"
-	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/execute"
-	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/parity"
+	"github.com/invakid404/baml-rest/nativeserve/admission"
+	"github.com/invakid404/baml-rest/nativeserve/execute"
+	"github.com/invakid404/baml-rest/nativeserve/parity"
 )
 
 // errNoBAMLOnlyParse marks a same-response comparison that reached the response

@@ -35,8 +35,8 @@ import (
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
-	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/admission"
-	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/planassert"
+	"github.com/invakid404/baml-rest/nativeserve/admission"
+	"github.com/invakid404/baml-rest/nativeserve/planassert"
 )
 
 func sp(s string) *string { return &s }

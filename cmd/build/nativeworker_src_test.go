@@ -22,8 +22,10 @@ func TestNativeWorkerModuleTarIsFresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolving repo root: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(repoRoot, nativeworkersrc.ModuleRelPath, "go.mod")); err != nil {
-		t.Fatalf("isolated module not found at %s (repoRoot=%s): %v", nativeworkersrc.ModuleRelPath, repoRoot, err)
+	for _, modRel := range nativeworkersrc.ModuleRelPaths {
+		if _, err := os.Stat(filepath.Join(repoRoot, modRel, "go.mod")); err != nil {
+			t.Fatalf("packaged module not found at %s (repoRoot=%s): %v", modRel, repoRoot, err)
+		}
 	}
 
 	want, err := nativeworkersrc.BuildTar(repoRoot)

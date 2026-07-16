@@ -56,11 +56,11 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/bamlparser"
 	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
 	"github.com/invakid404/baml-rest/internal/nativebody"
-	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/planassert"
-	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/testutil"
 	"github.com/invakid404/baml-rest/internal/nativeprompt"
 	bamlclient "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/static_oracle/baml_client"
 	"github.com/invakid404/baml-rest/internal/nativeschema"
+	"github.com/invakid404/baml-rest/nativeserve/planassert"
+	"github.com/invakid404/baml-rest/nativeserve/testutil"
 	nanollm "github.com/viktordanov/nanollm-ffi/go"
 )
 

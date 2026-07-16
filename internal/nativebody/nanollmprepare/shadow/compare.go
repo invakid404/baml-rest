@@ -18,7 +18,7 @@ package shadow
 
 import (
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
-	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/parity"
+	"github.com/invakid404/baml-rest/nativeserve/parity"
 )
 
 // planComparison is the shadow-local view of parity.PlanComparison. It keeps the
