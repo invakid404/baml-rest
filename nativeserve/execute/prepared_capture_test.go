@@ -251,17 +251,23 @@ func TestPreparedExpiryRejectedPreAttempt(t *testing.T) {
 	}
 }
 
-// TestPreparedUnsupportedDeclinedPreAttempt: a plan outside the admitted
-// unary-OpenAI surface declines with the parity-decline sentinel + a stable
-// stage/reason, before any socket.
+// TestPreparedUnsupportedDeclinedPreAttempt: a plan outside the admitted unary
+// chat surface declines with the parity-decline sentinel + a stable stage/reason,
+// before any socket. The provider requirement was REMOVED from supportDecision
+// (de-BAML mprov S1 §7 — admission's mapper/verification policy already decides
+// provider support, and TranslateResponse normalizes every provider to OpenAI
+// JSON), so this exercises a still-enforced provider-NEUTRAL shape gate: a
+// streaming plan, which the one-shot unary transport never sends.
 func TestPreparedUnsupportedDeclinedPreAttempt(t *testing.T) {
 	cs := newCaptureServer(t)
 	nano := newPreparedClient(t, cs.base())
 	prep := preparePlan(t, nano, cs.base(), p6bNativeBody(t))
 
-	// Mutate the plan's provider to an unproven one AFTER Prepare (a synthetic
-	// unsupported shape). The support decision must decline before a socket.
+	// A non-openai provider (e.g. "anthropic") is NO LONGER a pre-attempt decline
+	// — the provider gate is gone. Mutate a provider-neutral unsupported shape
+	// instead: a streaming plan. The support decision must decline before a socket.
 	prep.Meta.Provider = "anthropic"
+	prep.Meta.Stream = true
 
 	spy := &parseSpy{fn: debaml.Parse}
 	ctx, cancel := context.WithTimeout(context.Background(), p6bTimeout)
@@ -278,8 +284,8 @@ func TestPreparedUnsupportedDeclinedPreAttempt(t *testing.T) {
 		t.Fatalf("err = %v, want ErrAttemptUnsupported", err)
 	}
 	var ue *UnsupportedError
-	if !errors.As(err, &ue) || ue.Stage != "provider" {
-		t.Fatalf("err = %v, want an UnsupportedError with stage=provider", err)
+	if !errors.As(err, &ue) || ue.Stage != "stream" {
+		t.Fatalf("err = %v, want an UnsupportedError with stage=stream", err)
 	}
 	if res != nil {
 		t.Errorf("result = %s, want nil on a pre-attempt decline", resultSummary(res))

@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"github.com/dave/jennifer/jen"
+	"github.com/stoewer/go-strcase"
 )
 
 // emitLegacyStream emits the legacy CallStream+OnTick streaming
@@ -19,128 +20,11 @@ func (me *methodEmitter) emitLegacyStream() {
 	// This path uses BAML's native streaming without raw collection overhead.
 	// Partials come directly from BAML's stream, no OnTick/SSE parsing needed.
 
-	// Build call parameters for the noRaw Stream call (includes WithOnTick for heartbeat)
-	var noRawStreamCallParams []jen.Code
-	noRawStreamCallParams = append(noRawStreamCallParams, jen.Id("adapter")) // context
-	for _, arg := range me.args {
-		noRawStreamCallParams = append(noRawStreamCallParams, me.argCallParam(arg))
-	}
-	noRawStreamCallParams = append(noRawStreamCallParams,
-		jen.Id("streamOpts").Op("..."),
-	)
-
-	// noRaw goroutine body - wrapped in gorecovery.GoHandler for panic resilience
-	noRawGoroutineBody := []jen.Code{
-		// Build streamOpts: base options + WithOnTick heartbeat; append
-		// WithClient(clientOverride) when the router passed a resolved leaf
-		// client (e.g. baml-roundrobin selected a specific child).
-		//
-		// The WithClient append clones streamOpts first, matching the
-		// driveStream pattern. Without the clone, streamOpts shares its
-		// backing array with `options` (the first append may or may not
-		// have reallocated, depending on capacity), and appending
-		// WithClient could mutate the caller's slice — stomping the
-		// options list for any sibling request that held the same
-		// backing array.
-		jen.Id("streamOpts").Op(":=").Append(
-			jen.Id("options"),
-			jen.Qual(g.pkgs.GeneratedClientPkg, "WithOnTick").Call(jen.Id("onTick")),
-		),
-		g.withClientCloneAndAppend("streamOpts", "streamOpts"),
-		// Call Stream WITH OnTick for heartbeat tracking, but still use native streaming for data
-		jen.List(jen.Id("stream"), jen.Id("streamErr")).Op(":=").
-			Qual(g.pkgs.GeneratedClientPkg, "Stream").Dot(me.methodName).Call(noRawStreamCallParams...),
-
-		// If stream creation failed, emit error
-		jen.If(jen.Id("streamErr").Op("!=").Nil()).Block(
-			jen.Id("__errR").Op(":=").Id(me.errorConstructorName).Call(jen.Id("streamErr")),
-			jen.Select().Block(
-				jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
-				jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
-					jen.Id("__errR").Dot("Release").Call(),
-				),
-			),
-			jen.Return(jen.Nil()),
-		),
-
-		// Process BAML's stream - forward partials and final
-		jen.For(jen.Id("streamVal").Op(":=").Range().Id("stream")).Block(
-			// Check context cancellation at start of each iteration
-			jen.Select().Block(
-				jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
-					jen.Return(jen.Nil()),
-				),
-				jen.Default().Block(),
-			),
-
-			// Handle errors
-			jen.If(jen.Id("streamVal").Dot("IsError")).Block(
-				jen.Id("__errR").Op(":=").Id(me.errorConstructorName).Call(jen.Id("streamVal").Dot("Error")),
-				jen.Select().Block(
-					jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
-					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
-						jen.Id("__errR").Dot("Release").Call(),
-						jen.Return(jen.Nil()),
-					),
-				),
-				jen.Continue(),
-			),
-
-			// Handle final result
-			// Final() already returns *TFinal from the BAML generated client — assign directly.
-			jen.If(jen.Id("streamVal").Dot("IsFinal")).Block(
-				jen.Id("__r").Op(":=").Id(me.getterFuncName).Call(),
-				jen.Id("__r").Dot("kind").Op("=").Qual(g.pkgs.InterfacesPkg, "StreamResultKindFinal"),
-				jen.Id("__r").Dot("finalParsed").Op("=").Id("streamVal").Dot("Final").Call(),
-				func() jen.Code {
-					if me.isDynamicFinal {
-						return jen.Id(me.unwrapFinalFuncName).Call(jen.Id("__r").Dot("finalParsed"))
-					}
-					return jen.Null()
-				}(),
-				// Emit outcome metadata before sending Final, so it lands
-				// between the last partial and the terminal payload —
-				// matching the BuildRequest path's contract.
-				jen.Id("beforeFinal").Call(),
-				jen.Select().Block(
-					jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
-					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
-						jen.Id("__r").Dot("Release").Call(),
-						jen.Return(jen.Nil()),
-					),
-				),
-				jen.Continue(),
-			),
-
-			// Handle partial - forward BAML's native partial via Stream() (only if not skipping partials)
-			// Stream() already returns *TStream from the BAML generated client — assign directly.
-			jen.If(jen.Op("!").Id("skipPartials")).Block(
-				jen.If(jen.Id("__partial").Op(":=").Id("streamVal").Dot("Stream").Call(), jen.Id("__partial").Op("!=").Nil()).Block(
-					func() jen.Code {
-						if me.isDynamicStream {
-							return jen.Id(me.unwrapStreamFuncName).Call(jen.Id("__partial"))
-						}
-						return jen.Null()
-					}(),
-					jen.Id("__r").Op(":=").Id(me.getterFuncName).Call(),
-					jen.Id("__r").Dot("kind").Op("=").Qual(g.pkgs.InterfacesPkg, "StreamResultKindStream"),
-					jen.Id("__r").Dot("streamParsed").Op("=").Id("__partial"),
-					jen.Select().Block(
-						jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
-						jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
-							jen.Id("__r").Dot("Release").Call(),
-							jen.Return(jen.Nil()),
-						),
-						jen.Default().Block(
-							jen.Id("__r").Dot("Release").Call(),
-						), // Non-blocking send for partials - release if not sent
-					),
-				),
-			),
-		),
-
-		jen.Return(jen.Nil()),
-	}
+	// The stream-driving body is factored into noRawStreamBody so the de-BAML
+	// direct-legacy probe (emitDirectLegacyCall) reuses the EXACT same body on a
+	// native DECLINE — guaranteeing byte-identical error/final/heartbeat/partial
+	// frame behaviour with the ordinary legacy path.
+	noRawGoroutineBody := me.noRawStreamBody()
 
 	// _noRaw is the top-level legacy streaming impl invoked from
 	// the BuildRequest fallthrough branch (see __legacyClientOverride
@@ -565,4 +449,404 @@ func (me *methodEmitter) emitLegacyStream() {
 		).
 		Error().
 		Block(fullBody...)
+}
+
+// --- de-BAML direct-legacy native-first probe (mprov S1) ---------------------
+// These live here (next to emitLegacyStream) rather than in a separate file so
+// the shared noRawStreamBody and the probe emitter are always compiled together
+// with the ordinary legacy path.
+
+// noRawStreamBody returns the shared legacy noRaw stream-driving statements: it
+// builds the BAML stream (WithOnTick), forwards every IsError frame and keeps
+// draining, emits the final (after beforeFinal's outcome metadata), and forwards
+// partials unless skipPartials. Factored out of emitLegacyStream so the de-BAML
+// DIRECT-LEGACY probe (emitDirectLegacyCall) reuses the EXACT same body on a
+// native DECLINE — guaranteeing byte-identical result/error/heartbeat/raw/
+// metadata behaviour with the ordinary direct legacy path (only planned_engine
+// differs). It references skipPartials / onTick / beforeFinal from the enclosing
+// scope, which BOTH callers provide.
+func (me *methodEmitter) noRawStreamBody() []jen.Code {
+	g := me.g
+
+	var noRawStreamCallParams []jen.Code
+	noRawStreamCallParams = append(noRawStreamCallParams, jen.Id("adapter")) // context
+	for _, arg := range me.args {
+		noRawStreamCallParams = append(noRawStreamCallParams, me.argCallParam(arg))
+	}
+	noRawStreamCallParams = append(noRawStreamCallParams,
+		jen.Id("streamOpts").Op("..."),
+	)
+
+	return []jen.Code{
+		// Build streamOpts: base options + WithOnTick heartbeat; append
+		// WithClient(clientOverride) when the router passed a resolved leaf
+		// client (e.g. baml-roundrobin selected a specific child).
+		//
+		// The WithClient append clones streamOpts first, matching the
+		// driveStream pattern. Without the clone, streamOpts shares its
+		// backing array with `options` (the first append may or may not
+		// have reallocated, depending on capacity), and appending
+		// WithClient could mutate the caller's slice — stomping the
+		// options list for any sibling request that held the same
+		// backing array.
+		jen.Id("streamOpts").Op(":=").Append(
+			jen.Id("options"),
+			jen.Qual(g.pkgs.GeneratedClientPkg, "WithOnTick").Call(jen.Id("onTick")),
+		),
+		g.withClientCloneAndAppend("streamOpts", "streamOpts"),
+		// Call Stream WITH OnTick for heartbeat tracking, but still use native streaming for data
+		jen.List(jen.Id("stream"), jen.Id("streamErr")).Op(":=").
+			Qual(g.pkgs.GeneratedClientPkg, "Stream").Dot(me.methodName).Call(noRawStreamCallParams...),
+
+		// If stream creation failed, emit error
+		jen.If(jen.Id("streamErr").Op("!=").Nil()).Block(
+			jen.Id("__errR").Op(":=").Id(me.errorConstructorName).Call(jen.Id("streamErr")),
+			jen.Select().Block(
+				jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
+				jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+					jen.Id("__errR").Dot("Release").Call(),
+				),
+			),
+			jen.Return(jen.Nil()),
+		),
+
+		// Process BAML's stream - forward partials and final
+		jen.For(jen.Id("streamVal").Op(":=").Range().Id("stream")).Block(
+			// Check context cancellation at start of each iteration
+			jen.Select().Block(
+				jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+					jen.Return(jen.Nil()),
+				),
+				jen.Default().Block(),
+			),
+
+			// Handle errors
+			jen.If(jen.Id("streamVal").Dot("IsError")).Block(
+				jen.Id("__errR").Op(":=").Id(me.errorConstructorName).Call(jen.Id("streamVal").Dot("Error")),
+				jen.Select().Block(
+					jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
+					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+						jen.Id("__errR").Dot("Release").Call(),
+						jen.Return(jen.Nil()),
+					),
+				),
+				jen.Continue(),
+			),
+
+			// Handle final result
+			// Final() already returns *TFinal from the BAML generated client — assign directly.
+			jen.If(jen.Id("streamVal").Dot("IsFinal")).Block(
+				jen.Id("__r").Op(":=").Id(me.getterFuncName).Call(),
+				jen.Id("__r").Dot("kind").Op("=").Qual(g.pkgs.InterfacesPkg, "StreamResultKindFinal"),
+				jen.Id("__r").Dot("finalParsed").Op("=").Id("streamVal").Dot("Final").Call(),
+				func() jen.Code {
+					if me.isDynamicFinal {
+						return jen.Id(me.unwrapFinalFuncName).Call(jen.Id("__r").Dot("finalParsed"))
+					}
+					return jen.Null()
+				}(),
+				// Emit outcome metadata before sending Final, so it lands
+				// between the last partial and the terminal payload —
+				// matching the BuildRequest path's contract.
+				jen.Id("beforeFinal").Call(),
+				jen.Select().Block(
+					jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
+					jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+						jen.Id("__r").Dot("Release").Call(),
+						jen.Return(jen.Nil()),
+					),
+				),
+				jen.Continue(),
+			),
+
+			// Handle partial - forward BAML's native partial via Stream() (only if not skipping partials)
+			// Stream() already returns *TStream from the BAML generated client — assign directly.
+			jen.If(jen.Op("!").Id("skipPartials")).Block(
+				jen.If(jen.Id("__partial").Op(":=").Id("streamVal").Dot("Stream").Call(), jen.Id("__partial").Op("!=").Nil()).Block(
+					func() jen.Code {
+						if me.isDynamicStream {
+							return jen.Id(me.unwrapStreamFuncName).Call(jen.Id("__partial"))
+						}
+						return jen.Null()
+					}(),
+					jen.Id("__r").Op(":=").Id(me.getterFuncName).Call(),
+					jen.Id("__r").Dot("kind").Op("=").Qual(g.pkgs.InterfacesPkg, "StreamResultKindStream"),
+					jen.Id("__r").Dot("streamParsed").Op("=").Id("__partial"),
+					jen.Select().Block(
+						jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
+						jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(
+							jen.Id("__r").Dot("Release").Call(),
+							jen.Return(jen.Nil()),
+						),
+						jen.Default().Block(
+							jen.Id("__r").Dot("Release").Call(),
+						), // Non-blocking send for partials - release if not sent
+					),
+				),
+			),
+		),
+
+		jen.Return(jen.Nil()),
+	}
+}
+
+// directLegacyCallMethodName is the de-BAML direct-legacy native-first probe
+// entrypoint (e.g. bamlRestDynamicDirectLegacyCall). The router dispatches to it
+// for a direct single unary-call leaf whose existing BAML route is legacy, only
+// when the umbrella flag is on and a SERVE callback is installed.
+func (me *methodEmitter) directLegacyCallMethodName() string {
+	return strcase.LowerCamelCase(me.methodName + "_directLegacyCall")
+}
+
+// emitDirectLegacyCall emits the de-BAML DIRECT-LEGACY native-first probe
+// (mprov S1). Emitted ONLY for the de-BAML dynamic method. It runs the native
+// serve callback FIRST; on a native DECLINE it runs the EXACT ordinary legacy
+// serving lifecycle by reusing runNoRawOrchestration (unchanged) with the SAME
+// noRawStreamBody, so result/error/heartbeat/raw/metadata are byte-identical to
+// bamlRest…NoRaw — only planned_engine=native differs (added on the OUTCOME frame
+// by the metadata interceptor). On native SUCCESS it serves the native final; on
+// native FAILURE it emits the typed error. There is no BuildRequest path behind
+// it (BuildBAMLRequest is nil in the serve request): a non-openai leaf
+// mapping-declines, and an OpenAI leaf forced to legacy declines strict
+// verification (no BAML plan) — both fall through to the ordinary legacy stream.
+func (me *methodEmitter) emitDirectLegacyCall() {
+	if !me.isDeBAMLMethod() {
+		return
+	}
+	g := me.g
+	out := g.out
+	streamResultInterface := jen.Qual(g.pkgs.InterfacesPkg, "StreamResult")
+
+	convertedVar := me.deBAMLConvertedVar()
+
+	// Message conversion + legacy options (options, __struct_messages,
+	// __releaseConverted). The direct-legacy probe is plain unary call, so
+	// skipPartials is always true.
+	body := me.makeLegacyPreamble()
+	body = append(body, jen.Id("skipPartials").Op(":=").True())
+
+	// Resolve the effective send client for the WouldRewriteOrProxy predicate the
+	// admission strategy gate evaluates against the effective target.
+	body = append(body,
+		jen.Id("__httpClient").Op(":=").Qual(g.pkgs.LLMHTTPPkg, "DefaultClient"),
+		jen.If(
+			jen.Id("__c").Op(":=").Id("adapter").Dot("HTTPClient").Call(),
+			jen.Id("__c").Op("!=").Nil(),
+		).Block(
+			jen.Id("__httpClient").Op("=").Id("__c"),
+		),
+	)
+
+	// Resolve the SERVE implementation (the router already gated hasNativeServe,
+	// so it is non-nil in practice; a nil serve safely runs the ordinary legacy
+	// stream with no native probe).
+	body = append(body,
+		jen.Var().Id("serve").Qual(g.pkgs.InterfacesPkg, "NativeServeFunc"),
+		jen.If(
+			jen.List(jen.Id("__g"), jen.Id("__gok")).Op(":=").Id("adapter").Assert(jen.Id("nativeServeGetter")),
+			jen.Id("__gok"),
+		).Block(
+			jen.Id("serve").Op("=").Id("__g").Dot("NativeServeComparator").Call(),
+		),
+	)
+
+	// The metadata interceptor threads planned_engine=native onto the OUTCOME
+	// frame ONLY (§9: serve-considered-then-declined), leaving the planned frame
+	// and every legacy outcome field (winner, baml_call_count) byte-identical to
+	// the ordinary path — that is beforeFinal's BuildLegacyOutcome result.
+	newMetadataResultNative := jen.Func().Params(jen.Id("md").Op("*").Qual(g.pkgs.InterfacesPkg, "Metadata")).Qual(g.pkgs.InterfacesPkg, "StreamResult").Block(
+		jen.If(jen.Id("md").Op("!=").Nil().Op("&&").Id("md").Dot("Phase").Op("==").Qual(g.pkgs.InterfacesPkg, "MetadataPhaseOutcome")).Block(
+			jen.Id("md").Dot("PlannedEngine").Op("=").Lit("native"),
+		),
+		jen.Return(jen.Id(me.metadataConstructorName).Call(jen.Id("md"))),
+	)
+
+	// The stream-driving body, run on a native DECLINE. Identical to the ordinary
+	// legacy path by construction (shared noRawStreamBody).
+	declineBody := me.noRawStreamBody()
+
+	// wrappedBody: native probe first, then dispatch. On DECLINE it falls through
+	// to the ordinary legacy stream (declineBody). __releaseConverted is deferred
+	// at the top so it fires on every branch.
+	var wrappedBody []jen.Code
+	if me.hasReleaseConverted {
+		wrappedBody = append(wrappedBody, jen.Defer().Id("__releaseConverted").Call())
+	}
+	wrappedBody = append(wrappedBody,
+		jen.If(jen.Id("serve").Op("!=").Nil()).Block(
+			// A first-2xx heartbeat frame for a native SERVE (idempotent). On a
+			// pre-socket DECLINE it is never fired, so the heartbeat on the fall-
+			// through leg comes solely from the ordinary stream's onTick — matching
+			// the ordinary legacy path exactly.
+			jen.Var().Id("__probeHB").Qual("sync/atomic", "Bool"),
+			jen.Id("__sendHeartbeat").Op(":=").Func().Params().Block(
+				jen.If(jen.Id("__probeHB").Dot("CompareAndSwap").Call(jen.False(), jen.True())).Block(
+					jen.Id("__hb").Op(":=").Id(me.getterFuncName).Call(),
+					jen.Id("__hb").Dot("kind").Op("=").Qual(g.pkgs.InterfacesPkg, "StreamResultKindHeartbeat"),
+					jen.Select().Block(
+						jen.Case(jen.Id("out").Op("<-").Id("__hb")).Block(),
+						jen.Default().Block(jen.Id("__hb").Dot("Release").Call()),
+					),
+				),
+			),
+			jen.Id("__res").Op(":=").Id("serve").Call(jen.Id("adapter"), jen.Qual(g.pkgs.InterfacesPkg, "NativeServeRequest").Values(jen.Dict{
+				jen.Id("Registry"):         jen.Id("adapter").Dot("OriginalClientRegistry").Call(),
+				jen.Id("Messages"):         jen.Id("nativeShadowMessages").Call(jen.Id(convertedVar)),
+				jen.Id("OutputSchema"):     jen.Id("adapter").Dot("DeBAMLOutputSchema").Call(),
+				jen.Id("Provider"):         jen.Id("provider"),
+				jen.Id("ClientOverride"):   jen.Id("clientOverride"),
+				jen.Id("Mode"):             jen.Qual(g.pkgs.InterfacesPkg, "NativeServeModeCall"),
+				jen.Id("IncludeReasoning"): jen.Id("adapter").Dot("IncludeReasoning").Call(),
+				jen.Id("SingleLeaf"):       jen.True(),
+				jen.Id("HasFallbackChain"): jen.False(),
+				jen.Id("HasRoundRobin"):    jen.False(),
+				// Forwarded TRUTHFULLY from the router's strategy-aware
+				// __legacyRetryPolicy (via the hasRequestRetryOverride param): a
+				// direct single leaf can still carry a resolved retry policy the
+				// single-attempt exact lane would bypass, so a resolved policy must
+				// decline native admission PRE-SOCKET and keep BAML's retry semantics.
+				// (SingleLeaf/HasFallbackChain/HasRoundRobin are literal because the
+				// router only reaches this probe when Strategy/Chain/RoundRobin are all
+				// empty; a retry override is INDEPENDENT of those.)
+				jen.Id("HasRequestRetryOverride"): jen.Id("hasRequestRetryOverride"),
+				jen.Id("WouldRewriteOrProxy"):     jen.Id("__httpClient").Dot("WouldRewriteOrProxy"),
+				// The probe route has no BAML plan to compare (its BAML route is
+				// legacy): a strict OpenAI leaf declines strict verification, a
+				// non-openai leaf mapping-declines.
+				jen.Id("BuildBAMLRequest"): jen.Nil(),
+				jen.Id("SendHeartbeat"):    jen.Id("__sendHeartbeat"),
+			})),
+			jen.Switch(jen.Id("__res").Dot("Disposition")).Block(
+				jen.Case(jen.Qual(g.pkgs.InterfacesPkg, "NativeServeSucceeded")).Block(
+					// Native served the request: emit the native outcome
+					// (winner_path=legacy, winner_engine=native, planned_engine=native)
+					// then the native final. (Unreachable in S1 — every non-openai
+					// leaf mapping-declines before a socket; live once S2 adds the
+					// mappers.)
+					jen.List(jen.Id("__wrapped"), jen.Id("__werr")).Op(":=").Id("wrapDeBAMLDynamicOutput").Call(jen.Id("__res").Dot("FinalJSON")),
+					jen.If(jen.Id("__werr").Op("!=").Nil()).Block(
+						jen.Id("__errR").Op(":=").Id(me.errorConstructorName).Call(jen.Op("&").Qual(g.pkgs.BuildRequestPkg, "OutputParseError").Values(jen.Dict{jen.Id("Err"): jen.Id("__werr")})),
+						// Carry the native-owned raw channel (res.Raw) as details.raw on the
+						// wrap-failure terminal error — parity with the ordinary native-call
+						// route's FailNativeCallWithRaw(&OutputParseError, res.Raw) in codegen_debaml.go.
+						jen.Id("__errR").Dot("raw").Op("=").Id("__res").Dot("Raw"),
+						jen.Select().Block(
+							jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
+							jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Id("__errR").Dot("Release").Call()),
+						),
+						jen.Return(jen.Nil()),
+					),
+					jen.If(jen.Id("plannedMetadata").Op("!=").Nil()).Block(
+						jen.Id("__outcome").Op(":=").Qual(g.pkgs.InterfacesPkg, "BuildLegacyOutcome").Call(
+							jen.Id("plannedMetadata"), jen.Lit(0),
+							jen.Id("plannedMetadata").Dot("Client"), jen.Id("plannedMetadata").Dot("Provider"), jen.Nil(),
+						),
+						jen.If(jen.Id("__outcome").Op("!=").Nil()).Block(
+							jen.Id("__outcome").Dot("WinnerEngine").Op("=").Id("__res").Dot("WinnerEngine"),
+							jen.Id("__outcome").Dot("PlannedEngine").Op("=").Lit("native"),
+							jen.Id("__om").Op(":=").Id(me.metadataConstructorName).Call(jen.Id("__outcome")),
+							jen.Select().Block(
+								jen.Case(jen.Id("out").Op("<-").Id("__om")).Block(),
+								jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Id("__om").Dot("Release").Call()),
+							),
+						),
+					),
+					jen.Id("__r").Op(":=").Id(me.getterFuncName).Call(),
+					jen.Id("__r").Dot("kind").Op("=").Qual(g.pkgs.InterfacesPkg, "StreamResultKindFinal"),
+					jen.Id("__r").Dot("finalParsed").Op("=").Op("&").Id("__wrapped"),
+					func() jen.Code {
+						if me.isDynamicFinal {
+							return jen.Id(me.unwrapFinalFuncName).Call(jen.Id("__r").Dot("finalParsed"))
+						}
+						return jen.Null()
+					}(),
+					jen.Select().Block(
+						jen.Case(jen.Id("out").Op("<-").Id("__r")).Block(),
+						jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Id("__r").Dot("Release").Call()),
+					),
+					jen.Return(jen.Nil()),
+				),
+				jen.Case(jen.Qual(g.pkgs.InterfacesPkg, "NativeServeFailed")).Block(
+					// Post-claim native failure: the typed error is terminal. NEVER
+					// fall through to a legacy resend. (Unreachable in S1.)
+					jen.Id("__errR").Op(":=").Id(me.errorConstructorName).Call(jen.Id("__res").Dot("Err")),
+					// Carry the native-owned raw diagnostic (res.RawDiagnostic) as details.raw
+					// on the terminal native-failure error — parity with the ordinary native-call
+					// route's FailNativeCallWithRaw(res.Err, res.RawDiagnostic) in codegen_debaml.go.
+					jen.Id("__errR").Dot("raw").Op("=").Id("__res").Dot("RawDiagnostic"),
+					jen.Select().Block(
+						jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
+						jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Id("__errR").Dot("Release").Call()),
+					),
+					jen.Return(jen.Nil()),
+				),
+				jen.Case(jen.Qual(g.pkgs.InterfacesPkg, "NativeServeDeclined")).Block(
+					// Pre-socket decline (the S1 live path): the callback guarantees
+					// NO provider socket occurred, so fall through to the ordinary
+					// legacy stream below in the SAME iteration.
+					jen.Comment("no-op: fall through to the ordinary legacy stream below"),
+				),
+				jen.Default().Block(
+					// An out-of-contract disposition — NativeServeResult crosses a
+					// public, integer-backed boundary — can NOT assert "no socket
+					// occurred", so FAIL CLOSED with a terminal typed error and NEVER
+					// run the legacy stream: a fall-through here could issue a hidden
+					// SECOND same-child BAML request after the native callback may have
+					// already opened one. Mirrors the fail-closed default in
+					// maybeInstallNativeCall's serve dispatch.
+					jen.Id("__errR").Op(":=").Id(me.errorConstructorName).Call(
+						jen.Qual("fmt", "Errorf").Call(jen.Lit("native serve returned unknown disposition %d"), jen.Id("__res").Dot("Disposition")),
+					),
+					jen.Select().Block(
+						jen.Case(jen.Id("out").Op("<-").Id("__errR")).Block(),
+						jen.Case(jen.Op("<-").Id("adapter").Dot("Done").Call()).Block(jen.Id("__errR").Dot("Release").Call()),
+					),
+					jen.Return(jen.Nil()),
+				),
+			),
+		),
+	)
+	wrappedBody = append(wrappedBody, declineBody...)
+
+	body = append(body,
+		jen.Return(jen.Id("runNoRawOrchestration").Call(
+			jen.Id("adapter"),
+			jen.Id("out"),
+			// newHeartbeat
+			jen.Func().Params().Qual(g.pkgs.InterfacesPkg, "StreamResult").Block(
+				jen.Id("__r").Op(":=").Id(me.getterFuncName).Call(),
+				jen.Id("__r").Dot("kind").Op("=").Qual(g.pkgs.InterfacesPkg, "StreamResultKindHeartbeat"),
+				jen.Return(jen.Id("__r")),
+			),
+			// newError
+			jen.Func().Params(jen.Id("err").Error()).Qual(g.pkgs.InterfacesPkg, "StreamResult").Block(
+				jen.Return(jen.Id(me.errorConstructorName).Call(jen.Id("err"))),
+			),
+			// release
+			jen.Func().Params(jen.Id("__r").Qual(g.pkgs.InterfacesPkg, "StreamResult")).Block(
+				jen.Id("__r").Dot("Release").Call(),
+			),
+			jen.Id("plannedMetadata"),
+			// newMetadataResult: adds planned_engine=native on the OUTCOME frame.
+			newMetadataResultNative,
+			// body: native probe, then the ordinary legacy stream on decline.
+			jen.Func().Params(jen.Id("beforeFinal").Func().Params(), jen.Id("onTick").Add(onTickType(g.pkgs.BamlPkg))).Error().Block(wrappedBody...),
+		)),
+	)
+
+	out.Func().
+		Id(me.directLegacyCallMethodName()).
+		Params(
+			jen.Id("adapter").Qual(g.pkgs.InterfacesPkg, "Adapter"),
+			jen.Id("rawInput").Any(),
+			jen.Id("out").Chan().Add(streamResultInterface.Clone()),
+			jen.Id("provider").String(),
+			// TRUTHFUL retry-override fact: __legacyRetryPolicy != nil at the router
+			// call site. A resolved retry policy declines native admission pre-socket.
+			jen.Id("hasRequestRetryOverride").Bool(),
+			jen.Id("plannedMetadata").Op("*").Qual(g.pkgs.InterfacesPkg, "Metadata"),
+			jen.Id("clientOverride").String(),
+		).
+		Error().
+		Block(body...)
 }

@@ -27,6 +27,56 @@ func validatePreparedBody(prep *nanollm.PreparedRequest, canonical []byte) *Decl
 	return nil
 }
 
+// validateGenericPlan is the provider-neutral post-Prepare self-consistency gate
+// (§5.2), run for the TRUSTED verification policy in place of the strict OpenAI
+// comparators. It proves the prepared plan is a usable unary chat plan whose meta
+// matches the mapped intent and whose body is present, non-empty, valid JSON —
+// WITHOUT the strict anchor's byte-equality, exact base+/chat/completions URL,
+// unique bearer/Content-Type header shape, unsigned-plan requirement, or a jq
+// transform ban. Those are nanollm's transport contract for a trusted provider
+// (which owns its own endpoint / signed plan / transformed body / member order),
+// so enforcing them would be a false BAML parity claim.
+//
+// provider is the mapped NANOLLM provider spelling (aws-bedrock normalized to
+// bedrock). Header admissibility (transport-controlled/duplicate-Host/invalid
+// field) is still enforced provider-neutrally by validateExactTransport at the
+// exact-transport boundary, so a plan that passes this gate is safe to send once.
+// A signed/expiring plan is allowed here as long as it is not ALREADY expired;
+// the serve path rechecks expiry immediately before the claim.
+func validateGenericPlan(prep *nanollm.PreparedRequest, alias, target, provider string) *Decline {
+	if len(prep.Body) == 0 {
+		return declinef(StagePrepare, ReasonBodyEmpty, "prepared plan body is empty")
+	}
+	if !json.Valid(prep.Body) {
+		return declinef(StagePrepare, ReasonBodyNotJSON, "prepared plan body is not valid JSON")
+	}
+	m := prep.Meta
+	switch {
+	case m.ModelAlias != alias:
+		return declinef(StagePlanMeta, ReasonAliasMismatch, "plan alias differs from the attempted internal alias")
+	case m.TargetModel != target:
+		return declinef(StagePlanMeta, ReasonTargetMismatch, "plan target model differs from the mapped target")
+	case m.Provider != provider:
+		return declinef(StagePlanMeta, ReasonPlanProviderMismatch, "plan provider %q differs from the mapped provider", m.Provider)
+	case m.RequestType != nanollm.ChatCompletion:
+		return declinef(StagePlanMeta, ReasonRequestTypeMismatch, "plan request type %q is not chat_completion", m.RequestType)
+	case m.Stream:
+		return declinef(StagePlanMeta, ReasonPlanStreamTrue, "plan stream is true")
+	case m.MaxRetries != 0:
+		return declinef(StagePlanMeta, ReasonMaxRetriesNonzero, "plan max retries is not zero")
+	case prep.ResponseFormat != nanollm.FormatJSON:
+		return declinef(StagePlanMeta, ReasonResponseFormatNotJSON, "plan response format %q is not json", prep.ResponseFormat)
+	case prep.Method != "POST":
+		return declinef(StagePlanHeaders, ReasonMethodNotPost, "plan method %q is not POST", prep.Method)
+	}
+	// A trusted plan MAY be signed/expiring (Bedrock), but must not be ALREADY
+	// expired at admission; the serve path rechecks immediately before the socket.
+	if prep.Expired() {
+		return declinef(StagePlanExpiry, ReasonExpiredPlan, "plan is already expired")
+	}
+	return nil
+}
+
 // validatePlanMeta is the StagePlanMeta gate: the prepared plan's meta must
 // resolve the attempted internal alias, the canonical target, the openai
 // provider, a non-streaming ChatCompletion with no jq transform and a zero
