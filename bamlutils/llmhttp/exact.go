@@ -158,17 +158,31 @@ var exactControlledHeaders = map[string]struct{}{
 // A caller MAY pass their own RoundTripper to NewExactExecutor (e.g. a
 // loopback-guarded test transport); they then own these guarantees for that
 // transport.
-var defaultExactTransport = &http.Transport{
-	Proxy: nil,
-	DialContext: (&net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
-	}).DialContext,
-	TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
-	TLSHandshakeTimeout:   10 * time.Second,
-	DisableCompression:    true,
-	DisableKeepAlives:     true,
-	ExpectContinueTimeout: 1 * time.Second,
+var defaultExactTransport = newHardenedExactTransport()
+
+// newHardenedExactTransport constructs the exact lane's hardened net/http
+// transport: no proxy, no compression injection/decode, no keep-alive replay,
+// HTTP/1.1-only (a non-nil TLSClientConfig with ForceAttemptHTTP2 unset). It is
+// the single source of the field values documented on defaultExactTransport and
+// is shared with the exact STREAM lane (exact_stream.go, which additionally
+// pins TLSNextProto to make the H1-only guarantee explicit). Each call returns a
+// fresh *http.Transport so a per-stream client can own its own transport without
+// aliasing the unary default. Unary byte behaviour is pinned: defaultExactTransport
+// is exactly this transport's field values, and the existing exact unary suite
+// verifies it.
+func newHardenedExactTransport() *http.Transport {
+	return &http.Transport{
+		Proxy: nil,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
+		TLSHandshakeTimeout:   10 * time.Second,
+		DisableCompression:    true,
+		DisableKeepAlives:     true,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
 }
 
 // ExactExecutor performs exactly one net/http RoundTrip for an
