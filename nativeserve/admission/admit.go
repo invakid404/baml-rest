@@ -205,27 +205,37 @@ func (a *Admitter) AdmitClaim(ctx context.Context, in Input) (*Claim, error) {
 	return a.admitClaim(ctx, in, false)
 }
 
-// admitClaim is the shared admission core. recordAdmitted controls whether the
-// terminal OutcomeAdmitted is recorded (true for the no-send Admit path, false
-// for the serving AdmitClaim path). On success it returns a Claim holding the
-// OPEN request-scoped engine; on every decline/error/panic AFTER the engine is
-// created it Closes the engine before returning (via the closeClient guard).
-func (a *Admitter) admitClaim(ctx context.Context, in Input, recordAdmitted bool) (*Claim, error) {
+// admitCore is the shared admission core for BOTH the unary and streaming lanes.
+// recordAdmitted controls whether the terminal OutcomeAdmitted is recorded (true
+// for the no-send Admit path, false for the serving AdmitClaim / AdmitStreamClaim
+// paths). stream selects the streaming variant at exactly the four points the two
+// lanes diverge — the admitted mode, the canonical body builder, the prepared
+// Request's Stream flag, and the plan-meta validator (stream=true wants an SSE
+// response format, stream=false a JSON one); every other layer is identical, so
+// the unary path (stream=false) is byte-for-byte the pre-7B behavior.
+//
+// On success it returns the proven plan (Admitted), the OPEN request-scoped
+// engine (ownership passes to the caller, which wraps it in a *Claim /
+// *StreamClaim and MUST Close it), and the nanollm streaming Request the stream
+// executor hands DoStream (unused on the unary path). On every decline/error/
+// panic AFTER the engine is created it Closes the engine before returning (via
+// the closeClient guard) and returns a nil client.
+func (a *Admitter) admitCore(ctx context.Context, in Input, recordAdmitted, stream bool) (Admitted, *nanollm.Client, nanollm.Request, error) {
 	provider := providerFromResolved(in.ResolvedProvider)
 
-	decline := func(d *Decline) (*Claim, error) {
+	decline := func(d *Decline) (Admitted, *nanollm.Client, nanollm.Request, error) {
 		a.m.recordDecline(in.Mode, provider, d)
-		return nil, d
+		return Admitted{}, nil, nanollm.Request{}, d
 	}
-	plannerErr := func(err error) (*Claim, error) {
+	plannerErr := func(err error) (Admitted, *nanollm.Client, nanollm.Request, error) {
 		a.m.recordAttempt(in.Mode, provider, OutcomePlannerError)
-		return nil, err
+		return Admitted{}, nil, nanollm.Request{}, err
 	}
 	// ctxDecline is the PRE-SOCKET decline for a request cancelled/expired around a
 	// non-context FFI boundary (New / render / Prepare). It declines to BAML — the
 	// ordinary BAML attempt then surfaces the same context error to the caller —
 	// rather than counting a planner error or opening a socket.
-	ctxDecline := func() (*Claim, error) {
+	ctxDecline := func() (Admitted, *nanollm.Client, nanollm.Request, error) {
 		return decline(declinef(StageContext, ReasonContextCancelled, "request context cancelled during admission"))
 	}
 
@@ -245,8 +255,14 @@ func (a *Admitter) admitClaim(ctx context.Context, in Input, recordAdmitted bool
 	if in.Method != dynamicMethod {
 		return decline(declinef(StageMethod, ReasonNotDynamicMethod, "internal method is not Baml_Rest_Dynamic"))
 	}
-	if d := admitMode(in.Mode); d != nil {
-		return decline(d)
+	if stream {
+		if d := admitStreamMode(in.Mode); d != nil {
+			return decline(d)
+		}
+	} else {
+		if d := admitMode(in.Mode); d != nil {
+			return decline(d)
+		}
 	}
 	// Output schema present (layer 1). The bounds check follows once the message
 	// surface is validated, but an absent schema declines up front.
@@ -319,8 +335,15 @@ func (a *Admitter) admitClaim(ctx context.Context, in Input, recordAdmitted bool
 		Provider:    facts.provider,
 		TargetModel: facts.target,
 		ModelAlias:  in.Alias,
+		Stream:      stream,
 	}
-	canonical, berr := nativebody.BuildOpenAIChat(rendered, intent)
+	var canonical *nativebody.CanonicalBody
+	var berr error
+	if stream {
+		canonical, berr = nativebody.BuildOpenAIChatStream(rendered, intent)
+	} else {
+		canonical, berr = nativebody.BuildOpenAIChat(rendered, intent)
+	}
 	if berr != nil {
 		var bd *nativebody.Decline
 		if errors.As(berr, &bd) {
@@ -357,6 +380,12 @@ func (a *Admitter) admitClaim(ctx context.Context, in Input, recordAdmitted bool
 		return decline(declinef(StagePrepare, ReasonPrepareError, "nanollm ChatRequest.Build could not serialize the canonical body"))
 	}
 	nreq.Model = in.Alias
+	// Stream is set on the nanollm Request (NOT baked into the body): the engine
+	// injects BAML's `"stream":true,"stream_options":{"include_usage":true}` suffix
+	// into the prepared body when stream is true, which validatePreparedBody then
+	// checks byte-for-byte against the canonical stream oracle. On the unary path
+	// this is the zero value (false), so the prepared body stays the unary body.
+	nreq.Stream = stream
 	prep, perr := client.Prepare(nreq)
 	// Cancellation gate AFTER the Prepare FFI, before the (fast, local) plan
 	// validations that finish admission.
@@ -370,8 +399,14 @@ func (a *Admitter) admitClaim(ctx context.Context, in Input, recordAdmitted bool
 	if d := validatePreparedBody(prep, canonicalBytes); d != nil {
 		return decline(d)
 	}
-	if d := validatePlanMeta(prep, in.Alias, facts.target); d != nil {
-		return decline(d)
+	if stream {
+		if d := validateStreamPlanMeta(prep, in.Alias, facts.target); d != nil {
+			return decline(d)
+		}
+	} else {
+		if d := validatePlanMeta(prep, in.Alias, facts.target); d != nil {
+			return decline(d)
+		}
 	}
 	if d := validatePlanExpiry(prep); d != nil {
 		return decline(d)
@@ -388,18 +423,28 @@ func (a *Admitter) admitClaim(ctx context.Context, in Input, recordAdmitted bool
 	if recordAdmitted {
 		a.m.recordAttempt(in.Mode, provider, OutcomeAdmitted)
 	}
-	// Hand engine ownership to the Claim: the deferred guard no longer closes it.
+	// Hand engine ownership to the caller (the wrapping *Claim / *StreamClaim): the
+	// deferred guard no longer closes it.
 	closeClient = false
-	return &Claim{
-		Admitted: Admitted{
-			Prepared:     prep,
-			ExactRequest: exactReq,
-			Alias:        in.Alias,
-			Target:       facts.target,
-			Provider:     facts.provider,
-		},
-		client: client,
-	}, nil
+	return Admitted{
+		Prepared:     prep,
+		ExactRequest: exactReq,
+		Alias:        in.Alias,
+		Target:       facts.target,
+		Provider:     facts.provider,
+	}, client, nreq, nil
+}
+
+// admitClaim wraps admitCore for the UNARY lane, folding the core's (Admitted,
+// engine, streaming-Request) tuple into a *Claim. The streaming Request the core
+// also returns is unused on the unary path. Behavior is identical to the pre-7B
+// admitClaim: admitCore with stream=false runs the exact prior sequence.
+func (a *Admitter) admitClaim(ctx context.Context, in Input, recordAdmitted bool) (*Claim, error) {
+	adm, client, _, err := a.admitCore(ctx, in, recordAdmitted, false)
+	if err != nil {
+		return nil, err
+	}
+	return &Claim{Admitted: adm, client: client}, nil
 }
 
 // admitMode declines every mode outside the admitted unary `call`.

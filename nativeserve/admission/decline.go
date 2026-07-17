@@ -97,6 +97,10 @@ const (
 	ReasonWithRawUnproven   Reason = "with_raw_unproven"
 	ReasonStreamingUnproven Reason = "streaming_unproven"
 	ReasonModeUnknown       Reason = "mode_unknown"
+	// ReasonNotStreamMode is the STREAM-claim mirror of ReasonStreamingUnproven:
+	// the stream admission declines a non-streaming mode (unary call /
+	// call-with-raw) that reached the stream claim by mistake.
+	ReasonNotStreamMode Reason = "not_stream_mode"
 	// strategy
 	ReasonNotSingleLeaf        Reason = "not_single_leaf"
 	ReasonFallbackChain        Reason = "fallback_chain"
@@ -156,6 +160,12 @@ const (
 	ReasonTransformPresent      Reason = "transform_present"
 	ReasonMaxRetriesNonzero     Reason = "max_retries_nonzero"
 	ReasonResponseFormatNotJSON Reason = "response_format_not_json"
+	// ReasonPlanStreamFalse / ReasonResponseFormatNotSSE are the STREAM-claim
+	// mirrors of ReasonPlanStreamTrue / ReasonResponseFormatNotJSON: a stream plan
+	// meta MUST carry stream=true and an SSE response format, so the opposite of
+	// each declines.
+	ReasonPlanStreamFalse      Reason = "plan_stream_false"
+	ReasonResponseFormatNotSSE Reason = "response_format_not_sse"
 	// plan_expiry
 	ReasonSignedPlan   Reason = "signed_plan"
 	ReasonExpiringPlan Reason = "expiring_plan"
