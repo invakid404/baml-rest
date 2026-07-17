@@ -34,6 +34,16 @@
 // consumer resolves those pseudo-versions from the proxy. When the root module is
 // eventually tagged for a release that includes these packages, the three requires
 // can be bumped to that tag.
+//
+// NOTE (Phase 7B): as of 7B, nativeserve/execute uses bamlutils' 7A exact-stream
+// client and nativeserve/admission uses the root's new nativebody.BuildOpenAIChatStream
+// — symbols NEWER than this d7359348 pin. So the external-consumer lane
+// (nativeserve-goget) is EXPECTED to be red on the 7B PR: no published/master commit
+// carries BuildOpenAIChatStream until 7B merges, and a branch-commit pin cannot be
+// used — the native-worker PACKAGING build (nanollmprepare builder E2E) runs
+// -mod=readonly without GOPRIVATE and cannot resolve/verify a non-sumdb-indexed
+// pseudo-version ("go mod tidy needed"). These three requires MUST be bumped to the
+// 7B master merge commit at integration, which restores nativeserve-goget green.
 module github.com/invakid404/baml-rest/nativeserve
 
 go 1.26.5
