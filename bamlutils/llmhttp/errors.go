@@ -170,6 +170,90 @@ func classifyTransportErr(err error, prefix string, staleConnTeardownAcceptable 
 	return nil
 }
 
+// ErrExactStream is the umbrella sentinel for the exact native STREAM
+// transport's own terminal failures (exact_stream.go): a refused second
+// RoundTrip, a plan drift, an invalid 2xx content type, a first-body or idle
+// deadline, or a pre-send body-read failure. Test/caller code gates on it via
+// errors.Is(err, ErrExactStream).
+//
+// It is DELIBERATELY DISTINCT from ErrTransportFlake. Every one of these
+// failures occurs on the exact stream lane, whose one physical request is
+// claimed immediately before the underlying RoundTrip (scope I4): once claimed,
+// the failure is TERMINAL for that stream and must never be reclassified as a
+// retryable transport flake. Keeping a separate umbrella prevents an exact
+// stream failure from accidentally unwrapping to ErrTransportFlake and being
+// retried/replayed. The legacy classifyTransportErr path is unchanged and never
+// produces these; the (still unrouted in Phase 7A) native lane matches on them
+// directly.
+var ErrExactStream = errors.New("llmhttp: exact stream")
+
+// ErrExactStreamSecondRoundTrip is returned when the one-shot exact stream
+// RoundTripper is entered a second time. It is a ZERO-SOCKET failure — the
+// second entry never touches the network — so a nanollm retry/fallback
+// regression surfaces here as a refused second call rather than a duplicate
+// physical request (scope §5.7 / I3). Unwraps to ErrExactStream.
+var ErrExactStreamSecondRoundTrip = fmt.Errorf("llmhttp: exact stream second RoundTrip refused (zero socket): %w", ErrExactStream)
+
+// ErrExactStreamFirstBodyTimeout is surfaced by the exact stream body reader
+// when no raw upstream body byte arrives within the first-body window after
+// successful response headers (scope §5.10 deadline 2). It is distinct from the
+// inter-byte idle timeout below and from the legacy ErrIdleTimeout so the two
+// exact-stream deadlines are separately observable. Unwraps to ErrExactStream.
+var ErrExactStreamFirstBodyTimeout = fmt.Errorf("llmhttp: exact stream first-body timeout: %w", ErrExactStream)
+
+// ErrExactStreamIdleTimeout is surfaced by the exact stream body reader when no
+// raw upstream body byte arrives within the inter-byte idle window after the
+// first body byte (scope §5.10 deadline 3). It is the exact stream lane's own
+// idle sentinel, distinct from the legacy ErrIdleTimeout, because an exact
+// stream idle stall is TERMINAL (never a retryable flake). Unwraps to
+// ErrExactStream.
+var ErrExactStreamIdleTimeout = fmt.Errorf("llmhttp: exact stream idle timeout: %w", ErrExactStream)
+
+// ExactStreamPlanMismatchError reports that the request the exact stream
+// transport was asked to send drifted from the admitted plan. Field names the
+// drifting facet only — "method", "url", "host", "body", or "header:<name>"
+// (a header NAME, never its value) — so a diagnostic can never leak a URL
+// query, header value, or body byte. It is a ZERO-SOCKET, terminal invariant
+// failure detected before the underlying RoundTrip. Unwraps to ErrExactStream.
+type ExactStreamPlanMismatchError struct {
+	Field string
+}
+
+func (e *ExactStreamPlanMismatchError) Error() string {
+	return "llmhttp: exact stream plan mismatch (" + e.Field + ")"
+}
+
+func (e *ExactStreamPlanMismatchError) Unwrap() error { return ErrExactStream }
+
+// ExactStreamContentTypeError reports a 2xx response whose Content-Type is not
+// text/event-stream. The bounded media type is surfaced to aid diagnosis (a
+// Content-Type carries no secret); the response body is never buffered or
+// echoed. Unwraps to ErrExactStream.
+type ExactStreamContentTypeError struct {
+	MediaType string
+}
+
+func (e *ExactStreamContentTypeError) Error() string {
+	return "llmhttp: exact stream 2xx content type is not text/event-stream: " + e.MediaType
+}
+
+func (e *ExactStreamContentTypeError) Unwrap() error { return ErrExactStream }
+
+// ExactStreamBodyReadError reports that reading the OUTGOING request body — in
+// order to compare it against the admitted plan and restore it for the single
+// send — failed. It is a ZERO-SOCKET failure detected before the underlying
+// RoundTrip. The underlying cause is retained for diagnosis; no body bytes are
+// ever surfaced. Unwraps to both the cause and ErrExactStream.
+type ExactStreamBodyReadError struct {
+	Cause error
+}
+
+func (e *ExactStreamBodyReadError) Error() string {
+	return "llmhttp: exact stream outgoing body read failed: " + e.Cause.Error()
+}
+
+func (e *ExactStreamBodyReadError) Unwrap() []error { return []error{e.Cause, ErrExactStream} }
+
 // classifyStreamErrc consumes the single terminal value sseclient.Stream
 // (and the fast-path stream reader) emits and re-emits it on a buffered(1)
 // channel after running non-nil values through classifyTransportErr with

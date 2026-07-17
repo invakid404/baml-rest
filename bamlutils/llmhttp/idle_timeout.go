@@ -70,6 +70,149 @@ func StreamIdleTimeoutFromEnv() time.Duration {
 	return ParseStreamIdleTimeout(os.Getenv(EnvVarStreamIdleTimeout))
 }
 
+// EnvVarStreamFirstBodyTimeout selects the exact native stream lane's
+// first-body read timeout: the bound from a successful response header line
+// until the FIRST raw upstream body byte. It is DELIBERATELY distinct from
+// EnvVarStreamIdleTimeout because the idle bound only arms after the first
+// byte, so a provider that returns headers and then never sends a body would
+// otherwise be bounded only by the caller context (scope §3.2 / §5.10). The
+// value is a Go duration string; "0" means infinite (no first-body bound).
+// Unset or unparseable falls back to DefaultStreamFirstBodyTimeout.
+//
+// This bound is consumed ONLY by the exact native stream transport
+// (exact_stream.go), which is unrouted in Phase 7A — the legacy BAML streaming
+// path is unaffected.
+const EnvVarStreamFirstBodyTimeout = "BAML_REST_STREAM_FIRST_BODY_TIMEOUT"
+
+// DefaultStreamFirstBodyTimeout bounds the response-header-to-first-body gap on
+// the exact native stream lane when unconfigured. Per scope §11 the production
+// value is an owner-chosen operational number; the §11 default is to reuse the
+// idle timeout value while keeping this bound SEPARATELY named and observable,
+// so it can be tuned independently of the inter-byte idle bound.
+const DefaultStreamFirstBodyTimeout = DefaultStreamIdleTimeout
+
+// ParseStreamFirstBodyTimeout interprets a raw env-style string into a
+// first-body timeout duration, with the same fail-safe semantics as
+// ParseStreamIdleTimeout: empty / unparseable / negative collapses to
+// DefaultStreamFirstBodyTimeout so a typo never silently disables the bound; an
+// explicit "0" is preserved as "infinite".
+func ParseStreamFirstBodyTimeout(raw string) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return DefaultStreamFirstBodyTimeout
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < 0 {
+		return DefaultStreamFirstBodyTimeout
+	}
+	return d
+}
+
+// StreamFirstBodyTimeoutFromEnv resolves the first-body timeout from
+// BAML_REST_STREAM_FIRST_BODY_TIMEOUT.
+func StreamFirstBodyTimeoutFromEnv() time.Duration {
+	return ParseStreamFirstBodyTimeout(os.Getenv(EnvVarStreamFirstBodyTimeout))
+}
+
+// byteProgressWatchdog is a race-safe, single-shot inter-byte deadline used by
+// the exact native stream lane's first-body/idle reader (exact_stream.go). It
+// factors out the timer/fired/closed discipline the legacy BAML
+// idleTimeoutReader (below) carries inline: the two-phase stream reader reuses
+// exactly this deadline logic rather than reimplementing it. The legacy reader
+// is deliberately left with its own inline copy so its white-box suite — which
+// pins the reader's internal fields — stays byte-identical; the two agree on
+// semantics by construction (this type is a direct extraction of that code).
+//
+//   - arm(timeout) starts a fresh timer window on every call (to a possibly
+//     different duration, which the two-phase stream reader relies on). A call
+//     after markClosed is a no-op, so a Read racing Close can never re-arm a
+//     stopped watchdog.
+//   - fire() runs interrupt() EXACTLY ONCE (CAS-guarded), severing a parked
+//     Read; concurrent fire/Close/cancel all collapse to a single interrupt.
+//   - hasFired() lets the reader distinguish "our own deadline close" from a
+//     genuine upstream error on the byte-delivering path.
+//
+// Stale-callback safety: time.Timer.Stop / Reset do NOT retract a callback
+// whose timer has already expired but whose goroutine has not yet run, so a
+// superseded window's callback could otherwise interrupt a LATER window and
+// surface a false idle timeout on a healthy, progressing stream. Each window
+// carries a monotonically-increasing generation; arm/stop/markClosed advance it
+// and each timer callback captures its own generation, so fire is a no-op unless
+// its window is still the current one. (The legacy idleTimeoutReader keeps its
+// simpler inline Reset-based copy; only this reused watchdog is hardened.)
+type byteProgressWatchdog struct {
+	// interrupt is the race-safe action invoked exactly once on fire to unblock
+	// a parked Read (typically the body's Close). Set before the timer is armed.
+	interrupt func()
+
+	fired atomic.Bool
+
+	mu     sync.Mutex
+	timer  *time.Timer
+	gen    uint64 // generation of the currently-armed window
+	closed bool
+}
+
+// arm starts a fresh timer window, invalidating any pending callback from a
+// previous window via the generation. It is a no-op once markClosed has run, so
+// a late Read cannot resurrect a closed watchdog's timer.
+func (w *byteProgressWatchdog) arm(timeout time.Duration) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return
+	}
+	w.gen++
+	gen := w.gen
+	if w.timer != nil {
+		w.timer.Stop()
+	}
+	w.timer = time.AfterFunc(timeout, func() { w.fire(gen) })
+}
+
+// stop halts the timer and advances the generation (so a stale, already-expired
+// callback cannot fire) without marking the watchdog closed, so it may be
+// re-armed later (the "data wins, wait for the next gap" path).
+func (w *byteProgressWatchdog) stop() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.gen++
+	if w.timer != nil {
+		w.timer.Stop()
+	}
+}
+
+// fire is the timer callback for one window. It runs interrupt exactly once, and
+// only while its window is still current (gen match) and the watchdog is open —
+// the generation check drops a stale callback from a superseded window. The
+// gen check and the fired CAS are performed together under the lock so a window
+// switch racing this callback cannot let a superseded window still interrupt.
+func (w *byteProgressWatchdog) fire(gen uint64) {
+	w.mu.Lock()
+	if w.closed || gen != w.gen || !w.fired.CompareAndSwap(false, true) {
+		w.mu.Unlock()
+		return
+	}
+	w.mu.Unlock()
+	w.interrupt()
+}
+
+// hasFired reports whether the watchdog's interrupt has run.
+func (w *byteProgressWatchdog) hasFired() bool { return w.fired.Load() }
+
+// markClosed stops the timer, advances the generation (invalidating any pending
+// callback), and blocks any future arm, so the watchdog is inert after the
+// reader's Close.
+func (w *byteProgressWatchdog) markClosed() {
+	w.mu.Lock()
+	w.closed = true
+	w.gen++
+	if w.timer != nil {
+		w.timer.Stop()
+	}
+	w.mu.Unlock()
+}
+
 // idleTimeoutReader wraps a streaming response body with an inter-byte idle
 // read timeout. It is created in the HTTP layer (ExecuteStream) before the
 // body is handed to sseclient.Stream. Streaming runs exclusively over
