@@ -253,8 +253,19 @@ func supportsClientCommon(client ClientIntent) error {
 	}
 	if len(client.BodyAffecting) > 0 {
 		first := client.BodyAffecting[0]
-		return decline(first.Feature,
-			fmt.Sprintf("client carries unproven body-affecting option %q; the builder admits only an absent request_body (an explicit request_body {} declines: BAML emits \"request_body\":{})", first.Key))
+		var detail string
+		if first.Feature == FeatureRequestBody {
+			// request_body is the one option whose PRESENCE (even an empty block)
+			// declines: BAML emits "request_body":{...}, which the builder never
+			// reproduces. Keep that specific explanation ONLY here.
+			detail = fmt.Sprintf("client carries an unproven request_body option %q; the builder admits only an ABSENT request_body (an explicit request_body {} declines too: BAML emits \"request_body\":{})", first.Key)
+		} else {
+			// Any other body-affecting option (tools/response_format/an unrecognized
+			// flattened key). Name the concrete option + feature; do NOT misattribute
+			// it to request_body.
+			detail = fmt.Sprintf("client carries an unproven body-affecting option %q (%s); the builder admits no body-affecting client options", first.Key, first.Feature)
+		}
+		return decline(first.Feature, detail)
 	}
 	return nil
 }
