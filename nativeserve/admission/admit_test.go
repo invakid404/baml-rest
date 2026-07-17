@@ -258,6 +258,46 @@ func TestAdmitPositive(t *testing.T) {
 	}
 }
 
+// TestAdmitBuildErrorDeclinesFailClosed proves a canonical-body serialization
+// failure (a ChatRequest.Build error) declines FAIL-CLOSED to BAML via
+// StagePrepare/ReasonPrepareError — exactly like a Prepare error — instead of
+// surfacing a hard planner error. It swaps the shipped marshaler for a failing
+// one for the duration of the call; the input is otherwise fully admissible, so
+// admission reaches Build after a successful map/render/canonical, and no socket
+// is opened.
+func TestAdmitBuildErrorDeclinesFailClosed(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m, err := NewMetrics(reg)
+	if err != nil {
+		t.Fatalf("NewMetrics: %v", err)
+	}
+	ct := &countingTransport{}
+	a := NewAdmitter(m, llmhttp.NewExactExecutor(ct))
+
+	saved := canonicalSonicMarshaler
+	canonicalSonicMarshaler = func(any) ([]byte, error) {
+		return nil, errors.New("synthetic canonical-body marshal failure")
+	}
+	defer func() { canonicalSonicMarshaler = saved }()
+
+	admitted, err := a.Admit(context.Background(), validInput())
+	if admitted != nil {
+		t.Fatalf("expected no admitted plan on a Build failure, got %+v", admitted)
+	}
+	var d *Decline
+	if !errors.As(err, &d) {
+		t.Fatalf("expected a *Decline, got %T: %v", err, err)
+	}
+	if !errors.Is(err, ErrDeclined) {
+		t.Error("Build-error decline must unwrap to ErrDeclined")
+	}
+	if d.Stage != StagePrepare || d.Reason != ReasonPrepareError {
+		t.Fatalf("decline = (%s, %s), want (%s, %s)", d.Stage, d.Reason, StagePrepare, ReasonPrepareError)
+	}
+	// Fail-closed: the marshal failure must not have dialed anything.
+	assertNoSocket(t, ct)
+}
+
 // TestAdmit_WouldRewriteOrProxyDeclinesAgainstEffectiveTarget proves the effective
 // send-path rewrite/proxy parity gate: once the effective client is mapped (so the
 // exact target is known), a WouldRewriteOrProxy predicate reporting that the target

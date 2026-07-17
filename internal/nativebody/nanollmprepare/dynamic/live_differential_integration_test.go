@@ -356,7 +356,7 @@ func newLiveOracleClient(t *testing.T, httpClient *http.Client, spy *liveParseSp
 	return client
 }
 
-// newLiveNativeClient builds a nanollm v0.3.2 client with ONE openai alias bound
+// newLiveNativeClient builds a nanollm v0.4.3 client with ONE openai alias bound
 // to the loopback base, a distinct alias vs. target, a zero retry budget, and no
 // process-env secret resolution.
 func newLiveNativeClient(t *testing.T, base string) *nanollm.Client {

@@ -81,7 +81,7 @@ jobs:
           # same reason as dynclient/baml-patched: both are SEPARATE modules outside
           # go.work (de-BAML Phase 4b + 5.1, and the #624 public serve core), so a
           # workspace-mode `go list` here fails, and both are cgo/platform-bound.
-          # Their public nanollm-ffi dependency (github.com/viktordanov/nanollm-ffi/go@v0.3.2),
+          # Their public nanollm-ffi dependency (github.com/viktordanov/nanollm-ffi/go@v0.4.3),
           # like each module's other direct requires, is pinned in its own
           # go.mod/go.sum where Renovate tracks it; because the modules are outside
           # go.work their checksums never enter go.work.sum, so they need no

@@ -145,8 +145,8 @@ github.com/valyala/fasthttp v1.72.0 h1:R7kYdoWhn1ye1fVpP+cDHDJwYm3NkwLliwgzJ/Abg
 github.com/valyala/fasthttp v1.72.0/go.mod h1:zsbLTYqcpIktdQytlVBwIjY9La5d6bs990nBxWg8efk=
 github.com/viktordanov/go-mocklm v0.4.0 h1:s24303hjxX7yc4cgPDk+rnliqw+KVBrY9BOjl3AGt5w=
 github.com/viktordanov/go-mocklm v0.4.0/go.mod h1:IfPna1GfzjC6jo4LCw6fwm4ttKFaNKDIwVhg87jEozE=
-github.com/viktordanov/nanollm-ffi/go v0.3.2 h1:O9U+cWBUw8zfhETJG/Xob17tLtcGyeP7cY/saSqJpZo=
-github.com/viktordanov/nanollm-ffi/go v0.3.2/go.mod h1:8XTJCU7t0yvArXD8DT1YtbA1gu4K3os/BSm34TP89VA=
+github.com/viktordanov/nanollm-ffi/go v0.4.3 h1:/H9s+lOsUjOH8mJ0iL5T79dF6fRk5s0vqnuMUTdYs3k=
+github.com/viktordanov/nanollm-ffi/go v0.4.3/go.mod h1:8XTJCU7t0yvArXD8DT1YtbA1gu4K3os/BSm34TP89VA=
 github.com/xyproto/randomstring v1.0.5 h1:YtlWPoRdgMu3NZtP45drfy1GKoojuR7hmRcnhZqKjWU=
 github.com/xyproto/randomstring v1.0.5/go.mod h1:rgmS5DeNXLivK7YprL0pY+lTuhNQW3iGxZ18UQApw/E=
 go.opentelemetry.io/auto/sdk v1.2.1 h1:jXsnJ4Lmnqd11kwkBV2LgLoFMZKizbCi5fNZ/ipaZ64=

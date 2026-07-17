@@ -73,13 +73,13 @@ subprocess serve worker.
 
 ## CGO build recipe
 
-This module links `github.com/viktordanov/nanollm-ffi/go` (v0.3.2), a **CGO**
+This module links `github.com/viktordanov/nanollm-ffi/go` (v0.4.3), a **CGO**
 package that links a prebuilt Rust static archive committed per-platform inside
 that module. Building a consumer that imports `nativeserve` therefore requires:
 
 - **`CGO_ENABLED=1`** and a working C toolchain (clang on macOS, gcc/clang on
   Linux).
-- A **supported prebuilt OS/arch** for nanollm-ffi v0.3.2 (the archives shipped
+- A **supported prebuilt OS/arch** for nanollm-ffi v0.4.3 (the archives shipped
   inside `nanollm-ffi/go`):
   - `darwin/arm64` (`aarch64-apple-darwin`)
   - `linux/amd64` (`x86_64-unknown-linux-gnu`)
@@ -94,7 +94,7 @@ go get github.com/invakid404/baml-rest/nativeserve@latest
 CGO_ENABLED=1 go build ./...
 ```
 
-The pinned toolchain versions are: **nanollm-ffi `v0.3.2`**, **go-mocklm `v0.4.0`**
+The pinned toolchain versions are: **nanollm-ffi `v0.4.3`**, **go-mocklm `v0.4.0`**
 (test-only tool), **BAML `v0.223.0`**.
 
 ## Relationship to the subprocess worker

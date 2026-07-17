@@ -27,7 +27,7 @@
 // CGO-free — only this import pulls nanollm in). To build:
 //
 //   - Set CGO_ENABLED=1 and provide a C toolchain (clang/gcc).
-//   - Supported prebuilt OS/arch (nanollm-ffi v0.3.2, from the archives shipped
+//   - Supported prebuilt OS/arch (nanollm-ffi v0.4.3, from the archives shipped
 //     inside nanollm-ffi/go): darwin/arm64, linux/amd64, and linux/arm64. Other
 //     targets need a nanollm-ffi build for that platform.
 //   - Keep this module OUT of any workspace whose cold `go build ./...` must stay

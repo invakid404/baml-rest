@@ -63,7 +63,7 @@ assert_rc "symbols: early match + big trailing detected" 0 symbols_have_nanollm 
 # manifest_has_ref reads a FILE; besides match/clean it must treat a grep error
 # (exit >1) as a failure, so a `grep -q` that errors cannot read as "no match".
 tmp_manifest="$(mktemp)"
-printf 'require %s v0.3.2\n' "${NANOLLM_PREFIX}/go" >"${tmp_manifest}"
+printf 'require %s v0.4.3\n' "${NANOLLM_PREFIX}/go" >"${tmp_manifest}"
 assert_rc "manifest: nanollm reference detected" 0 manifest_has_ref "${NANOLLM_PREFIX}" "${tmp_manifest}"
 printf 'require github.com/boundaryml/baml v0.223.0\n' >"${tmp_manifest}"
 assert_rc "manifest: clean file is clean"        1 manifest_has_ref "${NANOLLM_PREFIX}" "${tmp_manifest}"

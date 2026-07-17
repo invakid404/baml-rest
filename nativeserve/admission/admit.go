@@ -339,12 +339,25 @@ func (a *Admitter) admitClaim(ctx context.Context, in Input, recordAdmitted bool
 	}
 
 	// --- Layer 5: prepared plan, revalidated immediately after Prepare ----
-	prep, perr := client.Prepare(nanollm.Request{
-		Model:  in.Alias,
-		Body:   canonicalBytes,
-		Type:   nanollm.ChatCompletion,
-		Stream: false,
-	})
+	// Assemble the request through nanollm v0.4.x's typed ChatRequest.Build seam
+	// (the FFI package's canonical OpenAI request type). The typed model is mapped
+	// from the admitted rendered prompt; the body is serialized by the SHIPPED
+	// canonicalSonicMarshaler (configured sonic + the backslash-parity-aware short-
+	// escape fixup), which the gated canonreq oracle proves byte-exact vs the
+	// zero-nanollm root writer on every admitted input. The root writer's bytes
+	// (canonicalBytes) stay the runtime parity anchor via validatePreparedBody
+	// below, so any mismatch fails closed to BAML rather than emitting a non-parity
+	// body. Build copies the target model into Request.Model — override it with the
+	// separate nanollm alias, exactly as the previous hand-built nanollm.Request did.
+	nreq, brerr := chatRequestFromRendered(rendered, facts.target).Build(canonicalSonicMarshaler)
+	if brerr != nil {
+		// Serializing the canonical body failed (a nil/erroring Marshaler). Fail
+		// closed to BAML with no socket, exactly as a Prepare error declines below —
+		// never a hard planner error.
+		return decline(declinef(StagePrepare, ReasonPrepareError, "nanollm ChatRequest.Build could not serialize the canonical body"))
+	}
+	nreq.Model = in.Alias
+	prep, perr := client.Prepare(nreq)
 	// Cancellation gate AFTER the Prepare FFI, before the (fast, local) plan
 	// validations that finish admission.
 	if err := ctx.Err(); err != nil {

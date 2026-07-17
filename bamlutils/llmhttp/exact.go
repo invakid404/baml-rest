@@ -79,7 +79,7 @@ type ExactAttemptResponse struct {
 
 // MaxExactErrorBodyBytes caps the body read for a non-2xx exact response at
 // 64 KiB. This is deliberately lane-specific and distinct from the legacy
-// MaxErrorBodyBytes (4 KiB diagnostic cap): it matches nanollm v0.3.2's
+// MaxErrorBodyBytes (4 KiB diagnostic cap): it matches nanollm v0.4.3's
 // executor input to its uniform error envelope, so the response side of a
 // later slice sees the same bounded provider body nanollm's own Do would.
 // Successful bodies reuse the existing MaxResponseBodyBytes (16 MiB) cap.
