@@ -319,9 +319,12 @@ jobs:
           path: warm-images
 
       - name: Load warm base images
-        # `docker load` the warmed tarballs before the go-test step so
-        # testcontainers' tag-based `FROM` builds reuse them locally instead of
-        # pulling from Docker Hub.
+        # `docker load` the warmed tarballs before the go-test step. Load
+        # restores each base as its ordinary `repo:tag`, but NOT the repo-digest
+        # mapping — so the mock Dockerfile's pinned `FROM repo:tag@sha256:…`
+        # would still re-resolve that manifest against Docker Hub (the #541
+        # "context deadline exceeded" flake). The next step binds the pinned
+        # bases to local aliases before testcontainers builds the mock image.
         run: |
           set -euo pipefail
           for tar in warm-images/*.tar; do
@@ -329,6 +332,15 @@ jobs:
             docker load -i "$tar"
           done
           docker image ls
+
+      - name: Bind warm mock bases to local aliases
+        # Tag the loaded golang/alpine bases to deterministic local aliases and
+        # rewrite this ephemeral Dockerfile checkout to consume them, so the mock
+        # build never re-resolves a pinned digest against Docker Hub (#541). The
+        # committed Dockerfile stays digest-pinned; only the CI checkout is
+        # rewritten. The helper also prints each base's RepoDigests as a
+        # diagnostic (empty after save/load — the root cause this works around).
+        run: integration/mockllm/ci-use-warm-bases.sh
 
       - name: Set up Go
         uses: actions/setup-go@v6.5.0
@@ -437,9 +449,12 @@ jobs:
           path: warm-images
 
       - name: Load warm base images
-        # `docker load` the warmed tarballs before the go-test step so
-        # testcontainers' tag-based `FROM` builds reuse them locally instead of
-        # pulling from Docker Hub.
+        # `docker load` the warmed tarballs before the go-test step. Load
+        # restores each base as its ordinary `repo:tag`, but NOT the repo-digest
+        # mapping — so the mock Dockerfile's pinned `FROM repo:tag@sha256:…`
+        # would still re-resolve that manifest against Docker Hub (the #541
+        # "context deadline exceeded" flake). The next step binds the pinned
+        # bases to local aliases before testcontainers builds the mock image.
         run: |
           set -euo pipefail
           for tar in warm-images/*.tar; do
@@ -447,6 +462,15 @@ jobs:
             docker load -i "$tar"
           done
           docker image ls
+
+      - name: Bind warm mock bases to local aliases
+        # Tag the loaded golang/alpine bases to deterministic local aliases and
+        # rewrite this ephemeral Dockerfile checkout to consume them, so the mock
+        # build never re-resolves a pinned digest against Docker Hub (#541). The
+        # committed Dockerfile stays digest-pinned; only the CI checkout is
+        # rewritten. The helper also prints each base's RepoDigests as a
+        # diagnostic (empty after save/load — the root cause this works around).
+        run: integration/mockllm/ci-use-warm-bases.sh
 
       - name: Set up Go
         uses: actions/setup-go@v6.5.0
@@ -537,9 +561,12 @@ jobs:
           path: warm-images
 
       - name: Load warm base images
-        # `docker load` the warmed tarballs before the go-test step so
-        # testcontainers' tag-based `FROM` builds reuse them locally instead of
-        # pulling from Docker Hub.
+        # `docker load` the warmed tarballs before the go-test step. Load
+        # restores each base as its ordinary `repo:tag`, but NOT the repo-digest
+        # mapping — so the mock Dockerfile's pinned `FROM repo:tag@sha256:…`
+        # would still re-resolve that manifest against Docker Hub (the #541
+        # "context deadline exceeded" flake). The next step binds the pinned
+        # bases to local aliases before testcontainers builds the mock image.
         run: |
           set -euo pipefail
           for tar in warm-images/*.tar; do
@@ -547,6 +574,15 @@ jobs:
             docker load -i "$tar"
           done
           docker image ls
+
+      - name: Bind warm mock bases to local aliases
+        # Tag the loaded golang/alpine bases to deterministic local aliases and
+        # rewrite this ephemeral Dockerfile checkout to consume them, so the mock
+        # build never re-resolves a pinned digest against Docker Hub (#541). The
+        # committed Dockerfile stays digest-pinned; only the CI checkout is
+        # rewritten. The helper also prints each base's RepoDigests as a
+        # diagnostic (empty after save/load — the root cause this works around).
+        run: integration/mockllm/ci-use-warm-bases.sh
 
       - name: Set up Go
         uses: actions/setup-go@v6.5.0
@@ -809,9 +845,12 @@ jobs:
           path: warm-images
 
       - name: Load warm base images
-        # `docker load` the warmed tarballs before the go-test step so
-        # testcontainers' tag-based `FROM` builds reuse them locally instead of
-        # pulling from Docker Hub.
+        # `docker load` the warmed tarballs before the go-test step. Load
+        # restores each base as its ordinary `repo:tag`, but NOT the repo-digest
+        # mapping — so the mock Dockerfile's pinned `FROM repo:tag@sha256:…`
+        # would still re-resolve that manifest against Docker Hub (the #541
+        # "context deadline exceeded" flake). The next step binds the pinned
+        # bases to local aliases before testcontainers builds the mock image.
         run: |
           set -euo pipefail
           for tar in warm-images/*.tar; do
@@ -819,6 +858,15 @@ jobs:
             docker load -i "$tar"
           done
           docker image ls
+
+      - name: Bind warm mock bases to local aliases
+        # Tag the loaded golang/alpine bases to deterministic local aliases and
+        # rewrite this ephemeral Dockerfile checkout to consume them, so the mock
+        # build never re-resolves a pinned digest against Docker Hub (#541). The
+        # committed Dockerfile stays digest-pinned; only the CI checkout is
+        # rewritten. The helper also prints each base's RepoDigests as a
+        # diagnostic (empty after save/load — the root cause this works around).
+        run: integration/mockllm/ci-use-warm-bases.sh
 
       - name: Checkout BAML Source
         uses: actions/checkout@v7.0.0
