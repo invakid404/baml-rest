@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
@@ -91,6 +92,13 @@ type Admitted struct {
 	Alias        string
 	Target       string
 	Provider     string
+	// Verification is the post-Prepare verification policy the mapper assigned
+	// (§6): PolicyStrictOpenAI runs the byte-exact OpenAI oracles + BAML plan/
+	// response comparisons; PolicyTrustedProvider runs only provider-neutral
+	// self-consistency and NEVER a BAML comparison. The serve path branches on it
+	// once. In S1 only strict OpenAI is ever produced in production (every
+	// non-openai provider mapping-declines before nanollm.New).
+	Verification VerificationPolicy
 }
 
 // Admitter evaluates the native admission predicate and records the bounded
@@ -274,9 +282,10 @@ func (a *Admitter) admitCore(ctx context.Context, in Input, recordAdmitted, stre
 	if d := admitStrategy(in); d != nil {
 		return decline(d)
 	}
-	if in.ResolvedProvider != nativebody.ProviderOpenAI {
-		return decline(declinef(StageProvider, ReasonProviderNotOpenAI, "resolved leaf provider is not openai"))
-	}
+	// The resolved-provider openai gate is REMOVED (§7): the provider-neutral
+	// foundation resolves + maps the provider inside mapClientConfig, which
+	// declines a non-openai provider with mapping_unavailable BEFORE nanollm.New
+	// (S1 admits no non-openai socket) and enforces §4.2 provider provenance.
 
 	// --- Layer 3: effective dynamic client (+ request-scoped engine) ------
 	// mapDynamicClient resolves the effective target (base_url + /chat/completions)
@@ -288,7 +297,7 @@ func (a *Admitter) admitCore(ctx context.Context, in Input, recordAdmitted, stre
 	if err := ctx.Err(); err != nil {
 		return ctxDecline()
 	}
-	client, facts, dec, err := mapDynamicClient(in.Registry, in.Alias, in.WouldRewriteOrProxy)
+	client, facts, policy, dec, err := mapDynamicClient(in.Registry, in.Alias, in.ResolvedProvider, in.WouldRewriteOrProxy)
 	if err != nil {
 		return plannerErr(err)
 	}
@@ -374,10 +383,11 @@ func (a *Admitter) admitCore(ctx context.Context, in Input, recordAdmitted, stre
 	// separate nanollm alias, exactly as the previous hand-built nanollm.Request did.
 	nreq, brerr := chatRequestFromRendered(rendered, facts.target).Build(canonicalSonicMarshaler)
 	if brerr != nil {
-		// Serializing the canonical body failed (a nil/erroring Marshaler). Fail
-		// closed to BAML with no socket, exactly as a Prepare error declines below —
-		// never a hard planner error.
-		return decline(declinef(StagePrepare, ReasonPrepareError, "nanollm ChatRequest.Build could not serialize the canonical body"))
+		// An unexpected serializer error on the SHIPPED canonical marshaler (§5.1):
+		// availability-first BAML fallback with no socket, but recorded as a planner
+		// error (not an ordinary unsupported decline) so it alerts rather than reading
+		// as expected unsupported traffic.
+		return plannerErr(fmt.Errorf("nativeserve/admission: nanollm ChatRequest.Build: %w", brerr))
 	}
 	nreq.Model = in.Alias
 	// Stream is set on the nanollm Request (NOT baked into the body): the engine
@@ -393,28 +403,55 @@ func (a *Admitter) admitCore(ctx context.Context, in Input, recordAdmitted, stre
 		return ctxDecline()
 	}
 	if perr != nil {
-		// Prepare could not prove a plan: a parity-decline to BAML (no socket).
-		return decline(declinef(StagePrepare, ReasonPrepareError, "nanollm Prepare could not prove a plan"))
+		// Typed New/Prepare classifier (§5.1), splitting today's too-broad
+		// prepare_error: a nanollm *Error whose Code is unsupported_request /
+		// invalid_provider is an ORDINARY pre-socket unsupported decline to BAML; any
+		// OTHER Prepare failure is a planner error (safe BAML fallback that alerts),
+		// never counted as ordinary unsupported traffic. Keyed on the typed CODE via
+		// errors.As, never a string match.
+		if classifyEngineError(perr) == engineUnsupported {
+			return decline(declinef(StagePrepare, prepareUnsupportedReason(perr),
+				"nanollm Prepare reported a typed unsupported request"))
+		}
+		return plannerErr(fmt.Errorf("nativeserve/admission: nanollm Prepare: %w", perr))
 	}
-	if d := validatePreparedBody(prep, canonicalBytes); d != nil {
-		return decline(d)
-	}
-	if stream {
-		if d := validateStreamPlanMeta(prep, in.Alias, facts.target); d != nil {
+	// --- Layer 5: prepared plan, revalidated immediately after Prepare --------
+	// The exact-attempt carrier is a direct field-for-field projection of the
+	// SAME prepared plan, built once and header-preflighted for BOTH policies (the
+	// transport admissibility scan is provider-neutral). The plan validation then
+	// forks on the verification policy: the STRICT OpenAI anchor runs every
+	// existing byte-exact oracle in its existing order (UNCHANGED — §6), while the
+	// TRUSTED provider runs only the provider-neutral post-Prepare self-consistency
+	// gate (§5.2) — nanollm owns the transformed body / signed plan / provider
+	// endpoint, so no BAML byte/URL/header parity is claimed for it.
+	exactReq := exactRequestFromPlan(prep)
+	if policy == PolicyStrictOpenAI {
+		if d := validatePreparedBody(prep, canonicalBytes); d != nil {
+			return decline(d)
+		}
+		// 7B streaming lane: a stream plan validates its SSE plan-meta, the unary
+		// plan its JSON plan-meta. In S1 only the strict-OpenAI anchor reaches the
+		// streaming lane (every non-openai provider mapping-declines before nanollm.New).
+		if stream {
+			if d := validateStreamPlanMeta(prep, in.Alias, facts.target); d != nil {
+				return decline(d)
+			}
+		} else {
+			if d := validatePlanMeta(prep, in.Alias, facts.target); d != nil {
+				return decline(d)
+			}
+		}
+		if d := validatePlanExpiry(prep); d != nil {
+			return decline(d)
+		}
+		if d := validatePlanHeaders(prep, facts.baseURL); d != nil {
 			return decline(d)
 		}
 	} else {
-		if d := validatePlanMeta(prep, in.Alias, facts.target); d != nil {
+		if d := validateGenericPlan(prep, in.Alias, facts.target, facts.provider); d != nil {
 			return decline(d)
 		}
 	}
-	if d := validatePlanExpiry(prep); d != nil {
-		return decline(d)
-	}
-	if d := validatePlanHeaders(prep, facts.baseURL); d != nil {
-		return decline(d)
-	}
-	exactReq := exactRequestFromPlan(prep)
 	if d := validateExactTransport(a.exec, exactReq); d != nil {
 		return decline(d)
 	}
@@ -432,6 +469,7 @@ func (a *Admitter) admitCore(ctx context.Context, in Input, recordAdmitted, stre
 		Alias:        in.Alias,
 		Target:       facts.target,
 		Provider:     facts.provider,
+		Verification: policy,
 	}, client, nreq, nil
 }
 
@@ -500,11 +538,22 @@ func validateCanonicalBody(raw []byte, target string) *Decline {
 }
 
 // providerFromResolved folds an arbitrary resolved provider into the bounded
-// provider label used by the attempts metric.
+// provider label used by the attempts metric (§9). The five known nanollm
+// provider classes each get their own label; the BAML `aws-bedrock` spelling
+// folds onto `bedrock`; an empty provider is "unknown"; everything else is
+// "other". The label OBSERVES; it never decides admission.
 func providerFromResolved(p string) providerLabel {
 	switch p {
 	case nativebody.ProviderOpenAI:
 		return providerOpenAI
+	case "anthropic":
+		return providerAnthropic
+	case providerNanollmBedrock, providerBAMLBedrock:
+		return providerBedrock
+	case "cerebras":
+		return providerCerebras
+	case "cohere":
+		return providerCohere
 	case "":
 		return providerUnknown
 	default:

@@ -42,7 +42,6 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
-	"github.com/invakid404/baml-rest/internal/nativebody"
 	nanollm "github.com/viktordanov/nanollm-ffi/go"
 )
 
@@ -450,13 +449,17 @@ func ConsumeResponse(ctx context.Context, cfg ConsumeConfig, status int, body []
 
 // supportDecision is the parity-decline gate. It runs before any socket and
 // declines with a stable, secret-free stage/reason for anything outside the
-// Phase 6 admitted unary-OpenAI surface. Header VALUES and body bytes are never
-// referenced, so a decline diagnostic can never leak a secret.
+// admitted unary chat surface. The OpenAI-only provider requirement is REMOVED
+// (§7): admission's mapper + verification policy already decided provider
+// support, and TranslateResponse normalizes every provider's 2xx into OpenAI JSON
+// (so response extraction stays "openai" downstream). What remains is the
+// provider-NEUTRAL shape this transport can send once and consume: a
+// non-streaming ChatCompletion with a JSON response format, POST method, and a
+// present, non-empty body — anything else declines rather than out-claiming BAML
+// on an unproven shape. Header VALUES and body bytes are never referenced, so a
+// decline diagnostic can never leak a secret.
 func supportDecision(prep *nanollm.PreparedRequest) error {
 	m := prep.Meta
-	if m.Provider != nativebody.ProviderOpenAI {
-		return &UnsupportedError{Stage: "provider", Reason: fmt.Sprintf("provider %q is not the admitted openai surface", m.Provider)}
-	}
 	if m.RequestType != nanollm.ChatCompletion {
 		return &UnsupportedError{Stage: "request_type", Reason: fmt.Sprintf("request type %q is not chat_completion", m.RequestType)}
 	}

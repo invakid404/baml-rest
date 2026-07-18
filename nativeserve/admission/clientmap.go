@@ -9,66 +9,179 @@ import (
 	nanollm "github.com/viktordanov/nanollm-ffi/go"
 )
 
+// VerificationPolicy selects the post-Prepare verification regime for an admitted
+// plan (§6). It is carried on the mapped client and the Claim so the serve path
+// branches ONCE on a typed enum rather than re-deriving intent from free-form
+// provider strings. The policy assignment is the ONE intentional OpenAI special
+// case — it is NOT admission membership: a non-openai plan still succeeds/fails on
+// mapping + nanollm, it just never runs a BAML plan/response comparison.
+type VerificationPolicy uint8
+
+const (
+	// PolicyStrictOpenAI runs every existing byte-exact OpenAI oracle: canonical
+	// body byte-equality, the exact base + /chat/completions URL and unique
+	// bearer/Content-Type headers, the unsigned/never-expiring plan, the BAML
+	// request-plan comparison, and the same-response comparison. It is the strict
+	// anchor and is UNCHANGED in S1.
+	PolicyStrictOpenAI VerificationPolicy = iota
+	// PolicyTrustedProvider runs only the provider-neutral post-Prepare
+	// self-consistency checks (§5.2) and NEVER a BAML plan/response comparison:
+	// nanollm owns the provider's transport contract, so the transformed provider
+	// bytes / signed plan / member order are not a BAML parity claim. S1 ships no
+	// production trusted mapping (every non-openai provider mapping-declines
+	// before nanollm.New); the policy plumbing is exercised by synthetic tests and
+	// activated in S2.
+	PolicyTrustedProvider
+)
+
+func (p VerificationPolicy) String() string {
+	switch p {
+	case PolicyStrictOpenAI:
+		return "strict_openai"
+	case PolicyTrustedProvider:
+		return "trusted_provider"
+	default:
+		return "unknown"
+	}
+}
+
+// Provider spellings the mapper normalizes on. BAML's registry uses the
+// `aws-bedrock` spelling; nanollm's model prefix is `bedrock`. Every other
+// provider string is used as the nanollm prefix verbatim — there is deliberately
+// no `supportedProviders` membership map in admission.
+const (
+	providerBAMLBedrock    = "aws-bedrock"
+	providerNanollmBedrock = "bedrock"
+)
+
 // clientFacts are the secret-free, body-relevant facts the mapper resolves from
-// the selected client. baseURL is retained ONLY for the prepared-plan URL check
-// (base + /chat/completions); the api key is written straight into the engine
-// config and is NEVER retained, returned, or logged. target is the resolved
-// literal OpenAI model — never the internal nanollm alias.
+// the selected client. baseURL is retained ONLY for the OpenAI prepared-plan URL
+// check (base + /chat/completions); the api key is written straight into the
+// engine config and is NEVER retained, returned, or logged. target is the
+// resolved literal model — never the internal nanollm alias. provider is the
+// nanollm provider spelling (aws-bedrock normalized to bedrock).
 type clientFacts struct {
 	provider string
 	target   string
 	baseURL  string
 }
 
-// transportTrio is the ONLY option set the request-scoped mapper accepts: the
+// mappedClient is the PURE mapping of the effective registry client onto a
+// request-scoped native intent plus its verification policy — resolved WITHOUT
+// calling nanollm (§4.1). newMappedClient is the SOLE nanollm.New site. In S1 the
+// only complete mapping is strict OpenAI; every non-openai provider
+// mapping-declines (mapping_unavailable) BEFORE newMappedClient, so no non-openai
+// socket is admitted. S2 fills in the generic bearer + Bedrock mappers.
+//
+// SENSITIVE — apiKey is a credential. A mappedClient MUST NEVER be logged,
+// serialized, or emitted; surface only clientFacts (secret-free) for
+// metrics/tests.
+type mappedClient struct {
+	registryProvider string // BAML spelling, e.g. "aws-bedrock"
+	nanollmProvider  string // nanollm spelling, e.g. "bedrock"
+	target           string
+	alias            string
+	baseURL          string
+	apiKey           string // SENSITIVE
+	verification     VerificationPolicy
+}
+
+// mappingInput is the pure input to mapClientConfig: the effective registry, the
+// SEPARATE internal nanollm alias, the orchestrator-resolved leaf provider (the
+// attempted provider), and the effective send client's rewrite/proxy predicate.
+type mappingInput struct {
+	registry            *bamlutils.ClientRegistry
+	alias               string
+	resolvedProvider    string
+	wouldRewriteOrProxy func(effectiveURL string) bool
+}
+
+// transportTrio is the ONLY option set the strict OpenAI mapper accepts: the
 // proved transport trio. Every other option — headers, tools, response_format,
 // request_body, temperature, or anything unrecognized — declines at
 // StageClientOption. There is deliberately no headers passthrough, no default
-// credential chain, and no option beyond these three.
+// credential chain, and no option beyond these three (S2 widens the trusted body
+// options; OpenAI stays the strict trio).
 var transportTrio = map[string]struct{}{
 	"model":    {},
 	"base_url": {},
 	"api_key":  {},
 }
 
-// mapDynamicClient resolves the effective one-client dynamic registry into a
-// request-scoped nanollm engine plus the facts the predicate needs, or a stable
-// Decline. It enforces, else declines:
+// normalizeNanollmProvider folds the ONE BAML spelling nanollm spells
+// differently: `aws-bedrock` -> `bedrock`. Every other nonempty provider string
+// is returned verbatim to be used as the nanollm prefix — there is no membership
+// check, so a future common-config provider starts mapping without a baml-rest
+// change, and an unknown prefix reaches nanollm.New (which types it as
+// invalid_provider once Viktor's P0 lands).
+func normalizeNanollmProvider(p string) string {
+	if p == providerBAMLBedrock {
+		return providerNanollmBedrock
+	}
+	return p
+}
+
+// mapClientConfig is the PURE registry->native-intent mapper (§4.1): it resolves
+// the effective one-client dynamic registry into a *mappedClient plus its
+// verification policy, or a stable *Decline — WITHOUT calling nanollm or opening
+// a socket. It enforces, else declines:
 //
 //   - the registry validates and resolves EXACTLY ONE unambiguous non-nil client,
 //     named by primary when a primary is present;
 //   - no client-retry policy on the selected client;
-//   - provider is exactly openai;
-//   - options are exactly the transport trio — model (a resolved literal target),
-//     base_url, and api_key — each a present, non-empty string, and nothing else.
-//
-// It configures nanollm with a SEPARATE internal alias, Model "openai/"+target,
-// MaxRetries 0, no fallbacks, Env nil, and UseProcessEnv false — so no ambient/
-// process-env value and no default credential chain can mask a difference. The
-// values may be real in production; they are never logged (the proof is
-// structural, with fake values in tests).
-//
-// The returned client is OPEN; the caller owns Close. An unexpected engine
-// construction failure returns a non-decline error (a planner error), not a
-// parity-decline, so it can be alerted instead of counted as ordinary
-// unsupported traffic.
-func mapDynamicClient(reg *bamlutils.ClientRegistry, alias string, wouldRewriteOrProxy func(effectiveURL string) bool) (*nanollm.Client, clientFacts, *Decline, error) {
-	cp, dec := selectOneClient(reg)
+//   - the selected client's explicit provider AGREES with the resolved leaf
+//     provider (§4.2; an absent client provider uses the resolved one);
+//   - S1: the resolved (nanollm-spelled) provider is exactly openai — every other
+//     provider mapping-declines (mapping_unavailable) here, BEFORE any nanollm
+//     construction, so no non-openai socket is admitted;
+//   - [strict OpenAI] options are exactly the transport trio, each a present,
+//     non-empty string; a SEPARATE internal alias distinct from target + client
+//     name; and the effective send target is neither rewritten nor proxied.
+func mapClientConfig(in mappingInput) (*mappedClient, *Decline, error) {
+	cp, dec := selectOneClient(in.registry)
 	if dec != nil {
-		return nil, clientFacts{}, dec, nil
+		return nil, dec, nil
 	}
 
 	// A per-client retry policy is a strategy the initial matrix does not prove
 	// (baml-rest owns the retry budget); decline at the strategy stage.
 	if cp.RetryPolicy != nil {
-		return nil, clientFacts{}, declinef(StageStrategy, ReasonClientRetryPolicy,
+		return nil, declinef(StageStrategy, ReasonClientRetryPolicy,
 			"selected client carries a retry_policy; the initial matrix proves no client-retry policy"), nil
 	}
 
-	if cp.Provider != nativebody.ProviderOpenAI {
-		return nil, clientFacts{}, declinef(StageProvider, ReasonProviderNotOpenAI,
-			"selected client provider is not the admitted openai surface"), nil
+	// §4.2 provider provenance: the RESOLVED leaf provider is the authoritative
+	// routing view and stays the mapped provider. It MUST be present — native never
+	// guesses the authoritative provider from an absent resolved leaf (an absent
+	// leaf letting the selected client's own provider stand in would admit a
+	// mapping without an authoritative resolved leaf), so an empty resolved leaf
+	// declines here BEFORE any nanollm construction. A selected client that
+	// explicitly carries a provider must AGREE with the resolved leaf under CANONICAL
+	// spelling (so BAML's aws-bedrock and nanollm's bedrock compare equal, while two
+	// genuinely distinct canonical providers still decline). The provider strings are
+	// structural routing facts (not secrets), but are not interpolated into the
+	// Detail — the bounded provider metric label already records which declined.
+	if in.resolvedProvider == "" {
+		return nil, declinef(StageClientSelection, ReasonProviderMismatch,
+			"the resolved leaf provider is absent; native never guesses the authoritative provider"), nil
 	}
+	registryProvider := in.resolvedProvider
+	nanollmProvider := normalizeNanollmProvider(registryProvider)
+	if cp.Provider != "" && normalizeNanollmProvider(cp.Provider) != nanollmProvider {
+		return nil, declinef(StageClientSelection, ReasonProviderMismatch,
+			"selected client provider disagrees with the resolved leaf provider"), nil
+	}
+
+	// S1: strict OpenAI is the ONLY complete production mapping. Every other
+	// provider — including a valid one nanollm supports (anthropic/bedrock/
+	// cerebras/cohere) — mapping-declines here BEFORE nanollm.New, so S1 admits no
+	// non-openai socket. S2 replaces this with the real bearer/Bedrock mappers.
+	if nanollmProvider != nativebody.ProviderOpenAI {
+		return nil, declinef(StageMapping, ReasonMappingUnavailable,
+			"selected provider has no complete native mapping in this slice"), nil
+	}
+
+	// ---- strict OpenAI mapping (byte-exact, UNCHANGED from the S6 anchor) ----
 
 	// Reject any option beyond the transport trio BEFORE reading the trio values,
 	// scanning in a stable sorted order so a client carrying several unproven
@@ -85,89 +198,134 @@ func mapDynamicClient(reg *bamlutils.ClientRegistry, alias string, wouldRewriteO
 		// The first (sorted) unproven key drives the fixed reason enum via
 		// classifyClientOption, but the request-controlled key text is NEVER
 		// interpolated into the secret-free Detail.
-		return nil, clientFacts{}, declinef(StageClientOption, classifyClientOption(extra[0]),
+		return nil, declinef(StageClientOption, classifyClientOption(extra[0]),
 			"selected client carries an unproven option beyond the transport trio"), nil
 	}
 
-	// The transport trio: model is a resolved literal target (StageClientSelection);
-	// base_url and api_key are the credential source (StageCredentialSource). Each
-	// must be a present, non-empty string.
 	target, dec := trioString(cp, "model", StageClientSelection, ReasonModelAbsent, ReasonModelNotLiteral)
 	if dec != nil {
-		return nil, clientFacts{}, dec, nil
+		return nil, dec, nil
 	}
 	baseURL, dec := trioString(cp, "base_url", StageCredentialSource, ReasonBaseURLAbsent, ReasonBaseURLAbsent)
 	if dec != nil {
-		return nil, clientFacts{}, dec, nil
+		return nil, dec, nil
 	}
 	apiKey, dec := trioString(cp, "api_key", StageCredentialSource, ReasonAPIKeyAbsent, ReasonAPIKeyAbsent)
 	if dec != nil {
-		return nil, clientFacts{}, dec, nil
+		return nil, dec, nil
 	}
 
 	// The required SEPARATE internal alias: non-empty and distinct from BOTH the
-	// resolved target model and the selected client name. Enforced BEFORE
-	// nanollm.New so a colliding alias never configures the engine — an
-	// alias == target would also make the later plan alias/target equality checks
-	// tautological, and alias == client name would blur the internal alias with
-	// the operator-visible client identity.
-	if alias == "" || alias == target || alias == cp.Name {
-		return nil, clientFacts{}, declinef(StageClientSelection, ReasonInvalidAlias,
+	// resolved target model and the selected client name (an alias == target would
+	// make the later plan alias/target equality checks tautological; alias ==
+	// client name would blur the internal alias with the operator-visible identity).
+	if in.alias == "" || in.alias == target || in.alias == cp.Name {
+		return nil, declinef(StageClientSelection, ReasonInvalidAlias,
 			"internal alias is empty or collides with the resolved target model or the selected client name"), nil
 	}
 
-	// Effective send-path rewrite/proxy parity — evaluated NOW that the effective
-	// target is known (base_url + /chat/completions) and BEFORE the engine is
-	// constructed. BAML's llmhttp client applies URL rewrites and HTTP proxying at
-	// EXECUTION time, on the built request — AFTER the plan the comparator captures.
-	// wouldRewriteOrProxy is the send client's own rewrite config plus its
-	// transport's own Proxy resolver evaluated against THAT exact target — the same
-	// function (and cached env snapshot) the transport uses at send — so a rewrite
-	// or a proxied target is an unproven shape that declines here, before the engine,
-	// the prepared plan, BAML's plan, or a plan_compare. A nil predicate (lightweight
-	// tests that carry no send client) skips the check.
-	if wouldRewriteOrProxy != nil && wouldRewriteOrProxy(baseURL+chatCompletionsPath) {
-		return nil, clientFacts{}, declinef(StageStrategy, ReasonURLRewriteOrProxy,
+	// Effective send-path rewrite/proxy parity — evaluated now that the effective
+	// target is known (base_url + /chat/completions) and BEFORE any engine is
+	// constructed. A rewrite or a proxied target is an unproven shape that declines
+	// here. A nil predicate (lightweight tests that carry no send client) skips it.
+	if in.wouldRewriteOrProxy != nil && in.wouldRewriteOrProxy(baseURL+chatCompletionsPath) {
+		return nil, declinef(StageStrategy, ReasonURLRewriteOrProxy,
 			"the effective send path would rewrite or proxy the request target"), nil
 	}
 
-	// Request-scoped engine: ONE openai model under the internal alias, the
-	// resolved target, a zero retry budget, and no fallbacks. Env nil +
-	// UseProcessEnv false forbid every ambient/process-env resolution. No
-	// headers option, no transforms, no option beyond the proved transport trio.
-	client, err := nanollm.New(nanollm.Config{
+	return &mappedClient{
+		registryProvider: registryProvider,
+		nanollmProvider:  nanollmProvider,
+		target:           target,
+		alias:            in.alias,
+		baseURL:          baseURL,
+		apiKey:           apiKey,
+		verification:     PolicyStrictOpenAI,
+	}, nil, nil
+}
+
+// newMappedClient is the SOLE nanollm.New call (§4.1). It builds the
+// request-scoped engine for an already-mapped client: ONE model under the
+// internal alias, the nanollm-spelled provider + resolved target, a zero retry
+// budget, no fallbacks, and Env nil + UseProcessEnv false so no ambient/process-
+// env value and no default credential chain can mask a difference. The returned
+// client is OPEN; the caller owns Close. The typed New-error classification lives
+// in mapDynamicClient (the sole caller), which keeps this function a pure
+// construction step.
+//
+// In S1 this is only ever reached for the strict OpenAI trio; the values may be
+// real in production and are never logged (the proof is structural, with fake
+// values in tests).
+func newMappedClient(m *mappedClient) (*nanollm.Client, error) {
+	return nanollm.New(nanollm.Config{
 		Models: []nanollm.ModelConfig{{
-			Name:       alias,
-			Model:      "openai/" + target,
-			APIKey:     apiKey,
-			BaseURL:    baseURL,
+			Name:       m.alias,
+			Model:      m.nanollmProvider + "/" + m.target,
+			APIKey:     m.apiKey,
+			BaseURL:    m.baseURL,
 			MaxRetries: 0,
 		}},
 		Env:           nil,
 		UseProcessEnv: false,
 	})
+}
+
+// mapDynamicClient resolves the effective one-client dynamic registry into a
+// request-scoped nanollm engine, its secret-free clientFacts, and its
+// verification policy — composing the pure mapClientConfig with the sole
+// newMappedClient. A pure-mapping decline (unsupported/ambiguous shape,
+// mapping_unavailable, provider mismatch) returns a *Decline; a typed nanollm
+// New failure classifies via classifyEngineError — an ordinary unsupported code
+// (unsupported_request / invalid_provider) is a pre-socket decline to BAML, and
+// any other construction failure is a non-decline planner error the caller alerts
+// on rather than counting as ordinary unsupported traffic.
+//
+// The returned client is OPEN; the caller owns Close.
+func mapDynamicClient(reg *bamlutils.ClientRegistry, alias, resolvedProvider string, wouldRewriteOrProxy func(effectiveURL string) bool) (*nanollm.Client, clientFacts, VerificationPolicy, *Decline, error) {
+	m, dec, err := mapClientConfig(mappingInput{
+		registry:            reg,
+		alias:               alias,
+		resolvedProvider:    resolvedProvider,
+		wouldRewriteOrProxy: wouldRewriteOrProxy,
+	})
 	if err != nil {
-		// Unexpected native construction failure — a planner error, not a
-		// parity-decline. Secret-free: nanollm.New's error never echoes the key.
-		return nil, clientFacts{}, nil, fmt.Errorf("nativeserve/admission: nanollm.New: %w", err)
+		return nil, clientFacts{}, 0, nil, err
+	}
+	if dec != nil {
+		return nil, clientFacts{}, 0, dec, nil
 	}
 
-	return client, clientFacts{provider: cp.Provider, target: target, baseURL: baseURL}, nil, nil
+	client, cerr := newMappedClient(m)
+	if cerr != nil {
+		if classifyEngineError(cerr) == engineUnsupported {
+			// A typed unsupported/invalid-provider construction: an ordinary
+			// pre-socket decline to the same BAML child (no socket, secret-free —
+			// nanollm.New's error never echoes the key).
+			return nil, clientFacts{}, 0, declinef(StagePrepare, prepareUnsupportedReason(cerr),
+				"nanollm.New reported a typed unsupported provider"), nil
+		}
+		// Unexpected native construction failure — a planner error, not a
+		// parity-decline, so it can alert instead of reading as unsupported traffic.
+		return nil, clientFacts{}, 0, nil, fmt.Errorf("nativeserve/admission: nanollm.New: %w", cerr)
+	}
+
+	return client, clientFacts{provider: m.nanollmProvider, target: m.target, baseURL: m.baseURL}, m.verification, nil, nil
 }
 
 // NewResponseClient rebuilds the request-scoped nanollm engine for the SAME
 // effective client the plan phase admitted, so the de-BAML same-response shadow
 // oracle can call TranslateResponse(alias, …) on BAML's already-fetched response.
-// It reuses the EXACT mapping mapDynamicClient uses (identical alias -> openai/
-// target config, zero retries, no ambient env), so the translation is faithful to
-// what the admitted plan would have translated with — but it performs NO
-// rewrite/proxy check (that gate already decided routing in the plan phase and is
-// irrelevant to a pure response translation) and NO Prepare (no plan is built or
-// sent). The returned client is OPEN; the caller owns Close. It never opens a
-// socket. It is only invoked AFTER the plan phase already admitted this exact
-// client, so a decline/error here is unexpected and surfaces as an error.
+// It reuses the EXACT strict-OpenAI mapping mapDynamicClient uses (identical
+// alias -> openai/target config, zero retries, no ambient env), so the
+// translation is faithful to what the admitted plan would have translated with —
+// but it performs NO rewrite/proxy check (that gate already decided routing in
+// the plan phase) and NO Prepare (no plan is built or sent). It is only invoked
+// on the OpenAI surface AFTER admission admitted this exact client, so it resolves
+// the provider as openai; a decline/error here is unexpected and surfaces as an
+// error. The returned client is OPEN; the caller owns Close. It never opens a
+// socket.
 func NewResponseClient(reg *bamlutils.ClientRegistry, alias string) (*nanollm.Client, string, error) {
-	client, facts, dec, err := mapDynamicClient(reg, alias, nil)
+	client, facts, _, dec, err := mapDynamicClient(reg, alias, nativebody.ProviderOpenAI, nil)
 	if err != nil {
 		return nil, "", err
 	}

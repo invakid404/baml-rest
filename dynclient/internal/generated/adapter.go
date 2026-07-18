@@ -1024,6 +1024,207 @@ func bamlRestDynamicBuildCallRequest(adapter bamlutils.Adapter, rawInput any, ou
 	}()
 	return nil
 }
+func bamlRestDynamicDirectLegacyCall(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, provider string, hasRequestRetryOverride bool, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
+	options, err := makeLegacyStreamOptionsFromAdapter(adapter, clientOverride)
+	if err != nil {
+		return err
+	}
+	input, ok := rawInput.(*BamlRestDynamicInput)
+	if !ok {
+		return fmt.Errorf("invalid input type: expected *%s, got %T", "BamlRestDynamicInput", rawInput)
+	}
+	__messagesPtr_messages := getbaml_Rest_MessageSlice(len(input.Messages))
+	*__messagesPtr_messages = (*__messagesPtr_messages)[:len(input.Messages)]
+	__struct_messages := *__messagesPtr_messages
+	var __ownedNested_messages []func()
+	__releaseConverted := func() {
+		for _, __release := range __ownedNested_messages {
+			__release()
+		}
+		putbaml_Rest_MessageSlice(__messagesPtr_messages)
+	}
+	for __i, __v := range input.Messages {
+		__converted, __err___struct_messages := convertBaml_Rest_MessageMediaInput(adapter, &__v, &__ownedNested_messages)
+		if __err___struct_messages != nil {
+			__releaseConverted()
+			return fmt.Errorf("messages[%d]: %w", __i, __err___struct_messages)
+		}
+		__struct_messages[__i] = __converted
+	}
+	skipPartials := true
+	__httpClient := llmhttp.DefaultClient
+	if __c := adapter.HTTPClient(); __c != nil {
+		__httpClient = __c
+	}
+	var serve bamlutils.NativeServeFunc
+	if __g, __gok := adapter.(nativeServeGetter); __gok {
+		serve = __g.NativeServeComparator()
+	}
+	return runNoRawOrchestration(adapter, out, func() bamlutils.StreamResult {
+		__r := getBamlRestDynamicOutput()
+		__r.kind = bamlutils.StreamResultKindHeartbeat
+		return __r
+	}, func(err error) bamlutils.StreamResult {
+		return newBamlRestDynamicOutputError(err)
+	}, func(__r bamlutils.StreamResult) {
+		__r.Release()
+	}, plannedMetadata, func(md *bamlutils.Metadata) bamlutils.StreamResult {
+		if md != nil && md.Phase == bamlutils.MetadataPhaseOutcome {
+			md.PlannedEngine = "native"
+		}
+		return newBamlRestDynamicOutputMetadata(md)
+	}, func(beforeFinal func(), onTick func(context.Context, pkg.TickReason, pkg.FunctionLog) pkg.FunctionSignal) error {
+		defer __releaseConverted()
+		if serve != nil {
+			var __probeHB atomic.Bool
+			__sendHeartbeat := func() {
+				if __probeHB.CompareAndSwap(false, true) {
+					__hb := getBamlRestDynamicOutput()
+					__hb.kind = bamlutils.StreamResultKindHeartbeat
+					select {
+					case out <- __hb:
+					default:
+						__hb.Release()
+					}
+				}
+			}
+			__res := serve(adapter, bamlutils.NativeServeRequest{
+				BuildBAMLRequest:        nil,
+				ClientOverride:          clientOverride,
+				HasFallbackChain:        false,
+				HasRequestRetryOverride: hasRequestRetryOverride,
+				HasRoundRobin:           false,
+				IncludeReasoning:        adapter.IncludeReasoning(),
+				Messages:                nativeShadowMessages(__struct_messages),
+				Mode:                    bamlutils.NativeServeModeCall,
+				OutputSchema:            adapter.DeBAMLOutputSchema(),
+				Provider:                provider,
+				Registry:                adapter.OriginalClientRegistry(),
+				SendHeartbeat:           __sendHeartbeat,
+				SingleLeaf:              true,
+				WouldRewriteOrProxy:     __httpClient.WouldRewriteOrProxy,
+			})
+			switch __res.Disposition {
+			case bamlutils.NativeServeSucceeded:
+				__wrapped, __werr := wrapDeBAMLDynamicOutput(__res.FinalJSON)
+				if __werr != nil {
+					__errR := newBamlRestDynamicOutputError(&buildrequest.OutputParseError{Err: __werr})
+					__errR.raw = __res.Raw
+					select {
+					case out <- __errR:
+					case <-adapter.Done():
+						__errR.Release()
+					}
+					return nil
+				}
+				if plannedMetadata != nil {
+					__outcome := bamlutils.BuildLegacyOutcome(plannedMetadata, 0, plannedMetadata.Client, plannedMetadata.Provider, nil)
+					if __outcome != nil {
+						__outcome.WinnerEngine = __res.WinnerEngine
+						__outcome.PlannedEngine = "native"
+						__om := newBamlRestDynamicOutputMetadata(__outcome)
+						select {
+						case out <- __om:
+						case <-adapter.Done():
+							__om.Release()
+						}
+					}
+				}
+				__r := getBamlRestDynamicOutput()
+				__r.kind = bamlutils.StreamResultKindFinal
+				__r.finalParsed = &__wrapped
+				unwrapDynamicBamlRestDynamicOutputFinal(__r.finalParsed)
+				select {
+				case out <- __r:
+				case <-adapter.Done():
+					__r.Release()
+				}
+				return nil
+			case bamlutils.NativeServeFailed:
+				__errR := newBamlRestDynamicOutputError(__res.Err)
+				__errR.raw = __res.RawDiagnostic
+				select {
+				case out <- __errR:
+				case <-adapter.Done():
+					__errR.Release()
+				}
+				return nil
+			case bamlutils.NativeServeDeclined:
+			// no-op: fall through to the ordinary legacy stream below
+			default:
+				__errR := newBamlRestDynamicOutputError(fmt.Errorf("native serve returned unknown disposition %d", __res.Disposition))
+				select {
+				case out <- __errR:
+				case <-adapter.Done():
+					__errR.Release()
+				}
+				return nil
+			}
+		}
+		streamOpts := append(options, bamlclient.WithOnTick(onTick))
+		if clientOverride != "" {
+			streamOpts = append(slices.Clone(streamOpts), bamlclient.WithClient(clientOverride))
+		}
+		stream, streamErr := bamlclient.Stream.Baml_Rest_Dynamic(adapter, __struct_messages, streamOpts...)
+		if streamErr != nil {
+			__errR := newBamlRestDynamicOutputError(streamErr)
+			select {
+			case out <- __errR:
+			case <-adapter.Done():
+				__errR.Release()
+			}
+			return nil
+		}
+		for streamVal := range stream {
+			select {
+			case <-adapter.Done():
+				return nil
+			default:
+			}
+			if streamVal.IsError {
+				__errR := newBamlRestDynamicOutputError(streamVal.Error)
+				select {
+				case out <- __errR:
+				case <-adapter.Done():
+					__errR.Release()
+					return nil
+				}
+				continue
+			}
+			if streamVal.IsFinal {
+				__r := getBamlRestDynamicOutput()
+				__r.kind = bamlutils.StreamResultKindFinal
+				__r.finalParsed = streamVal.Final()
+				unwrapDynamicBamlRestDynamicOutputFinal(__r.finalParsed)
+				beforeFinal()
+				select {
+				case out <- __r:
+				case <-adapter.Done():
+					__r.Release()
+					return nil
+				}
+				continue
+			}
+			if !skipPartials {
+				if __partial := streamVal.Stream(); __partial != nil {
+					unwrapDynamicBamlRestDynamicOutputStream(__partial)
+					__r := getBamlRestDynamicOutput()
+					__r.kind = bamlutils.StreamResultKindStream
+					__r.streamParsed = __partial
+					select {
+					case out <- __r:
+					case <-adapter.Done():
+						__r.Release()
+						return nil
+					default:
+						__r.Release()
+					}
+				}
+			}
+		}
+		return nil
+	})
+}
 func Baml_Rest_Dynamic(adapter bamlutils.Adapter, rawInput any) (<-chan bamlutils.StreamResult, error) {
 	out := make(chan bamlutils.StreamResult, 100)
 	var err error
@@ -1133,6 +1334,16 @@ func Baml_Rest_Dynamic(adapter bamlutils.Adapter, rawInput any) (<-chan bamlutil
 	__plannedLegacy.RoundRobin = __rrInfo
 	__legacyClientOverride := __effective
 	buildrequest.LogLegacyClassification(adapter, "Baml_Rest_Dynamic", __plannedLegacy)
+	if adapter.DeBAMLConfig().Enabled && mode == bamlutils.StreamModeCall && hasNativeServe(adapter) && __plannedLegacy.Strategy == "" && __plannedLegacy.Chain == nil && __plannedLegacy.RoundRobin == nil {
+		__directLegacyProvider := buildrequest.ResolveClientProvider(__reg, __effective, introspected.ClientProvider)
+		if __directLegacyProvider != "" && !buildrequest.IsCallProviderSupported(__directLegacyProvider) {
+			err = bamlRestDynamicDirectLegacyCall(adapter, rawInput, out, __directLegacyProvider, __legacyRetryPolicy != nil, __plannedLegacy, __legacyClientOverride)
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+	}
 	switch mode {
 	case bamlutils.StreamModeCall:
 		err = bamlRestDynamicNoRaw(adapter, rawInput, out, true, __plannedLegacy, __legacyClientOverride)

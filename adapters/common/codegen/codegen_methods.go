@@ -888,6 +888,7 @@ func (g *generator) emitMethods() []methodOut {
 		me.emitLegacyStream()
 		me.emitBuildRequest()
 		me.emitBuildCallRequest()
+		me.emitDirectLegacyCall()
 		me.emitRouter()
 		methods = append(methods, me.methodOut())
 	}

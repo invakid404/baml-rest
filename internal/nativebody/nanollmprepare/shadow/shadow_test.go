@@ -473,8 +473,9 @@ func TestComparator_AdmissionDeclineSkipsComparison(t *testing.T) {
 	ct := &countingTransport{}
 	c := NewComparator(m, llmhttp.NewExactExecutor(ct))
 
-	// A non-openai provider declines at the provider stage before any plan is
-	// built; BuildBAMLRequest must never run and no plan_compare is recorded.
+	// A non-openai provider (resolved + client agree on anthropic) mapping-declines
+	// before any plan is built (de-BAML mprov S1: strict OpenAI is the only complete
+	// mapping); BuildBAMLRequest must never run and no plan_compare is recorded.
 	req := shadowRequest(func(context.Context) (*llmhttp.Request, error) {
 		t.Fatal("BuildBAMLRequest must not run on an admission decline")
 		return nil, nil
@@ -483,16 +484,16 @@ func TestComparator_AdmissionDeclineSkipsComparison(t *testing.T) {
 	req.Registry.Clients[0].Provider = "anthropic"
 
 	res := c.Compare(context.Background(), req)
-	if res.Stage != string(admission.StageProvider) || res.Reason != string(admission.ReasonProviderNotOpenAI) {
-		t.Fatalf("expected a provider decline, got stage=%q reason=%q", res.Stage, res.Reason)
+	if res.Stage != string(admission.StageMapping) || res.Reason != string(admission.ReasonMappingUnavailable) {
+		t.Fatalf("expected a mapping_unavailable decline, got stage=%q reason=%q", res.Stage, res.Reason)
 	}
 	// No plan_compare series exist at all.
 	if fams, _ := reg.Gather(); hasFamily(fams, "baml_rest_debaml_plan_compare_total") {
 		t.Error("admission decline must record no plan_compare series")
 	}
 	// The decline was counted.
-	if got := counterVal(t, reg, "baml_rest_debaml_declines_total", map[string]string{"stage": "provider", "reason": "provider_not_openai"}); got != 1 {
-		t.Errorf("declines{provider,provider_not_openai} = %v, want 1", got)
+	if got := counterVal(t, reg, "baml_rest_debaml_declines_total", map[string]string{"stage": "mapping", "reason": "mapping_unavailable"}); got != 1 {
+		t.Errorf("declines{mapping,mapping_unavailable} = %v, want 1", got)
 	}
 	assertNoSocket(t, ct)
 }

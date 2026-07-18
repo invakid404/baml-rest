@@ -29,6 +29,14 @@ const (
 	// StageProvider: the resolved leaf / effective client provider is exactly
 	// openai (layers 2-3).
 	StageProvider Stage = "provider"
+	// StageMapping: the pure registry->nanollm config mapper could not
+	// CONFIDENTLY map the selected client to a request-scoped native intent
+	// (layer 3). In S1 the only complete production mapping is strict OpenAI, so
+	// every non-openai provider mapping-declines here (mapping_unavailable) BEFORE
+	// nanollm.New — no non-openai socket is admitted. S2 fills in the generic
+	// bearer + Bedrock mappers; a future provider whose config cannot be expressed
+	// keeps declining here rather than inventing credentials/options.
+	StageMapping Stage = "mapping"
 	// StageClientSelection: the registry validates and resolves exactly one
 	// unambiguous non-nil, non-empty client with a resolved literal target model,
 	// named by primary when a primary is present (layer 3).
@@ -111,6 +119,12 @@ const (
 	ReasonURLRewriteOrProxy    Reason = "url_rewrite_or_proxy"
 	// provider
 	ReasonProviderNotOpenAI Reason = "provider_not_openai"
+	// mapping — the pure registry->nanollm mapper's stable declines (layer 3).
+	// mapping_unavailable is S1's "no complete non-openai mapping yet" decline
+	// (before nanollm.New); provider_mismatch is the §4.2 guard when the selected
+	// client's explicit provider disagrees with the resolved leaf provider.
+	ReasonMappingUnavailable Reason = "mapping_unavailable"
+	ReasonProviderMismatch   Reason = "provider_mismatch"
 	// client_selection
 	ReasonNoRegistry         Reason = "no_registry"
 	ReasonRegistryInvalid    Reason = "registry_invalid"
@@ -148,9 +162,17 @@ const (
 	ReasonBodyNotJSON       Reason = "body_not_json"
 	ReasonBodyMissingTarget Reason = "body_missing_target_model"
 	ReasonBodyUnclaimed     Reason = "body_unclaimed"
-	// prepare
-	ReasonPrepareError     Reason = "prepare_error"
-	ReasonBodyNotByteEqual Reason = "body_not_byte_equal"
+	// prepare — the typed New/Prepare classifier (§5.1) splits today's too-broad
+	// prepare_error: a nanollm *Error whose Code is unsupported_request /
+	// invalid_provider is an ORDINARY pre-socket unsupported decline to BAML; any
+	// OTHER New/Prepare/Build failure is NOT a decline — it is recorded as
+	// OutcomePlannerError (safe BAML fallback that alerts) so it never reads as
+	// expected unsupported traffic. invalid_provider is keyed by CODE (via
+	// errors.As, never a string match); nanollm v0.4.3 does not emit it yet, so the
+	// classifier is forward-ready for Viktor's P0.
+	ReasonPrepareUnsupportedRequest Reason = "unsupported_request"
+	ReasonPrepareInvalidProvider    Reason = "invalid_provider"
+	ReasonBodyNotByteEqual          Reason = "body_not_byte_equal"
 	// plan_meta
 	ReasonAliasMismatch         Reason = "alias_mismatch"
 	ReasonTargetMismatch        Reason = "target_mismatch"

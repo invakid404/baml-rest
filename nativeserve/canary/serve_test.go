@@ -94,7 +94,7 @@ func TestMapAttempt_ProviderNon2xx(t *testing.T) {
 		ProviderStatus: 429,
 		ProviderBody:   bigBody,
 	}
-	out := s.mapAttempt(context.Background(), bamlutils.NativeServeRequest{Provider: "openai"}, res, nil)
+	out := s.mapAttempt(context.Background(), bamlutils.NativeServeRequest{Provider: "openai"}, admission.PolicyStrictOpenAI, res, nil)
 
 	if out.Disposition != bamlutils.NativeServeFailed {
 		t.Fatalf("disposition = %v, want failed", out.Disposition)
@@ -125,7 +125,7 @@ func TestMapAttempt_MalformedBody(t *testing.T) {
 		ProviderStatus: 200,
 		ProviderBody:   []byte("not json at all"),
 	}
-	out := s.mapAttempt(context.Background(), bamlutils.NativeServeRequest{Provider: "openai"}, res, nil)
+	out := s.mapAttempt(context.Background(), bamlutils.NativeServeRequest{Provider: "openai"}, admission.PolicyStrictOpenAI, res, nil)
 
 	if out.Disposition != bamlutils.NativeServeFailed {
 		t.Fatalf("disposition = %v, want failed", out.Disposition)
@@ -151,7 +151,7 @@ func TestMapAttempt_MalformedBody(t *testing.T) {
 func TestMapAttempt_TranslateError(t *testing.T) {
 	s, reg := newTestServer(t)
 	res := &execute.AttemptResult{ProviderStatus: 200, ProviderBody: []byte("upstream body")}
-	out := s.mapAttempt(context.Background(), bamlutils.NativeServeRequest{Provider: "openai"}, res, errors.New("translate boom"))
+	out := s.mapAttempt(context.Background(), bamlutils.NativeServeRequest{Provider: "openai"}, admission.PolicyStrictOpenAI, res, errors.New("translate boom"))
 
 	if out.Disposition != bamlutils.NativeServeFailed {
 		t.Fatalf("disposition = %v, want failed", out.Disposition)
@@ -179,7 +179,7 @@ func TestMapAttempt_ClaimedSAPError(t *testing.T) {
 		Raw:            "assistant text",
 		SAPInvoked:     true,
 	}
-	out := s.mapAttempt(context.Background(), bamlutils.NativeServeRequest{Provider: "openai"}, res, errors.New("claimed parse failure"))
+	out := s.mapAttempt(context.Background(), bamlutils.NativeServeRequest{Provider: "openai"}, admission.PolicyStrictOpenAI, res, errors.New("claimed parse failure"))
 
 	if out.Disposition != bamlutils.NativeServeFailed {
 		t.Fatalf("disposition = %v, want failed", out.Disposition)
@@ -209,7 +209,7 @@ func TestMapAttempt_TransportError(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, reg := newTestServer(t)
-			out := s.mapAttempt(context.Background(), bamlutils.NativeServeRequest{Provider: "openai"}, nil, tc.err)
+			out := s.mapAttempt(context.Background(), bamlutils.NativeServeRequest{Provider: "openai"}, admission.PolicyStrictOpenAI, nil, tc.err)
 			if out.Disposition != bamlutils.NativeServeFailed {
 				t.Fatalf("disposition = %v, want failed", out.Disposition)
 			}
@@ -266,7 +266,7 @@ func TestMapAttempt_ContextCancelledIsTransport(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, reg := newTestServer(t)
-			out := s.mapAttempt(context.Background(), bamlutils.NativeServeRequest{Provider: "openai"}, tc.res, tc.err)
+			out := s.mapAttempt(context.Background(), bamlutils.NativeServeRequest{Provider: "openai"}, admission.PolicyStrictOpenAI, tc.res, tc.err)
 			if out.Disposition != bamlutils.NativeServeFailed {
 				t.Fatalf("disposition = %v, want failed", out.Disposition)
 			}
@@ -547,5 +547,112 @@ func TestServeParseOnly_CanceledCtxNotServedDespiteValidParse(t *testing.T) {
 	}
 	if got := sumAttempts(t, reg, "parse_decline"); got != 0 {
 		t.Errorf("parse_decline attempts = %v, want 0 (never serve a canceled request)", got)
+	}
+}
+
+// familyTotal sums EVERY series of a counter family — used to prove a comparison
+// family stays at zero for a trusted provider (no BAML differential at all).
+func familyTotal(t *testing.T, reg *prometheus.Registry, name string) float64 {
+	t.Helper()
+	fams, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	var total float64
+	for _, f := range fams {
+		if f.GetName() != name {
+			continue
+		}
+		for _, mtr := range f.GetMetric() {
+			total += mtr.GetCounter().GetValue()
+		}
+	}
+	return total
+}
+
+// TestMapAttempt_TrustedStructured_NoBAMLCompare proves the trusted-provider
+// structured success branch (§6): mapAttempt serves the native SAP result
+// DIRECTLY. BuildBAMLRequest and BAMLOnlyParse are set to PANIC — neither is
+// invoked — the winner engine is native, and both comparison families stay at
+// zero (a trusted provider has no BAML differential).
+func TestMapAttempt_TrustedStructured_NoBAMLCompare(t *testing.T) {
+	s, reg := newTestServer(t)
+	res := &execute.AttemptResult{
+		Outcome:       execute.OutcomeStructured,
+		Structured:    []byte(`{"answer":"hi"}`),
+		AssistantText: `{"answer":"hi"}`,
+	}
+	req := bamlutils.NativeServeRequest{
+		Provider: "cerebras",
+		BuildBAMLRequest: func(context.Context) (*llmhttp.Request, error) {
+			panic("BuildBAMLRequest must not run for a trusted provider")
+		},
+		BAMLOnlyParse: func(context.Context, string) ([]byte, error) {
+			panic("BAMLOnlyParse must not run on a trusted structured success")
+		},
+	}
+	out := s.mapAttempt(context.Background(), req, admission.PolicyTrustedProvider, res, nil)
+
+	if out.Disposition != bamlutils.NativeServeSucceeded {
+		t.Fatalf("disposition = %v, want succeeded", out.Disposition)
+	}
+	if out.WinnerEngine != bamlutils.NativeServeEngineNative {
+		t.Errorf("winner engine = %q, want native", out.WinnerEngine)
+	}
+	if string(out.FinalJSON) != `{"answer":"hi"}` {
+		t.Errorf("final = %q, want the native SAP structured output served directly", out.FinalJSON)
+	}
+	if got := sumAttempts(t, reg, "success"); got != 1 {
+		t.Errorf("success attempts = %v, want 1", got)
+	}
+	if got := familyTotal(t, reg, "baml_rest_debaml_plan_compare_total"); got != 0 {
+		t.Errorf("plan_compare total = %v, want 0 (trusted provider has no BAML plan compare)", got)
+	}
+	if got := familyTotal(t, reg, "baml_rest_debaml_response_compare_total"); got != 0 {
+		t.Errorf("response_compare total = %v, want 0 (trusted provider has no BAML response compare)", got)
+	}
+}
+
+// TestMapAttempt_TrustedParseOnly_NoCompareFacets proves the trusted-provider SAP
+// decline branch (§6): BAML parse-only runs on the SAME extracted assistant text
+// as a parser fallback (never BuildBAMLRequest), the served final is BAML's parse
+// with the native_baml_parse engine, fallback=parse_only is recorded, and NO
+// response_compare facet is recorded (unlike the strict serveParseOnly).
+func TestMapAttempt_TrustedParseOnly_NoCompareFacets(t *testing.T) {
+	s, reg := newTestServer(t)
+	res := &execute.AttemptResult{
+		Outcome:       execute.OutcomeParseDeclined,
+		AssistantText: "loosely-shaped assistant text",
+	}
+	var parsedText string
+	req := bamlutils.NativeServeRequest{
+		Provider: "cerebras",
+		BuildBAMLRequest: func(context.Context) (*llmhttp.Request, error) {
+			panic("BuildBAMLRequest must not run for a trusted provider")
+		},
+		BAMLOnlyParse: func(_ context.Context, raw string) ([]byte, error) {
+			parsedText = raw
+			return []byte(`{"answer":"parsed"}`), nil
+		},
+	}
+	out := s.mapAttempt(context.Background(), req, admission.PolicyTrustedProvider, res, nil)
+
+	if out.Disposition != bamlutils.NativeServeSucceeded {
+		t.Fatalf("disposition = %v, want succeeded", out.Disposition)
+	}
+	if out.WinnerEngine != bamlutils.NativeServeEngineBAMLParse {
+		t.Errorf("winner engine = %q, want native_baml_parse", out.WinnerEngine)
+	}
+	if string(out.FinalJSON) != `{"answer":"parsed"}` {
+		t.Errorf("final = %q, want BAML parse-only of the same text", out.FinalJSON)
+	}
+	if parsedText != "loosely-shaped assistant text" {
+		t.Errorf("BAML parse-only received %q, want the SAME extracted assistant text", parsedText)
+	}
+	if got := sumFallback(t, reg, "parse_only"); got != 1 {
+		t.Errorf("fallback{parse_only} = %v, want 1", got)
+	}
+	if got := familyTotal(t, reg, "baml_rest_debaml_response_compare_total"); got != 0 {
+		t.Errorf("response_compare total = %v, want 0 (trusted parse-only records no compare facets)", got)
 	}
 }

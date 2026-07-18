@@ -77,6 +77,12 @@ type Server struct {
 	admitter *admission.Admitter
 	metrics  *admission.Metrics
 	exec     *llmhttp.ExactExecutor
+	// admitClaim is the admission step Serve runs. It defaults to
+	// admitter.AdmitClaim (the real production predicate) and is OVERRIDDEN ONLY by
+	// same-package tests to inject a SYNTHETIC trusted claim — S1 ships no
+	// production non-openai mapping, so the trusted verification path is otherwise
+	// unreachable through Serve. Production never rebinds it.
+	admitClaim func(ctx context.Context, in admission.Input) (*admission.Claim, error)
 }
 
 // NewServer builds a Server recording on m and sending admitted plans through exec
@@ -87,7 +93,9 @@ func NewServer(m *admission.Metrics, exec *llmhttp.ExactExecutor) *Server {
 	if exec == nil {
 		exec = llmhttp.NewExactExecutor(nil)
 	}
-	return &Server{admitter: admission.NewAdmitter(m, exec), metrics: m, exec: exec}
+	s := &Server{admitter: admission.NewAdmitter(m, exec), metrics: m, exec: exec}
+	s.admitClaim = s.admitter.AdmitClaim
+	return s
 }
 
 // NewServeFunc is the factory a serve-profile worker injects via
@@ -140,7 +148,7 @@ func (s *Server) Serve(ctx context.Context, req bamlutils.NativeServeRequest) (r
 		return declineResult(stageServe, reasonServedBAMLCtx)
 	}
 
-	claim, err := s.admitter.AdmitClaim(ctx, toAdmissionInput(req))
+	claim, err := s.admitClaim(ctx, toAdmissionInput(req))
 	if err != nil {
 		var d *admission.Decline
 		if errors.As(err, &d) {
@@ -155,21 +163,31 @@ func (s *Server) Serve(ctx context.Context, req bamlutils.NativeServeRequest) (r
 	// panic/cancel below).
 	defer claim.Close()
 
-	// S4 plan compare — a PRE-SOCKET precondition. A missing/failed BAML builder or
-	// any per-field mismatch declines to BAML BEFORE the claim; native never sends.
-	if req.BuildBAMLRequest == nil {
-		s.metrics.RecordPlanCompare(admission.PlanCompareMismatch, admission.PlanCompareFieldMeta)
-		return declineResult(stageServe, reasonNoBAMLBuilder)
-	}
-	bamlReq, berr := req.BuildBAMLRequest(ctx)
-	if berr != nil || bamlReq == nil {
-		s.metrics.RecordPlanCompare(admission.PlanCompareMismatch, admission.PlanCompareFieldMeta)
-		return declineResult(stageServe, reasonBAMLBuildError)
-	}
-	cmp := parity.ComparePlans(bamlReq, claim.ExactRequest)
-	s.recordPlanComparison(cmp)
-	if !cmp.AllMatch() {
-		return declineResult(stagePlanCompare, reasonPlanMismatch)
+	// The mapper's verification policy decides the pre-socket verification regime
+	// (§6): the STRICT OpenAI anchor runs the S4 BAML plan-compare precondition
+	// below; a TRUSTED provider SKIPS it entirely — nanollm owns the provider's
+	// transport contract, so there is no BAML plan to build or compare, and
+	// BuildBAMLRequest is expected nil (the direct-legacy probe passes it nil).
+	policy := claim.Verification
+
+	// S4 plan compare — a PRE-SOCKET precondition, STRICT OpenAI ONLY. A missing/
+	// failed BAML builder or any per-field mismatch declines to BAML BEFORE the
+	// claim; native never sends. Trusted providers record NO plan_compare at all.
+	if policy == admission.PolicyStrictOpenAI {
+		if req.BuildBAMLRequest == nil {
+			s.metrics.RecordPlanCompare(admission.PlanCompareMismatch, admission.PlanCompareFieldMeta)
+			return declineResult(stageServe, reasonNoBAMLBuilder)
+		}
+		bamlReq, berr := req.BuildBAMLRequest(ctx)
+		if berr != nil || bamlReq == nil {
+			s.metrics.RecordPlanCompare(admission.PlanCompareMismatch, admission.PlanCompareFieldMeta)
+			return declineResult(stageServe, reasonBAMLBuildError)
+		}
+		cmp := parity.ComparePlans(bamlReq, claim.ExactRequest)
+		s.recordPlanComparison(cmp)
+		if !cmp.AllMatch() {
+			return declineResult(stagePlanCompare, reasonPlanMismatch)
+		}
 	}
 
 	// A provably PRE-SOCKET preflight rejection — the prepared plan's signature
@@ -230,13 +248,13 @@ func (s *Server) Serve(ctx context.Context, req bamlutils.NativeServeRequest) (r
 		recordSocket(admission.NativeSocketResponded)
 	}
 
-	return s.mapAttempt(ctx, req, res, aerr)
+	return s.mapAttempt(ctx, req, policy, res, aerr)
 }
 
 // mapAttempt maps one claimed native attempt's (result, error) onto the neutral
 // serve result, per the cutover Slice 6 disposition/error table. It NEVER declines
 // (post-claim) and NEVER falls through to a BAML resend.
-func (s *Server) mapAttempt(ctx context.Context, req bamlutils.NativeServeRequest, res *execute.AttemptResult, aerr error) bamlutils.NativeServeResult {
+func (s *Server) mapAttempt(ctx context.Context, req bamlutils.NativeServeRequest, policy admission.VerificationPolicy, res *execute.AttemptResult, aerr error) bamlutils.NativeServeResult {
 	if aerr != nil {
 		// Caller cancellation / deadline is a transport-class typed error to the
 		// outer policy — regardless of whether a partial response was buffered
@@ -288,8 +306,18 @@ func (s *Server) mapAttempt(ctx context.Context, req bamlutils.NativeServeReques
 		s.metrics.RecordServeOutcome(toAdmissionMode(req.Mode), req.Provider, admission.OutcomeTranslateError)
 		return failResult(errMalformed2xx, string(res.ProviderBody))
 	case execute.OutcomeParseDeclined:
+		// Trusted providers take the non-comparison parse-only fallback (§6); the
+		// strict OpenAI path keeps the same-response-facet-recording serveParseOnly.
+		if policy == admission.PolicyTrustedProvider {
+			return s.serveTrustedParseOnly(ctx, req, res)
+		}
 		return s.serveParseOnly(ctx, req, res)
 	case execute.OutcomeStructured:
+		// Trusted providers serve the native SAP result DIRECTLY (no BAML compare);
+		// the strict OpenAI path runs the S5 same-response safety compare unchanged.
+		if policy == admission.PolicyTrustedProvider {
+			return s.serveTrustedStructured(req, res)
+		}
 		return s.serveStructured(ctx, req, res)
 	default:
 		// Unreachable for the closed Outcome set; fail conservatively (never serve).
@@ -411,6 +439,58 @@ func (s *Server) serveParseOnly(ctx context.Context, req bamlutils.NativeServeRe
 	s.recordResponse(true, admission.ResponseCompareFieldTranslate)
 	s.recordResponse(false, admission.ResponseCompareFieldStructured)
 	s.recordResponse(false, admission.ResponseCompareFieldOrder)
+	s.metrics.RecordFallback(admission.FallbackParseOnly)
+	s.metrics.RecordServeOutcome(toAdmissionMode(req.Mode), req.Provider, admission.OutcomeParseDecline)
+	return successResult(bamlStructured, res, bamlutils.NativeServeEngineBAMLParse)
+}
+
+// serveTrustedStructured serves a clean TRUSTED-provider structured claim
+// (OutcomeStructured) DIRECTLY: RunAttempt already translated the provider
+// response and extracted the structured output from nanollm's normalized OpenAI
+// body, so there is nothing to compare against BAML. It records the served
+// success and returns the native SAP result with the native winner engine — it
+// NEVER calls ExtractResponseContentBytes on raw provider bytes, BAMLOnlyParse,
+// parity.CompareStructured, or any comparison recorder (§6: trusted providers
+// record NO plan/response comparison at all; there is no BAML differential).
+func (s *Server) serveTrustedStructured(req bamlutils.NativeServeRequest, res *execute.AttemptResult) bamlutils.NativeServeResult {
+	s.metrics.RecordServeOutcome(toAdmissionMode(req.Mode), req.Provider, admission.OutcomeSuccess)
+	return successResult(res.Structured, res, bamlutils.NativeServeEngineNative)
+}
+
+// serveTrustedParseOnly handles a TRUSTED-provider native SAP decline
+// (OutcomeParseDeclined): native transported and translated cleanly but declined
+// the parse shape, so BAML parse-only runs on the SAME extracted assistant text
+// as a PARSER fallback (not a BAML transport or a differential admission bar) and
+// serves that final. Unlike the strict serveParseOnly it records ONLY
+// fallback=parse_only and the terminal outcome — NEVER a native-vs-BAML
+// response_compare facet (§6). One native provider request, zero BAML provider
+// requests.
+func (s *Server) serveTrustedParseOnly(ctx context.Context, req bamlutils.NativeServeRequest, res *execute.AttemptResult) bamlutils.NativeServeResult {
+	if req.BAMLOnlyParse == nil {
+		s.metrics.RecordServeOutcome(toAdmissionMode(req.Mode), req.Provider, admission.OutcomeParseError)
+		return failResult(&buildrequest.OutputParseError{Err: errNoBAMLOnlyParse}, res.Raw)
+	}
+	// ctx gate BEFORE the BAML parse-only fallback: a request already canceled/
+	// deadline-exceeded must never be served, regardless of what BAMLOnlyParse
+	// would return.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return s.ctxTransportFail(req, ctxErr)
+	}
+	bamlStructured, berr := req.BAMLOnlyParse(ctx, res.AssistantText)
+	// ctx gate AFTER: BAMLOnlyParse may IGNORE cancellation and return a valid
+	// value (err == nil) on a canceled context — never serve it.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return s.ctxTransportFail(req, ctxErr)
+	}
+	if berr != nil {
+		if isContextErr(berr) {
+			// BAMLOnlyParse returned its OWN context error while the request ctx is
+			// still live: transport-class, NOT a parse error.
+			return s.ctxTransportFail(req, berr)
+		}
+		s.metrics.RecordServeOutcome(toAdmissionMode(req.Mode), req.Provider, admission.OutcomeParseError)
+		return failResult(&buildrequest.OutputParseError{Err: berr}, res.Raw)
+	}
 	s.metrics.RecordFallback(admission.FallbackParseOnly)
 	s.metrics.RecordServeOutcome(toAdmissionMode(req.Mode), req.Provider, admission.OutcomeParseDecline)
 	return successResult(bamlStructured, res, bamlutils.NativeServeEngineBAMLParse)

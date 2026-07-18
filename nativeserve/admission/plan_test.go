@@ -219,7 +219,7 @@ func TestValidateExactTransport(t *testing.T) {
 // client engine from the fence trio and safely Closes it, resolving the target
 // and base URL while never retaining the api key in the returned facts.
 func TestMapDynamicClient(t *testing.T) {
-	client, facts, dec, err := mapDynamicClient(validRegistry(), fenceAlias, nil)
+	client, facts, policy, dec, err := mapDynamicClient(validRegistry(), fenceAlias, "openai", nil)
 	if err != nil {
 		t.Fatalf("mapDynamicClient planner error: %v", err)
 	}
@@ -228,6 +228,9 @@ func TestMapDynamicClient(t *testing.T) {
 	}
 	if client == nil {
 		t.Fatal("mapDynamicClient returned a nil client")
+	}
+	if policy != PolicyStrictOpenAI {
+		t.Errorf("mapDynamicClient policy = %v, want strict_openai", policy)
 	}
 	// Safe Close, twice — Close is idempotent and must never panic/leak.
 	if err := client.Close(); err != nil {

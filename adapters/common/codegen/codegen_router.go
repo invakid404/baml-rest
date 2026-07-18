@@ -608,6 +608,54 @@ func (me *methodEmitter) emitRouter() {
 			jen.Lit(me.methodName),
 			jen.Id("__plannedLegacy"),
 		),
+		// Direct-legacy native-first probe (de-BAML unary multi-provider S1).
+		// Emitted ONLY for the dynamic de-BAML method. It fires ONLY when: the
+		// umbrella flag is on, a SERVE (not shadow) callback is installed, the mode
+		// is plain unary call, and the resolved leaf is a DIRECT single leaf whose
+		// existing BAML route is legacy (a call-UNSUPPORTED provider, no
+		// strategy/chain/RR). It routes the SAME selected leaf through the native
+		// serve probe FIRST; on a native DECLINE it runs the EXACT ordinary legacy
+		// serving lifecycle (bamlRest…DirectLegacyCall reuses runNoRawOrchestration
+		// + the same stream-driving body, so result/error/heartbeat/raw/metadata are
+		// byte-identical to the plain legacy path — only planned_engine=native
+		// differs). Anything else (flag off, shadow-only, with-raw/stream, a
+		// strategy, a call-supported/empty provider) falls through UNCHANGED to the
+		// plain legacy dispatch below.
+		func() jen.Code {
+			if !me.isDeBAMLMethod() {
+				return jen.Null()
+			}
+			return jen.If(
+				jen.Id("adapter").Dot("DeBAMLConfig").Call().Dot("Enabled").
+					Op("&&").Id("mode").Op("==").Qual(g.pkgs.InterfacesPkg, "StreamModeCall").
+					Op("&&").Id("hasNativeServe").Call(jen.Id("adapter")).
+					Op("&&").Id("__plannedLegacy").Dot("Strategy").Op("==").Lit("").
+					Op("&&").Id("__plannedLegacy").Dot("Chain").Op("==").Nil().
+					Op("&&").Id("__plannedLegacy").Dot("RoundRobin").Op("==").Nil(),
+			).Block(
+				jen.Id("__directLegacyProvider").Op(":=").Qual(g.pkgs.BuildRequestPkg, "ResolveClientProvider").Call(
+					jen.Id("__reg"), jen.Id("__effective"), jen.Qual(g.pkgs.IntrospectedPkg, "ClientProvider"),
+				),
+				jen.If(
+					jen.Id("__directLegacyProvider").Op("!=").Lit("").
+						Op("&&").Op("!").Qual(g.pkgs.BuildRequestPkg, "IsCallProviderSupported").Call(jen.Id("__directLegacyProvider")),
+				).Block(
+					jen.Id("err").Op("=").Id(me.directLegacyCallMethodName()).Call(
+						jen.Id("adapter"), jen.Id("rawInput"), jen.Id("out"),
+						jen.Id("__directLegacyProvider"),
+						// TRUTHFUL retry-override fact: a resolved strategy-aware retry
+						// policy declines native admission pre-socket, preserving BAML's
+						// retry semantics on the ordinary legacy path.
+						jen.Id("__legacyRetryPolicy").Op("!=").Nil(),
+						jen.Id("__plannedLegacy"), jen.Id("__legacyClientOverride"),
+					),
+					jen.If(jen.Id("err").Op("!=").Nil()).Block(
+						jen.Return(jen.Nil(), jen.Id("err")),
+					),
+					jen.Return(jen.Id("out"), jen.Nil()),
+				),
+			)
+		}(),
 		jen.Switch(jen.Id("mode")).Block(
 			// StreamModeCall: final only, no raw, skip partials
 			jen.Case(jen.Qual(g.pkgs.InterfacesPkg, "StreamModeCall")).Block(

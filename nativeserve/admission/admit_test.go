@@ -258,14 +258,14 @@ func TestAdmitPositive(t *testing.T) {
 	}
 }
 
-// TestAdmitBuildErrorDeclinesFailClosed proves a canonical-body serialization
-// failure (a ChatRequest.Build error) declines FAIL-CLOSED to BAML via
-// StagePrepare/ReasonPrepareError — exactly like a Prepare error — instead of
-// surfacing a hard planner error. It swaps the shipped marshaler for a failing
-// one for the duration of the call; the input is otherwise fully admissible, so
-// admission reaches Build after a successful map/render/canonical, and no socket
-// is opened.
-func TestAdmitBuildErrorDeclinesFailClosed(t *testing.T) {
+// TestAdmitBuildErrorIsPlannerError proves a canonical-body serialization failure
+// (an unexpected ChatRequest.Build error on the SHIPPED marshaler) is recorded as
+// a PLANNER error (§5.1) — availability-first BAML fallback with zero sockets, but
+// a non-decline error so it alerts rather than reading as ordinary unsupported
+// traffic. It swaps the shipped marshaler for a failing one for the duration of
+// the call; the input is otherwise fully admissible, so admission reaches Build
+// after a successful map/render/canonical, and no socket is opened.
+func TestAdmitBuildErrorIsPlannerError(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m, err := NewMetrics(reg)
 	if err != nil {
@@ -284,15 +284,22 @@ func TestAdmitBuildErrorDeclinesFailClosed(t *testing.T) {
 	if admitted != nil {
 		t.Fatalf("expected no admitted plan on a Build failure, got %+v", admitted)
 	}
+	if err == nil {
+		t.Fatal("expected a non-nil planner error")
+	}
 	var d *Decline
-	if !errors.As(err, &d) {
-		t.Fatalf("expected a *Decline, got %T: %v", err, err)
+	if errors.As(err, &d) {
+		t.Fatalf("Build failure must NOT be a *Decline, got (%s, %s)", d.Stage, d.Reason)
 	}
-	if !errors.Is(err, ErrDeclined) {
-		t.Error("Build-error decline must unwrap to ErrDeclined")
+	if errors.Is(err, ErrDeclined) {
+		t.Fatal("Build failure planner error must not unwrap to ErrDeclined")
 	}
-	if d.Stage != StagePrepare || d.Reason != ReasonPrepareError {
-		t.Fatalf("decline = (%s, %s), want (%s, %s)", d.Stage, d.Reason, StagePrepare, ReasonPrepareError)
+	// Recorded as an attempts outcome (planner_error), never as a decline.
+	if got := counterVal(t, reg, "baml_rest_debaml_attempts_total", map[string]string{"mode": "call", "engine": "native", "provider": "openai", "outcome": "planner_error"}); got != 1 {
+		t.Errorf("attempts{planner_error} = %v, want 1", got)
+	}
+	if got := familySeriesCount(t, reg, "baml_rest_debaml_declines_total"); got != 0 {
+		t.Errorf("a Build planner error recorded %d decline series, want 0", got)
 	}
 	// Fail-closed: the marshal failure must not have dialed anything.
 	assertNoSocket(t, ct)
@@ -427,7 +434,18 @@ func TestAdmitDeclineMatrix(t *testing.T) {
 		{"round_robin", func(in *Input) { in.HasRoundRobin = true }, StageStrategy, ReasonRoundRobin, "openai"},
 		{"legacy_child", func(in *Input) { in.IsLegacyChild = true }, StageStrategy, ReasonLegacyChild, "openai"},
 		{"request_retry_override", func(in *Input) { in.HasRequestRetryOverride = true }, StageStrategy, ReasonRequestRetryOverride, "openai"},
-		{"resolved_provider_not_openai", func(in *Input) { in.ResolvedProvider = "anthropic" }, StageProvider, ReasonProviderNotOpenAI, "other"},
+		// §4.2 provider provenance: the selected client's explicit provider must
+		// AGREE with the resolved leaf provider. The fence client carries provider
+		// "openai", so a non-openai ResolvedProvider disagrees -> provider_mismatch
+		// (the metric provider label is the resolved provider, now bounded per §9).
+		{"resolved_provider_mismatch", func(in *Input) { in.ResolvedProvider = "anthropic" }, StageClientSelection, ReasonProviderMismatch, "anthropic"},
+		// Agreement on a non-openai provider reaches the mapper's S1 boundary: strict
+		// OpenAI is the only complete production mapping, so every other provider
+		// mapping-declines (mapping_unavailable) BEFORE nanollm.New — no socket.
+		{"provider_mapping_unavailable", func(in *Input) {
+			in.ResolvedProvider = "cerebras"
+			in.Registry.Clients[0].Provider = "cerebras"
+		}, StageMapping, ReasonMappingUnavailable, "cerebras"},
 		// --- layer 3: effective dynamic client ---
 		{"nil_registry", func(in *Input) { in.Registry = nil }, StageClientSelection, ReasonNoRegistry, "openai"},
 		{"registry_invalid_duplicate", func(in *Input) {
@@ -444,7 +462,7 @@ func TestAdmitDeclineMatrix(t *testing.T) {
 		{"model_absent", func(in *Input) { delete(in.Registry.Clients[0].Options, "model") }, StageClientSelection, ReasonModelAbsent, "openai"},
 		{"model_not_literal", func(in *Input) { in.Registry.Clients[0].Options["model"] = 42 }, StageClientSelection, ReasonModelNotLiteral, "openai"},
 		{"client_retry_policy", func(in *Input) { in.Registry.Clients[0].RetryPolicy = &rp }, StageStrategy, ReasonClientRetryPolicy, "openai"},
-		{"client_provider_not_openai", func(in *Input) { in.Registry.Clients[0].Provider = "anthropic" }, StageProvider, ReasonProviderNotOpenAI, "openai"},
+		{"client_provider_mismatch", func(in *Input) { in.Registry.Clients[0].Provider = "anthropic" }, StageClientSelection, ReasonProviderMismatch, "openai"},
 		// --- separate internal alias (must be non-empty, distinct from target + client name) ---
 		{"alias_empty", func(in *Input) { in.Alias = "" }, StageClientSelection, ReasonInvalidAlias, "openai"},
 		{"alias_equals_target", func(in *Input) { in.Alias = fenceModel }, StageClientSelection, ReasonInvalidAlias, "openai"},

@@ -379,6 +379,21 @@ type nativeServeGetter interface {
 	NativeServeComparator() bamlutils.NativeServeFunc
 }
 
+// hasNativeServe reports whether a native SERVE implementation is installed AND
+// the umbrella de-BAML flag is enabled. It is the gate the generated router uses
+// before routing a DIRECT single unary leaf whose existing BAML route is legacy
+// through the native-first probe (de-BAML unary multi-provider S1). It is
+// deliberately SERVE-only: a shadow-only worker (serve nil) returns false so the
+// shadow profile NEVER activates the legacy probe, and a flag-off build returns
+// false so the legacy dispatch stays byte-identical to today.
+func hasNativeServe(adapter bamlutils.Adapter) bool {
+	if !adapter.DeBAMLConfig().Enabled {
+		return false
+	}
+	g, ok := adapter.(nativeServeGetter)
+	return ok && g.NativeServeComparator() != nil
+}
+
 // maybeInstallNativeCall installs the Slice-1 native child-attempt callback
 // (CallConfig.NativeAttempt) — as a native SERVE implementation (Slice 6) when a
 // serve-profile worker injected one, else as a one-send SHADOW comparator (Slice

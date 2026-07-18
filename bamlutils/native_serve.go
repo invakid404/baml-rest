@@ -128,9 +128,20 @@ type NativeServeRequest struct {
 
 	// BuildBAMLRequest builds BAML's request plan for THIS selected child WITHOUT
 	// sending — the same closure the orchestrator uses to build the request it
-	// would otherwise send. The serve implementation calls it to obtain BAML's
-	// plan for the S4 plan-compare PRECONDITION; it opens NO socket. A mismatch,
-	// a build error, or a nil closure declines PRE-SOCKET so BAML serves.
+	// would otherwise send. A STRICT OpenAI serve implementation calls it to obtain
+	// BAML's plan for the S4 plan-compare PRECONDITION; it opens NO socket. For the
+	// strict anchor a mismatch, a build error, or a nil closure declines PRE-SOCKET
+	// so BAML serves.
+	//
+	// It is explicitly OPTIONAL. The DIRECT-LEGACY native-first probe route (a
+	// single unary leaf whose existing BAML route is legacy) passes nil. Under the
+	// TRUSTED verification policy the closure is never INVOKED — the trusted policy
+	// claims no BAML plan and records no plan_compare at all (nanollm owns the
+	// provider's transport contract) — so whether a generated caller supplies it is
+	// immaterial: it may be non-nil yet stays unused. Only strict OpenAI serving
+	// calls it (for the S4 plan-compare precondition). A strict OpenAI leaf that
+	// reaches the probe route (e.g. a debug support override) sees a nil closure and
+	// declines strict verification, preserving that debug route.
 	BuildBAMLRequest func(ctx context.Context) (*llmhttp.Request, error)
 
 	// BAMLOnlyParse is the explicit BAML-ONLY final-parse closure. Given the

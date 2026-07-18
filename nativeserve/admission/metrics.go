@@ -35,16 +35,23 @@ func normalizeMode(m Mode) Mode {
 	}
 }
 
-// providerLabel is the bounded provider label for the attempts metric. The
-// admitted surface is openai; anything else is folded to "other", and a decline
-// before the provider is resolved is "unknown". This keeps the provider label a
-// three-value enum, not an unbounded free string.
+// providerLabel is the bounded provider label for the attempts metric (§9). The
+// five known nanollm provider classes each get their own label so a non-openai
+// decline is observable per provider; anything else is folded to "other", and a
+// decline before the provider is resolved is "unknown". The BAML `aws-bedrock`
+// spelling folds onto `bedrock` (observability normalization, not admission).
+// This keeps the provider label a bounded enum, never an unbounded free string,
+// and it OBSERVES but never DECIDES admission.
 type providerLabel string
 
 const (
-	providerOpenAI  providerLabel = "openai"
-	providerOther   providerLabel = "other"
-	providerUnknown providerLabel = "unknown"
+	providerOpenAI    providerLabel = "openai"
+	providerAnthropic providerLabel = "anthropic"
+	providerBedrock   providerLabel = "bedrock"
+	providerCerebras  providerLabel = "cerebras"
+	providerCohere    providerLabel = "cohere"
+	providerOther     providerLabel = "other"
+	providerUnknown   providerLabel = "unknown"
 )
 
 // Outcome is the bounded terminal-outcome label for the attempts metric. In the
