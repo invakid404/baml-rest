@@ -203,10 +203,42 @@ func SupportsOpenAIChat(rendered *nativeprompt.RenderedPrompt, client ClientInte
 	return supportsRendered(rendered)
 }
 
-// supportsClient gates the normalized client record: openai only, a resolved
-// literal nonempty target model, non-streaming only, and no body-affecting
-// options (each reported with its concrete named feature).
+// supportsClient gates the normalized client record for the NON-STREAMING body:
+// the shared client gates (openai only, a resolved literal nonempty target
+// model, no body-affecting options) plus the requirement that this is NOT a
+// streaming attempt. supportsClientStream is the streaming mirror.
 func supportsClient(client ClientIntent) error {
+	if err := supportsClientCommon(client); err != nil {
+		return err
+	}
+	if client.Stream {
+		return decline(FeatureStreaming,
+			"streaming attempts emit an extra stream/stream_options suffix; the non-streaming body builder proves only the non-streaming chat-completions body")
+	}
+	return nil
+}
+
+// supportsClientStream gates the normalized client record for the STREAMING
+// body: the shared client gates plus the requirement that this IS a streaming
+// attempt. It never loosens the non-streaming gate — the two are independent
+// mirrors sharing supportsClientCommon.
+func supportsClientStream(client ClientIntent) error {
+	if err := supportsClientCommon(client); err != nil {
+		return err
+	}
+	if !client.Stream {
+		return decline(FeatureStreaming,
+			"the streaming body builder requires a streaming attempt (client.Stream is false)")
+	}
+	return nil
+}
+
+// supportsClientCommon holds the client gates shared by the streaming and
+// non-streaming predicates: openai only, a resolved literal nonempty valid-UTF-8
+// target model, and no body-affecting options (each reported with its concrete
+// named feature). It is MODE-AGNOSTIC — the stream flag is checked by the two
+// callers so neither can silently claim the other's surface.
+func supportsClientCommon(client ClientIntent) error {
 	if client.Provider != ProviderOpenAI {
 		return decline(FeatureProvider,
 			fmt.Sprintf("provider %q is not the proven openai provider", client.Provider))
@@ -219,14 +251,21 @@ func supportsClient(client ClientIntent) error {
 		return decline(FeatureInvalidUTF8,
 			"target model is not valid UTF-8 (BAML rejects it at its protobuf/CFFI boundary)")
 	}
-	if client.Stream {
-		return decline(FeatureStreaming,
-			"streaming attempts emit an extra stream/stream_options suffix; 4a proves only the non-streaming chat-completions body")
-	}
 	if len(client.BodyAffecting) > 0 {
 		first := client.BodyAffecting[0]
-		return decline(first.Feature,
-			fmt.Sprintf("client carries unproven body-affecting option %q; 4a admits only an absent request_body (an explicit request_body {} declines: BAML emits \"request_body\":{})", first.Key))
+		var detail string
+		if first.Feature == FeatureRequestBody {
+			// request_body is the one option whose PRESENCE (even an empty block)
+			// declines: BAML emits "request_body":{...}, which the builder never
+			// reproduces. Keep that specific explanation ONLY here.
+			detail = fmt.Sprintf("client carries an unproven request_body option %q; the builder admits only an ABSENT request_body (an explicit request_body {} declines too: BAML emits \"request_body\":{})", first.Key)
+		} else {
+			// Any other body-affecting option (tools/response_format/an unrecognized
+			// flattened key). Name the concrete option + feature; do NOT misattribute
+			// it to request_body.
+			detail = fmt.Sprintf("client carries an unproven body-affecting option %q (%s); the builder admits no body-affecting client options", first.Key, first.Feature)
+		}
+		return decline(first.Feature, detail)
 	}
 	return nil
 }

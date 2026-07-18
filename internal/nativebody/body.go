@@ -66,7 +66,19 @@ func BuildOpenAIChat(rendered *nativeprompt.RenderedPrompt, client ClientIntent)
 	if err := SupportsOpenAIChat(rendered, client); err != nil {
 		return nil, err
 	}
+	return buildCanonicalBody(rendered, client, false), nil
+}
 
+// buildCanonicalBody serializes an ALREADY-ADMITTED (rendered, client) into the
+// canonical OpenAI chat-completions body BAML v0.223 emits. When stream is true
+// it appends BAML's trailing streaming suffix
+// (`,"stream":true,"stream_options":{"include_usage":true}`) after the messages
+// array — the ONLY byte difference between BAML's Request and StreamRequest body
+// for the admitted surface (verified byte-for-byte against BAML by the gated
+// oracles). Callers MUST run the matching support predicate (SupportsOpenAIChat /
+// SupportsOpenAIChatStream) first; this never re-checks and never serializes an
+// unproven shape.
+func buildCanonicalBody(rendered *nativeprompt.RenderedPrompt, client ClientIntent, stream bool) *CanonicalBody {
 	msgs := flattenMessages(rendered)
 
 	var buf bytes.Buffer
@@ -91,7 +103,14 @@ func BuildOpenAIChat(rendered *nativeprompt.RenderedPrompt, client ClientIntent)
 		}
 		buf.WriteString(`]}`)
 	}
-	buf.WriteString(`]}`)
+	buf.WriteByte(']')
+	if stream {
+		// BAML v0.223's StreamRequest appends exactly these two fields after the
+		// messages array, in this order (openai provider). streamOptionsSuffix is
+		// the single source of truth shared with the stream builder.
+		buf.WriteString(streamOptionsSuffix)
+	}
+	buf.WriteByte('}')
 
 	raw := make([]byte, buf.Len())
 	copy(raw, buf.Bytes())
@@ -100,8 +119,16 @@ func BuildOpenAIChat(rendered *nativeprompt.RenderedPrompt, client ClientIntent)
 		targetModel: client.TargetModel,
 		modelAlias:  client.ModelAlias,
 		provider:    client.Provider,
-	}, nil
+	}
 }
+
+// streamOptionsSuffix is BAML v0.223's exact openai StreamRequest body suffix —
+// appended after the messages array, before the closing brace. Pinned as a
+// literal (not assembled from a map, whose key order is unstable) so the two
+// admitted stream fields keep BAML's fixed `stream` then `stream_options` order.
+// The gated oracle proves prep.Body (nanollm) == this canonical body == BAML's
+// StreamRequest body, all byte-exact.
+const streamOptionsSuffix = `,"stream":true,"stream_options":{"include_usage":true}`
 
 // flattenMessages projects an ADMITTED rendered prompt (SupportsOpenAIChat has
 // already passed) into ordered bodyMessages. A completion becomes a single

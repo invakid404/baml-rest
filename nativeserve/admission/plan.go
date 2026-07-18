@@ -55,6 +55,36 @@ func validatePlanMeta(prep *nanollm.PreparedRequest, alias, target string) *Decl
 	return nil
 }
 
+// validateStreamPlanMeta is the STREAM-claim mirror of validatePlanMeta: the
+// prepared STREAMING plan's meta must resolve the attempted internal alias, the
+// canonical target, the openai provider, a ChatCompletion with no jq transform
+// and a zero nanollm retry budget — the same as the unary gate — but with the two
+// streaming inversions: Stream MUST be true (an SSE stream, not a unary JSON
+// call) and the response format MUST be SSE (not JSON). Any divergence declines
+// instead of out-claiming BAML.
+func validateStreamPlanMeta(prep *nanollm.PreparedRequest, alias, target string) *Decline {
+	m := prep.Meta
+	switch {
+	case m.ModelAlias != alias:
+		return declinef(StagePlanMeta, ReasonAliasMismatch, "plan alias differs from the attempted internal alias")
+	case m.TargetModel != target:
+		return declinef(StagePlanMeta, ReasonTargetMismatch, "plan target model differs from the canonical target")
+	case m.Provider != nativebody.ProviderOpenAI:
+		return declinef(StagePlanMeta, ReasonPlanProviderMismatch, "plan provider %q is not openai", m.Provider)
+	case m.RequestType != nanollm.ChatCompletion:
+		return declinef(StagePlanMeta, ReasonRequestTypeMismatch, "plan request type %q is not chat_completion", m.RequestType)
+	case !m.Stream:
+		return declinef(StagePlanMeta, ReasonPlanStreamFalse, "plan stream is false")
+	case m.TransformKey != "":
+		return declinef(StagePlanMeta, ReasonTransformPresent, "plan carries a jq transform key")
+	case m.MaxRetries != 0:
+		return declinef(StagePlanMeta, ReasonMaxRetriesNonzero, "plan max retries is not zero")
+	case prep.ResponseFormat != nanollm.FormatSSE:
+		return declinef(StagePlanMeta, ReasonResponseFormatNotSSE, "plan response format %q is not sse", prep.ResponseFormat)
+	}
+	return nil
+}
+
 // validatePlanExpiry is the StagePlanExpiry gate: the admitted OpenAI plan is
 // unsigned and never expires. A signed window, an expiry, or an already-expired
 // plan declines — re-preparing belongs to the outer planner, never here.
