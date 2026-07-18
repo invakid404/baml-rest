@@ -498,7 +498,7 @@ func TestPreparedDeclineVsClaimedParseError(t *testing.T) {
 		// attaches as details.raw on a claimed parse_error. It must be the assistant
 		// JSON from the 2xx body, not empty.
 		if res.Raw != `{"animal":"cat dog"}` {
-			t.Errorf("res.Raw = %q, want the extracted assistant text %q (details.raw source)", res.Raw, `{"animal":"cat dog"}`)
+			t.Errorf("strDigest(res.Raw) = %q, want the extracted assistant text %q (details.raw source)", strDigest(res.Raw), `{"animal":"cat dog"}`)
 		}
 		if spy.calls != 1 {
 			t.Errorf("parser calls = %d, want 1 (SAP invoked, then claimed)", spy.calls)

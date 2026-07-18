@@ -69,34 +69,45 @@ func runDirectLegacyProbeCall(t *testing.T, spy *serveSpy, deBAMLEnabled bool) (
 
 	ctx, cancel := context.WithTimeout(context.Background(), liveCallTimeout)
 	defer cancel()
+	// De-BAML mprov S2 activates cerebras: a COMPLETE cerebras config now maps and
+	// serves natively. This probe test proves the native-DECLINE routing (probe →
+	// decline → ordinary legacy), so it forces a deterministic pre-socket decline
+	// with an empty api_key — a StageCredentialSource/api_key_absent decline that
+	// never consults ambient env (unlike an absent option). cerebras remains
+	// BAML-legacy (v0.223 does not recognise it), so the ordinary legacy leg still
+	// errors identically on the flag-on and flag-off paths.
+	reg := cerebrasRegistry(server.base())
+	reg.Clients[0].Options["api_key"] = ""
 	res, callErr := client.DynamicCall(ctx, dynclient.Request{
 		Messages:            toDynMessages(fx.messages),
-		ClientRegistry:      cerebrasRegistry(server.base()),
+		ClientRegistry:      reg,
 		OutputSchema:        fx.schema,
 		PreserveSchemaOrder: bptr(true),
 	})
 	return res, callErr
 }
 
-// TestDirectLegacyProbe_CerebrasDeclineRunsOrdinaryLegacy proves the S1 live path:
-// with the flag ON and a serve callback installed, a direct cerebras (legacy-route)
-// call invokes the native serve probe EXACTLY ONCE, which DECLINES pre-socket
-// (mapping_unavailable — S1 admits no non-openai socket), and the request then runs
-// the ORDINARY legacy BAML stream. There is NO native socket, and the terminal
-// outcome is BAML's — byte-identical to the flag-OFF ordinary legacy path (which
-// never invokes the probe). This is the error-stream parity the re-review required:
-// the decline runs the ordinary lifecycle, it does not collapse into a native
-// terminal attempt error.
+// TestDirectLegacyProbe_CerebrasDeclineRunsOrdinaryLegacy proves the live decline
+// routing: with the flag ON and a serve callback installed, a direct cerebras
+// (legacy-route) call whose native config is incomplete invokes the native serve
+// probe EXACTLY ONCE, which DECLINES pre-socket (api_key_absent — the empty api_key
+// forced by the helper), and the request then runs the ORDINARY legacy BAML stream.
+// There is NO native socket, and the terminal outcome is BAML's — byte-identical to
+// the flag-OFF ordinary legacy path (which never invokes the probe). This is the
+// error-stream parity the re-review required: the decline runs the ordinary
+// lifecycle, it does not collapse into a native terminal attempt error. (Under
+// de-BAML mprov S2 a COMPLETE cerebras config admits and serves natively; the
+// incomplete-config decline keeps this routing invariant under test.)
 func TestDirectLegacyProbe_CerebrasDeclineRunsOrdinaryLegacy(t *testing.T) {
-	// Flag ON: the probe fires, native declines mapping_unavailable, ordinary legacy runs.
+	// Flag ON: the probe fires, native declines api_key_absent, ordinary legacy runs.
 	onSpy := newServeSpy(t)
 	_, onErr := runDirectLegacyProbeCall(t, onSpy, true)
 
 	if got := onSpy.calls.Load(); got != 1 {
 		t.Fatalf("serve probe invoked %d times, want exactly 1 (direct-legacy probe fired)", got)
 	}
-	if got := onSpy.sumCounter(t, "baml_rest_debaml_declines_total", "reason", "mapping_unavailable"); got != 1 {
-		t.Fatalf("declines{mapping_unavailable} = %v, want 1 (native declined pre-socket)", got)
+	if got := onSpy.sumCounter(t, "baml_rest_debaml_declines_total", "reason", "api_key_absent"); got != 1 {
+		t.Fatalf("declines{api_key_absent} = %v, want 1 (native declined pre-socket)", got)
 	}
 	// Pre-socket decline: no native provider socket was ever claimed.
 	if got := onSpy.sumCounter(t, "baml_rest_debaml_native_sockets_total", "flag", "on"); got != 0 {

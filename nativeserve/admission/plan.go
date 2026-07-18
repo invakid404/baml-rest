@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"strings"
 
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
@@ -69,12 +70,39 @@ func validateGenericPlan(prep *nanollm.PreparedRequest, alias, target, provider 
 	case prep.Method != "POST":
 		return declinef(StagePlanHeaders, ReasonMethodNotPost, "plan method %q is not POST", prep.Method)
 	}
+	// Provider-neutral operation-shape guard: a chat-completion Prepare that routed
+	// to an EMBEDDINGS endpoint is not a usable unary chat plan, so it declines
+	// PRE-socket. This is the fail-closed backstop for a DEFERRED provider whose
+	// pinned nanollm spec plans an embedding for a chat request even though
+	// PreparedMeta.RequestType still reads chat_completion (cohere v0.4.3 plans
+	// /v2/embed — the §1.3 gap the upstream P0 closes with per-spec request-type
+	// validation). It enumerates a wrong OPERATION shape, never a provider, so it is
+	// not a membership allowlist; the activated chat providers never trip it.
+	if isEmbeddingEndpoint(prep.URL) {
+		return declinef(StagePlanMeta, ReasonEmbeddingPlan,
+			"prepared plan routed a chat request to an embeddings endpoint")
+	}
 	// A trusted plan MAY be signed/expiring (Bedrock), but must not be ALREADY
 	// expired at admission; the serve path rechecks immediately before the socket.
 	if prep.Expired() {
 		return declinef(StagePlanExpiry, ReasonExpiredPlan, "plan is already expired")
 	}
 	return nil
+}
+
+// isEmbeddingEndpoint reports whether a prepared URL names a provider embeddings
+// endpoint (a chat request must never be planned as one). It matches the trailing
+// path segment against the known embeddings shapes across providers — cohere's
+// `/embed` and the OpenAI-family `/embeddings` — so it stays provider-neutral and
+// never keys on a provider name. A malformed URL is conservatively treated as
+// NON-embedding (the exact-transport preflight and other gates still apply).
+func isEmbeddingEndpoint(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	path := strings.ToLower(strings.TrimRight(u.Path, "/"))
+	return strings.HasSuffix(path, "/embed") || strings.HasSuffix(path, "/embeddings")
 }
 
 // validatePlanMeta is the StagePlanMeta gate: the prepared plan's meta must

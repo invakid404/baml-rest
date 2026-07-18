@@ -297,7 +297,21 @@ func (a *Admitter) admitCore(ctx context.Context, in Input, recordAdmitted, stre
 	if err := ctx.Err(); err != nil {
 		return ctxDecline()
 	}
-	client, facts, policy, dec, err := mapDynamicClient(in.Registry, in.Alias, in.ResolvedProvider, in.WouldRewriteOrProxy)
+	client, facts, policy, dec, err := mapDynamicClient(ctx, in.Registry, in.Alias, in.ResolvedProvider, in.WouldRewriteOrProxy)
+	// Cancellation gate IMMEDIATELY AFTER mapping: the mapping may perform bounded
+	// credential I/O (the Bedrock resolver), and a cancellation during it surfaces
+	// as an ordinary credential decline / planner error from the resolver rather than
+	// the established pre-socket context_cancelled path. Re-check the ORIGINAL request
+	// context (not the resolver's bounded derivation) first so a caller cancellation
+	// classifies as context_cancelled. A successfully-constructed engine is closed
+	// here (the closeClient defer is not yet armed); an err/decline path returns a nil
+	// client, so this never double-closes.
+	if ctx.Err() != nil {
+		if client != nil {
+			client.Close()
+		}
+		return ctxDecline()
+	}
 	if err != nil {
 		return plannerErr(err)
 	}
@@ -315,6 +329,20 @@ func (a *Admitter) admitCore(ctx context.Context, in Input, recordAdmitted, stre
 			client.Close()
 		}
 	}()
+	// Bounded observability: a successfully-mapped aws-bedrock admission records
+	// WHICH documented credential source it resolved through (§9) — a secret-free
+	// enum only. Recorded once here (creds resolved, engine constructed) even if a
+	// later stage declines, so credential-path rollout stays visible.
+	if facts.bedrockSource != "" {
+		a.m.recordBedrockCredentialSource(facts.bedrockSource)
+	}
+	// Streaming stays out of scope for a TRUSTED provider in this slice: the S2
+	// mappers activate the unary surface only, so a trusted provider that reached
+	// the streaming lane declines (the strict OpenAI stream anchor is unchanged).
+	if stream && policy != PolicyStrictOpenAI {
+		return decline(declinef(StageMode, ReasonStreamingUnproven,
+			"streaming is out of scope for a trusted-provider native attempt in this slice"))
+	}
 
 	// Cancellation gate AFTER nanollm.New (the engine is now open; the closeClient
 	// guard above closes it) and BEFORE render.
@@ -340,62 +368,103 @@ func (a *Admitter) admitCore(ctx context.Context, in Input, recordAdmitted, stre
 		return plannerErr(rerr)
 	}
 
-	intent := nativebody.ClientIntent{
-		Provider:    facts.provider,
-		TargetModel: facts.target,
-		ModelAlias:  in.Alias,
-		Stream:      stream,
-	}
-	var canonical *nativebody.CanonicalBody
-	var berr error
-	if stream {
-		canonical, berr = nativebody.BuildOpenAIChatStream(rendered, intent)
-	} else {
-		canonical, berr = nativebody.BuildOpenAIChat(rendered, intent)
-	}
-	if berr != nil {
-		var bd *nativebody.Decline
-		if errors.As(berr, &bd) {
-			return decline(classifyBodyDecline(bd.Feature))
+	// --- Layer 4-5: canonical body + prepared plan — FORK on verification policy.
+	// The STRICT OpenAI anchor is UNCHANGED: it builds the byte-exact canonical body
+	// (BuildOpenAIChat[Stream]) as the runtime parity anchor and re-asserts it
+	// byte-for-byte on the prepared plan. A TRUSTED provider builds the SAME
+	// OpenAI-shaped ChatRequest PLUS the supported mapped body-field subset, but
+	// claims NO byte-exact anchor — nanollm owns the transformed provider body /
+	// signed plan / member order (§6), so there is nothing to byte-compare.
+	var canonicalBytes []byte // strict anchor bytes; nil for a trusted provider
+	var nreq nanollm.Request
+
+	if policy == PolicyStrictOpenAI {
+		intent := nativebody.ClientIntent{
+			Provider:    facts.provider,
+			TargetModel: facts.target,
+			ModelAlias:  in.Alias,
+			Stream:      stream,
 		}
-		return plannerErr(berr)
-	}
-	canonicalBytes := canonical.Bytes()
-	if d := validateCanonicalBody(canonicalBytes, facts.target); d != nil {
-		return decline(d)
+		var canonical *nativebody.CanonicalBody
+		var berr error
+		if stream {
+			canonical, berr = nativebody.BuildOpenAIChatStream(rendered, intent)
+		} else {
+			canonical, berr = nativebody.BuildOpenAIChat(rendered, intent)
+		}
+		if berr != nil {
+			var bd *nativebody.Decline
+			if errors.As(berr, &bd) {
+				return decline(classifyBodyDecline(bd.Feature))
+			}
+			return plannerErr(berr)
+		}
+		canonicalBytes = canonical.Bytes()
+		if d := validateCanonicalBody(canonicalBytes, facts.target); d != nil {
+			return decline(d)
+		}
+
+		// Cancellation gate AFTER render / BEFORE the Prepare FFI.
+		if err := ctx.Err(); err != nil {
+			return ctxDecline()
+		}
+
+		// Assemble the request through nanollm v0.4.x's typed ChatRequest.Build seam
+		// (the FFI package's canonical OpenAI request type). The typed model is mapped
+		// from the admitted rendered prompt; the body is serialized by the SHIPPED
+		// canonicalSonicMarshaler (configured sonic + the backslash-parity-aware short-
+		// escape fixup), which the gated canonreq oracle proves byte-exact vs the
+		// zero-nanollm root writer on every admitted input. The root writer's bytes
+		// (canonicalBytes) stay the runtime parity anchor via validatePreparedBody
+		// below, so any mismatch fails closed to BAML rather than emitting a non-parity
+		// body. Build copies the target model into Request.Model — override it with the
+		// separate nanollm alias, exactly as the previous hand-built nanollm.Request did.
+		var brerr error
+		nreq, brerr = chatRequestFromRendered(rendered, facts.target).Build(canonicalSonicMarshaler)
+		if brerr != nil {
+			// An unexpected serializer error on the SHIPPED canonical marshaler (§5.1):
+			// availability-first BAML fallback with no socket, but recorded as a planner
+			// error (not an ordinary unsupported decline) so it alerts rather than reading
+			// as expected unsupported traffic.
+			return plannerErr(fmt.Errorf("nativeserve/admission: nanollm ChatRequest.Build: %w", brerr))
+		}
+		nreq.Model = in.Alias
+		// Stream is set on the nanollm Request (NOT baked into the body): the engine
+		// injects BAML's `"stream":true,"stream_options":{"include_usage":true}` suffix
+		// into the prepared body when stream is true, which validatePreparedBody then
+		// checks byte-for-byte against the canonical stream oracle. On the unary path
+		// this is the zero value (false), so the prepared body stays the unary body.
+		nreq.Stream = stream
+	} else {
+		// TRUSTED provider (unary only in this slice): the OpenAI-shaped ChatRequest
+		// from the admitted rendered prompt PLUS the supported mapped body-field
+		// subset (temperature/max_tokens/… and the anthropic/bedrock extensions).
+		// Bedrock's inference_configuration is projected onto the SAME body fields; its
+		// AWS creds / additional_model_request_fields live on the engine config, not
+		// here. There is no byte-exact anchor — validateGenericPlan proves the plan.
+		chatReq := chatRequestFromRendered(rendered, facts.target)
+		applyBodyOptions(&chatReq, facts.body)
+
+		// Cancellation gate AFTER render / BEFORE the Prepare FFI.
+		if err := ctx.Err(); err != nil {
+			return ctxDecline()
+		}
+
+		var brerr error
+		nreq, brerr = chatReq.Build(canonicalSonicMarshaler)
+		if brerr != nil {
+			// A ChatRequest.Build error (e.g. an Extra key colliding with a typed field
+			// — a fail-closed guard) is a planner error: safe BAML fallback that alerts.
+			return plannerErr(fmt.Errorf("nativeserve/admission: nanollm ChatRequest.Build: %w", brerr))
+		}
+		nreq.Model = in.Alias
+		// Sanity gate on the pre-Prepare body: present, valid JSON, carrying the
+		// literal target model (the alias override touches Request.Model, not the body).
+		if d := validateCanonicalBody(nreq.Body, facts.target); d != nil {
+			return decline(d)
+		}
 	}
 
-	// Cancellation gate AFTER render / BEFORE the Prepare FFI.
-	if err := ctx.Err(); err != nil {
-		return ctxDecline()
-	}
-
-	// --- Layer 5: prepared plan, revalidated immediately after Prepare ----
-	// Assemble the request through nanollm v0.4.x's typed ChatRequest.Build seam
-	// (the FFI package's canonical OpenAI request type). The typed model is mapped
-	// from the admitted rendered prompt; the body is serialized by the SHIPPED
-	// canonicalSonicMarshaler (configured sonic + the backslash-parity-aware short-
-	// escape fixup), which the gated canonreq oracle proves byte-exact vs the
-	// zero-nanollm root writer on every admitted input. The root writer's bytes
-	// (canonicalBytes) stay the runtime parity anchor via validatePreparedBody
-	// below, so any mismatch fails closed to BAML rather than emitting a non-parity
-	// body. Build copies the target model into Request.Model — override it with the
-	// separate nanollm alias, exactly as the previous hand-built nanollm.Request did.
-	nreq, brerr := chatRequestFromRendered(rendered, facts.target).Build(canonicalSonicMarshaler)
-	if brerr != nil {
-		// An unexpected serializer error on the SHIPPED canonical marshaler (§5.1):
-		// availability-first BAML fallback with no socket, but recorded as a planner
-		// error (not an ordinary unsupported decline) so it alerts rather than reading
-		// as expected unsupported traffic.
-		return plannerErr(fmt.Errorf("nativeserve/admission: nanollm ChatRequest.Build: %w", brerr))
-	}
-	nreq.Model = in.Alias
-	// Stream is set on the nanollm Request (NOT baked into the body): the engine
-	// injects BAML's `"stream":true,"stream_options":{"include_usage":true}` suffix
-	// into the prepared body when stream is true, which validatePreparedBody then
-	// checks byte-for-byte against the canonical stream oracle. On the unary path
-	// this is the zero value (false), so the prepared body stays the unary body.
-	nreq.Stream = stream
 	prep, perr := client.Prepare(nreq)
 	// Cancellation gate AFTER the Prepare FFI, before the (fast, local) plan
 	// validations that finish admission.
@@ -450,6 +519,15 @@ func (a *Admitter) admitCore(ctx context.Context, in Input, recordAdmitted, stre
 	} else {
 		if d := validateGenericPlan(prep, in.Alias, facts.target, facts.provider); d != nil {
 			return decline(d)
+		}
+		// Trusted-provider rewrite/proxy parity (§5.2): the effective provider URL is
+		// only known AFTER Prepare (nanollm owns the endpoint), so the send-path
+		// rewrite/proxy check moves here — against the prepared URL — rather than into
+		// the mapper. A rewrite or a proxied target declines pre-claim; a nil predicate
+		// (lightweight tests) skips it.
+		if in.WouldRewriteOrProxy != nil && in.WouldRewriteOrProxy(prep.URL) {
+			return decline(declinef(StageStrategy, ReasonURLRewriteOrProxy,
+				"the effective send path would rewrite or proxy the prepared provider URL"))
 		}
 	}
 	if d := validateExactTransport(a.exec, exactReq); d != nil {

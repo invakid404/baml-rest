@@ -3,6 +3,8 @@
 package admission
 
 import (
+	"context"
+
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/internal/nativebody"
 	nanollm "github.com/viktordanov/nanollm-ffi/go"
@@ -21,7 +23,7 @@ import (
 // serve path's policy branch is exercised without a real non-openai mapper or a
 // non-openai socket. The caller OWNS the returned Claim and MUST Close it.
 func AdmitTrustedClaimForTest(reg *bamlutils.ClientRegistry, alias string) (*Claim, error) {
-	client, facts, _, dec, err := mapDynamicClient(reg, alias, nativebody.ProviderOpenAI, nil)
+	client, facts, _, dec, err := mapDynamicClient(context.Background(), reg, alias, nativebody.ProviderOpenAI, nil)
 	if err != nil {
 		return nil, err
 	}

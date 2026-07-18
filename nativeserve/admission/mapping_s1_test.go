@@ -1,6 +1,7 @@
 package admission
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -10,7 +11,7 @@ import (
 func s1sp(s string) *string { return &s }
 
 // s1Registry is a minimal effective one-client registry carrying the fence trio,
-// used by the socket-free S1 pure-mapping tests (no FFI, no engine construction).
+// used by the socket-free pure-mapping tests (no FFI, no engine construction).
 func s1Registry(provider string) *bamlutils.ClientRegistry {
 	return &bamlutils.ClientRegistry{
 		Primary: s1sp("C"),
@@ -29,9 +30,9 @@ func s1Registry(provider string) *bamlutils.ClientRegistry {
 // TestMapClientConfig_OpenAIStrict proves the strict OpenAI mapping still resolves
 // to a mappedClient carrying the fence trio and PolicyStrictOpenAI — the pure
 // mapper returns the intent WITHOUT constructing an engine (that is
-// newMappedClient's sole job).
+// newMappedClient's sole job). UNCHANGED strict anchor.
 func TestMapClientConfig_OpenAIStrict(t *testing.T) {
-	m, dec, err := mapClientConfig(mappingInput{registry: s1Registry("openai"), alias: "__alias__", resolvedProvider: "openai"})
+	m, dec, err := mapClientConfig(context.Background(), mappingInput{registry: s1Registry("openai"), alias: "__alias__", resolvedProvider: "openai"})
 	if err != nil {
 		t.Fatalf("openai mapping planner error: %v", err)
 	}
@@ -49,26 +50,33 @@ func TestMapClientConfig_OpenAIStrict(t *testing.T) {
 	}
 }
 
-// TestMapClientConfig_NonOpenAIMappingUnavailable proves the S1 boundary: EVERY
-// non-openai provider mapping-declines (mapping_unavailable) BEFORE any engine is
-// constructed — the returned mappedClient is nil (no nanollm.New / Prepare could
-// run), and the decline detail never leaks the api key. aws-bedrock and bedrock
-// both fold to the bedrock label but still decline in S1.
-func TestMapClientConfig_NonOpenAIMappingUnavailable(t *testing.T) {
-	for _, p := range []string{"anthropic", "cerebras", "cohere", "bedrock", "aws-bedrock", "some-future-provider"} {
+// TestMapClientConfig_S2TrustedBearerMaps proves the S2 boundary shift: every
+// common-bearer provider (anthropic/cerebras/cohere/any-other) now MAPS (the S1
+// mapping_unavailable decline is gone) to a PolicyTrustedProvider mappedClient
+// carrying the fence trio — WITHOUT constructing an engine. Cohere maps at the
+// pure level too; it auto-declines later PRE-socket at nanollm.New/Prepare
+// (embeddings-only in v0.4.3), not here. No decline detail leaks the api key.
+func TestMapClientConfig_S2TrustedBearerMaps(t *testing.T) {
+	for _, p := range []string{"anthropic", "cerebras", "cohere", "some-future-provider"} {
 		t.Run(p, func(t *testing.T) {
-			m, dec, err := mapClientConfig(mappingInput{registry: s1Registry(p), alias: "__alias__", resolvedProvider: p})
+			m, dec, err := mapClientConfig(context.Background(), mappingInput{registry: s1Registry(p), alias: "__alias__", resolvedProvider: p})
 			if err != nil {
 				t.Fatalf("planner error: %v", err)
 			}
-			if m != nil {
-				t.Fatal("mappedClient must be nil — no engine may be constructed on a mapping decline")
+			if dec != nil {
+				t.Fatalf("declined: %v (want a trusted mapping)", dec)
 			}
-			if dec == nil || dec.Stage != StageMapping || dec.Reason != ReasonMappingUnavailable {
-				t.Fatalf("decline = %v, want mapping/mapping_unavailable", dec)
+			if m == nil {
+				t.Fatal("mappedClient is nil (want a trusted mapping)")
 			}
-			if strings.Contains(dec.Detail, "SECRET_KEY") {
-				t.Fatalf("decline detail leaked a secret: %q", dec.Detail)
+			if m.verification != PolicyTrustedProvider {
+				t.Errorf("policy = %v, want trusted_provider", m.verification)
+			}
+			if m.nanollmProvider != p || m.target != "some-model" {
+				t.Errorf("mapping = (%q,%q), want (%s, some-model)", m.nanollmProvider, m.target, p)
+			}
+			if m.apiKey != "SECRET_KEY_do_not_leak" {
+				t.Errorf("api key not carried onto the mappedClient")
 			}
 		})
 	}
@@ -76,11 +84,10 @@ func TestMapClientConfig_NonOpenAIMappingUnavailable(t *testing.T) {
 
 // TestMapClientConfig_ProviderMismatch proves §4.2 provenance: a selected client
 // whose explicit provider disagrees with the resolved leaf provider declines
-// provider_mismatch (never a guess) — checked before the S1 mapping boundary.
-// The equality is CANONICAL, so distinct canonical providers (openai vs cerebras)
-// disagree.
+// provider_mismatch (never a guess). The equality is CANONICAL, so distinct
+// canonical providers (openai vs cerebras) disagree.
 func TestMapClientConfig_ProviderMismatch(t *testing.T) {
-	m, dec, err := mapClientConfig(mappingInput{registry: s1Registry("openai"), alias: "__alias__", resolvedProvider: "cerebras"})
+	m, dec, err := mapClientConfig(context.Background(), mappingInput{registry: s1Registry("openai"), alias: "__alias__", resolvedProvider: "cerebras"})
 	if err != nil {
 		t.Fatalf("planner error: %v", err)
 	}
@@ -97,8 +104,7 @@ func TestMapClientConfig_ProviderMismatch(t *testing.T) {
 // engine is constructed (m nil) — native never lets the selected client's own
 // provider stand in as the authoritative provider.
 func TestMapClientConfig_EmptyResolvedLeafDeclines(t *testing.T) {
-	// The client carries provider "openai", but the resolved leaf is absent.
-	m, dec, err := mapClientConfig(mappingInput{registry: s1Registry("openai"), alias: "__alias__", resolvedProvider: ""})
+	m, dec, err := mapClientConfig(context.Background(), mappingInput{registry: s1Registry("openai"), alias: "__alias__", resolvedProvider: ""})
 	if err != nil {
 		t.Fatalf("planner error: %v", err)
 	}
@@ -110,11 +116,13 @@ func TestMapClientConfig_EmptyResolvedLeafDeclines(t *testing.T) {
 	}
 }
 
-// TestMapClientConfig_BedrockSpellingEquivalence proves the provenance equality
-// is CANONICAL: BAML's aws-bedrock and nanollm's bedrock compare EQUAL (no
-// provider_mismatch), so an agreeing bedrock leaf reaches the S1 mapping boundary
-// and declines mapping_unavailable (bedrock is not the strict OpenAI mapping in
-// S1) — not a spurious provider_mismatch. Both spelling orders are covered.
+// TestMapClientConfig_BedrockSpellingEquivalence proves the provenance equality is
+// CANONICAL: BAML's aws-bedrock and nanollm's bedrock compare EQUAL (no
+// provider_mismatch), so an agreeing bedrock leaf REACHES the Bedrock special
+// mapper. The s1Registry carries the bearer trio (api_key/base_url), which are not
+// aws-bedrock options, so the Bedrock mapper declines them unproven_client_option
+// — NOT a spurious provider_mismatch, and NOT the retired mapping_unavailable. No
+// decline detail leaks the api key. Both spelling orders are covered.
 func TestMapClientConfig_BedrockSpellingEquivalence(t *testing.T) {
 	for _, tc := range []struct{ resolved, client string }{
 		{"aws-bedrock", "bedrock"},
@@ -122,16 +130,24 @@ func TestMapClientConfig_BedrockSpellingEquivalence(t *testing.T) {
 		{"aws-bedrock", "aws-bedrock"},
 	} {
 		t.Run(tc.resolved+"_vs_"+tc.client, func(t *testing.T) {
-			m, dec, err := mapClientConfig(mappingInput{registry: s1Registry(tc.client), alias: "__alias__", resolvedProvider: tc.resolved})
+			m, dec, err := mapClientConfig(context.Background(), mappingInput{registry: s1Registry(tc.client), alias: "__alias__", resolvedProvider: tc.resolved})
 			if err != nil {
 				t.Fatalf("planner error: %v", err)
 			}
 			if m != nil {
-				t.Fatal("mappedClient must be nil (bedrock has no complete mapping in S1)")
+				t.Fatal("mappedClient must be nil (the bearer trio is not a valid Bedrock shape)")
 			}
-			// Canonical agreement -> NOT provider_mismatch; the S1 boundary declines.
-			if dec == nil || dec.Stage != StageMapping || dec.Reason != ReasonMappingUnavailable {
-				t.Fatalf("decline = %v, want mapping/mapping_unavailable (canonical bedrock agreement)", dec)
+			// Canonical agreement -> reaches the Bedrock mapper (NOT provider_mismatch)
+			// -> declines the non-bedrock api_key option as unproven.
+			if dec == nil || dec.Stage != StageClientOption || dec.Reason != ReasonUnprovenClientOption {
+				t.Fatalf("decline = %v, want client_option/unproven_client_option (canonical bedrock agreement reached the Bedrock mapper)", dec)
+			}
+			if dec.Reason == ReasonProviderMismatch {
+				t.Fatal("canonical bedrock agreement must not decline provider_mismatch")
+			}
+			if strings.Contains(dec.Detail, "SECRET_KEY") {
+				// Never print dec.Detail — it contains the leaked secret; report the fact.
+				t.Fatal("decline detail contained the forbidden SECRET_KEY token (detail redacted)")
 			}
 		})
 	}
