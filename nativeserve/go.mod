@@ -28,31 +28,31 @@
 // submodules bamlutils/worker are tagged, and their tagged versions predate the
 // packages the root's internal/* imports here), so the three first-party requires
 // are pinned to the PROXY-RESOLVABLE pseudo-version of the master commit this
-// module targets (d7359348) — one consistent snapshot that resolves cleanly off a
-// fresh checkout with zero local replacements. The replace directives below are for
-// local development only; Go ignores a dependency module's replaces, so an external
-// consumer resolves those pseudo-versions from the proxy. When the root module is
-// eventually tagged for a release that includes these packages, the three requires
-// can be bumped to that tag.
+// module targets (eb48282c, the Phase 7B merge) — one consistent snapshot that
+// resolves cleanly off a fresh checkout with zero local replacements. The replace
+// directives below are for local development only; Go ignores a dependency module's
+// replaces, so an external consumer resolves those pseudo-versions from the proxy.
+// When the root module is eventually tagged for a release that includes these
+// packages, the three requires can be bumped to that tag.
 //
-// NOTE (Phase 7B): as of 7B, nativeserve/execute uses bamlutils' 7A exact-stream
-// client and nativeserve/admission uses the root's new nativebody.BuildOpenAIChatStream
-// — symbols NEWER than this d7359348 pin. So the external-consumer lane
-// (nativeserve-goget) is EXPECTED to be red on the 7B PR: no published/master commit
-// carries BuildOpenAIChatStream until 7B merges, and a branch-commit pin cannot be
-// used — the native-worker PACKAGING build (nanollmprepare builder E2E) runs
-// -mod=readonly without GOPRIVATE and cannot resolve/verify a non-sumdb-indexed
-// pseudo-version ("go mod tidy needed"). These three requires MUST be bumped to the
-// 7B master merge commit at integration, which restores nativeserve-goget green.
+// NOTE (Phase 7B): nativeserve/execute uses bamlutils' 7A exact-stream client and
+// nativeserve/admission uses the root's nativebody.BuildOpenAIChatStream — symbols
+// that first appear at the 7B merge. The three first-party requires are therefore
+// pinned to the 7B master merge commit (eb48282c) rather than an earlier snapshot:
+// it is the earliest master commit whose root + bamlutils carry those symbols, so
+// both the external-consumer lane (nativeserve-goget) and the native-worker PACKAGING
+// build (nanollmprepare builder E2E, -mod=readonly) resolve them cleanly off the
+// public origin. Any future bump must likewise land on a master commit that carries
+// every symbol nativeserve links.
 module github.com/invakid404/baml-rest/nativeserve
 
 go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260716063753-d7359348a2a5
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260716063753-d7359348a2a5
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260716063753-d7359348a2a5
+	github.com/invakid404/baml-rest v0.0.0-20260718064013-eb48282c885a
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260718064013-eb48282c885a
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260718064013-eb48282c885a
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/viktordanov/nanollm-ffi/go v0.4.3
@@ -83,11 +83,22 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/cloudwego/gjson v0.1.1 // indirect
+	github.com/dave/jennifer v1.7.1 // indirect
+	github.com/enriquebris/goconcurrentqueue v0.7.0 // indirect
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
+	github.com/google/uuid v1.6.0 // indirect
+	github.com/gregwebs/go-recovery v0.4.1 // indirect
+	github.com/gregwebs/stackfmt v0.1.1 // indirect
 	github.com/hashicorp/go-hclog v1.6.3 // indirect
 	github.com/hashicorp/go-plugin v1.8.0 // indirect
 	github.com/hashicorp/yamux v0.1.2 // indirect
+	github.com/invakid404/baml-rest/adapters/adapter_v0_204_0 v0.0.0-00010101000000-000000000000 // indirect
+	github.com/invakid404/baml-rest/adapters/adapter_v0_215_0 v0.0.0-00010101000000-000000000000 // indirect
+	github.com/invakid404/baml-rest/adapters/adapter_v0_219_0 v0.0.0-00010101000000-000000000000 // indirect
+	github.com/invakid404/baml-rest/adapters/common v0.0.48 // indirect
+	github.com/invakid404/baml-rest/introspected v0.0.48 // indirect
+	github.com/invakid404/baml-rest/pool v0.0.0-00010101000000-000000000000 // indirect
 	github.com/invakid404/baml-rest/workerplugin v0.0.48 // indirect
 	github.com/klauspost/compress v1.19.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
@@ -98,6 +109,7 @@ require (
 	github.com/oklog/run v1.1.0 // indirect
 	github.com/prometheus/common v0.69.0 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
+	github.com/rs/zerolog v1.35.1 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
