@@ -81,16 +81,17 @@ func TestCoercePrimitiveString_JsonToString(t *testing.T) {
 
 // TestCoercePrimitive_GoOnlyFloatSpellingsDecline pins the CR-B1 fix
 // end-to-end: float spellings Go's ParseFloat accepts but Rust rejects
-// (underscores, hex floats) and non-finite results DECLINE for int, float, and
-// int-literal targets, so native never claims a value BAML would decline nor
-// emits an invalid JSON token.
+// (underscores, hex floats) DECLINE for int, float, and int-literal targets, so
+// native never claims a value BAML would decline nor emits an invalid JSON token.
+// A non-finite result DECLINES for FLOAT (BAML error_unexpected_type) but for INT
+// SATURATES per Rust's `f64 as i64` cast (Phase 7C: "inf" -> i64::MAX, "nan" -> 0).
 func TestCoercePrimitive_GoOnlyFloatSpellingsDecline(t *testing.T) {
 	ints := oneField(intProp())
 	requireUnsupported(t, ints, `{"u":"0x1p4"}`)
 	requireUnsupported(t, ints, `{"u":"1_000"}`)
 	requireUnsupported(t, ints, `{"u":"0x1p4/2"}`)
-	requireUnsupported(t, ints, `{"u":"inf"}`) // non-finite -> decline
-	requireUnsupported(t, ints, `{"u":"nan"}`)
+	mustParse(t, ints, `{"u":"inf"}`, `{"u":9223372036854775807}`) // saturating cast -> i64::MAX
+	mustParse(t, ints, `{"u":"nan"}`, `{"u":0}`)                   // NaN -> 0
 
 	floats := oneField(&bamlutils.DynamicProperty{Type: "float"})
 	requireUnsupported(t, floats, `{"u":"0x1p4"}`)

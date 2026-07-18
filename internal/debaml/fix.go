@@ -25,12 +25,15 @@ var errFixUnsupported = errors.New("debaml: fix: unsupported construct")
 //   - unquoted primitive values that BAML resolves to true/false/null or a
 //     JSON number.
 //
-// Everything else — comments, backtick / triple-quoted strings, escapes
-// inside double-quoted strings, missing commas between elements, unquoted
-// bareword string values, unterminated structures, and multiple top-level
-// values — returns errFixUnsupported. BAML supports many of those, but
-// they interact with completion flags, inferred arrays, and union scoring,
-// so declining keeps the native-vs-BAML differential green via fallback.
+// Everything else — backtick / triple-quoted strings, escapes inside
+// double-quoted strings, missing commas between elements, unquoted bareword
+// string values, unterminated structures, and multiple top-level values —
+// returns errFixUnsupported. BAML supports many of those, but they interact
+// with completion flags, inferred arrays, and union scoring, so declining keeps
+// the native-vs-BAML differential green via fallback. (JSONish COMMENTS are the
+// exception since Phase 7C: a string-aware stripJSONComments pre-pass removes
+// `/* */` and `//` comments outside strings before extraction, matching BAML, so
+// the fixer never sees them and a comment-bearing input is CLAIMED, not declined.)
 //
 // The top level must be an object or array; a bare scalar span is declined
 // (recovery schemas always target object/list/class shapes, and a strict
@@ -291,13 +294,15 @@ const scalarBailBytes = "{}[]:\"'`"
 // behavior — InArray closes at ',' / ']' directly — so the guard is scoped
 // to object-value context.
 //
-// DELIBERATE over-decline (deferred to Mcoerce, #546): this also declines
-// the common flat `{"name":"Ada","age":36,}` (trailing comma, no space),
-// where BAML actually SUCCEEDS — it greedily reads age as the string "36,"
-// then its int coercer TRIMS the trailing comma back to 36
-// (coerce_primitive.rs). Native declining is correctness-safe (fallback →
-// BAML → 36); matching it natively needs BAML's greedy-read + trim-coercion,
-// which belongs to the coercion-leniency milestone, not M2a.
+// The common flat `{"name":"Ada","age":36,}` (trailing comma before the close,
+// no space) is CLAIMED, not declined: BAML greedily reads age as "36," then its
+// int/float/bool coercer TRIMS the trailing comma back to 36, which equals
+// native's clean read of `36` — the comma is followed by '}', so there is NO
+// following field for the greedy scan to swallow, and the two paths converge on
+// the same value. A comma followed by tight FIELD content (a genuine cascade,
+// e.g. `{"x":1,"y":2}`) still declines — and admission (checkStreamRootSupported)
+// excludes any schema with a NON-LAST unquoted-scalar field, so on the native
+// stream lane only the LAST-scalar trailing-comma-before-close reaches here.
 func (p *fixer) parseUnquotedScalar(term string) (value, error) {
 	start := p.pos
 	for !p.eof() {
@@ -324,8 +329,15 @@ func (p *fixer) parseUnquotedScalar(term string) (value, error) {
 	}
 	if term == objectValueTerm && p.s[p.pos] == ',' {
 		next := p.pos + 1
-		if next >= len(p.s) || (p.s[next] != ' ' && p.s[next] != '\n') {
-			// BAML would consume this comma and read greedily — decline.
+		if next >= len(p.s) || (p.s[next] != ' ' && p.s[next] != '\n' && p.s[next] != '}') {
+			// BAML would consume this comma and read greedily — decline. EXCEPTION: a
+			// comma immediately followed by '}' is a TRAILING comma with NO following
+			// field to greedy-swallow, so BAML's greedy read (`36,` then the int/float/
+			// bool coercer trims the trailing comma back to 36) produces the SAME value
+			// as native's clean read of `36` — CLAIM it. (A comma followed by tight
+			// FIELD content is the genuine InObjectValue cascade, which stays declined;
+			// admission also excludes any NON-last unquoted scalar, so only this LAST-
+			// scalar trailing-comma reaches here.)
 			return value{}, errFixUnsupported
 		}
 	}
@@ -357,11 +369,56 @@ func classifyScalar(raw string) (value, error) {
 	return value{}, errFixUnsupported
 }
 
+// decodeDoubleQuoteEscape decodes the escape sequence at p.pos (which must be a
+// backslash) inside a double-quoted string, appending the decoded content to sb
+// and advancing p.pos past what it consumed. It mirrors BAML's jsonish escape set
+// exactly (live-probed): only \" \\ \n \t \r \b \f decode to their character.
+// Every other escape — \/, an unknown letter like \z, a \uXXXX sequence, or a
+// backslash that runs to EOF — is kept LITERAL: the backslash is emitted as-is and
+// the following byte (if any) is left for the normal scan. That reproduces what
+// BAML emits (e.g. `\/`->`\/`, `\z`->`\z`, a dangling `\`->`\`), rather than the
+// standard-JSON decoding, which BAML does not apply here.
+func (p *fixer) decodeDoubleQuoteEscape(sb *strings.Builder) {
+	if p.pos+1 >= len(p.s) {
+		sb.WriteByte('\\') // dangling backslash at EOF -> literal
+		p.pos++
+		return
+	}
+	switch p.s[p.pos+1] {
+	case '"':
+		sb.WriteByte('"')
+		p.pos += 2
+	case '\\':
+		sb.WriteByte('\\')
+		p.pos += 2
+	case 'n':
+		sb.WriteByte('\n')
+		p.pos += 2
+	case 't':
+		sb.WriteByte('\t')
+		p.pos += 2
+	case 'r':
+		sb.WriteByte('\r')
+		p.pos += 2
+	case 'b':
+		sb.WriteByte('\b')
+		p.pos += 2
+	case 'f':
+		sb.WriteByte('\f')
+		p.pos += 2
+	default:
+		// \/, \uXXXX and unknown escapes are literal in BAML: keep the
+		// backslash and let the next byte be scanned normally.
+		sb.WriteByte('\\')
+		p.pos++
+	}
+}
+
 // parseDoubleQuoted reads a double-quoted string, closing at the first
-// unescaped quote. The opening '"' is at the cursor. A backslash escape
-// declines the parse (BAML's escape fixing and its embedded-quote close
-// heuristics are deferred), as does a triple-quoted opener or an
-// unterminated string.
+// unescaped quote. The opening '"' is at the cursor. Escape sequences are
+// decoded per BAML's set (see decodeDoubleQuoteEscape); a triple-quoted opener
+// and an unterminated string are still deferred, as is BAML's embedded-quote
+// close heuristic (an unescaped mid-string quote closes here).
 func (p *fixer) parseDoubleQuoted() (string, error) {
 	if strings.HasPrefix(p.s[p.pos:], `"""`) {
 		return "", errFixUnsupported // triple-quoted string deferred
@@ -370,10 +427,11 @@ func (p *fixer) parseDoubleQuoted() (string, error) {
 	var sb strings.Builder
 	for !p.eof() {
 		c := p.s[p.pos]
-		switch c {
-		case '\\':
-			return "", errFixUnsupported // escapes deferred to BAML
-		case '"':
+		if c == '\\' {
+			p.decodeDoubleQuoteEscape(&sb)
+			continue
+		}
+		if c == '"' {
 			p.pos++
 			return sb.String(), nil
 		}
@@ -629,8 +687,18 @@ func (p *fixer) parseKeyStream() (string, bool) {
 }
 
 // parseDoubleQuotedStream reads a double-quoted string with streaming recovery.
-// A backslash escape or triple-quoted opener still declines (deferred to BAML);
-// an unterminated string keeps its partial content and is marked Incomplete.
+// Escape sequences are decoded per BAML's set (see decodeDoubleQuoteEscape) so a
+// partial string emits the same decoded content BAML streams (e.g. a dangling
+// `"x\`->`x\`); a triple-quoted opener still declines; an unterminated string keeps
+// its partial content and is marked Incomplete.
+//
+// An EMBEDDED quote (a `\"` escape decoding to a literal ") is a #583 deferred
+// greedy-recovery trigger: BAML applies its embedded-quote CLOSE heuristic (greedily
+// re-absorbing past the apparent close at incomplete-object prefixes), which native's
+// clean standard-JSON close cannot reproduce byte-exact. Rather than emit a
+// byte-DIFFERENT clean close, DECLINE the stream partial so native purely UNDER-emits /
+// skips those frames — never a divergent emit (owner A′ / ledger #583). The FINAL of a
+// complete, valid object decodes via strictDecode (not this fixer), so it is unaffected.
 func (p *fixer) parseDoubleQuotedStream() (value, error) {
 	if strings.HasPrefix(p.s[p.pos:], `"""`) {
 		return value{}, errFixUnsupported // triple-quoted string deferred
@@ -639,10 +707,14 @@ func (p *fixer) parseDoubleQuotedStream() (value, error) {
 	var sb strings.Builder
 	for !p.eof() {
 		c := p.s[p.pos]
-		switch c {
-		case '\\':
-			return value{}, errFixUnsupported // escapes deferred to BAML
-		case '"':
+		if c == '\\' {
+			if p.pos+1 < len(p.s) && p.s[p.pos+1] == '"' {
+				return value{}, errFixUnsupported // #583 embedded-quote close heuristic deferred
+			}
+			p.decodeDoubleQuoteEscape(&sb)
+			continue
+		}
+		if c == '"' {
 			p.pos++
 			return value{kind: valString, strV: sb.String()}, nil // complete
 		}
@@ -715,10 +787,23 @@ func (p *fixer) parseUnquotedScalarStream(term string) (value, error) {
 	}
 	if term == objectValueTerm && p.s[p.pos] == ',' {
 		next := p.pos + 1
-		if next >= len(p.s) || (p.s[next] != ' ' && p.s[next] != '\n') {
-			// BAML would consume this comma and read greedily — decline.
+		if next < len(p.s) && p.s[next] != ' ' && p.s[next] != '\n' && p.s[next] != '}' {
+			// Comma FOLLOWED BY tight (non-space/newline, non-close) content: BAML's
+			// fixing parser CONSUMES the comma and keeps reading the unquoted object
+			// value PAST it (json_parse_state.rs InObjectValue), a GREEDY CASCADE that
+			// swallows every following field into one failed value — native's per-field
+			// parse cannot reproduce it (#546), so it DECLINES. Admission additionally
+			// declines any schema with a NON-LAST unquoted-scalar field, so no ADMITTED
+			// stream can reach this prefix.
 			return value{}, errFixUnsupported
 		}
+		// Comma at EOF of the streamed prefix (next >= len) OR immediately followed by
+		// '}' (a TRAILING comma before the close, with no following field to greedy-
+		// swallow): the value is cleanly comma-terminated → COMPLETE, matching BAML
+		// parse-stream (LIVE-CAPTURED: {"a":1, -> a kept; {"name":"Ada","age":36,} ->
+		// {name,age:36} — greedy-read "36," then int-trim == native's clean 36). This
+		// keeps the partial cadence aligned with the FINAL parser's same '}' exception.
+		// Fall through.
 	}
 	// Terminated by a proper delimiter → Complete.
 	return classifyScalar(raw)

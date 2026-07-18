@@ -1,6 +1,6 @@
 {
-  "name": "list_string_noninteger_number_stays_fallback",
-  "description": "Mcoerce-d PR 1 FALLBACK (number-display parity): list<string> ['a', 5e0]. BAML stringifies 5e0 via serde f64 Display -> \"5.0\"; native cannot prove the canonical spelling byte-identical, so the element display is UNCERTAIN and native DECLINES the WHOLE list (never a partial skip; native leg skipped in the differential). want is BAML's canonical serde f64 Display.",
+  "name": "list_string_noninteger_number_now_claimed",
+  "description": "Phase 7C CLAIMED (number-display parity closed): list<string> ['a', 5e0]. BAML stringifies 5e0 via serde f64 Display -> \"5.0\". native now reproduces serde's f64 Display byte-exact (displayFloat64: ryu shortest round-trip), so the element stringifies and native CLAIMS the whole list with no BAML fallback. want is BAML's canonical serde f64 Display.",
   "preserve_schema_order": false,
   "schema": {
     "classes": [

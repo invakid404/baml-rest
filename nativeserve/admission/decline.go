@@ -182,6 +182,12 @@ const (
 	ReasonOutputSchemaAbsent    Reason = "output_schema_absent"
 	ReasonOutputSchemaUnbounded Reason = "output_schema_unbounded"
 	ReasonPromptUnclaimed       Reason = "prompt_unclaimed"
+	// ReasonStreamSchemaUnsupported is the Phase 7C native-stream SAP schema row:
+	// the STREAM claim declines pre-transport any output schema whose native-only
+	// partial+final parser cannot own the whole type graph (checkSupported +
+	// no-stream-annotations), so no admitted stream ever needs a per-prefix BAML
+	// fallback (I6). It never fires on the unary lane.
+	ReasonStreamSchemaUnsupported Reason = "stream_schema_unsupported"
 	// message
 	ReasonEmptyMessages    Reason = "empty_messages"
 	ReasonEmptyMessage     Reason = "empty_message"

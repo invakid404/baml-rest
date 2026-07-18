@@ -179,11 +179,17 @@ func (p perCallTimeoutParser) Parse(ctx context.Context, req bamlfuzz.ParseReque
 // SkippedNative). Strict / markdown-fenced / prose-extracted JSON is
 // claimed; the conservative M2a fixing subset (trailing commas, unquoted
 // keys, single quotes, mixed jsonish, and the nested/literal/prose variants)
-// is now also claimed. Cases the native parser DECLINES — repairs outside
-// the fixing subset (comments), and "couldn't find/complete a candidate"
-// (an unterminated/truncated structure, which BAML recovers but M2a defers)
-// — stay fallback. Cases absent from the map (the streaming-only ones)
-// carry no final leg and are not asserted.
+// is now also claimed, AS ARE JSONish COMMENTS (Phase 7C: a string-aware
+// stripJSONComments pre-pass drops /* */ and // comments outside strings before
+// extraction, so a comment-bearing final is CLAIMED, not fallback). Cases this
+// HYBRID final parser DECLINES — repairs outside the fixing subset (backtick /
+// triple-quoted strings, escapes, missing commas, bareword string values), and
+// "couldn't find/complete a candidate" (an unterminated/truncated structure,
+// which BAML recovers but this fallback-capable Parse defers) — stay fallback.
+// (The native-only STREAM FINAL closure additionally CLOSES a complete-but-
+// unclosed object at [DONE] via completeUnclosedFinal — a no-fallback lane;
+// this hybrid Parse path, which CAN fall back, keeps deferring it.) Cases absent
+// from the map (the streaming-only ones) carry no final leg and are not asserted.
 //
 // MAP RE-ENABLE (#581): internal/debaml.Parse now CLAIMS a map in a proven
 // position — clean object input, an exact string / enum / string-literal(-union)
@@ -228,8 +234,11 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"leading_comma_object":   true,
 	"repeated_commas_object": true,
 	"array_stray_commas":     true,
-	// Deferred repair (comments) — pinned fallback until claimed.
-	"comments_fallback": false,
+	// Comments — Phase 7C: a string-aware pre-pass (stripJSONComments) strips
+	// `/* */` block and `//` line comments the way BAML does before extraction, so a
+	// comment-bearing final now CLAIMS the same result BAML recovers (native-only, no
+	// fallback). Held byte-exact vs live BAML by this differential.
+	"comments_fallback": true,
 	// M2b native MAPS: clean maps are claimed and diff-green vs BAML —
 	// object input, exact key match (string / enum / string-literal /
 	// string-literal-union), in-scope values, emitted in INPUT key order.
@@ -401,8 +410,8 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"float_nan_stays_fallback":                false,
 	"float_inf_stays_fallback":                false,
 	"float_nan_fraction_stays_fallback":       false,
-	"int_inf_stays_fallback":                  false,
-	"int_nan_stays_fallback":                  false,
+	"int_inf_now_claimed":                     true, // Phase 7C: saturating f64-as-i64 cast (inf -> i64::MAX)
+	"int_nan_now_claimed":                     true, // Phase 7C: saturating f64-as-i64 cast (nan -> 0)
 	// Mcoerce-c native LISTS (coerceList / coerce_array.rs): non-array
 	// SingleToArray wrapping, PARTIAL array skips of PROVEN-parse-error items,
 	// and empty-list-on-singleton-failure resolve byte-identical to BAML, so the
@@ -481,13 +490,13 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"list_literal_int_single_key_object_kept":              true,
 	"map_string_literal_bool_single_key_object_value_kept": true,
 	"list_string_null_skipped":                             true,
-	// Number-display parity (over-claim guard): a NON-integer number spelling is
-	// canonicalized by BAML's serde_json f64 Display (5e0 -> "5.0"), which native's
-	// raw-token render cannot prove byte-identical, so native marks it UNCERTAIN and
-	// DECLINES — standalone and (whole-collection, not a partial skip) in a list/map.
-	// Integer stringification still claims (see the CLAIMED entries above).
-	"primitive_string_number_noninteger_stays_fallback": false,
-	"list_string_noninteger_number_stays_fallback":      false,
+	// Number-display parity CLOSED (Phase 7C): a NON-integer number spelling is
+	// canonicalized by BAML's serde_json f64 Display (5e0 -> "5.0"); native now
+	// reproduces serde's f64 Display byte-exact (displayFloat64: ryu shortest
+	// round-trip, LIVE-CAPTURED 0-mismatch over 2060 finals), so it CLAIMS the
+	// stringification — standalone and inside a list/map — with no BAML fallback.
+	"primitive_string_number_noninteger_now_claimed": true,
+	"list_string_noninteger_number_now_claimed":      true,
 
 	// Mcoerce-d PR 2 — STRUCTURAL CLASS DEFAULTS. coerceClass now ports BAML's
 	// coerce_class.rs (non-array subset): single-field OBJECT implied-key and
@@ -625,13 +634,15 @@ var parseRecoveryBoundaryFamily = map[string]string{
 	"list_int_bool_union_stays_fallback":   "list_multi_arm_union",
 	"list_string_int_union_stays_fallback": "list_multi_arm_union",
 	"list_scalar_union_stays_fallback":     "list_multi_arm_union",
-	// Unicode case-fold uncertainty (#555).
+	// Unicode case-fold uncertainty (#555). Still a FINAL-parse fallback: native's
+	// match_string cannot prove its ASCII fold equals BAML's Unicode fold (the
+	// native-only STREAM lane additionally excludes non-ASCII literals/enums at
+	// admission — see checkStreamRootSupported).
 	"unicode_literal_casefold_uncertain_stays_fallback":      "unicode_casefold",
 	"unicode_list_literal_casefold_uncertain_stays_fallback": "unicode_casefold",
-	// Number-display uncertainty (non-integer serde f64 Display native cannot
-	// prove byte-identical).
-	"primitive_string_number_noninteger_stays_fallback": "number_display",
-	"list_string_noninteger_number_stays_fallback":      "number_display",
+	// (The number-display family is GONE: Phase 7C closes serde f64 Display
+	// byte-exact (displayFloat64), so those fixtures now CLAIM — see the
+	// *_now_claimed pins in parseRecoveryNativeClaim.)
 	// (The pre-#581 map_pre_581 guard is gone: #581 re-enables clean maps, so
 	// map_string_string_clean_boundary_guard now CLAIMS rather than guarding a
 	// fallback boundary — see its pin above.)
@@ -647,32 +658,48 @@ var parseRecoveryBoundaryFamily = map[string]string{
 //
 // M4b flips the live-captured success prefixes whose observable behavior is
 // jsonish recovery + class null-filling WITHOUT stream annotations or displayed
-// stream state: an open/repaired root object AFTER at least one field value is
-// available (BAML's Pending null fills the missing fields), truncated /
-// markdown-fence-recovered incomplete STRING values (strings are not done-required
-// so a partial string is kept as its value — no AnyOf leak), and trailing-comma
-// list/string prefixes BAML accepts. The prefixes that stay FALLBACK (absent) are
-// the over-claim guards: a bare open brace / dangling key / dangling colon and
-// bare prose / just-opened fence (NO field value yet — the empty-object and
-// allow_as_string→class recovery paths are not claimed), which M4b deliberately
-// over-declines. Completed done-required scalars are claimed only where the
-// enclosing structure proves them done (the closed full_object); an INCOMPLETE
-// done-required scalar and any semantic child deletion stay fallback (M4c).
+// stream state: an open/repaired root object (Phase 7C now claims it even before a
+// field value — see below), truncated / markdown-fence-recovered incomplete STRING
+// values (strings are not done-required so a partial string is kept as its value —
+// no AnyOf leak), and trailing-comma list/string prefixes BAML accepts.
+//
+// Phase 7C CLOSES the content-free-prefix gap for a MULTI-field (>=2) class: a bare
+// open brace `{`, a dangling key `{"name"`, a dangling colon `{"name":`, AND a
+// content-free PREAMBLE with no `{` at all (bare prose / a just-opened fence) now
+// CLAIM the all-filler object ({"name":null,"age":null}) byte-exact with BAML, which
+// instantiates the class target from nothing. The native no-candidate path synthesizes
+// the empty object for a >=2-field class (parse.go targetIsMultiFieldClass); the
+// coerceStreamClass filler logic (no longer requiring >=1 present field) emits it.
+// A SINGLE string-absorbing-field root class is instead DECLINED pre-transport by
+// SupportsNativeStream, because BAML does allow_as_string->class (InferedObject) for
+// it and diverges — so it never reaches this path. Completed done-required scalars are
+// claimed only where the enclosing structure proves them done (the closed full_object);
+// an INCOMPLETE done-required scalar and any semantic child deletion are claimed per M4c.
 var parseRecoveryStreamNativeClaim = map[string]map[string]bool{
-	// 20_streaming_growing_object (Root{name:string, age:int}). The bare `{`,
-	// key-only, and dangling-colon prefixes have no field value yet → fallback;
-	// every prefix from the first present field value on is claimed (missing fields
-	// null-filled, the closed int kept).
+	// 20_streaming_growing_object (Root{name:string, age:int}). Phase 7C closes the
+	// content-free OPEN-OBJECT gap: the bare `{`, dangling-key, and dangling-colon
+	// prefixes now CLAIM the all-filler object ({"name":null,"age":null}), byte-exact
+	// with BAML — every prefix here is claimed.
 	"streaming_growing_object": {
+		"open_brace":     true,
+		"first_key":      true,
+		"colon":          true,
 		"partial_string": true,
 		"full_string":    true,
 		"second_key":     true,
 		"full_object":    true,
 	},
-	// 21_streaming_markdown_fence (Root{name:string, age:int}). Bare prose and the
-	// just-opened fence have no JSON content → fallback; the object emerging inside
-	// the (still-open, then closed) fence is claimed.
+	// 21_streaming_markdown_fence (Root{name:string, age:int} — a >=2-field class).
+	// Phase 7C closes the content-free PREAMBLE gap for a multi-field class: bare
+	// prose and a just-opened fence (no `{`) now CLAIM the all-filler object
+	// ({"name":null,"age":null}) byte-exact with BAML parse-stream (which instantiates
+	// the class target from nothing). Every prefix here is claimed. (A SINGLE
+	// string-field class would instead be DECLINED pre-transport by SupportsNativeStream,
+	// because BAML does allow_as_string->class for it and diverges — see
+	// TestSupportsNativeStream_SingleStringFieldDeclines.)
 	"streaming_markdown_fence": {
+		"prose":          true,
+		"fence_open":     true,
 		"object_partial": true,
 		"object_full":    true,
 		"fence_close":    true,
@@ -771,7 +798,10 @@ var parseRecoveryStreamNativeClaim = map[string]map[string]bool{
 	// (`{"a":1`) has an incomplete int → deleted → a:null with the default fillers;
 	// a_closed (`{"a":1}`) has the completed int → a:1. Both claimed.
 	"streaming_missing_field_fillers": {
-		"key_only":  false,
+		// Phase 7C: key_only (`{"a"`) is a content-free open object → now CLAIMED as
+		// the all-filler object {"a":null,"tags":[],"scores":{},"note":null}, byte-exact
+		// with BAML's live-captured want (was fallback under the pre-7C ≥1-field guard).
+		"key_only":  true,
 		"a_partial": true,
 		"a_closed":  true,
 	},

@@ -1087,12 +1087,13 @@ func TestParse_FixingTrailingCommas(t *testing.T) {
 	}
 	mustParse(t, s, `{"name":"Ada","tags":["x","y",],}`, `{"name":"Ada","tags":["x","y"]}`)
 
-	// A trailing comma right after an UNQUOTED NUMBER object value DECLINES:
-	// BAML's fixing parser consumes the comma (the byte after it is '}', not
-	// space/newline) and reads greedily, producing the string "36," — which
-	// then fails int coercion, so BAML errors. Native must not claim a clean
-	// 36 where BAML errors, so it declines.
-	requireUnsupported(t, personSchema(), `{"name":"Ada","age":36,}`)
+	// A trailing comma right after an UNQUOTED NUMBER object value before the close
+	// is CLAIMED (LIVE-CAPTURED: BAML greedily reads age as "36," then its int coercer
+	// TRIMS the trailing comma back to 36 → success; the comma is followed by '}', so
+	// there is no following field to greedy-swallow, and native's clean read of 36
+	// yields the SAME value). A comma followed by tight FIELD content still declines
+	// (genuine greedy cascade), and admission excludes any NON-last unquoted scalar.
+	mustParse(t, personSchema(), `{"name":"Ada","age":36,}`, `{"name":"Ada","age":36}`)
 }
 
 func TestParse_FixingLeadingAndRepeatedCommas(t *testing.T) {
@@ -1163,17 +1164,65 @@ func TestParse_FixingFencedJSONish(t *testing.T) {
 	mustParse(t, personSchema(), raw, `{"name":"Ada","age":36}`)
 }
 
+// TestParse_Comments pins Phase 7C JSONish comment recovery on the FINAL path: a
+// string-aware pre-pass strips `/* */` block and `//` line comments outside strings
+// (matching BAML), so a comment-bearing final parses to the SAME result BAML
+// recovers (LIVE-CAPTURED, native-only, no fallback), across every comment position.
+func TestParse_Comments(t *testing.T) {
+	s := personSchema()
+	for _, raw := range []string{
+		`{"name": "Ada", "age": 36, /* note */}`,
+		`{"name": "Ada", "age": 36 /* note */}`,
+		`{"name": "Ada", /* mid */ "age": 36}`,
+		`{/* lead */ "name": "Ada", "age": 36}`,
+		"/* pre */ {\"name\": \"Ada\", \"age\": 36}",
+		"{\"name\": \"Ada\", // line\n \"age\": 36}",
+		"{\"name\": \"Ada\", \"age\": 36 // trailing\n}",
+		`{"name": "Ada", "age": 36} // after`,
+		`{"name": "Ada", /* a */ /* b */ "age": 36}`,
+		// UNTERMINATED (to-EOF) comments after a CLOSED object: stripJSONComments
+		// drops `/* …EOF` and `// …EOF`, so native recovers the closed record
+		// byte-exact (LIVE-CAPTURED vs BAML v0.223). An unterminated comment that
+		// leaves the object itself UNCLOSED is FINAL object-completion, not comment
+		// handling (BAML's non-stream final completes it, native declines; not in the
+		// corpus, and the stream final of an unclosed accumulation nulls the trailing
+		// value) — orthogonal, so those cases are not asserted here.
+		`{"name": "Ada", "age": 36} /* dangling to EOF`,
+		`{"name": "Ada", "age": 36}/*`,
+		`{"name": "Ada", "age": 36} // dangling to EOF`,
+		`{"name": "Ada", "age": 36}//`,
+	} {
+		mustParse(t, s, raw, `{"name":"Ada","age":36}`)
+	}
+	// A comment marker inside a STRING value is not a comment — kept verbatim.
+	mustParse(t, s, `{"name": "a/*b*/c", "age": 36}`, `{"name":"a/*b*/c","age":36}`)
+	// SINGLE-quoted keys/values are first-class in BAML's JSONish, so a comment marker
+	// inside a single-quoted value is content too — NOT stripped (round 13, CodeRabbit
+	// discussion_r3608361082; LIVE-CAPTURED vs BAML v0.223). Before the dual-quote fix,
+	// stripJSONComments treated `'a/*b*/c'` as out-of-string and corrupted it to `a c`.
+	mustParse(t, s, `{'name':'a/*b*/c','age':36}`, `{"name":"a/*b*/c","age":36}`)
+	mustParse(t, s, `{'name':'a//b','age':36}`, `{"name":"a//b","age":36}`)
+	// A single quote opens a string ONLY in a structural value/key position: a bare
+	// apostrophe in prose is literal, so a following out-of-string comment is still
+	// stripped (BAML strips it here too). Both cases share the same stripJSONComments.
+	mustParse(t, s, `x's /* c */ {"name":"Ada","age":36}`, `{"name":"Ada","age":36}`)
+}
+
 func TestParse_FixingDeferredFallsBack(t *testing.T) {
 	// Repairs outside the conservative M2a subset must still fall back to
 	// BAML (ErrDeBAMLParseUnsupported), preserving differential parity.
 	//
-	// Comments.
-	requireUnsupported(t, personSchema(), `{"name":"Ada","age":36 /* note */}`)
-	requireUnsupported(t, personSchema(), "{\"name\":\"Ada\", // note\n\"age\":36}")
+	// Comments are Phase 7C: a string-aware pre-pass strips them the way BAML does,
+	// so a comment-bearing value now CLAIMS the same result BAML recovers (native-only,
+	// no fallback) — see TestParse_Comments / TestStream_Comments.
+	mustParse(t, personSchema(), `{"name":"Ada","age":36 /* note */}`, `{"name":"Ada","age":36}`)
+	mustParse(t, personSchema(), "{\"name\":\"Ada\", // note\n\"age\":36}", `{"name":"Ada","age":36}`)
 	// Missing comma between fields.
 	requireUnsupported(t, personSchema(), `{"name":"Ada" "age":36}`)
-	// Escapes inside a double-quoted string (BAML's escape fixing deferred).
-	requireUnsupported(t, personSchema(), `{name:"A\nda",age:36}`)
+	// Escapes inside a double-quoted string are Phase 7C: native now DECODES BAML's
+	// escape set (\" \\ \n \t \r \b \f) and CLAIMS the same result BAML recovers
+	// (native-only, no fallback) — see TestParse_StringEscapes / the 7C differential.
+	mustParse(t, personSchema(), `{name:"A\nda",age:36}`, "{\"name\":\"A\\nda\",\"age\":36}")
 	// Bareword (non bool/null/number) unquoted value.
 	requireUnsupported(t, personSchema(), `{name: Ada, age: 36}`)
 	// Backtick-quoted value.

@@ -232,9 +232,12 @@ func TestCoerceIntValue(t *testing.T) {
 		{"str-hex-float-reject", strVv("0x1p4"), 0, false, false},
 		{"str-underscore-reject", strVv("1_000"), 0, false, false},
 		{"str-hex-fraction-reject", strVv("0x1p4/2"), 0, false, false},
-		// CR-B1: non-finite ("inf"/"nan"/fraction) DECLINES (parity-safe under-claim).
-		{"str-inf-declines", strVv("inf"), 0, false, false},
-		{"str-nan-declines", strVv("nan"), 0, false, false},
+		// Phase 7C: coerce_int applies Rust's saturating `f64 as i64` cast, so a
+		// non-finite DIRECT f64 spelling CLAIMS byte-exact vs BAML — "inf" -> i64::MAX,
+		// "nan" -> 0 (corpus 90_int_inf / 91_int_nan). The fraction path stays a
+		// parity-safe decline (BAML errors on "1/0"; "inf/2" is out-of-corpus).
+		{"str-inf-saturates-max", strVv("inf"), math.MaxInt64, true, true},
+		{"str-nan-saturates-zero", strVv("nan"), 0, true, true},
 		{"str-inf-fraction-declines", strVv("inf/2"), 0, false, false},
 		// A FINITE out-of-range value still saturates and CLAIMS (matches BAML).
 		{"str-finite-overflow-saturates", strVv("1e19"), math.MaxInt64, true, true},

@@ -84,7 +84,10 @@ func Parse(ctx context.Context, req bamlutils.DeBAMLParseRequest) (bamlutils.DeB
 		return bamlutils.DeBAMLParseResult{}, err
 	}
 
-	parsed, ok := extractCandidate(req.Raw)
+	// Strip JSONish comments (string-aware) exactly as BAML does before extraction,
+	// so a comment-bearing final an admitted schema can receive parses to the SAME
+	// result native-only — no BAML fallback (§5.9 admitted-final parity).
+	parsed, ok := extractCandidate(stripJSONComments(req.Raw))
 	if !ok {
 		// No cleanly-claimable JSON candidate: no JSON-looking content, a
 		// repair outside the conservative M2a fixing subset, an unterminated
@@ -155,18 +158,203 @@ func parseStream(req bamlutils.DeBAMLParseRequest) (bamlutils.DeBAMLParseResult,
 	if err := checkNoStreamAnnotations(bundle); err != nil {
 		return bamlutils.DeBAMLParseResult{}, err
 	}
-	v, ok := streamExtractCandidate(req.Raw)
+	// Strip JSONish comments (string-aware) as BAML does before extraction, so a
+	// comment-bearing streamed prefix/final parses to the SAME result native-only.
+	raw := stripJSONComments(req.Raw)
+	v, ok := streamExtractCandidate(raw)
 	if !ok {
-		// No cleanly-recoverable candidate (no JSON-looking content, a just-opened
-		// fence, or a construct outside the streaming fixing subset): BAML may still
-		// recover it, so DECLINE (fall back) rather than claim.
-		return bamlutils.DeBAMLParseResult{}, unsupported("stream: no cleanly-claimable JSON candidate")
+		// No recoverable candidate (bare prose / an opened-but-empty fence / a
+		// construct outside the streaming fixing subset). BAML parse-stream still
+		// emits the root class all-filler for a MULTI-field (>=2) class — the class
+		// is the target and jsonish instantiates it from nothing (LIVE-CAPTURED:
+		// corpus 21 prose / fence_open -> {"name":null,"age":null}). Reproduce that
+		// by coercing an EMPTY object against the target.
+		//
+		// A SINGLE-field root class is NOT emitted here: BAML instead attempts
+		// allow_as_string->class (InferedObject from the preamble String) and ERRORS
+		// on the incomplete preamble, so native matching-by-DECLINING keeps parity
+		// (both emit nothing). Admission additionally declines a single STRING-
+		// absorbing field root class outright (SupportsNativeStream), because BAML's
+		// allow_as_string diverges from native inside a fence for that shape.
+		//
+		// This synthesis is scoped to a prefix that opened NO object at all (no `{`):
+		// bare prose or an opened-but-empty fence. A prefix that DID open an object
+		// but whose streaming fix declined (e.g. the greedy unquoted-value tight-comma
+		// guard `{...36,`) is CONTENT-BEARING — synthesizing the all-filler here would
+		// wrongly drop the fields already present, so it keeps declining (that residual
+		// content-bearing decline is a separate streamFix boundary, not this gap).
+		if strings.TrimSpace(raw) == "" || !targetIsMultiFieldClass(bundle) || strings.ContainsRune(raw, '{') {
+			return bamlutils.DeBAMLParseResult{}, unsupported("stream: no candidate; empty / single-field-or-non-class root / content-bearing decline")
+		}
+		v = value{kind: valObject}
 	}
 	out, err := coerceStream(bundle, bundle.Target, v)
 	if err != nil {
 		return bamlutils.DeBAMLParseResult{}, err
 	}
 	return bamlutils.DeBAMLParseResult{JSON: out}, nil
+}
+
+// targetIsMultiFieldClass reports whether the bundle's output target is a class
+// with two or more fields — the shape for which BAML parse-stream emits the
+// all-filler object from a content-free prefix (bare prose / an opened-but-empty
+// fence). A single-field (or zero-field) class, or a non-class target, returns
+// false: BAML does allow_as_string->class (InferedObject from the preamble) for a
+// single field and errors on an incomplete preamble, which the native parser
+// matches by declining rather than emitting an all-filler object it cannot prove.
+func targetIsMultiFieldClass(b *schema.Bundle) bool {
+	if b.Target.Kind != schema.TypeClass {
+		return false
+	}
+	cls, ok := b.FindClass(b.Target.Name, b.Target.Mode)
+	return ok && len(cls.Fields) >= 2
+}
+
+// rootFieldIsStringAbsorbing reports whether the bundle's output target is a
+// single-field class whose lone field can absorb a bare string via BAML's
+// allow_as_string->class (InferedObject) recovery — a string primitive, an
+// optional string, or a union that includes a string primitive/literal. For that
+// shape BAML's parse-stream diverges from native INSIDE A FENCE (BAML errors on an
+// incomplete ```json{ preamble while native would extract the empty object and
+// over-emit an all-filler value), so admission declines it pre-transport. A
+// single field that is a list / map / int / float / bool / enum / nested class
+// does NOT absorb a string (BAML strips the fence and emits the all-filler,
+// matching native), so it stays admissible.
+func rootFieldIsStringAbsorbing(b *schema.Bundle) bool {
+	if b.Target.Kind != schema.TypeClass {
+		return false
+	}
+	cls, ok := b.FindClass(b.Target.Name, b.Target.Mode)
+	if !ok || len(cls.Fields) != 1 {
+		return false
+	}
+	return typeAbsorbsString(cls.Fields[0].Type)
+}
+
+// graphHasGreedyCommaRisk reports whether any type in the bundle can place an
+// UNQUOTED-SCALAR value (int / float / bool, a number/bool literal, or an
+// optional/union thereof) in OBJECT-VALUE position followed by a comma + more
+// content. BAML's fixing parser greedy-reads such a value PAST the following tight
+// comma (json_parse_state.rs InObjectValue) in a compact stream, a cascade that
+// swallows every subsequent entry — a divergence native's per-value parse cannot
+// reproduce (deferred #546). It fires for:
+//
+//   - a class (root OR nested) whose NON-LAST field is an unquoted scalar (a LAST
+//     scalar field is safe: only a trailing comma can follow, which native closes);
+//   - a map whose VALUE type is an unquoted scalar (every non-last map entry's value
+//     is followed by ',' + the next key).
+//
+// LIST elements are exempt: an array closes each element at ',' / ']' directly
+// (InArray), with no greedy read. Strings, string literals, enums, lists, maps, and
+// classes serialize quoted or bracketed and close at their own delimiter.
+func graphHasGreedyCommaRisk(b *schema.Bundle) bool {
+	for i := range b.Classes {
+		fs := b.Classes[i].Fields
+		for j := 0; j < len(fs); j++ {
+			// A non-last field that is an unquoted scalar → greedy-comma risk.
+			if j < len(fs)-1 && typeIsUnquotedScalar(fs[j].Type) {
+				return true
+			}
+			// A map-with-scalar-value anywhere in the field's type → risk.
+			if typeHasScalarMapValue(fs[j].Type) {
+				return true
+			}
+		}
+	}
+	return typeHasScalarMapValue(b.Target)
+}
+
+// typeHasScalarMapValue reports whether t contains (directly or nested) a map whose
+// VALUE type is an unquoted scalar — an object-value position that greedy-reads.
+func typeHasScalarMapValue(t schema.Type) bool {
+	switch t.Kind {
+	case schema.TypeMap:
+		if t.Value != nil && (typeIsUnquotedScalar(*t.Value) || typeHasScalarMapValue(*t.Value)) {
+			return true
+		}
+		return t.Value != nil && typeHasScalarMapValue(*t.Value)
+	case schema.TypeList:
+		return t.Elem != nil && typeHasScalarMapValue(*t.Elem)
+	case schema.TypeTuple:
+		for i := range t.Items {
+			if typeHasScalarMapValue(t.Items[i]) {
+				return true
+			}
+		}
+	case schema.TypeUnion:
+		if t.Union != nil {
+			for i := range t.Union.Variants {
+				if typeHasScalarMapValue(t.Union.Variants[i]) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// typeIsUnquotedScalar reports whether values of t serialize as an UNQUOTED JSON
+// token BAML can greedy-read across a comma: a number/bool primitive, a number/bool
+// literal, or an optional/union that can produce one. Strings, string literals,
+// enums (quoted), lists, maps, and classes are NOT unquoted scalars.
+func typeIsUnquotedScalar(t schema.Type) bool {
+	switch t.Kind {
+	case schema.TypePrimitive:
+		switch t.Primitive {
+		case schema.PrimitiveInt, schema.PrimitiveFloat, schema.PrimitiveBool:
+			return true
+		default:
+			return false
+		}
+	case schema.TypeLiteral:
+		return t.Literal != nil && (t.Literal.Kind == schema.LiteralInt || t.Literal.Kind == schema.LiteralBool)
+	case schema.TypeUnion:
+		if t.Union == nil {
+			return false
+		}
+		for i := range t.Union.Variants {
+			if typeIsUnquotedScalar(t.Union.Variants[i]) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+// typeAbsorbsString reports whether t (a class field's type) can be the target of
+// BAML's allow_as_string coercion: a string primitive, or an optional/union whose
+// members include a string primitive or a string literal.
+func typeAbsorbsString(t schema.Type) bool {
+	switch t.Kind {
+	case schema.TypePrimitive:
+		return t.Primitive == schema.PrimitiveString
+	case schema.TypeLiteral:
+		return t.Literal != nil && t.Literal.Kind == schema.LiteralString
+	case schema.TypeUnion:
+		if t.Union == nil {
+			return false
+		}
+		if t.Union.Nullable {
+			// optional<string> etc. — the null arm does not prevent allow_as_string
+			// on the non-null string arm.
+			for i := range t.Union.Variants {
+				if typeAbsorbsString(t.Union.Variants[i]) {
+					return true
+				}
+			}
+			return false
+		}
+		for i := range t.Union.Variants {
+			if typeAbsorbsString(t.Union.Variants[i]) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
 }
 
 // checkNoStreamAnnotations DECLINES any schema carrying BAML stream metadata —

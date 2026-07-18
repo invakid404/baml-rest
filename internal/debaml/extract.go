@@ -4,6 +4,102 @@ import (
 	"strings"
 )
 
+// stripJSONComments removes JSONish comments the way BAML's jsonish tokenizer does
+// before extraction — a string-aware pre-pass that drops `/* ... */` block comments
+// (INCLUDING an unterminated `/* ... EOF`) and `// ...` line comments (to the next
+// newline, or EOF), OUTSIDE quoted strings, replacing each with a single space
+// (preserving token separation). Comment markers INSIDE a string value are literal and
+// kept verbatim (LIVE-CAPTURED: BAML keeps {"name":"a/*b*/c"} AND {'name':'a/*b*/c'}
+// intact). A bare `/` (not `/*` or `//`) is not a comment and is written unchanged.
+//
+// BOTH quote delimiters are tracked, since BAML's JSONish accepts single-quoted keys and
+// values: a comment marker inside a single-quoted value is content, not a comment. But a
+// single quote opens a string only in a STRUCTURAL value/key/element START position (at
+// the very start, or right after `{ [ , :`, whitespace-tolerant) — matching BAML, which
+// tokenizes `'` as a string delimiter structurally, NOT as a bare apostrophe in prose or
+// mid-bareword. So `x's /* c */ {..}` still strips the comment (the apostrophe in `x's`
+// is literal), while `{'name':'a/*b*/c'}` preserves it. A double quote always opens
+// (BAML's primary delimiter, unambiguous). Escapes are honoured for both quote types so
+// `\'` / `\"` does not prematurely close.
+//
+// BAML strips comments in every non-string position — leading, between fields, before
+// a close, trailing, and unterminated (streaming) — so this pre-pass runs on the raw
+// text before both the final and streaming extractors, letting the existing
+// extract/fix/coerce machinery reproduce BAML's comment recovery byte-exact WITHOUT a
+// BAML fallback. It is a no-op for text with no out-of-string comment markers, so it
+// never perturbs the non-comment corpus.
+func stripJSONComments(s string) string {
+	// Fast path: nothing to strip if there is no `/*` or `//` anywhere.
+	if !strings.Contains(s, "/*") && !strings.Contains(s, "//") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	inStr := false
+	var strQuote byte // active string delimiter while inStr: '"' or '\''
+	escaped := false
+	var lastSig byte // last significant (non-whitespace) byte emitted OUTSIDE a string/comment
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if inStr {
+			b.WriteByte(c)
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == strQuote:
+				inStr = false
+				lastSig = c
+			}
+			i++
+			continue
+		}
+		if c == '"' {
+			inStr, strQuote, escaped = true, '"', false
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		if c == '\'' && (lastSig == 0 || lastSig == '{' || lastSig == '[' || lastSig == ',' || lastSig == ':') {
+			// Structural single-quote: opens a string only in a fresh value/key/element
+			// position (see doc comment). Elsewhere it falls through as a literal byte.
+			inStr, strQuote, escaped = true, '\'', false
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		if c == '/' && i+1 < len(s) && s[i+1] == '*' {
+			i += 2
+			for i < len(s) && !(s[i] == '*' && i+1 < len(s) && s[i+1] == '/') {
+				i++
+			}
+			if i < len(s) { // consume the closing */
+				i += 2
+			}
+			b.WriteByte(' ')
+			continue
+		}
+		if c == '/' && i+1 < len(s) && s[i+1] == '/' {
+			i += 2
+			for i < len(s) && s[i] != '\n' {
+				i++
+			}
+			// Leave the newline (if any) for the next iteration to preserve line
+			// structure; the comment body itself collapses to one space.
+			b.WriteByte(' ')
+			continue
+		}
+		b.WriteByte(c)
+		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+			lastSig = c // track the last significant byte for structural single-quote gating
+		}
+		i++
+	}
+	return b.String()
+}
+
 // extractCandidate finds the JSON candidate in raw and decodes it, in
 // BAML-recovery priority order: the whole input, then a markdown fenced
 // block, then the first balanced object/array embedded in prose. Each
@@ -236,7 +332,19 @@ func streamExtractCandidate(raw string) (value, bool) {
 	//    fence, or — while still streaming — everything after the opening fence to
 	//    EOF. Strict, then streaming fix, on the fence content.
 	if content, ok := extractFenceContentStream(raw); ok {
-		return decodeSpanStream(strings.TrimSpace(content))
+		trimmed := strings.TrimSpace(content)
+		// A completed object/array inside the fence may be followed only by a PARTIAL
+		// closing fence (the ``` arriving one backtick at a time) plus whitespace. BAML
+		// emits the completed object at those frames; native must too. Extract the
+		// balanced span and, when the only remainder is whitespace/backticks, decode
+		// the span — ignoring the partial closing fence. (The span scan is string-aware,
+		// so backticks INSIDE a string value stay part of the span, not the remainder.)
+		if span, end, closed, spanOk := extractBalancedSpanStream(trimmed); spanOk && closed {
+			if strings.Trim(trimmed[end:], " \t\r\n`") == "" {
+				return decodeSpanStream(span)
+			}
+		}
+		return decodeSpanStream(trimmed)
 	}
 
 	// 3. First balanced-or-truncated object/array span embedded in prose.
@@ -247,7 +355,11 @@ func streamExtractCandidate(raw string) (value, bool) {
 			// decline rather than claim the first span.
 			return value{}, false
 		}
-		return decodeSpanStream(strings.TrimSpace(span))
+		// NO TrimSpace: the span starts at the opening bracket (never leading whitespace)
+		// and an UNTERMINATED span runs to EOF, so trailing whitespace may be INSIDE an
+		// open string (e.g. `{"a":"café ` streaming) — trimming it would drop string
+		// content BAML keeps. Inter-token whitespace is handled by the fixer.
+		return decodeSpanStream(span)
 	}
 
 	return value{}, false
