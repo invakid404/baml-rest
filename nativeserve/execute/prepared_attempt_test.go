@@ -136,7 +136,7 @@ func preparePlan(t *testing.T, nano *nanollm.Client, base string, body []byte) *
 		t.Fatalf("plan method = %q, want POST", prep.Method)
 	}
 	if want := base + "/v1/chat/completions"; prep.URL != want {
-		t.Fatalf("plan url = %q, want %q", prep.URL, want)
+		t.Fatalf("plan url = %q, want %q", llmhttp.RedactedURL(prep.URL), llmhttp.RedactedURL(want))
 	}
 	if prep.ResponseFormat != nanollm.FormatJSON {
 		t.Fatalf("plan response format = %q, want json", prep.ResponseFormat)
@@ -368,7 +368,7 @@ func assertExactPlanSent(t *testing.T, prep *nanollm.PreparedRequest, rec record
 
 	u, err := url.Parse(prep.URL)
 	if err != nil {
-		t.Fatalf("parsing plan URL %q: %v", prep.URL, err)
+		t.Fatalf("parsing plan URL %q: %v", llmhttp.RedactedURL(prep.URL), err)
 	}
 	wantTarget := u.EscapedPath()
 	if u.RawQuery != "" {
@@ -480,6 +480,9 @@ func bodyDigest(b []byte) string {
 	sum := sha256.Sum256(b)
 	return fmt.Sprintf("%dB sha256:%s", len(b), hex.EncodeToString(sum[:])[:12])
 }
+
+// strDigest is bodyDigest for a string (a response body / raw diagnostic).
+func strDigest(s string) string { return bodyDigest([]byte(s)) }
 
 // translatedSummary renders a *nanollm.Response using only its safe scalar facts
 // (status, JSON flag) plus a digest of the body — never the body bytes.

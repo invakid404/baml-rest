@@ -22,7 +22,8 @@ func TestNormalizeHeadersLowercasesNames(t *testing.T) {
 		t.Fatalf("NormalizeHeaders: %v", err)
 	}
 	if m["content-type"] != "application/json" || m["authorization"] != "Bearer x" {
-		t.Fatalf("names not folded to lowercase: %v", m)
+		// Never print the header map (it carries an authorization value).
+		t.Fatal("header names not folded to lowercase (map redacted)")
 	}
 }
 
@@ -61,7 +62,8 @@ func TestSplitSemanticDropsBamlTransportHeader(t *testing.T) {
 		t.Error("baml-original-url must be partitioned into the transport set")
 	}
 	if len(sem) != 2 {
-		t.Errorf("semantic set = %v, want content-type + authorization only", sem)
+		// Never print the semantic set (it carries an authorization value); report the count.
+		t.Errorf("semantic set has %d entries, want 2 (content-type + authorization)", len(sem))
 	}
 }
 
@@ -86,7 +88,8 @@ func TestDiffEqualSnapshots(t *testing.T) {
 		t.Fatalf("NewSnapshot(nanollm): %v", err)
 	}
 	if d := Diff(a, b); len(d) != 0 {
-		t.Fatalf("equal snapshots reported diffs: %v", d)
+		// Never print d — the snapshots carry an authorization header; report the count.
+		t.Fatalf("equal snapshots reported %d diffs, want 0 (diffs redacted)", len(d))
 	}
 }
 
@@ -114,7 +117,8 @@ func TestDiffBamlOriginalURLExemptionIsOracleOnly(t *testing.T) {
 	// Oracle side (a) carries baml-original-url, nanollm side (b) does not: the
 	// exemption drops it from a, so parity holds (the real-fixture case).
 	if d := Diff(mk(withTransport), mk(semantic)); len(d) != 0 {
-		t.Fatalf("baml-original-url on the ORACLE side must be exempted (no diff), got: %v", d)
+		// Snapshots carry an authorization header — never print the diff; report the count.
+		t.Fatalf("baml-original-url on the ORACLE side must be exempted (no diff), got %d diffs (redacted)", len(d))
 	}
 
 	// nanollm side (b) carries baml-original-url, oracle side (a) does not: the
@@ -125,7 +129,9 @@ func TestDiffBamlOriginalURLExemptionIsOracleOnly(t *testing.T) {
 	}
 	joined := strings.Join(d, "\n")
 	if !strings.Contains(joined, "baml-original-url") || !strings.Contains(joined, "present on nanollm only") {
-		t.Fatalf("expected a 'present on nanollm only' diff for baml-original-url, got: %v", d)
+		// Never print the diff (snapshots carry an authorization header); report which marker is missing.
+		t.Fatalf("expected a 'present on nanollm only' baml-original-url diff (hasHeaderName=%v, hasPresenceMarker=%v; diff redacted)",
+			strings.Contains(joined, "baml-original-url"), strings.Contains(joined, "present on nanollm only"))
 	}
 }
 
@@ -142,7 +148,8 @@ func TestDiffDetectsMethodURLBodyDifferences(t *testing.T) {
 	a, b := base()
 	b.Method = "GET"
 	if d := Diff(a, b); len(d) == 0 || !containsPrefix(d, "method:") {
-		t.Errorf("method mutation not detected: %v", d)
+		// Never print d — the snapshots carry an authorization header; report the count.
+		t.Errorf("method mutation not detected (%d diffs, none with the method: prefix; redacted)", len(d))
 	}
 
 	// URL mutation carrying a secret marker: the diff must be EXACTLY the length-only
@@ -154,9 +161,10 @@ func TestDiffDetectsMethodURLBodyDifferences(t *testing.T) {
 	b.URL = "https://host/v1/chat?" + urlSecret
 	wantURL := fmt.Sprintf("url: differ (baml_len=%d nanollm_len=%d)", len(a.URL), len(b.URL))
 	if d := Diff(a, b); len(d) != 1 || d[0] != wantURL {
-		t.Errorf("url diff = %v, want exactly [%q]", d, wantURL)
+		// Never print d — it may carry the raw URL secret; report the expected form only.
+		t.Errorf("url diff is not exactly the length-only diagnostic %q (actual diff redacted)", wantURL)
 	} else if strings.Contains(d[0], urlSecret) { // belt-and-suspenders non-leak check
-		t.Errorf("url diagnostic leaked the raw URL (secret marker present): %v", d)
+		t.Error("url diagnostic leaked the raw URL secret marker (diff redacted)")
 	}
 
 	// Body mutation carrying a secret marker: the diff must be EXACTLY the length-only
@@ -167,9 +175,10 @@ func TestDiffDetectsMethodURLBodyDifferences(t *testing.T) {
 	b.Body = []byte(bodySecret)
 	wantBody := fmt.Sprintf("body: differ (baml_len=%d nanollm_len=%d)", len(a.Body), len(b.Body))
 	if d := Diff(a, b); len(d) != 1 || d[0] != wantBody {
-		t.Errorf("body diff = %v, want exactly [%q]", d, wantBody)
+		// Never print d — it may carry the raw body secret; report the expected form only.
+		t.Errorf("body diff is not exactly the length-only diagnostic %q (actual diff redacted)", wantBody)
 	} else if strings.Contains(d[0], bodySecret) { // belt-and-suspenders non-leak check
-		t.Errorf("body diagnostic leaked the raw body (secret marker present): %v", d)
+		t.Error("body diagnostic leaked the raw body secret marker (diff redacted)")
 	}
 }
 
@@ -184,10 +193,11 @@ func TestDiffAuthorizationMutationRedacted(t *testing.T) {
 	}
 	joined := strings.Join(d, "\n")
 	if strings.Contains(joined, "real-key") || strings.Contains(joined, "other-key") {
-		t.Fatalf("authorization value leaked into diagnostics: %q", joined)
+		// Never print the diff — it contains the leaked authorization value.
+		t.Fatal("authorization value leaked into the diff diagnostics (diff redacted)")
 	}
 	if !strings.Contains(joined, "<redacted>") {
-		t.Fatalf("authorization diff must be redacted: %q", joined)
+		t.Fatal("authorization diff must be redacted but was not (diff not printed)")
 	}
 }
 
@@ -196,14 +206,16 @@ func TestRedactValue(t *testing.T) {
 		t.Errorf("content-type must not be redacted, got %q", got)
 	}
 	if got := RedactValue("Authorization", "Bearer secret"); got != "<redacted>" {
-		t.Errorf("authorization must be redacted, got %q", got)
+		// Never print the (unredacted) value the redactor returned.
+		t.Error("authorization value must be redacted but RedactValue returned it unredacted (value not printed)")
 	}
 }
 
 func TestAuthorization(t *testing.T) {
 	v, ok := Authorization(map[string]string{"authorization": "Bearer k"})
 	if !ok || v != "Bearer k" {
-		t.Fatalf("Authorization = %q,%v", v, ok)
+		// Never print the authorization value; report presence + match.
+		t.Fatalf("Authorization not returned as expected (present=%v, matched=%v)", ok, v == "Bearer k")
 	}
 	if _, ok := Authorization(map[string]string{"content-type": "application/json"}); ok {
 		t.Fatal("Authorization must report absence")

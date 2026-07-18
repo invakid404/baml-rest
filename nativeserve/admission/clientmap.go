@@ -1,6 +1,7 @@
 package admission
 
 import (
+	"context"
 	"fmt"
 	"sort"
 
@@ -50,8 +51,9 @@ func (p VerificationPolicy) String() string {
 // provider string is used as the nanollm prefix verbatim — there is deliberately
 // no `supportedProviders` membership map in admission.
 const (
-	providerBAMLBedrock    = "aws-bedrock"
-	providerNanollmBedrock = "bedrock"
+	providerBAMLBedrock      = "aws-bedrock"
+	providerNanollmBedrock   = "bedrock"
+	providerNanollmAnthropic = "anthropic"
 )
 
 // clientFacts are the secret-free, body-relevant facts the mapper resolves from
@@ -60,10 +62,19 @@ const (
 // engine config and is NEVER retained, returned, or logged. target is the
 // resolved literal model — never the internal nanollm alias. provider is the
 // nanollm provider spelling (aws-bedrock normalized to bedrock).
+//
+// bedrockSource is the bounded credential-source label for a mapped aws-bedrock
+// client (empty for every other provider); it is a metric observation only and
+// carries no credential value. body is the resolved supported body-field subset a
+// TRUSTED provider projects onto the ChatRequest (zero-valued for the strict
+// OpenAI anchor, which never widens beyond the transport trio) — it is body-
+// relevant and secret-free (temperature/max_tokens/etc., never a credential).
 type clientFacts struct {
-	provider string
-	target   string
-	baseURL  string
+	provider      string
+	target        string
+	baseURL       string
+	bedrockSource BedrockCredentialSource
+	body          bodyOptions
 }
 
 // mappedClient is the PURE mapping of the effective registry client onto a
@@ -73,8 +84,8 @@ type clientFacts struct {
 // mapping-declines (mapping_unavailable) BEFORE newMappedClient, so no non-openai
 // socket is admitted. S2 fills in the generic bearer + Bedrock mappers.
 //
-// SENSITIVE — apiKey is a credential. A mappedClient MUST NEVER be logged,
-// serialized, or emitted; surface only clientFacts (secret-free) for
+// SENSITIVE — apiKey and bedrock creds are credentials. A mappedClient MUST NEVER
+// be logged, serialized, or emitted; surface only clientFacts (secret-free) for
 // metrics/tests.
 type mappedClient struct {
 	registryProvider string // BAML spelling, e.g. "aws-bedrock"
@@ -82,8 +93,21 @@ type mappedClient struct {
 	target           string
 	alias            string
 	baseURL          string
-	apiKey           string // SENSITIVE
+	apiKey           string // SENSITIVE (bearer credential; empty for bedrock)
 	verification     VerificationPolicy
+
+	// --- S2 trusted-provider material (nil/zero for the strict OpenAI anchor) ---
+
+	// headers is the custom string header map a trusted provider projects onto
+	// nanollm ModelConfig.Params["headers"] (a NESTED map — nanollm does not
+	// interpolate nested JSON, so header values pass through literally).
+	headers map[string]string
+	// bedrock carries the resolved aws-bedrock params (region + credential
+	// literals + additional model request fields) for a trusted bedrock client.
+	bedrock *bedrockParams
+	// body is the supported common body-field subset (§4.4) a trusted provider
+	// projects onto the typed nanollm ChatRequest / its Extra map.
+	body bodyOptions
 }
 
 // mappingInput is the pure input to mapClientConfig: the effective registry, the
@@ -123,21 +147,22 @@ func normalizeNanollmProvider(p string) string {
 
 // mapClientConfig is the PURE registry->native-intent mapper (§4.1): it resolves
 // the effective one-client dynamic registry into a *mappedClient plus its
-// verification policy, or a stable *Decline — WITHOUT calling nanollm or opening
-// a socket. It enforces, else declines:
+// verification policy, or a stable *Decline. It is pure EXCEPT for the explicit
+// aws-bedrock credential resolver (which may touch shared config / ECS / IMDS,
+// bounded by ctx); it never calls nanollm or opens a provider socket. It
+// enforces, else declines:
 //
 //   - the registry validates and resolves EXACTLY ONE unambiguous non-nil client,
 //     named by primary when a primary is present;
 //   - no client-retry policy on the selected client;
 //   - the selected client's explicit provider AGREES with the resolved leaf
 //     provider (§4.2; an absent client provider uses the resolved one);
-//   - S1: the resolved (nanollm-spelled) provider is exactly openai — every other
-//     provider mapping-declines (mapping_unavailable) here, BEFORE any nanollm
-//     construction, so no non-openai socket is admitted;
-//   - [strict OpenAI] options are exactly the transport trio, each a present,
-//     non-empty string; a SEPARATE internal alias distinct from target + client
-//     name; and the effective send target is neither rewritten nor proxied.
-func mapClientConfig(in mappingInput) (*mappedClient, *Decline, error) {
+//   - it dispatches on the canonical provider class: openai -> the strict
+//     byte-exact anchor (UNCHANGED); aws-bedrock/bedrock -> the Bedrock mapper;
+//     any other nonempty provider -> the common bearer mapper. There is NO
+//     provider membership allowlist — an unknown prefix maps through the common
+//     bearer path and is typed as invalid_provider by nanollm.New/Prepare.
+func mapClientConfig(ctx context.Context, in mappingInput) (*mappedClient, *Decline, error) {
 	cp, dec := selectOneClient(in.registry)
 	if dec != nil {
 		return nil, dec, nil
@@ -172,17 +197,24 @@ func mapClientConfig(in mappingInput) (*mappedClient, *Decline, error) {
 			"selected client provider disagrees with the resolved leaf provider"), nil
 	}
 
-	// S1: strict OpenAI is the ONLY complete production mapping. Every other
-	// provider — including a valid one nanollm supports (anthropic/bedrock/
-	// cerebras/cohere) — mapping-declines here BEFORE nanollm.New, so S1 admits no
-	// non-openai socket. S2 replaces this with the real bearer/Bedrock mappers.
-	if nanollmProvider != nativebody.ProviderOpenAI {
-		return nil, declinef(StageMapping, ReasonMappingUnavailable,
-			"selected provider has no complete native mapping in this slice"), nil
+	// Provider-class dispatch (§4.5). No membership allowlist: the default arm maps
+	// EVERY other nonempty provider through the common bearer path.
+	switch nanollmProvider {
+	case nativebody.ProviderOpenAI:
+		return mapOpenAIStrict(cp, in, registryProvider, nanollmProvider)
+	case providerNanollmBedrock:
+		return mapBedrock(ctx, cp, in, registryProvider, nanollmProvider)
+	default:
+		return mapCommonBearer(cp, in, registryProvider, nanollmProvider)
 	}
+}
 
-	// ---- strict OpenAI mapping (byte-exact, UNCHANGED from the S6 anchor) ----
-
+// mapOpenAIStrict is the strict OpenAI mapping (byte-exact, UNCHANGED from the S6
+// anchor): options are exactly the transport trio, each a present non-empty
+// string; a SEPARATE internal alias distinct from target + client name; and the
+// effective send target (base_url + /chat/completions) is neither rewritten nor
+// proxied. It is the ONE strict_openai policy assignment.
+func mapOpenAIStrict(cp *bamlutils.ClientProperty, in mappingInput, registryProvider, nanollmProvider string) (*mappedClient, *Decline, error) {
 	// Reject any option beyond the transport trio BEFORE reading the trio values,
 	// scanning in a stable sorted order so a client carrying several unproven
 	// options always declines on the same (first) one — no map-iteration
@@ -215,13 +247,8 @@ func mapClientConfig(in mappingInput) (*mappedClient, *Decline, error) {
 		return nil, dec, nil
 	}
 
-	// The required SEPARATE internal alias: non-empty and distinct from BOTH the
-	// resolved target model and the selected client name (an alias == target would
-	// make the later plan alias/target equality checks tautological; alias ==
-	// client name would blur the internal alias with the operator-visible identity).
-	if in.alias == "" || in.alias == target || in.alias == cp.Name {
-		return nil, declinef(StageClientSelection, ReasonInvalidAlias,
-			"internal alias is empty or collides with the resolved target model or the selected client name"), nil
+	if dec := validateAlias(in.alias, target, cp.Name); dec != nil {
+		return nil, dec, nil
 	}
 
 	// Effective send-path rewrite/proxy parity — evaluated now that the effective
@@ -244,30 +271,52 @@ func mapClientConfig(in mappingInput) (*mappedClient, *Decline, error) {
 	}, nil, nil
 }
 
+// validateAlias enforces the required SEPARATE internal alias: non-empty and
+// distinct from BOTH the resolved target model and the selected client name (an
+// alias == target would make the later plan alias/target equality checks
+// tautological; alias == client name would blur the internal alias with the
+// operator-visible identity). Shared by every provider mapper.
+func validateAlias(alias, target, clientName string) *Decline {
+	if alias == "" || alias == target || alias == clientName {
+		return declinef(StageClientSelection, ReasonInvalidAlias,
+			"internal alias is empty or collides with the resolved target model or the selected client name")
+	}
+	return nil
+}
+
 // newMappedClient is the SOLE nanollm.New call (§4.1). It builds the
 // request-scoped engine for an already-mapped client: ONE model under the
 // internal alias, the nanollm-spelled provider + resolved target, a zero retry
-// budget, no fallbacks, and Env nil + UseProcessEnv false so no ambient/process-
-// env value and no default credential chain can mask a difference. The returned
-// client is OPEN; the caller owns Close. The typed New-error classification lives
-// in mapDynamicClient (the sole caller), which keeps this function a pure
-// construction step.
+// budget, no fallbacks, and UseProcessEnv false so nanollm never reads the
+// ambient process environment and no default credential chain inside the engine
+// can mask a difference. The returned client is OPEN; the caller owns Close. The
+// typed New-error classification lives in mapDynamicClient (the sole caller),
+// which keeps this function a pure construction step.
 //
-// In S1 this is only ever reached for the strict OpenAI trio; the values may be
+// The strict OpenAI anchor (PolicyStrictOpenAI) is UNCHANGED from S1: the literal
+// trio (api_key/base_url written directly) with Env nil. A trusted provider
+// (PolicyTrustedProvider) instead routes every resolved secret through a
+// request-local private Config.Env placeholder (§4.3): nanollm's interpolation is
+// single-pass, so a resolved value that itself contains a literal ${...} stays
+// literal, and UseProcessEnv false forbids any ambient fallback. The values may be
 // real in production and are never logged (the proof is structural, with fake
 // values in tests).
 func newMappedClient(m *mappedClient) (*nanollm.Client, error) {
-	return nanollm.New(nanollm.Config{
-		Models: []nanollm.ModelConfig{{
-			Name:       m.alias,
-			Model:      m.nanollmProvider + "/" + m.target,
-			APIKey:     m.apiKey,
-			BaseURL:    m.baseURL,
-			MaxRetries: 0,
-		}},
-		Env:           nil,
-		UseProcessEnv: false,
-	})
+	if m.verification == PolicyStrictOpenAI {
+		// UNCHANGED strict anchor: literal trio, Env nil.
+		return nanollm.New(nanollm.Config{
+			Models: []nanollm.ModelConfig{{
+				Name:       m.alias,
+				Model:      m.nanollmProvider + "/" + m.target,
+				APIKey:     m.apiKey,
+				BaseURL:    m.baseURL,
+				MaxRetries: 0,
+			}},
+			Env:           nil,
+			UseProcessEnv: false,
+		})
+	}
+	return nanollm.New(newTrustedConfig(m))
 }
 
 // mapDynamicClient resolves the effective one-client dynamic registry into a
@@ -280,9 +329,11 @@ func newMappedClient(m *mappedClient) (*nanollm.Client, error) {
 // any other construction failure is a non-decline planner error the caller alerts
 // on rather than counting as ordinary unsupported traffic.
 //
-// The returned client is OPEN; the caller owns Close.
-func mapDynamicClient(reg *bamlutils.ClientRegistry, alias, resolvedProvider string, wouldRewriteOrProxy func(effectiveURL string) bool) (*nanollm.Client, clientFacts, VerificationPolicy, *Decline, error) {
-	m, dec, err := mapClientConfig(mappingInput{
+// The returned client is OPEN; the caller owns Close. ctx bounds the aws-bedrock
+// credential resolution (the one impurity inside mapClientConfig); it is unused
+// for the strict OpenAI and common bearer paths.
+func mapDynamicClient(ctx context.Context, reg *bamlutils.ClientRegistry, alias, resolvedProvider string, wouldRewriteOrProxy func(effectiveURL string) bool) (*nanollm.Client, clientFacts, VerificationPolicy, *Decline, error) {
+	m, dec, err := mapClientConfig(ctx, mappingInput{
 		registry:            reg,
 		alias:               alias,
 		resolvedProvider:    resolvedProvider,
@@ -309,7 +360,11 @@ func mapDynamicClient(reg *bamlutils.ClientRegistry, alias, resolvedProvider str
 		return nil, clientFacts{}, 0, nil, fmt.Errorf("nativeserve/admission: nanollm.New: %w", cerr)
 	}
 
-	return client, clientFacts{provider: m.nanollmProvider, target: m.target, baseURL: m.baseURL}, m.verification, nil, nil
+	facts := clientFacts{provider: m.nanollmProvider, target: m.target, baseURL: m.baseURL, body: m.body}
+	if m.bedrock != nil {
+		facts.bedrockSource = m.bedrock.source
+	}
+	return client, facts, m.verification, nil, nil
 }
 
 // NewResponseClient rebuilds the request-scoped nanollm engine for the SAME
@@ -325,7 +380,9 @@ func mapDynamicClient(reg *bamlutils.ClientRegistry, alias, resolvedProvider str
 // error. The returned client is OPEN; the caller owns Close. It never opens a
 // socket.
 func NewResponseClient(reg *bamlutils.ClientRegistry, alias string) (*nanollm.Client, string, error) {
-	client, facts, _, dec, err := mapDynamicClient(reg, alias, nativebody.ProviderOpenAI, nil)
+	// OpenAI-only re-map (no bedrock resolution), so a background context suffices
+	// for the ctx the bedrock resolver would otherwise bound.
+	client, facts, _, dec, err := mapDynamicClient(context.Background(), reg, alias, nativebody.ProviderOpenAI, nil)
 	if err != nil {
 		return nil, "", err
 	}

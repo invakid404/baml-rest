@@ -39,6 +39,18 @@ const (
 //     nanollm.New as the generic "config" code there, which classifies as
 //     enginePlannerError); keying on the code now makes the classifier
 //     forward-ready without a string match or a provider-membership table.
+//
+// KNOWN LIMITATION — deferred to the multi-provider epic (#546) / ledger (#583):
+// because v0.4.3 has no typed invalid_provider code, a truly-UNKNOWN provider
+// prefix classifies as enginePlannerError (OutcomePlannerError) rather than an
+// ordinary unsupported decline. This is metric NOISE, NOT a correctness gap — the
+// request STILL declines to BAML pre-socket with zero sockets; only the metric
+// reads planner_error (which alerts) instead of a clean invalid_provider decline.
+// When the upstream P0 lands the typed code, the classifier flips it to
+// engineUnsupported with no baml-rest logic change, and the gated
+// TestEngineBoundary_UnknownProviderKnownLimitation is updated. (Cohere is a
+// separate deferral: v0.4.3 plans /v2/embed for a chat request, caught fail-closed
+// PRE-socket by the provider-neutral ReasonEmbeddingPlan gate in validateGenericPlan.)
 const (
 	codeUnsupportedRequest = "unsupported_request"
 	codeInvalidProvider    = "invalid_provider"

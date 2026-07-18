@@ -10,6 +10,7 @@ package admission
 // nanollm plan.
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -198,7 +199,8 @@ func TestValidateExactTransport(t *testing.T) {
 	dv := validateExactTransport(exec, ctrlVal)
 	wantDecline(t, dv, StageExactTransport, ReasonInvalidHeaderValue)
 	if strings.Contains(dv.Detail, "sk-") || strings.Contains(dv.Detail, "\x00") {
-		t.Fatalf("invalid-value decline leaked the header value: %q", dv.Detail)
+		// Never print dv.Detail — it contains the leaked header value.
+		t.Fatal("invalid-value decline detail leaked the header value (detail redacted)")
 	}
 
 	badName := &llmhttp.ExactAttemptRequest{
@@ -219,7 +221,7 @@ func TestValidateExactTransport(t *testing.T) {
 // client engine from the fence trio and safely Closes it, resolving the target
 // and base URL while never retaining the api key in the returned facts.
 func TestMapDynamicClient(t *testing.T) {
-	client, facts, policy, dec, err := mapDynamicClient(validRegistry(), fenceAlias, "openai", nil)
+	client, facts, policy, dec, err := mapDynamicClient(context.Background(), validRegistry(), fenceAlias, "openai", nil)
 	if err != nil {
 		t.Fatalf("mapDynamicClient planner error: %v", err)
 	}
@@ -246,6 +248,6 @@ func TestMapDynamicClient(t *testing.T) {
 		t.Errorf("facts.target = %q, want %q", facts.target, fenceModel)
 	}
 	if facts.baseURL != fenceBaseURL {
-		t.Errorf("facts.baseURL = %q, want %q", facts.baseURL, fenceBaseURL)
+		t.Errorf("facts.baseURL = %q, want %q", llmhttp.RedactedURL(facts.baseURL), llmhttp.RedactedURL(fenceBaseURL))
 	}
 }

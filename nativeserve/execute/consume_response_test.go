@@ -57,10 +57,10 @@ func TestConsumeResponseCleanStructured(t *testing.T) {
 	}
 	// raw carries the text-only assistant channel — the /call-with-raw Raw().
 	if res.Raw != `{"name":"Ada","age":36}` {
-		t.Errorf("raw = %q, want the assistant text", res.Raw)
+		t.Errorf("raw = %q, want the assistant text", strDigest(res.Raw))
 	}
 	if res.AssistantText != res.Raw {
-		t.Errorf("assistant text %q and raw %q must match on the text-only channel", res.AssistantText, res.Raw)
+		t.Errorf("assistant text %q and raw %q must match on the text-only channel", strDigest(res.AssistantText), strDigest(res.Raw))
 	}
 }
 
@@ -86,7 +86,7 @@ func TestConsumeResponseNon2xxProviderError(t *testing.T) {
 		t.Errorf("SAP invoked on a non-2xx (SAPInvoked=%v calls=%d); it must be skipped", res.SAPInvoked, spy.calls)
 	}
 	if res.Raw != "" || res.Reasoning != "" {
-		t.Errorf("raw/reasoning surfaced on a provider error (raw=%q reasoning=%q), want empty", res.Raw, res.Reasoning)
+		t.Errorf("raw/reasoning surfaced on a provider error (raw=%q reasoning=%q), want empty", strDigest(res.Raw), strDigest(res.Reasoning))
 	}
 }
 
@@ -182,10 +182,10 @@ func TestConsumeResponseReasoningChannel(t *testing.T) {
 			t.Fatalf("ConsumeResponse: %v", err)
 		}
 		if res.Reasoning != "weighing the options" {
-			t.Errorf("reasoning = %q, want the reasoning_content text", res.Reasoning)
+			t.Errorf("reasoning = %q, want the reasoning_content text", strDigest(res.Reasoning))
 		}
 		if res.Raw != `{"name":"Ada","age":36}` {
-			t.Errorf("raw = %q, want the text-only assistant content (never reasoning)", res.Raw)
+			t.Errorf("raw = %q, want the text-only assistant content (never reasoning)", strDigest(res.Raw))
 		}
 	})
 
@@ -202,10 +202,10 @@ func TestConsumeResponseReasoningChannel(t *testing.T) {
 			t.Fatalf("ConsumeResponse: %v", err)
 		}
 		if res.Reasoning != "" {
-			t.Errorf("reasoning = %q, want empty when reasoning is off", res.Reasoning)
+			t.Errorf("reasoning = %q, want empty when reasoning is off", strDigest(res.Reasoning))
 		}
 		if res.Raw != `{"name":"Ada","age":36}` {
-			t.Errorf("raw = %q, want the text-only assistant content", res.Raw)
+			t.Errorf("raw = %q, want the text-only assistant content", strDigest(res.Raw))
 		}
 	})
 }

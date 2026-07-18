@@ -35,6 +35,9 @@ import (
 	dto "github.com/prometheus/client_model/go"
 )
 
+// bodyDigest lives in digest_test.go (default build) so both default and gated
+// admission tests share it.
+
 // counterVal reads one labeled counter value from a gathered registry (no
 // testutil dependency). Returns 0 when the series is absent.
 func counterVal(t *testing.T, reg *prometheus.Registry, name string, labels map[string]string) float64 {
@@ -234,14 +237,15 @@ func TestAdmitPositive(t *testing.T) {
 		t.Errorf("exact method = %q, want POST", admitted.ExactRequest.Method)
 	}
 	if admitted.ExactRequest.URL != wantURL {
-		t.Errorf("exact url = %q, want %q", admitted.ExactRequest.URL, wantURL)
+		// URLs can carry credentials in query params — report only the redacted view.
+		t.Errorf("exact url = %q, want %q", llmhttp.RedactedURL(admitted.ExactRequest.URL), llmhttp.RedactedURL(wantURL))
 	}
 	if !admitted.ExactRequest.BodyPresent || len(admitted.ExactRequest.Body) == 0 {
 		t.Error("exact request body must be present and non-empty")
 	}
 	// The plan targets the non-routable fence base; it is never dialed.
 	if !strings.Contains(admitted.Prepared.URL, ".invalid") {
-		t.Errorf("plan URL %q lost the non-routable fence base", admitted.Prepared.URL)
+		t.Errorf("plan URL %q lost the non-routable fence base", llmhttp.RedactedURL(admitted.Prepared.URL))
 	}
 	// Body byte-equality with the plan is what validatePreparedBody already
 	// enforced; re-assert the plan body is non-empty JSON carrying the target.
@@ -282,7 +286,8 @@ func TestAdmitBuildErrorIsPlannerError(t *testing.T) {
 
 	admitted, err := a.Admit(context.Background(), validInput())
 	if admitted != nil {
-		t.Fatalf("expected no admitted plan on a Build failure, got %+v", admitted)
+		// A non-nil Admitted embeds sensitive prepared/exact-request headers + body — never print it.
+		t.Fatal("expected no admitted plan on a Build failure (a non-nil Admitted embeds secrets; not printed)")
 	}
 	if err == nil {
 		t.Fatal("expected a non-nil planner error")
@@ -439,13 +444,16 @@ func TestAdmitDeclineMatrix(t *testing.T) {
 		// "openai", so a non-openai ResolvedProvider disagrees -> provider_mismatch
 		// (the metric provider label is the resolved provider, now bounded per §9).
 		{"resolved_provider_mismatch", func(in *Input) { in.ResolvedProvider = "anthropic" }, StageClientSelection, ReasonProviderMismatch, "anthropic"},
-		// Agreement on a non-openai provider reaches the mapper's S1 boundary: strict
-		// OpenAI is the only complete production mapping, so every other provider
-		// mapping-declines (mapping_unavailable) BEFORE nanollm.New — no socket.
-		{"provider_mapping_unavailable", func(in *Input) {
+		// S2: a non-openai provider is now ACTIVATED (common bearer / Bedrock), so a
+		// well-formed cerebras registry admits rather than mapping-declining. This row
+		// instead proves a TRUSTED-provider OPTION decline stays pre-socket: a cerebras
+		// client carrying an unproven control option (tools) declines with its specific
+		// reason, and the bounded metric provider label is the resolved provider.
+		{"trusted_tools_option", func(in *Input) {
 			in.ResolvedProvider = "cerebras"
 			in.Registry.Clients[0].Provider = "cerebras"
-		}, StageMapping, ReasonMappingUnavailable, "cerebras"},
+			in.Registry.Clients[0].Options["tools"] = []any{}
+		}, StageClientOption, ReasonToolsOption, "cerebras"},
 		// --- layer 3: effective dynamic client ---
 		{"nil_registry", func(in *Input) { in.Registry = nil }, StageClientSelection, ReasonNoRegistry, "openai"},
 		{"registry_invalid_duplicate", func(in *Input) {

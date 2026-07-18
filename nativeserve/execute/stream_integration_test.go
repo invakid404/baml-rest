@@ -190,7 +190,7 @@ func TestRunStreamOneSocketHappyPath(t *testing.T) {
 			parseable.WriteString(d.ParseableDelta)
 			raw.WriteString(d.RawDelta)
 			if d.ReasoningDelta != "" {
-				t.Errorf("unexpected reasoning delta with IncludeReasoning=false: %q", d.ReasoningDelta)
+				t.Errorf("unexpected reasoning delta with IncludeReasoning=false: %q", strDigest(d.ReasoningDelta))
 			}
 			return nil
 		},
@@ -209,7 +209,7 @@ func TestRunStreamOneSocketHappyPath(t *testing.T) {
 		t.Errorf("liveness callbacks = headers:%d firstBody:%d, want 1/1", headers.Load(), firstBodies.Load())
 	}
 	if parseable.String() != "Hello" || raw.String() != "Hello" {
-		t.Errorf("reassembled parseable=%q raw=%q, want Hello/Hello", parseable.String(), raw.String())
+		t.Errorf("reassembled parseable=%q raw=%q, want Hello/Hello", strDigest(parseable.String()), strDigest(raw.String()))
 	}
 	if res.PartialCount != 2 {
 		t.Errorf("PartialCount = %d, want 2 (role-only + usage-only emit nothing)", res.PartialCount)
@@ -220,7 +220,8 @@ func TestRunStreamOneSocketHappyPath(t *testing.T) {
 
 	// The bytes the real server received ARE the admitted plan (exact request).
 	if got := s.capturedBody(); string(got) != string(expected.Body) {
-		t.Errorf("server received body != admitted plan body\n got: %s\nwant: %s", got, expected.Body)
+		// Body is sensitive — report digests, not the wire bytes.
+		t.Errorf("server received body != admitted plan body (got %s, want %s)", bodyDigest(got), bodyDigest(expected.Body))
 	}
 }
 
@@ -259,14 +260,14 @@ func TestRunStreamReasoningOptIn(t *testing.T) {
 				t.Fatalf("RunStream: %v", err)
 			}
 			if parseable.String() != "Hel" {
-				t.Errorf("parseable = %q, want Hel (reasoning never enters parseable)", parseable.String())
+				t.Errorf("parseable = %q, want Hel (reasoning never enters parseable)", strDigest(parseable.String()))
 			}
 			wantReasoning := ""
 			if include {
 				wantReasoning = "think"
 			}
 			if reasoning.String() != wantReasoning {
-				t.Errorf("reasoning = %q, want %q", reasoning.String(), wantReasoning)
+				t.Errorf("reasoning = %q, want %q", strDigest(reasoning.String()), wantReasoning)
 			}
 			if s.conns.Load() != 1 {
 				t.Errorf("connections = %d, want 1", s.conns.Load())
@@ -320,16 +321,21 @@ func TestRunStreamProviderStatusErrorD11(t *testing.T) {
 		t.Fatalf("error does not preserve *nanollm.ProviderStatusError (D11): %v", err)
 	}
 	if pse.Status != 503 || !strings.Contains(string(pse.Body), "7b-overloaded") {
-		t.Errorf("ProviderStatusError = {%d, %s}, want 503 + native body", pse.Status, pse.Body)
+		t.Errorf("ProviderStatusError = {%d, %s}, want 503 + native body", pse.Status, bodyDigest(pse.Body))
 	}
 	// The native body must NOT be the uniform envelope.
 	if strings.Contains(string(pse.Body), "server_error") || strings.Contains(string(pse.Body), `"details"`) {
-		t.Errorf("D11 body looks like the uniform envelope, must be native: %s", pse.Body)
+		t.Errorf("D11 body looks like the uniform envelope, must be native: %s", bodyDigest(pse.Body))
 	}
 	// Mapping to the public HTTPError preserves the real status + bounded body.
 	he, ok := ProviderStatusHTTPError(err)
 	if !ok || he.StatusCode != 503 || !strings.Contains(he.Body, "7b-overloaded") {
-		t.Errorf("ProviderStatusHTTPError = (%v, %v), want 503 + native body", he, ok)
+		// *llmhttp.HTTPError.Error() prints .Body — never format `he`; report bounded facts.
+		st, bd := 0, "<nil>"
+		if ok {
+			st, bd = he.StatusCode, bodyDigest([]byte(he.Body))
+		}
+		t.Errorf("ProviderStatusHTTPError mismatch (ok=%v status=%d body=%s), want a 503 HTTPError carrying the native body", ok, st, bd)
 	}
 }
 

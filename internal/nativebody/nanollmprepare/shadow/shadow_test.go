@@ -473,27 +473,32 @@ func TestComparator_AdmissionDeclineSkipsComparison(t *testing.T) {
 	ct := &countingTransport{}
 	c := NewComparator(m, llmhttp.NewExactExecutor(ct))
 
-	// A non-openai provider (resolved + client agree on anthropic) mapping-declines
-	// before any plan is built (de-BAML mprov S1: strict OpenAI is the only complete
-	// mapping); BuildBAMLRequest must never run and no plan_compare is recorded.
+	// A trusted provider (resolved + client agree on anthropic) whose config is
+	// incomplete mapping-declines before any plan is built. Under de-BAML mprov S2
+	// anthropic now MAPS with a complete config, so the decline is triggered by an
+	// empty api_key — a deterministic StageCredentialSource/ReasonAPIKeyAbsent
+	// decline that does NOT consult ambient env (unlike an absent option). The
+	// invariant under test is unchanged: any admission decline must skip
+	// BuildBAMLRequest and record no plan_compare.
 	req := shadowRequest(func(context.Context) (*llmhttp.Request, error) {
 		t.Fatal("BuildBAMLRequest must not run on an admission decline")
 		return nil, nil
 	})
 	req.Provider = "anthropic"
 	req.Registry.Clients[0].Provider = "anthropic"
+	req.Registry.Clients[0].Options["api_key"] = ""
 
 	res := c.Compare(context.Background(), req)
-	if res.Stage != string(admission.StageMapping) || res.Reason != string(admission.ReasonMappingUnavailable) {
-		t.Fatalf("expected a mapping_unavailable decline, got stage=%q reason=%q", res.Stage, res.Reason)
+	if res.Stage != string(admission.StageCredentialSource) || res.Reason != string(admission.ReasonAPIKeyAbsent) {
+		t.Fatalf("expected an api_key_absent credential decline, got stage=%q reason=%q", res.Stage, res.Reason)
 	}
 	// No plan_compare series exist at all.
 	if fams, _ := reg.Gather(); hasFamily(fams, "baml_rest_debaml_plan_compare_total") {
 		t.Error("admission decline must record no plan_compare series")
 	}
 	// The decline was counted.
-	if got := counterVal(t, reg, "baml_rest_debaml_declines_total", map[string]string{"stage": "mapping", "reason": "mapping_unavailable"}); got != 1 {
-		t.Errorf("declines{mapping,mapping_unavailable} = %v, want 1", got)
+	if got := counterVal(t, reg, "baml_rest_debaml_declines_total", map[string]string{"stage": "credential_source", "reason": "api_key_absent"}); got != 1 {
+		t.Errorf("declines{credential_source,api_key_absent} = %v, want 1", got)
 	}
 	assertNoSocket(t, ct)
 }

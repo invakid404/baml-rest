@@ -296,14 +296,14 @@ type anthropicRequestBody struct {
 func assertOpenAIResult(t *testing.T, resp *nanollm.Response, wantText, wantFinish string) {
 	t.Helper()
 	if resp.Status != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (body: %s)", resp.Status, resp.Body)
+		t.Fatalf("status = %d, want 200 (body: %s)", resp.Status, bodyDigest(resp.Body))
 	}
 	if !resp.BodyIsJSON {
 		t.Errorf("BodyIsJSON = false, want true")
 	}
 	var parsed openAIChatResponse
 	if err := json.Unmarshal(resp.Body, &parsed); err != nil {
-		t.Fatalf("response body is not valid JSON: %v\n%s", err, resp.Body)
+		t.Fatalf("response body is not valid JSON: %v\n%s", err, bodyDigest(resp.Body))
 	}
 	if len(parsed.Choices) != 1 {
 		t.Fatalf("choices = %d, want exactly 1", len(parsed.Choices))
@@ -313,7 +313,7 @@ func assertOpenAIResult(t *testing.T, resp *nanollm.Response, wantText, wantFini
 		t.Errorf("choice role = %q, want assistant", ch.Message.Role)
 	}
 	if ch.Message.Content != wantText {
-		t.Errorf("assistant content = %q, want %q", ch.Message.Content, wantText)
+		t.Errorf("assistant content = %q, want %q", strDigest(ch.Message.Content), wantText)
 	}
 	if ch.FinishReason != wantFinish {
 		t.Errorf("finish_reason = %q, want %q", ch.FinishReason, wantFinish)
@@ -378,7 +378,8 @@ func TestSendParityOpenAI(t *testing.T) {
 	}
 	var reqBody openAIRequestBody
 	if err := json.Unmarshal(cap.Body, &reqBody); err != nil {
-		t.Fatalf("captured OpenAI body is not JSON: %v\n%s", err, cap.Body)
+		// Body is sensitive — report the parse error + a digest, never the bytes.
+		t.Fatalf("captured OpenAI body is not JSON: %v (%s)", err, bodyDigest(cap.Body))
 	}
 	if reqBody.Model != openaiTarget {
 		t.Errorf("captured model = %q, want %q (nanollm rewrite)", reqBody.Model, openaiTarget)
@@ -394,7 +395,8 @@ func TestSendParityOpenAI(t *testing.T) {
 	// Recorded auth is the fake Bearer key.
 	rec := m.recordedFor("openai", "/v1/chat/completions")
 	if v, ok := headerValue(rec.Headers, "Authorization"); !ok || v != "Bearer "+fakeAPIKey {
-		t.Errorf("Authorization = %q (present=%v), want %q", v, ok, "Bearer "+fakeAPIKey)
+		// Never print the authorization value; report presence + match.
+		t.Errorf("Authorization header missing or mismatched (present=%v, matched=%v)", ok, v == "Bearer "+fakeAPIKey)
 	}
 }
 
@@ -447,7 +449,7 @@ func TestSendParityAnthropic(t *testing.T) {
 	}
 	var areq anthropicRequestBody
 	if err := json.Unmarshal(cap.Body, &areq); err != nil {
-		t.Fatalf("captured Anthropic body is not JSON: %v\n%s", err, cap.Body)
+		t.Fatalf("captured Anthropic body is not JSON: %v (%s)", err, bodyDigest(cap.Body))
 	}
 	if areq.Model != anthropicTarget {
 		t.Errorf("captured model = %q, want %q", areq.Model, anthropicTarget)
@@ -456,7 +458,7 @@ func TestSendParityAnthropic(t *testing.T) {
 		t.Errorf("captured max_tokens = %d, want >= 1 (Anthropic requires it)", areq.MaxTokens)
 	}
 	if len(areq.System) == 0 || string(areq.System) == "null" {
-		t.Errorf("captured top-level system missing; nanollm must extract it, got %q", string(areq.System))
+		t.Errorf("captured top-level system missing; nanollm must extract it, got %q", strDigest(string(areq.System)))
 	}
 	roles := make([]string, len(areq.Messages))
 	for i, msg := range areq.Messages {
@@ -469,7 +471,8 @@ func TestSendParityAnthropic(t *testing.T) {
 	// them explicitly against the fake key).
 	rec := m.recordedFor("anthropic", "/v1/messages")
 	if v, ok := headerValue(rec.Headers, "x-api-key"); !ok || v != fakeAPIKey {
-		t.Errorf("x-api-key = %q (present=%v), want %q", v, ok, fakeAPIKey)
+		// Never print the api-key value; report presence + match.
+		t.Errorf("x-api-key header missing or mismatched (present=%v, matched=%v)", ok, v == fakeAPIKey)
 	}
 	if v, ok := headerValue(rec.Headers, "anthropic-version"); !ok || v == "" {
 		t.Errorf("anthropic-version = %q (present=%v), want non-empty", v, ok)
@@ -539,7 +542,8 @@ func TestStreamAnthropic(t *testing.T) {
 		t.Errorf("non-empty deltas = %d, want >= 2 (incremental SSE)", nonEmptyDeltas)
 	}
 	if got := reassembled.String(); got != wantText {
-		t.Errorf("reassembled stream = %q, want %q", got, wantText)
+		// Reassembled stream text is response content — report digests, not the text.
+		t.Errorf("reassembled stream != want (got %s, want %s)", strDigest(got), strDigest(wantText))
 	}
 	if len(finishes) != 1 || finishes[0] != "stop" {
 		t.Errorf("finish reasons = %v, want exactly [stop]", finishes)
@@ -567,7 +571,7 @@ func TestStreamAnthropic(t *testing.T) {
 	}
 	var areq anthropicRequestBody
 	if err := json.Unmarshal(cap.Body, &areq); err != nil {
-		t.Fatalf("captured Anthropic stream body is not JSON: %v\n%s", err, cap.Body)
+		t.Fatalf("captured Anthropic stream body is not JSON: %v (%s)", err, bodyDigest(cap.Body))
 	}
 	if !areq.Stream {
 		t.Errorf("captured body stream = false, want true")
@@ -777,7 +781,7 @@ func TestUniformErrorEnvelopeDo(t *testing.T) {
 		t.Fatalf("Do(uniform-529) returned error, want a normalized Response: %v", err)
 	}
 	if resp.Status != 529 {
-		t.Fatalf("Response.Status = %d, want 529 (body: %s)", resp.Status, resp.Body)
+		t.Fatalf("Response.Status = %d, want 529 (body: %s)", resp.Status, bodyDigest(resp.Body))
 	}
 	if !resp.BodyIsJSON {
 		t.Errorf("BodyIsJSON = false, want true")
@@ -786,7 +790,7 @@ func TestUniformErrorEnvelopeDo(t *testing.T) {
 	// Structural envelope fields.
 	var env uniformErrorEnvelope
 	if err := json.Unmarshal(resp.Body, &env); err != nil {
-		t.Fatalf("envelope body is not JSON: %v\n%s", err, resp.Body)
+		t.Fatalf("envelope body is not JSON: %v\n%s", err, bodyDigest(resp.Body))
 	}
 	if env.Error.Type != "server_error" {
 		t.Errorf("error.type = %q, want %q (classified OpenAI-safe type)", env.Error.Type, "server_error")
@@ -819,7 +823,7 @@ func TestUniformErrorEnvelopeDo(t *testing.T) {
 		t.Errorf("error.details.truncated = true, want false (the raw upstream fits under the cap)")
 	}
 	if !strings.Contains(rawUpstream, marker) || !strings.Contains(rawUpstream, "req_mock_") {
-		t.Errorf("error.details.raw = %q, want it to carry the marker and the go-mocklm request_id", rawUpstream)
+		t.Errorf("error.details.raw = %q, want it to carry the marker and the go-mocklm request_id", strDigest(rawUpstream))
 	}
 
 	// The raw Anthropic wrapper (its top-level type:"error" and request_id)
@@ -909,7 +913,7 @@ func TestStreamStartProviderStatusError(t *testing.T) {
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(statusErr.Body, &native); err != nil {
-		t.Fatalf("ProviderStatusError.Body is not JSON: %v\n%s", err, statusErr.Body)
+		t.Fatalf("ProviderStatusError.Body is not JSON: %v\n%s", err, bodyDigest(statusErr.Body))
 	}
 	if native.Type != "error" {
 		t.Errorf("native top-level type = %q, want \"error\" (raw Anthropic shape, NOT the uniform envelope)", native.Type)
@@ -923,10 +927,10 @@ func TestStreamStartProviderStatusError(t *testing.T) {
 	// Confirm this is the RAW body and NOT the uniform envelope: the classified
 	// "server_error" type and the details block are absent from a native body.
 	if bytes.Contains(statusErr.Body, []byte("server_error")) {
-		t.Errorf("D11 body contains \"server_error\"; it must carry the NATIVE error, not the uniform envelope\n%s", statusErr.Body)
+		t.Errorf("D11 body contains \"server_error\"; it must carry the NATIVE error, not the uniform envelope\n%s", bodyDigest(statusErr.Body))
 	}
 	if bytes.Contains(statusErr.Body, []byte(`"details"`)) {
-		t.Errorf("D11 body contains a details block; it must carry the NATIVE error, not the uniform envelope\n%s", statusErr.Body)
+		t.Errorf("D11 body contains a details block; it must carry the NATIVE error, not the uniform envelope\n%s", bodyDigest(statusErr.Body))
 	}
 
 	// The scenario fired exactly once.

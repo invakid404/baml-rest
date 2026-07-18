@@ -103,6 +103,7 @@ type Metrics struct {
 	responseCompare *prometheus.CounterVec
 	nativeSockets   *prometheus.CounterVec
 	fallback        *prometheus.CounterVec
+	bedrockCredSrc  *prometheus.CounterVec
 }
 
 // NativeSocketFlag is the bounded flag label for the native_sockets metric. It
@@ -142,6 +143,26 @@ type FallbackKind string
 
 const (
 	FallbackParseOnly FallbackKind = "parse_only"
+)
+
+// BedrockCredentialSource is the bounded source label for the S2 aws-bedrock
+// credential-source metric (§9). It records WHICH documented credential source a
+// successfully-mapped Bedrock admission resolved through — never a client name,
+// profile name, region, or any credential value. The full AWS chain (owner
+// decision A) is folded into three observable classes: `explicit` (a declared
+// static access/secret pair), `profile` (a declared shared-config profile), and
+// `default_chain` (nothing declared — the AWS default chain: env / shared config
+// / ECS-IMDS / SSO). `env` and `unknown` are declared for a stable enum but the
+// mapper folds ambient-env resolution into default_chain (env is part of the
+// default chain under decision A). The label OBSERVES; it never decides admission.
+type BedrockCredentialSource string
+
+const (
+	BedrockCredentialExplicit     BedrockCredentialSource = "explicit"
+	BedrockCredentialEnv          BedrockCredentialSource = "env"
+	BedrockCredentialProfile      BedrockCredentialSource = "profile"
+	BedrockCredentialDefaultChain BedrockCredentialSource = "default_chain"
+	BedrockCredentialUnknown      BedrockCredentialSource = "unknown"
 )
 
 // PlanCompareResult is the bounded result label for the plan_compare metric: a
@@ -234,14 +255,19 @@ func NewMetrics(reg prometheus.Registerer) (*Metrics, error) {
 			Name: "baml_rest_debaml_fallback_total",
 			Help: "de-BAML native-served requests that fell back to a BAML parse of the same response bytes, by bounded kind.",
 		}, []string{"kind"}),
+		bedrockCredSrc: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "baml_rest_debaml_bedrock_credential_source_total",
+			Help: "de-BAML aws-bedrock admissions by the documented credential source they resolved through (explicit/env/profile/default_chain/unknown). NO client/profile/region names, NO credential values.",
+		}, []string{"source"}),
 	}
 	// Register every collector in a fixed order, rolling back the ones already
 	// registered if a later Register fails, so a partial-registration error never
 	// leaves stray de-BAML collectors on a reused registry. The success path is
-	// unchanged (all six register in the same order as before).
-	registered := make([]prometheus.Collector, 0, 6)
+	// unchanged (all collectors register in the same order as before, with the S2
+	// bedrock credential-source family appended last).
+	registered := make([]prometheus.Collector, 0, 7)
 	for _, c := range []prometheus.Collector{
-		m.declines, m.attempts, m.planCompare, m.responseCompare, m.nativeSockets, m.fallback,
+		m.declines, m.attempts, m.planCompare, m.responseCompare, m.nativeSockets, m.fallback, m.bedrockCredSrc,
 	} {
 		if err := reg.Register(c); err != nil {
 			for _, done := range registered {
@@ -339,4 +365,15 @@ func (m *Metrics) RecordFallback(kind FallbackKind) {
 		return
 	}
 	m.fallback.WithLabelValues(string(kind)).Inc()
+}
+
+// recordBedrockCredentialSource increments the bedrock credential-source family
+// once per successfully-mapped aws-bedrock admission (creds resolved, engine
+// constructed). It records ONLY the bounded source enum — never a client/profile/
+// region name or a credential value. A nil *Metrics is a valid no-op receiver.
+func (m *Metrics) recordBedrockCredentialSource(source BedrockCredentialSource) {
+	if m == nil {
+		return
+	}
+	m.bedrockCredSrc.WithLabelValues(string(source)).Inc()
 }

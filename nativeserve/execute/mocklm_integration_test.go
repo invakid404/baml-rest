@@ -147,14 +147,22 @@ func (m *mockServer) exited() bool {
 	}
 }
 
-// dumpLogs surfaces the child's combined stdout+stderr exactly once, via t.Logf.
+// dumpLogs surfaces a bounded FACT about the child's combined stdout+stderr
+// exactly once — NEVER the raw text. go-mocklm forces MOCKLM_VALIDATE_RESPONSES=1,
+// and its response validator logs `body: <raw>` on a validation failure, so the
+// captured child log can contain a provider response body verbatim. Printing only
+// a line count + a SHA-256 digest keeps the failure log secret-clean while still
+// signalling that output exists (set MOCKLM_BINARY and run the mock manually to
+// inspect the raw logs when debugging).
 func (m *mockServer) dumpLogs() {
 	m.logDumpOnce.Do(func() {
-		out := strings.TrimRight(m.logs.String(), "\n")
-		if out == "" {
-			out = "(no child output captured)"
+		s := m.logs.String()
+		trimmed := strings.TrimRight(s, "\n")
+		lines := 0
+		if trimmed != "" {
+			lines = strings.Count(trimmed, "\n") + 1
 		}
-		m.t.Logf("go-mocklm child output:\n%s", out)
+		m.t.Logf("go-mocklm child output suppressed for secret-hygiene (may contain a response body): %d line(s), %s", lines, bodyDigest([]byte(s)))
 	})
 }
 
@@ -183,7 +191,7 @@ func (m *mockServer) waitHealthy() {
 		}
 		if time.Now().After(deadline) {
 			m.dumpLogs()
-			m.t.Fatalf("go-mocklm not healthy at %s within %s (last: %v)", m.baseURL, startupDeadline, lastErr)
+			m.t.Fatalf("go-mocklm not healthy on loopback port %d within %s (last: %v)", m.port, startupDeadline, lastErr)
 		}
 		time.Sleep(healthPollInterval)
 	}
@@ -287,7 +295,7 @@ func (m *mockServer) registerScenario(spec scenarioSpec) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		m.t.Fatalf("registering scenario %q: status %d: %s", spec.ID, resp.StatusCode, b)
+		m.t.Fatalf("registering scenario %q: status %d: %s", spec.ID, resp.StatusCode, bodyDigest(b))
 	}
 	io.Copy(io.Discard, resp.Body)
 	m.t.Cleanup(func() {
@@ -305,7 +313,7 @@ func (m *mockServer) lastRequest(id string) capturedRequest {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		m.t.Fatalf("last-request for scenario %q: status %d: %s", id, resp.StatusCode, b)
+		m.t.Fatalf("last-request for scenario %q: status %d: %s", id, resp.StatusCode, bodyDigest(b))
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -336,7 +344,7 @@ func (m *mockServer) scenarioCounter(id, kind string) int {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		m.t.Fatalf("%s for scenario %q: status %d: %s", kind, id, resp.StatusCode, b)
+		m.t.Fatalf("%s for scenario %q: status %d: %s", kind, id, resp.StatusCode, bodyDigest(b))
 	}
 	var out struct {
 		Count int `json:"count"`
@@ -354,7 +362,7 @@ func (m *mockServer) recordedRequests() []recordedRequest {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		m.t.Fatalf("admin/requests: status %d: %s", resp.StatusCode, b)
+		m.t.Fatalf("admin/requests: status %d: %s", resp.StatusCode, bodyDigest(b))
 	}
 	var out struct {
 		Requests []recordedRequest `json:"requests"`

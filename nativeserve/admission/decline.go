@@ -120,9 +120,13 @@ const (
 	// provider
 	ReasonProviderNotOpenAI Reason = "provider_not_openai"
 	// mapping — the pure registry->nanollm mapper's stable declines (layer 3).
-	// mapping_unavailable is S1's "no complete non-openai mapping yet" decline
-	// (before nanollm.New); provider_mismatch is the §4.2 guard when the selected
-	// client's explicit provider disagrees with the resolved leaf provider.
+	// provider_mismatch is the §4.2 guard when the selected client's explicit
+	// provider disagrees with the resolved leaf provider. mapping_unavailable was
+	// S1's "no complete non-openai mapping yet" decline; S2 replaced it with the
+	// common bearer + Bedrock mappers, so it is no longer emitted — it is retained
+	// as a reserved bounded-enum value (a future provider whose config truly cannot
+	// be expressed confidently may decline here again rather than inventing
+	// credentials/options).
 	ReasonMappingUnavailable Reason = "mapping_unavailable"
 	ReasonProviderMismatch   Reason = "provider_mismatch"
 	// client_selection
@@ -140,9 +144,40 @@ const (
 	ReasonResponseFormatOption Reason = "response_format_option"
 	ReasonRequestBodyOption    Reason = "request_body_option"
 	ReasonUnprovenClientOption Reason = "unproven_client_option"
+	// client_option — S2 trusted-provider option projection. A supported common
+	// body option carrying a malformed/wrong-typed value, a malformed headers map,
+	// or an aws-bedrock endpoint_url override (never rewrite a signed URL) each
+	// decline with a stable reason; the request-controlled option VALUE is never
+	// surfaced.
+	ReasonInvalidHeadersOption Reason = "invalid_headers_option"
+	ReasonInvalidBodyOption    Reason = "invalid_body_option"
+	ReasonEndpointOverride     Reason = "endpoint_override"
 	// credential_source
 	ReasonBaseURLAbsent Reason = "base_url_absent"
 	ReasonAPIKeyAbsent  Reason = "api_key_absent"
+	// credential_source — S2 trusted-provider credential resolution. A trusted
+	// bearer provider missing its key (explicit or <PROVIDER>_API_KEY env), a
+	// present-but-non-string base_url, an aws-bedrock client missing its region, a
+	// partial static credential pair, a resolved-but-empty credential, or a
+	// declared-but-broken credential source that must NEVER fall to ambient creds
+	// each decline with a stable, secret-free reason.
+	//
+	// explicit_api_key_required_for_custom_base_url is the SECURITY guard for the
+	// bearer env fallback: a dynamic registry can point base_url anywhere, so the
+	// documented <PROVIDER>_API_KEY environment credential is resolved ONLY when no
+	// custom base_url is configured (the provider's default service root). A
+	// non-empty base_url with no explicit api_key declines here rather than sending
+	// the host credential to a wire-controlled destination.
+	ReasonInvalidBaseURL                      Reason = "invalid_base_url"
+	ReasonRegionMissing                       Reason = "region_missing"
+	ReasonMissingCredential                   Reason = "missing_credential"
+	ReasonPartialCredentials                  Reason = "partial_credentials"
+	ReasonUnsupportedCredentialSource         Reason = "unsupported_credential_source"
+	ReasonCredentialResolution                Reason = "credential_resolution"
+	ReasonExplicitAPIKeyRequiredForCustomBase Reason = "explicit_api_key_required_for_custom_base_url"
+	// client_selection — S2 aws-bedrock model-key selection: the registry must
+	// carry EXACTLY ONE of `model`/`model_id` (both, or neither, declines).
+	ReasonBedrockModelKeys Reason = "bedrock_model_keys"
 	// prompt
 	ReasonOutputSchemaAbsent    Reason = "output_schema_absent"
 	ReasonOutputSchemaUnbounded Reason = "output_schema_unbounded"
@@ -188,6 +223,17 @@ const (
 	// each declines.
 	ReasonPlanStreamFalse      Reason = "plan_stream_false"
 	ReasonResponseFormatNotSSE Reason = "response_format_not_sse"
+	// ReasonEmbeddingPlan is the S2 trusted-provider self-consistency guard: a
+	// chat-completion Prepare that produced an EMBEDDINGS endpoint plan is NOT a
+	// usable unary chat plan and declines PRE-socket. It is provider-neutral (it
+	// enumerates a wrong OPERATION shape, never a provider), and it is the fail-
+	// closed backstop for a DEFERRED provider whose spec plans an embedding for a
+	// chat request in the pinned nanollm (cohere in v0.4.3 plans /v2/embed and does
+	// not reject RequestType::ChatCompletion — the §1.3 gap P0 closes). See
+	// classifyEngineError's KNOWN-LIMITATION note (#546/#583). It never fires for a
+	// real chat provider (openai/anthropic/cerebras/bedrock chat endpoints are not
+	// embeddings) and auto-retires when a provider gains a real chat endpoint.
+	ReasonEmbeddingPlan Reason = "embedding_plan"
 	// plan_expiry
 	ReasonSignedPlan   Reason = "signed_plan"
 	ReasonExpiringPlan Reason = "expiring_plan"

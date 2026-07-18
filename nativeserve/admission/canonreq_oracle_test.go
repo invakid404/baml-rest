@@ -106,7 +106,7 @@ func TestCanonicalTypeMatchesRootWriter(t *testing.T) {
 				t.Fatalf("ChatRequest.Build(canonicalSonicMarshaler): %v", err)
 			}
 			if !bytes.Equal([]byte(shipped.Body), want) {
-				t.Errorf("shipped body != root writer\n shipped: %s\n root:    %s", shipped.Body, want)
+				t.Errorf("shipped body != root writer\n shipped: %s\n root:    %s", bodyDigest(shipped.Body), bodyDigest(want))
 			}
 			// It also wires the typed transport shape the way the previous hand-built
 			// Request did.
@@ -136,7 +136,7 @@ func TestCanonicalTypeFixupClosesShortEscapeGap(t *testing.T) {
 	want := root.Bytes()
 	// BAML emits the short escapes for these bytes.
 	if !bytes.Contains(want, []byte{'\\', 'b'}) || !bytes.Contains(want, []byte{'\\', 'f'}) {
-		t.Fatalf("root writer must emit the short backspace/form-feed escapes; got %s", want)
+		t.Fatalf("root writer must emit the short backspace/form-feed escapes; got %s", bodyDigest(want))
 	}
 
 	cr := chatRequestFromRendered(rendered, oracleModel)
@@ -150,7 +150,7 @@ func TestCanonicalTypeFixupClosesShortEscapeGap(t *testing.T) {
 		t.Fatal("expected RAW sonic to diverge from BAML on 0x08/0x0c, but it matched — the fixup would be dead code")
 	}
 	if !bytes.Contains(raw, longEscBackspace) || !bytes.Contains(raw, longEscFormFeed) {
-		t.Errorf("raw sonic should emit the long u-escape forms; got %s", raw)
+		t.Errorf("raw sonic should emit the long u-escape forms; got %s", bodyDigest(raw))
 	}
 
 	// The SHIPPED (fixed) marshaler matches BAML byte-for-byte.
@@ -159,6 +159,6 @@ func TestCanonicalTypeFixupClosesShortEscapeGap(t *testing.T) {
 		t.Fatalf("ChatRequest.Build(canonicalSonicMarshaler): %v", err)
 	}
 	if !bytes.Equal([]byte(shipped.Body), want) {
-		t.Errorf("fixed sonic must equal the root writer on 0x08/0x0c\n shipped: %s\n root:    %s", shipped.Body, want)
+		t.Errorf("fixed sonic must equal the root writer on 0x08/0x0c\n shipped: %s\n root:    %s", bodyDigest(shipped.Body), bodyDigest(want))
 	}
 }

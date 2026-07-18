@@ -71,7 +71,7 @@ func TestFixShortEscapes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got := fixShortEscapes(append([]byte(nil), tc.in...))
 			if !bytes.Equal(got, tc.want) {
-				t.Errorf("fixShortEscapes(%q) = %q, want %q", tc.in, got, tc.want)
+				t.Errorf("fixShortEscapes(%q) = %q, want %q", bodyDigest(tc.in), bodyDigest(got), bodyDigest(tc.want))
 			}
 		})
 	}
@@ -99,6 +99,6 @@ func TestFixShortEscapesEndToEnd(t *testing.T) {
 		'"',
 	}
 	if !bytes.Equal(got, want) {
-		t.Errorf("shipped marshaler output = %q, want %q", got, want)
+		t.Errorf("shipped marshaler output = %q, want %q", bodyDigest(got), bodyDigest(want))
 	}
 }

@@ -98,7 +98,8 @@ func TestAdmitStreamClaimPositive(t *testing.T) {
 	// (model+messages+stream suffix), byte-for-byte.
 	wantBody := canonicalStreamBody(t)
 	if !bytes.Equal(claim.ExactRequest.Body, wantBody) {
-		t.Errorf("exact stream request body != canonical stream body\n got: %s\nwant: %s", claim.ExactRequest.Body, wantBody)
+		// Body is sensitive (Admitted/Claim contract) — report digests, not the bytes.
+		t.Errorf("exact stream request body != canonical stream body (got %s, want %s)", bodyDigest(claim.ExactRequest.Body), bodyDigest(wantBody))
 	}
 	if !bytes.Equal(claim.Prepared.Body, wantBody) {
 		t.Errorf("prepared stream plan body != canonical stream body (validatePreparedBody should have caught this)")
@@ -108,7 +109,8 @@ func TestAdmitStreamClaimPositive(t *testing.T) {
 	// re-prepares with Stream=true and the engine injects the suffix.
 	req := claim.Request()
 	if bytes.Contains(req.Body, []byte(`"stream_options"`)) {
-		t.Errorf("DoStream Request body must be the UNARY body (engine injects the suffix), got: %s", req.Body)
+		// Body is sensitive — report only that the forbidden suffix was present.
+		t.Errorf("DoStream Request body must be the UNARY body (engine injects the suffix) but carried the stream_options suffix (%s)", bodyDigest(req.Body))
 	}
 	if req.Model != fenceAlias {
 		t.Errorf("DoStream Request model = %q, want the internal alias %q", req.Model, fenceAlias)

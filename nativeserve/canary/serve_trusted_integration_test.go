@@ -79,13 +79,13 @@ func TestServe_TrustedClaimSkipsBuildBAMLRequest(t *testing.T) {
 	out := s.Serve(context.Background(), req)
 
 	if out.Disposition != bamlutils.NativeServeSucceeded {
-		t.Fatalf("disposition = %v (err=%v), want succeeded", out.Disposition, out.Err)
+		t.Fatalf("disposition = %v (err=%v), want succeeded", out.Disposition, errSummary(out.Err))
 	}
 	if out.WinnerEngine != bamlutils.NativeServeEngineNative {
 		t.Errorf("winner engine = %q, want native", out.WinnerEngine)
 	}
 	if string(out.FinalJSON) != `{"answer":"ok"}` {
-		t.Errorf("final = %q, want the native SAP structured output", out.FinalJSON)
+		t.Errorf("final = %q, want the native SAP structured output", bodyDigest(out.FinalJSON))
 	}
 	// Exactly one native socket (the loopback capture server).
 	if got := hits.Load(); got != 1 {

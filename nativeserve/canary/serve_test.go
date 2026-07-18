@@ -3,7 +3,10 @@ package canary
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -15,6 +18,35 @@ import (
 	"github.com/invakid404/baml-rest/nativeserve/admission"
 	"github.com/invakid404/baml-rest/nativeserve/execute"
 )
+
+// bodyDigest / strDigest render a served final / details.raw / response body as
+// "<n>B sha256:<12hex>" — NEVER the raw content. A mismatch is still uniquely
+// pinned by the digest, but no failure diagnostic emits the body/result bytes.
+func bodyDigest(b []byte) string {
+	sum := sha256.Sum256(b)
+	return fmt.Sprintf("%dB sha256:%s", len(b), hex.EncodeToString(sum[:])[:12])
+}
+
+func strDigest(s string) string { return bodyDigest([]byte(s)) }
+
+// errSummary renders an error for a failure diagnostic WITHOUT calling its
+// Error() method, which can transitively emit a provider response body:
+// *llmhttp.HTTPError.Error() prints .Body verbatim (llmhttp.go), and mapAttempt
+// builds one from capErrorBody(res.ProviderBody) on a provider error. It reports
+// the concrete type and, for a body-carrying *llmhttp.HTTPError, the status plus a
+// SHA-256 body digest — never the raw error string. Every other error type this
+// serve path produces (nanollm status/invalid-body errors, context errors,
+// errMalformed2xx, OutputParseError) is body-free at Error(), but %T stays uniform.
+func errSummary(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	var he *llmhttp.HTTPError
+	if errors.As(err, &he) {
+		return fmt.Sprintf("*llmhttp.HTTPError{status:%d body:%s}", he.StatusCode, strDigest(he.Body))
+	}
+	return fmt.Sprintf("%T", err)
+}
 
 // newTestServer builds a Server over a fresh private registry so a test can read
 // the bounded de-BAML collectors. The exact executor is unused by the pure
@@ -101,7 +133,7 @@ func TestMapAttempt_ProviderNon2xx(t *testing.T) {
 	}
 	var httpErr *llmhttp.HTTPError
 	if !errors.As(out.Err, &httpErr) {
-		t.Fatalf("err = %v, want *llmhttp.HTTPError", out.Err)
+		t.Fatalf("err = %v, want *llmhttp.HTTPError", errSummary(out.Err))
 	}
 	if httpErr.StatusCode != 429 {
 		t.Errorf("status = %d, want 429", httpErr.StatusCode)
@@ -132,13 +164,13 @@ func TestMapAttempt_MalformedBody(t *testing.T) {
 	}
 	var httpErr *llmhttp.HTTPError
 	if errors.As(out.Err, &httpErr) {
-		t.Errorf("malformed 2xx must NOT surface as an HTTPError/502, got %v", out.Err)
+		t.Errorf("malformed 2xx must NOT surface as an HTTPError/502, got %v", errSummary(out.Err))
 	}
 	if errors.Is(out.Err, buildrequest.ErrOutputParse) {
-		t.Errorf("malformed 2xx must NOT be a parse_error, got %v", out.Err)
+		t.Errorf("malformed 2xx must NOT be a parse_error, got %v", errSummary(out.Err))
 	}
 	if out.RawDiagnostic != "not json at all" {
-		t.Errorf("details.raw = %q, want the raw upstream body", out.RawDiagnostic)
+		t.Errorf("details.raw = %q, want the raw upstream body", strDigest(out.RawDiagnostic))
 	}
 	if sumAttempts(t, reg, "translate_error") != 1 {
 		t.Errorf("translate_error attempts = %v, want 1", sumAttempts(t, reg, "translate_error"))
@@ -157,10 +189,10 @@ func TestMapAttempt_TranslateError(t *testing.T) {
 		t.Fatalf("disposition = %v, want failed", out.Disposition)
 	}
 	if errors.Is(out.Err, buildrequest.ErrOutputParse) {
-		t.Errorf("translate error must NOT be a parse_error, got %v", out.Err)
+		t.Errorf("translate error must NOT be a parse_error, got %v", errSummary(out.Err))
 	}
 	if out.RawDiagnostic != "upstream body" {
-		t.Errorf("details.raw = %q, want the raw upstream body", out.RawDiagnostic)
+		t.Errorf("details.raw = %q, want the raw upstream body", strDigest(out.RawDiagnostic))
 	}
 	if sumAttempts(t, reg, "translate_error") != 1 {
 		t.Errorf("translate_error attempts = %v, want 1", sumAttempts(t, reg, "translate_error"))
@@ -185,10 +217,10 @@ func TestMapAttempt_ClaimedSAPError(t *testing.T) {
 		t.Fatalf("disposition = %v, want failed", out.Disposition)
 	}
 	if !errors.Is(out.Err, buildrequest.ErrOutputParse) {
-		t.Errorf("claimed SAP error must be a parse_error, got %v", out.Err)
+		t.Errorf("claimed SAP error must be a parse_error, got %v", errSummary(out.Err))
 	}
 	if out.RawDiagnostic != "assistant text" {
-		t.Errorf("details.raw = %q, want the extracted assistant text", out.RawDiagnostic)
+		t.Errorf("details.raw = %q, want the extracted assistant text", strDigest(out.RawDiagnostic))
 	}
 	if sumAttempts(t, reg, "parse_error") != 1 {
 		t.Errorf("parse_error attempts = %v, want 1", sumAttempts(t, reg, "parse_error"))
@@ -214,10 +246,10 @@ func TestMapAttempt_TransportError(t *testing.T) {
 				t.Fatalf("disposition = %v, want failed", out.Disposition)
 			}
 			if !errors.Is(out.Err, tc.err) {
-				t.Errorf("transport error must be preserved for the outer policy, got %v", out.Err)
+				t.Errorf("transport error must be preserved for the outer policy, got %v", errSummary(out.Err))
 			}
 			if out.RawDiagnostic != "" {
-				t.Errorf("transport error carries no body, got raw %q", out.RawDiagnostic)
+				t.Errorf("transport error carries no body, got raw %q", strDigest(out.RawDiagnostic))
 			}
 			if sumAttempts(t, reg, "transport_error") != 1 {
 				t.Errorf("transport_error attempts = %v, want 1", sumAttempts(t, reg, "transport_error"))
@@ -271,10 +303,10 @@ func TestMapAttempt_ContextCancelledIsTransport(t *testing.T) {
 				t.Fatalf("disposition = %v, want failed", out.Disposition)
 			}
 			if !errors.Is(out.Err, tc.wantErr) {
-				t.Errorf("err = %v, want errors.Is(%v) preserved for the outer policy", out.Err, tc.wantErr)
+				t.Errorf("err = %v, want errors.Is(%v) preserved for the outer policy", errSummary(out.Err), tc.wantErr)
 			}
 			if out.RawDiagnostic != "" {
-				t.Errorf("cancellation carries no details.raw, got %q", out.RawDiagnostic)
+				t.Errorf("cancellation carries no details.raw, got %q", strDigest(out.RawDiagnostic))
 			}
 			if got := sumAttempts(t, reg, "transport_error"); got != 1 {
 				t.Errorf("transport_error attempts = %v, want 1 (not translate/parse_error)", got)
@@ -313,7 +345,7 @@ func TestServeParseOnly_ServesBAMLParse(t *testing.T) {
 		t.Errorf("winner_engine = %q, want native_baml_parse", out.WinnerEngine)
 	}
 	if !bytes.Equal(out.FinalJSON, bamlFlat) {
-		t.Errorf("final = %s, want the BAML parse-only output", out.FinalJSON)
+		t.Errorf("final = %s, want the BAML parse-only output", bodyDigest(out.FinalJSON))
 	}
 	if sumAttempts(t, reg, "parse_decline") != 1 {
 		t.Errorf("parse_decline attempts = %v, want 1", sumAttempts(t, reg, "parse_decline"))
@@ -341,10 +373,10 @@ func TestServeParseOnly_BAMLParseErrors(t *testing.T) {
 		t.Fatalf("disposition = %v, want failed", out.Disposition)
 	}
 	if !errors.Is(out.Err, buildrequest.ErrOutputParse) {
-		t.Errorf("err = %v, want ErrOutputParse", out.Err)
+		t.Errorf("err = %v, want ErrOutputParse", errSummary(out.Err))
 	}
 	if out.RawDiagnostic != "raw text" {
-		t.Errorf("details.raw = %q, want the extracted raw", out.RawDiagnostic)
+		t.Errorf("details.raw = %q, want the extracted raw", strDigest(out.RawDiagnostic))
 	}
 	if sumAttempts(t, reg, "parse_error") != 1 {
 		t.Errorf("parse_error attempts = %v, want 1", sumAttempts(t, reg, "parse_error"))
@@ -361,7 +393,7 @@ func TestServeParseOnly_NoBAMLBuilder(t *testing.T) {
 		t.Fatalf("disposition = %v, want failed (never serve unverified)", out.Disposition)
 	}
 	if !errors.Is(out.Err, buildrequest.ErrOutputParse) {
-		t.Errorf("err = %v, want ErrOutputParse", out.Err)
+		t.Errorf("err = %v, want ErrOutputParse", errSummary(out.Err))
 	}
 }
 
@@ -390,7 +422,7 @@ func TestServeStructured_BAMLParseRejects(t *testing.T) {
 		t.Fatalf("disposition = %v, want failed (BAML rejects -> reject)", out.Disposition)
 	}
 	if !errors.Is(out.Err, buildrequest.ErrOutputParse) {
-		t.Errorf("err = %v, want ErrOutputParse", out.Err)
+		t.Errorf("err = %v, want ErrOutputParse", errSummary(out.Err))
 	}
 	if sumAttempts(t, reg, "parse_error") != 1 {
 		t.Errorf("parse_error attempts = %v, want 1", sumAttempts(t, reg, "parse_error"))
@@ -421,13 +453,13 @@ func TestServeStructured_BAMLParseContextCancelled(t *testing.T) {
 		t.Fatalf("disposition = %v, want failed", out.Disposition)
 	}
 	if !errors.Is(out.Err, context.Canceled) {
-		t.Errorf("err = %v, want the context.Canceled preserved for the outer policy", out.Err)
+		t.Errorf("err = %v, want the context.Canceled preserved for the outer policy", errSummary(out.Err))
 	}
 	if errors.Is(out.Err, buildrequest.ErrOutputParse) {
-		t.Errorf("a cancellation must NOT be wrapped as ErrOutputParse, got %v", out.Err)
+		t.Errorf("a cancellation must NOT be wrapped as ErrOutputParse, got %v", errSummary(out.Err))
 	}
 	if out.RawDiagnostic != "" {
-		t.Errorf("cancellation carries no details.raw, got %q", out.RawDiagnostic)
+		t.Errorf("cancellation carries no details.raw, got %q", strDigest(out.RawDiagnostic))
 	}
 	if got := sumAttempts(t, reg, "transport_error"); got != 1 {
 		t.Errorf("transport_error attempts = %v, want 1", got)
@@ -454,13 +486,13 @@ func TestServeParseOnly_BAMLParseContextDeadline(t *testing.T) {
 		t.Fatalf("disposition = %v, want failed", out.Disposition)
 	}
 	if !errors.Is(out.Err, context.DeadlineExceeded) {
-		t.Errorf("err = %v, want context.DeadlineExceeded preserved", out.Err)
+		t.Errorf("err = %v, want context.DeadlineExceeded preserved", errSummary(out.Err))
 	}
 	if errors.Is(out.Err, buildrequest.ErrOutputParse) {
-		t.Errorf("a deadline must NOT be wrapped as ErrOutputParse, got %v", out.Err)
+		t.Errorf("a deadline must NOT be wrapped as ErrOutputParse, got %v", errSummary(out.Err))
 	}
 	if out.RawDiagnostic != "" {
-		t.Errorf("deadline carries no details.raw, got %q", out.RawDiagnostic)
+		t.Errorf("deadline carries no details.raw, got %q", strDigest(out.RawDiagnostic))
 	}
 	if got := sumAttempts(t, reg, "transport_error"); got != 1 {
 		t.Errorf("transport_error attempts = %v, want 1", got)
@@ -498,13 +530,13 @@ func TestServeStructured_CanceledCtxNotServedDespiteValidParse(t *testing.T) {
 		t.Fatalf("disposition = %v, want failed (a canceled request must not be served)", out.Disposition)
 	}
 	if !errors.Is(out.Err, context.Canceled) {
-		t.Errorf("err = %v, want context.Canceled preserved", out.Err)
+		t.Errorf("err = %v, want context.Canceled preserved", errSummary(out.Err))
 	}
 	if out.FinalJSON != nil {
-		t.Errorf("FinalJSON = %s, want nil (no native/parse final served on a canceled ctx)", out.FinalJSON)
+		t.Errorf("FinalJSON = %s, want nil (no native/parse final served on a canceled ctx)", bodyDigest(out.FinalJSON))
 	}
 	if out.RawDiagnostic != "" {
-		t.Errorf("cancellation carries no details.raw, got %q", out.RawDiagnostic)
+		t.Errorf("cancellation carries no details.raw, got %q", strDigest(out.RawDiagnostic))
 	}
 	if got := sumAttempts(t, reg, "transport_error"); got != 1 {
 		t.Errorf("transport_error attempts = %v, want 1", got)
@@ -534,13 +566,13 @@ func TestServeParseOnly_CanceledCtxNotServedDespiteValidParse(t *testing.T) {
 		t.Fatalf("disposition = %v, want failed (a canceled request must not be served)", out.Disposition)
 	}
 	if !errors.Is(out.Err, context.Canceled) {
-		t.Errorf("err = %v, want context.Canceled preserved", out.Err)
+		t.Errorf("err = %v, want context.Canceled preserved", errSummary(out.Err))
 	}
 	if out.FinalJSON != nil {
-		t.Errorf("FinalJSON = %s, want nil (no parse-only final served on a canceled ctx)", out.FinalJSON)
+		t.Errorf("FinalJSON = %s, want nil (no parse-only final served on a canceled ctx)", bodyDigest(out.FinalJSON))
 	}
 	if out.RawDiagnostic != "" {
-		t.Errorf("cancellation carries no details.raw, got %q", out.RawDiagnostic)
+		t.Errorf("cancellation carries no details.raw, got %q", strDigest(out.RawDiagnostic))
 	}
 	if got := sumAttempts(t, reg, "transport_error"); got != 1 {
 		t.Errorf("transport_error attempts = %v, want 1", got)
@@ -600,7 +632,7 @@ func TestMapAttempt_TrustedStructured_NoBAMLCompare(t *testing.T) {
 		t.Errorf("winner engine = %q, want native", out.WinnerEngine)
 	}
 	if string(out.FinalJSON) != `{"answer":"hi"}` {
-		t.Errorf("final = %q, want the native SAP structured output served directly", out.FinalJSON)
+		t.Errorf("final = %q, want the native SAP structured output served directly", bodyDigest(out.FinalJSON))
 	}
 	if got := sumAttempts(t, reg, "success"); got != 1 {
 		t.Errorf("success attempts = %v, want 1", got)
@@ -644,10 +676,11 @@ func TestMapAttempt_TrustedParseOnly_NoCompareFacets(t *testing.T) {
 		t.Errorf("winner engine = %q, want native_baml_parse", out.WinnerEngine)
 	}
 	if string(out.FinalJSON) != `{"answer":"parsed"}` {
-		t.Errorf("final = %q, want BAML parse-only of the same text", out.FinalJSON)
+		t.Errorf("final = %q, want BAML parse-only of the same text", bodyDigest(out.FinalJSON))
 	}
 	if parsedText != "loosely-shaped assistant text" {
-		t.Errorf("BAML parse-only received %q, want the SAME extracted assistant text", parsedText)
+		// parsedText is the extracted provider assistant content — report a digest.
+		t.Errorf("BAML parse-only received the wrong text (got %s), want the SAME extracted assistant text", strDigest(parsedText))
 	}
 	if got := sumFallback(t, reg, "parse_only"); got != 1 {
 		t.Errorf("fallback{parse_only} = %v, want 1", got)
