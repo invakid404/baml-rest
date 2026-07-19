@@ -27,9 +27,24 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+// repoRoot resolves the repository root from this test file's own location (the
+// unrouted guards live at the repo root). It previously lived in the Phase 7B/7C
+// nativestream_unrouted_test.go, which Phase 7D removed when it wired the native
+// stream lane behind the umbrella flag; the helper moved here to its remaining
+// consumer.
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	return filepath.Dir(file)
+}
 
 func TestStaticPromptDescriptorUnrouted(t *testing.T) {
 	root := repoRoot(t)
@@ -47,7 +62,7 @@ func TestStaticPromptDescriptorUnrouted(t *testing.T) {
 	// fixture at internal/nativeprompt/testdata/... is skipped by the testdata
 	// SkipDir below, so it is never scanned.)
 	allowed := map[string]bool{
-		filepath.FromSlash("introspected/introspected.go"):                             true,
+		filepath.FromSlash("introspected/introspected.go"):                              true,
 		filepath.FromSlash("dynclient/internal/generated/introspected/introspected.go"): true,
 	}
 

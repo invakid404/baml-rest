@@ -58,3 +58,24 @@ import (
 func New(reg prometheus.Registerer) (bamlutils.NativeServeFunc, error) {
 	return canary.NewServeFunc(reg)
 }
+
+// NewStream constructs the nanollm-backed native STREAM serve implementation
+// (de-BAML Phase 7D) and returns it as the neutral [bamlutils.NativeStreamServeFunc]
+// a serve-profile worker installs via workerboot.Options.NativeStreamServeFactory.
+// It is the streaming twin of [New]: for an admitted dynamic OpenAI `/stream{,-with-raw}/_dynamic`
+// StreamRequest it serves natively (one exact provider RoundTrip driving nanollm
+// DoStream, the native-only partial/final parsers owned by the orchestrator), while
+// every unsupported shape declines PRE-TRANSPORT so BAML serves it. From the
+// transport claim onward a failure is TERMINAL — never a BAML resend/retry/replay.
+//
+// With the umbrella flag (BAML_REST_USE_DEBAML) off the generated dynamic stream
+// seam never installs the callback, so the stream path stays byte-identical BAML
+// with zero native FFI / socket / plan build.
+//
+// It is a thin, stable pass-through to the relocated serve core so the subprocess
+// serve worker drives byte-identical native streaming. reg is retained for
+// signature symmetry with [New]; the stream lane records no de-BAML counters this
+// phase (the rollout observability is owner-trimmed), so it never errors on reg.
+func NewStream(reg prometheus.Registerer) (bamlutils.NativeStreamServeFunc, error) {
+	return canary.NewStreamServeFunc(reg)
+}

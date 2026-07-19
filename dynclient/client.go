@@ -120,17 +120,18 @@ func newWithRuntime(rt worker.Runtime, init func(), opts ...Option) (*Client, er
 	httpClient := newLLMHTTPClient(cfg)
 
 	workerCfg := worker.Config{
-		Runtime:                rt,
-		Logger:                 cfg.logger,
-		Metrics:                cfg.metrics,
-		ClientDefaults:         cfg.clientDefaults,
-		DeBAML:                 cfg.deBAML,
-		DeBAMLRender:           cfg.deBAMLRender,
-		DeBAMLParse:            cfg.deBAMLParse,
-		NativeShadowComparator: cfg.nativeShadow,
-		NativeServeComparator:  cfg.nativeServe,
-		BaseURLRewrites:        cfg.baseURLRewrites,
-		HTTPClient:             httpClient,
+		Runtime:                     rt,
+		Logger:                      cfg.logger,
+		Metrics:                     cfg.metrics,
+		ClientDefaults:              cfg.clientDefaults,
+		DeBAML:                      cfg.deBAML,
+		DeBAMLRender:                cfg.deBAMLRender,
+		DeBAMLParse:                 cfg.deBAMLParse,
+		NativeShadowComparator:      cfg.nativeShadow,
+		NativeServeComparator:       cfg.nativeServe,
+		NativeStreamServeComparator: cfg.nativeStreamServe,
+		BaseURLRewrites:             cfg.baseURLRewrites,
+		HTTPClient:                  httpClient,
 	}
 	if cfg.sharedState != nil {
 		workerCfg.SharedState = worker.NewStoreSharedStateHook(cfg.sharedState)

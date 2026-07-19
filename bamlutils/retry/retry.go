@@ -12,10 +12,33 @@ package retry
 
 import (
 	"context"
+	"errors"
 	"math"
 	"sync"
 	"time"
 )
+
+// TerminalError is implemented by an error that must NOT be retried: Execute
+// returns it immediately, consuming no further attempts and firing no onRetry
+// callback. It is the mechanism the de-BAML native stream lane (Phase 7D) uses to
+// make a post-transport-claim failure terminal (scope §4 I4): a claimed native
+// stream is never replayed through retry. A dedicated typed marker is preferred
+// over generic error-kind classification, and it is checked via errors.As so it
+// survives any wrapping (e.g. the orchestrator's raw-carrying wrapper).
+//
+// Ordinary BAML errors do not implement this, so existing retry behaviour — all
+// errors retried up to the policy limit — is unchanged.
+type TerminalError interface {
+	// RetryTerminal reports that this error must never be retried.
+	RetryTerminal() bool
+}
+
+// isTerminal reports whether err (or any error it wraps) is a retry-terminal
+// error, i.e. Execute must return it immediately without retrying.
+func isTerminal(err error) bool {
+	var t TerminalError
+	return errors.As(err, &t) && t.RetryTerminal()
+}
 
 // Policy defines a retry policy with a maximum number of retries and a delay
 // strategy. A nil Policy means no retries (single attempt).
@@ -200,6 +223,13 @@ func Execute[T any](ctx context.Context, policy *Policy, fn func(attempt int) (T
 			return result, nil
 		}
 		lastErr = err
+
+		// Terminal errors abort immediately: no retry, no onRetry callback, no
+		// sleep. The native stream lane wraps a post-transport-claim failure in a
+		// TerminalError so a claimed native stream is never replayed (scope §4 I4).
+		if isTerminal(err) {
+			return zero, err
+		}
 
 		// Don't sleep after the last attempt
 		if attempt >= maxRetries {

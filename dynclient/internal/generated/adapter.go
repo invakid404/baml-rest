@@ -816,6 +816,7 @@ func bamlRestDynamicBuildRequest(adapter bamlutils.Adapter, rawInput any, out ch
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	maybeInstallNativeStream(adapter, streamConfig, __struct_messages, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, __httpClient.WouldRewriteOrProxy)
 	go func() {
 		defer close(out)
 		defer __releaseConverted()

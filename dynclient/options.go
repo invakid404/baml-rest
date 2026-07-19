@@ -36,6 +36,7 @@ type config struct {
 	deBAMLParse          bamlutils.DeBAMLParseFunc
 	nativeShadow         bamlutils.NativeShadowFunc
 	nativeServe          bamlutils.NativeServeFunc
+	nativeStreamServe    bamlutils.NativeStreamServeFunc
 	requestRetryOverride *bamlutils.RetryConfig
 	baseURLRewrites      []urlrewrite.Rule
 	logger               bamlutils.Logger
@@ -136,6 +137,24 @@ func WithNativeShadowComparator(shadow bamlutils.NativeShadowFunc) Option {
 func WithNativeServeComparator(serve bamlutils.NativeServeFunc) Option {
 	return func(c *config) error {
 		c.nativeServe = serve
+		return nil
+	}
+}
+
+// WithNativeStreamServeComparator injects the native STREAM SERVE implementation
+// (de-BAML Phase 7D), the streaming twin of WithNativeServeComparator. A caller in
+// the root module supplies the concrete nanollm-backed implementation (e.g.
+// nativeserve.NewStream). It is installed on every adapter; the generated dynamic
+// StreamRequest seam turns it into StreamConfig.NativeAttempt only when it is
+// non-nil AND WithDeBAML is enabled, and that callback actually SERVES an admitted
+// dynamic OpenAI `/stream{,-with-raw}/_dynamic` request natively (one exact
+// RoundTrip driving DoStream) or declines pre-transport to BAML. Without it (or with
+// WithDeBAML off) the dynamic stream path stays BAML-as-today with zero native FFI /
+// socket / plan build. It coexists with WithNativeServeComparator (a serve caller
+// installs both unary + stream).
+func WithNativeStreamServeComparator(serve bamlutils.NativeStreamServeFunc) Option {
+	return func(c *config) error {
+		c.nativeStreamServe = serve
 		return nil
 	}
 }

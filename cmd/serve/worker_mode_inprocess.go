@@ -75,6 +75,12 @@ func configureWorkerMode(logger zerolog.Logger, cfg *pool.Config, runtimeCfg wor
 			HTTPClient:      runtimeCfg.HTTPClient,
 		})
 	}
+	// De-BAML native-stream cohort (Phase 7D): the DEFAULT in-process build is
+	// zero-nanollm and cannot serve the native stream lane, so
+	// nativeStreamServeCapable is compile-time false here and the pool keeps its
+	// current stream retry behaviour. The expression is kept (rather than a bare
+	// false) so the capability×flag rule reads identically to the subprocess path.
+	cfg.DisableStreamInfrastructureRetries = nativeStreamServeCapable && runtimeCfg.DeBAML.Enabled
 	return nil
 }
 

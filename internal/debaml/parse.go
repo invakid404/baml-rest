@@ -58,6 +58,20 @@ import (
 func Parse(ctx context.Context, req bamlutils.DeBAMLParseRequest) (bamlutils.DeBAMLParseResult, error) {
 	_ = ctx // M1 parsing is a local CPU operation; no cancellation points.
 
+	if req.StreamFinal {
+		// De-BAML native STREAM FINAL (Phase 7D): the NATIVE-ONLY final parser for a
+		// completed native stream. It applies BAML's EOF object-completion and treats
+		// a post-preflight unsupported as a TERMINAL invariant — it NEVER falls back
+		// to BAML (I6). Distinct from req.Stream (the partial lane): StreamFinal takes
+		// precedence and routes to ParseNativeStreamFinal, whose error (a terminal
+		// invariant or a claimed parse failure) propagates unchanged so the claimed
+		// native serving lane treats it as terminal.
+		j, ferr := ParseNativeStreamFinal(ctx, req.OutputSchema, req.Raw)
+		if ferr != nil {
+			return bamlutils.DeBAMLParseResult{}, ferr
+		}
+		return bamlutils.DeBAMLParseResult{JSON: j}, nil
+	}
 	if req.Stream {
 		// M4b/M4c: the native STREAMING (raw_is_done=false) path claims the basic
 		// partial surface PLUS the annotation-free semantic-streaming shape
