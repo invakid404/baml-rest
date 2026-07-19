@@ -134,6 +134,31 @@ type Config struct {
 	// The returned Worker may also implement io.Closer; if so, the
 	// pool calls Close on teardown and restart.
 	WorkerFactory WorkerFactory
+
+	// DisableStreamInfrastructureRetries suppresses the CallStream
+	// worker-infrastructure retry/replay loop for the de-BAML native-stream
+	// serve cohort (Phase 7D, scope §3.5/§7D). The pool is the SECOND replay
+	// owner (the orchestration/round-robin path is the first): a native worker
+	// can CLAIM its one upstream provider socket and then crash before the host
+	// observes a terminal frame, and the ordinary retry loop would replay the
+	// whole logical stream on another worker — issuing a SECOND physical native
+	// request and violating the one-request / no-fallback-after-claim invariants
+	// (I3/I4). When true, CallStream performs exactly ONE worker attempt and
+	// never replays or injects a reset after a worker error / silent EOF; worker
+	// health is still marked and a replacement is still dispatched, and the
+	// terminal failure is surfaced to the client. When false the CallStream
+	// retry loop is byte-for-byte the current behaviour, and unary Parse retries
+	// are unaffected in both cases.
+	//
+	// The host must set this true ONLY when BOTH the deployment profile is native
+	// stream capable AND BAML_REST_USE_DEBAML resolves true — threaded from
+	// configureWorkerMode as an explicit compile/deployment capability, never
+	// inferred from the umbrella flag alone (a BAML-only artifact with the
+	// default-on umbrella but no native stream factory keeps the current pool
+	// retry behaviour). It is intentionally cohort-wide: the host cannot know
+	// admission will succeed before the worker evaluates schema/client facts, so
+	// ingress must keep unrelated streams out of the native cohort.
+	DisableStreamInfrastructureRetries bool
 }
 
 // WorkerFactory constructs a workerplugin.Worker for the pool. The
@@ -1393,7 +1418,30 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 		// boundary (below), so the first attempt stays 0.
 		var currentAttempt int
 
-		for attempt := 0; attempt <= p.config.MaxRetries; attempt++ {
+		// De-BAML native-stream cohort (Phase 7D, scope §3.5/§7D): the pool is the
+		// SECOND replay owner. When stream infrastructure retries are disabled AND
+		// this is an actual public STREAM request, CallStream performs exactly ONE
+		// worker attempt and never replays/injects a reset after a worker error or
+		// silent EOF — a native worker may have already CLAIMED its one provider
+		// socket, so replaying it would issue a second physical native request
+		// (I3/I4). Worker health is still marked and a replacement is still dispatched
+		// below; only the retry/replay is suppressed.
+		//
+		// The suppression is SCOPED to real stream modes (StreamModeStream /
+		// StreamModeStreamWithRaw, i.e. streamMode.NeedsPartials()). CallStream also
+		// serves the UNARY /call{,-with-raw} bridge (StreamModeCall / CallWithRaw via
+		// Pool.Call), which is NEVER eligible for the native stream lane, so those
+		// keep their ordinary worker-error/silent-EOF retry+reset even on a
+		// native-worker/flag-on process. When the setting is false, or for a unary
+		// mode, this equals p.config.MaxRetries and the loop is byte-for-byte the
+		// current behaviour. Unary Parse retries are on a separate loop and unaffected.
+		suppressStreamRetries := p.config.DisableStreamInfrastructureRetries && streamMode.NeedsPartials()
+		maxStreamRetries := p.config.MaxRetries
+		if suppressStreamRetries {
+			maxStreamRetries = 0
+		}
+
+		for attempt := 0; attempt <= maxStreamRetries; attempt++ {
 			// For retry attempts, get a new worker (may wait if pool size 1).
 			if attempt > 0 {
 				currentAttempt++
@@ -1568,7 +1616,15 @@ func (p *Pool) CallStream(ctx context.Context, methodName string, inputJSON []by
 				// land on the first real result (heartbeat / stream / final
 				// / outcome metadata) so the streamwriter only resets state
 				// when there's actually state to reset.
-				if needsReset && !injectedReset && !isPlannedMetadata {
+				// The reset marker signals a mid-stream RETRY to the stream writer. In
+				// the suppressed native-stream cohort retries are capped to one attempt,
+				// so needsReset is already always false here — but guard it explicitly so
+				// the "no reset after claim" invariant (I4) is local and obvious, and so
+				// a future change to the single-attempt shape can never resurrect a
+				// continuation reset on the claimed native lane. Scoped to the actual
+				// stream modes (suppressStreamRetries) so the unary /call bridge keeps
+				// its ordinary reset behaviour.
+				if needsReset && !injectedReset && !isPlannedMetadata && !suppressStreamRetries {
 					result.Reset = true
 					injectedReset = true
 					currentHandle.logger.Info().Msg("Injected reset marker for mid-stream retry")

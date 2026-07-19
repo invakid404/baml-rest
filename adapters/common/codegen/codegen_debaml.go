@@ -602,6 +602,185 @@ func maybeInstallNativeCall(
 	}
 }
 
+// nativeStreamServeGetter is the streaming twin of nativeServeGetter: the narrow
+// optional interface the adapter implements to expose the native STREAM SERVE
+// implementation (de-BAML Phase 7D). A serve-profile worker injects the
+// nanollm-backed implementation and the generated code drives it only through this
+// public-typed seam. Absent / nil in every default production build.
+type nativeStreamServeGetter interface {
+	NativeStreamServeComparator() bamlutils.NativeStreamServeFunc
+}
+
+// maybeInstallNativeStream installs the de-BAML native STREAM child-attempt seam
+// (StreamConfig.NativeAttempt + the NATIVE-ONLY partial/final parser closures) on
+// the dynamic StreamRequest path — but ONLY when a serve-profile worker injected a
+// native stream implementation AND the umbrella de-BAML flag is enabled. In every
+// default/flag-off build the getter is absent or returns nil, so the callback
+// stays nil/hard-off and the stream path is byte-identical BAML with zero native
+// FFI / socket / plan build (I1 hard-off identity).
+//
+// When installed, the seam runs as the FIRST operation for a selected non-legacy,
+// non-bedrock stream child (the orchestrator's tryOneStreamChild). It hands the
+// neutral request description to the injected implementation, which either DECLINES
+// pre-transport to BAML (no socket, no EmitDelta) or CLAIMS one native RoundTrip and
+// streams natively; every partial is emitted through the orchestrator's EmitDelta
+// (the shared accumulation/cadence pipeline), and the orchestrator owns the
+// NATIVE-ONLY final parse. A post-transport-claim failure is TERMINAL — never a BAML
+// resend/retry/fallback/pool-replay (I4). The strategy facts (singleLeaf /
+// hasFallbackChain / hasRoundRobin / a resolved retry override) are TRUTHFUL parity
+// facts: any unproven shape declines pre-transport so BAML serves it.
+func maybeInstallNativeStream(
+	adapter bamlutils.Adapter,
+	cfg *buildrequest.StreamConfig,
+	msgs []types.Baml_Rest_Message,
+	singleLeaf bool,
+	hasFallbackChain bool,
+	hasRoundRobin bool,
+	wouldRewriteOrProxy func(effectiveURL string) bool,
+) {
+	if !adapter.DeBAMLConfig().Enabled {
+		return
+	}
+	// PUBLIC-MODE gate (scope §5.2 / §7D): the dynamic StreamRequest builder ALSO
+	// serves the UNARY /call{,-with-raw} compatibility bridge (StreamModeCall /
+	// StreamModeCallWithRaw route through it when BAML's non-streaming Request API is
+	// unavailable). Only a REAL public /stream{,-with-raw} request is eligible for the
+	// native stream lane, so resolve the ACTUAL public mode and install the native
+	// seam ONLY for StreamModeStream / StreamModeStreamWithRaw. A bridged unary call
+	// therefore NEVER admits/claims a native stream and stays byte-identical BAML. The
+	// native mode is derived from the actual public mode (NOT inferred from NeedsRaw,
+	// which is true for the unary CallWithRaw bridge too).
+	publicMode := adapter.StreamMode()
+	if publicMode != bamlutils.StreamModeStream && publicMode != bamlutils.StreamModeStreamWithRaw {
+		return
+	}
+	// Resolve the injected native stream implementation. Absent getter or nil impl
+	// (every default/shadow/serve-unary/flag-off build) leaves the seam hard-off.
+	var streamServe bamlutils.NativeStreamServeFunc
+	if g, ok := adapter.(nativeStreamServeGetter); ok {
+		streamServe = g.NativeStreamServeComparator()
+	}
+	if streamServe == nil {
+		return
+	}
+	outputSchema := adapter.DeBAMLOutputSchema()
+	if outputSchema == nil {
+		return
+	}
+	// The native-only parser closures drive the SAME injected DeBAMLParseFunc the
+	// BAML/hybrid path uses, but in NATIVE-ONLY mode (no per-prefix BAML fallback,
+	// I6). Absent parser getter/nil parser leaves the seam off.
+	pg, ok := adapter.(deBAMLParserGetter)
+	if !ok {
+		return
+	}
+	parse := pg.DeBAMLParser()
+	if parse == nil {
+		return
+	}
+
+	registry := adapter.OriginalClientRegistry()
+	neutralMsgs := nativeShadowMessages(msgs)
+	// A resolved retry policy is a request retry override the single-attempt exact
+	// lane would bypass — a TRUTHFUL parity fact that declines the stream pre-transport.
+	hasRequestRetryOverride := cfg.RetryPolicy != nil
+
+	// NATIVE-ONLY partial parser (StreamConfig.NativeParseStream): drive the injected
+	// parser with Stream=true and map ANY error — the BAML-fallback sentinel OR a
+	// claimed parse failure — to a benign no-emit (nil, nil), NEVER a BAML fallback.
+	// A partial never terminates a stream. Mirrors internal/debaml.ParseNativeStreamPartial.
+	cfg.NativeParseStream = func(ctx context.Context, accumulated string) (any, error) {
+		res, perr := parse(ctx, bamlutils.DeBAMLParseRequest{Raw: accumulated, OutputSchema: outputSchema, Stream: true})
+		if perr != nil {
+			return nil, nil
+		}
+		if len(res.JSON) == 0 {
+			return nil, nil
+		}
+		out, werr := wrapDeBAMLDynamicOutputStream(res.JSON)
+		if werr != nil {
+			// A wrap failure on a claimed partial is non-terminal: skip this tick.
+			return nil, nil
+		}
+		return out, nil
+	}
+
+	// NATIVE-ONLY final parser (StreamConfig.NativeParseFinal): drive the injected
+	// parser with StreamFinal=true (the internal ParseNativeStreamFinal path — BAML
+	// EOF object-completion + terminal-on-unsupported). It NEVER falls back to BAML:
+	// a non-nil error is TERMINAL for the claimed stream (the orchestrator wraps it in
+	// a retry-terminal carrier). Mirrors internal/debaml.ParseNativeStreamFinal.
+	cfg.NativeParseFinal = func(ctx context.Context, accumulated string) (any, error) {
+		res, perr := parse(ctx, bamlutils.DeBAMLParseRequest{Raw: accumulated, OutputSchema: outputSchema, StreamFinal: true})
+		if perr != nil {
+			return nil, perr
+		}
+		out, werr := wrapDeBAMLDynamicOutput(res.JSON)
+		if werr != nil {
+			return nil, fmt.Errorf("wrap native de-BAML stream final result: %w", werr)
+		}
+		return out, nil
+	}
+
+	cfg.NativeAttemptEnabled = true
+	cfg.NativeOutputSchema = outputSchema
+	// planned_engine="native": a native stream attempt was installed + considered for
+	// this request. Recorded on the OUTCOME frame only; empty on every default/BAML/
+	// flag-off path so metadata stays byte-identical.
+	cfg.PlannedEngine = "native"
+
+	// Derive the native mode from the ACTUAL public mode (gated to the two real
+	// stream modes above), never inferred from NeedsRaw.
+	streamMode := bamlutils.NativeStreamModeStream
+	if publicMode == bamlutils.StreamModeStreamWithRaw {
+		streamMode = bamlutils.NativeStreamModeStreamWithRaw
+	}
+	cfg.NativeMode = streamMode
+
+	cfg.NativeAttempt = func(ctx context.Context, att buildrequest.NativeStreamAttempt) buildrequest.NativeStreamOutcome {
+		res := streamServe(ctx, bamlutils.NativeStreamServeRequest{
+			Registry:                registry,
+			Messages:                neutralMsgs,
+			OutputSchema:            outputSchema,
+			Provider:                att.Provider,
+			ClientOverride:          att.ClientOverride,
+			Mode:                    streamMode,
+			NeedsPartials:           att.NeedsPartials,
+			NeedsRaw:                att.NeedsRaw,
+			IncludeReasoning:        att.IncludeReasoning,
+			SingleLeaf:              singleLeaf,
+			HasFallbackChain:        hasFallbackChain,
+			HasRoundRobin:           hasRoundRobin,
+			HasRequestRetryOverride: hasRequestRetryOverride,
+			WouldRewriteOrProxy:     wouldRewriteOrProxy,
+			BuildBAMLRequest:        att.BuildBAMLRequest,
+			EmitDelta:               att.EmitDelta,
+			SendHeaders:             att.SendHeaders,
+			SendFirstBody:           att.SendFirstBody,
+		})
+		switch res.Disposition {
+		case bamlutils.NativeStreamCompleted:
+			// Native streamed to a valid terminal condition; every partial was emitted
+			// via EmitDelta and the orchestrator owns the final parse. winner_engine=native.
+			return buildrequest.CompleteNativeStream(res.WinnerEngine)
+		case bamlutils.NativeStreamFailedAfterClaim:
+			// Post-claim failure: the typed error is terminal (no BAML resend/replay).
+			return buildrequest.FailNativeStreamAfterClaim(res.Err, res.RawDiagnostic)
+		case bamlutils.NativeStreamDeclined:
+			// Pre-transport decline: the orchestrator runs the ordinary BAML build/send
+			// for the same child in the same retry iteration.
+			return buildrequest.DeclineNativeStream(
+				buildrequest.NativeDeclineStage(res.Stage),
+				buildrequest.NativeDeclineReason(res.Reason),
+			)
+		default:
+			// Out-of-contract disposition can't assert "no socket": fail closed.
+			return buildrequest.FailNativeStreamAfterClaim(
+				fmt.Errorf("native stream serve returned unknown disposition %d", res.Disposition), "")
+		}
+	}
+}
+
 // nativeShadowMessages converts the generated dynamic messages into the neutral
 // bamlutils.DynamicMessage shape the shadow comparator's native admission
 // consumes. It is a faithful structural conversion of the FIXED dynamic message

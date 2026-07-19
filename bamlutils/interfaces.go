@@ -1054,6 +1054,16 @@ type DeBAMLParseRequest struct {
 	// exists now so the seam is not redesigned when native streaming
 	// lands.
 	Stream bool
+
+	// StreamFinal selects the de-BAML native STREAM FINAL parse (Phase 7D): the
+	// native-only final parser for a completed native stream, which applies BAML's
+	// EOF object-completion and treats a post-preflight unsupported as a TERMINAL
+	// invariant (never a BAML fallback). It is DISTINCT from Stream (the partial
+	// lane): a request with StreamFinal=true routes to the native-only final closure
+	// and is used ONLY by the claimed native stream serving lane. When both are
+	// false the request is the ordinary non-stream final parse; Stream and
+	// StreamFinal are mutually exclusive (StreamFinal takes precedence).
+	StreamFinal bool
 }
 
 // DeBAMLParseResult is a native de-BAML parser's successful output.

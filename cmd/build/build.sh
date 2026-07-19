@@ -197,6 +197,18 @@ fi
 if [ "${SUBPROCESS:-true}" = "true" ]; then
     BUILD_TAGS="${BUILD_TAGS:+${BUILD_TAGS},}subprocess"
 fi
+# De-BAML native stream cohort (Phase 7D): the SERVE-CAPABLE native worker
+# (NATIVE_WORKER=true, subprocess-only) is the only profile that installs the
+# native stream serve factory. Tag the HOST build so cmd/serve knows — at compile
+# time — that its embedded worker can serve native streams, which arms the pool's
+# stream-retry suppression (only alongside a truthy umbrella flag). The SHADOW
+# worker is NOT a stream-serve profile, so it does NOT get the tag. This is the
+# explicit compile/deployment capability the pool threads through
+# configureWorkerMode; it never infers native-stream capability from the umbrella
+# flag alone (scope §7D pool rule).
+if [ "${NATIVE_WORKER:-false}" = "true" ]; then
+    BUILD_TAGS="${BUILD_TAGS:+${BUILD_TAGS},}nativestreamserve"
+fi
 GO_BUILD_TAGS=""
 if [ -n "${BUILD_TAGS}" ]; then
     GO_BUILD_TAGS="-tags=${BUILD_TAGS}"

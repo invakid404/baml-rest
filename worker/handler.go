@@ -111,6 +111,18 @@ type Config struct {
 	// exclusion (workerboot fails startup if both factories are set), so the
 	// generated installer only ever sees one.
 	NativeServeComparator bamlutils.NativeServeFunc
+
+	// NativeStreamServeComparator is the neutral native STREAM SERVE implementation
+	// (de-BAML Phase 7D), the streaming twin of NativeServeComparator. Non-nil ONLY
+	// in the SERVE deploy profile's worker with the umbrella flag on; every other
+	// build leaves it nil, so the generated dynamic StreamRequest seam installs no
+	// native stream callback and every streamed request stays byte-identical to
+	// today. It is installed on every adapter via the narrow nativeStreamServeSetter
+	// interface, gated by DeBAMLConfig().Enabled at the seam. It coexists with
+	// NativeServeComparator (the serve profile installs both unary + stream); it is
+	// NOT installed in the shadow profile, so it does not participate in the
+	// serve/shadow mutual exclusion.
+	NativeStreamServeComparator bamlutils.NativeStreamServeFunc
 }
 
 // deBAMLRendererSetter is the narrow optional interface the adapter
@@ -144,6 +156,14 @@ type nativeShadowSetter interface {
 // bamlutils.Adapter. nil implementation ⇒ nothing installed ⇒ callback hard-off.
 type nativeServeSetter interface {
 	SetNativeServeComparator(bamlutils.NativeServeFunc)
+}
+
+// nativeStreamServeSetter is the streaming twin of nativeServeSetter: the narrow
+// optional interface the adapter implements to receive the native STREAM SERVE
+// implementation (de-BAML Phase 7D). Kept off bamlutils.Adapter for the same
+// reason. nil implementation ⇒ nothing installed ⇒ stream callback hard-off.
+type nativeStreamServeSetter interface {
+	SetNativeStreamServeComparator(bamlutils.NativeStreamServeFunc)
 }
 
 // ErrRuntimeRequired is returned by New when Config.Runtime is nil.
@@ -197,6 +217,13 @@ type Handler struct {
 	// nil/hard-off. Mutually exclusive with nativeShadow at the entry point.
 	nativeServe bamlutils.NativeServeFunc
 
+	// nativeStreamServe is the neutral native STREAM SERVE implementation (de-BAML
+	// Phase 7D), injected only in the serve deploy profile with the flag on (nil in
+	// every default/shadow/flag-off build). Installed on every adapter in
+	// configureAdapter; the generated dynamic StreamRequest seam gates it on
+	// DeBAMLConfig().Enabled and otherwise leaves the stream callback nil/hard-off.
+	nativeStreamServe bamlutils.NativeStreamServeFunc
+
 	sharedStateHook hookStorage
 
 	noSharedStateWarnOnce    sync.Once
@@ -224,18 +251,19 @@ func New(cfg Config) (*Handler, error) {
 		metricsReg = NewMetricsRegistry()
 	}
 	h := &Handler{
-		runtime:          cfg.Runtime,
-		logger:           cfg.Logger,
-		metricsReg:       metricsReg,
-		clientDefaults:   cfg.ClientDefaults,
-		baseURLRewrites:  cfg.BaseURLRewrites,
-		httpClient:       cfg.HTTPClient,
-		deBAML:           cfg.DeBAML,
-		deBAMLRender:     cfg.DeBAMLRender,
-		deBAMLParse:      cfg.DeBAMLParse,
-		nativeCapability: cfg.NativeCapability,
-		nativeShadow:     cfg.NativeShadowComparator,
-		nativeServe:      cfg.NativeServeComparator,
+		runtime:           cfg.Runtime,
+		logger:            cfg.Logger,
+		metricsReg:        metricsReg,
+		clientDefaults:    cfg.ClientDefaults,
+		baseURLRewrites:   cfg.BaseURLRewrites,
+		httpClient:        cfg.HTTPClient,
+		deBAML:            cfg.DeBAML,
+		deBAMLRender:      cfg.DeBAMLRender,
+		deBAMLParse:       cfg.DeBAMLParse,
+		nativeCapability:  cfg.NativeCapability,
+		nativeShadow:      cfg.NativeShadowComparator,
+		nativeServe:       cfg.NativeServeComparator,
+		nativeStreamServe: cfg.NativeStreamServeComparator,
 	}
 	if cfg.SharedState != nil {
 		h.SetSharedStateHook(cfg.SharedState)
@@ -285,6 +313,13 @@ func (h *Handler) configureAdapter(adapter bamlutils.Adapter) {
 	// guarantees the two are never both non-nil.
 	if setter, ok := adapter.(nativeServeSetter); ok {
 		setter.SetNativeServeComparator(h.nativeServe)
+	}
+	// Install the native STREAM SERVE implementation (nil in every default/shadow/
+	// flag-off build, so this is a no-op there). The generated dynamic StreamRequest
+	// seam builds a serving native stream callback when this is non-nil AND
+	// DeBAMLConfig().Enabled; it coexists with the unary serve callback.
+	if setter, ok := adapter.(nativeStreamServeSetter); ok {
+		setter.SetNativeStreamServeComparator(h.nativeStreamServe)
 	}
 }
 

@@ -103,6 +103,15 @@ type BamlAdapter struct {
 	// when it is non-nil and DeBAMLConfig().Enabled.
 	nativeServe bamlutils.NativeServeFunc
 
+	// nativeStreamServe is the native STREAM SERVE implementation (de-BAML
+	// Phase 7D), injected by a serve deploy profile's worker for the same
+	// module-boundary reason as nativeServe. Non-nil ONLY in the serve build
+	// with the flag on; nil in every default/shadow/flag-off build, leaving the
+	// orchestrator's native STREAM child-attempt callback nil/hard-off. The
+	// generated dynamic StreamRequest seam installs it via
+	// StreamConfig.NativeAttempt only when it is non-nil and DeBAMLConfig().Enabled.
+	nativeStreamServe bamlutils.NativeStreamServeFunc
+
 	// rrAdvancer is the per-request round-robin Advancer installed by the
 	// worker; nil falls back to the introspected Coordinator.
 	rrAdvancer bamlutils.RoundRobinAdvancer
@@ -280,6 +289,12 @@ func (b *BamlAdapter) SetNativeServeComparator(fn bamlutils.NativeServeFunc) {
 }
 func (b *BamlAdapter) NativeServeComparator() bamlutils.NativeServeFunc {
 	return b.nativeServe
+}
+func (b *BamlAdapter) SetNativeStreamServeComparator(fn bamlutils.NativeStreamServeFunc) {
+	b.nativeStreamServe = fn
+}
+func (b *BamlAdapter) NativeStreamServeComparator() bamlutils.NativeStreamServeFunc {
+	return b.nativeStreamServe
 }
 func (b *BamlAdapter) SetRoundRobinAdvancer(advancer bamlutils.RoundRobinAdvancer) {
 	b.rrAdvancer = advancer

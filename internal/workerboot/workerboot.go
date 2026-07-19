@@ -87,6 +87,24 @@ type Options struct {
 	// native callback.
 	NativeServeFactory func(reg prometheus.Registerer) (bamlutils.NativeServeFunc, error)
 
+	// NativeStreamServeFactory, when non-nil, builds the native STREAM SERVE
+	// implementation (de-BAML Phase 7D) the SERVE deploy profile's worker injects
+	// alongside NativeServeFactory while the umbrella flag is on. It is called ONCE
+	// at startup with the worker's private Prometheus registry (for signature
+	// symmetry with NativeServeFactory; the stream lane records no de-BAML counters
+	// this phase — the rollout observability is owner-trimmed); the returned
+	// NativeStreamServeFunc is installed on every adapter. The generated dynamic
+	// StreamRequest seam turns it into StreamConfig.NativeAttempt only when it is
+	// non-nil AND the umbrella flag is enabled, and that callback actually SERVES an
+	// admitted dynamic OpenAI `_dynamic` StreamRequest natively (one exact RoundTrip
+	// driving nanollm DoStream) or declines pre-transport to BAML. A returned error
+	// exits the process non-zero (fails the go-plugin handshake). nil in every
+	// non-serve build. It is the streaming twin of NativeServeFactory and is NOT
+	// installed in the shadow profile, so it does not participate in the serve/shadow
+	// mutual exclusion — a serve worker supplies BOTH NativeServeFactory and
+	// NativeStreamServeFactory.
+	NativeStreamServeFactory func(reg prometheus.Registerer) (bamlutils.NativeStreamServeFunc, error)
+
 	// NativeBuildCapable and NativeEngineName advertise a STATIC build capability
 	// (no FFI) for the startup diagnostic even while the umbrella flag is off, so a
 	// flag-off serve/shadow profile can report native_build_capable=true + the
@@ -331,6 +349,25 @@ func Run(opts Options) {
 		nativeServe = fn
 	}
 
+	// Build the native STREAM SERVE implementation (de-BAML Phase 7D; nil except in
+	// the serve deploy profile). Same fail-loud contract as the unary serve factory:
+	// a build error or a PRESENT factory that returns a nil implementation without an
+	// error is fatal, so a serve cohort never silently streams all-BAML while
+	// reporting rollout_mode=serve.
+	var nativeStreamServe bamlutils.NativeStreamServeFunc
+	if opts.NativeStreamServeFactory != nil {
+		fn, err := opts.NativeStreamServeFactory(metricsReg)
+		if err != nil {
+			logger.Error("failed to build native stream serve implementation", "err", err.Error())
+			os.Exit(1)
+		}
+		if fn == nil {
+			logger.Error("native stream serve factory returned a nil implementation without an error; a serve-profile worker must not stream all-BAML while reporting rollout_mode=serve")
+			os.Exit(1)
+		}
+		nativeStreamServe = fn
+	}
+
 	handler, err := worker.New(worker.Config{
 		Runtime:         rt,
 		Logger:          logger,
@@ -354,6 +391,12 @@ func Run(opts Options) {
 		// is enabled it actually serves an admitted unary `_dynamic` call natively
 		// (one exact RoundTrip); unsupported traffic declines pre-socket to BAML.
 		NativeServeComparator: nativeServe,
+		// Install the native STREAM SERVE implementation (de-BAML Phase 7D; nil except
+		// in the serve deploy profile's worker with the flag on). When non-nil AND the
+		// umbrella flag is enabled it serves an admitted dynamic OpenAI `_dynamic`
+		// StreamRequest natively (one exact RoundTrip driving DoStream); unsupported
+		// traffic declines pre-transport to BAML.
+		NativeStreamServeComparator: nativeStreamServe,
 	})
 	if err != nil {
 		logger.Error("failed to construct worker handler", "err", err.Error())

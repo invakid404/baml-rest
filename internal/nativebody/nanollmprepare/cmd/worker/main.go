@@ -64,5 +64,13 @@ func main() {
 		// subprocess serve worker and the in-process path are at transport parity by
 		// construction.
 		NativeServeFactory: nativeserve.New,
+		// The STREAM serve factory (de-BAML Phase 7D): returns the neutral
+		// bamlutils.NativeStreamServeFunc the generated dynamic StreamRequest seam
+		// installs as StreamConfig.NativeAttempt — which serves admitted dynamic OpenAI
+		// `/stream{,-with-raw}/_dynamic` requests natively (one exact RoundTrip driving
+		// nanollm DoStream) or declines pre-transport to BAML. Installed ALONGSIDE the
+		// unary serve factory (both live in the serve profile); with the flag off this
+		// whole branch is skipped, so the stream lane is hard-off and 100% BAML.
+		NativeStreamServeFactory: nativeserve.NewStream,
 	})
 }

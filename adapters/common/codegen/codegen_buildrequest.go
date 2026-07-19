@@ -778,6 +778,32 @@ func (me *methodEmitter) emitBuildRequest() {
 		),
 	)
 
+	// De-BAML native STREAM child-attempt install (Phase 7D). Emitted only for the
+	// dynamic method; a no-op unless a serve-profile worker injected a native stream
+	// implementation AND the umbrella flag is enabled (see maybeInstallNativeStream).
+	// It sets StreamConfig.NativeAttempt to a callback that admits + plan-compares
+	// without a socket, then either DECLINES to BAML pre-transport or CLAIMS one
+	// native RoundTrip and streams natively via the orchestrator's shared cadence,
+	// plus the NATIVE-ONLY partial/final parser closures (no per-prefix BAML
+	// fallback). The strategy facts + the effective send client's rewrite/proxy
+	// predicate mirror the unary maybeInstallNativeCall call exactly, so an unproven
+	// shape declines pre-transport. The wouldRewriteOrProxy method value is
+	// __httpClient.WouldRewriteOrProxy — the exact client BAML would send through.
+	if me.isDeBAMLMethod() {
+		buildRequestBody = append(buildRequestBody,
+			jen.Id("maybeInstallNativeStream").Call(
+				jen.Id("adapter"),
+				jen.Id("streamConfig"),
+				jen.Id(me.deBAMLConvertedVar()),
+				jen.Len(jen.Id("fallbackChain")).Op("==").Lit(0),
+				jen.Len(jen.Id("fallbackChain")).Op(">").Lit(0),
+				jen.Id("plannedMetadata").Op("!=").Nil().Op("&&").
+					Id("plannedMetadata").Dot("RoundRobin").Op("!=").Nil(),
+				jen.Id("__httpClient").Dot("WouldRewriteOrProxy"),
+			),
+		)
+	}
+
 	// Seed_OmitAsyncDefer relocates the release defer to the outer
 	// buildRequest function body — it fires when the outer function
 	// returns, racing the orchestration goroutine's reads of

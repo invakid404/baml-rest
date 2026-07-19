@@ -131,13 +131,21 @@ func writeWorkerAtomic(dst, workerFilename, cacheDir string) error {
 // no host→worker config RPC; programmatic config flows only through
 // the in-process WorkerFactory seam.
 func configureWorkerMode(logger zerolog.Logger, cfg *pool.Config, runtimeCfg workerModeRuntimeConfig) error {
-	_ = runtimeCfg
 	workerPath, err := extractWorker(logger)
 	if err != nil {
 		return fmt.Errorf("failed to extract worker binary: %w", err)
 	}
 	logger.Info().Str("path", workerPath).Msg("Worker binary extracted")
 	cfg.WorkerPath = workerPath
+	// De-BAML native-stream cohort (Phase 7D): suppress the pool's stream
+	// replay/retry loop ONLY when this artifact ships the native-stream serve
+	// worker (compile capability) AND the umbrella flag resolves true. A BAML-only
+	// subprocess build (nativeStreamServeCapable=false) keeps the current pool
+	// retry behaviour even with the default-on umbrella.
+	cfg.DisableStreamInfrastructureRetries = nativeStreamServeCapable && runtimeCfg.DeBAML.Enabled
+	if cfg.DisableStreamInfrastructureRetries {
+		logger.Info().Msg("Native-stream cohort: pool stream infrastructure retries disabled (no replay after transport claim)")
+	}
 	return nil
 }
 

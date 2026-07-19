@@ -201,6 +201,15 @@ func emitFrameworkAdapter(out *jen.File, opts Options) {
 		jen.Comment("when it is non-nil and DeBAMLConfig().Enabled."),
 		jen.Id("nativeServe").Qual(bamlutilsPkg, "NativeServeFunc"),
 		jen.Line(),
+		jen.Comment("nativeStreamServe is the native STREAM SERVE implementation (de-BAML"),
+		jen.Comment("Phase 7D), injected by a serve deploy profile's worker for the same"),
+		jen.Comment("module-boundary reason as nativeServe. Non-nil ONLY in the serve build"),
+		jen.Comment("with the flag on; nil in every default/shadow/flag-off build, leaving the"),
+		jen.Comment("orchestrator's native STREAM child-attempt callback nil/hard-off. The"),
+		jen.Comment("generated dynamic StreamRequest seam installs it via"),
+		jen.Comment("StreamConfig.NativeAttempt only when it is non-nil and DeBAMLConfig().Enabled."),
+		jen.Id("nativeStreamServe").Qual(bamlutilsPkg, "NativeStreamServeFunc"),
+		jen.Line(),
 		jen.Comment("rrAdvancer is the per-request round-robin Advancer installed by the"),
 		jen.Comment("worker; nil falls back to the introspected Coordinator."),
 		jen.Id("rrAdvancer").Qual(bamlutilsPkg, "RoundRobinAdvancer"),
@@ -640,6 +649,23 @@ func emitFrameworkAdapterDeBAML(out *jen.File, bamlutilsPkg string) {
 		Id("NativeServeComparator").Params().Qual(bamlutilsPkg, "NativeServeFunc").
 		Block(
 			jen.Return(jen.Id("b").Dot("nativeServe")),
+		)
+
+	// SetNativeStreamServeComparator / NativeStreamServeComparator are the streaming
+	// twins (de-BAML Phase 7D): the narrow optional interfaces the serve-profile
+	// worker and the generated dynamic StreamRequest seam use to install and read the
+	// native STREAM serve implementation. Kept off bamlutils.Adapter like the other
+	// native accessors; nil in every default build.
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("SetNativeStreamServeComparator").Params(jen.Id("fn").Qual(bamlutilsPkg, "NativeStreamServeFunc")).
+		Block(
+			jen.Id("b").Dot("nativeStreamServe").Op("=").Id("fn"),
+		)
+
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("NativeStreamServeComparator").Params().Qual(bamlutilsPkg, "NativeStreamServeFunc").
+		Block(
+			jen.Return(jen.Id("b").Dot("nativeStreamServe")),
 		)
 }
 
