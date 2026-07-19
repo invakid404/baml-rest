@@ -96,6 +96,20 @@ codegen/bamlfuzz
 # whether the operator has session notes on disk.
 notes
 
+# de-BAML #555 Slice 1: the bamlunicode generator cache + build-time proof
+# material. testdata/ucd/archives/** are the SHA-256-pinned UCD 17.0.0/16.0.0
+# UCD.zip archives the deterministic generator extracts its inputs from;
+# testdata/reference/** is the Rust 1.93.0
+# / unicode-normalization 0.1.24 differential oracle; testdata/{deltas,sigma}/**
+# and oracle_strings.json are the committed proof corpora. All are test-only
+# generator inputs / proof artifacts — never a runtime or customer-build input,
+# and hash-verified in the profile manifest. Excluded here so cmd/embed keeps
+# them out of the server binary's embed.FS, mirroring
+# internal/schema/outputformat/testdata above. The generated production tables
+# (internal/debaml/bamlunicode/*_gen.go) and hand-written runtime files ARE
+# embedded (they carry no testdata/ path and are picked up by cmd/embed).
+internal/debaml/bamlunicode/testdata
+
 # Root-level command build artifacts. `go build ./cmd/introspect` and
 # `go build ./cmd/schema` default their output to `./introspect` and
 # `./schema` at the module root; both are gitignored (see .gitignore's

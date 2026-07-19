@@ -2,6 +2,12 @@
 .claude/
 /introspect
 /schema
+# Stray root-level build artifacts from `go build ./internal/debaml/bamlunicode/cmd/gen`
+# and `.../cmd/driftcheck` (Go names the binary after the package dir in $CWD).
+# Ignored so an accidental local build can never be picked up by the root
+# //go:embed directive (cmd/embed), mirroring /introspect and /schema above.
+/gen
+/driftcheck
 
 # Generated framework adapter files — emitted in-place by each
 # per-adapter cmd/main.go (and during customer builds via

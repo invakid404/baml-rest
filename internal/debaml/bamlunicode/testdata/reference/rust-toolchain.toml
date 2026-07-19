@@ -1,0 +1,8 @@
+# Pin the exact BAML 0.223.0 CFFI build toolchain. Rust std at 1.93.0 carries
+# Unicode 17.0.0 (char::UNICODE_VERSION), which is the dataset str::to_lowercase,
+# char::is_alphanumeric and char::is_whitespace resolve against. The reference
+# MUST be built with `cargo +1.93.0`; the ambient toolchain (1.94) selects a
+# different Unicode version and would silently invalidate the byte-for-byte proof.
+[toolchain]
+channel = "1.93.0"
+profile = "minimal"
