@@ -9,10 +9,14 @@ package nativeschema
 //
 // Like BuildStaticSchemas it is fail-closed PER FUNCTION: it returns a
 // descriptor OR a decline for each method, never both, and never errors as a
-// pipeline. Duplicate function names are last-wins, matching build.go. The
-// descriptor is a BUILD-ONLY sidecar in Phase 1 — cmd/introspect stores it on
-// *bamlConfig but does NOT emit it into the generated introspected package, so
-// nothing here reaches codegen or a request path.
+// pipeline. Duplicate function names are last-wins, matching build.go. As of
+// de-BAML Phase 8A (#602) cmd/introspect EMITS the descriptor it stores on
+// *bamlConfig into the generated introspected package (StaticPromptDescriptors)
+// as representation-only metadata that stays unrouted — no consumer, admission,
+// or socket reads it. The raw prompt bytes and any inline client literals the
+// descriptor carries are therefore sensitive generated-source + binary material
+// (see promptdescriptor's package doc). This builder itself stays passive and
+// reaches no request path.
 //
 // Decline contract (Phase 1 scope, "Precise decline contract"). Each decline
 // carries a stable reason substring:

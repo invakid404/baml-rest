@@ -7,11 +7,15 @@ package nativeschema
 // transport-only vs body-affecting option split.
 //
 // It is a sibling of the prompt-descriptor builder (prompt.go) and, like it, is
-// PASSIVE and BUILD-ONLY: it lowers no values, resolves no env, serializes
-// nothing, and reaches no request path. BuildPromptDescriptors stamps the result
-// onto each eligible function's descriptor. The static differential oracle and
-// cmd/introspect both call BuildClientConfigs on the same parsed files, so the
-// production build path and the oracle preserve identical option data.
+// PASSIVE: it lowers no values, resolves no env, and serializes nothing itself.
+// BuildPromptDescriptors stamps the result onto each eligible function's
+// descriptor, which cmd/introspect EMITS into the generated introspected package
+// as of de-BAML Phase 8A (#602) — so a ClientConfig's inline option literals
+// become sensitive representation-only generated-source + binary material (see
+// promptdescriptor's package doc), though this extractor reaches no request path.
+// The static differential oracle and cmd/introspect both call BuildClientConfigs
+// on the same parsed files, so the production build path and the oracle preserve
+// identical option data.
 //
 // Ordering and duplicate resolution mirror BAML: options are kept in source
 // order and duplicate keys resolve last-wins, with the surviving key keeping the

@@ -17,9 +17,20 @@
 // The builder that populates these descriptors lives on the internal side
 // (internal/nativeschema.BuildPromptDescriptors); like schemadescriptor, this
 // package stays a passive contract with no knowledge of how it is built or
-// consumed. In Phase 1 the descriptor is a build-only sidecar in
-// cmd/introspect: it is NOT emitted into the generated introspected package
-// and reaches no request path. See the de-BAML Phase 1 scope (slice 2).
+// consumed.
+//
+// As of de-BAML Phase 8A (#602) these descriptors — including [Function.Prompt]
+// and [Function.ClientConfig] — ARE emitted into the generated introspected
+// packages (as introspected.StaticPromptDescriptors, a map of fresh-per-call
+// typed factories) as runtime REPRESENTATION ONLY: routed nowhere, with no
+// consumer, admission, or socket in 8A. SECURITY: emission puts each function's
+// raw prompt bytes and any INLINE client-option literals (including credentials
+// declared as literals rather than env.X references) into generated source AND
+// the compiled worker binary, so both are sensitive artifacts — never log,
+// metric-label, %v-format, or error-wrap a descriptor or its raw fields, and
+// prefer env.X references so secret material stays out of generated artifacts.
+// Only the separate standalone static-schema sidecar stays un-emitted; a
+// descriptor's [Function.Return] already carries the exact schemadescriptor.Bundle.
 package promptdescriptor
 
 import (
