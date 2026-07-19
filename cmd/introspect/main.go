@@ -67,6 +67,16 @@ func (c *config) roundRobinPkg() string {
 	return c.InterfacesPkg + "/buildrequest/roundrobin"
 }
 
+// promptDescriptorPkg / bamlParserPkg / schemaDescriptorPkg return the
+// bamlutils subpackage import paths the de-BAML Phase 8A static
+// prompt-descriptor emission names in the generated introspected package.
+// They are all rooted at InterfacesPkg (the bamlutils module), so they
+// resolve identically for the root, dynclient, and stock-oracle-fixture
+// generation layouts.
+func (c *config) promptDescriptorPkg() string { return c.InterfacesPkg + "/promptdescriptor" }
+func (c *config) bamlParserPkg() string       { return c.InterfacesPkg + "/bamlparser" }
+func (c *config) schemaDescriptorPkg() string { return c.InterfacesPkg + "/schemadescriptor" }
+
 // outputFile returns the path of the introspected.go file to emit.
 func (c *config) outputFile() string {
 	return filepath.Join(c.OutputDir, "introspected.go")
@@ -1284,8 +1294,18 @@ type bamlConfig struct {
 	// P1 slice 2), keyed by function name. Populated by BuildPromptDescriptors; a
 	// function appears here only when it is an eligible LLM function whose return
 	// bundle, shape, and reachable input/return/macro type graphs all pass the
-	// decline contract. Like staticSchemas this is a BUILD-ONLY sidecar: it is
-	// NOT emitted into introspected.go and reaches no request path in this phase.
+	// decline contract.
+	//
+	// As of de-BAML Phase 8A (#602) this IS emitted into introspected.go, as
+	// StaticPromptDescriptors (a map of fresh-per-call typed factories) — runtime
+	// REPRESENTATION ONLY, routed nowhere in 8A (no consumer/admission/socket; an
+	// AST guard proves it). SECURITY: emitting it puts each descriptor's raw prompt
+	// bytes and any INLINE client-option literals (including credentials declared
+	// as literals rather than env.X) into generated source AND the compiled worker
+	// binary; treat both as sensitive artifacts and prefer env.X for secrets. See
+	// emitStaticPromptDescriptors for the full contract. (The separate static-schema
+	// sidecar staticSchemas/staticSchemaDeclines stays build-only and un-emitted:
+	// Function.Return already carries the exact Bundle.)
 	staticPromptDescriptors map[string]promptdescriptor.Function
 	// staticPromptDeclines maps a function name to the stable reason it is not an
 	// eligible prompt descriptor (return bundle unavailable, no usable LLM
@@ -1436,17 +1456,20 @@ func parseBamlSourceDir(dir string) *bamlConfig {
 
 	// Extract the passive per-client body configuration (model + ordered
 	// request_body tree + transport/body-affecting option split) from the same
-	// parsed files (de-BAML P4a). Like the descriptors below it is a BUILD-ONLY
-	// sidecar: NOT emitted into introspected.go, reaches no request path.
+	// parsed files (de-BAML P4a). It becomes each descriptor's ClientConfig and is
+	// therefore emitted with the descriptor as of Phase 8A (see below); it can
+	// carry INLINE client-option literals, so it is sensitive generated-source
+	// material and must never be logged/metric-labeled/%v-formatted.
 	clientConfigs := nativeschema.BuildClientConfigs(parsedFiles)
 
 	// Build the native per-function PROMPT descriptors AFTER the static schemas
 	// and enrichShorthandClientProviders (de-BAML P1 slice 2, #586). Fail-closed
-	// per function; a BUILD-ONLY sidecar not consumed by codegen — see the
-	// non-emission boundary documented in generateBamlConfigVars. Always returns
-	// non-nil maps, matching staticSchemas above. The clientConfigs are threaded
-	// in (P4a) so each descriptor carries its client's passive body config; this
-	// changes only the sidecar descriptors, not any generated/served output.
+	// per function; always returns non-nil maps, matching staticSchemas above. The
+	// clientConfigs are threaded in (P4a) so each descriptor carries its client's
+	// passive body config. As of Phase 8A (#602) these descriptors and their
+	// ClientConfig ARE emitted into introspected.go (StaticPromptDescriptors) as
+	// representation-only metadata that stays unrouted — see the security/ownership
+	// contract on emitStaticPromptDescriptors.
 	cfg.staticPromptDescriptors, cfg.staticPromptDeclines = nativeschema.BuildPromptDescriptors(
 		parsedFiles, cfg.staticSchemas, cfg.staticSchemaDeclines, cfg.clientProvider, clientConfigs)
 
@@ -2345,17 +2368,21 @@ func generateBamlConfigVars(out *jen.File, cliCfg *config) {
 		out.Var().Id("BedrockClientOptionsByName").Op("=").Map(jen.String()).Id("BedrockClientOptions").Values(entries...)
 	}
 
-	// Non-emission boundary (de-BAML P1 slice 2, #586). cfg.staticSchemas /
-	// cfg.staticSchemaDeclines AND cfg.staticPromptDescriptors /
-	// cfg.staticPromptDeclines are INTENTIONALLY NOT emitted into introspected.go
-	// here, and no generated imports are added for them. They are build-only
-	// sidecars: emitting the prompt descriptor would require a large generated Go
-	// literal serializer for TypeExpr and the schemadescriptor.Bundle, would put
-	// raw prompt bytes into generated source (a security surface, see the scope's
-	// R6), and would create a runtime surface this representation-only phase must
-	// not add. A later metadata-runtime plumbing slice may transport these
-	// descriptors into the generated package without redesigning them; until then
-	// they stay in-process on *bamlConfig and reach no request path.
+	// Static prompt-descriptor emission (de-BAML Phase 8A, #602). This REPLACES
+	// the Phase-1 non-emission boundary that used to sit here. cfg.staticPrompt-
+	// Descriptors / cfg.staticPromptDeclines are now emitted into introspected.go
+	// as deterministic, typed factory literals plus a StaticPromptDescriptor
+	// accessor. This is runtime REPRESENTATION ONLY: no serving, admission, or
+	// socket path consumes them in 8A (an AST source guard proves no production
+	// consumer outside the generated package). See emitStaticPromptDescriptors
+	// for the full ownership + SECURITY contract.
+	//
+	// cfg.staticSchemas / cfg.staticSchemaDeclines remain build-only sidecars and
+	// are still INTENTIONALLY NOT emitted: Function.Return already carries the
+	// exact schemadescriptor.Bundle, so a second standalone static-schema copy
+	// would be a drift source (scope R4). A response-side static-parse slice may
+	// add its own schema-only accessor later if it needs prompt-less functions.
+	emitStaticPromptDescriptors(out, cliCfg, cfg.staticPromptDescriptors, cfg.staticPromptDeclines)
 }
 
 // bedrockOptionValueLit renders a bedrockOptionValue as the
@@ -2446,4 +2473,1011 @@ func emitBedrockOptionTypes(out *jen.File) {
 		jen.Id("Region").Id("BedrockOptionValue"),
 		jen.Id("Credentials").Id("BedrockCredentialOptions"),
 	)
+}
+
+// ============================================================================
+// de-BAML Phase 8A (#602): static prompt-descriptor runtime emission.
+//
+// emitStaticPromptDescriptors REPLACES the Phase-1 non-emission boundary. It
+// writes the build-time promptdescriptor.Function set + its decline ledger into
+// the generated introspected package as deterministic, typed factory literals:
+//
+//	var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{...}
+//	var StaticPromptDeclines    = map[string]string{...}
+//	func StaticPromptDescriptor(method string) (promptdescriptor.Function, bool)
+//
+// OWNERSHIP / SCOPE: this is runtime REPRESENTATION ONLY. Nothing in Phase 8A
+// consumes these symbols on any serving, admission, or socket path — the AST
+// source guard in the generated package's test tree proves there is no
+// production consumer outside that package. They exist so a later native static
+// serving slice (8B/8C) can transport the already-proven descriptor into runtime
+// without reparsing .baml or querying a BAML runtime.
+//
+// FRESHNESS: every map value is a func() that RETURNS A FRESH composite literal
+// on each call. Every pointer (&bamlparser.TypeExpr{...}, &schemadescriptor.Type
+// {...}, a *string materialized from a fresh local) and every slice literal is
+// re-evaluated per call, so a caller mutating one returned descriptor (its args,
+// recursive TypeExpr nodes, macros, schema bundle, option trees, or pointer
+// fields) cannot poison a later call. Strings are immutable, so sharing the
+// underlying bytes is safe.
+//
+// DETERMINISM: method keys are sorted; every load-bearing slice keeps its
+// source/BAML order verbatim (the descriptor model carries no Go maps, only
+// ordered slices); jennifer renders struct-literal Dict keys sorted, so output
+// is byte-identical regardless of Go map-iteration order. nil-vs-present
+// slice/pointer distinctions are preserved: a nil slice/pointer omits its field
+// (Go zero-value is nil), while an empty-but-present slice emits []T{}.
+//
+// SECURITY (owner-approved, de-BAML P8A): a descriptor's raw prompt bytes and
+// any INLINE client option literals (including credentials declared as literals
+// rather than env.X references) land in this generated source file AND the
+// compiled worker binary. That is a deliberate change from Phase 1, which
+// avoided emission for exactly this reason. Handling contract: NEVER log /
+// metric-label / %v-format / error-wrap a descriptor or its raw fields; treat
+// the generated file and the worker binary as sensitive build artifacts; prefer
+// env.X references so secret material stays out of generated artifacts. Encoding
+// is plain typed Go literals (NOT obfuscation/base64, NOT a runtime JSON/gob
+// decoder): obfuscation is not a security improvement, and a decoder would add
+// an init-time panic path and forfeit compile-time type safety and explicit deep
+// freshness.
+func emitStaticPromptDescriptors(out *jen.File, cliCfg *config, descriptors map[string]promptdescriptor.Function, declines map[string]string) {
+	e := &promptEmitter{
+		pd: cliCfg.promptDescriptorPkg(),
+		bp: cliCfg.bamlParserPkg(),
+		sd: cliCfg.schemaDescriptorPkg(),
+	}
+
+	// Fail-closed disjointness guard: a method is a descriptor XOR a decline,
+	// never both and never neither-with-an-accessor-hit. BuildPromptDescriptors
+	// already returns disjoint maps; assert it at generation time so a future
+	// builder regression cannot silently emit a method into both partitions
+	// (which would let the accessor and the decline ledger disagree).
+	descKeys := make([]string, 0, len(descriptors))
+	for method := range descriptors {
+		if _, dup := declines[method]; dup {
+			log.Fatalf("introspect: method %q is BOTH a static prompt descriptor and a decline; the partition must be disjoint", method)
+		}
+		descKeys = append(descKeys, method)
+	}
+	sort.Strings(descKeys)
+
+	out.Comment("StaticPromptDescriptors maps a BAML method name to a factory returning a FRESH")
+	out.Comment("promptdescriptor.Function on every call (de-BAML Phase 8A, representation only — no")
+	out.Comment("serving/admission/socket path consumes it). SECURITY: a returned descriptor's raw")
+	out.Comment("prompt bytes and any inline client literals are baked into this generated file and the")
+	out.Comment("worker binary; never log / metric-label / %v-format / error-wrap a descriptor or its raw")
+	out.Comment("fields. Prefer env.X references so secrets stay out of the generated artifact.")
+	descEntries := make([]jen.Code, 0, len(descKeys))
+	for _, method := range descKeys {
+		fn := descriptors[method]
+		descEntries = append(descEntries, jen.Lit(method).Op(":").Func().Params().Qual(e.pd, "Function").Block(
+			jen.Return(e.function(fn)),
+		))
+	}
+	out.Var().Id("StaticPromptDescriptors").Op("=").Map(jen.String()).Func().Params().Qual(e.pd, "Function").Values(descEntries...)
+
+	out.Comment("StaticPromptDeclines maps a BAML method name to the stable build-time reason it is NOT")
+	out.Comment("an eligible static prompt descriptor. Disjoint from StaticPromptDescriptors. Every entry")
+	out.Comment("is a #583 teardown blocker to close, not an accepted permanent fallback.")
+	declKeys := make([]string, 0, len(declines))
+	for method := range declines {
+		declKeys = append(declKeys, method)
+	}
+	sort.Strings(declKeys)
+	declEntries := make([]jen.Code, 0, len(declKeys))
+	for _, method := range declKeys {
+		declEntries = append(declEntries, jen.Lit(method).Op(":").Lit(declines[method]))
+	}
+	out.Var().Id("StaticPromptDeclines").Op("=").Map(jen.String()).String().Values(declEntries...)
+
+	out.Comment("StaticPromptDescriptor returns a fresh descriptor and true when method has an emitted")
+	out.Comment("static prompt descriptor; it returns the zero Function and false otherwise (method absent")
+	out.Comment("or declined). It NEVER manufactures a zero-valued \"supported\" descriptor: a caller must")
+	out.Comment("treat !ok as \"no native static descriptor; stay on the BAML path\".")
+	out.Func().Id("StaticPromptDescriptor").Params(jen.Id("method").String()).Params(jen.Qual(e.pd, "Function"), jen.Bool()).Block(
+		jen.List(jen.Id("factory"), jen.Id("ok")).Op(":=").Id("StaticPromptDescriptors").Index(jen.Id("method")),
+		jen.If(jen.Op("!").Id("ok")).Block(
+			jen.Return(jen.Qual(e.pd, "Function").Values(), jen.False()),
+		),
+		jen.Return(jen.Id("factory").Call(), jen.True()),
+	)
+}
+
+// promptEmitter holds the resolved import paths for the three bamlutils
+// packages a static prompt descriptor names (promptdescriptor, bamlparser,
+// schemadescriptor). Its methods walk a live promptdescriptor.Function and emit
+// a self-contained typed Go literal for it. jennifer adds only the imports an
+// emitted literal actually references, so the empty-map layouts (root stub /
+// dynamic-only dynclient) import just promptdescriptor for the accessor
+// signature, while a populated fixture imports all three.
+//
+// Field-emission rule: a scalar/enum field is emitted only when it differs from
+// its Go zero value (an omitted field decodes back to that exact zero), a
+// pointer only when non-nil, and a slice only when non-nil (an empty-but-present
+// slice as []T{}). This is lossless — zero-value == omitted-value in Go — and
+// keeps the fixture readable while preserving every nil-vs-empty distinction. A
+// handful of structurally-required fields (a Function's Return/ClientConfig, a
+// type node's discriminating Kind, a class field's Type, an alias/arrow Target/
+// Return) are always emitted.
+//
+// Parser-private scratch (bamlparser.Attribute.argStart/argEnd) is unexported
+// and already resolved into RawArgs; it is neither read nor emitted here, matching
+// the scope's "do not expose parser scratch to satisfy reflect.DeepEqual" rule.
+type promptEmitter struct {
+	pd string // promptdescriptor import path
+	bp string // bamlparser import path
+	sd string // schemadescriptor import path
+}
+
+func (e *promptEmitter) function(fn promptdescriptor.Function) jen.Code {
+	d := jen.Dict{}
+	if fn.Version != 0 {
+		d[jen.Id("Version")] = jen.Lit(fn.Version)
+	}
+	if fn.Method != "" {
+		d[jen.Id("Method")] = jen.Lit(fn.Method)
+	}
+	if fn.Prompt != "" {
+		d[jen.Id("Prompt")] = jen.Lit(fn.Prompt)
+	}
+	if fn.Args != nil {
+		d[jen.Id("Args")] = e.arguments(fn.Args)
+	}
+	if fn.Client != "" {
+		d[jen.Id("Client")] = jen.Lit(fn.Client)
+	}
+	if fn.Provider != "" {
+		d[jen.Id("Provider")] = jen.Lit(fn.Provider)
+	}
+	d[jen.Id("Return")] = e.bundle(fn.Return)
+	if fn.Macros != nil {
+		d[jen.Id("Macros")] = e.templateStrings(fn.Macros)
+	}
+	d[jen.Id("ClientConfig")] = e.clientConfig(fn.ClientConfig)
+	return jen.Qual(e.pd, "Function").Values(d)
+}
+
+func (e *promptEmitter) arguments(args []promptdescriptor.Argument) jen.Code {
+	elems := make([]jen.Code, len(args))
+	for i, a := range args {
+		elems[i] = e.argument(a)
+	}
+	return jen.Index().Qual(e.pd, "Argument").Values(elems...)
+}
+
+func (e *promptEmitter) argument(a promptdescriptor.Argument) jen.Code {
+	d := jen.Dict{}
+	if a.Name != "" {
+		d[jen.Id("Name")] = jen.Lit(a.Name)
+	}
+	if a.Type != nil {
+		d[jen.Id("Type")] = e.typeExprPtr(a.Type)
+	}
+	return jen.Qual(e.pd, "Argument").Values(d)
+}
+
+func (e *promptEmitter) templateStrings(ms []promptdescriptor.TemplateString) jen.Code {
+	elems := make([]jen.Code, len(ms))
+	for i, m := range ms {
+		elems[i] = e.templateString(m)
+	}
+	return jen.Index().Qual(e.pd, "TemplateString").Values(elems...)
+}
+
+func (e *promptEmitter) templateString(m promptdescriptor.TemplateString) jen.Code {
+	d := jen.Dict{}
+	if m.Name != "" {
+		d[jen.Id("Name")] = jen.Lit(m.Name)
+	}
+	if m.Args != nil {
+		d[jen.Id("Args")] = e.arguments(m.Args)
+	}
+	if m.Body != "" {
+		d[jen.Id("Body")] = jen.Lit(m.Body)
+	}
+	if m.SourcePath != "" {
+		d[jen.Id("SourcePath")] = jen.Lit(m.SourcePath)
+	}
+	return jen.Qual(e.pd, "TemplateString").Values(d)
+}
+
+// --- bamlparser.TypeExpr and its recursive arms ---
+
+func (e *promptEmitter) typeExprPtr(t *bamlparser.TypeExpr) jen.Code {
+	if t == nil {
+		return jen.Nil()
+	}
+	return jen.Op("&").Qual(e.bp, "TypeExpr").Values(e.typeExprDict(t))
+}
+
+func (e *promptEmitter) typeExprPtrSlice(ts []*bamlparser.TypeExpr) jen.Code {
+	elems := make([]jen.Code, len(ts))
+	for i, t := range ts {
+		elems[i] = e.typeExprPtr(t)
+	}
+	return jen.Index().Op("*").Qual(e.bp, "TypeExpr").Values(elems...)
+}
+
+func (e *promptEmitter) typeExprDict(t *bamlparser.TypeExpr) jen.Dict {
+	d := jen.Dict{}
+	// Kind is the union discriminator — always emitted.
+	d[jen.Id("Kind")] = e.bamlTypeKind(t.Kind)
+	if t.Primitive != "" {
+		d[jen.Id("Primitive")] = jen.Lit(t.Primitive)
+	}
+	if t.Media != "" {
+		d[jen.Id("Media")] = jen.Lit(t.Media)
+	}
+	if t.Name != "" {
+		d[jen.Id("Name")] = jen.Lit(t.Name)
+	}
+	if t.Namespaced {
+		d[jen.Id("Namespaced")] = jen.Lit(true)
+	}
+	if t.Path {
+		d[jen.Id("Path")] = jen.Lit(true)
+	}
+	if t.Elem != nil {
+		d[jen.Id("Elem")] = e.typeExprPtr(t.Elem)
+	}
+	if t.Dims != 0 {
+		d[jen.Id("Dims")] = jen.Lit(t.Dims)
+	}
+	if t.Key != nil {
+		d[jen.Id("Key")] = e.typeExprPtr(t.Key)
+	}
+	if t.Value != nil {
+		d[jen.Id("Value")] = e.typeExprPtr(t.Value)
+	}
+	if t.Variants != nil {
+		d[jen.Id("Variants")] = e.typeExprPtrSlice(t.Variants)
+	}
+	if t.Nullable {
+		d[jen.Id("Nullable")] = jen.Lit(true)
+	}
+	if t.LiteralKind != "" {
+		d[jen.Id("LiteralKind")] = jen.Lit(t.LiteralKind)
+	}
+	if t.LiteralValue != "" {
+		d[jen.Id("LiteralValue")] = jen.Lit(t.LiteralValue)
+	}
+	if t.Items != nil {
+		d[jen.Id("Items")] = e.typeExprPtrSlice(t.Items)
+	}
+	if t.Inner != nil {
+		d[jen.Id("Inner")] = e.typeExprPtr(t.Inner)
+	}
+	if t.Reason != "" {
+		d[jen.Id("Reason")] = jen.Lit(t.Reason)
+	}
+	if t.Attributes != nil {
+		d[jen.Id("Attributes")] = e.attributeSlice(t.Attributes)
+	}
+	if t.Parenthesized {
+		d[jen.Id("Parenthesized")] = jen.Lit(true)
+	}
+	if !isZeroSpan(t.Span) {
+		d[jen.Id("Span")] = e.span(t.Span)
+	}
+	return d
+}
+
+func (e *promptEmitter) attributeSlice(as []*bamlparser.Attribute) jen.Code {
+	elems := make([]jen.Code, len(as))
+	for i, a := range as {
+		elems[i] = e.attributePtr(a)
+	}
+	return jen.Index().Op("*").Qual(e.bp, "Attribute").Values(elems...)
+}
+
+func (e *promptEmitter) attributePtr(a *bamlparser.Attribute) jen.Code {
+	if a == nil {
+		return jen.Nil()
+	}
+	d := jen.Dict{}
+	if a.Name != "" {
+		d[jen.Id("Name")] = jen.Lit(a.Name)
+	}
+	if a.Block {
+		d[jen.Id("Block")] = jen.Lit(true)
+	}
+	if a.Parenthesized {
+		d[jen.Id("Parenthesized")] = jen.Lit(true)
+	}
+	if a.HasParens {
+		d[jen.Id("HasParens")] = jen.Lit(true)
+	}
+	if a.Args != nil {
+		d[jen.Id("Args")] = e.valueSlice(a.Args)
+	}
+	if a.RawArgs != "" {
+		d[jen.Id("RawArgs")] = jen.Lit(a.RawArgs)
+	}
+	if !isZeroSpan(a.Span) {
+		d[jen.Id("Span")] = e.span(a.Span)
+	}
+	return jen.Op("&").Qual(e.bp, "Attribute").Values(d)
+}
+
+func (e *promptEmitter) valueSlice(vs []*bamlparser.Value) jen.Code {
+	elems := make([]jen.Code, len(vs))
+	for i, v := range vs {
+		elems[i] = e.valuePtr(v)
+	}
+	return jen.Index().Op("*").Qual(e.bp, "Value").Values(elems...)
+}
+
+func (e *promptEmitter) valuePtr(v *bamlparser.Value) jen.Code {
+	if v == nil {
+		return jen.Nil()
+	}
+	d := jen.Dict{}
+	if v.Literal != nil {
+		d[jen.Id("Literal")] = e.strPtr(*v.Literal)
+	}
+	if v.EnvRef != nil {
+		d[jen.Id("EnvRef")] = e.strPtr(*v.EnvRef)
+	}
+	if v.Ident != nil {
+		d[jen.Id("Ident")] = e.strPtr(*v.Ident)
+	}
+	if v.Number != nil {
+		d[jen.Id("Number")] = e.strPtr(*v.Number)
+	}
+	if v.Raw != nil {
+		d[jen.Id("Raw")] = e.strPtr(*v.Raw)
+	}
+	if v.List != nil {
+		d[jen.Id("List")] = e.valueSlice(v.List)
+	}
+	return jen.Op("&").Qual(e.bp, "Value").Values(d)
+}
+
+func (e *promptEmitter) span(s bamlparser.Span) jen.Code {
+	d := jen.Dict{}
+	if s.Start != 0 {
+		d[jen.Id("Start")] = jen.Lit(s.Start)
+	}
+	if s.End != 0 {
+		d[jen.Id("End")] = jen.Lit(s.End)
+	}
+	if s.Line != 0 {
+		d[jen.Id("Line")] = jen.Lit(s.Line)
+	}
+	if s.Col != 0 {
+		d[jen.Id("Col")] = jen.Lit(s.Col)
+	}
+	return jen.Qual(e.bp, "Span").Values(d)
+}
+
+// strPtr emits a fresh *string: an IIFE materializes a local and returns its
+// address, so each factory call allocates its own backing string and a caller
+// mutating *p cannot poison a later call. Used for every *string in the model
+// (schemadescriptor Name.Alias / *.Description / Constraint.Label and
+// bamlparser.Value's literal shapes).
+func (e *promptEmitter) strPtr(s string) jen.Code {
+	return jen.Func().Params().Op("*").String().Block(
+		jen.Id("s").Op(":=").Lit(s),
+		jen.Return(jen.Op("&").Id("s")),
+	).Call()
+}
+
+// --- schemadescriptor.Bundle and its type tree ---
+
+func (e *promptEmitter) bundle(b schemadescriptor.Bundle) jen.Code {
+	d := jen.Dict{}
+	if b.Version != 0 {
+		d[jen.Id("Version")] = jen.Lit(b.Version)
+	}
+	if b.Method != "" {
+		d[jen.Id("Method")] = jen.Lit(b.Method)
+	}
+	if b.Stream {
+		d[jen.Id("Stream")] = jen.Lit(true)
+	}
+	d[jen.Id("Target")] = e.schemaType(b.Target)
+	if b.Enums != nil {
+		d[jen.Id("Enums")] = e.enumDefs(b.Enums)
+	}
+	if b.Classes != nil {
+		d[jen.Id("Classes")] = e.classDefs(b.Classes)
+	}
+	if b.RecursiveClasses != nil {
+		d[jen.Id("RecursiveClasses")] = e.stringSlice(b.RecursiveClasses)
+	}
+	if b.StructuralRecursiveAliases != nil {
+		d[jen.Id("StructuralRecursiveAliases")] = e.recursiveAliasDefs(b.StructuralRecursiveAliases)
+	}
+	return jen.Qual(e.sd, "Bundle").Values(d)
+}
+
+func (e *promptEmitter) schemaTypeDict(t schemadescriptor.Type) jen.Dict {
+	d := jen.Dict{}
+	d[jen.Id("Kind")] = e.schemaTypeKind(t.Kind)
+	// Emit Meta whenever it carries a present (even empty-but-non-nil) Constraints
+	// slice or a non-zero Stream. TypeMeta.IsZero() treats a non-nil empty
+	// Constraints as zero (len==0), which would collapse the present-empty slice to
+	// nil on the round trip; guarding on Constraints != nil instead preserves the
+	// emitter's nil-vs-present contract for that nested slice. (This changes only
+	// the present-empty case; a genuinely zero Meta — nil Constraints, zero Stream —
+	// is still omitted, so real-corpus output is unaffected.)
+	if t.Meta.Constraints != nil || !t.Meta.Stream.IsZero() {
+		d[jen.Id("Meta")] = e.typeMeta(t.Meta)
+	}
+	if t.Primitive != "" {
+		d[jen.Id("Primitive")] = e.primitiveKind(t.Primitive)
+	}
+	if t.Media != "" {
+		d[jen.Id("Media")] = e.mediaKind(t.Media)
+	}
+	if t.Name != "" {
+		d[jen.Id("Name")] = jen.Lit(t.Name)
+	}
+	if t.Mode != "" {
+		d[jen.Id("Mode")] = e.streamingMode(t.Mode)
+	}
+	if t.Dynamic {
+		d[jen.Id("Dynamic")] = jen.Lit(true)
+	}
+	if t.Literal != nil {
+		d[jen.Id("Literal")] = e.literalValuePtr(t.Literal)
+	}
+	if t.Elem != nil {
+		d[jen.Id("Elem")] = e.schemaTypePtr(t.Elem)
+	}
+	if t.Key != nil {
+		d[jen.Id("Key")] = e.schemaTypePtr(t.Key)
+	}
+	if t.Value != nil {
+		d[jen.Id("Value")] = e.schemaTypePtr(t.Value)
+	}
+	if t.Items != nil {
+		d[jen.Id("Items")] = e.schemaTypes(t.Items)
+	}
+	if t.Union != nil {
+		d[jen.Id("Union")] = e.unionTypePtr(t.Union)
+	}
+	if t.Arrow != nil {
+		d[jen.Id("Arrow")] = e.arrowTypePtr(t.Arrow)
+	}
+	return d
+}
+
+func (e *promptEmitter) schemaType(t schemadescriptor.Type) jen.Code {
+	return jen.Qual(e.sd, "Type").Values(e.schemaTypeDict(t))
+}
+
+func (e *promptEmitter) schemaTypePtr(t *schemadescriptor.Type) jen.Code {
+	if t == nil {
+		return jen.Nil()
+	}
+	return jen.Op("&").Qual(e.sd, "Type").Values(e.schemaTypeDict(*t))
+}
+
+func (e *promptEmitter) schemaTypes(ts []schemadescriptor.Type) jen.Code {
+	elems := make([]jen.Code, len(ts))
+	for i, t := range ts {
+		elems[i] = e.schemaType(t)
+	}
+	return jen.Index().Qual(e.sd, "Type").Values(elems...)
+}
+
+func (e *promptEmitter) typeMeta(m schemadescriptor.TypeMeta) jen.Code {
+	d := jen.Dict{}
+	if m.Constraints != nil {
+		d[jen.Id("Constraints")] = e.constraints(m.Constraints)
+	}
+	if !m.Stream.IsZero() {
+		d[jen.Id("Stream")] = e.streamingBehavior(m.Stream)
+	}
+	return jen.Qual(e.sd, "TypeMeta").Values(d)
+}
+
+func (e *promptEmitter) streamingBehavior(s schemadescriptor.StreamingBehavior) jen.Code {
+	d := jen.Dict{}
+	if s.Needed {
+		d[jen.Id("Needed")] = jen.Lit(true)
+	}
+	if s.Done {
+		d[jen.Id("Done")] = jen.Lit(true)
+	}
+	if s.State {
+		d[jen.Id("State")] = jen.Lit(true)
+	}
+	return jen.Qual(e.sd, "StreamingBehavior").Values(d)
+}
+
+func (e *promptEmitter) constraints(cs []schemadescriptor.Constraint) jen.Code {
+	elems := make([]jen.Code, len(cs))
+	for i, c := range cs {
+		elems[i] = e.constraint(c)
+	}
+	return jen.Index().Qual(e.sd, "Constraint").Values(elems...)
+}
+
+func (e *promptEmitter) constraint(c schemadescriptor.Constraint) jen.Code {
+	d := jen.Dict{}
+	if c.Level != "" {
+		d[jen.Id("Level")] = e.constraintLevel(c.Level)
+	}
+	if c.Expression != "" {
+		d[jen.Id("Expression")] = jen.Lit(c.Expression)
+	}
+	if c.Label != nil {
+		d[jen.Id("Label")] = e.strPtr(*c.Label)
+	}
+	return jen.Qual(e.sd, "Constraint").Values(d)
+}
+
+func (e *promptEmitter) enumDefs(xs []schemadescriptor.EnumDef) jen.Code {
+	elems := make([]jen.Code, len(xs))
+	for i, x := range xs {
+		elems[i] = e.enumDef(x)
+	}
+	return jen.Index().Qual(e.sd, "EnumDef").Values(elems...)
+}
+
+func (e *promptEmitter) enumDef(x schemadescriptor.EnumDef) jen.Code {
+	d := jen.Dict{}
+	d[jen.Id("Name")] = e.name(x.Name)
+	if x.Values != nil {
+		d[jen.Id("Values")] = e.enumValues(x.Values)
+	}
+	if x.Constraints != nil {
+		d[jen.Id("Constraints")] = e.constraints(x.Constraints)
+	}
+	return jen.Qual(e.sd, "EnumDef").Values(d)
+}
+
+func (e *promptEmitter) enumValues(xs []schemadescriptor.EnumValue) jen.Code {
+	elems := make([]jen.Code, len(xs))
+	for i, x := range xs {
+		elems[i] = e.enumValue(x)
+	}
+	return jen.Index().Qual(e.sd, "EnumValue").Values(elems...)
+}
+
+func (e *promptEmitter) enumValue(x schemadescriptor.EnumValue) jen.Code {
+	d := jen.Dict{}
+	d[jen.Id("Name")] = e.name(x.Name)
+	if x.Description != nil {
+		d[jen.Id("Description")] = e.strPtr(*x.Description)
+	}
+	return jen.Qual(e.sd, "EnumValue").Values(d)
+}
+
+func (e *promptEmitter) classDefs(xs []schemadescriptor.ClassDef) jen.Code {
+	elems := make([]jen.Code, len(xs))
+	for i, x := range xs {
+		elems[i] = e.classDef(x)
+	}
+	return jen.Index().Qual(e.sd, "ClassDef").Values(elems...)
+}
+
+func (e *promptEmitter) classDef(x schemadescriptor.ClassDef) jen.Code {
+	d := jen.Dict{}
+	d[jen.Id("Name")] = e.name(x.Name)
+	if x.Description != nil {
+		d[jen.Id("Description")] = e.strPtr(*x.Description)
+	}
+	if x.Mode != "" {
+		d[jen.Id("Mode")] = e.streamingMode(x.Mode)
+	}
+	if x.Fields != nil {
+		d[jen.Id("Fields")] = e.classFields(x.Fields)
+	}
+	if x.Constraints != nil {
+		d[jen.Id("Constraints")] = e.constraints(x.Constraints)
+	}
+	if !x.Stream.IsZero() {
+		d[jen.Id("Stream")] = e.streamingBehavior(x.Stream)
+	}
+	return jen.Qual(e.sd, "ClassDef").Values(d)
+}
+
+func (e *promptEmitter) classFields(xs []schemadescriptor.ClassField) jen.Code {
+	elems := make([]jen.Code, len(xs))
+	for i, x := range xs {
+		elems[i] = e.classField(x)
+	}
+	return jen.Index().Qual(e.sd, "ClassField").Values(elems...)
+}
+
+func (e *promptEmitter) classField(x schemadescriptor.ClassField) jen.Code {
+	d := jen.Dict{}
+	d[jen.Id("Name")] = e.name(x.Name)
+	d[jen.Id("Type")] = e.schemaType(x.Type)
+	if x.Description != nil {
+		d[jen.Id("Description")] = e.strPtr(*x.Description)
+	}
+	if x.StreamingNeeded {
+		d[jen.Id("StreamingNeeded")] = jen.Lit(true)
+	}
+	return jen.Qual(e.sd, "ClassField").Values(d)
+}
+
+func (e *promptEmitter) name(n schemadescriptor.Name) jen.Code {
+	d := jen.Dict{}
+	if n.Name != "" {
+		d[jen.Id("Name")] = jen.Lit(n.Name)
+	}
+	if n.Alias != nil {
+		d[jen.Id("Alias")] = e.strPtr(*n.Alias)
+	}
+	return jen.Qual(e.sd, "Name").Values(d)
+}
+
+func (e *promptEmitter) literalValuePtr(l *schemadescriptor.LiteralValue) jen.Code {
+	if l == nil {
+		return jen.Nil()
+	}
+	d := jen.Dict{}
+	if l.Kind != "" {
+		d[jen.Id("Kind")] = e.literalKind(l.Kind)
+	}
+	if l.String != "" {
+		d[jen.Id("String")] = jen.Lit(l.String)
+	}
+	if l.Int != 0 {
+		d[jen.Id("Int")] = jen.Lit(l.Int)
+	}
+	if l.Bool {
+		d[jen.Id("Bool")] = jen.Lit(true)
+	}
+	return jen.Op("&").Qual(e.sd, "LiteralValue").Values(d)
+}
+
+func (e *promptEmitter) unionTypePtr(u *schemadescriptor.UnionType) jen.Code {
+	if u == nil {
+		return jen.Nil()
+	}
+	d := jen.Dict{}
+	if u.Variants != nil {
+		d[jen.Id("Variants")] = e.schemaTypes(u.Variants)
+	}
+	if u.Nullable {
+		d[jen.Id("Nullable")] = jen.Lit(true)
+	}
+	return jen.Op("&").Qual(e.sd, "UnionType").Values(d)
+}
+
+func (e *promptEmitter) arrowTypePtr(a *schemadescriptor.ArrowType) jen.Code {
+	if a == nil {
+		return jen.Nil()
+	}
+	d := jen.Dict{}
+	if a.Params != nil {
+		d[jen.Id("Params")] = e.schemaTypes(a.Params)
+	}
+	d[jen.Id("Return")] = e.schemaType(a.Return)
+	return jen.Op("&").Qual(e.sd, "ArrowType").Values(d)
+}
+
+func (e *promptEmitter) recursiveAliasDefs(xs []schemadescriptor.RecursiveAliasDef) jen.Code {
+	elems := make([]jen.Code, len(xs))
+	for i, x := range xs {
+		elems[i] = e.recursiveAliasDef(x)
+	}
+	return jen.Index().Qual(e.sd, "RecursiveAliasDef").Values(elems...)
+}
+
+func (e *promptEmitter) recursiveAliasDef(x schemadescriptor.RecursiveAliasDef) jen.Code {
+	d := jen.Dict{}
+	if x.Name != "" {
+		d[jen.Id("Name")] = jen.Lit(x.Name)
+	}
+	d[jen.Id("Target")] = e.schemaType(x.Target)
+	return jen.Qual(e.sd, "RecursiveAliasDef").Values(d)
+}
+
+func (e *promptEmitter) stringSlice(ss []string) jen.Code {
+	elems := make([]jen.Code, len(ss))
+	for i, s := range ss {
+		elems[i] = jen.Lit(s)
+	}
+	return jen.Index().String().Values(elems...)
+}
+
+// --- promptdescriptor.ClientConfig and its ordered option trees ---
+
+func (e *promptEmitter) clientConfig(c promptdescriptor.ClientConfig) jen.Code {
+	d := jen.Dict{}
+	if c.Present {
+		d[jen.Id("Present")] = jen.Lit(true)
+	}
+	if c.Name != "" {
+		d[jen.Id("Name")] = jen.Lit(c.Name)
+	}
+	if c.Provider != "" {
+		d[jen.Id("Provider")] = jen.Lit(c.Provider)
+	}
+	if !isZeroClientModel(c.Model) {
+		d[jen.Id("Model")] = e.clientModel(c.Model)
+	}
+	if c.RequestBodyPresent {
+		d[jen.Id("RequestBodyPresent")] = jen.Lit(true)
+	}
+	if c.RequestBody != nil {
+		d[jen.Id("RequestBody")] = e.requestBodyEntries(c.RequestBody)
+	}
+	if c.TransportOptions != nil {
+		d[jen.Id("TransportOptions")] = e.clientOptions(c.TransportOptions)
+	}
+	if c.BodyAffectingOptions != nil {
+		d[jen.Id("BodyAffectingOptions")] = e.clientOptions(c.BodyAffectingOptions)
+	}
+	return jen.Qual(e.pd, "ClientConfig").Values(d)
+}
+
+func (e *promptEmitter) clientModel(m promptdescriptor.ClientModel) jen.Code {
+	d := jen.Dict{}
+	if m.Value != "" {
+		d[jen.Id("Value")] = jen.Lit(m.Value)
+	}
+	if m.Provenance != "" {
+		d[jen.Id("Provenance")] = e.modelProvenance(m.Provenance)
+	}
+	if m.EnvVar != "" {
+		d[jen.Id("EnvVar")] = jen.Lit(m.EnvVar)
+	}
+	if m.RawString {
+		d[jen.Id("RawString")] = jen.Lit(true)
+	}
+	return jen.Qual(e.pd, "ClientModel").Values(d)
+}
+
+func (e *promptEmitter) requestBodyEntries(xs []promptdescriptor.RequestBodyEntry) jen.Code {
+	elems := make([]jen.Code, len(xs))
+	for i, x := range xs {
+		elems[i] = e.requestBodyEntry(x)
+	}
+	return jen.Index().Qual(e.pd, "RequestBodyEntry").Values(elems...)
+}
+
+func (e *promptEmitter) requestBodyEntry(x promptdescriptor.RequestBodyEntry) jen.Code {
+	d := jen.Dict{}
+	if x.Key != "" {
+		d[jen.Id("Key")] = jen.Lit(x.Key)
+	}
+	d[jen.Id("Value")] = e.optionValue(x.Value)
+	return jen.Qual(e.pd, "RequestBodyEntry").Values(d)
+}
+
+func (e *promptEmitter) clientOptions(xs []promptdescriptor.ClientOption) jen.Code {
+	elems := make([]jen.Code, len(xs))
+	for i, x := range xs {
+		elems[i] = e.clientOption(x)
+	}
+	return jen.Index().Qual(e.pd, "ClientOption").Values(elems...)
+}
+
+func (e *promptEmitter) clientOption(x promptdescriptor.ClientOption) jen.Code {
+	d := jen.Dict{}
+	if x.Key != "" {
+		d[jen.Id("Key")] = jen.Lit(x.Key)
+	}
+	d[jen.Id("Value")] = e.optionValue(x.Value)
+	return jen.Qual(e.pd, "ClientOption").Values(d)
+}
+
+func (e *promptEmitter) optionValue(v promptdescriptor.OptionValue) jen.Code {
+	d := jen.Dict{}
+	if v.Kind != "" {
+		d[jen.Id("Kind")] = e.optionValueKind(v.Kind)
+	}
+	if v.String != "" {
+		d[jen.Id("String")] = jen.Lit(v.String)
+	}
+	if v.Number != "" {
+		d[jen.Id("Number")] = jen.Lit(v.Number)
+	}
+	if v.Bool {
+		d[jen.Id("Bool")] = jen.Lit(true)
+	}
+	if v.List != nil {
+		d[jen.Id("List")] = e.optionValues(v.List)
+	}
+	if v.Object != nil {
+		d[jen.Id("Object")] = e.requestBodyEntries(v.Object)
+	}
+	return jen.Qual(e.pd, "OptionValue").Values(d)
+}
+
+func (e *promptEmitter) optionValues(vs []promptdescriptor.OptionValue) jen.Code {
+	elems := make([]jen.Code, len(vs))
+	for i, v := range vs {
+		elems[i] = e.optionValue(v)
+	}
+	return jen.Index().Qual(e.pd, "OptionValue").Values(elems...)
+}
+
+// --- enum constant emitters (named const for known values, typed-conversion
+// fallback for an unrecognized value so generation stays lossless and never
+// fails closed on a future arm) ---
+
+func (e *promptEmitter) bamlTypeKind(k bamlparser.TypeKind) jen.Code {
+	var name string
+	switch k {
+	case bamlparser.KindUnsupported:
+		name = "KindUnsupported"
+	case bamlparser.KindPrimitive:
+		name = "KindPrimitive"
+	case bamlparser.KindMedia:
+		name = "KindMedia"
+	case bamlparser.KindNameRef:
+		name = "KindNameRef"
+	case bamlparser.KindList:
+		name = "KindList"
+	case bamlparser.KindMap:
+		name = "KindMap"
+	case bamlparser.KindUnion:
+		name = "KindUnion"
+	case bamlparser.KindLiteral:
+		name = "KindLiteral"
+	case bamlparser.KindTuple:
+		name = "KindTuple"
+	case bamlparser.KindGroup:
+		name = "KindGroup"
+	default:
+		return jen.Qual(e.bp, "TypeKind").Call(jen.Lit(int(k)))
+	}
+	return jen.Qual(e.bp, name)
+}
+
+func (e *promptEmitter) schemaTypeKind(k schemadescriptor.TypeKind) jen.Code {
+	var name string
+	switch k {
+	case schemadescriptor.TypeTop:
+		name = "TypeTop"
+	case schemadescriptor.TypePrimitive:
+		name = "TypePrimitive"
+	case schemadescriptor.TypeEnum:
+		name = "TypeEnum"
+	case schemadescriptor.TypeLiteral:
+		name = "TypeLiteral"
+	case schemadescriptor.TypeClass:
+		name = "TypeClass"
+	case schemadescriptor.TypeList:
+		name = "TypeList"
+	case schemadescriptor.TypeMap:
+		name = "TypeMap"
+	case schemadescriptor.TypeRecursiveAlias:
+		name = "TypeRecursiveAlias"
+	case schemadescriptor.TypeTuple:
+		name = "TypeTuple"
+	case schemadescriptor.TypeArrow:
+		name = "TypeArrow"
+	case schemadescriptor.TypeUnion:
+		name = "TypeUnion"
+	default:
+		return jen.Qual(e.sd, "TypeKind").Call(jen.Lit(string(k)))
+	}
+	return jen.Qual(e.sd, name)
+}
+
+func (e *promptEmitter) primitiveKind(k schemadescriptor.PrimitiveKind) jen.Code {
+	var name string
+	switch k {
+	case schemadescriptor.PrimitiveString:
+		name = "PrimitiveString"
+	case schemadescriptor.PrimitiveInt:
+		name = "PrimitiveInt"
+	case schemadescriptor.PrimitiveFloat:
+		name = "PrimitiveFloat"
+	case schemadescriptor.PrimitiveBool:
+		name = "PrimitiveBool"
+	case schemadescriptor.PrimitiveNull:
+		name = "PrimitiveNull"
+	case schemadescriptor.PrimitiveMedia:
+		name = "PrimitiveMedia"
+	default:
+		return jen.Qual(e.sd, "PrimitiveKind").Call(jen.Lit(string(k)))
+	}
+	return jen.Qual(e.sd, name)
+}
+
+func (e *promptEmitter) mediaKind(k schemadescriptor.MediaKind) jen.Code {
+	var name string
+	switch k {
+	case schemadescriptor.MediaImage:
+		name = "MediaImage"
+	case schemadescriptor.MediaAudio:
+		name = "MediaAudio"
+	case schemadescriptor.MediaPDF:
+		name = "MediaPDF"
+	case schemadescriptor.MediaVideo:
+		name = "MediaVideo"
+	default:
+		return jen.Qual(e.sd, "MediaKind").Call(jen.Lit(string(k)))
+	}
+	return jen.Qual(e.sd, name)
+}
+
+func (e *promptEmitter) literalKind(k schemadescriptor.LiteralKind) jen.Code {
+	var name string
+	switch k {
+	case schemadescriptor.LiteralString:
+		name = "LiteralString"
+	case schemadescriptor.LiteralInt:
+		name = "LiteralInt"
+	case schemadescriptor.LiteralBool:
+		name = "LiteralBool"
+	default:
+		return jen.Qual(e.sd, "LiteralKind").Call(jen.Lit(string(k)))
+	}
+	return jen.Qual(e.sd, name)
+}
+
+func (e *promptEmitter) streamingMode(m schemadescriptor.StreamingMode) jen.Code {
+	var name string
+	switch m {
+	case schemadescriptor.NonStreaming:
+		name = "NonStreaming"
+	case schemadescriptor.Streaming:
+		name = "Streaming"
+	default:
+		return jen.Qual(e.sd, "StreamingMode").Call(jen.Lit(string(m)))
+	}
+	return jen.Qual(e.sd, name)
+}
+
+func (e *promptEmitter) constraintLevel(l schemadescriptor.ConstraintLevel) jen.Code {
+	var name string
+	switch l {
+	case schemadescriptor.ConstraintCheck:
+		name = "ConstraintCheck"
+	case schemadescriptor.ConstraintAssert:
+		name = "ConstraintAssert"
+	default:
+		return jen.Qual(e.sd, "ConstraintLevel").Call(jen.Lit(string(l)))
+	}
+	return jen.Qual(e.sd, name)
+}
+
+func (e *promptEmitter) modelProvenance(p promptdescriptor.ModelProvenance) jen.Code {
+	var name string
+	switch p {
+	case promptdescriptor.ModelProvenanceAbsent:
+		name = "ModelProvenanceAbsent"
+	case promptdescriptor.ModelProvenanceLiteral:
+		name = "ModelProvenanceLiteral"
+	case promptdescriptor.ModelProvenanceEnv:
+		name = "ModelProvenanceEnv"
+	case promptdescriptor.ModelProvenanceDynamic:
+		name = "ModelProvenanceDynamic"
+	default:
+		return jen.Qual(e.pd, "ModelProvenance").Call(jen.Lit(string(p)))
+	}
+	return jen.Qual(e.pd, name)
+}
+
+func (e *promptEmitter) optionValueKind(k promptdescriptor.OptionValueKind) jen.Code {
+	var name string
+	switch k {
+	case promptdescriptor.OptionString:
+		name = "OptionString"
+	case promptdescriptor.OptionNumber:
+		name = "OptionNumber"
+	case promptdescriptor.OptionBool:
+		name = "OptionBool"
+	case promptdescriptor.OptionIdent:
+		name = "OptionIdent"
+	case promptdescriptor.OptionEnv:
+		name = "OptionEnv"
+	case promptdescriptor.OptionList:
+		name = "OptionList"
+	case promptdescriptor.OptionObject:
+		name = "OptionObject"
+	default:
+		return jen.Qual(e.pd, "OptionValueKind").Call(jen.Lit(string(k)))
+	}
+	return jen.Qual(e.pd, name)
+}
+
+func isZeroSpan(s bamlparser.Span) bool {
+	return s.Start == 0 && s.End == 0 && s.Line == 0 && s.Col == 0
+}
+
+func isZeroClientModel(m promptdescriptor.ClientModel) bool {
+	return m.Value == "" && m.Provenance == "" && m.EnvVar == "" && !m.RawString
 }

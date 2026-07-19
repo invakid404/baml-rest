@@ -5,6 +5,7 @@ package introspected
 import (
 	bamlutils "github.com/invakid404/baml-rest/bamlutils"
 	roundrobin "github.com/invakid404/baml-rest/bamlutils/buildrequest/roundrobin"
+	promptdescriptor "github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
 	retry "github.com/invakid404/baml-rest/bamlutils/retry"
 	bamlclient "github.com/invakid404/baml-rest/dynclient/internal/generated/baml_client"
 	typebuilder "github.com/invakid404/baml-rest/dynclient/internal/generated/baml_client/type_builder"
@@ -146,6 +147,31 @@ type BedrockClientOptions struct {
 // and credential-selector options. Codegen looks up the resolved client name here at request-build
 // time and dispatches to llmhttp.AttachBedrockAuthForClient with the resolved values.
 var BedrockClientOptionsByName = map[string]BedrockClientOptions{}
+
+// StaticPromptDescriptors maps a BAML method name to a factory returning a FRESH
+// promptdescriptor.Function on every call (de-BAML Phase 8A, representation only — no
+// serving/admission/socket path consumes it). SECURITY: a returned descriptor's raw
+// prompt bytes and any inline client literals are baked into this generated file and the
+// worker binary; never log / metric-label / %v-format / error-wrap a descriptor or its raw
+// fields. Prefer env.X references so secrets stay out of the generated artifact.
+var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{}
+
+// StaticPromptDeclines maps a BAML method name to the stable build-time reason it is NOT
+// an eligible static prompt descriptor. Disjoint from StaticPromptDescriptors. Every entry
+// is a #583 teardown blocker to close, not an accepted permanent fallback.
+var StaticPromptDeclines = map[string]string{"Baml_Rest_Dynamic": "prompt descriptor return bundle unavailable: class \"Baml_Rest_DynamicOutput\": block attribute @@dynamic is not supported here (@@dynamic and unknown block attributes are declined; @@alias/@@description/@@check/@@assert/@@stream.* are lowered where the descriptor can represent them)"}
+
+// StaticPromptDescriptor returns a fresh descriptor and true when method has an emitted
+// static prompt descriptor; it returns the zero Function and false otherwise (method absent
+// or declined). It NEVER manufactures a zero-valued "supported" descriptor: a caller must
+// treat !ok as "no native static descriptor; stay on the BAML path".
+func StaticPromptDescriptor(method string) (promptdescriptor.Function, bool) {
+	factory, ok := StaticPromptDescriptors[method]
+	if !ok {
+		return promptdescriptor.Function{}, false
+	}
+	return factory(), true
+}
 
 // MediaParams maps function name -> param name -> media kind for parameters that are BAML media types.
 var MediaParams = map[string]map[string]bamlutils.MediaKind{}

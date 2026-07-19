@@ -74,6 +74,12 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
 	"github.com/invakid404/baml-rest/internal/nativeprompt"
 	bamlclient "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/static_oracle/baml_client"
+	// introspected is the CHECKED-IN, drift-guarded generated metadata fixture for
+	// this stock-BAML static project (de-BAML Phase 8A). The candidate leg of
+	// every differential below consumes its emitted StaticPromptDescriptors
+	// factory instead of rebuilding the descriptor from .baml, so this suite
+	// proves the EMITTED representation renders byte-identically to stock BAML.
+	introspected "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/static_oracle/introspected"
 	"github.com/invakid404/baml-rest/internal/nativeschema"
 )
 
@@ -657,9 +663,33 @@ func readFixtureFiles(t *testing.T) []nativeschema.SourceFile {
 	return files
 }
 
-// buildDescriptors runs the native build order and returns the prompt
-// descriptors, asserting no declines occurred.
+// buildDescriptors returns the descriptors UNDER TEST: the candidate leg sources
+// them from the EMITTED, drift-guarded metadata fixture (de-BAML Phase 8A),
+// calling each StaticPromptDescriptors factory once, so every differential below
+// proves the emitted representation — not a freshly rebuilt one — matches stock
+// BAML. It asserts the fixture emitted zero declines (the claimed corpus is fully
+// eligible) so a regression that turns a descriptor into a decline fails loudly.
+// buildDescriptorsFromSource rebuilds the same descriptors directly from .baml;
+// TestEmittedDescriptorsMatchSource proves the two are semantically identical.
 func buildDescriptors(t *testing.T) map[string]promptdescriptor.Function {
+	t.Helper()
+	if len(introspected.StaticPromptDeclines) != 0 {
+		t.Fatalf("fixture emitted unexpected static prompt declines: %v", introspected.StaticPromptDeclines)
+	}
+	descriptors := make(map[string]promptdescriptor.Function, len(introspected.StaticPromptDescriptors))
+	for method, factory := range introspected.StaticPromptDescriptors {
+		descriptors[method] = factory()
+	}
+	if len(descriptors) == 0 {
+		t.Fatal("fixture emitted no static prompt descriptors")
+	}
+	return descriptors
+}
+
+// buildDescriptorsFromSource runs the native build order over the fixture .baml
+// and returns the prompt descriptors, asserting no declines occurred. It is the
+// source authority the emitted fixture is cross-checked against.
+func buildDescriptorsFromSource(t *testing.T) map[string]promptdescriptor.Function {
 	t.Helper()
 	files := readFixtureFiles(t)
 	schemas, schemaDeclines := nativeschema.BuildStaticSchemas(files)
