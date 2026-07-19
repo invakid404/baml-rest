@@ -1,0 +1,29 @@
+{
+  "name": "primitive_string_number_noninteger_now_claimed",
+  "description": "Phase 7C CLAIMED (number-display parity closed): string target, JSON 5e0. BAML's jsonish::Value::Number stores serde_json f64 and Display CANONICALIZES the spelling (5e0 -> \"5.0\"). native now reproduces serde's f64 Display byte-exact (displayFloat64: ryu shortest round-trip, LIVE-CAPTURED 0-mismatch over 2060 finals), so it CLAIMS this with no BAML fallback. want is BAML's canonical serde f64 Display.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":5e0}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": "5.0"
+    }
+  }
+}

@@ -19,11 +19,12 @@ func arrVal(vs ...value) value    { return value{kind: valArray, arrV: vs} }
 
 // TestDisplayValue pins displayValue against BAML's jsonish::Value Display impl
 // (jsonish/value.rs:195) BYTE-FOR-BYTE. This is NOT JSON: keys and nested
-// strings are UNQUOTED, entries use ", " and keys ": ". certain is true only when
-// native can prove byte-identity to BAML's serde_json Display — an INTEGER token
-// is certain; a non-integer number spelling is UNCERTAIN (BAML canonicalizes it
-// via f64 Display, which native cannot reproduce), and that uncertainty
-// propagates up through nested object/array trees.
+// strings are UNQUOTED, entries use ", " and keys ": ". certain is true whenever
+// native can reproduce BAML's serde_json Display — an INTEGER token prints its
+// canonical decimal, and a NON-integer spelling is canonicalized via serde's f64
+// Display (ryu shortest round-trip), which displayFloat64 reproduces byte-exact
+// (Phase 7C, LIVE-CAPTURED): "5e0"/"5.00" -> "5.0", "-0" -> "-0.0", a past-u64
+// integer -> its f64 form. All of these are CERTAIN.
 func TestDisplayValue(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -36,15 +37,15 @@ func TestDisplayValue(t *testing.T) {
 		{"number-zero", numV("0"), "0", true},
 		{"number-large-in-i64", numV("9223372036854775807"), "9223372036854775807", true},
 		{"number-large-in-u64", numV("18446744073709551615"), "18446744073709551615", true},
-		// Non-integer spellings are UNCERTAIN — BAML canonicalizes via f64 Display
-		// (serde ryu), which native's strconv does not reproduce byte-for-byte.
-		{"number-trailing-zero", numV("5.0"), "5.0", false},
-		{"number-decimal", numV("3.14"), "3.14", false},
-		{"number-exponent-lower", numV("5e0"), "5e0", false},
-		{"number-exponent-upper", numV("5E0"), "5E0", false},
-		{"number-redundant-decimal", numV("5.00"), "5.00", false},
-		{"number-negative-zero", numV("-0"), "-0", false},
-		{"number-past-u64", numV("18446744073709551616"), "18446744073709551616", false},
+		// Non-integer spellings canonicalize via serde f64 Display (ryu), which
+		// displayFloat64 reproduces byte-exact — CERTAIN (Phase 7C close).
+		{"number-trailing-zero", numV("5.0"), "5.0", true},
+		{"number-decimal", numV("3.14"), "3.14", true},
+		{"number-exponent-lower", numV("5e0"), "5.0", true},
+		{"number-exponent-upper", numV("5E0"), "5.0", true},
+		{"number-redundant-decimal", numV("5.00"), "5.0", true},
+		{"number-negative-zero", numV("-0"), "-0.0", true},
+		{"number-past-u64", numV("18446744073709551616"), "1.8446744073709552e19", true},
 		{"bool-true", boolVal(true), "true", true},
 		{"bool-false", boolVal(false), "false", true},
 		{"null", nullVal(), "null", true},
@@ -62,9 +63,10 @@ func TestDisplayValue(t *testing.T) {
 		{"deep-nest", objVal(fld("a", arrVal(numV("1"), objVal(fld("b", numV("2")))))), "{a: [1, {b: 2}]}", true},
 		// Input key ORDER is preserved (not sorted).
 		{"object-order-preserved", objVal(fld("z", numV("1")), fld("a", numV("2"))), "{z: 1, a: 2}", true},
-		// A non-integer number ANYWHERE in the tree makes the WHOLE display uncertain.
-		{"object-nested-noninteger-number", objVal(fld("a", numV("5.0"))), "{a: 5.0}", false},
-		{"array-nested-exponent-number", arrVal(numV("1"), numV("2e0")), "[1, 2e0]", false},
+		// A non-integer number nested in the tree canonicalizes via f64 Display and
+		// stays CERTAIN (Phase 7C close): 5.0 -> "5.0", 2e0 -> "2.0".
+		{"object-nested-noninteger-number", objVal(fld("a", numV("5.0"))), "{a: 5.0}", true},
+		{"array-nested-exponent-number", arrVal(numV("1"), numV("2e0")), "[1, 2.0]", true},
 	}
 	for _, c := range cases {
 		got, certain := displayValue(c.in)
@@ -126,39 +128,25 @@ func TestCoercePrimitiveString_Direct(t *testing.T) {
 	}
 }
 
-// TestCoercePrimitiveString_NonIntegerNumberDeclines pins the number-display
-// parity guard: a NON-integer number spelling (BAML canonicalizes via serde f64
-// Display, which native cannot reproduce byte-for-byte) DECLINES and marks f
-// uncertain — standalone and nested inside an object/array display. An INTEGER
-// (and integer-only object/array display) still claims.
-func TestCoercePrimitiveString_NonIntegerNumberDeclines(t *testing.T) {
-	for _, c := range []struct {
-		name string
-		in   value
-	}{
-		{"exponent", numV("5e0")},
-		{"upper-exponent", numV("5E0")},
-		{"decimal", numV("5.0")},
-		{"redundant-decimal", numV("5.00")},
-		{"negative-zero", numV("-0")},
-		{"past-u64", numV("18446744073709551616")},
-		{"object-with-noninteger", objVal(fld("a", numV("5.0")))},
-		{"array-with-exponent", arrVal(numV("1"), numV("2e0"))},
-	} {
-		f := &coerceFlags{}
-		if _, err := coercePrimitiveString(c.in, f); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
-			t.Errorf("%s: expected ErrDeBAMLParseUnsupported, got %v", c.name, err)
-		}
-		if !f.isUncertain() {
-			t.Errorf("%s: expected f marked uncertain (number-display parity)", c.name)
-		}
-	}
-	// Sanity: a plain integer and an integer-only object/array still CLAIM.
+// TestCoercePrimitiveString_NonIntegerNumberClaims pins the Phase 7C number-display
+// close: a NON-integer number spelling now stringifies via serde's f64 Display
+// (ryu shortest round-trip, displayFloat64) byte-exact, so coercePrimitiveString
+// CLAIMS it (JsonToString flag, NOT uncertain) — standalone and nested inside an
+// object/array display. An INTEGER still prints its canonical decimal.
+func TestCoercePrimitiveString_NonIntegerNumberClaims(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		in   value
 		want string
 	}{
+		{"exponent", numV("5e0"), `"5.0"`},
+		{"upper-exponent", numV("5E0"), `"5.0"`},
+		{"decimal", numV("5.0"), `"5.0"`},
+		{"redundant-decimal", numV("5.00"), `"5.0"`},
+		{"negative-zero", numV("-0"), `"-0.0"`},
+		{"past-u64", numV("18446744073709551616"), `"1.8446744073709552e19"`},
+		{"object-with-noninteger", objVal(fld("a", numV("5.0"))), `"{a: 5.0}"`},
+		{"array-with-exponent", arrVal(numV("1"), numV("2e0")), `"[1, 2.0]"`},
 		{"integer", numV("5"), `"5"`},
 		{"object-integers", objVal(fld("a", numV("1"))), `"{a: 1}"`},
 	} {
@@ -168,38 +156,42 @@ func TestCoercePrimitiveString_NonIntegerNumberDeclines(t *testing.T) {
 			t.Errorf("%s: got (%s,%v), want (%s,nil)", c.name, got, err, c.want)
 		}
 		if f.isUncertain() {
-			t.Errorf("%s: must NOT be uncertain (provable integer display)", c.name)
+			t.Errorf("%s: must NOT be uncertain (number display now reproduced byte-exact)", c.name)
+		}
+		if !f.isFlagged() {
+			t.Errorf("%s: expected JsonToString flag (score-bearing)", c.name)
 		}
 	}
 }
 
-// TestNumberDisplayUncertainty_EndToEnd pins that a non-integer number spelling
-// makes stringification DECLINE end-to-end — standalone string, and (whole-
-// collection decline, NOT a partial skip) inside a list<string> / map value /
-// enum / string-literal — while integer stringification still claims.
-func TestNumberDisplayUncertainty_EndToEnd(t *testing.T) {
-	// Standalone string target: 5e0 declines (BAML would emit "5.0").
+// TestNumberDisplayParity_EndToEnd pins the Phase 7C number-display close end-to-end:
+// a non-integer number spelling now stringifies via serde f64 Display byte-exact, so
+// native CLAIMS it — standalone string, inside a list<string>, and inside a map value
+// — matching BAML (LIVE-CAPTURED). A string literal "5" still matches the numeric
+// input by its match_string substring (5e0 -> "5.0" contains "5" -> "5"), as BAML does.
+func TestNumberDisplayParity_EndToEnd(t *testing.T) {
+	// Standalone string target: 5e0 -> "5.0" (BAML byte-exact).
 	strS := oneField(strProp())
-	requireUnsupported(t, strS, `{"u":5e0}`)
-	mustParse(t, strS, `{"u":5}`, `{"u":"5"}`) // integer still claims
+	mustParse(t, strS, `{"u":5e0}`, `{"u":"5.0"}`)
+	mustParse(t, strS, `{"u":5}`, `{"u":"5"}`) // integer stays canonical
 
-	// list<string> with a non-integer element -> WHOLE list declines (not a skip).
+	// list<string> with a non-integer element -> element stringifies (not a decline).
 	listS := oneField(&bamlutils.DynamicProperty{Type: "list", Items: &bamlutils.DynamicTypeSpec{Type: "string"}})
-	requireUnsupported(t, listS, `{"u":["a",5.0]}`)
+	mustParse(t, listS, `{"u":["a",5.0]}`, `{"u":["a","5.0"]}`)
 
-	// map<string,string> with a non-integer value -> WHOLE map declines.
+	// map<string,string> with a non-integer value -> value stringifies.
 	mapS := oneField(&bamlutils.DynamicProperty{
 		Type:   "map",
 		Keys:   &bamlutils.DynamicTypeSpec{Type: "string"},
 		Values: &bamlutils.DynamicTypeSpec{Type: "string"},
 	})
-	requireUnsupported(t, mapS, `{"u":{"a":"x","b":5.0}}`)
+	mustParse(t, mapS, `{"u":{"a":"x","b":5.0}}`, `{"u":{"a":"x","b":"5.0"}}`)
 
-	// string literal "5" with a non-integer number input -> declines (can't prove
-	// the stringification, so match_string is not run).
+	// string literal "5": a numeric input matches via match_string (integer "5"
+	// exact, 5e0 -> "5.0" substring), both -> "5", as BAML does.
 	litS := oneField(&bamlutils.DynamicProperty{Type: "literal_string", Value: "5"})
-	requireUnsupported(t, litS, `{"u":5e0}`)
-	mustParse(t, litS, `{"u":5}`, `{"u":"5"}`) // integer stringifies to "5" == literal
+	mustParse(t, litS, `{"u":5e0}`, `{"u":"5"}`)
+	mustParse(t, litS, `{"u":5}`, `{"u":"5"}`)
 }
 
 // TestStringForMatch pins the shared match_string value→string prelude used by

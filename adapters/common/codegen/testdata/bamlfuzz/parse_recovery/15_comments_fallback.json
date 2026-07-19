@@ -1,6 +1,6 @@
 {
   "name": "comments_fallback",
-  "description": "Inline block comment inside the object. BAML's JSONish parser drops the comment and recovers the record, but comments are OUTSIDE the conservative M2a fixing subset, so the native parser declines and falls back to BAML (pinned native disposition: fallback). want captured from BAML final parse.",
+  "description": "Inline block comment inside the object. BAML's JSONish parser drops the comment and recovers the record. Phase 7C: a string-aware stripJSONComments pre-pass drops /* */ and // comments outside strings before extraction, so the native parser now CLAIMS this byte-exact (native disposition: claimed) — no BAML fallback. want captured from BAML final parse.",
   "preserve_schema_order": true,
   "schema": {
     "classes": [

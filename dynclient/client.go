@@ -329,6 +329,37 @@ func (c *Client) DynamicParse(ctx context.Context, req ParseRequest) (*ParseResu
 	return &ParseResult{Data: flattened}, nil
 }
 
+// DynamicParseRaw is DynamicParse WITHOUT the absent-optional injection or the schema
+// reorder/sort — it applies ONLY the structural FlattenDynamicOutput (unwrapping the
+// dynamic-output envelope) and returns the BAML worker's parsed Data with the parser's
+// RAW field order and presence preserved. It exists so the type-space differential can
+// compare native output against a PRE-NORMALIZATION BAML oracle (the injection/reorder
+// steps could otherwise mask a real absence/order divergence). Production serving uses
+// DynamicParse (the normalized public form); this is test/inspection only.
+func (c *Client) DynamicParseRaw(ctx context.Context, req ParseRequest) (*ParseResult, error) {
+	if c == nil {
+		return nil, errNilClient
+	}
+	c.applyPreserveSchemaOrderDefault(&req.PreserveSchemaOrder)
+	if err := req.Validate(); err != nil {
+		return nil, fmt.Errorf("dynclient: dynamic parse raw: %w", err)
+	}
+	input, err := req.ToWorkerInput()
+	if err != nil {
+		return nil, fmt.Errorf("dynclient: dynamic parse raw: %w", err)
+	}
+	result, err := c.handler.Parse(ctx, bamlutils.DynamicMethodName, input)
+	if err != nil {
+		return nil, fmt.Errorf("dynclient: dynamic parse raw: %w", err)
+	}
+	data := append(stdjson.RawMessage(nil), result.Data...)
+	flattened, err := bamlutils.FlattenDynamicOutput(data)
+	if err != nil {
+		return nil, fmt.Errorf("dynclient: dynamic parse raw: %w", err)
+	}
+	return &ParseResult{Data: flattened}, nil
+}
+
 // DynamicStream starts a partial+final streaming dynamic call. Callers
 // must invoke Stream.Close (or drain to io.EOF) so the request scope
 // and any buffered worker results are released.

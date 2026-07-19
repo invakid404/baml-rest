@@ -73,10 +73,13 @@ func nameTagsSchema() *bamlutils.DynamicOutputSchema {
 
 func TestStream_GrowingObject(t *testing.T) {
 	s := personSchema()
-	// No field value available yet → FALLBACK (open root object before ≥1 field).
-	requireStreamUnsupported(t, s, `{`)
-	requireStreamUnsupported(t, s, `{"name"`)
-	requireStreamUnsupported(t, s, `{"name":`)
+	// Phase 7C eligible-prefix gap closure: an open root object with NO field value
+	// yet (`{`, a dangling key, a dangling colon) is now CLAIMED as the all-filler
+	// object, byte-exact with BAML parse-stream's LIVE-CAPTURED want (corpus 20
+	// open_brace / first_key / colon → {"name":null,"age":null}). No BAML fallback.
+	mustStream(t, s, `{`, `{"name":null,"age":null}`)
+	mustStream(t, s, `{"name"`, `{"name":null,"age":null}`)
+	mustStream(t, s, `{"name":`, `{"name":null,"age":null}`)
 	// ≥1 field value available → CLAIMED, missing fields null-filled.
 	mustStream(t, s, `{"name":"Ad`, `{"name":"Ad","age":null}`)
 	mustStream(t, s, `{"name":"Ada"`, `{"name":"Ada","age":null}`)
@@ -88,9 +91,10 @@ func TestStream_GrowingObject(t *testing.T) {
 
 func TestStream_MarkdownFence(t *testing.T) {
 	s := personSchema()
-	// Bare prose / just-opened fence: no JSON content → FALLBACK.
-	requireStreamUnsupported(t, s, "Here you go:\n")
-	requireStreamUnsupported(t, s, "Here you go:\n```json\n")
+	// Phase 7C: bare prose / just-opened fence (no `{`) for a >=2-field class now
+	// CLAIM the all-filler object byte-exact with BAML (LIVE-CAPTURED corpus 21).
+	mustStream(t, s, "Here you go:\n", `{"name":null,"age":null}`)
+	mustStream(t, s, "Here you go:\n```json\n", `{"name":null,"age":null}`)
 	// Object emerging inside the (still-open) fence → CLAIMED.
 	mustStream(t, s, "Here you go:\n```json\n{\"name\":\"Ada\"", `{"name":"Ada","age":null}`)
 	mustStream(t, s, "Here you go:\n```json\n{\"name\":\"Ada\",\"age\":36}", `{"name":"Ada","age":36}`)
@@ -132,11 +136,18 @@ func TestStream_IncompleteDoneRequiredScalarNulls(t *testing.T) {
 	// age=3 runs to EOF inside an unterminated object → Incomplete int → deleted →
 	// the class field is null-replaced; the completed string sibling is kept.
 	mustStream(t, s, `{"name":"Ada","age":3`, `{"name":"Ada","age":null}`)
-	// A trailing comma after an UNQUOTED object value at EOF (`36,`) hits the
-	// greedy-unquoted-object-value guard streamFix uses (BAML would consume the comma
-	// and read greedily), so the streaming fixer DECLINES the candidate before
-	// coercion — native over-declines it, safe, and not a corpus prefix.
-	requireStreamUnsupported(t, s, `{"name":"Ada","age":36,`)
+	// A trailing comma after an unquoted object value AT EOF (`36,`) cleanly
+	// comma-terminates the value — nothing follows to greedy-read — so Phase 7C
+	// now CLAIMS it as COMPLETE (age=36), matching BAML parse-stream byte-exact
+	// (LIVE-CAPTURED). This closes the tight-comma-at-EOF transient.
+	mustStream(t, s, `{"name":"Ada","age":36,`, `{"name":"Ada","age":36}`)
+	// A comma FOLLOWED BY tight content (`36,"x"`) is BAML's GREEDY read: the
+	// unquoted value is consumed past the comma in a cascade native's per-field
+	// parse cannot reproduce (#546), so native DECLINES. Admission declines any
+	// schema with a NON-LAST unquoted-scalar field so no admitted stream reaches
+	// this prefix (here `age` IS last, so this raw is only an over-decline guard —
+	// not an admitted prefix).
+	requireStreamUnsupported(t, s, `{"name":"Ada","age":36,"extra"`)
 }
 
 // TestStream_NumbersListDropsIncompleteTail pins the NUMBERS behavior: a partial
@@ -211,11 +222,15 @@ func TestStream_MapIntDropsIncompleteValue(t *testing.T) {
 	mustStreamCoerce(t, s, `{"m":{"a":1, "b":2`, `{"m":{"a":1}}`)
 }
 
-// TestStream_NoStructureDeclines pins that raw text with no recoverable JSON
-// structure falls back (BAML's allow_as_string→class path is not claimed by M4b).
+// TestStream_NoStructureDeclines pins the content-free-prefix boundary. For a
+// >=2-field class, bare prose (no `{`) now CLAIMS the all-filler object (matching
+// BAML); an EMPTY string still declines (nothing to parse — never reached by the
+// orchestrator, which only parses non-empty accumulated text). For a SINGLE-field
+// class, prose declines (BAML errors via allow_as_string, native matches).
 func TestStream_NoStructureDeclines(t *testing.T) {
-	requireStreamUnsupported(t, personSchema(), "just some prose, no json")
+	mustStream(t, personSchema(), "just some prose, no json", `{"name":null,"age":null}`)
 	requireStreamUnsupported(t, personSchema(), "")
+	requireStreamUnsupported(t, nameOnlySchema(), "just some prose, no json")
 }
 
 // TestStream_ScalarToClassDeclines pins that a scalar/array into a class declines
@@ -223,6 +238,23 @@ func TestStream_NoStructureDeclines(t *testing.T) {
 func TestStream_ScalarToClassDeclines(t *testing.T) {
 	requireStreamUnsupported(t, personSchema(), `"hello"`)
 	requireStreamUnsupported(t, personSchema(), `[1,2,3]`)
+}
+
+// TestStream_Comments pins Phase 7C JSONish comment recovery on the STREAM path:
+// a string-aware pre-pass (stripJSONComments) drops `/* */` block and `//` line
+// comments — INCLUDING unterminated ones — outside strings, so a comment-bearing
+// streamed prefix parses to the SAME partial BAML recovers (LIVE-CAPTURED, native-
+// only, no fallback). A comment INSIDE a string value is kept verbatim.
+func TestStream_Comments(t *testing.T) {
+	s := personSchema()
+	mustStream(t, s, `{"name": "Ada", /* mid */ "age": 3`, `{"name":"Ada","age":null}`)
+	mustStream(t, s, `{"name": "Ada", /* unterm`, `{"name":"Ada","age":null}`)
+	mustStream(t, s, "{\"name\": \"Ada\", // unterm line", `{"name":"Ada","age":null}`)
+	mustStream(t, s, `{"name": "Ada", /* mid */ "age": 36}`, `{"name":"Ada","age":36}`)
+	mustStream(t, s, `{"name": "Ada", "age": 36, /* n */`, `{"name":"Ada","age":36}`)
+	mustStream(t, s, `{"name": "Ada", /* c1 */ "age`, `{"name":"Ada","age":null}`)
+	// A comment marker inside a STRING value is not a comment — kept verbatim.
+	mustStream(t, s, `{"name": "a/*b*/c", "age": 36}`, `{"name":"a/*b*/c","age":36}`)
 }
 
 // TestStream_NilSchemaDeclines pins the nil-schema fallback.

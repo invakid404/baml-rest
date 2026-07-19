@@ -20,6 +20,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/internal/nativebody"
 	"github.com/invakid404/baml-rest/internal/nativeprompt"
@@ -28,11 +29,25 @@ import (
 )
 
 // streamInput is the fully-formed admitted streaming _dynamic call: validInput
-// with the streaming mode.
+// with the streaming mode and an admitted-for-stream output schema. The Phase 7C
+// native-stream SAP schema gate declines validInput's single-string schema
+// (allow_as_string diverges), so the stream fixture uses a >=2-field class with a
+// last unquoted-scalar field — the admitted §11 matrix shape.
 func streamInput() Input {
 	in := validInput()
 	in.Mode = ModeStream
+	in.OutputSchema = admittedStreamSchema()
 	return in
+}
+
+// admittedStreamSchema is Root{answer:string, count:int} — a >=2-field required-
+// field class whose only scalar field is LAST, no unions/optionals, no non-last
+// scalar, no scalar map value: the shape SupportsNativeStream admits.
+func admittedStreamSchema() *bamlutils.DynamicOutputSchema {
+	return &bamlutils.DynamicOutputSchema{Properties: bamlutils.MustOrderedMap(
+		bamlutils.OrderedKV("answer", &bamlutils.DynamicProperty{Type: "string"}),
+		bamlutils.OrderedKV("count", &bamlutils.DynamicProperty{Type: "int"}),
+	)}
 }
 
 // canonicalStreamBody rebuilds the zero-nanollm canonical STREAM body for the

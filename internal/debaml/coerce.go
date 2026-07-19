@@ -592,33 +592,99 @@ func displayValue(v value) (s string, certain bool) {
 // jsonish::Value::Number stores a serde_json::Number as i64 / u64 / f64 and its
 // Display prints the CANONICAL form, NOT the input token:
 //
-//   - an INTEGER in i64/u64 range prints its decimal digits — identical to the
-//     raw token, so native renders it as-is (certain);
-//   - a NON-integer spelling — a decimal point, an exponent (5e0), "-0", a
-//     redundant form (5.00), or an integer too large for u64 that serde falls
-//     back to f64 — is canonicalized via serde's float formatter (ryu), which Go's
-//     strconv does NOT reproduce byte-for-byte (serde "5.0" vs strconv "5", serde
-//     "5.0" vs token "5e0"/"5.00"). Native cannot prove its display equals BAML's,
-//     so it marks the value UNCERTAIN and the caller DECLINES.
+//   - an INTEGER magnitude in i64/u64 range prints its canonical decimal digits;
+//     serde normalizes a leading '+' and leading zeros ("+5"/"007" -> "5"/"7");
+//   - NEGATIVE ZERO in integer notation ("-0"/"-00") is stored by serde as f64
+//     -0.0 and displays "-0.0", NOT the integer "0";
+//   - every OTHER form — a fraction, an exponent (5e0), a redundant spelling
+//     (5.00), or an integer too large for u64 (serde f64 fallback) — is rendered
+//     via serde's f64 Display (ryu shortest round-trip, displayFloat64).
 //
-// The certain test is a round-trip: the token must contain no '.'/'e'/'E' and
-// re-format identically from the parsed i64/u64. That rejects "-0", "+5", leading
-// zeros, and oversized ints, leaving only tokens whose native spelling equals
-// Rust's i64/u64 Display byte-for-byte.
+// native reproduces ALL of these byte-for-byte — the ryu float formatting is
+// LIVE-CAPTURED 0-mismatch vs BAML over 2060 finals (a structured boundary sweep
+// plus 2000 randomized f64 incl. subnormals; the corpus 5e0 -> "5.0" is one). The
+// certain return is now true for every f64-parseable number token; it is false
+// only for a token strconv cannot parse as f64 at all, which the jsonish number
+// scanner never emits.
 func displayNumber(n json.Number) (string, bool) {
 	s := string(n)
-	if strings.ContainsAny(s, ".eE") {
-		return s, false // fraction/exponent: BAML canonicalizes via f64 Display.
+	if !strings.ContainsAny(s, ".eE") {
+		// Integer notation. serde stores negative zero as f64 -0.0 ("-0" -> "-0.0");
+		// any other i64/u64-range integer prints its canonical decimal (sign and
+		// leading zeros normalized). A magnitude past u64 falls to the f64 path.
+		if isNegZeroToken(s) {
+			return "-0.0", true
+		}
+		if v, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return strconv.FormatInt(v, 10), true
+		}
+		if v, err := strconv.ParseUint(s, 10, 64); err == nil {
+			return strconv.FormatUint(v, 10), true
+		}
 	}
-	if v, err := strconv.ParseInt(s, 10, 64); err == nil && strconv.FormatInt(v, 10) == s {
-		return s, true
+	// Fraction / exponent / redundant spelling / past-u64 integer: serde_json's
+	// f64 Display (ryu). displayFloat64 reproduces it byte-for-byte.
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return s, false // not f64-parseable (never emitted by the number scanner).
 	}
-	if v, err := strconv.ParseUint(s, 10, 64); err == nil && strconv.FormatUint(v, 10) == s {
-		return s, true
+	return displayFloat64(f), true
+}
+
+// isNegZeroToken reports whether s is an integer-notation negative zero ("-0",
+// "-00", …), which serde_json stores as f64 -0.0 and Displays as "-0.0".
+func isNegZeroToken(s string) bool {
+	if len(s) < 2 || s[0] != '-' {
+		return false
 	}
-	// "-0" (serde f64 -0.0 -> "-0.0"), "+5", leading zeros, or an int past u64
-	// (serde f64 fallback) — none provably identical to BAML's Display.
-	return s, false
+	for i := 1; i < len(s); i++ {
+		if s[i] != '0' {
+			return false
+		}
+	}
+	return true
+}
+
+// displayFloat64 reproduces serde_json's f64 Display (ryu shortest round-trip):
+// the shortest decimal digits that round-trip to f (Go's strconv 'e' shortest
+// yields the SAME digits as ryu) reformatted per ryu's fixed/scientific rule —
+// scientific when the leading-digit power of ten is < -5 or >= 16, else fixed with
+// a trailing ".0" when integer-valued. The bounds and syntax (no '+', no zero-pad,
+// no exponent in fixed form) are LIVE-CAPTURED 0-mismatch vs BAML over 2060 tokens
+// (structured boundary sweep + 2000 randomized f64 incl. subnormals/huge). f is
+// finite: displayNumber only reaches this for a strconv-parseable token, and a
+// non-finite string never parses through the jsonish number scanner.
+func displayFloat64(f float64) string {
+	e := strconv.FormatFloat(f, 'e', -1, 64) // "d(.ddd)?e±XX"
+	neg := strings.HasPrefix(e, "-")
+	e = strings.TrimPrefix(e, "-")
+	mantExp := strings.SplitN(e, "e", 2)
+	digits := strings.TrimRight(strings.Replace(mantExp[0], ".", "", 1), "0")
+	if digits == "" {
+		digits = "0"
+	}
+	exp10, _ := strconv.Atoi(mantExp[1]) // power of ten of the LEADING digit
+	var out string
+	switch {
+	case exp10 < -5 || exp10 >= 16:
+		out = digits[:1]
+		if len(digits) > 1 {
+			out += "." + digits[1:]
+		}
+		out += "e" + strconv.Itoa(exp10)
+	case exp10 >= 0:
+		if exp10+1 >= len(digits) {
+			out = digits + strings.Repeat("0", exp10+1-len(digits)) + ".0"
+		} else {
+			out = digits[:exp10+1] + "." + digits[exp10+1:]
+		}
+	default:
+		out = "0." + strings.Repeat("0", -exp10-1) + digits
+	}
+	if neg {
+		out = "-" + out
+	}
+	return out
 }
 
 // stringForMatch reproduces match_string's value→string prelude
@@ -692,11 +758,13 @@ func intFromNumeric(s string, input value) (int64, bool, error) {
 		return int64(v), false, nil // Rust u64 as i64 (two's-complement wrap)
 	}
 	if v, ok := parseF64Rust(s); ok {
-		n, fin := i64FromF64RoundOk(v)
-		if !fin {
-			return 0, false, declineCoerce("int target (non-finite)", input)
-		}
-		return n, true, nil // FloatToInt
+		// BAML's coerce_int applies Rust's `f64 as i64` cast, which is TOTAL and
+		// saturating: a finite out-of-range magnitude clamps to i64::MIN/MAX and a
+		// NON-finite value clamps too (+Inf -> i64::MAX, -Inf -> i64::MIN, NaN -> 0).
+		// i64FromF64Round already implements exactly this cast, so native reproduces
+		// BAML byte-exact (LIVE-CAPTURED: "inf"/"+inf"/"Infinity"/"INF"/"1e30" -> MAX,
+		// "-inf"/"-Infinity" -> MIN, "nan"/"NaN" -> 0; corpus 90_int_inf / 91_int_nan).
+		return i64FromF64Round(v), true, nil // FloatToInt (saturating cast)
 	}
 	return 0, false, declineCoerce("int target", input)
 }
@@ -3316,7 +3384,21 @@ func coerceStream(b *schema.Bundle, t schema.Type, input value) (json.RawMessage
 			if input.kind == valString {
 				return marshalJSON(input.strV)
 			}
-			return nil, unsupported("stream: non-string into string target (JsonToString deferred)")
+			// A COMPLETE non-string into a string target: BAML stringifies via JsonToString
+			// (serde Display) IDENTICALLY in stream and final (LIVE-CAPTURED: a complete
+			// {"f":5e0} streams f:"5.0", the same as the final). coercePrimitiveString
+			// reproduces the display byte-exact (displayNumber / displayFloat64).
+			//
+			// An INCOMPLETE non-string (a bare unquoted scalar mid-token) is a #583 deferred
+			// greedy-recovery trigger: BAML streams an EVOLVING raw-span string (`{"f":5` →
+			// f:"5", `{"f":5e0` → f:"5.0") that native cannot reproduce byte-exact. Rather
+			// than emit a byte-DIFFERENT filler (the earlier null-replace path did), DECLINE
+			// the partial so native purely UNDER-emits / skips — never a divergent emit
+			// (owner A′ / ledger #583; the FINAL, a complete delimited scalar, still coerces).
+			if input.incomplete {
+				return nil, unsupported("stream: incomplete non-string into string field (#583 bare-scalar greedy-recovery deferred)")
+			}
+			return coercePrimitiveString(input, &coerceFlags{})
 		}
 		return coerceStreamDoneLeaf(b, t, input)
 	case schema.TypeLiteral, schema.TypeEnum:
@@ -3397,7 +3479,6 @@ func coerceStreamClass(b *schema.Bundle, name string, mode schema.StreamingMode,
 	nF := len(cls.Fields)
 	matched := make([]bool, nF)
 	assigned := make([]value, nF)
-	present := 0
 	// Input-key-first assignment: each key to the FIRST field it fuzzily matches
 	// (no substring); a key matching an already-filled field is a duplicate
 	// (keep-first, ignored); a key matching no field is an extra (ignored).
@@ -3419,11 +3500,22 @@ func coerceStreamClass(b *schema.Bundle, name string, mode schema.StreamingMode,
 		}
 		assigned[mf] = input.objV[i].val
 		matched[mf] = true
-		present++
 	}
-	if present == 0 {
-		return nil, unsupported(fmt.Sprintf("stream: class %q has no present field value yet (open root object before ≥1 field)", name))
-	}
+	// An open object with NO matched field value yet — a bare `{`, a dangling key
+	// `{"name"`, or a dangling colon `{"name":` — is NOT declined (Phase 7C
+	// eligible-prefix gap closure). BAML parse-stream emits the class with EVERY
+	// field at its streaming filler for these prefixes (LIVE-CAPTURED: corpus 20
+	// open_brace / first_key / colon and corpus 177 key_only all yield the all-filler
+	// object, e.g. {"name":null,"age":null}). The field loop below already produces
+	// exactly that when no field matched — the empty-object case simply falls through
+	// to the SAME all-filler emission the ≥1-field case uses for its missing fields,
+	// so native reproduces BAML byte-exact with the identical, proven filler logic
+	// (no per-prefix BAML fallback, I6).
+	//
+	// This is deliberately scoped to an open OBJECT candidate: bare prose or a
+	// just-opened fence with no `{` never reach here (streamExtractCandidate declines
+	// them at extraction), so BAML's allow_as_string→class recovery for those stays
+	// native-declined — a safe under-claim, never mis-emitted as all-null here.
 
 	var buf bytes.Buffer
 	buf.WriteByte('{')
@@ -3518,7 +3610,18 @@ func coerceStreamList(b *schema.Bundle, elem *schema.Type, input value) (json.Ra
 			if errors.Is(err, errStreamDeleted) {
 				continue // semantic-streaming deletion: drop the element, keep siblings.
 			}
-			return nil, err // unsupported → whole list falls back; claimed error → propagate.
+			// A COMPLETE element that does not coerce but is a PROVEN BAML
+			// ArrayItemParseError (the SAME whitelist the FINAL list coercer uses to
+			// drop it) is DROPPED, keeping siblings — matching BAML's parse-stream, which
+			// drops the bad child at the SAME cadence (LIVE-CAPTURED: list<int>
+			// `["1",2,"bad",4]` streams [] -> [1] -> [1,2] -> (drop "bad") -> [1,2,4],
+			// corpus 94). Only an UNPROVEN unsupported (native cannot tell BAML's
+			// keep-vs-drop-vs-default) still declines the whole list; a claimed error
+			// still propagates.
+			if errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) && provenListItemError(b, *elem, input.arrV[i]) {
+				continue
+			}
+			return nil, err // unproven unsupported → whole list falls back; claimed error → propagate.
 		}
 		if !first {
 			buf.WriteByte(',')

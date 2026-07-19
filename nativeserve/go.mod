@@ -44,6 +44,20 @@
 // build (nanollmprepare builder E2E, -mod=readonly) resolve them cleanly off the
 // public origin. Any future bump must likewise land on a master commit that carries
 // every symbol nativeserve links.
+//
+// NOTE (Phase 7C): nativeserve/admission now also imports the root's
+// internal/debaml.SupportsNativeStream (the native-stream SAP schema preflight, the
+// §5.5 schema admission row). That symbol first appears at the 7C merge, so it is
+// NOT yet in the eb48282c pin. The native-worker PACKAGING build compiles against
+// LOCAL root sources (the go.work-off replace / overlaid tar bundle), so it — and
+// every other correctness lane — stays GREEN; only the external-consumer lane
+// (nativeserve-goget, which resolves the pinned pseudo-version off the proxy with no
+// replace) goes RED pre-merge, exactly as the 7B cross-module symbol did. This is the
+// SAME expected, documented version-pin artifact: at the 7C squash-merge, bump the
+// three first-party requires to the 7C master merge commit (which carries
+// SupportsNativeStream) and regenerate nativeworker_module.tar to restore
+// nativeserve-goget green. Do NOT pin to a pre-merge branch commit — a non-sumdb
+// pseudo-version breaks the -mod=readonly packaging build.
 module github.com/invakid404/baml-rest/nativeserve
 
 go 1.26.5

@@ -8,6 +8,7 @@ import (
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
+	"github.com/invakid404/baml-rest/internal/debaml"
 	"github.com/invakid404/baml-rest/internal/nativebody"
 	"github.com/invakid404/baml-rest/internal/nativeprompt"
 	"github.com/invakid404/baml-rest/internal/schema"
@@ -356,6 +357,20 @@ func (a *Admitter) admitCore(ctx context.Context, in Input, recordAdmitted, stre
 	}
 	if _, serr := schema.FromDynamicOutputSchema(in.OutputSchema, schema.BuildOptions{}); serr != nil {
 		return decline(declinef(StagePrompt, ReasonOutputSchemaUnbounded, "output schema is outside the native schema/SAP bounds"))
+	}
+	if stream {
+		// Phase 7C native-stream SAP schema row (§5.5). The claimed native stream
+		// lane owns EVERY partial and the final for this schema with NO per-prefix
+		// BAML fallback (I6), so decline pre-transport (I2) any schema whose
+		// native-only stream/final parser cannot own the whole type graph.
+		// SupportsNativeStream subsumes the final-support gate — both run the shared
+		// checkSupported cut-line; the stream preflight additionally rejects stream
+		// annotations — so it is the single schema-support row for the stream claim.
+		// Zero sockets, zero FFI: a pure schema-graph walk. The unary lane
+		// (stream=false) skips this block and stays byte-for-byte unchanged.
+		if serr := debaml.SupportsNativeStream(in.OutputSchema); serr != nil {
+			return decline(declinef(StagePrompt, ReasonStreamSchemaUnsupported, "output schema is outside the native stream SAP bounds"))
+		}
 	}
 
 	rendered, rerr := nativeprompt.Render(toNativeMessages(in.Messages), in.OutputSchema)

@@ -1,0 +1,22 @@
+{
+  "name": "int_inf_now_claimed",
+  "description": "Phase 7C CLAIMED (CR-B1 close): int target, 'inf'. BAML's int coercer applies Rust's saturating f64-as-i64 cast -> i64::MAX. native now reproduces that TOTAL saturating cast (i64FromF64Round; LIVE-CAPTURED: inf/+inf/Infinity/INF -> MAX), so it CLAIMS this with no BAML fallback. want captured LIVE from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {"name": "u", "type": {"kind": "int"}}
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"inf\"}",
+  "want": {
+    "status": "success",
+    "json": {"u": 9223372036854775807}
+  }
+}
