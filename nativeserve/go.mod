@@ -28,35 +28,37 @@
 // submodules bamlutils/worker are tagged, and their tagged versions predate the
 // packages the root's internal/* imports here), so the three first-party requires
 // are pinned to the PROXY-RESOLVABLE pseudo-version of the master commit this
-// module targets (3237cc3beb66, the Phase 7C merge) — one consistent snapshot that
+// module targets (f08d06c95b1c, the Phase 7D merge) — one consistent snapshot that
 // resolves cleanly off a fresh checkout with zero local replacements. The replace
 // directives below are for local development only; Go ignores a dependency module's
 // replaces, so an external consumer resolves those pseudo-versions from the proxy.
 // When the root module is eventually tagged for a release that includes these
 // packages, the three requires can be bumped to that tag.
 //
-// NOTE (Phase 7C): nativeserve/execute uses bamlutils' 7A exact-stream client,
+// NOTE (Phase 7D): nativeserve/execute uses bamlutils' 7A exact-stream client,
 // nativeserve/admission uses the root's nativebody.BuildOpenAIChatStream (Phase 7B),
-// and nativeserve/admission also imports the root's internal/debaml.SupportsNativeStream
-// (Phase 7C — the native-stream SAP schema preflight, the §5.5 schema admission row) —
-// symbols that first appear at the 7A, 7B, and 7C merges respectively. The three
-// first-party requires are therefore pinned to the 7C master merge commit
-// (3237cc3beb66) rather than an earlier snapshot: it is the earliest master commit
-// whose root + bamlutils carry every one of those symbols, so both the
-// external-consumer lane (nativeserve-goget) and the native-worker PACKAGING build
-// (nanollmprepare builder E2E, -mod=readonly) resolve them cleanly off the public
-// origin. Any future bump must likewise land on a master commit that carries every
-// symbol nativeserve links, and must NOT pin to a pre-merge branch commit — a
-// non-sumdb pseudo-version breaks the -mod=readonly packaging build.
+// nativeserve/admission also imports the root's internal/debaml.SupportsNativeStream
+// (Phase 7C — the native-stream SAP schema preflight, the §5.5 schema admission row),
+// and nativeserve/canary + nativeserve.NewStream now return the neutral
+// bamlutils.NativeStreamServeFunc (Phase 7D — guarded production wiring of the native
+// stream lane, the new bamlutils/native_stream.go serve seam) — symbols that first
+// appear at the 7A, 7B, 7C, and 7D merges respectively. The three first-party requires
+// are therefore pinned to the 7D master merge commit (f08d06c95b1c) rather than an
+// earlier snapshot: it is the earliest master commit whose root + bamlutils carry every
+// one of those symbols, so both the external-consumer lane (nativeserve-goget) and the
+// native-worker PACKAGING build (nanollmprepare builder E2E, -mod=readonly) resolve them
+// cleanly off the public origin. Any future bump must likewise land on a master commit
+// that carries every symbol nativeserve links, and must NOT pin to a pre-merge branch
+// commit — a non-sumdb pseudo-version breaks the -mod=readonly packaging build.
 module github.com/invakid404/baml-rest/nativeserve
 
 go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260719133922-3237cc3beb66
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260719133922-3237cc3beb66
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260719133922-3237cc3beb66
+	github.com/invakid404/baml-rest v0.0.0-20260719190743-f08d06c95b1c
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260719190743-f08d06c95b1c
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260719190743-f08d06c95b1c
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/viktordanov/nanollm-ffi/go v0.4.3
