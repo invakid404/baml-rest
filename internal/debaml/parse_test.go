@@ -778,15 +778,14 @@ func TestParse_NullableClassUnionScored(t *testing.T) {
 	mustParse(t, s, `{"u":{"title":"Go","pages":300,"x":1}}`, `{"u":{"title":"Go","pages":300}}`)
 }
 
-func TestParse_NonASCIICaseFoldUnionDeclines(t *testing.T) {
-	// P2: native's case fold (cases.Lower) is not byte-identical to Rust's
-	// str::to_lowercase for every rune, so any match whose verdict hinges on
-	// lowercasing a non-ASCII rune Go can't prove is lowercase-stable is
-	// UNCERTAIN. A|B with A{a: literal "é"(U+00E9), aa, aaa} | B{b, bb}: arm A's
-	// literal only matches the input "É"(U+00C9) via the case-fold attempt
-	// (NFKD leaves the accent so it is not connected at the accent-fold stage),
-	// and 'É' is non-ASCII and not IsLower → uncertain. Native must DECLINE THE
-	// UNION rather than false-reject A and claim B as the lone winner.
+func TestParse_NonASCIICaseFoldUnionClaims(t *testing.T) {
+	// #555 Slice 2: match_string now folds through bamlunicode (byte-for-byte Rust
+	// str::to_lowercase), so a non-ASCII case fold is native's to CLAIM. A|B with
+	// A{a: literal "é"(U+00E9), aa, aaa} | B{b, bb}: the input "É"(U+00C9) folds to
+	// "é" and matches arm A's literal, so A coerces (its two extra keys b/bb score
+	// 2, ExtraKey) and beats arm B (three extra keys a/aa/aaa score 3). Native now
+	// CLAIMS arm A where it formerly DECLINED the whole union on the case-fold
+	// uncertainty (the union arm-count that BAML resolves is now reproduced).
 	s := &bamlutils.DynamicOutputSchema{
 		Properties: props(kv("u", &bamlutils.DynamicProperty{
 			Type:  "union",
@@ -805,18 +804,20 @@ func TestParse_NonASCIICaseFoldUnionDeclines(t *testing.T) {
 			}),
 		),
 	}
-	requireUnsupported(t, s, "{\"u\":{\"a\":\"É\",\"aa\":1,\"aaa\":1,\"b\":\"x\",\"bb\":2}}")
+	mustParse(t, s,
+		"{\"u\":{\"a\":\"É\",\"aa\":1,\"aaa\":1,\"b\":\"x\",\"bb\":2}}",
+		"{\"u\":{\"a\":\"é\",\"aa\":1,\"aaa\":1}}")
 }
 
-func TestParse_NonASCIICaseFoldStandaloneFallsBack(t *testing.T) {
-	// Standalone (non-union) literal/enum under the same uncertainty: native
-	// falls back rather than risk a claim that diverges from BAML.
+func TestParse_NonASCIICaseFoldStandaloneClaims(t *testing.T) {
+	// #555 Slice 2: standalone (non-union) literal/enum non-ASCII case folds now
+	// CLAIM — the fold is proven (bamlunicode), so native emits the canonical form.
 	lit := &bamlutils.DynamicOutputSchema{
 		Properties: props(kv("k", &bamlutils.DynamicProperty{Type: "literal_string", Value: "é"})),
 	}
-	// "É"(U+00C9) only matches "é" via the uncertain case fold -> decline.
-	requireUnsupported(t, lit, "{\"k\":\"É\"}")
-	// Exact "é" needs no case fold -> certain -> claimed (the canonical literal).
+	// "É"(U+00C9) folds to "é" -> CLAIM the canonical literal.
+	mustParse(t, lit, "{\"k\":\"É\"}", "{\"k\":\"é\"}")
+	// Exact "é" needs no case fold -> also claimed.
 	mustParse(t, lit, "{\"k\":\"é\"}", "{\"k\":\"é\"}")
 
 	enum := &bamlutils.DynamicOutputSchema{
@@ -827,9 +828,10 @@ func TestParse_NonASCIICaseFoldStandaloneFallsBack(t *testing.T) {
 			}),
 		),
 	}
-	requireUnsupported(t, enum, "{\"c\":\"é\"}")
+	// input "é" folds to match enum value "É" -> CLAIM the canonical real name.
+	mustParse(t, enum, "{\"c\":\"é\"}", "{\"c\":\"É\"}")
 
-	// ASCII case folding is UNAFFECTED — it stays certain and is claimed.
+	// ASCII case folding is UNAFFECTED — it stays claimed.
 	mustParse(t, personSchema(), `{"Name":"Ada","age":36}`, `{"name":"Ada","age":36}`)
 }
 

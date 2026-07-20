@@ -84,8 +84,7 @@ func SupportsNativeStream(s *bamlutils.DynamicOutputSchema) error {
 // core (round-6/7/9, type-space-proven partial+final byte-exact over a true grammar
 // cross-product with the recovery battery applied by field path): a required-field class
 // (>=2 fields, or a single non-string-absorbing, non-list<string> field) whose field types
-// are string / int (LAST position only) / enum (ASCII, no alias/description) /
-// string-literal (ASCII) / int-literal / SINGLE-level
+// are string / int (LAST position only) / enum / string-literal / int-literal / SINGLE-level
 // list<string|int|enum|string-literal|int-literal> / a SAFE DIRECT nested class — a nested
 // class with <=3 fields, <=1 list, and NO bare enum or string-literal field (recursively the
 // same) — and deep nestings thereof.
@@ -94,10 +93,11 @@ func SupportsNativeStream(s *bamlutils.DynamicOutputSchema) error {
 // an UNSAFE nested class — >=4 fields, >=2 lists, or a bare enum/string-literal field (BAML's
 // nested-class start cadence there native cannot reproduce byte-exact); any non-last unquoted
 // scalar; any union/optional; ANY map<string,*> (declined outright — BAML
-// overwrite-on-duplicate-key); any non-string map key; any non-ASCII literal/enum value; any
-// @alias / @description / non-ASCII name (incl. enum-VALUE @alias/@description); ANY bool or
-// float (incl. bool literal); ANY bare null-typed field (the null-keyword streaming cadence);
-// and any class inside a list element or map value.
+// overwrite-on-duplicate-key); any non-string map key; ANY field @alias (BAML matches the
+// canonical field key too; native's matcher checks only the rendered alias — #583); ANY bool
+// or float (incl. bool literal); ANY bare null-typed field (the null-keyword streaming cadence);
+// and any class inside a list element or map value. (A field @description, class/enum
+// @alias/@description, and non-ASCII names/values are ADMITTED — no key-matching divergence.)
 //
 // NOTE (§5.9 owed debt, ledger #583): for these admitted schemas, five NON-conforming /
 // BAML-jsonish greedy-recovery INPUT classes — a bare unquoted scalar in a string field, an
@@ -184,26 +184,22 @@ func checkStreamRootSupported(b *schema.Bundle) error {
 		// cannot, so it excludes the shape pre-transport.)
 		return unsupported("stream: map with a non-string key type (BAML keeps non-member enum/literal keys native declines)")
 	}
-	if typeGraphHasNonASCIILiteralOrEnum(b) {
-		// BAML matches a string literal / enum value case-INSENSITIVELY with full
-		// Unicode case folding, so a non-ASCII value (181_unicode_list_literal:
-		// literal "GRÜN" recovered from provider "grün") SUCCEEDS where native's
-		// match_string marks the fold UNCERTAIN and DECLINES — native cannot prove its
-		// ASCII-only fold equals BAML's Unicode fold. Decline any non-ASCII literal or
-		// enum value anywhere in the graph pre-transport.
-		return unsupported("stream: non-ASCII string literal or enum value (BAML Unicode case-fold native cannot prove)")
-	}
-	if graphHasDisallowedMetadata(b) {
-		// A field/class/enum ALIAS (@alias) or enum-value/field/class DESCRIPTION
-		// (@description), or a NON-ASCII class/enum/field/value NAME. BAML's field and
-		// enum matchers add the alias AND the description as match candidates and fold
-		// them with full Unicode lowering; native's match_string classifies a non-ASCII
-		// fold as UNCERTAIN and declines, and does not model description candidates, so
-		// Root{title:string @alias("ÉTAT")} on `{"état":"ok",...}` (and enum
-		// @description) is a BAML-success / native-terminal split. Narrow the whole
-		// class of extra match candidates out pre-transport (the small provably-safe
-		// core carries no aliases/descriptions/non-ASCII names).
-		return unsupported("stream: field/enum alias, description, or non-ASCII name (extra BAML match candidate native cannot prove)")
+	if graphHasFieldAlias(b) {
+		// A field @alias is the ONE metadata case that DIVERGES (LIVE-PROVEN vs BAML
+		// v0.223.0): BAML matches a class key against the field's CANONICAL name too,
+		// but native's coerceClass/coerceStreamClass field-key matcher checks only
+		// Name.RenderedName() — which is the ALIAS when present — so it MISSES a response
+		// key that uses the canonical name. E.g. field `title @alias("heading")` on
+		// `{"title":"x",...}`: BAML emits {"title":"x"}, native emits {"title":null}.
+		// Decline any field @alias pre-transport. #583 teardown condition: make the
+		// field-key matcher check BOTH the canonical name AND the alias (like BAML), then
+		// drop this gate. Field @description, class/enum @alias/@description, non-ASCII
+		// names/values, and enum-VALUE @alias carry no such divergence and STAY admitted:
+		// class/enum type metadata is never matched as a key; a field description does not
+		// change the key candidate; and a complete enum/literal VALUE is coerced through
+		// the final coercer whose enumMatchCandidates already models rendered-name/alias/
+		// description candidates.
+		return unsupported("stream: field @alias (BAML also matches the canonical field key; native's matcher checks only the rendered alias — #583)")
 	}
 	if typeGraphHasMap(b) {
 		// ANY map<string,*>. BAML's generic map coercion is INSERT/OVERWRITE-on-
@@ -455,31 +451,17 @@ func classSubtreeHasList(b *schema.Bundle, t schema.Type, seen map[string]bool) 
 	return false
 }
 
-// graphHasDisallowedMetadata reports whether any class/enum/field/value in the bundle
-// carries an @alias or @description, or has a non-ASCII NAME — the extra Unicode-folded
-// match candidates BAML uses but native's ASCII-only match_string cannot prove. See
-// checkStreamRootSupported.
-func graphHasDisallowedMetadata(b *schema.Bundle) bool {
+// graphHasFieldAlias reports whether any class field carries an @alias. It is the ONE
+// metadata shape the native stream/final lane cannot yet reproduce byte-exact: BAML
+// matches a class key against the field's canonical name AND its alias, but native's
+// coerceClass/coerceStreamClass matcher checks only Name.RenderedName() (the alias when
+// present), so a canonical-name response key that BAML matches is missed. Class/enum
+// @alias/@description and field @description do NOT change key matching and are admitted.
+// See checkStreamRootSupported (#583 teardown: match both name and alias).
+func graphHasFieldAlias(b *schema.Bundle) bool {
 	for i := range b.Classes {
-		c := &b.Classes[i]
-		if c.Name.Alias != nil || c.Description != nil || !isASCIIString(c.Name.Name) {
-			return true
-		}
-		for j := range c.Fields {
-			f := &c.Fields[j]
-			if f.Name.Alias != nil || f.Description != nil || !isASCIIString(f.Name.Name) {
-				return true
-			}
-		}
-	}
-	for i := range b.Enums {
-		e := &b.Enums[i]
-		if e.Name.Alias != nil || !isASCIIString(e.Name.Name) {
-			return true
-		}
-		for j := range e.Values {
-			v := &e.Values[j]
-			if v.Name.Alias != nil || v.Description != nil || !isASCIIString(v.Name.Name) {
+		for j := range b.Classes[i].Fields {
+			if b.Classes[i].Fields[j].Name.Alias != nil {
 				return true
 			}
 		}
@@ -819,73 +801,6 @@ func typeHasNonStringMapKey(t schema.Type) bool {
 		}
 	}
 	return false
-}
-
-// typeGraphHasNonASCIILiteralOrEnum reports whether any string literal or enum
-// value reachable from the bundle target contains a non-ASCII byte. Enum values
-// are resolved through b.FindEnum (their canonical AND rendered names are both
-// checked, since match_string folds against aliases too). See
-// checkStreamRootSupported for why non-ASCII case folding declines.
-func typeGraphHasNonASCIILiteralOrEnum(b *schema.Bundle) bool {
-	if typeHasNonASCIILiteralOrEnum(b.Target, b) {
-		return true
-	}
-	for i := range b.Classes {
-		for j := range b.Classes[i].Fields {
-			if typeHasNonASCIILiteralOrEnum(b.Classes[i].Fields[j].Type, b) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func typeHasNonASCIILiteralOrEnum(t schema.Type, b *schema.Bundle) bool {
-	switch t.Kind {
-	case schema.TypeLiteral:
-		return t.Literal != nil && t.Literal.Kind == schema.LiteralString && !isASCIIString(t.Literal.String)
-	case schema.TypeEnum:
-		e, ok := b.FindEnum(t.Name)
-		if !ok {
-			return false
-		}
-		for i := range e.Values {
-			if !isASCIIString(e.Values[i].Name.Name) || !isASCIIString(e.Values[i].Name.RenderedName()) {
-				return true
-			}
-		}
-		return false
-	case schema.TypeList:
-		return t.Elem != nil && typeHasNonASCIILiteralOrEnum(*t.Elem, b)
-	case schema.TypeMap:
-		return (t.Key != nil && typeHasNonASCIILiteralOrEnum(*t.Key, b)) ||
-			(t.Value != nil && typeHasNonASCIILiteralOrEnum(*t.Value, b))
-	case schema.TypeTuple:
-		for i := range t.Items {
-			if typeHasNonASCIILiteralOrEnum(t.Items[i], b) {
-				return true
-			}
-		}
-	case schema.TypeUnion:
-		if t.Union != nil {
-			for i := range t.Union.Variants {
-				if typeHasNonASCIILiteralOrEnum(t.Union.Variants[i], b) {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-// isASCIIString reports whether s contains only 7-bit ASCII bytes.
-func isASCIIString(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] >= 0x80 {
-			return false
-		}
-	}
-	return true
 }
 
 // typeGraphHasUnion reports whether any type reachable from the bundle target is a

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/internal/debaml/bamlunicode"
 	"github.com/invakid404/baml-rest/internal/schema"
 )
 
@@ -47,11 +48,16 @@ func (k candKind) isComposite() bool {
 //     use the inherent model. A nil receiver means "don't track" (top-level /
 //     standalone), so add / foldChild are nil-safe and free there.
 //   - uncertain: the verdict depended on something native cannot prove equals
-//     BAML — a non-ASCII case fold vs Rust's str::to_lowercase
-//     (caseFoldUncertain), OR a non-integer number spelling whose jsonish Value
-//     Display native cannot reproduce byte-identically (displayNumber). A HARD
-//     decline signal: any uncertain arm declines the WHOLE union, and the
-//     collection classifiers decline the whole list/map on an uncertain child.
+//     BAML. Its ONE remaining leaf cause is a non-integer number spelling whose
+//     jsonish Value Display native cannot reproduce byte-identically
+//     (displayStringification/displayNumber). (#555 Slice 2 removed the former
+//     non-ASCII case-fold cause: match_string now folds through bamlunicode,
+//     byte-identical to Rust str::to_lowercase, so a case-fold verdict is
+//     native's to CLAIM, never uncertain.) A HARD decline signal: any uncertain
+//     arm declines the WHOLE union, and the collection classifiers decline the
+//     whole list/map on an uncertain child. This flag may still acquire OTHER
+//     non-Unicode causes in future, so it is NOT removed wholesale — only the
+//     Unicode leaf cause was dropped.
 //
 // The remaining fields describe the TOP-LEVEL node this accumulator coerced (its
 // OWN conditions and kind) for pick_best's special ordering. They are set by the
@@ -139,17 +145,18 @@ func (f *coerceFlags) absorb(w candidate) {
 	f.classSingleImplied = w.classSingleImplied
 }
 
-// markUncertain records a verdict native cannot prove matches BAML — a
-// non-ASCII case-fold (caseFoldUncertain) or a non-integer number display
-// (displayNumber). Callers DECLINE (never claim, never proven-skip).
+// markUncertain records a verdict native cannot prove matches BAML — today only
+// a non-integer number display (displayStringification/displayNumber); the
+// non-ASCII case-fold cause was removed in #555 Slice 2. Callers DECLINE (never
+// claim, never proven-skip).
 func (f *coerceFlags) markUncertain() {
 	if f != nil {
 		f.uncertain = true
 	}
 }
 
-// isUncertain reports whether a non-ASCII case-fold / number-display
-// uncertainty was recorded.
+// isUncertain reports whether a number-display uncertainty was recorded (the
+// sole remaining cause after #555 Slice 2 dropped the Unicode case-fold cause).
 func (f *coerceFlags) isUncertain() bool { return f != nil && f.uncertain }
 
 // isFlagged reports whether any score-bearing condition was recorded — i.e. the
@@ -372,17 +379,14 @@ func coercePrimitiveFloat(input value, f *coerceFlags) (json.RawMessage, error) 
 }
 
 // coercePrimitiveBool emits the coerced bool, marking f when it came from a
-// string (StringToBool). A non-ASCII case-fold uncertainty in the match_string
-// fallback marks f and DECLINES (native cannot prove the verdict equals BAML).
-// JSON ARRAY input routes through coerce_array_to_singular (M3d).
+// string (StringToBool). The string→bool match_string fold is now proven
+// (bamlunicode), so a miss/tie is a CLAIMED decline, never a Unicode-uncertain
+// one. JSON ARRAY input routes through coerce_array_to_singular (M3d).
 func coercePrimitiveBool(input value, f *coerceFlags) (json.RawMessage, error) {
 	if input.kind == valArray {
 		return coerceScalarArrayToSingular(input.arrV, f, coercePrimitiveBool, provenBoolArrayItemError)
 	}
-	b, flagged, uncertain, err := coerceBoolValue(input)
-	if uncertain {
-		f.markUncertain()
-	}
+	b, flagged, err := coerceBoolValue(input)
 	if err != nil {
 		return nil, err
 	}
@@ -437,8 +441,8 @@ func provenNumericArrayItemError(item value) bool {
 
 // provenBoolArrayItemError reports whether coerce_bool PROVABLY errors on item —
 // the item-error whitelist for a bool array-to-singular. It is reached only after
-// native's bool coercer FAILED and was NOT case-fold-uncertain (the caller checks
-// isUncertain first), so a certain casefold + match_string miss on a STRING equals
+// native's bool coercer FAILED; the string→bool match_string fold is now proven
+// (bamlunicode), so a STRING miss/tie is a CERTAIN match_string failure equal to
 // BAML's error_unexpected_type, and an object/number/null is error_unexpected_type;
 // a bool coerces and a nested array recurses.
 func provenBoolArrayItemError(item value) bool {
@@ -812,40 +816,44 @@ var boolMatchCandidates = []matchCandidate{
 }
 
 // coerceBoolValue ports coerce_bool (coerce_primitive.rs). It returns the bool,
-// whether a StringToBool conversion happened, whether a non-ASCII case-fold
-// uncertainty was hit in the match_string fallback, and an error. A JSON bool
-// is clean; a string is first tested casefold-exact against "true"/"false",
-// then via match_string (substring enabled) — whose own flags (SubstringMatch)
-// are DROPPED: a substring hit still adds only StringToBool (score 1).
-func coerceBoolValue(input value) (b bool, flagged bool, uncertain bool, err error) {
+// whether a StringToBool conversion happened, and an error. A JSON bool is clean;
+// a string is first tested casefold-exact against "true"/"false", then via
+// match_string (substring enabled) — whose own flags (SubstringMatch) are
+// DROPPED: a substring hit still adds only StringToBool (score 1). The
+// match_string fold is now proven (bamlunicode == Rust str::to_lowercase), so a
+// non-ASCII string bool verdict is native's to CLAIM (no uncertainty return).
+func coerceBoolValue(input value) (b bool, flagged bool, err error) {
 	switch input.kind {
 	case valBool:
-		return input.boolV, false, false, nil
+		return input.boolV, false, nil
 	case valString:
+		// ASCII-only fast path: "true"/"false" spell out of ASCII letters, and no
+		// non-ASCII scalar lowercases (simple OR full) to a bare ASCII t/r/u/e, so
+		// strings.ToLower here can never turn a non-ASCII input into "true"/"false"
+		// — a non-ASCII bool string always falls through to the bamlunicode-backed
+		// match_string below, which carries the full-Unicode parity. (Leaving this
+		// ASCII lower is deliberate; swapping it changes nothing observable.)
 		switch strings.ToLower(input.strV) {
 		case "true":
-			return true, true, false, nil // StringToBool
+			return true, true, nil // StringToBool
 		case "false":
-			return false, true, false, nil // StringToBool
+			return false, true, nil // StringToBool
 		}
-		matched, outcome, _, unc := matchString(input.strV, boolMatchCandidates, true)
-		if unc {
-			return false, false, true, unsupported("bool target: non-ASCII case-fold uncertainty in match_string")
-		}
+		matched, outcome, _ := matchString(input.strV, boolMatchCandidates, true)
 		if outcome == matchOne {
 			switch matched {
 			case "true":
-				return true, true, false, nil // StringToBool (NOT SubstringMatch)
+				return true, true, nil // StringToBool (NOT SubstringMatch)
 			case "false":
-				return false, true, false, nil
+				return false, true, nil
 			}
 		}
 		// match_string no-match or substring TIE (StrMatchOneFromMany): BAML's
 		// coerce_bool errors; for a required bool it errors, for an optional one
 		// it null-defaults, and native cannot tell which without scoring — decline.
-		return false, false, false, declineCoerce("bool target", input)
+		return false, false, declineCoerce("bool target", input)
 	default:
-		return false, false, false, declineCoerce("bool target", input)
+		return false, false, declineCoerce("bool target", input)
 	}
 }
 
@@ -1063,11 +1071,7 @@ func coerceLiteral(lit *schema.LiteralValue, input value, f *coerceFlags) (json.
 		if err != nil {
 			return nil, err
 		}
-		matched, outcome, viaSub, uncertain := matchString(str, []matchCandidate{{name: lit.String, validValues: []string{lit.String}}}, true)
-		if uncertain {
-			f.markUncertain()
-			return nil, unsupported(fmt.Sprintf("literal string %q: non-ASCII case-fold uncertainty for %q (cannot prove match equals BAML)", lit.String, str))
-		}
+		matched, outcome, viaSub := matchString(str, []matchCandidate{{name: lit.String, validValues: []string{lit.String}}}, true)
 		switch outcome {
 		case matchOne:
 			if viaSub {
@@ -1111,11 +1115,7 @@ func coerceLiteral(lit *schema.LiteralValue, input value, f *coerceFlags) (json.
 		}
 		return json.RawMessage(strconv.FormatInt(n, 10)), nil
 	case schema.LiteralBool:
-		b, flagged, uncertain, err := coerceBoolValue(input)
-		if uncertain {
-			f.markUncertain()
-			return nil, unsupported(fmt.Sprintf("literal bool %v: non-ASCII case-fold uncertainty (cannot prove verdict equals BAML)", lit.Bool))
-		}
+		b, flagged, err := coerceBoolValue(input)
 		if err != nil {
 			if !declinableChildError(err) {
 				return nil, err // hard/invariant failure: propagate.
@@ -1160,14 +1160,7 @@ func coerceEnum(b *schema.Bundle, name string, input value, f *coerceFlags) (jso
 	if err != nil {
 		return nil, err
 	}
-	matched, outcome, viaSub, uncertain := matchString(str, enumMatchCandidates(e), true)
-	if uncertain {
-		// The verdict hinged on a non-ASCII case fold native cannot prove
-		// equals BAML's. Mark it (so a union counter declines the whole union)
-		// and DECLINE rather than claim a match/no-match that might diverge.
-		f.markUncertain()
-		return nil, unsupported(fmt.Sprintf("enum %q: non-ASCII case-fold uncertainty for %q (cannot prove match equals BAML)", name, str))
-	}
+	matched, outcome, viaSub := matchString(str, enumMatchCandidates(e), true)
 	switch outcome {
 	case matchOne:
 		if viaSub {
@@ -1196,7 +1189,9 @@ func enumMatchCandidates(e *schema.EnumDef) []matchCandidate {
 		rendered := v.Name.RenderedName()
 		var vals []string
 		if v.Description != nil {
-			if d := strings.TrimSpace(*v.Description); d != "" {
+			// Rust .trim() (Unicode 17.0.0 White_Space) via bamlunicode, matching
+			// BAML's coerce_enum candidate construction — not Go's unicode.IsSpace.
+			if d := bamlunicode.TrimSpace(*v.Description); d != "" {
 				vals = []string{rendered, d, rendered + ": " + d}
 			}
 		}
@@ -1321,9 +1316,11 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 			return nil
 		}
 		if childF.isUncertain() {
-			// The field verdict hinged on a case fold native cannot prove — it might
-			// MATCH (BAML keeps) or MISS (BAML errors), so native cannot classify the
-			// class: INDETERMINATE (a scored union arm declines the whole union).
+			// A nested child carried number-display uncertainty native cannot
+			// reproduce byte-exact (displayNumber) — the field might coerce (BAML
+			// keeps) or not, so native cannot classify the class: INDETERMINATE (a
+			// scored union arm declines the whole union). (#555 Slice 2 removed the
+			// former case-fold cause; only number-display reaches here now.)
 			cf.markUncertain()
 			indeterminate = true
 			return nil
@@ -1396,17 +1393,13 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 		assigned := make([]value, nF)
 		foundAny := false
 		extraCount := 0
-		keyUncertain := false
 		for i := range input.objV {
 			key := input.objV[i].key
 			mf := -1
 			for j := range cls.Fields {
-				m, unc := matchesStringToString(key, cls.Fields[j].Name.RenderedName())
-				if unc {
-					keyUncertain = true
-					cf.markUncertain()
-				}
-				if m {
+				// The field-key fold is now proven (bamlunicode == BAML's
+				// match_string), so a non-ASCII key assignment is native's to CLAIM.
+				if matchesStringToString(key, cls.Fields[j].Name.RenderedName()) {
 					mf = j
 					break
 				}
@@ -1421,11 +1414,6 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 				matched[mf] = true
 				foundAny = true
 			}
-		}
-		if keyUncertain {
-			// A field-key match/no-match could diverge from BAML; DECLINE (cf is
-			// already marked so an enclosing union counter declines too).
-			return nil, unsupported(fmt.Sprintf("class %q: non-ASCII case-fold uncertainty in a field key (cannot prove assignment equals BAML)", name))
 		}
 		for j := range cls.Fields {
 			if matched[j] {
@@ -1661,7 +1649,7 @@ func defaultValue(t schema.Type) (json.RawMessage, bool) {
 // merely DECLINED (an ErrDeBAMLParseUnsupported that is NOT a proven error) may be
 // a DEFERRED Mcoerce-d SUCCESS (e.g. list<string> with a number → JsonToString),
 // so native DECLINES THE WHOLE LIST there rather than skip an item BAML would
-// keep. A case-fold-uncertain child likewise declines the whole list. A
+// keep. A number-display-uncertain child likewise declines the whole list. A
 // HARD/invariant child error propagates unchanged. See coerceListChild /
 // provenListItemError for the exact safe-skip vs must-decline split.
 //
@@ -1741,9 +1729,8 @@ func coerceList(b *schema.Bundle, elem *schema.Type, input value, cf *coerceFlag
 //     it (BAML records ArrayItemParseError and the list still succeeds).
 //   - (nil, false, err): the whole list must FAIL — err is either a HARD/invariant
 //     error to propagate, or an ErrDeBAMLParseUnsupported DECLINE because the
-//     child could be a DEFERRED Mcoerce-d success or its match verdict was
-//     case-fold-uncertain, so native falls back rather than skip an item BAML
-//     might keep.
+//     child could be a DEFERRED Mcoerce-d success or carried number-display
+//     uncertainty, so native falls back rather than skip an item BAML might keep.
 func coerceListChild(b *schema.Bundle, elem schema.Type, item value, cf *coerceFlags) (json.RawMessage, bool, error) {
 	childF := &coerceFlags{}
 	out, err := coerce(b, elem, item, childF)
@@ -1758,11 +1745,12 @@ func coerceListChild(b *schema.Bundle, elem schema.Type, item value, cf *coerceF
 		return nil, false, err // hard/invariant failure: propagate, never mask.
 	}
 	if childF.isUncertain() {
-		// The child's match verdict hinged on a non-ASCII case fold native cannot
-		// prove equals BAML — it might MATCH (BAML keeps) or MISS (BAML skips), and
-		// native cannot tell which, so DECLINE the whole list.
+		// A nested child carried number-display uncertainty native cannot reproduce
+		// byte-exact (displayNumber) — the child might coerce (BAML keeps) or not,
+		// and native cannot tell which, so DECLINE the whole list. (#555 Slice 2
+		// removed the former case-fold cause; only number-display reaches here now.)
 		cf.markUncertain()
-		return nil, false, unsupported(fmt.Sprintf("list element %s→%s: non-ASCII case-fold uncertainty (cannot prove skip vs keep)", item.kind, elem.Kind))
+		return nil, false, unsupported(fmt.Sprintf("list element %s→%s: number-display uncertainty (cannot prove skip vs keep)", item.kind, elem.Kind))
 	}
 	if provenListItemError(b, elem, item) {
 		return nil, false, nil // PROVEN parse error → BAML skips via ArrayItemParseError.
@@ -1777,9 +1765,9 @@ func coerceListChild(b *schema.Bundle, elem schema.Type, item value, cf *coerceF
 // provenListItemError reports whether BAML PROVABLY errors coercing item to the
 // list element type elem — the ONLY case where BAML records ArrayItemParseError
 // and drops the item, so native may skip it. It is a WHITELIST called ONLY after
-// native's own coercion FAILED with a declinable error AND was not case-fold-
-// uncertain, so for match_string-based targets (bool/enum/string-literal from a
-// STRING) a native failure already equals a BAML failure. For NUMERIC targets
+// native's own coercion FAILED with a declinable error, so for match_string-based
+// targets (bool/enum/string-literal from a STRING) — whose fold is now proven
+// (bamlunicode) — a native failure already equals a BAML failure. For NUMERIC targets
 // native is STRICTER than BAML (inf/overflow/hex/underscore), so a string is
 // proven only when BAML's own parse strategies are re-checked
 // (bamlStringNumberFails); an input kind BAML rejects with error_unexpected_type
@@ -1806,9 +1794,9 @@ func provenListItemError(b *schema.Bundle, elem schema.Type, item value) bool {
 		case schema.PrimitiveBool:
 			switch item.kind {
 			case valString:
-				// Reached only after a native bool coercion FAILED and was NOT
-				// case-fold-uncertain: a certain casefold + match_string miss/tie,
-				// which BAML's coerce_bool turns into error_unexpected_type.
+				// Reached only after a native bool coercion FAILED: a CERTAIN
+				// match_string miss/tie (the fold is proven, bamlunicode), which
+				// BAML's coerce_bool turns into error_unexpected_type.
 				return true
 			case valObject, valNumber, valNull:
 				return true // error_unexpected_type (BAML never coerces number→bool).
@@ -1828,8 +1816,8 @@ func provenListItemError(b *schema.Bundle, elem schema.Type, item value) bool {
 		}
 	case schema.TypeEnum:
 		// A non-string enum input stringifies (ObjectToString, Mcoerce-d). A
-		// STRING native rejected (non-uncertain) is a certain match_string
-		// miss/tie, which coerce_enum turns into an error in a required
+		// STRING native rejected is a CERTAIN match_string miss/tie (the fold is
+		// proven, bamlunicode), which coerce_enum turns into an error in a required
 		// list-element position.
 		return item.kind == valString
 	case schema.TypeLiteral:
@@ -2038,8 +2026,9 @@ func bamlCommaNumberParses(s string) bool {
 // target+input. A value native merely DECLINED (an ErrDeBAMLParseUnsupported that
 // is NOT a proven error) may be a DEFERRED Mcoerce-d SUCCESS (e.g.
 // map<string,string> with a NUMBER value → JsonToString), so native DECLINES THE
-// WHOLE MAP there rather than skip an entry BAML would keep. A case-fold-
-// uncertain value or key likewise declines the whole map.
+// WHOLE MAP there rather than skip an entry BAML would keep. A number-display-
+// uncertain value likewise declines the whole map. (A KEY match is now proven —
+// bamlunicode — so a non-ASCII key is native's to CLAIM, no longer a decline.)
 //
 // Native still DECLINES (ErrDeBAMLParseUnsupported → fall back) on:
 //   - Non-object input: BAML has object/map coercion + scoring outside this
@@ -2126,14 +2115,14 @@ func coerceMap(b *schema.Bundle, keyT, valT *schema.Type, input value, cf *coerc
 //     the entry (BAML records MapValueParseError and the map still succeeds).
 //   - (nil, false, err): the whole map must FAIL — a HARD/invariant error, or an
 //     ErrDeBAMLParseUnsupported DECLINE because the value could be a DEFERRED
-//     Mcoerce-d success or its verdict was case-fold-uncertain, so native falls
+//     Mcoerce-d success or carried number-display uncertainty, so native falls
 //     back rather than skip an entry BAML might keep.
 //
 // A map's INHERENT score (types.rs) is own conditions plus, per accepted entry,
 // the key conditions (inserted EMPTY, score 0) plus the VALUE score — so a kept
 // value's total score DOES fold into the map here (M3 drops the pre-M3
-// "map own flags only" score.rs shortcut). The child's case-fold uncertainty is
-// still propagated.
+// "map own flags only" score.rs shortcut). The child's number-display uncertainty
+// is still propagated.
 func coerceMapValueChild(b *schema.Bundle, valT schema.Type, val value, cf *coerceFlags) (json.RawMessage, bool, error) {
 	childF := &coerceFlags{}
 	out, err := coerce(b, valT, val, childF)
@@ -2145,11 +2134,11 @@ func coerceMapValueChild(b *schema.Bundle, valT schema.Type, val value, cf *coer
 		return nil, false, err // hard/invariant failure: propagate, never mask.
 	}
 	if childF.isUncertain() {
-		// The value's match verdict hinged on a non-ASCII case fold native cannot
-		// prove equals BAML — it might MATCH (BAML keeps) or MISS (BAML skips), so
-		// DECLINE the whole map.
+		// A nested value carried number-display uncertainty native cannot reproduce
+		// byte-exact (displayNumber) — it might coerce (BAML keeps) or not, so
+		// DECLINE the whole map. (#555 Slice 2 removed the former case-fold cause.)
 		cf.markUncertain()
-		return nil, false, unsupported(fmt.Sprintf("map value %s→%s: non-ASCII case-fold uncertainty (cannot prove skip vs keep)", val.kind, valT.Kind))
+		return nil, false, unsupported(fmt.Sprintf("map value %s→%s: number-display uncertainty (cannot prove skip vs keep)", val.kind, valT.Kind))
 	}
 	if provenMapValueError(b, valT, val) {
 		return nil, false, nil // PROVEN parse error → BAML skips via MapValueParseError.
@@ -2195,14 +2184,16 @@ func provenMapValueError(b *schema.Bundle, valT schema.Type, val value) bool {
 //
 //   - string primitive: any key coerces → ACCEPT.
 //   - enum / string literal / string-literal union: a clean match_string match
-//     (any arm, for a union) → ACCEPT; a case-fold-UNCERTAIN verdict marks cf and
-//     declines; a certain MISS declines the whole map (dynamic lenient keep).
+//     (any arm, for a union) → ACCEPT; a certain MISS declines the whole map
+//     (dynamic lenient keep). The match_string fold is now proven (bamlunicode ==
+//     Rust str::to_lowercase), so a non-ASCII key match/miss is native's to CLAIM
+//     — there is no case-fold-uncertain branch (#555 Slice 2).
 //
-// A non-ASCII case-fold uncertainty marks cf (nil-safe) so that — should a map
-// ever become reachable as a union arm — the enclosing union counter makes the
-// same conservative whole-union decline. Today no claimable union admits a map
-// arm (parse.go's safe families are literal/class only), so this is purely
-// defensive signal propagation, never an over-claim.
+// cf is retained for the scored-context threading convention every coerce* helper
+// follows (and so a future NON-Unicode key uncertainty could propagate to an
+// enclosing union counter). Key coercion produces no uncertainty today, so cf is
+// never marked here; no claimable union admits a map arm anyway (parse.go's safe
+// families are literal/class only).
 func coerceMapKey(b *schema.Bundle, keyT schema.Type, key string, cf *coerceFlags) error {
 	switch keyT.Kind {
 	case schema.TypePrimitive:
@@ -2217,11 +2208,7 @@ func coerceMapKey(b *schema.Bundle, keyT schema.Type, key string, cf *coerceFlag
 		}
 		// Only success/failure matters (BAML discards the coerced key, inserting
 		// the original string), so ignore the substring bit.
-		_, outcome, _, uncertain := matchString(key, enumMatchCandidates(e), true)
-		if uncertain {
-			cf.markUncertain()
-			return unsupported(fmt.Sprintf("map key %q: non-ASCII case-fold uncertainty against enum %q", key, keyT.Name))
-		}
+		_, outcome, _ := matchString(key, enumMatchCandidates(e), true)
 		if outcome == matchOne {
 			return nil
 		}
@@ -2232,11 +2219,7 @@ func coerceMapKey(b *schema.Bundle, keyT schema.Type, key string, cf *coerceFlag
 		if keyT.Literal == nil || keyT.Literal.Kind != schema.LiteralString {
 			return unsupported("map key literal must be a string literal")
 		}
-		_, outcome, _, uncertain := matchString(key, []matchCandidate{{name: keyT.Literal.String, validValues: []string{keyT.Literal.String}}}, true)
-		if uncertain {
-			cf.markUncertain()
-			return unsupported(fmt.Sprintf("map key %q: non-ASCII case-fold uncertainty against literal %q", key, keyT.Literal.String))
-		}
+		_, outcome, _ := matchString(key, []matchCandidate{{name: keyT.Literal.String, validValues: []string{keyT.Literal.String}}}, true)
 		if outcome == matchOne {
 			return nil
 		}
@@ -2254,39 +2237,14 @@ func coerceMapKey(b *schema.Bundle, keyT schema.Type, key string, cf *coerceFlag
 		}
 		// A union-of-string-literals key coerces through BAML's union coercer,
 		// which accepts when ANY arm matches; the map then inserts the ORIGINAL
-		// key, so the winning arm is irrelevant. Scan ALL arms: only a CERTAIN
-		// match accepts the key. An uncertain-only match (matchString can return
-		// matchOne together with uncertain when the match is achieved solely in
-		// the non-ASCII case-fold pass, e.g. key "É" vs literal "é") must NOT
-		// accept — that verdict hinges on a lowercasing native cannot prove
-		// equals BAML — so it only records sawUncertain. A later CERTAIN arm
-		// still rescues an earlier uncertain one (its match returns before the
-		// case-fold attempt, so uncertain is false), which is why scanning all
-		// arms — rather than short-circuiting on the first uncertain arm —
-		// avoids over-declining.
-		accepted := false
-		sawUncertain := false
+		// key, so the winning arm is irrelevant. The fold is now proven
+		// (bamlunicode == Rust str::to_lowercase), so a non-ASCII arm match
+		// (e.g. key "É" vs literal "é", matched in the case-fold pass) is native's
+		// to CLAIM. Scan the arms: the FIRST clean match accepts the key.
 		for _, lit := range flattenStringLiterals(keyT) {
-			_, outcome, _, uncertain := matchString(key, []matchCandidate{{name: lit, validValues: []string{lit}}}, true)
-			if uncertain {
-				sawUncertain = true
-				continue
+			if _, outcome, _ := matchString(key, []matchCandidate{{name: lit, validValues: []string{lit}}}, true); outcome == matchOne {
+				return nil
 			}
-			if outcome == matchOne {
-				accepted = true
-			}
-		}
-		if accepted {
-			// A clean arm matched; the key is valid regardless of any uncertain
-			// arm, and the map inserts the original key — no uncertainty to mark.
-			return nil
-		}
-		if sawUncertain {
-			// No clean arm, but an arm's verdict hinged on a non-ASCII case fold
-			// native cannot prove equals BAML — decline the map AND propagate the
-			// uncertainty (so any enclosing union counter declines conservatively).
-			cf.markUncertain()
-			return unsupported(fmt.Sprintf("map key %q: non-ASCII case-fold uncertainty against string-literal-union arms", key))
 		}
 		// No arm matched: a DEFERRED lenient keep (dynamic keeps non-matching
 		// literal-union keys → full map), not a skip → decline the whole map.
@@ -2512,7 +2470,7 @@ func cmpCandidates(targetIsUnion bool, a, b candidate) int {
 //     error at a standalone position.
 //   - a PROVEN BAML item error is excluded from ranking (i32::MAX), safe.
 //   - an item native merely DECLINED (native stricter — could be a DEFERRED
-//     BAML success that changes the pick_best winner) or a case-fold-UNCERTAIN
+//     BAML success that changes the pick_best winner) or a number-display-UNCERTAIN
 //     item DECLINES the whole array-to-singular (fall back).
 //   - every item a proven error (and the array non-empty) → BAML merges the
 //     errors and errors (provenError).
@@ -2539,9 +2497,10 @@ func coerceArrayToSingular(items []value, targetIsUnion bool, coerceItem func(it
 	for i := 0; i < n; i++ {
 		out, cf, err := coerceItem(items[i])
 		if cf.isUncertain() {
-			// The item verdict hinged on a case fold native cannot prove; BAML
-			// might keep or drop it, changing the winner → decline the whole thing.
-			return candidate{}, unsupported("array-to-singular item: non-ASCII case-fold / number-display uncertainty (cannot prove verdict equals BAML)")
+			// The item verdict hinged on number-display native cannot reproduce
+			// byte-exact; BAML might keep or drop it, changing the winner → decline
+			// the whole thing. (#555 Slice 2 removed the former case-fold cause.)
+			return candidate{}, unsupported("array-to-singular item: number-display uncertainty (cannot prove verdict equals BAML)")
 		}
 		if err == nil {
 			cands = append(cands, cf.toCandidate(out, i))
@@ -2613,7 +2572,9 @@ func selectUnionArms(narms int, nullable bool, arm unionArm) (candidate, error) 
 	for i := 0; i < narms; i++ {
 		out, armF, err := arm(i)
 		if armF.isUncertain() {
-			return candidate{}, unsupported("union arm: non-ASCII case-fold / number-display uncertainty (cannot prove verdict equals BAML)")
+			// #555 Slice 2 removed the former case-fold cause; only number-display
+			// uncertainty reaches here now (still declines the whole union).
+			return candidate{}, unsupported("union arm: number-display uncertainty (cannot prove verdict equals BAML)")
 		}
 		if err == nil {
 			c := armF.toCandidate(out, i)
@@ -2775,7 +2736,7 @@ func coerceUnionSafe(b *schema.Bundle, u *schema.UnionType, input value, cf *coe
 // In the lenient pass a non-matching / value-mismatched / missing-required arm is a
 // PROVEN BAML error (excluded from ranking); an arm native's stricter coercer merely
 // DECLINED (native-can't-prove — a non-numeric string to an int arm, or ARRAY input
-// to an int/float/bool/class arm whose array-to-singular is M3d) or a case-fold-
+// to an int/float/bool/class arm whose array-to-singular is M3d) or a number-display-
 // UNCERTAIN arm declines the WHOLE union, because BAML might succeed it via a
 // deferred path and change the winner. The winner's own output is emitted directly
 // (in the winner's schema field order for a class).
@@ -3465,9 +3426,11 @@ func coerceStreamDoneLeaf(b *schema.Bundle, t schema.Type, input value) (json.Ra
 //     field whose value is DELETED still counts as present, so it is claimed);
 //   - a present field whose value DECLINES in stream with the unsupported sentinel (a
 //     complete leaf that does not cleanly coerce, a deferred conversion) — its
-//     decline propagates and the whole class falls back;
-//   - a field-key match that hinges on a non-ASCII case fold native cannot prove
-//     equals BAML.
+//     decline propagates and the whole class falls back.
+//
+// A field-key match is now proven (bamlunicode == BAML's match_string), so a
+// non-ASCII field key is native's to CLAIM — no field-key uncertainty decline
+// (#555 Slice 2).
 func coerceStreamClass(b *schema.Bundle, name string, mode schema.StreamingMode, input value) (json.RawMessage, error) {
 	cls, ok := b.FindClass(name, mode)
 	if !ok {
@@ -3486,11 +3449,7 @@ func coerceStreamClass(b *schema.Bundle, name string, mode schema.StreamingMode,
 		key := input.objV[i].key
 		mf := -1
 		for j := range cls.Fields {
-			m, unc := matchesStringToString(key, cls.Fields[j].Name.RenderedName())
-			if unc {
-				return nil, unsupported(fmt.Sprintf("stream: class %q field-key non-ASCII case-fold uncertainty", name))
-			}
-			if m {
+			if matchesStringToString(key, cls.Fields[j].Name.RenderedName()) {
 				mf = j
 				break
 			}

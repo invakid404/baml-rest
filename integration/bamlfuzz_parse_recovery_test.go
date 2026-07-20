@@ -597,11 +597,35 @@ var parseRecoveryNativeClaim = map[string]bool{
 	// deferred array union_variant_hint, coerce_array.rs):
 	"list_int_bool_union_stays_fallback":   false,
 	"list_string_int_union_stays_fallback": false,
-	// Unicode case-fold uncertainty (#555 — Go cases.Lower not proven byte-identical
-	// to Rust str::to_lowercase for an uppercase non-ASCII rune; the ASCII corpus
-	// never fired this before, so these are the first case-fold guards):
-	"unicode_literal_casefold_uncertain_stays_fallback":      false,
-	"unicode_list_literal_casefold_uncertain_stays_fallback": false,
+	// #555 Slice 2 — Unicode match_string CLAIMS. match_string now folds through
+	// internal/debaml/bamlunicode (byte-for-byte Rust 1.93.0 str::to_lowercase /
+	// unicode-normalization 0.1.24), so every non-ASCII case/normalization fold the
+	// old x/text path could not prove is now native's to CLAIM. Fixtures 180/181
+	// (formerly the unicode_casefold fallback-boundary guards) flip to claimed, and
+	// the new corpus covers the U+A7DC->U+019B sentinel across enum/literal/field-key/
+	// map-key, one-to-many lowercase (U+0130), Final/medial sigma, the U+1E9E control,
+	// a 15->16 NFKD compat-decomposition + combining-mark-removal delta, each surface
+	// nested, a union whose arm count the fold changes, and a negative near-match
+	// proving no over-claim. Each is held to BAML byte-exact AND asserted CLAIMED (a
+	// decline->BAML-fallback equality fails the claimed=true pin).
+	"unicode_literal_casefold_now_claimed":      true,
+	"unicode_list_literal_casefold_now_claimed": true,
+	"unicode_a7dc_enum_now_claimed":             true,
+	"unicode_a7dc_literal_now_claimed":          true,
+	"unicode_a7dc_field_key_now_claimed":        true,
+	"unicode_a7dc_map_key_now_claimed":          true,
+	"unicode_dotted_i_one_to_many_enum":         true,
+	"unicode_greek_sigma_final_and_medial":      true,
+	"unicode_u1e9e_control_literal":             true,
+	"unicode_nfkd16_compat_decomp_literal":      true,
+	"unicode_a7dc_enum_nested_list":             true,
+	"unicode_a7dc_union_arm_count":              true,
+	"unicode_near_match_distinct_enum":          true,
+	"unicode_a7dc_literal_nested_map_value":     true,
+	// Unicode BOOLEAN consumer: a non-ASCII bool input ("trué") bypasses the ASCII
+	// strings.ToLower fast path and is accent-folded to "true" by the bamlunicode-backed
+	// match_string — StringToBool, claimed byte-exact.
+	"unicode_bool_accent_fold": true,
 	// #581 map re-enable: a clean map<string,string> is now CLAIMED (object input,
 	// string keys, in-scope values) in input key order, matching BAML. Was the
 	// pre-#581 checkNoMap parity-decline guard; flipped to claimed with the gate.
@@ -634,12 +658,10 @@ var parseRecoveryBoundaryFamily = map[string]string{
 	"list_int_bool_union_stays_fallback":   "list_multi_arm_union",
 	"list_string_int_union_stays_fallback": "list_multi_arm_union",
 	"list_scalar_union_stays_fallback":     "list_multi_arm_union",
-	// Unicode case-fold uncertainty (#555). Still a FINAL-parse fallback: native's
-	// match_string cannot prove its ASCII fold equals BAML's Unicode fold (the
-	// native-only STREAM lane additionally excludes non-ASCII literals/enums at
-	// admission — see checkStreamRootSupported).
-	"unicode_literal_casefold_uncertain_stays_fallback":      "unicode_casefold",
-	"unicode_list_literal_casefold_uncertain_stays_fallback": "unicode_casefold",
+	// #555 Slice 2: the unicode_casefold fallback-boundary family is GONE — match_string
+	// now folds through bamlunicode (Rust str::to_lowercase / unicode-normalization), so the
+	// former guard fixtures 180/181 and the new non-ASCII corpus all CLAIM (see
+	// parseRecoveryNativeClaim). There is no longer a Unicode fold that stays fallback.
 	// (The number-display family is GONE: Phase 7C closes serde f64 Display
 	// byte-exact (displayFloat64), so those fixtures now CLAIM — see the
 	// *_now_claimed pins in parseRecoveryNativeClaim.)
@@ -804,6 +826,38 @@ var parseRecoveryStreamNativeClaim = map[string]map[string]bool{
 		"key_only":  true,
 		"a_partial": true,
 		"a_closed":  true,
+	},
+	// #555 Slice 2 — non-ASCII STREAM claims. The stream-admission gate
+	// (checkStreamRootSupported) was narrowed to admit non-ASCII string-literal /
+	// enum VALUES and non-ASCII field NAMES (their fold is now proven via
+	// bamlunicode); the streaming cadence is character-agnostic and the
+	// complete-value fold uses the same final coercer, so native reproduces BAML
+	// parse-stream byte-exact per prefix and CLAIMS every prefix.
+	// 196 Root{status: enum{ƛ,other}, note: string}: incomplete enum value → null,
+	// then folds U+A7DC→U+019B on close.
+	"streaming_unicode_a7dc_enum": {
+		"open_brace":     true,
+		"status_partial": true,
+		"status_done":    true,
+		"note_partial":   true,
+		"closed":         true,
+	},
+	// 197 Root{u: literal "ƛ", note: string}: same cadence; folds to the canonical literal ƛ.
+	"streaming_unicode_a7dc_literal": {
+		"open_brace":   true,
+		"u_partial":    true,
+		"u_done":       true,
+		"note_partial": true,
+		"closed":       true,
+	},
+	// 198 Root{ƛ: string, count: int}: the input key Ƛ (U+A7DC) folds to match field ƛ
+	// (U+019B); the done-required int null-fills until complete.
+	"streaming_unicode_field_key": {
+		"open_brace":      true,
+		"key_partial_val": true,
+		"key_done":        true,
+		"count_partial":   true,
+		"closed":          true,
 	},
 }
 

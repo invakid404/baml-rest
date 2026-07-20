@@ -1,0 +1,37 @@
+{
+  "name": "unicode_list_literal_casefold_now_claimed",
+  "description": "#555 Slice 2 — NOW CLAIMED (was a unicode_casefold fallback-boundary guard). list<literal \"GRÜN\"> against [\"grün\"]: the element literal match now folds through bamlunicode (Rust str::to_lowercase), so native CLAIMS the element and keeps [GRÜN] — the distinct nested decline site (180 is the standalone literal) is now claimed too. want is BAML v0.223's byte-exact final parse, held by this differential; native==BAML is independently proven by the exhaustive bamlunicode Rust reference.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "list",
+              "inner": {
+                "kind": "literal",
+                "literal": {
+                  "kind": "string",
+                  "string": "GRÜN"
+                }
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":[\"grün\"]}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": [
+        "GRÜN"
+      ]
+    }
+  }
+}

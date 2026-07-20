@@ -5,13 +5,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"unicode"
-
-	"golang.org/x/text/cases"
-	"golang.org/x/text/language"
-	"golang.org/x/text/unicode/norm"
 
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/internal/debaml/bamlunicode"
 	"github.com/invakid404/baml-rest/internal/schema"
 )
 
@@ -39,8 +35,9 @@ import (
 //     preserve_schema_order reorders only class fields, never map keys. A map
 //     whose order or key/value coercion native cannot prove still DECLINES and
 //     falls back: a missed enum/literal key BAML would keep leniently, a
-//     duplicate input key, a Unicode case-fold-uncertain key (#555), a value
-//     that could defer to a lenient Mcoerce-d success, or a non-object input.
+//     duplicate input key, a value that could defer to a lenient Mcoerce-d
+//     success, or a non-object input. (A non-ASCII key match is now proven via
+//     bamlunicode and CLAIMED — #555 Slice 2.)
 //   - Raw text whose JSON-looking candidate needs a repair outside the
 //     conservative M2a fixing subset — comments, escapes, missing commas,
 //     unterminated structures, multiple top-level values, … — which stays
@@ -561,8 +558,9 @@ func checkSupportedType(b *schema.Bundle, t schema.Type) error {
 		// bamlfuzz parse-recovery differential proves equal to BAML's observable
 		// order. Everything the differential cannot prove declines at COERCE
 		// time (coerceMap): a missed enum/literal key, a duplicate key, a
-		// case-fold-uncertain key/value, a deferred Mcoerce-d value, or a
-		// non-object input. An optional map `map<K,V>?` reaches this arm only for
+		// number-display-uncertain value, a deferred Mcoerce-d value, or a
+		// non-object input. (A non-ASCII key match is now proven via bamlunicode
+		// and CLAIMED — #555 Slice 2.) An optional map `map<K,V>?` reaches this arm only for
 		// a directly-typed field; behind the nullable-union fast path (`if
 		// u.Nullable { return nil }`) the gate claims it and coerceMap still
 		// declines any unsupported key/value on non-null input — a safe
@@ -673,7 +671,7 @@ func isStringLiteralUnionType(t schema.Type) bool {
 // flattened into this variant set by simplifyUnion.
 //
 // Every over-claim path declines the WHOLE union at coerce time — an arm native
-// cannot prove (a non-proven ErrDeBAMLParseUnsupported), a case-fold-uncertain
+// cannot prove (a non-proven ErrDeBAMLParseUnsupported), a number-display-uncertain
 // verdict, or ARRAY input to an int/float/bool/class arm (array-to-singular is
 // M3d) — so over-claim is impossible; the only residual is safe under-claim.
 //
@@ -886,51 +884,30 @@ type matchCandidate struct {
 	validValues []string
 }
 
-// undLowerCaser builds a fresh full-Unicode lowercaser. BAML's match_string
-// case-fold uses Rust str::to_lowercase (full SpecialCasing — e.g. İ ->
-// i+U+0307), which Go's strings.ToLower (simple per-rune mapping) does NOT
-// reproduce; golang.org/x/text/cases.Lower(language.Und) does. A cases.Caser is
-// NOT safe for concurrent use, so callers build a local one per matchString
-// call (only when the case-fold attempt is actually reached).
-func undLowerCaser() cases.Caser { return cases.Lower(language.Und) }
-
-// caseFoldUncertain reports whether lowercasing s could DIVERGE from Rust's
-// str::to_lowercase. cases.Lower is not byte-identical to Rust for every rune
-// (e.g. x/text v0.38 leaves U+A7DC 'Ƛ' unchanged while Rust lowercases it to
-// 'ƛ'; Go's own case tables don't even classify U+A7DC as uppercase). The
-// robust, conservative test that native CAN prove: a rune is lowercase-stable
-// iff it is ASCII or Go reports it IsLower (a genuinely lowercase letter, whose
-// lowercasing is the identity on both Go and Rust — this keeps 'é'/'ß'/'ü'
-// certain so accented inputs like "Résumé" still match). Any OTHER non-ASCII
-// rune (uppercase, titlecase, or a cased letter Go's tables don't recognize)
-// is treated as uncertain. The corpus is ASCII, so this never fires there.
-func caseFoldUncertain(s string) bool {
-	for _, r := range s {
-		if r > unicode.MaxASCII && !unicode.IsLower(r) {
-			return true
-		}
-	}
-	return false
-}
-
 // matchString ports match_string.rs::match_string. It trims the input, then
 // runs the case-sensitive / accent-folded / punctuation-stripped /
 // case-insensitive / substring strategies in BAML's exact order, returning the
-// matched candidate name, an outcome, whether the match came from the SUBSTRING
-// strategy (BAML's SubstringMatch flag, cost 2 — the exact/fold strategies are
-// score 0), and whether the case-fold attempt involved a non-ASCII rune whose
-// lowercasing native cannot prove equals Rust's (uncertain — see
-// caseFoldUncertain). uncertain is false whenever a match is found before the
-// case-fold attempt. allowSubstring mirrors match_string's allow_substring_match:
-// class field keys pass false (via matchesStringToString); enum / string-literal
-// / map-key coercion pass true.
-func matchString(input string, candidates []matchCandidate, allowSubstring bool) (string, matchOutcome, bool, bool) {
+// matched candidate name, an outcome, and whether the match came from the
+// SUBSTRING strategy (BAML's SubstringMatch flag, cost 2 — the exact/fold
+// strategies are score 0). allowSubstring mirrors match_string's
+// allow_substring_match: class field keys pass false (via matchesStringToString);
+// enum / string-literal / map-key coercion pass true.
+//
+// Every Unicode-sensitive operation — the whitespace trim, punctuation
+// classification (removeAccents/stripPunctuation), NFKD, combining-mark removal,
+// and the case-insensitive fold — routes through internal/debaml/bamlunicode,
+// whose tables reproduce BAML's exact dual-version profile (Rust 1.93.0 std
+// Unicode 17.0.0 for case/properties/whitespace; unicode-normalization 0.1.24
+// Unicode 16.0.0 for NFKD/marks). Because that fold is now proven byte-identical
+// to Rust str::to_lowercase for every scalar (#555 Slice 1), the case-fold is
+// no longer "uncertain": a match/no-match verdict is native's to CLAIM.
+func matchString(input string, candidates []matchCandidate, allowSubstring bool) (string, matchOutcome, bool) {
 	// Trim whitespace (no flag, score 0).
-	matchContext := strings.TrimSpace(input)
+	matchContext := bamlunicode.TrimSpace(input)
 
 	// Attempt 1: original (trimmed) candidates.
 	if name, outcome, sub, found := stringMatchStrategy(matchContext, candidates, allowSubstring); found {
-		return name, outcome, sub, false
+		return name, outcome, sub
 	}
 
 	// Strip punctuation from input and from every candidate value, then retry
@@ -949,50 +926,36 @@ func matchString(input string, candidates []matchCandidate, allowSubstring bool)
 	// repeat of this one over the SAME match_context/candidates — it can only
 	// return the same result — so it is intentionally omitted here.)
 	if name, outcome, sub, found := stringMatchStrategy(matchContext, stripped, allowSubstring); found {
-		return name, outcome, sub, false
-	}
-
-	// The case-fold attempt is now reached. Determine whether lowercasing any of
-	// the forms about to be lowered could diverge from Rust (uncertain).
-	uncertain := caseFoldUncertain(matchContext)
-	if !uncertain {
-		for i := range stripped {
-			for _, v := range stripped[i].validValues {
-				if caseFoldUncertain(v) {
-					uncertain = true
-				}
-			}
-		}
+		return name, outcome, sub
 	}
 
 	// Attempt 4: case-insensitive over the stripped forms (no flag, score 0),
-	// using full-Unicode lowercasing to match Rust's str::to_lowercase.
-	caser := undLowerCaser()
-	matchContext = caser.String(matchContext)
+	// using bamlunicode.LowerString — byte-for-byte Rust str::to_lowercase
+	// (full SpecialCasing + Final_Sigma, Unicode 17.0.0).
+	matchContext = bamlunicode.LowerString(matchContext)
 	lowered := make([]matchCandidate, len(stripped))
 	for i := range stripped {
 		vals := make([]string, len(stripped[i].validValues))
 		for j, v := range stripped[i].validValues {
-			vals[j] = caser.String(v)
+			vals[j] = bamlunicode.LowerString(v)
 		}
 		lowered[i] = matchCandidate{name: stripped[i].name, validValues: vals}
 	}
 	if name, outcome, sub, found := stringMatchStrategy(matchContext, lowered, allowSubstring); found {
-		return name, outcome, sub, uncertain
+		return name, outcome, sub
 	}
 
-	return "", matchNone, false, uncertain
+	return "", matchNone, false
 }
 
 // matchesStringToString ports match_string.rs::matches_string_to_string: a
 // single-candidate, NO-substring match used for class object field keys
-// (coerce_class.rs:209). Returns whether input matches target, plus whether the
-// verdict depended on a non-ASCII case fold native cannot prove equals BAML
-// (uncertain — caller declines on it). (The key match adds no class flag in
-// BAML, so the substring bit is irrelevant — substring is disabled here anyway.)
-func matchesStringToString(input, target string) (matched, uncertain bool) {
-	_, outcome, _, unc := matchString(input, []matchCandidate{{name: target, validValues: []string{target}}}, false)
-	return outcome == matchOne, unc
+// (coerce_class.rs:209). Returns whether input matches target. (The key match
+// adds no class flag in BAML, so the substring bit is irrelevant — substring is
+// disabled here anyway.)
+func matchesStringToString(input, target string) (matched bool) {
+	_, outcome, _ := matchString(input, []matchCandidate{{name: target, validValues: []string{target}}}, false)
+	return outcome == matchOne
 }
 
 // stringMatchStrategy ports match_string.rs::string_match_strategy for one
@@ -1133,12 +1096,15 @@ func matchIndices(haystack, needle string) []int {
 }
 
 // stripPunctuation ports match_string.rs::strip_punctuation: keep
-// alphanumeric runes plus '-' and '_', drop everything else.
+// alphanumeric runes plus '-' and '_', drop everything else. "Alphanumeric" is
+// Rust char::is_alphanumeric (Alphabetic OR GC=N, Unicode 17.0.0) via
+// bamlunicode.IsAlphanumeric — NOT Go's unicode.IsLetter||IsNumber, which
+// classifies a different rune set.
 func stripPunctuation(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range s {
-		if r == '-' || r == '_' || unicode.IsLetter(r) || unicode.IsNumber(r) {
+		if r == '-' || r == '_' || bamlunicode.IsAlphanumeric(r) {
 			b.WriteRune(r)
 		}
 	}
@@ -1156,14 +1122,18 @@ var ligatureFolder = strings.NewReplacer(
 )
 
 // removeAccents ports match_string.rs::remove_accents: fold the ligatures
-// above, NFKD-decompose, then drop combining marks (General_Category=Mark).
+// above, NFKD-decompose, then drop combining marks. Both NFKD and the
+// combining-mark test route through bamlunicode (unicode-normalization 0.1.24,
+// Unicode 16.0.0) rather than Go's x/text NFKD + unicode.Mn/Mc/Me categories,
+// so the decomposition and Mn/Mc/Me classification match BAML's exact 16.0.0
+// normalization data.
 func removeAccents(s string) string {
 	s = ligatureFolder.Replace(s)
-	decomposed := norm.NFKD.String(s)
+	decomposed := bamlunicode.NFKD(s)
 	var b strings.Builder
 	b.Grow(len(decomposed))
 	for _, r := range decomposed {
-		if unicode.In(r, unicode.Mn, unicode.Mc, unicode.Me) {
+		if bamlunicode.IsCombiningMark(r) {
 			continue
 		}
 		b.WriteRune(r)

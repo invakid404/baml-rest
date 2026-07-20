@@ -1,0 +1,32 @@
+{
+  "name": "unicode_nfkd16_compat_decomp_literal",
+  "description": "NFKD 15→16 delta + combining-mark removal: U+105C9 has no decomposition under Go/Unicode-15 but decomposes to U+105D2 + U+0307 under unicode-normalization/Unicode-16; removeAccents strips the combining U+0307, so input U+105C9 accent-folds to U+105D2 and matches literal U+105D2. #555 Slice 2 — native now CLAIMS this non-ASCII match_string case (match_string folds through internal/debaml/bamlunicode, byte-for-byte Rust 1.93.0 str::to_lowercase / unicode-normalization 0.1.24, so the verdict is native's to claim, never case-fold-uncertain). want is BAML v0.223's byte-exact final parse, held by this differential; native==BAML is independently proven by the exhaustive bamlunicode Rust reference.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "literal",
+              "literal": {
+                "kind": "string",
+                "string": "𐗒"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"u\": \"\\ud801\\uddc9\"}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": "𐗒"
+    }
+  }
+}

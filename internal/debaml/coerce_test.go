@@ -107,19 +107,19 @@ func litUnionType(lits ...string) schema.Type {
 //
 //   - ACCEPT: err=nil — a clean match_string match (any arm, for a union), or any
 //     string-primitive key.
-//   - DECLINE the whole map: err=ErrDeBAMLParseUnsupported — a case-fold-UNCERTAIN
-//     verdict (marks cf.uncertain, nil-safely), the mixed-union guard, or a
-//     certain MISS. A KEY never yields a partial skip: the dynamic bridge keeps
-//     non-matching enum/literal/literal-union keys leniently (full map), so a
-//     miss is a DEFERRED Mcoerce-d keep and native declines the whole map.
+//   - DECLINE the whole map: err=ErrDeBAMLParseUnsupported — a certain MISS. A KEY
+//     never yields a partial skip: the dynamic bridge keeps non-matching
+//     enum/literal/literal-union keys leniently (full map), so a miss is a
+//     DEFERRED Mcoerce-d keep and native declines the whole map.
 //
-// It also pins the string-literal-union ACCEPT-ANY-ARM rule (a clean arm accepts
-// even if an EARLIER arm was uncertain). The runes are 'é'(U+00E9, IsLower ->
-// certain) and 'É'(U+00C9, not IsLower -> uncertain once it reaches the case-fold
-// attempt).
+// #555 Slice 2: the match_string fold is now proven (bamlunicode == Rust
+// str::to_lowercase), so a non-ASCII key that folds to a candidate CLAIMS the
+// match — the runes 'é'(U+00E9) and 'É'(U+00C9) fold together, so key "É" now
+// ACCEPTS literal "é" (was a case-fold-uncertain DECLINE). coerceMapKey marks NO
+// uncertainty, so cf.isUncertain() is always false here.
 func TestCoerceMapKey(t *testing.T) {
-	// An indexed bundle with an (ASCII) enum key type — enum uncertainty is
-	// driven by the non-ASCII INPUT key, so the enum values stay ASCII.
+	// An indexed bundle with an (ASCII) enum key type — the non-ASCII INPUT key
+	// exercises the fold against ASCII enum values.
 	enumB, err := schema.FromDynamicOutputSchema(mapEnumKeySchema(), schema.BuildOptions{})
 	if err != nil {
 		t.Fatalf("build enum bundle: %v", err)
@@ -128,45 +128,41 @@ func TestCoerceMapKey(t *testing.T) {
 	strKey := schema.Type{Kind: schema.TypePrimitive, Primitive: schema.PrimitiveString}
 
 	mixedUnion := schema.Type{Kind: schema.TypeUnion, Union: &schema.UnionType{Variants: []schema.Type{
-		strLitType("é"),
+		strLitType("\u00e9"),
 		{Kind: schema.TypePrimitive, Primitive: schema.PrimitiveInt},
 	}}}
 
 	cases := []struct {
-		name          string
-		b             *schema.Bundle
-		keyT          schema.Type
-		key           string
-		wantAccept    bool // true = nil (accepted), false = whole-map decline (err)
-		wantUncertain bool
+		name       string
+		b          *schema.Bundle
+		keyT       schema.Type
+		key        string
+		wantAccept bool // true = nil (accepted), false = whole-map decline (err)
 	}{
 		// String primitive: any key coerces -> ACCEPT.
-		{"string-any", nil, strKey, "whatever", true, false},
-		// String literal: exact -> ACCEPT; certain miss -> DECLINE (dynamic keeps);
-		// uncertain case fold -> DECLINE + mark.
-		{"literal-exact", nil, strLitType("é"), "é", true, false},
-		{"literal-certain-miss-decline", nil, strLitType("abc"), "xyz", false, false},
-		{"literal-uncertain-decline", nil, strLitType("é"), "É", false, true},
+		{"string-any", nil, strKey, "whatever", true},
+		// String literal: exact -> ACCEPT; certain miss -> DECLINE (dynamic keeps).
+		{"literal-exact", nil, strLitType("\u00e9"), "\u00e9", true},
+		{"literal-certain-miss-decline", nil, strLitType("abc"), "xyz", false},
+		// #555 Slice 2: key "É" folds to "é" (proven) and now CLAIMS the match.
+		{"literal-nonascii-casefold-now-accept", nil, strLitType("\u00e9"), "\u00c9", true},
 		// String-literal union.
-		{"union-normal-accept", nil, litUnionType("é", "beta"), "beta", true, false},
-		{"union-certain-miss-decline", nil, litUnionType("abc", "def"), "xyz", false, false},
-		// UNCERTAIN-ONLY match: key "É" matches literal "é" only via the case-fold
-		// pass (matchString returns matchOne AND uncertain) -> DECLINE + mark, NOT
-		// accept.
-		{"union-uncertain-only-match", nil, litUnionType("é"), "É", false, true},
-		// No arm cleanly matches, but an arm's verdict was uncertain -> DECLINE.
-		{"union-uncertain-no-clean", nil, litUnionType("abc", "def"), "É", false, true},
-		// ACCEPT-ANY-ARM rescue: arm "abc" is uncertain for "É", but arm "É"
-		// matches EXACTLY (before the case-fold attempt, so certain) -> accept,
-		// and DON'T mark uncertain.
-		{"union-accept-any-arm", nil, litUnionType("abc", "É"), "É", true, false},
+		{"union-normal-accept", nil, litUnionType("\u00e9", "beta"), "beta", true},
+		{"union-certain-miss-decline", nil, litUnionType("abc", "def"), "xyz", false},
+		// #555 Slice 2: the single non-ASCII arm now folds and ACCEPTS (was decline).
+		{"union-nonascii-casefold-now-accept", nil, litUnionType("\u00e9"), "\u00c9", true},
+		// "É" folds to "é" which matches NO ascii arm -> certain miss -> DECLINE.
+		{"union-nonascii-no-arm-decline", nil, litUnionType("abc", "def"), "\u00c9", false},
+		// A later EXACT arm accepts regardless (unchanged).
+		{"union-accept-any-arm", nil, litUnionType("abc", "\u00c9"), "\u00c9", true},
 		// Mixed union (string literal | int): declined by the guard, no scan.
-		{"mixed-union-guard", nil, mixedUnion, "É", false, false},
-		// Enum: exact -> ACCEPT; a MISS (dynamic keeps non-members) -> DECLINE the
-		// whole map; uncertain -> DECLINE + mark.
-		{"enum-exact", enumB, enumKey, "A", true, false},
-		{"enum-miss-decline", enumB, enumKey, "ZZZ", false, false},
-		{"enum-uncertain-decline", enumB, enumKey, "É", false, true},
+		{"mixed-union-guard", nil, mixedUnion, "\u00c9", false},
+		// Enum: exact -> ACCEPT; a MISS (dynamic keeps non-members) -> DECLINE.
+		{"enum-exact", enumB, enumKey, "A", true},
+		{"enum-miss-decline", enumB, enumKey, "ZZZ", false},
+		// #555 Slice 2: "É" folds to "é" (proven), != the ASCII enum values -> a
+		// CERTAIN miss -> DECLINE the whole map (dynamic keeps non-members).
+		{"enum-nonascii-certain-miss-decline", enumB, enumKey, "\u00c9", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -179,14 +175,16 @@ func TestCoerceMapKey(t *testing.T) {
 			} else if !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
 				t.Fatalf("want ErrDeBAMLParseUnsupported decline, got %v", err)
 			}
-			if cf.isUncertain() != c.wantUncertain {
-				t.Errorf("cf.uncertain = %v, want %v", cf.isUncertain(), c.wantUncertain)
+			// coerceMapKey marks no uncertainty after #555 Slice 2 (the fold is proven).
+			if cf.isUncertain() {
+				t.Errorf("cf.isUncertain() = true, want false (map-key coercion marks no uncertainty)")
 			}
 		})
 	}
 
-	// Nil-safe: an uncertain key with a nil accumulator must not panic.
-	if err := coerceMapKey(nil, strLitType("é"), "É", nil); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
-		t.Fatalf("nil cf: want ErrDeBAMLParseUnsupported, got %v", err)
+	// Nil-safe: a non-ASCII key with a nil accumulator must not panic; key "É"
+	// folds to literal "é" and ACCEPTS.
+	if err := coerceMapKey(nil, strLitType("\u00e9"), "\u00c9", nil); err != nil {
+		t.Fatalf("nil cf: want accept (nil), got %v", err)
 	}
 }

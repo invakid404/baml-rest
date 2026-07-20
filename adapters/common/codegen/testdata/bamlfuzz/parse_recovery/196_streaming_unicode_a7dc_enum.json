@@ -1,0 +1,94 @@
+{
+  "name": "streaming_unicode_a7dc_enum",
+  "description": "U+A7DC enum stream: Root{status: enum{ƛ,other}, note: string}. The incomplete enum value \"Ƛ is done-required → null; once closed it folds U+A7DC→U+019B and claims ƛ. #555 Slice 2 admits non-ASCII string-literal/enum/field-name shapes into the native STREAM lane (checkStreamRootSupported narrowed): the streaming cadence is character-agnostic (done-required scalars null-fill until complete; partial strings shown) and the complete-value fold routes through the same bamlunicode-backed final coercer, so native reproduces BAML parse-stream byte-exact per prefix. Per-prefix want values are BAML v0.223 parse-stream (BAMLFUZZ_PARSE_CAPTURE=1); native==BAML for the fold is proven by the bamlunicode Rust reference.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "status",
+            "type": {
+              "kind": "enum_ref",
+              "ref": "Lam"
+            }
+          },
+          {
+            "name": "note",
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    ],
+    "enums": [
+      {
+        "name": "Lam",
+        "values": [
+          "ƛ",
+          "other"
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "prefixes": [
+    {
+      "name": "open_brace",
+      "raw": "{",
+      "want": {
+        "status": "success",
+        "json": {
+          "status": null,
+          "note": null
+        }
+      }
+    },
+    {
+      "name": "status_partial",
+      "raw": "{\"status\":\"Ƛ",
+      "want": {
+        "status": "success",
+        "json": {
+          "status": null,
+          "note": null
+        }
+      }
+    },
+    {
+      "name": "status_done",
+      "raw": "{\"status\":\"Ƛ\",",
+      "want": {
+        "status": "success",
+        "json": {
+          "status": "ƛ",
+          "note": null
+        }
+      }
+    },
+    {
+      "name": "note_partial",
+      "raw": "{\"status\":\"Ƛ\",\"note\":\"h",
+      "want": {
+        "status": "success",
+        "json": {
+          "status": "ƛ",
+          "note": "h"
+        }
+      }
+    },
+    {
+      "name": "closed",
+      "raw": "{\"status\":\"Ƛ\",\"note\":\"hi\"}",
+      "want": {
+        "status": "success",
+        "json": {
+          "status": "ƛ",
+          "note": "hi"
+        }
+      }
+    }
+  ]
+}

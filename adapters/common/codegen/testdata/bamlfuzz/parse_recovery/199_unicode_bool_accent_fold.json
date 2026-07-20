@@ -1,0 +1,35 @@
+{
+  "name": "unicode_bool_accent_fold",
+  "description": "#555 Slice 2 — Unicode BOOLEAN consumer. Root{ok: bool, n: int} with ok=\"trué\": the é leaves the ASCII strings.ToLower fast path unchanged (\"trué\" != \"true\"), so coerce_bool falls through to match_string, whose bamlunicode accent-fold (NFKD + combining-mark removal) reduces \"trué\" to \"true\" and CLAIMS true (StringToBool). Proves the bool match_string consumer folds non-ASCII byte-exact vs BAML. want is BAML v0.223 final parse; native==BAML for the fold is proven by the bamlunicode Rust reference.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "ok",
+            "type": {
+              "kind": "bool"
+            }
+          },
+          {
+            "name": "n",
+            "type": {
+              "kind": "int"
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"ok\": \"trué\", \"n\": 5}",
+  "want": {
+    "status": "success",
+    "json": {
+      "ok": true,
+      "n": 5
+    }
+  }
+}

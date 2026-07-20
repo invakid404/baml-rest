@@ -93,7 +93,7 @@ type ft struct {
 	clsDesc      bool   // class @description
 	enumAlias    bool   // enum @alias
 	enumValAlias bool   // enum VALUE @alias
-	enumValDesc  bool   // enum VALUE @description (production rejects v.Description too)
+	enumValDesc  bool   // enum VALUE @description (admitted; enumMatchCandidates models it)
 	badName      bool   // non-ASCII class/enum name
 	badEnumV     bool   // non-ASCII enum value name
 	badLitV      bool   // non-ASCII string-literal value
@@ -353,15 +353,24 @@ func graphBad(t *ft) bool {
 		}
 		return boolOrFloat(t.elem) || graphBad(t.elem)
 	case "enum":
-		return t.badName || t.badEnumV || t.enumAlias || t.enumValAlias || t.enumValDesc
+		// #555 Slice 2 (v2/v3): a non-ASCII enum name/value and an enum @alias/@description
+		// are all ADMITTED. The complete enum leaf routes through the final coercer whose
+		// enumMatchCandidates already models the rendered name (incl. alias), description,
+		// and "rendered: description" candidate, and the fold is proven via bamlunicode —
+		// so there is no metadata/Unicode enum decline.
+		return false
 	case "literal":
-		return t.litKind == "bool" || t.badLitV
+		// A non-ASCII string-literal VALUE is admitted (fold proven); only a bool literal
+		// stays declined (streaming completion cadence, typeGraphHasBoolOrFloat).
+		return t.litKind == "bool"
 	case "class":
-		if t.badName || t.clsAlias || t.clsDesc {
-			return true
-		}
+		// #555 Slice 2: a non-ASCII class/field NAME, a class @alias/@description, and a
+		// field @description are ADMITTED (they don't change key matching / are handled by
+		// the final coercer). A field @alias is the ONE metadata shape that DIVERGES
+		// (LIVE-PROVEN): native's field-key matcher checks only Name.RenderedName() (the
+		// alias), missing the canonical key BAML also matches — so it stays declined (#583).
 		for i, f := range t.flds {
-			if f.alias != "" || f.desc != "" || !ascii(f.name) {
+			if f.alias != "" {
 				return true
 			}
 			if i < len(t.flds)-1 && unquotedScalar(f.t) {
@@ -433,16 +442,32 @@ func ftSubtreeHasList(t *ft) bool {
 	return false
 }
 
-func ascii(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] >= 0x80 {
-			return false
-		}
+// ---- canonical JSON instance ----
+
+// enumFirstVal returns the RENDERED name of the enum's first value — the string the
+// battery must feed to MATCH it. #555 Slice 2 admits enum shapes whose first value is
+// renamed non-ASCII (RÖD) or aliased (rendered "rouge"), so the canonical input can no
+// longer be the hard-coded "RED": it must be the rendered value or the field never
+// coerces (an invalid-member artifact, not a real divergence). Mirrors mkEnum.
+func enumFirstVal(t *ft) string {
+	switch {
+	case t.badEnumV:
+		return "RÖD"
+	case t.enumValAlias:
+		return "rouge"
+	default:
+		return "RED"
 	}
-	return true
 }
 
-// ---- canonical JSON instance ----
+// litStrVal returns the string-literal VALUE (mirrors spec(): "GRÜN" for a non-ASCII
+// literal, else "A") so the canonical input matches the admitted non-ASCII literal.
+func litStrVal(t *ft) string {
+	if t.badLitV {
+		return "GRÜN"
+	}
+	return "A"
+}
 
 func canon(t *ft) string {
 	switch t.kind {
@@ -457,7 +482,7 @@ func canon(t *ft) string {
 	case "float":
 		return `1.5`
 	case "enum":
-		return `"RED"`
+		return `"` + enumFirstVal(t) + `"`
 	case "literal":
 		switch t.litKind {
 		case "int":
@@ -465,7 +490,7 @@ func canon(t *ft) string {
 		case "bool":
 			return `true`
 		default:
-			return `"A"`
+			return `"` + litStrVal(t) + `"`
 		}
 	case "list":
 		return `[` + canon(t.elem) + `,` + canon(t.elem) + `]`
@@ -749,7 +774,11 @@ func enumerate() []genShape {
 	addGen("listlist_enum", tcls(fld("u", tlist(tlist(tenum()))), fld("last", tstr())))
 	addGen("listlist_litstr", tcls(fld("u", tlist(tlist(tlitS()))), fld("last", tstr())))
 
-	// C. metadata × position (all DECLINE).
+	// C. metadata × position (#555 Slice 2). Non-ASCII names/values, field @description, and
+	// class/enum @alias/@description ADMIT (no key-matching divergence — folds via bamlunicode,
+	// enum values via enumMatchCandidates); the battery byte-walks them vs live BAML. Field
+	// @alias is the ONE case that DECLINES (graphBad) — native's field-key matcher checks only
+	// the rendered alias and misses the canonical key BAML also matches (#583).
 	// class-level metadata on a NESTED class (the dynamic root has no class object).
 	for _, m := range []struct {
 		name string
@@ -1046,6 +1075,15 @@ func TestStream7CTypeSpaceDifferential(t *testing.T) {
 			for i := 1; i <= len(in.raw); i++ {
 				p := in.raw[:i]
 				np, npok := natPartial(s, p) // must not panic on any prefix (incl. invalid UTF-8)
+				if !utf8.ValidString(p) {
+					// Byte prefix split mid-rune: invalid UTF-8, which BAML's CFFI REJECTS
+					// (panics "string field contains invalid UTF-8"), so BAML cannot be the
+					// oracle for this prefix in ANY branch — deferred or not. This guard MUST
+					// run before EVERY bamlRaw call (a multibyte name/value, now admitted, makes
+					// these prefixes real). Native (called above) must not panic.
+					invalidWalk++
+					continue
+				}
 				if in.deferred {
 					// #583 owed-debt bound (owner A′ / reviewer): native must PURELY
 					// under-approximate. A no-emit (skip) is a permitted under-emit; ANY native
@@ -1060,12 +1098,6 @@ func TestStream7CTypeSpaceDifferential(t *testing.T) {
 					bp, bpok := bamlRaw(s, p, true)
 					cmp("DEFERRED-EMIT", sh.name, in.name+":prefix", p, bp, bpok, np, npok)
 					strictCmp++
-					continue
-				}
-				if !utf8.ValidString(p) {
-					// Byte prefix split mid-rune: invalid UTF-8, which BAML's CFFI rejects,
-					// so it cannot be the oracle here. Native (called above) must not panic.
-					invalidWalk++
 					continue
 				}
 				bp, bpok := bamlRaw(s, p, true)
@@ -1094,7 +1126,10 @@ func TestStream7CTypeSpaceDifferential(t *testing.T) {
 		}
 	}
 	// Exact pinned totals — any future omission (or accidental addition) changes these and fails.
-	const wantTotal, wantAdmit, wantDeclined = 289, 134, 155
+	// #555 Slice 2 admitted the non-ASCII name/value shapes + field @description + class/enum
+	// @alias/@description (134→153); field @alias stays declined (the ONE LIVE-PROVEN
+	// canonical-key divergence — native's matcher checks only the rendered alias, #583).
+	const wantTotal, wantAdmit, wantDeclined = 289, 153, 136
 	if len(shapes) != wantTotal || admittedN != wantAdmit || declinedN != wantDeclined {
 		t.Errorf("COUNT PIN drift: got total=%d admitted=%d declined=%d; want total=%d admitted=%d declined=%d "+
 			"(update the pin only after confirming the grammar/loops intentionally changed)",

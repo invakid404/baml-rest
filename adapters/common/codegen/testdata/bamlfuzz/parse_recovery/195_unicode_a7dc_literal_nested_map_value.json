@@ -1,0 +1,40 @@
+{
+  "name": "unicode_a7dc_literal_nested_map_value",
+  "description": "Nested surface: literal ƛ (U+019B) as a map<string, literal> VALUE. Input {\"k\":\"Ƛ\"} folds U+A7DC→U+019B for the value, claiming {\"k\":ƛ}. #555 Slice 2 — native now CLAIMS this non-ASCII match_string case (match_string folds through internal/debaml/bamlunicode, byte-for-byte Rust 1.93.0 str::to_lowercase / unicode-normalization 0.1.24, so the verdict is native's to claim, never case-fold-uncertain). want is BAML v0.223's byte-exact final parse, held by this differential; native==BAML is independently proven by the exhaustive bamlunicode Rust reference.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "m",
+            "type": {
+              "kind": "map",
+              "key": {
+                "kind": "string"
+              },
+              "inner": {
+                "kind": "literal",
+                "literal": {
+                  "kind": "string",
+                  "string": "ƛ"
+                }
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"m\": {\"k\": \"\\ua7dc\"}}",
+  "want": {
+    "status": "success",
+    "json": {
+      "m": {
+        "k": "ƛ"
+      }
+    }
+  }
+}
