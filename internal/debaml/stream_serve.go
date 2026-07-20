@@ -93,11 +93,17 @@ func SupportsNativeStream(s *bamlutils.DynamicOutputSchema) error {
 // an UNSAFE nested class — >=4 fields, >=2 lists, or a bare enum/string-literal field (BAML's
 // nested-class start cadence there native cannot reproduce byte-exact); any non-last unquoted
 // scalar; any union/optional; ANY map<string,*> (declined outright — BAML
-// overwrite-on-duplicate-key); any non-string map key; ANY field @alias (BAML matches the
-// canonical field key too; native's matcher checks only the rendered alias — #583); ANY bool
-// or float (incl. bool literal); ANY bare null-typed field (the null-keyword streaming cadence);
-// and any class inside a list element or map value. (A field @description, class/enum
-// @alias/@description, and non-ASCII names/values are ADMITTED — no key-matching divergence.)
+// overwrite-on-duplicate-key); any non-string map key; a FUZZY field alias/canonical
+// rendered-name COLLISION (two fields whose rendered names fold-collide through match_string,
+// at least one an @alias — the byte-equal collision is already rejected at lowering,
+// internal/schema/index.go; BAML's order-dependent collision resolution across ordinary-coerce
+// vs try_cast is unpinned, a tracked #583 residual decline); ANY bool or float (incl. bool
+// literal); ANY bare null-typed field (the null-keyword streaming cadence); and any class inside
+// a list element or map value. (A NON-colliding field @alias is now ADMITTED — native reproduces
+// static BAML v0.223's ALIAS-ONLY rendered-name matching byte-exact: coerceClass/coerceStreamClass
+// match Name.RenderedName() only, so the alias is the sole key candidate and the canonical name is
+// an extra key, exactly as jsonish coerce_class does. A field @description, class/enum
+// @alias/@description, and non-ASCII names/values are ADMITTED too — no key-matching divergence.)
 //
 // NOTE (§5.9 owed debt, ledger #583): for these admitted schemas, five NON-conforming /
 // BAML-jsonish greedy-recovery INPUT classes — a bare unquoted scalar in a string field, an
@@ -184,22 +190,22 @@ func checkStreamRootSupported(b *schema.Bundle) error {
 		// cannot, so it excludes the shape pre-transport.)
 		return unsupported("stream: map with a non-string key type (BAML keeps non-member enum/literal keys native declines)")
 	}
-	if graphHasFieldAlias(b) {
-		// A field @alias is the ONE metadata case that DIVERGES (LIVE-PROVEN vs BAML
-		// v0.223.0): BAML matches a class key against the field's CANONICAL name too,
-		// but native's coerceClass/coerceStreamClass field-key matcher checks only
-		// Name.RenderedName() — which is the ALIAS when present — so it MISSES a response
-		// key that uses the canonical name. E.g. field `title @alias("heading")` on
-		// `{"title":"x",...}`: BAML emits {"title":"x"}, native emits {"title":null}.
-		// Decline any field @alias pre-transport. #583 teardown condition: make the
-		// field-key matcher check BOTH the canonical name AND the alias (like BAML), then
-		// drop this gate. Field @description, class/enum @alias/@description, non-ASCII
-		// names/values, and enum-VALUE @alias carry no such divergence and STAY admitted:
-		// class/enum type metadata is never matched as a key; a field description does not
-		// change the key candidate; and a complete enum/literal VALUE is coerced through
-		// the final coercer whose enumMatchCandidates already models rendered-name/alias/
-		// description candidates.
-		return unsupported("stream: field @alias (BAML also matches the canonical field key; native's matcher checks only the rendered alias — #583)")
+	if aliasRenderedNameCollision(b) {
+		// A FUZZY alias/canonical rendered-name COLLISION: two fields of one class whose
+		// rendered names fold-collide through the SAME match_string path the coercers use
+		// (case / accent / punctuation / NFKD), with at least one carrying an @alias, yet
+		// are NOT byte-equal (the byte-equal collision — e.g. `a @alias("b")` + literal `b`,
+		// or two equal aliases — is already rejected at lowering by the rendered-name index,
+		// internal/schema/index.go:145). A non-colliding field @alias is otherwise ADMITTED:
+		// native reproduces static BAML v0.223's alias-only rendered-name matching byte-exact
+		// (coerceClass/coerceStreamClass match Name.RenderedName() only). The collision case is
+		// held back because BAML's resolution is order-dependent and NOT uniform across the two
+		// coercion paths (ordinary Class::coerce is find-first in declaration order; try_cast
+		// builds a rendered-name map), and no v0.223 test pins whether the schema compiler even
+		// admits such a class. Until a live probe pins that (schema admission + final + every
+		// stream prefix, both declaration and key orders), native declines it pre-transport
+		// rather than over-claim a parity it cannot prove — a tracked #583 residual.
+		return unsupported("stream: fuzzy field alias/canonical rendered-name collision (BAML's order-dependent resolution unpinned — #583 residual)")
 	}
 	if typeGraphHasMap(b) {
 		// ANY map<string,*>. BAML's generic map coercion is INSERT/OVERWRITE-on-
@@ -451,18 +457,35 @@ func classSubtreeHasList(b *schema.Bundle, t schema.Type, seen map[string]bool) 
 	return false
 }
 
-// graphHasFieldAlias reports whether any class field carries an @alias. It is the ONE
-// metadata shape the native stream/final lane cannot yet reproduce byte-exact: BAML
-// matches a class key against the field's canonical name AND its alias, but native's
-// coerceClass/coerceStreamClass matcher checks only Name.RenderedName() (the alias when
-// present), so a canonical-name response key that BAML matches is missed. Class/enum
-// @alias/@description and field @description do NOT change key matching and are admitted.
-// See checkStreamRootSupported (#583 teardown: match both name and alias).
-func graphHasFieldAlias(b *schema.Bundle) bool {
+// aliasRenderedNameCollision reports whether any class has two fields whose RENDERED names
+// fuzzy-collide — i.e. some response key could match BOTH through the coercers' field-key
+// matcher (matchesStringToString: trim / case-fold / accent / punctuation-strip / NFKD, no
+// substring) — where at least one of the two carries an @alias. The BYTE-equal rendered
+// collision (a @alias("b") + literal b, or two equal aliases) is already rejected earlier at
+// lowering by the rendered-name index (internal/schema/index.go:145), so this catches only the
+// FUZZY residue the exact index misses (e.g. @alias("Foo") vs @alias("foo"); @alias("héading")
+// vs literal heading).
+//
+// It is scoped to alias-bearing collisions — the shapes admission newly reaches now that the
+// blanket field-@alias decline is gone. A pure canonical/canonical fuzzy pair (no alias) is a
+// pre-existing shape outside this teardown and is intentionally left untouched. Genuine
+// alias/canonical collisions stay a tracked #583 residual decline until a live BAML probe pins
+// the order-dependent resolution; see checkStreamRootSupported.
+func aliasRenderedNameCollision(b *schema.Bundle) bool {
 	for i := range b.Classes {
-		for j := range b.Classes[i].Fields {
-			if b.Classes[i].Fields[j].Name.Alias != nil {
-				return true
+		fields := b.Classes[i].Fields
+		for a := range fields {
+			for c := a + 1; c < len(fields); c++ {
+				if fields[a].Name.Alias == nil && fields[c].Name.Alias == nil {
+					continue
+				}
+				ra, rc := fields[a].Name.RenderedName(), fields[c].Name.RenderedName()
+				// Check both directions: a response key equal to either rendered form
+				// must be unambiguous. The fold is symmetric for our passes, but probe
+				// both to be defensive against any combining-mark edge asymmetry.
+				if matchesStringToString(ra, rc) || matchesStringToString(rc, ra) {
+					return true
+				}
 			}
 		}
 	}

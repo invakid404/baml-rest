@@ -60,9 +60,10 @@ func TestRound6_StreamCadenceAndNarrows(t *testing.T) {
 	}
 
 	// §11 narrows: each disallowed shape declines pre-transport; int-last stays admitted.
-	// #555 Slice 2: field @description ADMITS (doesn't change key matching); field @alias
-	// DECLINES — native's field-key matcher checks only the rendered alias and misses the
-	// canonical key BAML also matches (LIVE-PROVEN divergence, #583 teardown).
+	// #555 Slice 2: field @description ADMITS (doesn't change key matching). #583 teardown:
+	// a NON-colliding field @alias now ADMITS too — native's rendered-name-only matcher is
+	// byte-exact vs static BAML v0.223's alias-only jsonish coercer; only a fuzzy alias/canonical
+	// rendered-name COLLISION stays declined (order-dependent BAML resolution unpinned, #583).
 	dp := func(p *bamlutils.DynamicProperty) *bamlutils.DynamicOutputSchema {
 		return sc(bamlutils.OrderedKV("name", str()), bamlutils.OrderedKV("v", p))
 	}
@@ -76,7 +77,8 @@ func TestRound6_StreamCadenceAndNarrows(t *testing.T) {
 		{"float", dp(&bamlutils.DynamicProperty{Type: "float"}), true},
 		{"map", dp(mapProp), true},
 		{"listbool", dp(&bamlutils.DynamicProperty{Type: "list", Items: &bamlutils.DynamicTypeSpec{Type: "bool"}}), true},
-		{"field_alias", sc(bamlutils.OrderedKV("title", &bamlutils.DynamicProperty{Type: "string", Alias: "ÉTAT"}), bamlutils.OrderedKV("last", str())), true},
+		{"field_alias", sc(bamlutils.OrderedKV("title", &bamlutils.DynamicProperty{Type: "string", Alias: "ÉTAT"}), bamlutils.OrderedKV("last", str())), false},
+		{"field_alias_collision", sc(bamlutils.OrderedKV("a", &bamlutils.DynamicProperty{Type: "string", Alias: "Foo"}), bamlutils.OrderedKV("bb", &bamlutils.DynamicProperty{Type: "string", Alias: "foo"})), true},
 		{"field_desc", sc(bamlutils.OrderedKV("title", &bamlutils.DynamicProperty{Type: "string", Description: "the title"}), bamlutils.OrderedKV("last", str())), false},
 		{"str_int_admitted", na, false},
 		{"str_liststr_admitted", sc(bamlutils.OrderedKV("name", str()), bamlutils.OrderedKV("tags", &bamlutils.DynamicProperty{Type: "list", Items: &bamlutils.DynamicTypeSpec{Type: "string"}})), false},

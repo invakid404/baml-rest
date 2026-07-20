@@ -331,6 +331,35 @@ func boolOrFloat(t *ft) bool {
 	return false
 }
 
+// shapeHasFieldAlias reports whether any class in the shape tree carries a field @alias. Such
+// shapes are ADMITTED (the #583 gate is gone) but MUST be carved out of this harness's BAML
+// byte-comparison: the BAML leg is dynclient.DynamicParseRaw, whose TypeBuilder bridge DROPS
+// field aliases (canonical-only), so comparing native(alias-only) vs BAML(canonical-only) would
+// FALSELY diverge on every alias-key input. Their final + every-streaming-prefix byte parity is
+// proven vs the STATIC BAML v0.223 oracle in internal/debaml (TestParse_Alias*), never here.
+func shapeHasFieldAlias(t *ft) bool {
+	if t.kind == "class" {
+		for _, f := range t.flds {
+			if f.alias != "" {
+				return true
+			}
+			if shapeHasFieldAlias(f.t) {
+				return true
+			}
+		}
+		return false
+	}
+	if t.elem != nil && shapeHasFieldAlias(t.elem) {
+		return true
+	}
+	for _, a := range t.arms {
+		if shapeHasFieldAlias(a) {
+			return true
+		}
+	}
+	return false
+}
+
 func graphBad(t *ft) bool {
 	switch t.kind {
 	case "map":
@@ -365,14 +394,18 @@ func graphBad(t *ft) bool {
 		return t.litKind == "bool"
 	case "class":
 		// #555 Slice 2: a non-ASCII class/field NAME, a class @alias/@description, and a
-		// field @description are ADMITTED (they don't change key matching / are handled by
-		// the final coercer). A field @alias is the ONE metadata shape that DIVERGES
-		// (LIVE-PROVEN): native's field-key matcher checks only Name.RenderedName() (the
-		// alias), missing the canonical key BAML also matches — so it stays declined (#583).
+		// field @description are ADMITTED. #583 teardown: a NON-colliding field @alias is now
+		// ADMITTED too — native's rendered-name-only matcher (coerceClass/coerceStreamClass,
+		// Name.RenderedName()) is byte-exact vs static BAML v0.223's alias-only jsonish coercer.
+		// (The earlier "BAML matches the canonical key too" premise was the DYNAMIC parse
+		// bridge DROPPING aliases -> canonical-only, NOT static BAML.) Only a FUZZY
+		// alias/canonical rendered-name COLLISION stays declined in production
+		// (aliasRenderedNameCollision); this enumerator emits no colliding aliases, so no shape
+		// trips it — the per-shape admission assertion (SupportsNativeStream == expectAdmit)
+		// keeps that honest. The alias shapes' BYTE parity is proven separately by the STATIC
+		// oracle (internal/debaml TestParse_Alias*), NOT this dynamic-oracle byte leg (which
+		// drops aliases and cannot judge them — see the carve-out in the differential loop).
 		for i, f := range t.flds {
-			if f.alias != "" {
-				return true
-			}
 			if i < len(t.flds)-1 && unquotedScalar(f.t) {
 				return true
 			}
@@ -570,7 +603,9 @@ type genShape struct {
 //	   field @alias (ASCII + non-ASCII) / @description / non-ASCII name; enum @alias /
 //	   non-ASCII name; enum-VALUE @alias / @DESCRIPTION / non-ASCII value; non-ASCII
 //	   string-literal value} at each applicable position {root field, nested field, nested
-//	   class, enum value, list element} — plus class-in-container and union. All DECLINE.
+//	   class, enum value, list element} — these metadata kinds all ADMIT (#555 Slice 2 + the
+//	   #583 field-@alias teardown; field-@alias shapes are carved out of the BAML byte leg and
+//	   proven vs the static oracle), while the class-in-container and union specimens DECLINE.
 //
 // The recovery battery (batteryFor) is applied BY FIELD PATH into nested classes AND into
 // permitted LIST ELEMENTS (escaped/Unicode/deferred string, enum/literal casefold, bad-child),
@@ -776,9 +811,11 @@ func enumerate() []genShape {
 
 	// C. metadata × position (#555 Slice 2). Non-ASCII names/values, field @description, and
 	// class/enum @alias/@description ADMIT (no key-matching divergence — folds via bamlunicode,
-	// enum values via enumMatchCandidates); the battery byte-walks them vs live BAML. Field
-	// @alias is the ONE case that DECLINES (graphBad) — native's field-key matcher checks only
-	// the rendered alias and misses the canonical key BAML also matches (#583).
+	// enum values via enumMatchCandidates); the battery byte-walks them vs live BAML. #583
+	// teardown: a NON-colliding field @alias now ADMITS too (native's rendered-name-only matcher
+	// is byte-exact vs static BAML v0.223's alias-only jsonish coercer) — but because THIS
+	// harness's BAML leg (DynamicParseRaw) DROPS field aliases, alias shapes are carved out of the
+	// byte comparison (shapeHasFieldAlias) and proven vs the STATIC oracle in internal/debaml.
 	// class-level metadata on a NESTED class (the dynamic root has no class object).
 	for _, m := range []struct {
 		name string
@@ -1113,6 +1150,18 @@ func TestStream7CTypeSpaceDifferential(t *testing.T) {
 		if sh.root.kind == "class" {
 			perArityAdmit[len(sh.root.flds)]++
 		}
+		// #583 carve-out: a field-@alias shape IS admitted (the admission assertion above
+		// already proved SupportsNativeStream claims it), but its BYTE parity is NOT judgeable
+		// by this harness — the BAML leg (DynamicParseRaw) drops field aliases, so the battery's
+		// canonical-key inputs (rootObj emits f.name, the CANONICAL name) would make BAML
+		// canonical-only match while native is alias-only, a guaranteed FALSE divergence. Byte
+		// parity for these shapes is proven vs the STATIC oracle (internal/debaml
+		// TestParse_AliasedFieldMatchesRenderedNameOnly + TestParse_AliasStreamRenderedName-
+		// Equivalence: final + every valid-UTF-8 prefix). NEVER native-alias-only vs
+		// dynamic-canonical-only (scope §"Reconcile the type-space differential").
+		if shapeHasFieldAlias(sh.root) {
+			continue
+		}
 		for _, in := range batteryFor(sh.root) {
 			rc := recoveryClass(in.name)
 			// FINAL byte-exact for EVERY input (incl. deferred — the complete frame
@@ -1214,7 +1263,7 @@ func TestStream7CTypeSpaceDifferential(t *testing.T) {
 	// input class (num_in → nested-brace bare-scalar; escapedq → embedded-quote). A NEW genuine
 	// under-emit — e.g. a claimed FLAT direct-field frame regressing to a skip, or a new spill —
 	// RAISES the count and FAILS; a CLOSED residual LOWERS it and FAILS (forcing a promote-to
-	// -STRICT + #583 ledger update). Deterministic under the pinned generator (289/153/136); move
+	// -STRICT + #583 ledger update). Deterministic under the pinned generator (289/157/132); move
 	// only with an intentional grammar/behavior change. TestStream591GreedyRecoveryResidual pins a
 	// concrete witness of each so the mechanism itself can't silently vanish.
 	// barescalar is PARTIALLY claimed (flat direct-field is strict), so its residual is pinned
@@ -1250,9 +1299,16 @@ func TestStream7CTypeSpaceDifferential(t *testing.T) {
 	}
 	// Exact pinned totals — any future omission (or accidental addition) changes these and fails.
 	// #555 Slice 2 admitted the non-ASCII name/value shapes + field @description + class/enum
-	// @alias/@description (134→153); field @alias stays declined (the ONE LIVE-PROVEN
-	// canonical-key divergence — native's matcher checks only the rendered alias, #583).
-	const wantTotal, wantAdmit, wantDeclined = 289, 153, 136
+	// @alias/@description (134→153). #583 teardown then admitted the 4 NON-colliding field-@alias
+	// shapes — meta_{root,nested}fld_fldalias and their _nonascii twins — moving 153→157 admitted
+	// and 136→132 declined: native's rendered-name-only matcher (coerceClass/coerceStreamClass)
+	// is byte-exact vs static BAML v0.223's ALIAS-ONLY jsonish coercer, so the blanket decline was
+	// dropped. Those 4 are carved OUT of the DynamicParseRaw byte leg above (that bridge drops
+	// field aliases -> canonical-only and cannot judge alias parity) and are proven vs the STATIC
+	// oracle instead (internal/debaml TestParse_AliasedFieldMatchesRenderedNameOnly +
+	// TestParse_AliasStreamRenderedNameEquivalence). A FUZZY alias/canonical rendered-name
+	// collision would still decline (aliasRenderedNameCollision), but this enumerator emits none.
+	const wantTotal, wantAdmit, wantDeclined = 289, 157, 132
 	if len(shapes) != wantTotal || admittedN != wantAdmit || declinedN != wantDeclined {
 		t.Errorf("COUNT PIN drift: got total=%d admitted=%d declined=%d; want total=%d admitted=%d declined=%d "+
 			"(update the pin only after confirming the grammar/loops intentionally changed)",
