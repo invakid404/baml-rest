@@ -238,6 +238,9 @@ func streamDiffFixtures() []streamDiffFixture {
 		Classes:    bamlutils.MustOrderedMap(bamlutils.OrderedKV("Inner", &bamlutils.DynamicClass{Properties: bamlutils.MustOrderedMap(bamlutils.OrderedKV("x", dstr()), bamlutils.OrderedKV("y", dint()))})),
 	}
 	answerScore := dsch(bamlutils.OrderedKV("answer", dstr()), bamlutils.OrderedKV("score", dint()))
+	// §5.9.1 greedy-recovery: bare scalar in a list<string> ELEMENT (the array closes each
+	// element at ',' / ']', no object-value cascade — CLAIMED strict).
+	fListLast := dsch(bamlutils.OrderedKV("f", &bamlutils.DynamicProperty{Type: "list", Items: &bamlutils.DynamicTypeSpec{Type: "string"}}), bamlutils.OrderedKV("last", dstr()))
 
 	return []streamDiffFixture{
 		{name: "person", schema: person, messages: userMsg("Give a person."),
@@ -254,6 +257,27 @@ func streamDiffFixtures() []streamDiffFixture {
 			deltas: contentDeltas("Here you go:\n", "```json\n", `{`, `"name": "`, `Ada`, `", "age": `, `36`, `}`, "\n`", "``", "`")},
 		{name: "answer_reasoning", schema: answerScore, messages: userMsg("Reason then answer."), reasoning: true,
 			deltas: []sseDelta{{Reasoning: "let me think"}, {Content: `{`}, {Content: `"answer": "`}, {Reasoning: " still"}, {Content: `hi`}, {Content: `", "score": `}, {Content: `5`}, {Content: `}`}}},
+		// §5.9.1 greedy-recovery — TRANSIENT EXTRA FIELD after a last unquoted scalar. The
+		// `36,` frame closes age=36 (comma at EOF); the tight extra key `"zz9"` then triggers
+		// BAML's greedy InObjectValue cascade absorbing `,"zz9":"e"` into age's raw span
+		// (Incomplete) so age is DELETED → transiently NULLED; the valid final restores age=36.
+		// Native reproduces that 36→null→36 cadence byte-exact over BOTH native legs with zero
+		// fallback (extra key ignored at final). CLAIMED.
+		{name: "extra_field", schema: person, messages: userMsg("Give a person."),
+			deltas: contentDeltas(`{`, `"name":"`, `Ada`, `","age":`, `36,`, `"zz9":"`, `e`, `"}`)},
+		// §5.9.1 greedy-recovery — LONE COMMENT MARKER. The delta `/` on its own is the pending
+		// comment (not yet `/*` vs `//`): native drops it and re-emits the prior class state,
+		// then the completed `/* m */` is stripped and the same state re-emitted (duplicate
+		// cadence), before age closes. CLAIMED. (A separate `/`-then-`*` split guarantees the
+		// duplicate partial cannot be coalesced away.)
+		{name: "mid_comment", schema: person, messages: userMsg("Give a person."),
+			deltas: contentDeltas(`{`, `"name":"`, `Ada`, `",`, `/`, `*`, ` m */`, `"age":`, `36`, `}`)},
+		// §5.9.1 greedy-recovery — BARE SCALAR in a list<string> ELEMENT. The evolving numeric
+		// token streams as its serde/ryu display (`5`→"5", `5e`→"5e", `5e0`→"5.0") inside the
+		// array element, then the array comma closes it and the second element grows normally.
+		// CLAIMED strict (no object-value cascade in an array).
+		{name: "bare_list_scalar", schema: fListLast, messages: userMsg("Give f and last."),
+			deltas: contentDeltas(`{`, `"f":[`, `5`, `e`, `0`, `,`, `"txt"`, `]`, `,"last":"`, `txt`, `"}`)},
 	}
 }
 
@@ -690,7 +714,9 @@ func assertRequestBodyParity(t *testing.T, oracle, native recordedLive) {
 // socket per leg — across several admitted fixtures and both modes.
 func TestStreamDifferential_Fragmentation(t *testing.T) {
 	all := streamDiffFixtures()
-	pick := map[string]bool{"person": true, "name_tags": true, "nested": true, "answer_reasoning": true}
+	pick := map[string]bool{"person": true, "name_tags": true, "nested": true, "answer_reasoning": true,
+		// §5.9.1 greedy-recovery triggers under byte-level TCP fragmentation on BOTH native legs.
+		"extra_field": true, "mid_comment": true, "bare_list_scalar": true}
 	for _, f := range all {
 		if !pick[f.name] {
 			continue

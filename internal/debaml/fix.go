@@ -3,6 +3,7 @@ package debaml
 import (
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 )
 
@@ -630,6 +631,22 @@ func (p *fixer) parseArrayStream() (value, error) {
 			p.pos++
 			continue
 		}
+		if p.s[p.pos] == '/' && p.pos == len(p.s)-1 {
+			// §5.9.1 lone-comment marker. A lone TERMINAL '/' in array-element position is
+			// BAML's PENDING COMMENT: not yet disambiguated '/*' vs '//', so in a non-object
+			// collection BAML's fixing parser IGNORES it (find_any_starting_value '/' with no
+			// next byte pushes nothing) and closes the array Incomplete at EOF — the pending
+			// element never materializes (LIVE-CAPTURED: {"v":["txt",/ streams {"v":["txt"]}).
+			// A complete '/*…*/' / '//…\n' AND an unterminated '/*…' / '//…' are already
+			// removed by stripJSONComments, so ONLY the lone terminal '/' reaches here; a '/'
+			// with a following non-comment byte stays declined (deferred to BAML). Object-KEY
+			// position is handled separately (parseUnquotedKey reads the '/' key, dropped at
+			// EOF); object-VALUE keeps declining (BAML keeps a '/' value as an unquoted string,
+			// not a pending comment — no admitted witness).
+			p.pos = len(p.s) // consume the pending marker so streamFix sees a clean EOF
+			arr.incomplete = true
+			return arr, nil
+		}
 		v, err := p.parseValueStream(arrayValueTerm)
 		if err != nil {
 			return value{}, err
@@ -777,7 +794,15 @@ func (p *fixer) parseUnquotedScalarStream(term string) (value, error) {
 		// Ran to EOF with no terminator → still streaming → Incomplete.
 		v, err := classifyScalar(raw)
 		if err != nil {
-			return value{}, err
+			// A token that is not (yet) a valid JSON number/bool/null literal — e.g. the
+			// partial `5e` of a streaming `5e0`. §5.9.1 greedy-recovery: for a STRING target
+			// BAML keeps the raw unquoted span as an Incomplete string (allow_as_string),
+			// streaming `{"f":5e`→f:"5e"; reproduce that raw span rather than decline. A
+			// done-required target (int/enum/…) sees an INCOMPLETE value and null-fills
+			// regardless of kind (coerceStreamDoneLeaf), so the raw span is safe there too.
+			// Only reachable at EOF (still streaming); a COMPLETE bare token terminated by a
+			// delimiter still classifies strictly below (a complete bareword stays declined).
+			return value{kind: valString, strV: raw, incomplete: true}, nil
 		}
 		v.incomplete = true
 		return v, nil
@@ -791,11 +816,13 @@ func (p *fixer) parseUnquotedScalarStream(term string) (value, error) {
 			// Comma FOLLOWED BY tight (non-space/newline, non-close) content: BAML's
 			// fixing parser CONSUMES the comma and keeps reading the unquoted object
 			// value PAST it (json_parse_state.rs InObjectValue), a GREEDY CASCADE that
-			// swallows every following field into one failed value — native's per-field
-			// parse cannot reproduce it (#546), so it DECLINES. Admission additionally
-			// declines any schema with a NON-LAST unquoted-scalar field, so no ADMITTED
-			// stream can reach this prefix.
-			return value{}, errFixUnsupported
+			// absorbs the following bytes into one raw string span. §5.9.1 greedy-recovery
+			// REPRODUCES that scan (greedyObjectValueTail) so native emits BAML's transient
+			// partial byte-exact: a string-target field keeps the raw swallowed span; an
+			// int/enum/other done-required field sees an INCOMPLETE span and null-fills
+			// (semantic-streaming deletion). The full valid object still wins at the final
+			// via strict parse. See greedyObjectValueTail for the exact InObjectValue rule.
+			return p.greedyObjectValueTail(start)
 		}
 		// Comma at EOF of the streamed prefix (next >= len) OR immediately followed by
 		// '}' (a TRAILING comma before the close, with no following field to greedy-
@@ -807,4 +834,79 @@ func (p *fixer) parseUnquotedScalarStream(term string) (value, error) {
 	}
 	// Terminated by a proper delimiter → Complete.
 	return classifyScalar(raw)
+}
+
+// greedyObjectValueTail reproduces BAML's fixing-parser InObjectValue greedy scan
+// (json_parse_state.rs should_close_unescaped_string, Pos::InObjectValue). It is
+// entered with p.pos AT a comma that BAML would CONSUME (the comma is followed by
+// tight content — not a space/newline/'}' and not EOF). `start` is the first byte
+// of the object value already read. From here BAML keeps absorbing bytes into the
+// current unquoted string until it reaches a genuine close, then classifies the
+// whole raw span as ONE string value:
+//
+//   - a comma whose NEXT byte is '\n'                → close BEFORE the comma, Complete;
+//   - a comma whose NEXT byte is ' ' AND the span so far is a "possible value"
+//     (numeric / true / false / null / identifier)  → close BEFORE the comma, Complete;
+//   - a comma at EOF (no following byte)             → close BEFORE the comma, Complete;
+//   - a '}'                                          → close BEFORE the '}', Complete;
+//   - any other byte (incl. the tight comma itself, quotes, colons, digits, tab, CR)
+//                                                    → absorb it, keep scanning;
+//   - EOF of the scan                                → close, Incomplete.
+//
+// The span is returned as a raw valString (never a number: it always contains at
+// least the absorbed comma, so it is not a strict JSON number). p.pos is left at the
+// close byte (comma / '}') or at EOF, so parseObjectStream resumes exactly as BAML's
+// object parser does. The comma+space+NON-possible-value BAML sub-branch (a buffer
+// look-ahead for a comment/new-key marker) is the one InObjectValue case not
+// reproduced here; it does not arise on the admitted matrix (an unquoted object
+// value there is always numeric → possible), so it DECLINES rather than risk an
+// over-claim. incomplete is set only at EOF, matching BAML's CompletionState.
+func (p *fixer) greedyObjectValueTail(start int) (value, error) {
+	i := p.pos
+	n := len(p.s)
+	closeAt := func(end int, incomplete bool) (value, error) {
+		p.pos = end
+		return value{kind: valString, strV: p.s[start:end], incomplete: incomplete}, nil
+	}
+	for i < n {
+		switch p.s[i] {
+		case ',':
+			if i+1 >= n {
+				return closeAt(i, false) // comma at EOF: close before comma, Complete
+			}
+			switch p.s[i+1] {
+			case '\n':
+				return closeAt(i, false)
+			case ' ':
+				if isPossibleUnquotedValue(p.s[start:i]) {
+					return closeAt(i, false)
+				}
+				// comma+space+non-possible: BAML's buffer look-ahead sub-branch (not
+				// reproduced) — decline so native under-claims instead of over-claiming.
+				return value{}, errFixUnsupported
+			default:
+				i++ // tight content after the comma → absorb the comma, keep scanning
+			}
+		case '}':
+			return closeAt(i, false) // close before '}', Complete
+		default:
+			i++
+		}
+	}
+	return closeAt(n, true) // scan ran to EOF → Incomplete
+}
+
+// isPossibleUnquotedValue mirrors BAML's InObjectValue is_possible_value test used
+// to decide whether a comma+space closes the unquoted object value: the trimmed span
+// parses as a float, equals true/false/null case-insensitively, or is an identifier
+// (contains neither a space nor a '(').
+func isPossibleUnquotedValue(span string) bool {
+	s := strings.TrimSpace(span)
+	if _, err := strconv.ParseFloat(s, 64); err == nil {
+		return true
+	}
+	if strings.EqualFold(s, "true") || strings.EqualFold(s, "false") || strings.EqualFold(s, "null") {
+		return true
+	}
+	return !strings.ContainsAny(span, " (")
 }
