@@ -3350,14 +3350,20 @@ func coerceStream(b *schema.Bundle, t schema.Type, input value) (json.RawMessage
 			// {"f":5e0} streams f:"5.0", the same as the final). coercePrimitiveString
 			// reproduces the display byte-exact (displayNumber / displayFloat64).
 			//
-			// An INCOMPLETE non-string (a bare unquoted scalar mid-token) is a #583 deferred
-			// greedy-recovery trigger: BAML streams an EVOLVING raw-span string (`{"f":5` →
-			// f:"5", `{"f":5e0` → f:"5.0") that native cannot reproduce byte-exact. Rather
-			// than emit a byte-DIFFERENT filler (the earlier null-replace path did), DECLINE
-			// the partial so native purely UNDER-emits / skips — never a divergent emit
-			// (owner A′ / ledger #583; the FINAL, a complete delimited scalar, still coerces).
+			// §5.9.1 greedy-recovery — bare-scalar pre-comma display. An INCOMPLETE unquoted
+			// NUMBER mid-token in a string field is streamed by BAML as its evolving serde/ryu
+			// display (`{"f":5`→f:"5", `{"f":5e0`→f:"5.0"), byte-IDENTICAL to the complete
+			// display below (semantic streaming does not gate a string target on done).
+			// coercePrimitiveString reproduces it byte-exact. An incomplete raw span that is
+			// not a valid number arrives as an Incomplete valString and is handled above
+			// (marshalJSON of the raw span — e.g. `5e`→"5e"). Any OTHER incomplete non-string
+			// (an incomplete bool/null keyword, never emitted into an admitted string field on
+			// this matrix) stays declined — a safe under-claim, never a byte-divergent emit.
 			if input.incomplete {
-				return nil, unsupported("stream: incomplete non-string into string field (#583 bare-scalar greedy-recovery deferred)")
+				if input.kind == valNumber {
+					return coercePrimitiveString(input, &coerceFlags{})
+				}
+				return nil, unsupported("stream: incomplete non-number/non-string into string field (greedy-recovery)")
 			}
 			return coercePrimitiveString(input, &coerceFlags{})
 		}
@@ -3393,9 +3399,53 @@ func coerceStreamDoneLeaf(b *schema.Bundle, t schema.Type, input value) (json.Ra
 	}
 	out, err := coerce(b, t, input, &coerceFlags{})
 	if err != nil {
+		// §5.9.1 greedy-recovery — invalid-enum partial disposition. A COMPLETE
+		// done-required leaf that PROVABLY fails coercion is, in PARTIAL (stream) mode,
+		// BAML's partial-unparseable disposition, NOT a whole-parse fallback: the leaf
+		// coerces to an error, the class/list/map records the field as unparsed, and the
+		// PARTIAL value is emitted with that field nulled (class deletion_nulls) / dropped
+		// (list/map), while the FINAL non-stream parse still errors on the required field
+		// (LIVE-CAPTURED: {f:E1,last:string} with "NOPE" streams {"f":null,"last":...} then
+		// the terminal final ERRORS — same as BAML). Reuse errStreamDeleted (the parent
+		// container already null-fills / drops it, identical to an incomplete done value).
+		//
+		// Scoped to a PROVEN match_string miss — a complete enum or string-literal value
+		// from a STRING input, whose fold is now BAML-exact (bamlunicode, #555 Slice 2), so
+		// a native coercion failure equals a BAML failure. This is the SAME proven-error
+		// whitelist coerceStreamList already uses (provenListItemError) to drop a bad
+		// list<enum>/list<litstr> child, so a direct enum FIELD and an enum LIST ELEMENT now
+		// share one disposition. An UNPROVEN failure (native stricter than BAML — a numeric
+		// overflow, an ambiguous conversion) still DECLINES so the whole stream falls back;
+		// never a blanket null on every coercion failure.
+		if streamCompleteLeafUnparseable(t, input) {
+			return nil, errStreamDeleted
+		}
 		return nil, unsupported(fmt.Sprintf("stream: done-required leaf did not cleanly coerce: %v", err))
 	}
 	return out, nil
+}
+
+// streamCompleteLeafUnparseable reports whether a COMPLETE leaf value that FAILED
+// coercion is a PROVEN BAML non-match native may treat as a partial-unparseable
+// deletion (class null / list-map drop) rather than a whole-stream fallback. It is
+// deliberately NARROW — a match_string target (enum, string-literal) coerced from a
+// STRING, where the fold is proven BAML-exact (bamlunicode) so a native miss is a
+// certain BAML miss. Numeric / bool / int-or-bool-literal leaves are NOT included:
+// native is stricter than BAML there (inf/overflow/hex/underscore), so a failure is
+// not proven and must keep declining. Mirrors provenListItemError's enum/litstr arms
+// so a class enum field and a list<enum> element resolve identically.
+func streamCompleteLeafUnparseable(t schema.Type, input value) bool {
+	if input.kind != valString {
+		return false
+	}
+	switch t.Kind {
+	case schema.TypeEnum:
+		return true
+	case schema.TypeLiteral:
+		return t.Literal != nil && t.Literal.Kind == schema.LiteralString
+	default:
+		return false
+	}
 }
 
 // coerceStreamClass coerces an object into a class in stream mode, porting the

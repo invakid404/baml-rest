@@ -141,13 +141,15 @@ func TestStream_IncompleteDoneRequiredScalarNulls(t *testing.T) {
 	// now CLAIMS it as COMPLETE (age=36), matching BAML parse-stream byte-exact
 	// (LIVE-CAPTURED). This closes the tight-comma-at-EOF transient.
 	mustStream(t, s, `{"name":"Ada","age":36,`, `{"name":"Ada","age":36}`)
-	// A comma FOLLOWED BY tight content (`36,"x"`) is BAML's GREEDY read: the
-	// unquoted value is consumed past the comma in a cascade native's per-field
-	// parse cannot reproduce (#546), so native DECLINES. Admission declines any
-	// schema with a NON-LAST unquoted-scalar field so no admitted stream reaches
-	// this prefix (here `age` IS last, so this raw is only an over-decline guard —
-	// not an admitted prefix).
-	requireStreamUnsupported(t, s, `{"name":"Ada","age":36,"extra"`)
+	// A comma FOLLOWED BY tight content (`36,"extra"`) is BAML's GREEDY InObjectValue
+	// read: the unquoted value is consumed PAST the comma as one raw span
+	// (`36,"extra"`), Incomplete. §5.9.1 greedy-recovery now REPRODUCES that cascade
+	// (greedyObjectValueTail): the greedy span is an Incomplete done-required int, so it
+	// is deleted and the class field is null-replaced — native CLAIMS the transient
+	// partial byte-exact (LIVE-CAPTURED: BAML streams {"name":"Ada","age":null} for a
+	// tight extra field after the last unquoted scalar; the full valid object restores
+	// age at the final). This is the transient-extra-field trigger (#583).
+	mustStream(t, s, `{"name":"Ada","age":36,"extra"`, `{"name":"Ada","age":null}`)
 }
 
 // TestStream_NumbersListDropsIncompleteTail pins the NUMBERS behavior: a partial
