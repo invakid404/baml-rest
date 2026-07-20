@@ -1,0 +1,92 @@
+{
+  "baml_version": "0.223.0",
+  "baml_source_commit": "85247f452fe202300ec38d41fdc4035ea3020983",
+  "rustc_version": "1.93.0",
+  "rustc_commit": "254b59607d4417e9dffbc307138ae5c86280fe4c",
+  "rust_std_unicode_version": "17.0.0",
+  "normalization_crate": "unicode-normalization",
+  "normalization_crate_version": "0.1.24",
+  "normalization_crate_checksum": "5033c97c4262335cded6d6fc3e5c18ab755e1a3dc96376350f3d8e9f009ad956",
+  "normalization_unicode_version": "16.0.0",
+  "match_string_path": "engine/baml-lib/jsonish/src/deserializer/coercer/match_string.rs",
+  "match_string_fingerprint": "6ced35949641470658930d60787d128f9ccf5bb9b058a2606b64c81f54d1d228",
+  "release_workflow_path": ".github/workflows/build-cli-release.reusable.yaml",
+  "release_workflow_fingerprint": "1aa156be43a455693245aad57be996673f03384f8045589550837ab6ef6c1ad2",
+  "setup_rust_action_path": ".github/actions/setup-rust/action.yml",
+  "setup_rust_action_fingerprint": "31bdf1bf41065f8b1e429ffeef768b97d63ae7f5196be094c498057cadfcdfa3",
+  "generator_revision": "2",
+  "inputs": [
+    {
+      "unicode_version": "17.0.0",
+      "name": "UnicodeData.txt",
+      "url": "https://www.unicode.org/Public/17.0.0/ucd/UnicodeData.txt",
+      "sha256": "2e1efc1dcb59c575eedf5ccae60f95229f706ee6d031835247d843c11d96470c"
+    },
+    {
+      "unicode_version": "17.0.0",
+      "name": "SpecialCasing.txt",
+      "url": "https://www.unicode.org/Public/17.0.0/ucd/SpecialCasing.txt",
+      "sha256": "efc25faf19de21b92c1194c111c932e03d2a5eaf18194e33f1156e96de4c9588"
+    },
+    {
+      "unicode_version": "17.0.0",
+      "name": "DerivedCoreProperties.txt",
+      "url": "https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt",
+      "sha256": "24c7fed1195c482faaefd5c1e7eb821c5ee1fb6de07ecdbaa64b56a99da22c08"
+    },
+    {
+      "unicode_version": "17.0.0",
+      "name": "PropList.txt",
+      "url": "https://www.unicode.org/Public/17.0.0/ucd/PropList.txt",
+      "sha256": "130dcddcaadaf071008bdfce1e7743e04fdfbc910886f017d9f9ac931d8c64dd"
+    },
+    {
+      "unicode_version": "16.0.0",
+      "name": "UnicodeData.txt",
+      "url": "https://www.unicode.org/Public/16.0.0/ucd/UnicodeData.txt",
+      "sha256": "ff58e5823bd095166564a006e47d111130813dcf8bf234ef79fa51a870edb48f"
+    },
+    {
+      "unicode_version": "16.0.0",
+      "name": "NormalizationTest.txt",
+      "url": "https://www.unicode.org/Public/16.0.0/ucd/NormalizationTest.txt",
+      "sha256": "d811971453e7075e1ad56fb1b301eece5aa80757b81f6156e74a1bfb3ae5ceb1"
+    },
+    {
+      "unicode_version": "16.0.0",
+      "name": "DerivedNormalizationProps.txt",
+      "url": "https://www.unicode.org/Public/16.0.0/ucd/DerivedNormalizationProps.txt",
+      "sha256": "4d4c03892dea9146d674b686e495df2d55a28d071ac474041d73518f887abddc"
+    }
+  ],
+  "archives": [
+    {
+      "unicode_version": "17.0.0",
+      "url": "https://www.unicode.org/Public/17.0.0/ucd/UCD.zip",
+      "sha256": "2066d1909b2ea93916ce092da1c0ee4808ea3ef8407c94b4f14f5b7eb263d28e"
+    },
+    {
+      "unicode_version": "16.0.0",
+      "url": "https://www.unicode.org/Public/zipped/16.0.0/UCD.zip",
+      "sha256": "c86dd81f2b14a43b0cc064aa5f89aa7241386801e35c59c7984e579832634eb2"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "lower_17_0_0_gen.go",
+      "sha256": "d66460d6e816058a962e25b2a2ab3289619a304b957fc9b0a36f67ca6b67fb8b"
+    },
+    {
+      "name": "marks_16_0_0_gen.go",
+      "sha256": "8fd1ade1ec65b8b68f885a1bd3d1515dbcc1539d438a5186dbd6abe5b93ca736"
+    },
+    {
+      "name": "nfkd_16_0_0_gen.go",
+      "sha256": "1b625eea6915eebb12ec169024faf08cd586e4dbf5106a7e2b20cd74f85fc6de"
+    },
+    {
+      "name": "props_17_0_0_gen.go",
+      "sha256": "db8d245b05171613403fbdc12a456367eb179f7e73d07e100caabdbe7502de2c"
+    }
+  ]
+}

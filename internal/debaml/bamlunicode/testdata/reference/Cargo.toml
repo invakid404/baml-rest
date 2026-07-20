@@ -1,0 +1,18 @@
+[package]
+name = "bamlunicode-reference"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Build-time exact oracle for internal/debaml/bamlunicode. Reproduces the BAML 0.223.0 CFFI Unicode primitives byte-for-byte: rustc 1.93.0 std (Unicode 17.0.0) str::to_lowercase / char::is_alphanumeric / char::is_whitespace, and unicode-normalization 0.1.24 (Unicode 16.0.0) NFKD / is_combining_mark. NOT linked into the Go binary; consumed only by the rustc-gated differential test."
+
+[[bin]]
+name = "bamlunicode-reference"
+path = "src/main.rs"
+
+[dependencies]
+# Pinned to the exact version resolved by BAML 0.223.0 engine/Cargo.lock
+# (checksum 5033c97c4262335cded6d6fc3e5c18ab755e1a3dc96376350f3d8e9f009ad956).
+unicode-normalization = "=0.1.24"
+
+[profile.release]
+opt-level = 3

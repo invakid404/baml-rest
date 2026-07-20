@@ -1,0 +1,147 @@
+name: Unicode Parity Drift Guard
+
+# Required first-class drift guard for #555 (internal/debaml/bamlunicode). It
+# re-derives BAML 0.223.0's exact DUAL-VERSION Unicode profile (case/properties =
+# rustc 1.93.0 std Unicode 17.0.0; normalization = unicode-normalization 0.1.24
+# Unicode 16.0.0) from the pinned BAML SOURCE on every push/PR and fails if any
+# value drifts from the committed compatibility manifest. A BAML bump cannot
+# merge while it silently changes the matcher's Unicode contract.
+#
+# Four independent checks:
+#   A. BAML source/profile discovery  (driftcheck source-derives the toolchain +
+#      crate + Origin.Hash fail-closed; toolchain/Unicode-version probes)
+#   B. Generator freshness/provenance (cmd/gen -check + no host/target deps)
+#   C. Behavioral profile sentinels   (exhaustive vs pinned engine + BLACK-BOX
+#      probe of the stock libbaml_cffi 0.223.0 artifact)
+#   D. Upstream matcher fingerprint   (match_string.rs sha256, via driftcheck)
+#
+# This guard MUST be a required status check in branch protection
+# ("Unicode Parity Drift Guard / unicode-parity"); see the owner action item in
+# the PR if it is not yet enforced.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: unicode-parity-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.26.5"
+
+# Read-only: this guard only reads the repo and runs tests/builds.
+permissions:
+  contents: read
+
+jobs:
+  unicode-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: internal/debaml/bamlunicode
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.0
+        with:
+          # No later step needs git auth; don't leave the token in git config.
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Read committed manifest
+        id: manifest
+        run: |
+          # The manifest's rustc_version is itself validated against BAML's
+          # pinned rust-toolchain.toml by driftcheck (check A6), so reading it
+          # here means nothing about the toolchain is a free-floating hardcode.
+          echo "rustc_commit=$(jq -r .rustc_commit testdata/manifest.json)" >> "$GITHUB_OUTPUT"
+          echo "rustc_version=$(jq -r .rustc_version testdata/manifest.json)" >> "$GITHUB_OUTPUT"
+          echo "rust_unicode=$(jq -r .rust_std_unicode_version testdata/manifest.json)" >> "$GITHUB_OUTPUT"
+          echo "norm_unicode=$(jq -r .normalization_unicode_version testdata/manifest.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Install pinned Rust toolchain (from manifest)
+        # Manifest values are passed via env (NOT interpolated into the script
+        # text) so a fork PR editing manifest.json cannot inject shell commands.
+        env:
+          RUSTC_VERSION: ${{ steps.manifest.outputs.rustc_version }}
+        run: |
+          rustup toolchain install "$RUSTC_VERSION" --profile minimal
+          rustc "+$RUSTC_VERSION" -Vv
+
+      # ---- Check A: BAML source/profile discovery -------------------------
+      - name: "Check A (source-derived) — driftcheck: baml_versions.json, go.mod, Origin.Hash (fail-closed), Cargo.lock, rust-toolchain.toml, fingerprint"
+        working-directory: .
+        run: go run ./internal/debaml/bamlunicode/cmd/driftcheck
+
+      - name: "Check A — installed rustc commit == manifest"
+        env:
+          RUSTC_VERSION: ${{ steps.manifest.outputs.rustc_version }}
+          RUSTC_COMMIT: ${{ steps.manifest.outputs.rustc_commit }}
+        run: |
+          got_commit="$(rustc "+$RUSTC_VERSION" -Vv | sed -n 's/^commit-hash: //p')"
+          if [ "$got_commit" != "$RUSTC_COMMIT" ]; then
+            echo "::error::rustc commit $got_commit != manifest $RUSTC_COMMIT"; exit 1
+          fi
+          echo "rustc $RUSTC_VERSION ($got_commit) matches manifest"
+
+      - name: "Check A — char::UNICODE_VERSION / unicode_normalization::UNICODE_VERSION probes"
+        env:
+          RUSTC_VERSION: ${{ steps.manifest.outputs.rustc_version }}
+          RUST_UNICODE: ${{ steps.manifest.outputs.rust_unicode }}
+          NORM_UNICODE: ${{ steps.manifest.outputs.norm_unicode }}
+        run: |
+          # Building + running the pinned reference is the locked probe of BOTH
+          # Unicode versions (rustc std + the Cargo.lock-pinned crate).
+          out="$(cargo "+$RUSTC_VERSION" run --quiet --release --manifest-path testdata/reference/Cargo.toml -- versions)"
+          echo "$out"
+          echo "$out" | grep -qx "char=$RUST_UNICODE" \
+            || { echo "::error::char::UNICODE_VERSION drift"; exit 1; }
+          echo "$out" | grep -qx "norm=$NORM_UNICODE" \
+            || { echo "::error::unicode_normalization::UNICODE_VERSION drift"; exit 1; }
+
+      # ---- Check B: generator freshness / provenance ----------------------
+      - name: "Check B — generator freshness (cmd/gen -check) + no host/target deps"
+        working-directory: .
+        run: |
+          # Verifies UCD archive AND file hashes match the manifest AND regenerates
+          # the committed tables byte-for-byte (fails on any drift). Deterministic
+          # and independent of GOOS/GOARCH/Go-version/network.
+          go run ./internal/debaml/bamlunicode/cmd/gen -check
+          go test ./internal/debaml/bamlunicode/ \
+            -run 'TestNoHostUnicodeDeps|TestGeneratedHeaders|TestManifest' -count=1
+
+      # ---- Check C: behavioral profile sentinels --------------------------
+      - name: "Check C — exhaustive proof vs the pinned engine"
+        working-directory: .
+        run: |
+          # Builds testdata/reference with cargo +<manifest rustc> and compares
+          # UTF-8 bytes for every scalar (lowercase, NFKD, is_alphanumeric,
+          # is_whitespace, is_combining_mark, and Cased/Case_Ignorable via
+          # Final_Sigma), the NormalizationTest conformance suite, equivalence-class
+          # Final_Sigma contexts, and adversarial sequences.
+          go test -tags unicode_rustref ./internal/debaml/bamlunicode/ -count=1
+
+      - name: "Check C — black-box probe of the stock libbaml_cffi 0.223.0 artifact"
+        working-directory: .
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          # Drives the stock artifact's OFFLINE coercion path (no LLM, no Docker;
+          # the loader auto-downloads the pinned release artifact) with inputs
+          # whose match requires the exact profile: A7DC->019B (17 case),
+          # U+0130 one-to-many, Final_Sigma medial/final, a 15->16 NFKD delta, and
+          # a 15->17 classification delta. Confirms the DOWNLOADED artifact
+          # exhibits the profile our vendored tables reproduce.
+          go test -tags integration ./integration/cffisentinel/ -count=1
+
+      # ---- Check D is enforced inside driftcheck (match_string.rs fingerprint).
+
+      - name: Always-on suite (conformance + deltas + manifest)
+        working-directory: .
+        run: go test ./internal/debaml/bamlunicode/ -count=1
