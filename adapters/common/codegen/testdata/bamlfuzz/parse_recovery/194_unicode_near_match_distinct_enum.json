@@ -1,0 +1,38 @@
+{
+  "name": "unicode_near_match_distinct_enum",
+  "description": "Negative near-match (no over-claim): enum ƛ (U+019B) | λ (U+03BB). Input Λ (U+039B) folds to λ (U+03BB) and matches the λ value — it does NOT spuriously fold onto the visually similar ƛ (U+019B). #555 Slice 2 — native now CLAIMS this non-ASCII match_string case (match_string folds through internal/debaml/bamlunicode, byte-for-byte Rust 1.93.0 str::to_lowercase / unicode-normalization 0.1.24, so the verdict is native's to claim, never case-fold-uncertain). want is BAML v0.223's byte-exact final parse, held by this differential; native==BAML is independently proven by the exhaustive bamlunicode Rust reference.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "status",
+            "type": {
+              "kind": "enum_ref",
+              "ref": "Gl"
+            }
+          }
+        ]
+      }
+    ],
+    "enums": [
+      {
+        "name": "Gl",
+        "values": [
+          "ƛ",
+          "λ"
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"status\": \"\\u039b\"}",
+  "want": {
+    "status": "success",
+    "json": {
+      "status": "λ"
+    }
+  }
+}

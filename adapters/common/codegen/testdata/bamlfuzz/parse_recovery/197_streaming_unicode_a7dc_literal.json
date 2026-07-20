@@ -1,0 +1,88 @@
+{
+  "name": "streaming_unicode_a7dc_literal",
+  "description": "U+A7DC literal stream: Root{u: literal \"ƛ\", note: string}. Same cadence as the enum case; the closed value folds U+A7DC→U+019B and claims the canonical literal ƛ. #555 Slice 2 admits non-ASCII string-literal/enum/field-name shapes into the native STREAM lane (checkStreamRootSupported narrowed): the streaming cadence is character-agnostic (done-required scalars null-fill until complete; partial strings shown) and the complete-value fold routes through the same bamlunicode-backed final coercer, so native reproduces BAML parse-stream byte-exact per prefix. Per-prefix want values are BAML v0.223 parse-stream (BAMLFUZZ_PARSE_CAPTURE=1); native==BAML for the fold is proven by the bamlunicode Rust reference.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "literal",
+              "literal": {
+                "kind": "string",
+                "string": "ƛ"
+              }
+            }
+          },
+          {
+            "name": "note",
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "prefixes": [
+    {
+      "name": "open_brace",
+      "raw": "{",
+      "want": {
+        "status": "success",
+        "json": {
+          "u": null,
+          "note": null
+        }
+      }
+    },
+    {
+      "name": "u_partial",
+      "raw": "{\"u\":\"Ƛ",
+      "want": {
+        "status": "success",
+        "json": {
+          "u": null,
+          "note": null
+        }
+      }
+    },
+    {
+      "name": "u_done",
+      "raw": "{\"u\":\"Ƛ\",",
+      "want": {
+        "status": "success",
+        "json": {
+          "u": "ƛ",
+          "note": null
+        }
+      }
+    },
+    {
+      "name": "note_partial",
+      "raw": "{\"u\":\"Ƛ\",\"note\":\"h",
+      "want": {
+        "status": "success",
+        "json": {
+          "u": "ƛ",
+          "note": "h"
+        }
+      }
+    },
+    {
+      "name": "closed",
+      "raw": "{\"u\":\"Ƛ\",\"note\":\"hi\"}",
+      "want": {
+        "status": "success",
+        "json": {
+          "u": "ƛ",
+          "note": "hi"
+        }
+      }
+    }
+  ]
+}

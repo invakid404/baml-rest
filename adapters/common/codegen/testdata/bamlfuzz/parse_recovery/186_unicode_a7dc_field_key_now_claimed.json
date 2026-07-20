@@ -1,0 +1,28 @@
+{
+  "name": "unicode_a7dc_field_key_now_claimed",
+  "description": "Class field-key: the field named ƛ (U+019B) is matched by the input key Ƛ (U+A7DC → U+019B) via matchesStringToString (no-substring fold), emitting the field under its canonical name ƛ. #555 Slice 2 — native now CLAIMS this non-ASCII match_string case (match_string folds through internal/debaml/bamlunicode, byte-for-byte Rust 1.93.0 str::to_lowercase / unicode-normalization 0.1.24, so the verdict is native's to claim, never case-fold-uncertain). want is BAML v0.223's byte-exact final parse, held by this differential; native==BAML is independently proven by the exhaustive bamlunicode Rust reference.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "ƛ",
+            "type": {
+              "kind": "int"
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"\\ua7dc\": 5}",
+  "want": {
+    "status": "success",
+    "json": {
+      "ƛ": 5
+    }
+  }
+}

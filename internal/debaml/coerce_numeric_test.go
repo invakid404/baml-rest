@@ -340,13 +340,20 @@ func TestCoerceBoolValue(t *testing.T) {
 		{"no-match", strVv("maybe"), false, false, false},
 		{"ambiguous-tie", strVv("true or false"), false, false, false},
 		{"number-input", numV("1"), false, false, false},
+		// #555 Slice 2: a non-ASCII bool input BYPASSES the ASCII strings.ToLower
+		// fast path — Go DOES lowercase É→é, but the lowered strings "trué"/"trué"
+		// stay non-ASCII and are still != the ASCII "true"/"false", so the fast-path
+		// switch misses. They then match via match_string's bamlunicode accent-fold
+		// (StringToBool, no SubstringMatch). The negative "naïve" folds to "naive",
+		// matches no bool candidate, and declines: no over-claim on non-ASCII.
+		{"unicode-accent-true", strVv("trué"), true, true, true},
+		{"unicode-accent-caps-true", strVv("TRUÉ"), true, true, true},
+		{"unicode-accent-false", strVv("fálse"), false, true, true},
+		{"unicode-nonbool-decline", strVv("naïve"), false, false, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, flagged, uncertain, err := coerceBoolValue(c.in)
-			if uncertain {
-				t.Fatalf("unexpected uncertain for ASCII input")
-			}
+			got, flagged, err := coerceBoolValue(c.in)
 			if c.ok {
 				if err != nil {
 					t.Fatalf("coerceBoolValue(%+v) unexpected error: %v", c.in, err)

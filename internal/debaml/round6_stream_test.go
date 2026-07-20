@@ -60,6 +60,9 @@ func TestRound6_StreamCadenceAndNarrows(t *testing.T) {
 	}
 
 	// §11 narrows: each disallowed shape declines pre-transport; int-last stays admitted.
+	// #555 Slice 2: field @description ADMITS (doesn't change key matching); field @alias
+	// DECLINES — native's field-key matcher checks only the rendered alias and misses the
+	// canonical key BAML also matches (LIVE-PROVEN divergence, #583 teardown).
 	dp := func(p *bamlutils.DynamicProperty) *bamlutils.DynamicOutputSchema {
 		return sc(bamlutils.OrderedKV("name", str()), bamlutils.OrderedKV("v", p))
 	}
@@ -74,7 +77,7 @@ func TestRound6_StreamCadenceAndNarrows(t *testing.T) {
 		{"map", dp(mapProp), true},
 		{"listbool", dp(&bamlutils.DynamicProperty{Type: "list", Items: &bamlutils.DynamicTypeSpec{Type: "bool"}}), true},
 		{"field_alias", sc(bamlutils.OrderedKV("title", &bamlutils.DynamicProperty{Type: "string", Alias: "ÉTAT"}), bamlutils.OrderedKV("last", str())), true},
-		{"field_desc", sc(bamlutils.OrderedKV("title", &bamlutils.DynamicProperty{Type: "string", Description: "the title"}), bamlutils.OrderedKV("last", str())), true},
+		{"field_desc", sc(bamlutils.OrderedKV("title", &bamlutils.DynamicProperty{Type: "string", Description: "the title"}), bamlutils.OrderedKV("last", str())), false},
 		{"str_int_admitted", na, false},
 		{"str_liststr_admitted", sc(bamlutils.OrderedKV("name", str()), bamlutils.OrderedKV("tags", &bamlutils.DynamicProperty{Type: "list", Items: &bamlutils.DynamicTypeSpec{Type: "string"}})), false},
 	} {

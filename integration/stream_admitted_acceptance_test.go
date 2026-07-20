@@ -11,8 +11,10 @@ package integration
 //     native-only FINAL closure reproduces BAML's final byte-for-byte (and every
 //     streaming PREFIX partial matches BAML's parse-stream) — so no admitted fixture
 //     can be a BAML-success / native-fallback on the native-only lane (I6 / §5.9);
-//   - the §11-narrowed shapes (single string-absorbing root, non-string map key,
-//     non-ASCII literal/enum, union/optional, scalar map value) DECLINE pre-transport;
+//   - the §11-narrowed shapes (single string-absorbing root, non-string map key, field
+//     @alias, union/optional, scalar map value) DECLINE pre-transport (#555 Slice 2 admits
+//     non-ASCII literal/enum/name, field @description, and class/enum @alias/@description;
+//     only field @alias stays narrowed — the canonical-key divergence, #583);
 //   - comment-bearing FINALS — including UNTERMINATED (to-EOF) block and line
 //     comments after a closed object — match BAML byte-exact (the P1/P2-c cases).
 //
@@ -129,7 +131,8 @@ func TestStream7CAdmittedMatrixParity(t *testing.T) {
 	// Anti-vacuity guard (catches an accidental all-decline schema-support regression). The
 	// round-11 single-nested-class-field root narrow (rootSingleFieldIsClass — BAML single-field-
 	// root inferred-object recovery native cannot reproduce) correctly declines a couple of
-	// corpus fixtures, so the admitted count settled at 49; the guard has margin below that.
+	// corpus fixtures; #555 Slice 2 (v3) admitted the non-ASCII / metadata shapes, so the
+	// admitted count settled at 59; the guard has margin below that.
 	if admitted < 45 {
 		t.Fatalf("corpus admitted=%d is implausibly low (schema-support regression?)", admitted)
 	}
@@ -185,15 +188,16 @@ func TestStream7CAdmittedMatrixParity(t *testing.T) {
 			t.Errorf("declined shape %q: expected SupportsNativeStream to DECLINE, got nil", name)
 		}
 	}
-	// The map-key and non-ASCII-literal narrowings are asserted against the REAL
-	// corpus fixtures they exclude (BAML succeeds on these finals, native declines,
-	// so the native-only lane must reject the SHAPE pre-transport): a non-string map
-	// key (enum key 28, union-of-literal key 104) and a non-ASCII string literal
-	// (181 "GRÜN"). Each must have landed in the declined set above.
+	// The map-key narrowing is asserted against the REAL corpus fixtures it excludes
+	// (BAML succeeds on these finals, native declines, so the native-only lane must
+	// reject the SHAPE pre-transport): a non-string map key (enum key 28,
+	// union-of-literal key 104). Each must have landed in the declined set above.
+	// (The former non-ASCII-literal narrowing is GONE: #555 Slice 2 admits non-ASCII
+	// string-literal / enum values and names, so 180/181 now CLAIM — the acceptance
+	// loop above proves the admitted non-ASCII fixtures are byte-exact vs live BAML.)
 	for _, name := range []string{
 		"map_bad_enum_key",
 		"map_bad_key_original_order",
-		"unicode_list_literal_casefold_uncertain_stays_fallback",
 	} {
 		if !declinedNames[name] {
 			t.Errorf("§11 narrowing: corpus fixture %q must be DECLINED pre-transport, but it was not in the declined set", name)

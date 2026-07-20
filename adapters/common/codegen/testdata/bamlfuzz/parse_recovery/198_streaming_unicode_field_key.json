@@ -1,0 +1,84 @@
+{
+  "name": "streaming_unicode_field_key",
+  "description": "Non-ASCII field-KEY stream: Root{ƛ: string, count: int} (field name U+019B). The input key Ƛ (U+A7DC) folds to match the field ƛ (matchesStringToString); the done-required int null-fills until complete. #555 Slice 2 admits non-ASCII string-literal/enum/field-name shapes into the native STREAM lane (checkStreamRootSupported narrowed): the streaming cadence is character-agnostic (done-required scalars null-fill until complete; partial strings shown) and the complete-value fold routes through the same bamlunicode-backed final coercer, so native reproduces BAML parse-stream byte-exact per prefix. Per-prefix want values are BAML v0.223 parse-stream (BAMLFUZZ_PARSE_CAPTURE=1); native==BAML for the fold is proven by the bamlunicode Rust reference.",
+  "preserve_schema_order": true,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "ƛ",
+            "type": {
+              "kind": "string"
+            }
+          },
+          {
+            "name": "count",
+            "type": {
+              "kind": "int"
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "prefixes": [
+    {
+      "name": "open_brace",
+      "raw": "{",
+      "want": {
+        "status": "success",
+        "json": {
+          "ƛ": null,
+          "count": null
+        }
+      }
+    },
+    {
+      "name": "key_partial_val",
+      "raw": "{\"Ƛ\":\"h",
+      "want": {
+        "status": "success",
+        "json": {
+          "ƛ": "h",
+          "count": null
+        }
+      }
+    },
+    {
+      "name": "key_done",
+      "raw": "{\"Ƛ\":\"hi\",",
+      "want": {
+        "status": "success",
+        "json": {
+          "ƛ": "hi",
+          "count": null
+        }
+      }
+    },
+    {
+      "name": "count_partial",
+      "raw": "{\"Ƛ\":\"hi\",\"count\":5",
+      "want": {
+        "status": "success",
+        "json": {
+          "ƛ": "hi",
+          "count": null
+        }
+      }
+    },
+    {
+      "name": "closed",
+      "raw": "{\"Ƛ\":\"hi\",\"count\":5}",
+      "want": {
+        "status": "success",
+        "json": {
+          "ƛ": "hi",
+          "count": 5
+        }
+      }
+    }
+  ]
+}

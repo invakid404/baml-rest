@@ -1,0 +1,86 @@
+{
+  "name": "unicode_a7dc_union_arm_count",
+  "description": "Union arm-count changed by the fold: A{a:literal ƛ, aa, aaa} | B{b, bb} over {a:Ƛ,aa,aaa,b,bb}. The U+A7DC→U+019B fold lets arm A's literal match (two extra keys b/bb, score 2) and win over arm B (three extra keys, score 3); without the fold arm A would fail its literal and the union would resolve differently. Native now CLAIMS arm A. #555 Slice 2 — native now CLAIMS this non-ASCII match_string case (match_string folds through internal/debaml/bamlunicode, byte-for-byte Rust 1.93.0 str::to_lowercase / unicode-normalization 0.1.24, so the verdict is native's to claim, never case-fold-uncertain). want is BAML v0.223's byte-exact final parse, held by this differential; native==BAML is independently proven by the exhaustive bamlunicode Rust reference.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "A",
+        "properties": [
+          {
+            "name": "a",
+            "type": {
+              "kind": "literal",
+              "literal": {
+                "kind": "string",
+                "string": "ƛ"
+              }
+            }
+          },
+          {
+            "name": "aa",
+            "type": {
+              "kind": "int"
+            }
+          },
+          {
+            "name": "aaa",
+            "type": {
+              "kind": "int"
+            }
+          }
+        ]
+      },
+      {
+        "name": "B",
+        "properties": [
+          {
+            "name": "b",
+            "type": {
+              "kind": "int"
+            }
+          },
+          {
+            "name": "bb",
+            "type": {
+              "kind": "int"
+            }
+          }
+        ]
+      },
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {
+                  "kind": "class_ref",
+                  "ref": "A"
+                },
+                {
+                  "kind": "class_ref",
+                  "ref": "B"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"u\": {\"a\": \"\\ua7dc\", \"aa\": 1, \"aaa\": 1, \"b\": 2, \"bb\": 3}}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": {
+        "a": "ƛ",
+        "aa": 1,
+        "aaa": 1
+      }
+    }
+  }
+}

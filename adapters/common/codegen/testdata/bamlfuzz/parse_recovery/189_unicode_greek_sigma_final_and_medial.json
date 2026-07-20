@@ -1,0 +1,43 @@
+{
+  "name": "unicode_greek_sigma_final_and_medial",
+  "description": "Language-independent Final_Sigma: input ΦΩΣ lowercases to φως (word-final Σ→ς) and matches literal φως, while ΕΣΩ lowercases to εσω (medial Σ→σ) and matches literal εσω. #555 Slice 2 — native now CLAIMS this non-ASCII match_string case (match_string folds through internal/debaml/bamlunicode, byte-for-byte Rust 1.93.0 str::to_lowercase / unicode-normalization 0.1.24, so the verdict is native's to claim, never case-fold-uncertain). want is BAML v0.223's byte-exact final parse, held by this differential; native==BAML is independently proven by the exhaustive bamlunicode Rust reference.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "a",
+            "type": {
+              "kind": "literal",
+              "literal": {
+                "kind": "string",
+                "string": "φως"
+              }
+            }
+          },
+          {
+            "name": "b",
+            "type": {
+              "kind": "literal",
+              "literal": {
+                "kind": "string",
+                "string": "εσω"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"a\": \"\\u03a6\\u03a9\\u03a3\", \"b\": \"\\u0395\\u03a3\\u03a9\"}",
+  "want": {
+    "status": "success",
+    "json": {
+      "a": "φως",
+      "b": "εσω"
+    }
+  }
+}

@@ -71,6 +71,83 @@ func TestSupportsNativeStream_SingleStringFieldDeclines(t *testing.T) {
 	}
 }
 
+// TestSupportsNativeStream_NonASCIIAdmitted pins #555 Slice 2: the stream lane now
+// ADMITS non-ASCII string-literal / enum VALUES and non-ASCII field NAMES — their
+// match_string fold is proven via bamlunicode, and the streaming cadence is
+// character-agnostic — so a native streamed request no longer falls back to BAML for
+// these. (Their per-prefix parity is locked by the streaming_unicode_* corpus.)
+func TestSupportsNativeStream_NonASCIIAdmitted(t *testing.T) {
+	enumS := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("status", &bamlutils.DynamicProperty{Ref: "Lam"}), kv("note", strProp())),
+		Enums: bamlutils.MustOrderedMap(bamlutils.OrderedKV("Lam", &bamlutils.DynamicEnum{
+			Values: []*bamlutils.DynamicEnumValue{{Name: "ƛ"}, {Name: "other"}}, // U+019B enum value
+		})),
+	}
+	litS := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("u", &bamlutils.DynamicProperty{Type: "literal_string", Value: "ƛ"}), kv("note", strProp())),
+	}
+	nameS := &bamlutils.DynamicOutputSchema{ // non-ASCII field NAME ƛ
+		Properties: props(kv("ƛ", strProp()), kv("count", intProp())),
+	}
+	for _, c := range []struct {
+		name string
+		s    *bamlutils.DynamicOutputSchema
+	}{{"enum-value", enumS}, {"string-literal", litS}, {"field-name", nameS}} {
+		if err := SupportsNativeStream(c.s); err != nil {
+			t.Errorf("SupportsNativeStream(non-ASCII %s): want admit (nil), got %v", c.name, err)
+		}
+		if err := SupportsNativeFinal(c.s); err != nil {
+			t.Errorf("SupportsNativeFinal(non-ASCII %s): want admit (nil), got %v", c.name, err)
+		}
+	}
+}
+
+// TestSupportsNativeStream_MetadataAdmitted pins that the metadata cases with NO
+// key-matching divergence are ADMITTED: a field @description (does not change the key
+// candidate), and an enum @alias / @description (a complete enum VALUE routes through the
+// final coercer whose enumMatchCandidates already models the rendered name, description,
+// and "rendered: description" candidate). Class-type @alias/@description are likewise not
+// matched as keys.
+func TestSupportsNativeStream_MetadataAdmitted(t *testing.T) {
+	fieldDescS := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("title", &bamlutils.DynamicProperty{Type: "string", Description: "the heading"}), kv("count", intProp())),
+	}
+	enumAliasS := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("status", &bamlutils.DynamicProperty{Ref: "St"}), kv("note", strProp())),
+		Enums: bamlutils.MustOrderedMap(bamlutils.OrderedKV("St", &bamlutils.DynamicEnum{
+			Values: []*bamlutils.DynamicEnumValue{{Name: "OPEN", Alias: "opened"}, {Name: "SHUT", Description: "closed up"}},
+		})),
+	}
+	for _, c := range []struct {
+		name string
+		s    *bamlutils.DynamicOutputSchema
+	}{{"field-description", fieldDescS}, {"enum-alias-desc", enumAliasS}} {
+		if err := SupportsNativeStream(c.s); err != nil {
+			t.Errorf("SupportsNativeStream(%s): want admit (nil), got %v", c.name, err)
+		}
+		if err := SupportsNativeFinal(c.s); err != nil {
+			t.Errorf("SupportsNativeFinal(%s): want admit (nil), got %v", c.name, err)
+		}
+	}
+}
+
+// TestSupportsNativeStream_FieldAliasDeclines pins the ONE metadata divergence
+// (LIVE-PROVEN vs BAML v0.223.0): a field @alias declines because BAML matches a class
+// key against the field's CANONICAL name too, while native's coerceStreamClass matcher
+// checks only Name.RenderedName() (the alias) and misses the canonical key. #583 teardown:
+// match both the name and the alias, then drop this gate.
+func TestSupportsNativeStream_FieldAliasDeclines(t *testing.T) {
+	fieldAliasS := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("title", &bamlutils.DynamicProperty{Type: "string", Alias: "banner"}), kv("count", intProp())),
+	}
+	if err := SupportsNativeStream(fieldAliasS); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+		t.Errorf("SupportsNativeStream(field-alias): want decline (canonical-key divergence), got %v", err)
+	}
+	if err := SupportsNativeFinal(fieldAliasS); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+		t.Errorf("SupportsNativeFinal(field-alias): want decline, got %v", err)
+	}
+}
+
 func TestSupportsNativeStream_NilSchema(t *testing.T) {
 	if err := SupportsNativeStream(nil); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
 		t.Errorf("SupportsNativeStream(nil): want ErrDeBAMLParseUnsupported, got %v", err)

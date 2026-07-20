@@ -1,0 +1,32 @@
+{
+  "name": "unicode_u1e9e_control_literal",
+  "description": "Stable non-ASCII control U+1E9E (ẞ, capital sharp s): input GROẞ case-folds to groß, then the ligature fold rewrites ß→ss, matching literal \"gross\". #555 Slice 2 — native now CLAIMS this non-ASCII match_string case (match_string folds through internal/debaml/bamlunicode, byte-for-byte Rust 1.93.0 str::to_lowercase / unicode-normalization 0.1.24, so the verdict is native's to claim, never case-fold-uncertain). want is BAML v0.223's byte-exact final parse, held by this differential; native==BAML is independently proven by the exhaustive bamlunicode Rust reference.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "literal",
+              "literal": {
+                "kind": "string",
+                "string": "gross"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"u\": \"GRO\\u1e9e\"}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": "gross"
+    }
+  }
+}

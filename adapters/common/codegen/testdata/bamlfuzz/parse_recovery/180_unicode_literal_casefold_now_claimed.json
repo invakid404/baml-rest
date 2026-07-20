@@ -1,0 +1,32 @@
+{
+  "name": "unicode_literal_casefold_now_claimed",
+  "description": "#555 Slice 2 — NOW CLAIMED (was a unicode_casefold fallback-boundary guard). String literal \"GRÜN\" against input \"grün\": exact + accent-fold miss, so match_string reaches the case-insensitive fold, which now routes through bamlunicode (byte-for-byte Rust str::to_lowercase) — GRÜN and grün both fold to grün, so native CLAIMS the match and emits the canonical literal GRÜN instead of falling back. want is BAML v0.223's byte-exact final parse, held by this differential; native==BAML is independently proven by the exhaustive bamlunicode Rust reference.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "literal",
+              "literal": {
+                "kind": "string",
+                "string": "GRÜN"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root"
+  },
+  "raw": "{\"u\":\"grün\"}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": "GRÜN"
+    }
+  }
+}

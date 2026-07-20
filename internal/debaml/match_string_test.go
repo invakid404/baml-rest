@@ -38,40 +38,42 @@ func TestRemoveAccents(t *testing.T) {
 	}
 }
 
-// TestUndLowerCaser pins that native's case fold follows Rust's full-Unicode
-// str::to_lowercase, not Go's simple strings.ToLower: İ (U+0130) lowercases to
-// "i" + U+0307 (combining dot above), which Go's strings.ToLower flattens to a
-// bare "i". (Both fold to "i" after the inner accent removal, but the
-// intermediate must match Rust.)
-func TestUndLowerCaser(t *testing.T) {
-	// İ (U+0130) -> "i" + U+0307 (combining dot above) under full Unicode
-	// lowercasing (Rust / cases.Lower), vs a bare "i" under strings.ToLower.
-	if got := undLowerCaser().String("İ"); got != "i̇" {
-		t.Errorf("undLowerCaser().String(U+0130) = %q, want %q", got, "i̇")
+// TestMatchStringUnicodeClaims pins the #555 Slice 2 win: match_string now folds
+// through bamlunicode (byte-for-byte Rust str::to_lowercase / NFKD / properties),
+// so exotic non-ASCII case folds the old x/text-based fold could not prove are now
+// CLAIMED matches — a match verdict is native's to return, never "uncertain".
+// The U+A7DC → U+019B sentinel (which Go's own tables don't even classify as
+// uppercase) is the headline case. Negative near-matches confirm no over-claim.
+func TestMatchStringUnicodeClaims(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		cand  string // single candidate (name == valid value)
+		want  matchOutcome
+	}{
+		// Uppercase accented Latin folds to the lowercase candidate (case + accent).
+		{"grun-umlaut", "GRÜN", "grün", matchOne},
+		{"e-acute", "É", "é", matchOne}, // É -> é
+		// U+A7DC LATIN CAPITAL LETTER LAMBDA WITH STROKE lowercases to U+019B under
+		// Rust/Unicode-17; the old Go-15 x/text tables left it unchanged (the #555
+		// sentinel). Now a CLAIMED case-fold match.
+		{"a7dc-sentinel", "Ƛ", "ƛ", matchOne},
+		// One-to-many lowercase İ (U+0130 → "i"+U+0307): folds to "id" via the
+		// accent-strip inside the case-fold pass.
+		{"dotted-capital-i", "İD", "id", matchOne},
+		// Stable non-ASCII control U+1E9E (ẞ) lowercases to ß, which the ligature
+		// fold rewrites to "ss": "GRoẞ" folds to "gross".
+		{"capital-sharp-s", "GROẞ", "gross", matchOne},
+		// Negative near-matches: no over-claim.
+		{"neg-different-word", "GRÜN", "blau", matchNone},
+		{"neg-lambda-vs-x", "Ƛ", "x", matchNone},
 	}
-	if got := strings.ToLower("İ"); got != "i" {
-		t.Errorf("strings.ToLower(U+0130) = %q, want %q (sanity: it differs from Rust)", got, "i")
-	}
-}
 
-// TestCaseFoldUncertain pins the conservative non-ASCII case-fold uncertainty
-// test: genuinely lowercase non-ASCII letters are CERTAIN (so accented inputs
-// still match), while anything Go can't prove is lowercase-stable is uncertain.
-func TestCaseFoldUncertain(t *testing.T) {
-	// ASCII, plus non-ASCII letters Go reports IsLower (é, ß, ü, ƛ U+019B).
-	certain := []string{"", "name", "RESUME", "résumé", "straße", "grün", "ƛ"}
-	for _, s := range certain {
-		if caseFoldUncertain(s) {
-			t.Errorf("caseFoldUncertain(%q) = true, want false", s)
-		}
-	}
-	// U+A7DC 'Ƛ' (x/text leaves it unchanged but Rust lowercases it to U+019B),
-	// accented uppercase 'É' (U+00C9), and 'İ' (U+0130): all non-ASCII and not
-	// IsLower -> uncertain.
-	uncertain := []string{"Ƛ", "ÉTAT", "İD"}
-	for _, s := range uncertain {
-		if !caseFoldUncertain(s) {
-			t.Errorf("caseFoldUncertain(%q) = false, want true", s)
+	for _, c := range cases {
+		cands := []matchCandidate{{name: c.cand, validValues: []string{c.cand}}}
+		_, outcome, _ := matchString(c.input, cands, true)
+		if outcome != c.want {
+			t.Errorf("%s: matchString(%q vs %q) outcome = %v, want %v", c.name, c.input, c.cand, outcome, c.want)
 		}
 	}
 }
@@ -156,7 +158,7 @@ func TestMatchStringOutcomes(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		name, outcome, viaSub, uncertain := matchString(c.input, c.candidates, c.allowSubstring)
+		name, outcome, viaSub := matchString(c.input, c.candidates, c.allowSubstring)
 		if outcome != c.wantOutcome || (outcome == matchOne && name != c.wantName) {
 			t.Errorf("%s: matchString(%q) = (%q, %v), want (%q, %v)",
 				c.name, c.input, name, outcome, c.wantName, c.wantOutcome)
@@ -166,11 +168,6 @@ func TestMatchStringOutcomes(t *testing.T) {
 		wantSub := strings.HasPrefix(c.name, "substring") && c.wantOutcome != matchNone
 		if viaSub != wantSub {
 			t.Errorf("%s: matchString(%q) viaSubstring = %v, want %v", c.name, c.input, viaSub, wantSub)
-		}
-		// All these cases are ASCII (or fold before the case-fold attempt), so
-		// none should be flagged non-ASCII-case-fold-uncertain.
-		if uncertain {
-			t.Errorf("%s: matchString(%q) unexpectedly uncertain", c.name, c.input)
 		}
 	}
 }
@@ -191,14 +188,16 @@ func TestMatchesStringToString(t *testing.T) {
 		{"full_name", "fullname", false}, // '_' is KEPT, so no match
 		{"names", "name", false},
 		{"color", "shade", false},
+		// #555 Slice 2: uppercase non-ASCII field keys now fold to their lowercase
+		// rendered name and CLAIM the match (were formerly case-fold-uncertain).
+		{"GRÜN", "grün", true},
+		{"Ƛ", "ƛ", true}, // U+A7DC -> U+019B sentinel
+		{"ÉTAT", "état", true},
 	}
 	for _, c := range cases {
-		got, uncertain := matchesStringToString(c.input, c.target)
+		got := matchesStringToString(c.input, c.target)
 		if got != c.want {
 			t.Errorf("matchesStringToString(%q, %q) = %v, want %v", c.input, c.target, got, c.want)
-		}
-		if uncertain {
-			t.Errorf("matchesStringToString(%q, %q) unexpectedly uncertain (all ASCII)", c.input, c.target)
 		}
 	}
 }
