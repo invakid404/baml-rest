@@ -42,6 +42,12 @@ const (
 	// smokeContent is the exact assistant text the mock returns; the native SAP
 	// cleanly claims it against personSchema6b.
 	smokeContent = `{"name":"Ada","age":36}`
+	// smokeSystemText / smokeUserText are the fixed fixture turns every provider
+	// smoke sends (non-secret). They are the single source of truth so the Bedrock
+	// smoke can assert the lifted system value and the surviving user turn against
+	// the SAME literals smokeInput builds the request from.
+	smokeSystemText = "You are a precise extractor."
+	smokeUserText   = "Return the person as JSON."
 )
 
 // smokeInput builds a fully-formed admitted unary `_dynamic` call for a trusted
@@ -59,8 +65,8 @@ func smokeInput(reg *bamlutils.ClientRegistry, provider string) admission.Input 
 		Registry:            reg,
 		Alias:               smokeAlias,
 		Messages: []bamlutils.DynamicMessage{
-			{Role: "system", TextContent: sp("You are a precise extractor.")},
-			{Role: "user", TextContent: sp("Return the person as JSON.")},
+			{Role: "system", TextContent: sp(smokeSystemText)},
+			{Role: "user", TextContent: sp(smokeUserText)},
 		},
 		OutputSchema: personSchema6b(),
 	}
@@ -249,6 +255,133 @@ func TestMprovSmokeBedrock(t *testing.T) {
 		}},
 	}
 	runSmoke(t, reg, "aws-bedrock", id, bedrockTLSExecutor(t, tlsPort), m)
+
+	// Harden the Bedrock path: beyond the shared structured-output plumbing and the
+	// dial-layer untouched-host assertion, pin that the ONE request that crossed the
+	// wire (byte-for-byte, only its destination redirected to loopback TLS) is a
+	// provider-correct, SigV4-signed Converse call. Exact-plan + cryptographic SigV4
+	// verification lives in the no-send provideroracle oracle; here we prove the
+	// signed plan reached the socket unmodified and is Converse-shaped.
+	assertBedrockSmokeContract(t, m, id, target)
+}
+
+// converseTextBlock is a Bedrock Converse `{text}` content/system block.
+type converseTextBlock struct {
+	Text string `json:"text"`
+}
+
+// converseRequestBody is the narrow view of the captured Bedrock Converse request:
+// text content blocks and messages that must no longer carry system/developer
+// roles (the system turn is lifted to a top-level `system`, checked separately).
+// It intentionally omits `model` — a Converse body carries the model in the URL,
+// not the body, asserted via the raw member set in assertBedrockSmokeContract.
+type converseRequestBody struct {
+	Messages []struct {
+		Role    string              `json:"role"`
+		Content []converseTextBlock `json:"content"`
+	} `json:"messages"`
+}
+
+// assertBedrockSmokeContract pins the captured Bedrock request contract: POST
+// /model/<id>/converse, an unmodified SigV4 Authorization (AWS4-HMAC-SHA256 with the
+// us-east-1/bedrock/aws4_request credential scope) plus X-Amz-Date and a JSON
+// content-type that survived the dial-only redirect, and a Converse body carrying
+// NO top-level `model`, the system turn LIFTED to a top-level `system` whose VALUE
+// equals the fixture system text, a PRESENT + NON-EMPTY `messages` array whose every
+// content block is a non-empty `{text}` block (with the surviving user turn carrying
+// the fixture user text), and no system/developer role remaining in `messages`. The
+// Authorization value is never printed (it carries the signature) and the body is
+// never dumped raw — value mismatches report counts/booleans only.
+func assertBedrockSmokeContract(t *testing.T, m *mockServer, id, target string) {
+	t.Helper()
+
+	path := "/model/" + target + "/converse"
+	rec := m.recordedFor("bedrock", path)
+	if rec.Method != http.MethodPost {
+		t.Errorf("captured Bedrock method = %q, want POST", rec.Method)
+	}
+
+	// The SigV4 signature reached the socket unmodified: present, well-formed, and
+	// scoped to the signed region/service (never print the raw header — it carries
+	// the signature).
+	if authz, ok := headerValue(rec.Headers, "authorization"); !ok || !strings.HasPrefix(authz, "AWS4-HMAC-SHA256 ") {
+		t.Errorf("Authorization missing or not SigV4 (present=%v, sigv4=%v)", ok, ok && strings.HasPrefix(authz, "AWS4-HMAC-SHA256 "))
+	} else if !strings.Contains(authz, "/us-east-1/bedrock/aws4_request") {
+		t.Errorf("SigV4 credential scope is not us-east-1/bedrock/aws4_request")
+	}
+	if v, ok := headerValue(rec.Headers, "x-amz-date"); !ok || v == "" {
+		t.Errorf("X-Amz-Date missing (present=%v)", ok)
+	}
+	if v, ok := headerValue(rec.Headers, "content-type"); !ok || !strings.HasPrefix(v, "application/json") {
+		t.Errorf("content-type = %q (present=%v), want application/json", v, ok)
+	}
+
+	cap := m.lastRequest(id)
+	if cap.Path != path {
+		t.Errorf("captured path = %q, want %q", cap.Path, path)
+	}
+
+	// Converse body shape: NO top-level model, and the system turn LIFTED to a
+	// top-level `system` with the exact fixture value.
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(cap.Body, &top); err != nil {
+		t.Fatalf("captured Bedrock body is not JSON (stage=json_unmarshal, len=%d)", len(cap.Body))
+	}
+	if _, hasModel := top["model"]; hasModel {
+		t.Errorf("Converse body must not carry a top-level model (it rides in the URL)")
+	}
+	rawSystem, ok := top["system"]
+	if !ok {
+		t.Fatalf("captured top-level system missing; the system turn must be lifted out of messages")
+	}
+	// Assert the lifted system VALUE (not just key presence): exactly the fixture
+	// system turn as a single {text} block. On mismatch report counts only (the
+	// fixture text is non-secret, but the body is never dumped raw).
+	var sysBlocks []converseTextBlock
+	if err := json.Unmarshal(rawSystem, &sysBlocks); err != nil {
+		t.Fatalf("captured top-level system did not decode as text blocks (stage=system_decode, len=%d)", len(rawSystem))
+	}
+	if len(sysBlocks) != 1 || sysBlocks[0].Text != smokeSystemText {
+		got := ""
+		if len(sysBlocks) == 1 {
+			got = sysBlocks[0].Text
+		}
+		t.Errorf("lifted system value mismatch: blocks=%d text_matches_fixture=%v", len(sysBlocks), got == smokeSystemText)
+	}
+
+	var creq converseRequestBody
+	if err := json.Unmarshal(cap.Body, &creq); err != nil {
+		t.Fatalf("captured Bedrock body did not decode as Converse (stage=converse_decode, len=%d)", len(cap.Body))
+	}
+	// messages must be PRESENT and NON-EMPTY: the user turn survives after the system
+	// turn is lifted out.
+	if len(creq.Messages) == 0 {
+		t.Fatalf("captured Converse body has no messages; the user turn must survive the system lift")
+	}
+	// EVERY message content block must be a non-empty {text} block, and the surviving
+	// user turn must carry the exact fixture user text. No system/developer role may
+	// remain in messages.
+	roles := make([]string, len(creq.Messages))
+	sawUserText := false
+	for i, msg := range creq.Messages {
+		roles[i] = msg.Role
+		if len(msg.Content) == 0 {
+			t.Errorf("message[%d] has no content blocks", i)
+			continue
+		}
+		for j, blk := range msg.Content {
+			if blk.Text == "" {
+				t.Errorf("message[%d] content block[%d] is not a non-empty {text} block", i, j)
+			}
+			if blk.Text == smokeUserText {
+				sawUserText = true
+			}
+		}
+	}
+	if !sawUserText {
+		t.Errorf("no message content block carries the fixture user turn text")
+	}
+	assertMessageRoles(t, roles, "system", "developer")
 }
 
 // bedrockTLSExecutor builds an ExactExecutor whose dial connects the SIGNED Bedrock
