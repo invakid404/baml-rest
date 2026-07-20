@@ -197,6 +197,28 @@ func assertAnthropicSmokeContract(t *testing.T, m *mockServer, id, target string
 	assertMessageRoles(t, roles, "system", "developer")
 }
 
+// cerebrasSmokeAPIKey is the fake Bearer key both cerebras smokes configure and
+// the request-contract assertion expects (never a real key; loopback-fenced).
+const cerebrasSmokeAPIKey = "sk-cb-fake"
+
+// cerebrasSmokeRegistry builds the single-client cerebras registry both cerebras
+// smokes share: base_url is the nanollm API base (mock + /v1); the api key is the
+// fake Bearer above.
+func cerebrasSmokeRegistry(m *mockServer, target string) *bamlutils.ClientRegistry {
+	return &bamlutils.ClientRegistry{
+		Primary: sp("C"),
+		Clients: []*bamlutils.ClientProperty{{
+			Name:     "C",
+			Provider: "cerebras",
+			Options: map[string]any{
+				"model":    target,
+				"api_key":  cerebrasSmokeAPIKey,
+				"base_url": m.baseURL + "/v1",
+			},
+		}},
+	}
+}
+
 // TestMprovSmokeCerebras: cerebras is OpenAI-wire-compatible, so nanollm's
 // cerebras route hits the mock's strict OpenAI /v1/chat/completions route (there is
 // no first-class cerebras route in go-mocklm v0.4.0 — documented compatibility
@@ -211,19 +233,138 @@ func TestMprovSmokeCerebras(t *testing.T) {
 		Model:    target,
 		Output:   &exactOutput{Text: smokeContent, OutputTokens: 7},
 	})
-	reg := &bamlutils.ClientRegistry{
-		Primary: sp("C"),
-		Clients: []*bamlutils.ClientProperty{{
-			Name:     "C",
-			Provider: "cerebras",
-			Options: map[string]any{
-				"model":    target,
-				"api_key":  "sk-cb-fake",
-				"base_url": m.baseURL + "/v1",
-			},
-		}},
+	runSmoke(t, cerebrasSmokeRegistry(m, target), "cerebras", id, exactLoopbackExecutor(), m)
+
+	// Harden the Cerebras path: beyond the shared structured-output plumbing, assert
+	// the ONE request that crossed the wire is a provider-correct OpenAI-compatible
+	// Cerebras call — POST /v1/chat/completions, the fake Bearer key + JSON, the
+	// rewritten target model, and (the TPBP-C crux) ordered CONTENT-PART-ARRAY message
+	// content, NOT the openai-generic string surrogate. go-mocklm is a functional
+	// responder (a header MAP, no exact-byte order), so exact plan parity lives in the
+	// no-send provideroracle oracle; here we pin the captured request-contract facts.
+	assertCerebrasSmokeContract(t, m, id, target)
+}
+
+// cerebrasSmokeRequestBody is the narrow view of the captured OpenAI-compatible
+// Cerebras request: the rewritten target model and messages whose content must be
+// the native ORDERED CONTENT-PART ARRAY — never the openai-generic string surrogate.
+type cerebrasSmokeRequestBody struct {
+	Model    string `json:"model"`
+	Messages []struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	} `json:"messages"`
+}
+
+// assertCerebrasSmokeContract pins the captured Cerebras request contract: POST
+// /v1/chat/completions, the fake Bearer key + JSON content-type, the rewritten
+// target model, and — the TPBP-C crux — every message `content` as an ordered
+// content-part ARRAY (native's OpenAI-compatible shape), NOT the openai-generic
+// string surrogate. Secrets are reported by presence/match only; the body is never
+// dumped raw (a decode/shape failure reports an index + stage token).
+func assertCerebrasSmokeContract(t *testing.T, m *mockServer, id, target string) {
+	t.Helper()
+
+	// Method/path/auth from the global request log (the cerebras scenario is
+	// registered under the OpenAI-compatible provider/route).
+	rec := m.recordedFor("openai", "/v1/chat/completions")
+	if rec.Method != http.MethodPost {
+		t.Errorf("captured Cerebras method = %q, want POST", rec.Method)
 	}
-	runSmoke(t, reg, "cerebras", id, exactLoopbackExecutor(), m)
+	if v, ok := headerValue(rec.Headers, "Authorization"); !ok || v != "Bearer "+cerebrasSmokeAPIKey {
+		// Never print the key value; report presence + match only.
+		t.Errorf("Authorization missing or mismatched (present=%v, matched=%v)", ok, v == "Bearer "+cerebrasSmokeAPIKey)
+	}
+	if v, ok := headerValue(rec.Headers, "content-type"); !ok || !strings.HasPrefix(v, "application/json") {
+		t.Errorf("content-type = %q (present=%v), want application/json", v, ok)
+	}
+
+	// Byte-exact captured body: OpenAI-compatible route + model rewrite + arrays.
+	cap := m.lastRequest(id)
+	if cap.Path != "/v1/chat/completions" {
+		t.Errorf("captured path = %q, want /v1/chat/completions", cap.Path)
+	}
+	var creq cerebrasSmokeRequestBody
+	if err := json.Unmarshal(cap.Body, &creq); err != nil {
+		// Never echo the body or a content-derived digest — report stage + length only.
+		t.Fatalf("captured Cerebras body is not JSON (stage=json_unmarshal, len=%d)", len(cap.Body))
+	}
+	if creq.Model != target {
+		t.Errorf("captured model = %q, want %q (nanollm rewrite)", creq.Model, target)
+	}
+	if len(creq.Messages) == 0 {
+		t.Fatal("captured Cerebras body carries no messages")
+	}
+	for i, msg := range creq.Messages {
+		// A content-part ARRAY decodes into typed {type,text} blocks; the openai-generic
+		// STRING surrogate would fail this decode — that failure IS the divergence proof.
+		var parts []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(msg.Content, &parts); err != nil || len(parts) == 0 {
+			t.Errorf("captured message[%d] content is not a content-part array (native must not emit the openai-generic string surrogate)", i)
+			continue
+		}
+		if parts[0].Type != "text" {
+			t.Errorf("captured message[%d] block type = %q, want text", i, parts[0].Type)
+		}
+	}
+}
+
+// TestMprovSmokeCerebrasProviderError hardens the Cerebras response path with a
+// provider ERROR ENVELOPE: the mock returns a non-2xx, the single attempt (no
+// retry/fallback) surfaces OutcomeProviderError with the real status, SAP is NEVER
+// invoked, and exactly one request crosses the wire. It is the error-envelope
+// companion to the happy-path structured smoke above.
+func TestMprovSmokeCerebrasProviderError(t *testing.T) {
+	m := startMock(t)
+	const target = "llama-3.1-8b-mock"
+	const id = "s2-smoke-cerebras-error"
+	// A deterministic 503 on the first (and only) attempt; no Output — it never
+	// produces a success body. MaxRetries is 0 and there is no fallback, so the one
+	// attempt returns the 503.
+	m.registerScenario(scenarioSpec{
+		ID:       id,
+		Provider: "openai", // cerebras uses the OpenAI-compatible route
+		Model:    target,
+		Config:   json.RawMessage(`{"fail_first_n":1,"error_status":503}`),
+	})
+
+	exec := exactLoopbackExecutor()
+	admitter := admission.NewAdmitter(nil, exec)
+	ctx, cancel := context.WithTimeout(context.Background(), p6bTimeout)
+	defer cancel()
+
+	claim, err := admitter.AdmitClaim(ctx, smokeInput(cerebrasSmokeRegistry(m, target), "cerebras"))
+	if err != nil {
+		t.Fatalf("cerebras: AdmitClaim: %v", err)
+	}
+	defer claim.Close()
+
+	spy := &parseSpy{fn: debaml.Parse}
+	res, aerr := RunAttempt(ctx, AttemptConfig{
+		Client:       claim.Client(),
+		Prepared:     claim.Prepared,
+		Executor:     exec,
+		Parse:        spy.Parse,
+		OutputSchema: personSchema6b(),
+	})
+	if aerr != nil {
+		t.Fatalf("cerebras: RunAttempt returned an error, want a provider-error result: %v", aerr)
+	}
+	if res.Outcome != OutcomeProviderError {
+		t.Fatalf("cerebras: outcome = %s, want provider-error (provider body: %s)", res.Outcome, bodyDigest(res.ProviderBody))
+	}
+	if res.ProviderStatus != 503 {
+		t.Errorf("cerebras: provider status = %d, want 503", res.ProviderStatus)
+	}
+	if res.SAPInvoked || spy.calls != 0 {
+		t.Errorf("cerebras: SAP invoked=%v calls=%d, want SAP NEVER invoked on a provider error", res.SAPInvoked, spy.calls)
+	}
+	if got := m.scenarioRequestCount(id); got != 1 {
+		t.Errorf("cerebras: scenario request count = %d, want exactly 1", got)
+	}
 }
 
 // TestMprovSmokeBedrock: nanollm signs a SigV4 plan for the fixed
