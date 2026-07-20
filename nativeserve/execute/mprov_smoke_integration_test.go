@@ -18,6 +18,7 @@ package execute
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -25,6 +26,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -129,6 +131,64 @@ func TestMprovSmokeAnthropic(t *testing.T) {
 		}},
 	}
 	runSmoke(t, reg, "anthropic", id, exactLoopbackExecutor(), m)
+
+	// Harden the Anthropic path: beyond the shared structured-output plumbing, assert
+	// the ONE request that crossed the wire is a provider-correct Anthropic Messages
+	// call. go-mocklm is a functional responder (a header MAP, no exact-byte order),
+	// so exact plan parity lives in the no-send provideroracle oracle; here we pin the
+	// captured request-contract facts the smoke can prove.
+	assertAnthropicSmokeContract(t, m, id, target)
+}
+
+// assertAnthropicSmokeContract pins the captured Anthropic request contract: POST
+// /v1/messages, the fake x-api-key + a present anthropic-version + JSON
+// content-type, a native Anthropic body carrying the target model and a required
+// max_tokens, the system turn lifted to top-level `system`, and NO system/developer
+// role surviving into provider `messages`. Secrets are reported by presence/match
+// only (never the raw key), and the body is digested, never dumped raw.
+func assertAnthropicSmokeContract(t *testing.T, m *mockServer, id, target string) {
+	t.Helper()
+
+	// Method/path/headers from the global request log (canonicalized header map).
+	rec := m.recordedFor("anthropic", "/v1/messages")
+	if rec.Method != http.MethodPost {
+		t.Errorf("captured Anthropic method = %q, want POST", rec.Method)
+	}
+	if v, ok := headerValue(rec.Headers, "x-api-key"); !ok || v != "sk-ant-fake" {
+		// Never print the api-key value; report presence + match only.
+		t.Errorf("x-api-key missing or mismatched (present=%v, matched=%v)", ok, v == "sk-ant-fake")
+	}
+	if v, ok := headerValue(rec.Headers, "anthropic-version"); !ok || v == "" {
+		t.Errorf("anthropic-version = %q (present=%v), want non-empty", v, ok)
+	}
+	if v, ok := headerValue(rec.Headers, "content-type"); !ok || !strings.HasPrefix(v, "application/json") {
+		t.Errorf("content-type = %q (present=%v), want application/json", v, ok)
+	}
+
+	// Byte-exact captured body: a native Anthropic Messages request.
+	cap := m.lastRequest(id)
+	if cap.Path != "/v1/messages" {
+		t.Errorf("captured path = %q, want /v1/messages", cap.Path)
+	}
+	var areq anthropicRequestBody
+	if err := json.Unmarshal(cap.Body, &areq); err != nil {
+		// Never echo the body or a content-derived digest — report stage + length only.
+		t.Fatalf("captured Anthropic body is not JSON (stage=json_unmarshal, len=%d)", len(cap.Body))
+	}
+	if areq.Model != target {
+		t.Errorf("captured model = %q, want %q", areq.Model, target)
+	}
+	if areq.MaxTokens < 1 {
+		t.Errorf("captured max_tokens = %d, want >= 1 (Anthropic requires it)", areq.MaxTokens)
+	}
+	if len(areq.System) == 0 || string(areq.System) == "null" {
+		t.Errorf("captured top-level system missing; the system turn must be lifted out of messages")
+	}
+	roles := make([]string, len(areq.Messages))
+	for i, msg := range areq.Messages {
+		roles[i] = msg.Role
+	}
+	assertMessageRoles(t, roles, "system", "developer")
 }
 
 // TestMprovSmokeCerebras: cerebras is OpenAI-wire-compatible, so nanollm's
