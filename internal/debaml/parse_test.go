@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 )
@@ -1278,24 +1280,146 @@ func TestParse_TopLevelArrayDeclines(t *testing.T) {
 	requireUnsupported(t, personSchema(), `[1,2,3]`)
 }
 
+// TestParse_AliasedFieldMatchesRenderedNameOnly is the STATIC-ORACLE alias FINAL matrix.
+// Native reproduces static/jsonish BAML v0.223 EXACTLY: a field @alias is ALIAS-ONLY — a
+// class key is matched against the field's RENDERED (alias) name only (jsonish
+// coerce_class.rs:205-222 uses Name::rendered_name, never real_name), and the OUTPUT is
+// keyed by the canonical real_name. The canonical name is therefore an EXTRA key, and the
+// aliased field is supplied ONLY by its alias.
+//
+// This is the parity oracle the served-native path targets, NOT the dynamic bridge: the
+// live output_format renderer EMITS the alias (internal/schema/outputformat/render.go:412,
+// f.Name.RenderedName()), so a model told to emit `heading` emits `heading` and native
+// parses `heading` — self-consistent (#583 Step-0). The dynamic DynamicParseRaw bridge drops
+// aliases (canonical-only) and cannot judge this — it is deliberately NOT the oracle here.
 func TestParse_AliasedFieldMatchesRenderedNameOnly(t *testing.T) {
-	// Field `name` is rendered as alias `full_name`. BAML's jsonish class
-	// coercer matches the rendered (alias) key ONLY; the canonical key
-	// `name` is an extra key and the rendered field is missing. Native must
-	// agree to stay drift-free.
+	// Multi-field root so single-field implied-object recovery cannot mask key behavior
+	// (scope §"Differential proof plan").
 	s := &bamlutils.DynamicOutputSchema{
 		Properties: props(
-			kv("name", &bamlutils.DynamicProperty{Type: "string", Alias: "full_name"}),
-			kv("age", intProp()),
+			kv("title", &bamlutils.DynamicProperty{Type: "string", Alias: "heading"}),
+			kv("last", strProp()),
 		),
 	}
-	// Alias present (exact) -> claimed; emitted under the canonical field name.
-	mustParse(t, s, `{"full_name":"Ada","age":36}`, `{"name":"Ada","age":36}`)
-	// Canonical name present instead of the rendered alias -> the rendered
-	// field `full_name` has no EXACT key match -> DECLINE. (BAML may even
-	// fuzzy-match "name" as a substring of "full_name" and succeed, so native
-	// must not claim a missing-required error.)
-	requireUnsupported(t, s, `{"name":"Ada","age":36}`)
+	// alias key (exact) -> claimed; emitted under the CANONICAL field name.
+	mustParse(t, s, `{"heading":"Ada","last":"z"}`, `{"title":"Ada","last":"z"}`)
+	// case-fold alias key -> match_string case-insensitive pass; canonical output.
+	mustParse(t, s, `{"HEADING":"Ada","last":"z"}`, `{"title":"Ada","last":"z"}`)
+	// accent-fold alias key -> match_string accent/NFKD pass (proven byte-exact via
+	// bamlunicode, #555). Same rendered-name match path the canonical name would use.
+	mustParse(t, s, `{"héading":"Ada","last":"z"}`, `{"title":"Ada","last":"z"}`)
+	// both keys, EITHER raw order: only the alias `heading` is a candidate, so it supplies
+	// `title`; the canonical `title` key stays an extra (no canonical-vs-alias precedence
+	// rule, because canonical is not a candidate). Scope table, alias-scope.md:72.
+	mustParse(t, s, `{"title":"C","heading":"Ada","last":"z"}`, `{"title":"Ada","last":"z"}`)
+	mustParse(t, s, `{"heading":"Ada","title":"C","last":"z"}`, `{"title":"Ada","last":"z"}`)
+	// canonical key ONLY -> the aliased field has no rendered-name match -> it is MISSING
+	// (required, non-defaultable). Static BAML errors on this final too; native returns the
+	// fallback sentinel rather than claim a byte-different value (parity-safe: never over-claim).
+	requireUnsupported(t, s, `{"title":"C","last":"z"}`)
+
+	// @description ALONGSIDE @alias adds NO extra key candidate: class field-key matching
+	// destructures only Name (alias-scope.md:96-102); the description is separate state.
+	sd := &bamlutils.DynamicOutputSchema{
+		Properties: props(
+			kv("title", &bamlutils.DynamicProperty{Type: "string", Alias: "heading", Description: "the title"}),
+			kv("last", strProp()),
+		),
+	}
+	mustParse(t, sd, `{"heading":"Ada","last":"z"}`, `{"title":"Ada","last":"z"}`)
+	requireUnsupported(t, sd, `{"title":"C","last":"z"}`)
+
+	// NESTED-class alias field: the alias applies inside the child object identically
+	// (rendered-name-only match, canonical output key).
+	sn := &bamlutils.DynamicOutputSchema{
+		Properties: props(
+			kv("name", strProp()),
+			kv("inner", &bamlutils.DynamicProperty{Ref: "Inner"}),
+		),
+		Classes: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("Inner", &bamlutils.DynamicClass{
+				Properties: props(
+					kv("title", &bamlutils.DynamicProperty{Type: "string", Alias: "heading"}),
+					kv("y", intProp()),
+				),
+			}),
+		),
+	}
+	mustParse(t, sn, `{"name":"n","inner":{"heading":"Ada","y":5}}`, `{"name":"n","inner":{"title":"Ada","y":5}}`)
+	requireUnsupported(t, sn, `{"name":"n","inner":{"title":"C","y":5}}`)
+}
+
+// TestParse_AliasStreamRenderedNameEquivalence proves the STATIC-ORACLE alias parity at the
+// FINAL and at EVERY valid-UTF-8 streaming prefix, WITHOUT a live BAML call.
+//
+// The insight: an @alias changes ONLY (a) the rendered name used for KEY matching and (b) the
+// canonical name used for the OUTPUT key — nothing about streaming cadence. So native's
+// stream/final for an ALIAS schema {title @alias("heading"), last} must equal, byte-for-byte,
+// native's stream/final for the EQUIVALENT schema whose field is literally NAMED by that
+// rendered name {heading, last}, with the output key relabeled canonical<-rendered. The
+// no-alias (rendered==canonical) coercion is a plain 2-string-field class already proven
+// byte-exact vs LIVE BAML by the type-space differential; this equivalence transfers that live
+// proof onto the alias schema — exactly static BAML v0.223 (Name::rendered_name for matching,
+// real_name for output). The battery includes conforming (alias key), case/accent/punct/NFKD
+// variants (all routed through the SAME match_string path), the non-conforming canonical key
+// (field missing on BOTH), both-keys, and the absent field.
+func TestParse_AliasStreamRenderedNameEquivalence(t *testing.T) {
+	aliasS := func() *bamlutils.DynamicOutputSchema {
+		return &bamlutils.DynamicOutputSchema{Properties: props(
+			kv("title", &bamlutils.DynamicProperty{Type: "string", Alias: "heading"}),
+			kv("last", strProp()),
+		)}
+	}
+	renderedS := func() *bamlutils.DynamicOutputSchema {
+		return &bamlutils.DynamicOutputSchema{Properties: props(
+			kv("heading", strProp()),
+			kv("last", strProp()),
+		)}
+	}
+	// Relabel the equivalent schema's canonical output key `heading` -> `title`. Only the
+	// object KEY ever spells `"heading":`; string values in this battery never do.
+	rename := func(s string) string { return strings.ReplaceAll(s, `"heading":`, `"title":`) }
+
+	ctx := context.Background()
+	for _, raw := range []string{
+		`{"heading":"h","last":"y"}`,             // alias key (conforming)
+		`{"HEADING":"h","last":"y"}`,             // case-fold alias key
+		`{"héading":"h","last":"y"}`,             // accent/NFKD alias key
+		`{"head-ing":"h","last":"y"}`,            // punctuation variant (same match_string path)
+		`{"title":"x","last":"y"}`,               // canonical key (non-conforming: field missing on BOTH)
+		`{"heading":"h","title":"x","last":"y"}`, // both keys
+		`{"last":"y"}`,                           // aliased field absent
+	} {
+		a, r := aliasS(), renderedS()
+		// FINAL: same success/error disposition; on success, byte-identical after the relabel.
+		af, aerr := ParseNativeStreamFinal(ctx, a, raw)
+		rf, rerr := ParseNativeStreamFinal(ctx, r, raw)
+		if (aerr == nil) != (rerr == nil) {
+			t.Errorf("[%s] FINAL disposition mismatch: alias err=%v rendered err=%v", raw, aerr, rerr)
+		} else if aerr == nil && string(af) != rename(string(rf)) {
+			t.Errorf("[%s] FINAL byte mismatch:\n alias   =%s\n rendered=%s\n renamed =%s", raw, af, rf, rename(string(rf)))
+		}
+		// PARTIAL cadence at every valid-UTF-8 prefix — emit/skip AND bytes must agree.
+		for i := 1; i <= len(raw); i++ {
+			p := raw[:i]
+			if !utf8.ValidString(p) {
+				continue // a mid-rune split; native is still exercised but not compared
+			}
+			ap, aperr := ParseNativeStreamPartial(ctx, a, p)
+			rp, rperr := ParseNativeStreamPartial(ctx, r, p)
+			if aperr != nil || rperr != nil {
+				t.Errorf("[%s @%d] unexpected partial error alias=%v rendered=%v", raw, i, aperr, rperr)
+				continue
+			}
+			if (ap == nil) != (rp == nil) {
+				t.Errorf("[%s @%d=%q] partial emit/skip mismatch: aliasEmit=%v renderedEmit=%v", raw, i, p, ap != nil, rp != nil)
+				continue
+			}
+			if ap != nil && string(ap) != rename(string(rp)) {
+				t.Errorf("[%s @%d=%q] PARTIAL byte mismatch:\n alias   =%s\n rendered=%s\n renamed =%s", raw, i, p, ap, rp, rename(string(rp)))
+			}
+		}
+	}
 }
 
 func TestParse_FencedJSONWithInlineBackticks(t *testing.T) {

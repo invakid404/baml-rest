@@ -11,10 +11,12 @@ package integration
 //     native-only FINAL closure reproduces BAML's final byte-for-byte (and every
 //     streaming PREFIX partial matches BAML's parse-stream) — so no admitted fixture
 //     can be a BAML-success / native-fallback on the native-only lane (I6 / §5.9);
-//   - the §11-narrowed shapes (single string-absorbing root, non-string map key, field
-//     @alias, union/optional, scalar map value) DECLINE pre-transport (#555 Slice 2 admits
+//   - the §11-narrowed shapes (single string-absorbing root, non-string map key,
+//     union/optional, scalar map value) DECLINE pre-transport (#555 Slice 2 admits
 //     non-ASCII literal/enum/name, field @description, and class/enum @alias/@description;
-//     only field @alias stays narrowed — the canonical-key divergence, #583);
+//     #583 teardown admits a NON-colliding field @alias too — native's rendered-name-only
+//     matcher is byte-exact vs static BAML v0.223's alias-only jsonish coercer — while a
+//     FUZZY alias/canonical rendered-name collision stays a #583 residual decline);
 //   - comment-bearing FINALS — including UNTERMINATED (to-EOF) block and line
 //     comments after a closed object — match BAML byte-exact (the P1/P2-c cases).
 //

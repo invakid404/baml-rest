@@ -131,20 +131,71 @@ func TestSupportsNativeStream_MetadataAdmitted(t *testing.T) {
 	}
 }
 
-// TestSupportsNativeStream_FieldAliasDeclines pins the ONE metadata divergence
-// (LIVE-PROVEN vs BAML v0.223.0): a field @alias declines because BAML matches a class
-// key against the field's CANONICAL name too, while native's coerceStreamClass matcher
-// checks only Name.RenderedName() (the alias) and misses the canonical key. #583 teardown:
-// match both the name and the alias, then drop this gate.
-func TestSupportsNativeStream_FieldAliasDeclines(t *testing.T) {
+// TestSupportsNativeStream_FieldAliasAdmitted pins the #583 teardown: a NON-colliding field
+// @alias now ADMITS on both native serving lanes. The scope finding overturned the earlier
+// "BAML matches the canonical key too" premise — that was an artifact of the DYNAMIC parse
+// bridge dropping aliases, not static BAML v0.223. Static/jsonish BAML is ALIAS-ONLY (it
+// matches a class key against the field's rendered name only), and native's coerceClass/
+// coerceStreamClass do exactly that (Name.RenderedName() only), so removing the blanket gate
+// makes native byte-exact vs static BAML.
+func TestSupportsNativeStream_FieldAliasAdmitted(t *testing.T) {
 	fieldAliasS := &bamlutils.DynamicOutputSchema{
 		Properties: props(kv("title", &bamlutils.DynamicProperty{Type: "string", Alias: "banner"}), kv("count", intProp())),
 	}
-	if err := SupportsNativeStream(fieldAliasS); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
-		t.Errorf("SupportsNativeStream(field-alias): want decline (canonical-key divergence), got %v", err)
+	if err := SupportsNativeStream(fieldAliasS); err != nil {
+		t.Errorf("SupportsNativeStream(field-alias): want admit (nil), got %v", err)
 	}
-	if err := SupportsNativeFinal(fieldAliasS); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
-		t.Errorf("SupportsNativeFinal(field-alias): want decline, got %v", err)
+	if err := SupportsNativeFinal(fieldAliasS); err != nil {
+		t.Errorf("SupportsNativeFinal(field-alias): want admit (nil), got %v", err)
+	}
+}
+
+// TestSupportsNativeStream_FieldAliasCollisionDeclines pins the retained #583 residual: a
+// rendered-name COLLISION involving an @alias still declines, because BAML's collision
+// resolution is order-dependent and NOT uniform across its two coercion paths, and no v0.223
+// test pins whether the schema compiler even admits such a class.
+//
+//   - The BYTE-equal rendered collision (`a @alias("b")` + literal `b`) is rejected at
+//     lowering by the rendered-name index (internal/schema/index.go), surfaced as the
+//     unsupported sentinel by lowerForSupport — it never reaches the coercers.
+//   - The FUZZY collision between two ALIASES (`@alias("Foo")` vs `@alias("foo")` — fold-equal,
+//     byte-distinct) slips past the exact index, so aliasRenderedNameCollision declines it.
+//   - The FUZZY collision between an ALIAS and a PLAIN unaliased canonical sibling
+//     (`a @alias("Foo")` vs literal field `foo`) ALSO slips past the exact byte-equal index
+//     ("Foo" != "foo"), and aliasRenderedNameCollision catches it too — the pair qualifies
+//     because at least one side carries an @alias. (CodeRabbit r3616424315.)
+func TestSupportsNativeStream_FieldAliasCollisionDeclines(t *testing.T) {
+	exact := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("a", &bamlutils.DynamicProperty{Type: "string", Alias: "b"}), kv("b", strProp())),
+	}
+	fuzzy := &bamlutils.DynamicOutputSchema{
+		Properties: props(
+			kv("a", &bamlutils.DynamicProperty{Type: "string", Alias: "Foo"}),
+			kv("bb", &bamlutils.DynamicProperty{Type: "string", Alias: "foo"}),
+		),
+	}
+	// alias @alias("Foo") vs a PLAIN unaliased canonical sibling `foo` (fold-collision the
+	// byte-equal index MISSES; the gate must catch it).
+	fuzzyPlainCanonical := &bamlutils.DynamicOutputSchema{
+		Properties: props(
+			kv("a", &bamlutils.DynamicProperty{Type: "string", Alias: "Foo"}),
+			kv("foo", strProp()),
+		),
+	}
+	for _, c := range []struct {
+		name string
+		s    *bamlutils.DynamicOutputSchema
+	}{
+		{"exact-collision(index)", exact},
+		{"fuzzy-collision-alias-vs-alias(gate)", fuzzy},
+		{"fuzzy-collision-alias-vs-plain-canonical(gate)", fuzzyPlainCanonical},
+	} {
+		if err := SupportsNativeStream(c.s); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+			t.Errorf("SupportsNativeStream(%s): want decline, got %v", c.name, err)
+		}
+		if err := SupportsNativeFinal(c.s); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+			t.Errorf("SupportsNativeFinal(%s): want decline, got %v", c.name, err)
+		}
 	}
 }
 
