@@ -105,6 +105,20 @@ type Options struct {
 	// NativeStreamServeFactory.
 	NativeStreamServeFactory func(reg prometheus.Registerer) (bamlutils.NativeStreamServeFunc, error)
 
+	// NativeStaticObserveFactory, when non-nil, builds the native STATIC no-send
+	// admission OBSERVER (de-BAML Slice 8B) a native worker injects while the umbrella
+	// flag is on. Like the other native factories it is called ONCE at startup with
+	// the worker's private Prometheus registry (retained for signature symmetry; 8B
+	// records no de-BAML counters — it is observe-only); the returned
+	// NativeStaticObserveFunc is installed on every adapter. The generated static
+	// observe seam turns it into an observer callback only when it is non-nil AND the
+	// umbrella flag is enabled, and that callback ALWAYS declines to BAML after a
+	// no-socket admission observation. A returned error exits the process non-zero
+	// (fails the go-plugin handshake). nil in every non-native build. It is
+	// OBSERVE-ONLY, so it is NOT part of the serve/shadow mutual exclusion — a native
+	// worker may supply it alongside the serve/shadow factory or on its own.
+	NativeStaticObserveFactory func(reg prometheus.Registerer) (bamlutils.NativeStaticObserveFunc, error)
+
 	// NativeBuildCapable and NativeEngineName advertise a STATIC build capability
 	// (no FFI) for the startup diagnostic even while the umbrella flag is off, so a
 	// flag-off serve/shadow profile can report native_build_capable=true + the
@@ -368,6 +382,26 @@ func Run(opts Options) {
 		nativeStreamServe = fn
 	}
 
+	// Build the native STATIC no-send admission OBSERVER (de-BAML Slice 8B; nil except
+	// in a native worker with the flag on). Same fail-loud contract as the serve
+	// factories: a build error or a PRESENT factory that returns a nil observer
+	// without an error is fatal, so a native cohort never silently runs with the
+	// observer off while reporting a native build. It is OBSERVE-ONLY (always
+	// declines), so it does not participate in the serve/shadow mutual exclusion.
+	var nativeStaticObserver bamlutils.NativeStaticObserveFunc
+	if opts.NativeStaticObserveFactory != nil {
+		fn, err := opts.NativeStaticObserveFactory(metricsReg)
+		if err != nil {
+			logger.Error("failed to build native static observer", "err", err.Error())
+			os.Exit(1)
+		}
+		if fn == nil {
+			logger.Error("native static observer factory returned a nil observer without an error; a native worker must not run with the static observer off while reporting a native build")
+			os.Exit(1)
+		}
+		nativeStaticObserver = fn
+	}
+
 	handler, err := worker.New(worker.Config{
 		Runtime:         rt,
 		Logger:          logger,
@@ -397,6 +431,11 @@ func Run(opts Options) {
 		// StreamRequest natively (one exact RoundTrip driving DoStream); unsupported
 		// traffic declines pre-transport to BAML.
 		NativeStreamServeComparator: nativeStreamServe,
+		// Install the native STATIC no-send admission observer (de-BAML Slice 8B; nil
+		// except in a native worker with the flag on). When non-nil AND the umbrella
+		// flag is enabled it runs the full static admission predicate per eligible
+		// static method, then ALWAYS declines pre-socket to BAML — observe-only.
+		NativeStaticObserver: nativeStaticObserver,
 	})
 	if err != nil {
 		logger.Error("failed to construct worker handler", "err", err.Error())

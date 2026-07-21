@@ -57,6 +57,27 @@ func SupportsNativeStream(s *bamlutils.DynamicOutputSchema) error {
 	if err != nil {
 		return err
 	}
+	return SupportsNativeStreamBundle(bundle)
+}
+
+// SupportsNativeStreamBundle is the Bundle-based factoring of SupportsNativeStream:
+// it runs the IDENTICAL structural cut-line over an ALREADY-lowered, validated
+// *schema.Bundle, so a caller that already holds a Bundle (the de-BAML Slice 8B
+// STATIC admission path lowers a fresh promptdescriptor.Function.Return via
+// schema.FromStaticDescriptor + ValidateOutput) reuses the exact stream support
+// contract without a dynamic DynamicOutputSchema. SupportsNativeStream is the thin
+// dynamic wrapper that lowers first, then calls this — so the dynamic and static
+// lanes share one cut-line and can never diverge.
+//
+// The bundle MUST already be structurally valid (Validate/ValidateOutput). This
+// factoring deliberately does NOT re-lower or re-validate — it applies only the
+// checks the dynamic path applies AFTER lowerForSupport (checkSupported +
+// checkStreamRootSupported + checkNoStreamAnnotations), so the dynamic behaviour
+// (and the pinned dynamic 289/157/132 universe) stays byte-for-byte unchanged.
+func SupportsNativeStreamBundle(bundle *schema.Bundle) error {
+	if bundle == nil {
+		return unsupported("nil bundle")
+	}
 	if err := checkSupported(bundle); err != nil {
 		return err
 	}
@@ -870,6 +891,29 @@ func SupportsNativeFinal(s *bamlutils.DynamicOutputSchema) error {
 	bundle, err := lowerForSupport(s)
 	if err != nil {
 		return err
+	}
+	return SupportsNativeFinalBundle(bundle)
+}
+
+// SupportsNativeFinalBundle is the Bundle-based factoring of SupportsNativeFinal:
+// it runs the IDENTICAL final-parse structural cut-line over an ALREADY-lowered,
+// validated *schema.Bundle. The de-BAML Slice 8B STATIC admission path holds a
+// Bundle directly (schema.FromStaticDescriptor(descriptor.Return) + ValidateOutput)
+// and calls this to prove the native final parser could own the return shape
+// BEFORE any socket; SupportsNativeFinal is the thin dynamic wrapper that lowers a
+// DynamicOutputSchema first, then calls this, so the dynamic and static lanes share
+// one cut-line.
+//
+// The bundle MUST already be structurally valid (Validate/ValidateOutput). Like
+// SupportsNativeStreamBundle this deliberately does NOT re-lower or re-validate — it
+// applies only the checks the dynamic path applies AFTER lowerForSupport
+// (checkSupported + checkStreamRootSupported), so the dynamic behaviour stays
+// byte-for-byte unchanged. In 8B the checkSupported recursion decline (recursive
+// classes / structural recursive aliases) is the CORRECT measured static outcome —
+// a later recursion slice lifts it.
+func SupportsNativeFinalBundle(bundle *schema.Bundle) error {
+	if bundle == nil {
+		return unsupported("nil bundle")
 	}
 	if err := checkSupported(bundle); err != nil {
 		return err

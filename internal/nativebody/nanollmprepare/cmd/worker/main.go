@@ -72,5 +72,13 @@ func main() {
 		// unary serve factory (both live in the serve profile); with the flag off this
 		// whole branch is skipped, so the stream lane is hard-off and 100% BAML.
 		NativeStreamServeFactory: nativeserve.NewStream,
+		// The STATIC no-send admission OBSERVER factory (de-BAML Slice 8B): returns the
+		// neutral bamlutils.NativeStaticObserveFunc the generated static observe seam
+		// installs. For an eligible static method it runs the full pre-socket admission
+		// predicate (descriptor -> args -> native render/Prepare -> BAML plan compare)
+		// and ALWAYS declines pre-socket to BAML — observe-only, zero serving behaviour
+		// change. Installed ONLY under the umbrella flag (this whole branch is skipped
+		// when the flag is off), so the static observer is hard-off and 100% BAML then.
+		NativeStaticObserveFactory: nativeserve.NewStaticObserve,
 	})
 }

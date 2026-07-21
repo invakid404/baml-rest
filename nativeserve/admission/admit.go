@@ -39,8 +39,13 @@ type Input struct {
 	RequestAPIPresent   bool
 	OnBuildRequestRoute bool
 	FlagEnabled         bool
-	Method              string
-	Mode                Mode
+	// RouteKind is the closed dynamic|static distinction (Slice 8B). The zero value
+	// is RouteKindDynamic, so an existing dynamic caller that leaves it unset admits
+	// through admitCore exactly as before; a static invocation uses AdmitStatic and
+	// never reaches this struct.
+	RouteKind RouteKind
+	Method    string
+	Mode      Mode
 
 	// Whole orchestration plan (layer 2). SingleLeaf is "exactly one resolved
 	// client/leaf"; the Has* flags mark a fallback chain, round-robin strategy,
@@ -260,6 +265,15 @@ func (a *Admitter) admitCore(ctx context.Context, in Input, recordAdmitted, stre
 	}
 	if !in.FlagEnabled {
 		return decline(declinef(StageFlag, ReasonFlagDisabled, "BAML_REST_USE_DEBAML is not resolved enabled"))
+	}
+	// Closed ROUTE-KIND distinction (Slice 8B): admitCore admits ONLY the dynamic
+	// route. A static invocation flows through AdmitStatic (static.go) instead; the
+	// zero-value RouteKind is RouteKindDynamic, so every existing dynamic caller
+	// (which leaves the field unset) keeps its exact behaviour. This replaces the
+	// previous implicit "the one internal method is Baml_Rest_Dynamic" gate with an
+	// explicit route kind so the two predicates never cross.
+	if in.RouteKind != RouteKindDynamic {
+		return decline(declinef(StageMethod, ReasonNotDynamicMethod, "dynamic admission requires the dynamic route kind"))
 	}
 	if in.Method != dynamicMethod {
 		return decline(declinef(StageMethod, ReasonNotDynamicMethod, "internal method is not Baml_Rest_Dynamic"))

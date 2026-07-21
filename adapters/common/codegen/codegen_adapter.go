@@ -210,6 +210,14 @@ func emitFrameworkAdapter(out *jen.File, opts Options) {
 		jen.Comment("StreamConfig.NativeAttempt only when it is non-nil and DeBAMLConfig().Enabled."),
 		jen.Id("nativeStreamServe").Qual(bamlutilsPkg, "NativeStreamServeFunc"),
 		jen.Line(),
+		jen.Comment("nativeStaticObserver is the native STATIC no-send admission OBSERVER"),
+		jen.Comment("(de-BAML Slice 8B), injected by a native worker for the same"),
+		jen.Comment("module-boundary reason as nativeServe. Non-nil ONLY in a native worker"),
+		jen.Comment("with the flag on; nil in every default/flag-off build, leaving the"),
+		jen.Comment("generated static observe seam nil/hard-off. It is OBSERVE-ONLY (always"),
+		jen.Comment("declines to BAML), so it never changes what BAML serves."),
+		jen.Id("nativeStaticObserver").Qual(bamlutilsPkg, "NativeStaticObserveFunc"),
+		jen.Line(),
 		jen.Comment("rrAdvancer is the per-request round-robin Advancer installed by the"),
 		jen.Comment("worker; nil falls back to the introspected Coordinator."),
 		jen.Id("rrAdvancer").Qual(bamlutilsPkg, "RoundRobinAdvancer"),
@@ -666,6 +674,24 @@ func emitFrameworkAdapterDeBAML(out *jen.File, bamlutilsPkg string) {
 		Id("NativeStreamServeComparator").Params().Qual(bamlutilsPkg, "NativeStreamServeFunc").
 		Block(
 			jen.Return(jen.Id("b").Dot("nativeStreamServe")),
+		)
+
+	// SetNativeStaticObserver / NativeStaticObserver are the STATIC observe-only
+	// twins (de-BAML Slice 8B): the narrow optional interfaces the native worker and
+	// the generated static observe seam use to install and read the native static
+	// no-send admission OBSERVER. Kept off bamlutils.Adapter like the other native
+	// accessors; nil in every default build. OBSERVE-ONLY: the observer always
+	// declines to BAML, so a present observer changes no serving behaviour.
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("SetNativeStaticObserver").Params(jen.Id("fn").Qual(bamlutilsPkg, "NativeStaticObserveFunc")).
+		Block(
+			jen.Id("b").Dot("nativeStaticObserver").Op("=").Id("fn"),
+		)
+
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("NativeStaticObserver").Params().Qual(bamlutilsPkg, "NativeStaticObserveFunc").
+		Block(
+			jen.Return(jen.Id("b").Dot("nativeStaticObserver")),
 		)
 }
 

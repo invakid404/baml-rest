@@ -112,6 +112,14 @@ type BamlAdapter struct {
 	// StreamConfig.NativeAttempt only when it is non-nil and DeBAMLConfig().Enabled.
 	nativeStreamServe bamlutils.NativeStreamServeFunc
 
+	// nativeStaticObserver is the native STATIC no-send admission OBSERVER
+	// (de-BAML Slice 8B), injected by a native worker for the same
+	// module-boundary reason as nativeServe. Non-nil ONLY in a native worker
+	// with the flag on; nil in every default/flag-off build, leaving the
+	// generated static observe seam nil/hard-off. It is OBSERVE-ONLY (always
+	// declines to BAML), so it never changes what BAML serves.
+	nativeStaticObserver bamlutils.NativeStaticObserveFunc
+
 	// rrAdvancer is the per-request round-robin Advancer installed by the
 	// worker; nil falls back to the introspected Coordinator.
 	rrAdvancer bamlutils.RoundRobinAdvancer
@@ -295,6 +303,12 @@ func (b *BamlAdapter) SetNativeStreamServeComparator(fn bamlutils.NativeStreamSe
 }
 func (b *BamlAdapter) NativeStreamServeComparator() bamlutils.NativeStreamServeFunc {
 	return b.nativeStreamServe
+}
+func (b *BamlAdapter) SetNativeStaticObserver(fn bamlutils.NativeStaticObserveFunc) {
+	b.nativeStaticObserver = fn
+}
+func (b *BamlAdapter) NativeStaticObserver() bamlutils.NativeStaticObserveFunc {
+	return b.nativeStaticObserver
 }
 func (b *BamlAdapter) SetRoundRobinAdvancer(advancer bamlutils.RoundRobinAdvancer) {
 	b.rrAdvancer = advancer

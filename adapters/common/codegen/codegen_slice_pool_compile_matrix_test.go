@@ -68,8 +68,8 @@ func TestCompileMatrix(t *testing.T) {
 // AST assertions look up cells by `dispatchFunc`; subprocess
 // `go build` does not need the metadata.
 type matrixCell struct {
-	name                  string
-	dispatchFunc          string
+	name                   string
+	dispatchFunc           string
 	expectReleaseConverted bool
 }
 
@@ -148,9 +148,9 @@ func emitMatrix(t *testing.T) (*jen.File, []matrixCell) {
 		ty   reflect.Type
 	}
 	topShapes := []struct {
-		name           string
-		expectRelease  bool
-		buildParams    func(messageTy, classTy, otherTy reflect.Type) []paramSpec
+		name          string
+		expectRelease bool
+		buildParams   func(messageTy, classTy, otherTy reflect.Type) []paramSpec
 	}{
 		{
 			name:          "1_pooled_baseline",
@@ -210,7 +210,7 @@ func emitMatrix(t *testing.T) (*jen.File, []matrixCell) {
 			},
 		},
 		{
-			name:          "7_single_non_pooled_ptr",
+			name: "7_single_non_pooled_ptr",
 			// Whether the cell emits __releaseConverted depends on
 			// whether `*Other<Shape>`'s converter takes ownedNested.
 			// For nested shapes a and c the converter pools, so it
@@ -534,4 +534,3 @@ func dispatchHasReleaseConverted(fd *ast.FuncDecl) bool {
 	})
 	return found
 }
-

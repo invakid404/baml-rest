@@ -37,9 +37,12 @@
 package nativeserve
 
 import (
+	"context"
+
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/nativeserve/admission"
 	"github.com/invakid404/baml-rest/nativeserve/canary"
 )
 
@@ -78,4 +81,74 @@ func New(reg prometheus.Registerer) (bamlutils.NativeServeFunc, error) {
 // phase (the rollout observability is owner-trimmed), so it never errors on reg.
 func NewStream(reg prometheus.Registerer) (bamlutils.NativeStreamServeFunc, error) {
 	return canary.NewStreamServeFunc(reg)
+}
+
+// NewStaticObserve constructs the nanollm-backed native STATIC no-send admission
+// OBSERVER (de-BAML Slice 8B) and returns it as the neutral
+// [bamlutils.NativeStaticObserveFunc] a native worker installs via
+// workerboot.Options.NativeStaticObserveFactory (only while the umbrella flag is
+// on). It is the STATIC observe-only twin of [New]: for an eligible generated static
+// method it runs the FULL pre-socket admission predicate (descriptor envelope,
+// arg-binder match, Return-Bundle lower/support, RenderStatic, canonical body,
+// nanollm New/Prepare, and the strict BAML `Request.<Method>` no-send plan compare)
+// and then ALWAYS forces a pre-socket decline so the original generated
+// `Request.<Method>` / `Parse.<Method>` (BAML) execute exactly as today. It opens NO
+// socket, RoundTrips NOTHING, and serves NO native result — it proves ATTACHMENT
+// with zero behavior change.
+//
+// reg is retained for signature symmetry with [New]; 8B records no de-BAML counters
+// (observe-only), so it never errors on reg. With the umbrella flag off the generated
+// static seam never installs the callback, so the static path stays byte-identical
+// BAML with zero native FFI / socket / plan build.
+//
+// The callback maps the neutral invocation onto admission.AdmitStatic — hardcoding
+// the layer-1 facts (WorkerCapable / RequestAPIPresent / OnBuildRequestRoute /
+// FlagEnabled all true, RouteKindStatic), exactly as the dynamic serve path's
+// toAdmissionInput does — then translates the recorded observation into a forced
+// NativeStaticDeclined result.
+func NewStaticObserve(reg prometheus.Registerer) (bamlutils.NativeStaticObserveFunc, error) {
+	return func(ctx context.Context, inv bamlutils.NativeStaticInvocation) bamlutils.NativeStaticResult {
+		si := admission.StaticInput{
+			WorkerCapable:           true,
+			RequestAPIPresent:       true,
+			OnBuildRequestRoute:     true,
+			FlagEnabled:             true,
+			RouteKind:               admission.RouteKindStatic,
+			Method:                  inv.Method,
+			Descriptor:              inv.Descriptor,
+			Args:                    inv.Args,
+			ArgOrder:                inv.ArgOrder,
+			Mode:                    inv.Mode,
+			SingleLeaf:              inv.SingleLeaf,
+			HasFallbackChain:        inv.HasFallbackChain,
+			HasRoundRobin:           inv.HasRoundRobin,
+			HasRequestRetryOverride: inv.HasRequestRetryOverride,
+			Raw:                     inv.Raw,
+			ClientOverride:          inv.ClientOverride,
+			Provider:                inv.Provider,
+			WouldRewriteOrProxy:     inv.WouldRewriteOrProxy,
+			BuildBAMLRequest:        inv.BuildBAMLRequest,
+		}
+		// Route STRICTLY on the observation mode and FAIL CLOSED on anything else: only
+		// final runs the full predicate; parse-only observes the Return-Bundle final
+		// support; a stream (or any unrecognized) mode declines here WITHOUT reaching
+		// render/Prepare, so a NativeStaticModeStream invocation can never be admitted.
+		var obs admission.StaticObservation
+		switch inv.Mode {
+		case bamlutils.NativeStaticModeFinal:
+			obs = admission.AdmitStatic(ctx, si)
+		case bamlutils.NativeStaticModeParseOnly:
+			obs = admission.AdmitStaticParse(ctx, si)
+		default:
+			obs = admission.DeclineStaticMode(inv.Mode)
+		}
+		// OBSERVE-ONLY: force a pre-socket decline regardless of the observation.
+		return bamlutils.NativeStaticResult{
+			Disposition: bamlutils.NativeStaticDeclined,
+			Observation: obs.Observation,
+			Family:      obs.Family,
+			Stage:       obs.Stage,
+			Reason:      obs.Reason,
+		}
+	}, nil
 }
