@@ -408,6 +408,32 @@ func (me *methodEmitter) argCallParam(arg string) jen.Code {
 	return jen.Id("input").Dot(strcase.UpperCamelCase(arg))
 }
 
+// staticArgBinderMap builds the de-BAML Slice 8B static argument binder: a
+// `map[string]any` literal whose keys are the descriptor argument NAMES and whose
+// values are the EXACT generated call-site expressions (the same typed input
+// fields / converted media locals the BAML Request.<Method> call uses). The
+// observer proves these keys match the descriptor's declared arguments; the
+// separate ordered slice ([staticArgOrderSlice]) carries the declared order that a
+// Go map literal does not preserve.
+func (me *methodEmitter) staticArgBinderMap() jen.Code {
+	dict := jen.Dict{}
+	for _, arg := range me.args {
+		dict[jen.Lit(arg)] = me.argCallParam(arg)
+	}
+	return jen.Map(jen.String()).Any().Values(dict)
+}
+
+// staticArgOrderSlice builds the ordered `[]string` of descriptor argument NAMES in
+// declared (signature) order — the order the observer checks the binder against
+// promptdescriptor.Function.Args.
+func (me *methodEmitter) staticArgOrderSlice() jen.Code {
+	lits := make([]jen.Code, 0, len(me.args))
+	for _, arg := range me.args {
+		lits = append(lits, jen.Lit(arg))
+	}
+	return jen.Index().String().Values(lits...)
+}
+
 // makePreambleWithArgs builds the shared body prefix for every
 // generated dispatch site: resolve the options helper, type-assert
 // rawInput into the per-method input struct, and convert any media-
@@ -983,6 +1009,16 @@ func (g *generator) isDeBAMLDynamicMethod(methodName string) bool {
 	return g.opts.DeBAMLDynamicMethod != "" && methodName == g.opts.DeBAMLDynamicMethod
 }
 
+// isDeBAMLStaticMethod reports whether methodName is a de-BAML Slice 8B STATIC
+// observe target: the static-observe opt-in is on AND this is NOT the dynamic
+// method (the dynamic method has its own native seam and is never a static observe
+// target). Only BuildRequest-capable (v0.219+) adapters set DeBAMLStaticObserve, so
+// generic/customer and pre-0.219 adapters always report false and stay
+// BAML-as-today.
+func (g *generator) isDeBAMLStaticMethod(methodName string) bool {
+	return g.opts.DeBAMLStaticObserve && !g.isDeBAMLDynamicMethod(methodName)
+}
+
 // emitParseMethods walks introspected.ParseMethods, emits the
 // parse_<Method> wrapper for each method whose SyncFuncs entry has
 // a usable reflect signature, and returns the per-method
@@ -1071,6 +1107,39 @@ func (g *generator) emitParseMethods() []parseMethodOut {
 					),
 					jen.Id(parseUnwrapName).Call(jen.Op("&").Id("result")),
 					jen.Return(jen.Id("result"), jen.Nil()),
+				),
+			)
+		}
+
+		// De-BAML Slice 8B STATIC parse-only OBSERVER, for every STATIC (non-dynamic)
+		// method. It looks up this method's FRESH descriptor and, if present, runs the
+		// no-send parse-only admission observation (Return-Bundle native-final support)
+		// and ALWAYS declines — then falls through to BAML's Parse below, byte-identical
+		// to today. Gated at runtime inside maybeObserveDeBAMLStaticParse on the de-BAML
+		// flag + an installed observer, so it is inert until BAML_REST_USE_DEBAML is on
+		// in a native worker. The parse-only entrypoint has no request context, so the
+		// helper uses context.Background() (observe-only, cancellation-tolerant).
+		if g.isDeBAMLStaticMethod(methodName) {
+			// A static observe call is emitted -> ensure generate() writes
+			// debaml_static.go (which holds maybeObserveDeBAMLStaticParse) into this
+			// package.
+			g.emittedDeBAMLStaticCall = true
+			parseBody = append(parseBody,
+				// FLAG-OFF IDENTITY: resolve the observer FIRST and gate the descriptor
+				// lookup on it, so a flag-off / no-observer parse performs NO
+				// StaticPromptDescriptor lookup and stays byte-identical BAML.
+				jen.If(
+					jen.List(jen.Id("__staticObserve")).Op(":=").
+						Id("deBAMLStaticObserver").Call(jen.Id("adapter")),
+					jen.Id("__staticObserve").Op("!=").Nil(),
+				).Block(
+					jen.If(
+						jen.List(jen.Id("__staticDescriptor"), jen.Id("__staticOK")).Op(":=").
+							Qual(g.pkgs.IntrospectedPkg, "StaticPromptDescriptor").Call(jen.Lit(methodName)),
+						jen.Id("__staticOK"),
+					).Block(
+						jen.Id("maybeObserveDeBAMLStaticParse").Call(jen.Id("__staticObserve"), jen.Id("__staticDescriptor")),
+					),
 				),
 			)
 		}

@@ -87,6 +87,15 @@ var FrameworkAdapters = []FrameworkAdapter{
 			// debaml.go helper next to adapter.go. v0.204/v0.215 have no
 			// BuildRequest surface, so the seam is intentionally absent there.
 			DeBAMLDynamicMethod: bamlutils.DynamicMethodName,
+			// v0.219 is also the first BuildRequest-capable surface for the de-BAML
+			// Slice 8B STATIC no-send admission observer, so opt it in here. codegen
+			// emits, for every STATIC (non-dynamic) method, the static arg binder +
+			// introspected.StaticPromptDescriptor lookup + the observe call (final on
+			// the /call BuildRequest closure, parse-only on parse_<Method>) plus the
+			// debaml_static.go helper. It is OBSERVE-ONLY (always declines), inert
+			// until BAML_REST_USE_DEBAML is on in a native worker. v0.204/v0.215 have
+			// no BuildRequest surface, so it is intentionally absent there.
+			DeBAMLStaticObserve: true,
 		},
 	},
 }

@@ -1122,6 +1122,81 @@ func (me *methodEmitter) emitBuildCallRequest() {
 		)
 	}
 
+	// De-BAML Slice 8B STATIC unary FINAL no-send OBSERVER, for every STATIC
+	// (non-dynamic) method. It looks up this method's FRESH descriptor and, if
+	// present, runs the full pre-socket admission observation — binding the EXACT
+	// generated arguments (declared descriptor-argument order) and reusing
+	// buildRequestFn as the BAML `Request.<Method>` no-send plan closure — then
+	// ALWAYS declines. The generated call path is byte-identical to today: the
+	// observer opens no socket and never changes what BAML serves. Gated at runtime
+	// inside maybeObserveDeBAMLStaticFinal on the de-BAML flag + an installed
+	// observer, so it is inert until BAML_REST_USE_DEBAML is on in a native worker.
+	//
+	// SAFETY: emitted ONLY when this method has NO pooled slice/media conversions
+	// (!hasReleaseConverted). buildRequestFn (the forwarded no-send plan closure) reads
+	// the converted-arg slice-pool buffers for slice/media params, but the observation
+	// runs on a DETACHED goroutine that is not synchronized with the __releaseConverted
+	// defer — so a pooled method could free those buffers before the observer reads
+	// them. Such methods carry non-scalar/media arguments that the static renderer
+	// declines anyway (the observation would decline before ever calling buildRequestFn),
+	// so skipping their observe loses no eligible coverage while removing the race
+	// surface entirely; only pure-scalar methods (no release defer) emit the observe.
+	if me.g.isDeBAMLStaticMethod(me.methodName) && !me.hasReleaseConverted {
+		me.g.emittedDeBAMLStaticCall = true
+		buildCallRequestBody = append(buildCallRequestBody,
+			// FLAG-OFF IDENTITY: resolve the observer FIRST and gate the ENTIRE
+			// descriptor lookup + binder construction on it being non-nil. With the
+			// de-BAML flag off (or no observer installed) this is a single cheap
+			// type-assertion that returns nil, so the path performs NO
+			// StaticPromptDescriptor lookup/alloc and stays byte-identical BAML.
+			jen.If(
+				jen.List(jen.Id("__staticObserve")).Op(":=").
+					Id("deBAMLStaticObserver").Call(jen.Id("adapter")),
+				jen.Id("__staticObserve").Op("!=").Nil(),
+			).Block(
+				jen.If(
+					jen.List(jen.Id("__staticDescriptor"), jen.Id("__staticOK")).Op(":=").
+						Qual(g.pkgs.IntrospectedPkg, "StaticPromptDescriptor").Call(jen.Lit(me.methodName)),
+					jen.Id("__staticOK"),
+				).Block(
+					jen.Id("maybeObserveDeBAMLStaticFinal").Call(
+						jen.Id("__staticObserve"),
+						jen.Id("adapter"),
+						jen.Id("__staticDescriptor"),
+						me.staticArgBinderMap(),
+						me.staticArgOrderSlice(),
+						// Actual selected-route facts, derived from THIS attempt's plan
+						// exactly like the dynamic native seam (maybeInstallNativeCall):
+						// resolved leaf provider, selected client override, single-leaf
+						// iff no fallback chain, the fallback-chain / round-robin shape,
+						// and the call-with-raw flag. A non-default route / raw call makes
+						// the observer decline TRUTHFULLY rather than record a false
+						// would-admit.
+						jen.Id("provider"),
+						jen.Id("clientOverride"),
+						jen.Len(jen.Id("fallbackChain")).Op("==").Lit(0),
+						jen.Len(jen.Id("fallbackChain")).Op(">").Lit(0),
+						jen.Id("plannedMetadata").Op("!=").Nil().Op("&&").
+							Id("plannedMetadata").Dot("RoundRobin").Op("!=").Nil(),
+						// hasRetry = the EFFECTIVE resolved retry policy is non-nil (the
+						// SAME retryPolicy that flows into CallConfig.RetryPolicy), so a
+						// static-introspected OR registry retry policy declines, not only
+						// the per-request __baml_options__.retry override.
+						jen.Id("retryPolicy").Op("!=").Nil(),
+						jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
+						// BAML's Request.<Method> no-send plan for the SELECTED child (the
+						// same clientOverride BAML would send through), not the default.
+						jen.Func().Params(jen.Id("ctx").Qual("context", "Context")).Params(
+							jen.Op("*").Qual(g.pkgs.LLMHTTPPkg, "Request"), jen.Error(),
+						).Block(
+							jen.Return(jen.Id("buildRequestFn").Call(jen.Id("ctx"), jen.Id("clientOverride"))),
+						),
+					),
+				),
+			),
+		)
+	}
+
 	// Seed_OmitAsyncDefer relocates the release defer to the outer
 	// buildCallRequest function body so it fires when the outer
 	// function returns, racing the orchestration goroutine's reads.

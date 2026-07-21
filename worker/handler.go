@@ -123,6 +123,17 @@ type Config struct {
 	// NOT installed in the shadow profile, so it does not participate in the
 	// serve/shadow mutual exclusion.
 	NativeStreamServeComparator bamlutils.NativeStreamServeFunc
+
+	// NativeStaticObserver is the neutral native STATIC no-send admission OBSERVER
+	// (de-BAML Slice 8B). Non-nil ONLY in a native worker with the umbrella flag on;
+	// the BAML-only worker and every flag-off build leave it nil, so the generated
+	// static seam's observer callback stays nil/hard-off and every request stays
+	// byte-identical to today. It is installed on every adapter via the narrow
+	// nativeStaticObserverSetter interface, gated by DeBAMLConfig().Enabled at the
+	// seam. It is OBSERVE-ONLY (always declines), so it does NOT participate in the
+	// serve/shadow mutual exclusion — a native worker may install it alongside the
+	// serve or shadow callback, or on its own.
+	NativeStaticObserver bamlutils.NativeStaticObserveFunc
 }
 
 // deBAMLRendererSetter is the narrow optional interface the adapter
@@ -164,6 +175,16 @@ type nativeServeSetter interface {
 // reason. nil implementation ⇒ nothing installed ⇒ stream callback hard-off.
 type nativeStreamServeSetter interface {
 	SetNativeStreamServeComparator(bamlutils.NativeStreamServeFunc)
+}
+
+// nativeStaticObserverSetter is the STATIC observe-only twin of the native
+// setters (de-BAML Slice 8B): the narrow optional interface the adapter implements
+// to receive the native static no-send admission OBSERVER. Kept off the
+// bamlutils.Adapter interface for the same reason as the renderer/parser/native
+// setters so test doubles and non-static adapters need not implement it; the
+// generated adapter does. nil observer ⇒ nothing installed ⇒ static seam hard-off.
+type nativeStaticObserverSetter interface {
+	SetNativeStaticObserver(bamlutils.NativeStaticObserveFunc)
 }
 
 // ErrRuntimeRequired is returned by New when Config.Runtime is nil.
@@ -224,6 +245,14 @@ type Handler struct {
 	// DeBAMLConfig().Enabled and otherwise leaves the stream callback nil/hard-off.
 	nativeStreamServe bamlutils.NativeStreamServeFunc
 
+	// nativeStaticObserver is the neutral native STATIC no-send admission observer
+	// (de-BAML Slice 8B), injected only in a native worker with the flag on (nil in
+	// every default/flag-off build). Installed on every adapter in configureAdapter;
+	// the generated static seam gates it on DeBAMLConfig().Enabled and otherwise
+	// leaves the static observer callback nil/hard-off. OBSERVE-ONLY: it always
+	// declines, so it never changes what BAML serves.
+	nativeStaticObserver bamlutils.NativeStaticObserveFunc
+
 	sharedStateHook hookStorage
 
 	noSharedStateWarnOnce    sync.Once
@@ -251,19 +280,20 @@ func New(cfg Config) (*Handler, error) {
 		metricsReg = NewMetricsRegistry()
 	}
 	h := &Handler{
-		runtime:           cfg.Runtime,
-		logger:            cfg.Logger,
-		metricsReg:        metricsReg,
-		clientDefaults:    cfg.ClientDefaults,
-		baseURLRewrites:   cfg.BaseURLRewrites,
-		httpClient:        cfg.HTTPClient,
-		deBAML:            cfg.DeBAML,
-		deBAMLRender:      cfg.DeBAMLRender,
-		deBAMLParse:       cfg.DeBAMLParse,
-		nativeCapability:  cfg.NativeCapability,
-		nativeShadow:      cfg.NativeShadowComparator,
-		nativeServe:       cfg.NativeServeComparator,
-		nativeStreamServe: cfg.NativeStreamServeComparator,
+		runtime:              cfg.Runtime,
+		logger:               cfg.Logger,
+		metricsReg:           metricsReg,
+		clientDefaults:       cfg.ClientDefaults,
+		baseURLRewrites:      cfg.BaseURLRewrites,
+		httpClient:           cfg.HTTPClient,
+		deBAML:               cfg.DeBAML,
+		deBAMLRender:         cfg.DeBAMLRender,
+		deBAMLParse:          cfg.DeBAMLParse,
+		nativeCapability:     cfg.NativeCapability,
+		nativeShadow:         cfg.NativeShadowComparator,
+		nativeServe:          cfg.NativeServeComparator,
+		nativeStreamServe:    cfg.NativeStreamServeComparator,
+		nativeStaticObserver: cfg.NativeStaticObserver,
 	}
 	if cfg.SharedState != nil {
 		h.SetSharedStateHook(cfg.SharedState)
@@ -320,6 +350,15 @@ func (h *Handler) configureAdapter(adapter bamlutils.Adapter) {
 	// DeBAMLConfig().Enabled; it coexists with the unary serve callback.
 	if setter, ok := adapter.(nativeStreamServeSetter); ok {
 		setter.SetNativeStreamServeComparator(h.nativeStreamServe)
+	}
+	// Install the native STATIC no-send admission observer (de-BAML Slice 8B; nil in
+	// every default/flag-off build, so this is a no-op there). The generated static
+	// seam only builds an observer callback when this is non-nil AND
+	// DeBAMLConfig().Enabled; it is OBSERVE-ONLY (always declines to BAML), so it
+	// coexists with the unary/stream serve or shadow callbacks and changes no serving
+	// behaviour.
+	if setter, ok := adapter.(nativeStaticObserverSetter); ok {
+		setter.SetNativeStaticObserver(h.nativeStaticObserver)
 	}
 }
 

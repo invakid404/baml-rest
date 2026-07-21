@@ -196,6 +196,21 @@ type Options struct {
 	// intentionally left BAML-as-today (route coupling tracked in #537).
 	DeBAMLDynamicMethod string
 
+	// DeBAMLStaticObserve enables the de-BAML Slice 8B STATIC no-send admission
+	// OBSERVER emission for BuildRequest-capable (v0.219+) adapters. When true, every
+	// STATIC (non-dynamic) method emits, gated at runtime on the de-BAML flag + an
+	// installed observer callback: a static arg binder (map[string]any in declared
+	// descriptor-argument order), an introspected.StaticPromptDescriptor(method)
+	// lookup, the static observe call (final on the /call BuildRequest closure,
+	// parse-only on parse_<Method>) that runs the full pre-socket admission predicate
+	// and ALWAYS declines, and the generated static observe helper (debaml_static.go).
+	// It is OBSERVE-ONLY: it opens no socket, RoundTrips nothing, and never changes
+	// what BAML serves. Empty/false (default) emits nothing, so generic/customer
+	// adapters and every pre-0.219 adapter stay BAML-as-today. It composes with — and
+	// is INDEPENDENT of — DeBAMLDynamicMethod (the dynamic method is never a static
+	// observe target).
+	DeBAMLStaticObserve bool
+
 	// Test-only regression seeds — DO NOT use in production codegen.
 	// Each seed reintroduces one bug class the slice-pool lifecycle
 	// harness is designed to catch. The harness flips them one at a
@@ -265,6 +280,12 @@ type generator struct {
 	// so a method that only emitted a native-PARSE call cannot satisfy the
 	// render-injection guard and ship a render-side-inert build.
 	emittedDeBAMLRenderCall bool
+	// emittedDeBAMLStaticCall records whether ANY de-BAML Slice 8B STATIC observe
+	// call was emitted (a final observe on a /call BuildRequest closure OR a
+	// parse-only observe on parse_<Method>). When true, generate() writes the static
+	// observe helper (debaml_static.go) next to adapter.go so those calls resolve in
+	// this package. It is independent of emittedDeBAMLCall (the dynamic helper bit).
+	emittedDeBAMLStaticCall bool
 	// slicePools dedupes pooled-slice helper emission across all method
 	// preambles + nested struct conversions. Lifetime is per-file: every
 	// pooled inner type encountered during emission lazily lands one
@@ -429,6 +450,10 @@ func generate(opts Options) {
 	// closure consumed it. Done after Save so a generation that never
 	// emits the call leaves no orphan helper file.
 	g.maybeWriteDeBAMLHelper()
+	// Emit the de-BAML Slice 8B STATIC observe helper (debaml_static.go) next to
+	// adapter.go when a static observe call was emitted; a no-op (and stale-remove)
+	// otherwise, so generic / customer / pre-0.219 adapters carry no static helper.
+	g.maybeWriteDeBAMLStaticHelper()
 }
 
 // validateDeBAMLRenderEmission is the generator-bound guard: it keys
