@@ -1141,7 +1141,90 @@ func (me *methodEmitter) emitBuildCallRequest() {
 	// declines anyway (the observation would decline before ever calling buildRequestFn),
 	// so skipping their observe loses no eligible coverage while removing the race
 	// surface entirely; only pure-scalar methods (no release defer) emit the observe.
-	if me.g.isDeBAMLStaticMethod(me.methodName) && !me.hasReleaseConverted {
+	// De-BAML Slice 8C STATIC unary FINAL SERVE + Stage-1 SHADOW seam, for every STATIC
+	// (non-dynamic) method when the static-serve opt-in is on. It resolves the installed
+	// native serve + shadow callbacks FIRST (flag-off identity: two cheap
+	// type-assertions returning nil, so the path performs NO descriptor lookup and stays
+	// byte-identical BAML), looks up this method's FRESH descriptor, and installs — via
+	// CallConfig.NativeAttempt — either the SERVE attempt (ACTUALLY serves the admitted
+	// static /call natively, one send, decoding the winning canonical JSON via the
+	// per-method DecodeStaticFinal, S5 same-response BAML Parse.<Method> comparator) when
+	// a serve callback is present, or, ELSE, the Stage-1 SHADOW comparison (BAML stays
+	// the SOLE sender; native parses BAML's captured bytes with ZERO native sends and
+	// compares). Serve SUPERSEDES shadow SUPERSEDES the observe seam. Emitted ONLY for
+	// pure-scalar methods (!hasReleaseConverted), same slice-pool-race reasoning as the
+	// observe seam. Both the per-method BAML-only parse closure and the per-method
+	// DecodeNativeStaticFinal closure are shared by the serve and shadow install.
+	if me.g.isDeBAMLStaticServeMethod(me.methodName) && !me.hasReleaseConverted {
+		me.g.emittedDeBAMLStaticCall = true
+		// jennifer statements are single-use, so each install branch gets FRESH copies
+		// (the serve and shadow branches are both emitted; only one runs at runtime).
+		bamlOnlyParseClosure := func() jen.Code {
+			return jen.Func().Params(
+				jen.Id("__pctx").Qual("context", "Context"),
+				jen.Id("__raw").String(),
+			).Params(jen.Index().Byte(), jen.Error()).Block(
+				jen.List(jen.Id("__pr"), jen.Id("__pe")).Op(":=").
+					Qual(g.pkgs.GeneratedClientPkg, "Parse").Dot(me.methodName).
+					Call(jen.Id("__pctx"), jen.Id("__raw"), jen.Id("options").Op("...")),
+				jen.If(jen.Id("__pe").Op("!=").Nil()).Block(
+					jen.Return(jen.Nil(), jen.Id("__pe")),
+				),
+				jen.Return(jen.Qual("encoding/json", "Marshal").Call(jen.Id("__pr"))),
+			)
+		}
+		decodeFinalClosure := func() jen.Code {
+			return jen.Func().Params(jen.Id("__cj").Index().Byte()).Params(jen.Any(), jen.Error()).Block(
+				jen.List(jen.Id("__dv"), jen.Id("__de")).Op(":=").
+					Qual(g.pkgs.InterfacesPkg, "DecodeStaticFinal").Index(me.finalResultTypeCode()).Call(jen.Id("__cj")),
+				jen.Return(jen.Id("__dv"), jen.Id("__de")),
+			)
+		}
+		installStatic := func(installer, resolved string) jen.Code {
+			return jen.Id(installer).Call(
+				jen.Id("callConfig"),
+				jen.Id(resolved),
+				jen.Id("adapter"),
+				jen.Id("__staticDescriptor"),
+				me.staticArgBinderMap(),
+				me.staticArgOrderSlice(),
+				// Selected-route facts derived from THIS attempt's plan, exactly like the
+				// dynamic native seam + the observe seam.
+				jen.Len(jen.Id("fallbackChain")).Op("==").Lit(0),
+				jen.Len(jen.Id("fallbackChain")).Op(">").Lit(0),
+				jen.Id("plannedMetadata").Op("!=").Nil().Op("&&").
+					Id("plannedMetadata").Dot("RoundRobin").Op("!=").Nil(),
+				jen.Id("retryPolicy").Op("!=").Nil(),
+				jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
+				bamlOnlyParseClosure(),
+				decodeFinalClosure(),
+			)
+		}
+		buildCallRequestBody = append(buildCallRequestBody,
+			// FLAG-OFF IDENTITY: resolve serve + shadow FIRST; gate the ENTIRE descriptor
+			// lookup + binder + closure construction on either being non-nil.
+			jen.List(jen.Id("__staticServe")).Op(":=").Id("deBAMLStaticServe").Call(jen.Id("adapter")),
+			jen.List(jen.Id("__staticShadow")).Op(":=").Id("deBAMLStaticShadow").Call(jen.Id("adapter")),
+			jen.If(
+				jen.Id("__staticServe").Op("!=").Nil().Op("||").Id("__staticShadow").Op("!=").Nil(),
+			).Block(
+				jen.If(
+					jen.List(jen.Id("__staticDescriptor"), jen.Id("__staticOK")).Op(":=").
+						Qual(g.pkgs.IntrospectedPkg, "StaticPromptDescriptor").Call(jen.Lit(me.methodName)),
+					jen.Id("__staticOK"),
+				).Block(
+					// Serve SUPERSEDES shadow.
+					jen.If(jen.Id("__staticServe").Op("!=").Nil()).Block(
+						installStatic("installNativeStaticCall", "__staticServe"),
+					).Else().Block(
+						installStatic("installNativeStaticShadow", "__staticShadow"),
+					),
+				),
+			),
+		)
+	}
+
+	if me.g.isDeBAMLStaticMethod(me.methodName) && !me.g.isDeBAMLStaticServeMethod(me.methodName) && !me.hasReleaseConverted {
 		me.g.emittedDeBAMLStaticCall = true
 		buildCallRequestBody = append(buildCallRequestBody,
 			// FLAG-OFF IDENTITY: resolve the observer FIRST and gate the ENTIRE

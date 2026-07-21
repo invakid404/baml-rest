@@ -55,6 +55,15 @@ internal/schema/outputformat/testdata
 # unchanged, mirroring internal/schema/outputformat/testdata above.
 internal/nativeprompt/testdata/static_oracle
 
+# de-BAML Slice 8C STATIC SERVE generated-route fixture: a copy of static_oracle with
+# the ctx-first client hacks applied + a checked-in GENERATED serve-seam adapter, used
+# solely by the //go:build integration && nanollm_integration generated-route e2e +
+# cutover manifest (internal/nativebody/nanollmprepare/staticserve). Like static_oracle
+# it imports the stock github.com/boundaryml/baml runtime, so it must NEVER enter the
+# root server binary's embed.FS. Excluded here (cmd/embed includes testdata dirs by
+# default) so the root embed manifest stays unchanged.
+internal/nativeprompt/testdata/staticserve_fixture
+
 # de-BAML Phase 4b + 5.1 gated nanollm Prepare validation: a SEPARATE, test-only
 # Go module (github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare)
 # excluded from go.work so the PUBLIC github.com/viktordanov/nanollm-ffi/go

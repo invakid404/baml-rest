@@ -75,6 +75,20 @@ type methodEmitter struct {
 	hasReleaseConverted bool
 }
 
+// finalResultTypeCode returns a FRESH clone of the method's final (non-stream) result
+// type expression. me.finalResultType is a single-use jennifer node reused across
+// multiple emitted sites (the static serve + shadow /call installs each embed
+// DecodeStaticFinal[Return] into a distinct rendered tree), so any caller that renders
+// it more than once MUST take a clone — matching the sibling finalType/finalTypePtr
+// .Clone() convention. Its concrete value is always a *jen.Statement (parseReflectType
+// .statement or jen.Any()); the fallback returns the node unchanged if that ever changes.
+func (me *methodEmitter) finalResultTypeCode() jen.Code {
+	if st, ok := me.finalResultType.(*jen.Statement); ok {
+		return st.Clone()
+	}
+	return me.finalResultType
+}
+
 // newMethodEmitter validates the method's reflect signature and (on
 // success) returns a methodEmitter with the per-method derived names
 // and types populated. The boolean return is false when this method
@@ -1017,6 +1031,15 @@ func (g *generator) isDeBAMLDynamicMethod(methodName string) bool {
 // BAML-as-today.
 func (g *generator) isDeBAMLStaticMethod(methodName string) bool {
 	return g.opts.DeBAMLStaticObserve && !g.isDeBAMLDynamicMethod(methodName)
+}
+
+// isDeBAMLStaticServeMethod reports whether methodName is a de-BAML Slice 8C STATIC
+// SERVE target: the static-serve opt-in is on AND this is NOT the dynamic method. A
+// serve-enabled static method installs the serving native attempt (CallConfig.
+// NativeAttempt) instead of the observe-only fire-and-forget. Only BuildRequest-
+// capable (v0.219+) adapters set DeBAMLStaticServe.
+func (g *generator) isDeBAMLStaticServeMethod(methodName string) bool {
+	return g.opts.DeBAMLStaticServe && !g.isDeBAMLDynamicMethod(methodName)
 }
 
 // emitParseMethods walks introspected.ParseMethods, emits the

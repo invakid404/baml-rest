@@ -31,6 +31,8 @@ require (
 	golang.org/x/mod v0.37.0
 )
 
+require github.com/stoewer/go-strcase v1.3.1 // indirect
+
 require (
 	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/alecthomas/participle/v2 v2.1.4 // indirect
@@ -38,7 +40,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.42.1 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.14 // indirect
 	github.com/aws/aws-sdk-go-v2/config v1.32.25 // indirect
-	github.com/aws/aws-sdk-go-v2/credentials v1.19.24 // indirect
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.24
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.29 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.30 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.30 // indirect
@@ -70,7 +72,7 @@ require (
 	github.com/invakid404/baml-rest/adapters/adapter_v0_204_0 v0.0.0-00010101000000-000000000000 // indirect
 	github.com/invakid404/baml-rest/adapters/adapter_v0_215_0 v0.0.0-00010101000000-000000000000 // indirect
 	github.com/invakid404/baml-rest/adapters/adapter_v0_219_0 v0.0.0-00010101000000-000000000000 // indirect
-	github.com/invakid404/baml-rest/adapters/common v0.0.48 // indirect
+	github.com/invakid404/baml-rest/adapters/common v0.0.48
 	github.com/invakid404/baml-rest/dynclient/baml-patched v0.0.48 // indirect
 	github.com/invakid404/baml-rest/introspected v0.0.48 // indirect
 	github.com/invakid404/baml-rest/nativeserve v0.0.0-00010101000000-000000000000

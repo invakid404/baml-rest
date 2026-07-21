@@ -211,6 +211,20 @@ type Options struct {
 	// observe target).
 	DeBAMLStaticObserve bool
 
+	// DeBAMLStaticServe enables the de-BAML Slice 8C STATIC SERVE seam emission for
+	// BuildRequest-capable (v0.219+) adapters. When true, every STATIC (non-dynamic)
+	// method's /call BuildRequest closure emits, gated at runtime on the de-BAML flag +
+	// an installed native static serve callback: the descriptor lookup + static arg
+	// binder (shared with the observer), a per-method BAML-only parse closure
+	// (Parse.<Method> + json.Marshal), a per-method DecodeNativeStaticFinal closure
+	// (bamlutils.DecodeStaticFinal at the method's concrete return type), and the
+	// installNativeStaticCall install that sets CallConfig.NativeAttempt to actually
+	// SERVE the admitted static /call natively (one send) or DECLINE pre-socket to BAML.
+	// It SUPERSEDES the observe seam (a serve-enabled method installs serve, not the
+	// observe fire-and-forget). Empty/false (default) emits nothing. It composes with —
+	// and is INDEPENDENT of — DeBAMLDynamicMethod (the dynamic method has its own seam).
+	DeBAMLStaticServe bool
+
 	// Test-only regression seeds — DO NOT use in production codegen.
 	// Each seed reintroduces one bug class the slice-pool lifecycle
 	// harness is designed to catch. The harness flips them one at a

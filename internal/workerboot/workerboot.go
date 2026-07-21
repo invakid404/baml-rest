@@ -119,6 +119,30 @@ type Options struct {
 	// worker may supply it alongside the serve/shadow factory or on its own.
 	NativeStaticObserveFactory func(reg prometheus.Registerer) (bamlutils.NativeStaticObserveFunc, error)
 
+	// NativeStaticServeFactory, when non-nil, builds the native STATIC SERVE
+	// implementation (de-BAML Slice 8C) a SERVE-profile worker injects while the
+	// umbrella flag is on. Like the other native factories it is called ONCE at
+	// startup with the worker's private Prometheus registry; the returned
+	// NativeStaticServeFunc is installed on every adapter. The generated static /call
+	// seam turns it into a serving callback only when it is non-nil AND the umbrella
+	// flag is enabled: it SERVES an admitted static unary /call natively (one exact
+	// RoundTrip), and every unsupported shape declines PRE-SOCKET so BAML serves it. A
+	// returned error exits the process non-zero (fails the go-plugin handshake). nil
+	// in every non-serve build. It is the static twin of NativeServeFactory and, like
+	// the observer, is NOT part of the dynamic serve/shadow mutual exclusion.
+	NativeStaticServeFactory func(reg prometheus.Registerer) (bamlutils.NativeStaticServeFunc, error)
+
+	// NativeStaticShadowFactory, when non-nil, builds the native STATIC Stage-1 SHADOW
+	// comparator (de-BAML Slice 8C) a SHADOW-profile worker injects while the umbrella
+	// flag is on. Called ONCE at startup with the worker's private registry; the
+	// returned NativeStaticShadowFunc is installed on every adapter. The generated
+	// static /call seam turns it into a shadow callback only when it is non-nil AND the
+	// umbrella flag is enabled AND no serve callback is installed: BAML remains the SOLE
+	// sender and native parses BAML's captured bytes (ZERO native sends) to compare. A
+	// returned error exits the process non-zero. nil in every non-shadow build. It is
+	// the static twin of NativeShadowFactory.
+	NativeStaticShadowFactory func(reg prometheus.Registerer) (bamlutils.NativeStaticShadowFunc, error)
+
 	// NativeBuildCapable and NativeEngineName advertise a STATIC build capability
 	// (no FFI) for the startup diagnostic even while the umbrella flag is off, so a
 	// flag-off serve/shadow profile can report native_build_capable=true + the
@@ -183,26 +207,31 @@ func Run(opts Options) {
 	// visible in this per-worker line. deBAMLConfig flows unchanged into worker.New.
 	deBAMLConfig := bamlutils.DeBAMLConfigFromEnv()
 
-	// Rollout mode is a deployment PROFILE, not a second application flag:
-	//   - "serve" when this build injected a serve implementation (the de-BAML
-	//     cutover Slice 6 SERVE deploy profile). It actually serves an admitted
-	//     unary `_dynamic` call natively (one exact RoundTrip) while the umbrella
-	//     flag is enabled; unsupported traffic declines pre-socket to BAML.
-	//   - "shadow" when this build injected a shadow comparator (the shadow
-	//     deploy profile). It runs a no-socket native-vs-BAML plan comparison per
-	//     admitted dynamic call ONLY while the umbrella flag is enabled, then
-	//     declines — BAML still serves every request.
+	// Rollout mode is a deployment PROFILE, not a second application flag. It is
+	// derived from which native child-attempt LANES this build wired — and a lane
+	// counts whether it is DYNAMIC (`_dynamic` call) or STATIC (generated static
+	// `/call`), so a static-only serve/shadow cohort is reported correctly rather
+	// than appearing BAML-only to rollout monitoring:
+	//   - "serve" when a serve implementation was injected (the de-BAML cutover
+	//     Slice 6 dynamic SERVE and/or the Slice 8C static SERVE deploy profile).
+	//     It serves an admitted call natively (one exact RoundTrip) while the
+	//     umbrella flag is enabled; unsupported traffic declines pre-socket to BAML.
+	//   - "shadow" when a shadow comparator was injected (the dynamic and/or the
+	//     Slice 8C static shadow deploy profile). It runs a no-socket native-vs-BAML
+	//     comparison per admitted call ONLY while the flag is enabled, then declines
+	//     — BAML still serves every request.
 	//   - "off" otherwise (BAML-only worker, the S2 native-capable worker, and
 	//     every flag-off build): no native child-attempt callback is installed,
 	//     100% BAML.
-	rolloutMode := "off"
-	switch {
-	case opts.NativeServeFactory != nil:
-		rolloutMode = "serve"
-	case opts.NativeShadowFactory != nil:
-		rolloutMode = "shadow"
-	}
-	nativeServing := nativeServingLabel(opts.NativeServeFactory != nil, deBAMLConfig.Enabled)
+	// serve takes precedence over shadow (matching worker install order); the two
+	// profiles are not wired together in practice.
+	rolloutMode, nativeServing := nativeLaneStatus(
+		opts.NativeServeFactory != nil,
+		opts.NativeStaticServeFactory != nil,
+		opts.NativeShadowFactory != nil,
+		opts.NativeStaticShadowFactory != nil,
+		deBAMLConfig.Enabled,
+	)
 	// native_build_capable is a STATIC build fact: true when the binary linked a
 	// native engine, reported even while the flag is off. A live NativeCapability
 	// carries the engine identity/version (resolved via FFI); a flag-off
@@ -402,6 +431,41 @@ func Run(opts Options) {
 		nativeStaticObserver = fn
 	}
 
+	// Build the native STATIC SERVE implementation (de-BAML Slice 8C; nil except in a
+	// SERVE-profile worker with the flag on). A non-nil factory returning an error or
+	// a nil func without an error is fatal, so a serve cohort never silently runs with
+	// the static serve callback off while reporting a serve build.
+	var nativeStaticServe bamlutils.NativeStaticServeFunc
+	if opts.NativeStaticServeFactory != nil {
+		fn, err := opts.NativeStaticServeFactory(metricsReg)
+		if err != nil {
+			logger.Error("failed to build native static serve implementation", "err", err.Error())
+			os.Exit(1)
+		}
+		if fn == nil {
+			logger.Error("native static serve factory returned a nil implementation without an error; a serve worker must not run with the static serve callback off while reporting a serve build")
+			os.Exit(1)
+		}
+		nativeStaticServe = fn
+	}
+
+	// Build the native STATIC Stage-1 SHADOW comparator (de-BAML Slice 8C; nil except
+	// in a SHADOW-profile worker with the flag on). A non-nil factory returning an
+	// error or a nil func without an error is fatal.
+	var nativeStaticShadow bamlutils.NativeStaticShadowFunc
+	if opts.NativeStaticShadowFactory != nil {
+		fn, err := opts.NativeStaticShadowFactory(metricsReg)
+		if err != nil {
+			logger.Error("failed to build native static shadow comparator", "err", err.Error())
+			os.Exit(1)
+		}
+		if fn == nil {
+			logger.Error("native static shadow factory returned a nil comparator without an error; a shadow worker must not run with the static shadow callback off while reporting a shadow build")
+			os.Exit(1)
+		}
+		nativeStaticShadow = fn
+	}
+
 	handler, err := worker.New(worker.Config{
 		Runtime:         rt,
 		Logger:          logger,
@@ -436,6 +500,16 @@ func Run(opts Options) {
 		// flag is enabled it runs the full static admission predicate per eligible
 		// static method, then ALWAYS declines pre-socket to BAML — observe-only.
 		NativeStaticObserver: nativeStaticObserver,
+		// Install the native STATIC SERVE implementation (de-BAML Slice 8C; nil except
+		// in a SERVE-profile worker with the flag on). When non-nil AND the umbrella
+		// flag is enabled it serves an admitted static unary /call natively (one exact
+		// RoundTrip); unsupported traffic declines pre-socket to BAML.
+		NativeStaticServeComparator: nativeStaticServe,
+		// Install the native STATIC Stage-1 SHADOW comparator (de-BAML Slice 8C; nil
+		// except in a SHADOW-profile worker with the flag on). When non-nil AND the flag
+		// is enabled AND no serve callback is installed, the generated static /call seam
+		// runs a no-send shadow comparison per admitted static call — BAML sole sender.
+		NativeStaticShadowComparator: nativeStaticShadow,
 	})
 	if err != nil {
 		logger.Error("failed to construct worker handler", "err", err.Error())
@@ -466,14 +540,35 @@ func Run(opts Options) {
 	})
 }
 
+// nativeLaneStatus derives the bounded (rollout_mode, native_serving) startup
+// diagnostics from which native child-attempt lanes a build wired. A serve/shadow
+// lane counts whether it is DYNAMIC or STATIC, so a static-only cohort (e.g. only
+// NativeStaticServeFactory) is reported as serving rather than BAML-only — the gap
+// that let an actively static-serving worker read as rollout_mode=off. serve takes
+// precedence over shadow (matching the worker install order). Pure so the mapping
+// is unit-testable without booting a worker.
+func nativeLaneStatus(dynServe, staticServe, dynShadow, staticShadow, flagEnabled bool) (rolloutMode, nativeServing string) {
+	serveLane := dynServe || staticServe
+	shadowLane := dynShadow || staticShadow
+	switch {
+	case serveLane:
+		rolloutMode = "serve"
+	case shadowLane:
+		rolloutMode = "shadow"
+	default:
+		rolloutMode = "off"
+	}
+	return rolloutMode, nativeServingLabel(serveLane, flagEnabled)
+}
+
 // nativeServingLabel returns the bounded native_serving startup-diagnostic label.
-// It is "eligible" ONLY when the serve profile is active with the umbrella flag on
-// (a serve factory is present AND the flag is enabled). It is "off" otherwise —
-// crucially including the flag-OFF + factory-present case: the generated seam gates
-// every native child-attempt callback on DeBAMLConfig().Enabled, so with the flag
-// off no serve callback is installed and nothing serves natively regardless of a
-// present factory. Extracted as a pure function so this eligibility contract is
-// unit-testable without booting a worker.
+// It is "eligible" ONLY when a serve LANE is active with the umbrella flag on (a
+// serve factory — dynamic OR static — is present AND the flag is enabled). It is
+// "off" otherwise — crucially including the flag-OFF + factory-present case: the
+// generated seam gates every native child-attempt callback on DeBAMLConfig().Enabled,
+// so with the flag off no serve callback is installed and nothing serves natively
+// regardless of a present factory. Extracted as a pure function so this eligibility
+// contract is unit-testable without booting a worker.
 func nativeServingLabel(serveFactoryPresent, flagEnabled bool) string {
 	if serveFactoryPresent && flagEnabled {
 		return "eligible"

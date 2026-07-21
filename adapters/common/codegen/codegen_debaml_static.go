@@ -32,6 +32,7 @@ package {{.Pkg}}
 
 import (
 	"context"
+	"fmt"
 
 	bamlutils "{{.BamlutilsPkg}}"
 	buildrequest "{{.BuildRequestPkg}}"
@@ -157,6 +158,221 @@ func maybeObserveDeBAMLStaticParse(observe bamlutils.NativeStaticObserveFunc, fn
 	// Fire-and-forget with LOCAL, payload-redacted panic containment (see the final
 	// hook) — never blocks/crashes the parse request goroutine, never logs the payload.
 	buildrequest.ObserveStaticFireAndForget(observe, inv)
+}
+
+// nativeStaticServeGetter is the SERVE twin of nativeStaticObserverGetter (de-BAML
+// Slice 8C): the narrow optional interface the adapter implements to expose the
+// installed native STATIC SERVE implementation. Kept off bamlutils.Adapter.
+type nativeStaticServeGetter interface {
+	NativeStaticServeComparator() bamlutils.NativeStaticServeFunc
+}
+
+// deBAMLStaticServe returns the installed native static serve implementation when the
+// de-BAML umbrella flag is on AND a serve callback is wired (a SERVE-profile worker),
+// else nil — the hard-off default that keeps every static request byte-identical BAML.
+// The generated /call seam checks this FIRST, so with the flag off (or no serve
+// callback) it never performs the StaticPromptDescriptor lookup, builds the argument
+// binder, or installs a native attempt: the path is the byte-identical BAML path.
+func deBAMLStaticServe(adapter bamlutils.Adapter) bamlutils.NativeStaticServeFunc {
+	if !adapter.DeBAMLConfig().Enabled {
+		return nil
+	}
+	getter, ok := adapter.(nativeStaticServeGetter)
+	if !ok {
+		return nil
+	}
+	return getter.NativeStaticServeComparator()
+}
+
+// installNativeStaticCall installs the de-BAML Slice 8C native STATIC SERVE attempt as
+// the Slice-1 CallConfig.NativeAttempt for one eligible static /call. When the
+// orchestrator runs the attempt it builds the neutral NativeStaticInvocation from the
+// selected descriptor + exact args + the ACTUAL selected-route facts (provider /
+// clientOverride / include-reasoning / heartbeat / the no-send BAML plan from att),
+// calls the injected NativeStaticServeFunc, and maps the tri-state outcome:
+//
+//   - Succeeded: decode the winning flattened canonical JSON into the method's exact
+//     concrete return type via the per-method decodeFinal closure
+//     (bamlutils.DecodeStaticFinal[Return]) and serve it with the owned raw/reasoning
+//     + winner engine. A decode failure is a POST-CLAIM failure (never a resend).
+//   - Declined: PRE-SOCKET decline; the orchestrator runs BAML's Request.<Method> /
+//     Parse.<Method> for the same call exactly as today.
+//   - Failed: a POST-CLAIM typed failure to the outer policy; never a BAML resend.
+//
+// serve is the ALREADY-RESOLVED, non-nil serve callback (the caller gated the whole
+// descriptor lookup + binder + closure construction on deBAMLStaticServe being
+// non-nil, so flag-off never reaches here). bamlOnlyParse is the per-method
+// Parse.<Method>-on-the-same-bytes closure (the S5 differential/safety comparator);
+// decodeFinal is the per-method concrete-return-type decoder. Both are built by the
+// generated /call seam because they reference the method's concrete return type.
+//
+// SENSITIVE: fn/args/bamlOnlyParse/decodeFinal all carry secret material; this never
+// logs, serializes, or emits them.
+func installNativeStaticCall(
+	cfg *buildrequest.CallConfig,
+	serve bamlutils.NativeStaticServeFunc,
+	adapter bamlutils.Adapter,
+	fn promptdescriptor.Function,
+	args map[string]any,
+	argOrder []string,
+	singleLeaf bool,
+	hasFallbackChain bool,
+	hasRoundRobin bool,
+	hasRetry bool,
+	raw bool,
+	bamlOnlyParse func(ctx context.Context, rawText string) ([]byte, error),
+	decodeFinal func(canonicalJSON []byte) (any, error),
+) {
+	// The effective send client (the exact client BAML would send through), whose
+	// WouldRewriteOrProxy applies rewrites/proxying at execution time; nil falls back
+	// to the default client, matching the observe seam + the BuildRequest route.
+	httpClient := adapter.HTTPClient()
+	if httpClient == nil {
+		httpClient = llmhttp.DefaultClient
+	}
+	// planned_engine="native": a serve callback was installed and native was considered
+	// for this static /call (recorded on the OUTCOME frame; empty on every default/BAML/
+	// flag-off path so metadata stays byte-identical). Mirrors the dynamic serve seam.
+	cfg.PlannedEngine = "native"
+	cfg.NativeAttemptEnabled = true
+	cfg.NativeAttempt = func(ctx context.Context, att buildrequest.NativeCallAttempt) buildrequest.NativeCallOutcome {
+		inv := bamlutils.NativeStaticInvocation{
+			Method:                  fn.Method,
+			Descriptor:              fn,
+			Args:                    args,
+			ArgOrder:                argOrder,
+			Mode:                    bamlutils.NativeStaticModeFinal,
+			Provider:                att.Provider,
+			ClientOverride:          att.ClientOverride,
+			SingleLeaf:              singleLeaf,
+			HasFallbackChain:        hasFallbackChain,
+			HasRoundRobin:           hasRoundRobin,
+			HasRequestRetryOverride: hasRetry,
+			Raw:                     raw,
+			IncludeReasoning:        att.IncludeReasoning,
+			WouldRewriteOrProxy:     httpClient.WouldRewriteOrProxy,
+			BuildBAMLRequest:        att.BuildBAMLRequest,
+			BAMLOnlyParse:           bamlOnlyParse,
+			SendHeartbeat:           att.SendHeartbeat,
+		}
+		res := serve(ctx, inv)
+		switch res.Disposition {
+		case bamlutils.NativeStaticServeSucceeded:
+			final, derr := decodeFinal(res.FinalJSON)
+			if derr != nil {
+				// A post-claim decode failure cannot fall through to a BAML resend;
+				// FAIL, retaining the owned raw assistant text as details.raw.
+				return buildrequest.FailNativeCallWithRaw(&buildrequest.OutputParseError{Err: derr}, res.Raw)
+			}
+			outcome := buildrequest.SucceedNativeCall(final, res.Raw, res.Reasoning)
+			outcome.WinnerEngine = res.WinnerEngine
+			return outcome
+		case bamlutils.NativeStaticServeFailed:
+			return buildrequest.FailNativeCallWithRaw(res.Err, res.RawDiagnostic)
+		case bamlutils.NativeStaticServeDeclined:
+			return buildrequest.DeclineNativeCall(
+				buildrequest.NativeDeclineStage(res.Stage),
+				buildrequest.NativeDeclineReason(res.Reason),
+			)
+		default:
+			// Out-of-contract disposition (the result is public + integer-backed): it
+			// CANNOT assert "no socket", so fail closed rather than risk a hidden second
+			// same-call BAML send. Unreachable for the closed NativeStaticServe* set.
+			return buildrequest.FailNativeCall(
+				fmt.Errorf("native static serve returned unknown disposition %d", res.Disposition),
+			)
+		}
+	}
+}
+
+// nativeStaticShadowGetter is the Stage-1 SHADOW twin of nativeStaticServeGetter
+// (de-BAML Slice 8C): the narrow optional interface the adapter implements to expose
+// the installed native static SHADOW comparator. Kept off bamlutils.Adapter.
+type nativeStaticShadowGetter interface {
+	NativeStaticShadowComparator() bamlutils.NativeStaticShadowFunc
+}
+
+// deBAMLStaticShadow returns the installed native static SHADOW comparator when the
+// de-BAML umbrella flag is on AND a shadow callback is wired (a SHADOW-profile
+// worker), else nil. The generated /call seam resolves serve FIRST, then shadow, so
+// the shadow runs only when no serve callback is installed. Flag-off (or no shadow
+// callback) is a single cheap type-assertion returning nil — byte-identical BAML.
+func deBAMLStaticShadow(adapter bamlutils.Adapter) bamlutils.NativeStaticShadowFunc {
+	if !adapter.DeBAMLConfig().Enabled {
+		return nil
+	}
+	getter, ok := adapter.(nativeStaticShadowGetter)
+	if !ok {
+		return nil
+	}
+	return getter.NativeStaticShadowComparator()
+}
+
+// installNativeStaticShadow installs the de-BAML Slice 8C Stage-1 SHADOW comparison as
+// the Slice-1 CallConfig.NativeAttempt for one eligible static /call. The comparison
+// ALWAYS DECLINES so BAML remains the SOLE sender; on a full plan match it threads an
+// OnResponse continuation onto the declined outcome (OnResponseShadow) that the
+// orchestrator invokes with BAML's already-fetched bytes — native then compares its
+// translate/extract/static-SAP/typed-decode against BAML's parse of the SAME bytes
+// with ZERO native sends. bamlOnlyParse is the per-method Parse.<Method> comparator;
+// decodeFinal is the per-method concrete-return-type decoder (used for the typed-
+// result facet). Both are built by the generated seam (they reference the method's
+// return type). shadow is the ALREADY-RESOLVED, non-nil comparator.
+//
+// SENSITIVE: fn/args/bamlOnlyParse/decodeFinal carry secret material; never logged.
+func installNativeStaticShadow(
+	cfg *buildrequest.CallConfig,
+	shadow bamlutils.NativeStaticShadowFunc,
+	adapter bamlutils.Adapter,
+	fn promptdescriptor.Function,
+	args map[string]any,
+	argOrder []string,
+	singleLeaf bool,
+	hasFallbackChain bool,
+	hasRoundRobin bool,
+	hasRetry bool,
+	raw bool,
+	bamlOnlyParse func(ctx context.Context, rawText string) ([]byte, error),
+	decodeFinal func(canonicalJSON []byte) (any, error),
+) {
+	httpClient := adapter.HTTPClient()
+	if httpClient == nil {
+		httpClient = llmhttp.DefaultClient
+	}
+	// planned_engine="native": native was CONSIDERED (shadow) for this static /call.
+	cfg.PlannedEngine = "native"
+	cfg.NativeAttemptEnabled = true
+	cfg.NativeAttempt = func(ctx context.Context, att buildrequest.NativeCallAttempt) buildrequest.NativeCallOutcome {
+		inv := bamlutils.NativeStaticInvocation{
+			Method:                  fn.Method,
+			Descriptor:              fn,
+			Args:                    args,
+			ArgOrder:                argOrder,
+			Mode:                    bamlutils.NativeStaticModeFinal,
+			Provider:                att.Provider,
+			ClientOverride:          att.ClientOverride,
+			SingleLeaf:              singleLeaf,
+			HasFallbackChain:        hasFallbackChain,
+			HasRoundRobin:           hasRoundRobin,
+			HasRequestRetryOverride: hasRetry,
+			Raw:                     raw,
+			IncludeReasoning:        att.IncludeReasoning,
+			WouldRewriteOrProxy:     httpClient.WouldRewriteOrProxy,
+			BuildBAMLRequest:        att.BuildBAMLRequest,
+			BAMLOnlyParse:           bamlOnlyParse,
+			DecodeNativeFinal:       decodeFinal,
+		}
+		res := shadow(ctx, inv)
+		// The shadow ALWAYS declines so BAML serves; thread OnResponse onto the declined
+		// outcome so the orchestrator runs the same-response comparison over BAML's
+		// captured bytes AFTER BAML serves. Native NEVER sends.
+		outcome := buildrequest.DeclineNativeCall(
+			buildrequest.NativeDeclineStage(res.Stage),
+			buildrequest.NativeDeclineReason(res.Reason),
+		)
+		outcome.OnResponseShadow = res.OnResponse
+		return outcome
+	}
 }
 `
 

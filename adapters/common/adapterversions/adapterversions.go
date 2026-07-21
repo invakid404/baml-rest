@@ -96,6 +96,28 @@ var FrameworkAdapters = []FrameworkAdapter{
 			// until BAML_REST_USE_DEBAML is on in a native worker. v0.204/v0.215 have
 			// no BuildRequest surface, so it is intentionally absent there.
 			DeBAMLStaticObserve: true,
+			// De-BAML Slice 8C STATIC SERVE cutover: v0.219 is the BuildRequest-capable
+			// surface, so opt in the generated static SERVE seam. codegen emits, for every
+			// admitted STATIC (non-dynamic) method's /call, the installNativeStaticCall
+			// install (CallConfig.NativeAttempt) + per-method DecodeNativeStaticFinal, which
+			// SUPERSEDES the observe seam.
+			//
+			// SCOPE OF THIS FLAG (important): `true` here does NOT advertise that every
+			// static return shape serves natively. It ONLY enables EMISSION of the serve
+			// seam; whether any individual response is served natively is decided at
+			// RUNTIME by the narrow-surface admission gate (admittedStaticReturnShape),
+			// NOT by this boolean. The gate admits exactly the two v0.223-differential-
+			// PROVEN shapes — a top-level `string` and the flat StaticAnswer{answer:string,
+			// confidence:int} class — and DECLINES every other shape (richer classes,
+			// unions, optionals, enums, recursion/aliases, constrained/@@dynamic targets)
+			// PRE-SOCKET. A declined shape is the tri-state narrow-surface fallback BY
+			// DESIGN: BAML remains the sole sender and the response bytes are byte-identical
+			// to flag-off, so enabling the flag can never regress an unproven shape. The
+			// admitted set is deliberately widened only as each shape's mapper is proven.
+			// The shadow→serve cutover gate is green — the frozen generated-route serving
+			// pin (internal/nativebody/nanollmprepare/staticserve cutover manifest) proves
+			// one-send + tri-state + zero mismatch across the admitted set.
+			DeBAMLStaticServe: true,
 		},
 	},
 }
