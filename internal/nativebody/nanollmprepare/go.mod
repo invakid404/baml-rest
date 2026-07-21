@@ -21,9 +21,9 @@ go 1.26.5
 require (
 	github.com/boundaryml/baml v0.223.0
 	github.com/invakid404/baml-rest v0.0.48
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260719190743-f08d06c95b1c
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260721153955-e54503865639
 	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260719190743-f08d06c95b1c
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260721153955-e54503865639
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
