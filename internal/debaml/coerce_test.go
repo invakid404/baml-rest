@@ -66,25 +66,25 @@ func TestWrappersPropagateHardErrors(t *testing.T) {
 	}
 
 	run("coerceList", "unknown enum", func() (interface{}, error) {
-		return coerceList(b, &ghostEnum, arr, nil)
+		return coerceList(b, &ghostEnum, arr, nil, nil)
 	})
 	run("coerceMap-value", "unknown enum", func() (interface{}, error) {
-		return coerceMap(b, &strKey, &ghostEnum, obj, nil)
+		return coerceMap(b, &strKey, &ghostEnum, obj, nil, nil)
 	})
 	run("coerceUnionSafe-optional-arm", "unknown enum", func() (interface{}, error) {
 		u := &schema.UnionType{Variants: []schema.Type{ghostEnum}, Nullable: true}
-		return coerceUnionSafe(b, u, value{kind: valString, strV: "x"}, nil)
+		return coerceUnionSafe(b, u, value{kind: valString, strV: "x"}, nil, nil)
 	})
 	run("coerceUnionSafeMulti-class-counting", "unknown class", func() (interface{}, error) {
 		// Bypasses checkSupportedUnionShape (a unit-level wrapper probe): phase-1
 		// tryCastUnion → tryCastClass hits FindClass and must propagate the hard error.
-		return coerceUnionSafeMulti(b, []schema.Type{ghostClass, ghostClass}, obj, false, nil)
+		return coerceUnionSafeMulti(b, []schema.Type{ghostClass, ghostClass}, obj, false, nil, nil)
 	})
 	run("coerceUnionSafeMulti-literal-counting", "literal type missing value", func() (interface{}, error) {
 		// A literal variant with a nil payload is a hard invariant failure surfaced
 		// by phase-1 tryCastArm before the scored coerce loop runs.
 		bad := schema.Type{Kind: schema.TypeLiteral, Literal: nil}
-		return coerceUnionSafeMulti(b, []schema.Type{bad, bad}, value{kind: valString, strV: "x"}, false, nil)
+		return coerceUnionSafeMulti(b, []schema.Type{bad, bad}, value{kind: valString, strV: "x"}, false, nil, nil)
 	})
 }
 

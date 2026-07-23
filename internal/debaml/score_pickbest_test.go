@@ -62,7 +62,7 @@ func TestScoreModel_Composite(t *testing.T) {
 		f := &coerceFlags{}
 		// a=1.6 -> FloatToInt(1); 3 extra keys -> ExtraKey(3); total 4.
 		in := objVal(fld("a", numV("1.6")), fld("b", strVv("x")), fld("e0", numV("1")), fld("e1", numV("1")), fld("e2", numV("1")))
-		if _, err := coerceClass(b, ct.Name, ct.Mode, in, f); err != nil {
+		if _, err := coerceClass(b, ct.Name, ct.Mode, in, f, nil); err != nil {
 			t.Fatalf("coerceClass: %v", err)
 		}
 		if f.score != 4 || f.kind != candClass {
@@ -77,7 +77,7 @@ func TestScoreModel_Composite(t *testing.T) {
 	{
 		elem := schema.Type{Kind: schema.TypePrimitive, Primitive: schema.PrimitiveInt}
 		f := &coerceFlags{}
-		out, err := coerceList(nil, &elem, numV("2.6"), f)
+		out, err := coerceList(nil, &elem, numV("2.6"), f, nil)
 		if err != nil {
 			t.Fatalf("coerceList: %v", err)
 		}

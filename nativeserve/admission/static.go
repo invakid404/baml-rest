@@ -638,9 +638,17 @@ func admittedStaticReturnShape(b *schema.Bundle) bool {
 	if b == nil {
 		return false
 	}
-	// No recursion/alias carriers, and no enums (enum decode is not proven).
-	if len(b.RecursiveClasses) > 0 || len(b.StructuralRecursiveAliases) > 0 || len(b.Enums) > 0 {
+	// Structural recursive aliases and enums stay declined (no proven decoder).
+	if len(b.StructuralRecursiveAliases) > 0 || len(b.Enums) > 0 {
 		return false
+	}
+	// De-BAML Phase 2: the admitted recursive-class family is served through the SAME
+	// generic DecodeStaticFinal carrier (a legal *Node/*A/*B pointer graph), gated by a
+	// descriptor FINGERPRINT so only the three v0.223-differential-proven shapes claim a
+	// socket. A non-recursive bundle keeps the exact 8C string/StaticAnswer gate below
+	// byte-for-byte unchanged (the 5/5/5/5/5/2/3/1 pin is untouched).
+	if len(b.RecursiveClasses) > 0 {
+		return isProvenRecursiveStaticReturn(b)
 	}
 	switch b.Target.Kind {
 	case schema.TypePrimitive:
@@ -689,6 +697,24 @@ func isProvenStaticField(f schema.ClassField, name string, prim schema.Primitive
 		return false
 	}
 	return f.Type.Kind == schema.TypePrimitive && f.Type.Primitive == prim
+}
+
+// isProvenRecursiveStaticReturn reports whether the lowered Return Bundle is EXACTLY
+// one of the THREE fingerprint-proven recursive-class shapes whose generated
+// DecodeStaticFinal pointer carrier + BAML v0.223 differential are proven (the
+// static-recursion manifest): the SELF-recursive Node{value string; next Node?}, and
+// the MUTUAL A{value string; b B?} <-> B{value string; a A?} SCC rooted at A OR at B.
+//
+// It DELEGATES to the root-owned debaml.IsProvenRecursiveStaticFamily so the serve
+// fingerprint and the parser's admittedRecursiveClassProfile can NEVER diverge — a
+// single EXACT predicate (canonical class AND field names, exactly two fields / one
+// direct nullable-class edge, non-streaming ClassKeys, no @alias / constraints /
+// dynamic / enum / variant-metadata anywhere). A same-shaped but non-canonical
+// `Other{payload string; child Other?}`, a required/list/map edge, a one-field Loop,
+// an extra field, a reordered field, a bool/float/int value, a class-name alias, or a
+// constrained variant all decline PRE-CLAIM.
+func isProvenRecursiveStaticReturn(b *schema.Bundle) bool {
+	return debaml.IsProvenRecursiveStaticFamily(b)
 }
 
 // NewStaticResponseClient builds a FRESH request-scoped nanollm engine for the SAME

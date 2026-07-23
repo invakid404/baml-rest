@@ -30,7 +30,6 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 
 	fixture "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/staticserve_fixture/generated"
-	introspected "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/staticserve_fixture/introspected"
 )
 
 // staticRoute is one serve-enabled admitted fixture method + its return kind.
@@ -132,14 +131,25 @@ func gatherCounter(t *testing.T, reg *prometheus.Registry, name string, labels m
 	return sum
 }
 
-// TestStaticServingCutover_AntiOmission asserts the driven serving corpus is EXACTLY
-// the fixture's emitted/admitted static route set — no enabled route may be silently
-// omitted from the frozen pin.
+// legacyStaticMethods is the EXPLICIT, frozen legacy-8C partition — the exact route
+// set the legacy anti-omission pins INDEPENDENTLY of the Phase 2 recursive additions.
+var legacyStaticMethods = []string{
+	"StaticCompletion",
+	"StaticCompletionOutputFormat",
+	"StaticOutputFormat",
+	"StaticPrimitiveArgs",
+	"StaticRoleChat",
+}
+
+// TestStaticServingCutover_AntiOmission asserts the driven legacy serving corpus is
+// EXACTLY the frozen legacy-8C route set — no legacy route may be silently omitted
+// from the frozen pin. It is pinned against the EXPLICIT legacyStaticMethods set (NOT
+// SyncMethods), so the Phase 2 recursive additions cannot change this legacy
+// assertion; the recursive partition + the SyncMethods completeness check live in the
+// separate recursive manifest (TestStaticServingCutover_RecursivePartition).
 func TestStaticServingCutover_AntiOmission(t *testing.T) {
-	emitted := make([]string, 0, len(introspected.SyncMethods))
-	for m := range introspected.SyncMethods {
-		emitted = append(emitted, m)
-	}
+	emitted := make([]string, 0, len(legacyStaticMethods))
+	emitted = append(emitted, legacyStaticMethods...)
 	driven := make([]string, 0, len(staticServingCorpus))
 	for _, r := range staticServingCorpus {
 		driven = append(driven, r.name)

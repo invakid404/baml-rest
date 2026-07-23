@@ -109,8 +109,11 @@ func Parse(ctx context.Context, req bamlutils.DeBAMLParseRequest) (bamlutils.DeB
 	}
 
 	// Top-level coercion needs no cleanliness tracking (nil accumulator): a
-	// nullable target's own null/clean decision is made inside coerceUnionSafe.
-	out, err := coerce(bundle, bundle.Target, parsed, nil)
+	// nullable target's own null/clean decision is made inside coerceUnionSafe. A
+	// FRESH pair-guard context threads BAML's (ClassKey, value) circular-reference
+	// guard through every recursive descent; the dynamic bridge never produces a
+	// recursive class, so it never fires here (a strict no-op for acyclic data).
+	out, err := coerce(bundle, bundle.Target, parsed, nil, &coerceCtx{})
 	if err != nil {
 		// A candidate was decoded but does not coerce against the schema.
 		// coerce returns ErrDeBAMLParseUnsupported where the failure is only
@@ -464,6 +467,18 @@ func checkSupported(b *schema.Bundle) error {
 	if len(b.RecursiveClasses) > 0 {
 		return unsupported("recursive class")
 	}
+	return checkSupportedFields(b)
+}
+
+// checkSupportedFields runs the per-enum / per-class / per-field cut-line that is
+// IDENTICAL for the non-recursive and the admitted-recursive-class final paths. It
+// is the body of [checkSupported] after the blanket structural-alias/recursive-class
+// rejects; the recursion-aware final profile (checkSupportedRecursive) reuses it so
+// the two paths share one field cut-line and only the top-level recursion admission
+// differs. It does NOT re-reject recursion — a recursive class's nullable-class edge
+// is a nullable union, which checkSupportedType already lets through its null fast
+// path, and the class definitions themselves are validated as ordinary class entries.
+func checkSupportedFields(b *schema.Bundle) error {
 	for i := range b.Enums {
 		if len(b.Enums[i].Constraints) > 0 {
 			return unsupported("enum constraints")

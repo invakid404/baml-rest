@@ -18,49 +18,49 @@ import (
 var Stream = bamlclient.Stream
 
 // StreamMethods is a map from method name to argument names
-var StreamMethods = map[string][]string{"StaticCompletion": []string{"topic"}, "StaticCompletionOutputFormat": []string{"topic"}, "StaticOutputFormat": []string{"topic"}, "StaticPrimitiveArgs": []string{"text", "count", "ratio", "flag"}, "StaticRoleChat": []string{"topic", "count"}}
+var StreamMethods = map[string][]string{"StaticCompletion": []string{"topic"}, "StaticCompletionOutputFormat": []string{"topic"}, "StaticOutputFormat": []string{"topic"}, "StaticPrimitiveArgs": []string{"text", "count", "ratio", "flag"}, "StaticRecursiveA": []string{"topic"}, "StaticRecursiveB": []string{"topic"}, "StaticRecursiveLoop": []string{"topic"}, "StaticRecursiveNode": []string{"topic"}, "StaticRecursiveNodeAnn": []string{"topic"}, "StaticRoleChat": []string{"topic", "count"}}
 
 // SyncMethods maps sync function names to their argument names
-var SyncMethods = map[string][]string{"StaticCompletion": []string{"topic"}, "StaticCompletionOutputFormat": []string{"topic"}, "StaticOutputFormat": []string{"topic"}, "StaticPrimitiveArgs": []string{"text", "count", "ratio", "flag"}, "StaticRoleChat": []string{"topic", "count"}}
+var SyncMethods = map[string][]string{"StaticCompletion": []string{"topic"}, "StaticCompletionOutputFormat": []string{"topic"}, "StaticOutputFormat": []string{"topic"}, "StaticPrimitiveArgs": []string{"text", "count", "ratio", "flag"}, "StaticRecursiveA": []string{"topic"}, "StaticRecursiveB": []string{"topic"}, "StaticRecursiveLoop": []string{"topic"}, "StaticRecursiveNode": []string{"topic"}, "StaticRecursiveNodeAnn": []string{"topic"}, "StaticRoleChat": []string{"topic", "count"}}
 
 // SyncFuncs maps sync function names to their function values (for reflection)
-var SyncFuncs = map[string]any{"StaticCompletion": bamlclient.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.StaticCompletionOutputFormat, "StaticOutputFormat": bamlclient.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.StaticPrimitiveArgs, "StaticRoleChat": bamlclient.StaticRoleChat}
+var SyncFuncs = map[string]any{"StaticCompletion": bamlclient.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.StaticCompletionOutputFormat, "StaticOutputFormat": bamlclient.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.StaticRecursiveA, "StaticRecursiveB": bamlclient.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.StaticRecursiveNode, "StaticRecursiveNodeAnn": bamlclient.StaticRecursiveNodeAnn, "StaticRoleChat": bamlclient.StaticRoleChat}
 
 // Parse is the parse API for parsing raw LLM responses into final types
 var Parse = bamlclient.Parse
 
 // ParseMethods is a set of method names available on Parse
-var ParseMethods = map[string]struct{}{"StaticCompletion": {}, "StaticCompletionOutputFormat": {}, "StaticOutputFormat": {}, "StaticPrimitiveArgs": {}, "StaticRoleChat": {}}
+var ParseMethods = map[string]struct{}{"StaticCompletion": {}, "StaticCompletionOutputFormat": {}, "StaticOutputFormat": {}, "StaticPrimitiveArgs": {}, "StaticRecursiveA": {}, "StaticRecursiveB": {}, "StaticRecursiveLoop": {}, "StaticRecursiveNode": {}, "StaticRecursiveNodeAnn": {}, "StaticRoleChat": {}}
 
 // ParseStream is the parse_stream API for parsing raw LLM responses into partial/stream types
 var ParseStream = bamlclient.ParseStream
 
 // ParseStreamMethods is a set of method names available on ParseStream
-var ParseStreamMethods = map[string]struct{}{"StaticCompletion": {}, "StaticCompletionOutputFormat": {}, "StaticOutputFormat": {}, "StaticPrimitiveArgs": {}, "StaticRoleChat": {}}
+var ParseStreamMethods = map[string]struct{}{"StaticCompletion": {}, "StaticCompletionOutputFormat": {}, "StaticOutputFormat": {}, "StaticPrimitiveArgs": {}, "StaticRecursiveA": {}, "StaticRecursiveB": {}, "StaticRecursiveLoop": {}, "StaticRecursiveNode": {}, "StaticRecursiveNodeAnn": {}, "StaticRoleChat": {}}
 
 // ParseStreamFuncs maps ParseStream method names to their function values (for reflection)
-var ParseStreamFuncs = map[string]any{"StaticCompletion": bamlclient.ParseStream.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.ParseStream.StaticCompletionOutputFormat, "StaticOutputFormat": bamlclient.ParseStream.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.ParseStream.StaticPrimitiveArgs, "StaticRoleChat": bamlclient.ParseStream.StaticRoleChat}
+var ParseStreamFuncs = map[string]any{"StaticCompletion": bamlclient.ParseStream.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.ParseStream.StaticCompletionOutputFormat, "StaticOutputFormat": bamlclient.ParseStream.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.ParseStream.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.ParseStream.StaticRecursiveA, "StaticRecursiveB": bamlclient.ParseStream.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.ParseStream.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.ParseStream.StaticRecursiveNode, "StaticRecursiveNodeAnn": bamlclient.ParseStream.StaticRecursiveNodeAnn, "StaticRoleChat": bamlclient.ParseStream.StaticRoleChat}
 
 // Request is the BAML Request singleton for building non-streaming HTTP requests
 var Request = bamlclient.Request
 
 // RequestFuncs maps Request method names to their function values (for reflection)
-var RequestFuncs = map[string]any{"StaticCompletion": bamlclient.Request.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.Request.StaticCompletionOutputFormat, "StaticOutputFormat": bamlclient.Request.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.Request.StaticPrimitiveArgs, "StaticRoleChat": bamlclient.Request.StaticRoleChat}
+var RequestFuncs = map[string]any{"StaticCompletion": bamlclient.Request.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.Request.StaticCompletionOutputFormat, "StaticOutputFormat": bamlclient.Request.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.Request.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.Request.StaticRecursiveA, "StaticRecursiveB": bamlclient.Request.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.Request.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.Request.StaticRecursiveNode, "StaticRecursiveNodeAnn": bamlclient.Request.StaticRecursiveNodeAnn, "StaticRoleChat": bamlclient.Request.StaticRoleChat}
 
 // StreamRequest is the BAML StreamRequest singleton for building streaming HTTP requests
 var StreamRequest = bamlclient.StreamRequest
 
 // StreamRequestFuncs maps StreamRequest method names to their function values (for reflection)
-var StreamRequestFuncs = map[string]any{"StaticCompletion": bamlclient.StreamRequest.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.StreamRequest.StaticCompletionOutputFormat, "StaticOutputFormat": bamlclient.StreamRequest.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.StreamRequest.StaticPrimitiveArgs, "StaticRoleChat": bamlclient.StreamRequest.StaticRoleChat}
+var StreamRequestFuncs = map[string]any{"StaticCompletion": bamlclient.StreamRequest.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.StreamRequest.StaticCompletionOutputFormat, "StaticOutputFormat": bamlclient.StreamRequest.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.StreamRequest.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.StreamRequest.StaticRecursiveA, "StaticRecursiveB": bamlclient.StreamRequest.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.StreamRequest.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.StreamRequest.StaticRecursiveNode, "StaticRecursiveNodeAnn": bamlclient.StreamRequest.StaticRecursiveNodeAnn, "StaticRoleChat": bamlclient.StreamRequest.StaticRoleChat}
 
 // SupportsWithClient is true when baml_client exposes WithClient(string) (BAML v0.219.0+)
 var SupportsWithClient = true
 
 // FunctionClient maps BAML function names to their default client name
-var FunctionClient = map[string]string{"StaticCompletion": "StaticOracleClient", "StaticCompletionOutputFormat": "StaticOracleClient", "StaticOutputFormat": "StaticOracleClient", "StaticPrimitiveArgs": "StaticOracleClient", "StaticRoleChat": "StaticOracleClient"}
+var FunctionClient = map[string]string{"StaticCompletion": "StaticOracleClient", "StaticCompletionOutputFormat": "StaticOracleClient", "StaticOutputFormat": "StaticOracleClient", "StaticPrimitiveArgs": "StaticOracleClient", "StaticRecursiveA": "StaticOracleClient", "StaticRecursiveB": "StaticOracleClient", "StaticRecursiveLoop": "StaticOracleClient", "StaticRecursiveNode": "StaticOracleClient", "StaticRecursiveNodeAnn": "StaticOracleClient", "StaticRoleChat": "StaticOracleClient"}
 
 // FunctionProvider maps BAML function names to their default provider string
-var FunctionProvider = map[string]string{"StaticCompletion": "openai", "StaticCompletionOutputFormat": "openai", "StaticOutputFormat": "openai", "StaticPrimitiveArgs": "openai", "StaticRoleChat": "openai"}
+var FunctionProvider = map[string]string{"StaticCompletion": "openai", "StaticCompletionOutputFormat": "openai", "StaticOutputFormat": "openai", "StaticPrimitiveArgs": "openai", "StaticRecursiveA": "openai", "StaticRecursiveB": "openai", "StaticRecursiveLoop": "openai", "StaticRecursiveNode": "openai", "StaticRecursiveNodeAnn": "openai", "StaticRoleChat": "openai"}
 
 // ClientProvider maps BAML client names to their provider strings
 var ClientProvider = map[string]string{"EmptyBodyClient": "openai", "EscapedModelClient": "openai", "RichBodyClient": "openai", "StaticOracleClient": "openai"}
@@ -432,6 +432,432 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 		},
 		Version: 2,
 	}
+}, "StaticRecursiveA": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
+			Name: "topic",
+			Type: &bamlparser.TypeExpr{
+				Kind:      bamlparser.KindPrimitive,
+				Primitive: "string",
+				Span: bamlparser.Span{
+					Col:   34,
+					End:   3355,
+					Line:  84,
+					Start: 3349,
+				},
+			},
+		}},
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "http://127.0.0.1:17654/v1",
+				},
+			}},
+		},
+		Method:   "StaticRecursiveA",
+		Prompt:   "\n    Summarize {{ topic }} as an alternating A/B chain.\n    {{ ctx.output_format }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Classes: []schemadescriptor.ClassDef{schemadescriptor.ClassDef{
+				Fields: []schemadescriptor.ClassField{schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "value"},
+					Type: schemadescriptor.Type{
+						Kind:      schemadescriptor.TypePrimitive,
+						Primitive: schemadescriptor.PrimitiveString,
+					},
+				}, schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "b"},
+					Type: schemadescriptor.Type{
+						Kind: schemadescriptor.TypeUnion,
+						Union: &schemadescriptor.UnionType{
+							Nullable: true,
+							Variants: []schemadescriptor.Type{schemadescriptor.Type{
+								Kind: schemadescriptor.TypeClass,
+								Mode: schemadescriptor.NonStreaming,
+								Name: "B",
+							}},
+						},
+					},
+				}},
+				Mode: schemadescriptor.NonStreaming,
+				Name: schemadescriptor.Name{Name: "A"},
+			}, schemadescriptor.ClassDef{
+				Fields: []schemadescriptor.ClassField{schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "value"},
+					Type: schemadescriptor.Type{
+						Kind:      schemadescriptor.TypePrimitive,
+						Primitive: schemadescriptor.PrimitiveString,
+					},
+				}, schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "a"},
+					Type: schemadescriptor.Type{
+						Kind: schemadescriptor.TypeUnion,
+						Union: &schemadescriptor.UnionType{
+							Nullable: true,
+							Variants: []schemadescriptor.Type{schemadescriptor.Type{
+								Kind: schemadescriptor.TypeClass,
+								Mode: schemadescriptor.NonStreaming,
+								Name: "A",
+							}},
+						},
+					},
+				}},
+				Mode: schemadescriptor.NonStreaming,
+				Name: schemadescriptor.Name{Name: "B"},
+			}},
+			Method:           "StaticRecursiveA",
+			RecursiveClasses: []string{"A", "B"},
+			Target: schemadescriptor.Type{
+				Kind: schemadescriptor.TypeClass,
+				Mode: schemadescriptor.NonStreaming,
+				Name: "A",
+			},
+			Version: 1,
+		},
+		Version: 2,
+	}
+}, "StaticRecursiveB": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
+			Name: "topic",
+			Type: &bamlparser.TypeExpr{
+				Kind:      bamlparser.KindPrimitive,
+				Primitive: "string",
+				Span: bamlparser.Span{
+					Col:   34,
+					End:   3800,
+					Line:  96,
+					Start: 3794,
+				},
+			},
+		}},
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "http://127.0.0.1:17654/v1",
+				},
+			}},
+		},
+		Method:   "StaticRecursiveB",
+		Prompt:   "\n    Summarize {{ topic }} as an alternating B/A chain.\n    {{ ctx.output_format }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Classes: []schemadescriptor.ClassDef{schemadescriptor.ClassDef{
+				Fields: []schemadescriptor.ClassField{schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "value"},
+					Type: schemadescriptor.Type{
+						Kind:      schemadescriptor.TypePrimitive,
+						Primitive: schemadescriptor.PrimitiveString,
+					},
+				}, schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "a"},
+					Type: schemadescriptor.Type{
+						Kind: schemadescriptor.TypeUnion,
+						Union: &schemadescriptor.UnionType{
+							Nullable: true,
+							Variants: []schemadescriptor.Type{schemadescriptor.Type{
+								Kind: schemadescriptor.TypeClass,
+								Mode: schemadescriptor.NonStreaming,
+								Name: "A",
+							}},
+						},
+					},
+				}},
+				Mode: schemadescriptor.NonStreaming,
+				Name: schemadescriptor.Name{Name: "B"},
+			}, schemadescriptor.ClassDef{
+				Fields: []schemadescriptor.ClassField{schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "value"},
+					Type: schemadescriptor.Type{
+						Kind:      schemadescriptor.TypePrimitive,
+						Primitive: schemadescriptor.PrimitiveString,
+					},
+				}, schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "b"},
+					Type: schemadescriptor.Type{
+						Kind: schemadescriptor.TypeUnion,
+						Union: &schemadescriptor.UnionType{
+							Nullable: true,
+							Variants: []schemadescriptor.Type{schemadescriptor.Type{
+								Kind: schemadescriptor.TypeClass,
+								Mode: schemadescriptor.NonStreaming,
+								Name: "B",
+							}},
+						},
+					},
+				}},
+				Mode: schemadescriptor.NonStreaming,
+				Name: schemadescriptor.Name{Name: "A"},
+			}},
+			Method:           "StaticRecursiveB",
+			RecursiveClasses: []string{"A", "B"},
+			Target: schemadescriptor.Type{
+				Kind: schemadescriptor.TypeClass,
+				Mode: schemadescriptor.NonStreaming,
+				Name: "B",
+			},
+			Version: 1,
+		},
+		Version: 2,
+	}
+}, "StaticRecursiveLoop": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
+			Name: "topic",
+			Type: &bamlparser.TypeExpr{
+				Kind:      bamlparser.KindPrimitive,
+				Primitive: "string",
+				Span: bamlparser.Span{
+					Col:   37,
+					End:   4317,
+					Line:  108,
+					Start: 4311,
+				},
+			},
+		}},
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "http://127.0.0.1:17654/v1",
+				},
+			}},
+		},
+		Method:   "StaticRecursiveLoop",
+		Prompt:   "\n    Summarize {{ topic }} as a self-referential loop.\n    {{ ctx.output_format }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Classes: []schemadescriptor.ClassDef{schemadescriptor.ClassDef{
+				Fields: []schemadescriptor.ClassField{schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "next"},
+					Type: schemadescriptor.Type{
+						Kind: schemadescriptor.TypeUnion,
+						Union: &schemadescriptor.UnionType{
+							Nullable: true,
+							Variants: []schemadescriptor.Type{schemadescriptor.Type{
+								Kind: schemadescriptor.TypeClass,
+								Mode: schemadescriptor.NonStreaming,
+								Name: "Loop",
+							}},
+						},
+					},
+				}},
+				Mode: schemadescriptor.NonStreaming,
+				Name: schemadescriptor.Name{Name: "Loop"},
+			}},
+			Method:           "StaticRecursiveLoop",
+			RecursiveClasses: []string{"Loop"},
+			Target: schemadescriptor.Type{
+				Kind: schemadescriptor.TypeClass,
+				Mode: schemadescriptor.NonStreaming,
+				Name: "Loop",
+			},
+			Version: 1,
+		},
+		Version: 2,
+	}
+}, "StaticRecursiveNode": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
+			Name: "topic",
+			Type: &bamlparser.TypeExpr{
+				Kind:      bamlparser.KindPrimitive,
+				Primitive: "string",
+				Span: bamlparser.Span{
+					Col:   37,
+					End:   2942,
+					Line:  73,
+					Start: 2936,
+				},
+			},
+		}},
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "http://127.0.0.1:17654/v1",
+				},
+			}},
+		},
+		Method:   "StaticRecursiveNode",
+		Prompt:   "\n    Summarize {{ topic }} as a linked list of notes.\n    {{ ctx.output_format }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Classes: []schemadescriptor.ClassDef{schemadescriptor.ClassDef{
+				Fields: []schemadescriptor.ClassField{schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "value"},
+					Type: schemadescriptor.Type{
+						Kind:      schemadescriptor.TypePrimitive,
+						Primitive: schemadescriptor.PrimitiveString,
+					},
+				}, schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "next"},
+					Type: schemadescriptor.Type{
+						Kind: schemadescriptor.TypeUnion,
+						Union: &schemadescriptor.UnionType{
+							Nullable: true,
+							Variants: []schemadescriptor.Type{schemadescriptor.Type{
+								Kind: schemadescriptor.TypeClass,
+								Mode: schemadescriptor.NonStreaming,
+								Name: "Node",
+							}},
+						},
+					},
+				}},
+				Mode: schemadescriptor.NonStreaming,
+				Name: schemadescriptor.Name{Name: "Node"},
+			}},
+			Method:           "StaticRecursiveNode",
+			RecursiveClasses: []string{"Node"},
+			Target: schemadescriptor.Type{
+				Kind: schemadescriptor.TypeClass,
+				Mode: schemadescriptor.NonStreaming,
+				Name: "Node",
+			},
+			Version: 1,
+		},
+		Version: 2,
+	}
+}, "StaticRecursiveNodeAnn": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
+			Name: "topic",
+			Type: &bamlparser.TypeExpr{
+				Kind:      bamlparser.KindPrimitive,
+				Primitive: "string",
+				Span: bamlparser.Span{
+					Col:   40,
+					End:   4913,
+					Line:  121,
+					Start: 4907,
+				},
+			},
+		}},
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "http://127.0.0.1:17654/v1",
+				},
+			}},
+		},
+		Method:   "StaticRecursiveNodeAnn",
+		Prompt:   "\n    Summarize {{ topic }} as an annotated linked list.\n    {{ ctx.output_format }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Classes: []schemadescriptor.ClassDef{schemadescriptor.ClassDef{
+				Fields: []schemadescriptor.ClassField{schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "value"},
+					Type: schemadescriptor.Type{
+						Kind:      schemadescriptor.TypePrimitive,
+						Meta:      schemadescriptor.TypeMeta{Stream: schemadescriptor.StreamingBehavior{Done: true}},
+						Primitive: schemadescriptor.PrimitiveString,
+					},
+				}, schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "next"},
+					Type: schemadescriptor.Type{
+						Kind: schemadescriptor.TypeUnion,
+						Union: &schemadescriptor.UnionType{
+							Nullable: true,
+							Variants: []schemadescriptor.Type{schemadescriptor.Type{
+								Kind: schemadescriptor.TypeClass,
+								Mode: schemadescriptor.NonStreaming,
+								Name: "NodeAnn",
+							}},
+						},
+					},
+				}},
+				Mode: schemadescriptor.NonStreaming,
+				Name: schemadescriptor.Name{Name: "NodeAnn"},
+			}},
+			Method:           "StaticRecursiveNodeAnn",
+			RecursiveClasses: []string{"NodeAnn"},
+			Target: schemadescriptor.Type{
+				Kind: schemadescriptor.TypeClass,
+				Mode: schemadescriptor.NonStreaming,
+				Name: "NodeAnn",
+			},
+			Version: 1,
+		},
+		Version: 2,
+	}
 }, "StaticRoleChat": func() promptdescriptor.Function {
 	return promptdescriptor.Function{
 		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
@@ -565,7 +991,17 @@ type StaticEnumAccessor func(*TypeBuilder) (Typed, error)
 var DynamicClasses = map[string]DynamicClassAccessor{}
 
 // StaticClasses maps static class names to their accessor functions
-var StaticClasses = map[string]StaticClassAccessor{"StaticAnswer": func(tb *TypeBuilder) (Typed, error) {
+var StaticClasses = map[string]StaticClassAccessor{"A": func(tb *TypeBuilder) (Typed, error) {
+	return tb.A()
+}, "B": func(tb *TypeBuilder) (Typed, error) {
+	return tb.B()
+}, "Loop": func(tb *TypeBuilder) (Typed, error) {
+	return tb.Loop()
+}, "Node": func(tb *TypeBuilder) (Typed, error) {
+	return tb.Node()
+}, "NodeAnn": func(tb *TypeBuilder) (Typed, error) {
+	return tb.NodeAnn()
+}, "StaticAnswer": func(tb *TypeBuilder) (Typed, error) {
 	return tb.StaticAnswer()
 }}
 

@@ -40,11 +40,18 @@ func CompareStaticStructured(nativeFlat, bamlFlat []byte, bundle *schema.Bundle)
 }
 
 // reorderStaticByBundle re-emits data with object keys canonicalized to the Bundle's
-// class-field order (recursing through classes and lists), so an order-only diff is
-// normalized away and a residual byte diff is a real content/order divergence. Maps
-// preserve insertion order (never reordered) and unions/other kinds pass through
-// compacted, exactly as the dynamic reorderer treats them. A null / non-object where
-// a class is expected passes through unchanged (nullable targets).
+// class-field order (recursing through classes, lists, and the direct nullable-class
+// edge), so an order-only diff is normalized away and a residual byte diff is a real
+// content/order divergence. It ALSO canonicalizes string-scalar ESCAPING to
+// SetEscapeHTML(false): the native SAP emits strings unescaped (coerce.go's
+// marshalJSON), but the production BAML-only callback returns encoding/json.Marshal
+// (which escapes `<` `>` `&` to </>/&, codegen_buildrequest.go), so a
+// value like `<tag> &` would otherwise byte-differ and force a false order mismatch →
+// a silent BAML-parse winner even though the two parses are identical. Canonicalizing
+// both sides to native's escaping makes the admitted family serve native for
+// HTML-metacharacter values too. Maps preserve insertion order (never reordered) and
+// other kinds pass through compacted. A null / non-object where a class is expected
+// passes through unchanged (nullable targets).
 func reorderStaticByBundle(data []byte, t schema.Type, bundle *schema.Bundle) ([]byte, error) {
 	switch t.Kind {
 	case schema.TypeClass:
@@ -141,16 +148,48 @@ func reorderStaticByBundle(data []byte, t schema.Type, bundle *schema.Bundle) ([
 		buf.WriteByte(']')
 		return buf.Bytes(), nil
 
+	case schema.TypeUnion:
+		// The admitted direct nullable-class edge (`Node?` / `B?` / `A?`): a null stays
+		// null; a present non-null value recurses into the lone class variant so a deep
+		// child class is reordered AND its string values escape-canonicalized. Any other
+		// union passes through canonicalized (native/BAML emit them in the same shape).
+		if t.Union != nil && t.Union.Nullable && len(t.Union.Variants) == 1 && !isJSONNull(data) {
+			return reorderStaticByBundle(data, t.Union.Variants[0], bundle)
+		}
+		return canonicalScalar(data)
+
 	default:
-		// Primitives, enums, literals, maps (insertion-order preserved), unions, and
-		// TypeTop pass through compacted — the native/BAML coercers already emit them
-		// in the same canonical shape.
-		return compactJSON(data)
+		// Primitives, enums, literals, maps (insertion-order preserved), and TypeTop:
+		// compacted, with string scalars re-escaped to native's SetEscapeHTML(false) so
+		// an escaping-only difference never reads as a content/order divergence.
+		return canonicalScalar(data)
 	}
 }
 
 func isJSONNull(data []byte) bool {
 	return bytes.Equal(bytes.TrimSpace(data), []byte("null"))
+}
+
+// canonicalScalar compacts data, and for a JSON STRING re-encodes it with
+// SetEscapeHTML(false) — matching the native SAP's string emission (coerce.go's
+// marshalJSON) so an HTML-metacharacter value (`<` `>` `&`) that the production
+// BAML-only callback escaped (encoding/json.Marshal) canonicalizes to the SAME bytes.
+// Non-string scalars fall back to plain compaction (their native/BAML forms already
+// agree).
+func canonicalScalar(data []byte) ([]byte, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) > 0 && trimmed[0] == '"' {
+		var s string
+		if err := stdjson.Unmarshal(trimmed, &s); err == nil {
+			var buf bytes.Buffer
+			enc := stdjson.NewEncoder(&buf)
+			enc.SetEscapeHTML(false)
+			if err := enc.Encode(s); err == nil {
+				return bytes.TrimRight(buf.Bytes(), "\n"), nil
+			}
+		}
+	}
+	return compactJSON(data)
 }
 
 func compactJSON(data []byte) ([]byte, error) {

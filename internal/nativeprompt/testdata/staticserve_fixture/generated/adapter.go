@@ -3545,6 +3545,4391 @@ func StaticPrimitiveArgs(adapter bamlutils.Adapter, rawInput any) (<-chan bamlut
 	return out, nil
 }
 
+type StaticRecursiveAInput struct {
+	Topic string `json:"topic"`
+}
+type StaticRecursiveAOutput struct {
+	kind         bamlutils.StreamResultKind
+	raw          string
+	reasoning    string
+	streamParsed *streamtypes.A
+	finalParsed  *types.A
+	err          error
+	reset        bool
+	metadata     *bamlutils.Metadata
+}
+
+func (v *StaticRecursiveAOutput) Kind() bamlutils.StreamResultKind {
+	return v.kind
+}
+func (v *StaticRecursiveAOutput) Stream() any {
+	return v.streamParsed
+}
+func (v *StaticRecursiveAOutput) Final() any {
+	return v.finalParsed
+}
+func (v *StaticRecursiveAOutput) Error() error {
+	return v.err
+}
+func (v *StaticRecursiveAOutput) Raw() string {
+	return v.raw
+}
+func (v *StaticRecursiveAOutput) Reasoning() string {
+	return v.reasoning
+}
+func (v *StaticRecursiveAOutput) Reset() bool {
+	return v.reset
+}
+func (v *StaticRecursiveAOutput) Metadata() *bamlutils.Metadata {
+	return v.metadata
+}
+
+var staticRecursiveAOutputPool = bamlutils.NewPool(func() *StaticRecursiveAOutput {
+	return &StaticRecursiveAOutput{}
+})
+
+func (v *StaticRecursiveAOutput) Release() {
+	if v == nil {
+		return
+	}
+	*v = StaticRecursiveAOutput{}
+	staticRecursiveAOutputPool.Put(v)
+}
+func getStaticRecursiveAOutput() *StaticRecursiveAOutput {
+	return staticRecursiveAOutputPool.Get()
+}
+func newStaticRecursiveAOutputError(err error) *StaticRecursiveAOutput {
+	r := getStaticRecursiveAOutput()
+	r.kind = bamlutils.StreamResultKindError
+	r.err = err
+	return r
+}
+func newStaticRecursiveAOutputMetadata(md *bamlutils.Metadata) *StaticRecursiveAOutput {
+	r := getStaticRecursiveAOutput()
+	r.kind = bamlutils.StreamResultKindMetadata
+	r.metadata = md
+	return r
+}
+func staticRecursiveANoRaw(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, skipPartials bool, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
+	options, err := makeLegacyStreamOptionsFromAdapter(adapter, clientOverride)
+	if err != nil {
+		return err
+	}
+	input, ok := rawInput.(*StaticRecursiveAInput)
+	if !ok {
+		return fmt.Errorf("invalid input type: expected *%s, got %T", "StaticRecursiveAInput", rawInput)
+	}
+	return runNoRawOrchestration(adapter, out, func() bamlutils.StreamResult {
+		__r := getStaticRecursiveAOutput()
+		__r.kind = bamlutils.StreamResultKindHeartbeat
+		return __r
+	}, func(err error) bamlutils.StreamResult {
+		return newStaticRecursiveAOutputError(err)
+	}, func(__r bamlutils.StreamResult) {
+		__r.Release()
+	}, plannedMetadata, func(md *bamlutils.Metadata) bamlutils.StreamResult {
+		return newStaticRecursiveAOutputMetadata(md)
+	}, func(beforeFinal func(), onTick func(context.Context, pkg.TickReason, pkg.FunctionLog) pkg.FunctionSignal) error {
+		streamOpts := append(options, bamlclient.WithOnTick(onTick))
+		if clientOverride != "" {
+			streamOpts = append(slices.Clone(streamOpts), bamlclient.WithClient(clientOverride))
+		}
+		stream, streamErr := bamlclient.Stream.StaticRecursiveA(adapter, input.Topic, streamOpts...)
+		if streamErr != nil {
+			__errR := newStaticRecursiveAOutputError(streamErr)
+			select {
+			case out <- __errR:
+			case <-adapter.Done():
+				__errR.Release()
+			}
+			return nil
+		}
+		for streamVal := range stream {
+			select {
+			case <-adapter.Done():
+				return nil
+			default:
+			}
+			if streamVal.IsError {
+				__errR := newStaticRecursiveAOutputError(streamVal.Error)
+				select {
+				case out <- __errR:
+				case <-adapter.Done():
+					__errR.Release()
+					return nil
+				}
+				continue
+			}
+			if streamVal.IsFinal {
+				__r := getStaticRecursiveAOutput()
+				__r.kind = bamlutils.StreamResultKindFinal
+				__r.finalParsed = streamVal.Final()
+				beforeFinal()
+				select {
+				case out <- __r:
+				case <-adapter.Done():
+					__r.Release()
+					return nil
+				}
+				continue
+			}
+			if !skipPartials {
+				if __partial := streamVal.Stream(); __partial != nil {
+					__r := getStaticRecursiveAOutput()
+					__r.kind = bamlutils.StreamResultKindStream
+					__r.streamParsed = __partial
+					select {
+					case out <- __r:
+					case <-adapter.Done():
+						__r.Release()
+						return nil
+					default:
+						__r.Release()
+					}
+				}
+			}
+		}
+		return nil
+	})
+}
+func staticRecursiveAFull(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, skipIntermediateParsing bool, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
+	options, err := makeLegacyStreamOptionsFromAdapter(adapter, clientOverride)
+	if err != nil {
+		return err
+	}
+	input, ok := rawInput.(*StaticRecursiveAInput)
+	if !ok {
+		return fmt.Errorf("invalid input type: expected *%s, got %T", "StaticRecursiveAInput", rawInput)
+	}
+	return runFullOrchestration(adapter, out, options, func() bamlutils.StreamResult {
+		__r := getStaticRecursiveAOutput()
+		__r.kind = bamlutils.StreamResultKindHeartbeat
+		return __r
+	}, func(err error, raw string) bamlutils.StreamResult {
+		__r := newStaticRecursiveAOutputError(err)
+		__r.raw = raw
+		return __r
+	}, func(__r bamlutils.StreamResult) {
+		__r.Release()
+	}, plannedMetadata, func(md *bamlutils.Metadata) bamlutils.StreamResult {
+		return newStaticRecursiveAOutputMetadata(md)
+	}, func(funcLog pkg.FunctionLog, extractor *sse.IncrementalExtractor, extractorMu *sync.Mutex) error {
+		calls, callsErr := funcLog.Calls()
+		if callsErr != nil {
+			return nil
+		}
+		callCount := len(calls)
+		if callCount == 0 {
+			return nil
+		}
+		lastCall := calls[callCount-1]
+		streamCall, ok := lastCall.(pkg.LLMStreamCall)
+		if !ok {
+			return nil
+		}
+		provider, provErr := streamCall.Provider()
+		if provErr != nil {
+			return nil
+		}
+		if !sse.IsDeltaProviderSupported(provider) {
+			resolved := false
+			for i := callCount - 1; i >= 0 && !resolved; i-- {
+				if sc, scOk := calls[i].(pkg.LLMStreamCall); scOk {
+					if cp, cpErr := sc.Provider(); cpErr == nil && sse.IsDeltaProviderSupported(cp) {
+						provider = cp
+						resolved = true
+					}
+				}
+			}
+			if !resolved {
+				if clientName, cnErr := streamCall.ClientName(); cnErr == nil && clientName != "" {
+					if reg := adapter.OriginalClientRegistry(); reg != nil {
+						for _, rc := range reg.Clients {
+							if rc != nil && rc.Name == clientName && rc.Provider != "" && sse.IsDeltaProviderSupported(rc.Provider) {
+								provider = rc.Provider
+								resolved = true
+								break
+							}
+						}
+					}
+					if !resolved {
+						if sp, spOk := introspected.ClientProvider[clientName]; spOk && sse.IsDeltaProviderSupported(sp) {
+							provider = sp
+						}
+					}
+				}
+			}
+		}
+		chunks, chunksErr := streamCall.SSEChunks()
+		if chunksErr != nil {
+			return nil
+		}
+		extractorMu.Lock()
+		defer extractorMu.Unlock()
+		extractResult := sse.ExtractFrom(extractor, callCount, provider, chunks)
+		if skipIntermediateParsing {
+			return nil
+		}
+		if extractResult.ParseableDelta == "" && extractResult.RawDelta == "" && extractResult.ReasoningDelta == "" && !extractResult.Reset {
+			return nil
+		}
+		parseable := extractResult.ParseableFull
+		parseableDelta := extractResult.ParseableDelta
+		rawDelta := extractResult.RawDelta
+		reasoningDelta := extractResult.ReasoningDelta
+		if parseable == "" || parseableDelta == "" {
+			select {
+			case <-adapter.Done():
+				return nil
+			default:
+			}
+			__r := getStaticRecursiveAOutput()
+			__r.kind = bamlutils.StreamResultKindStream
+			__r.raw = rawDelta
+			__r.reasoning = reasoningDelta
+			__r.reset = extractResult.Reset
+			if extractResult.Reset {
+				select {
+				case out <- __r:
+				case <-adapter.Done():
+					__r.Release()
+				}
+			} else {
+				select {
+				case out <- __r:
+				default:
+					__r.Release()
+				}
+			}
+			return nil
+		}
+		parsed, parseErr := bamlclient.ParseStream.StaticRecursiveA(adapter, parseable, options...)
+		if parseErr == nil {
+			select {
+			case <-adapter.Done():
+				return nil
+			default:
+			}
+			parsedPtr := &parsed
+			__r := getStaticRecursiveAOutput()
+			__r.kind = bamlutils.StreamResultKindStream
+			__r.raw = rawDelta
+			__r.reasoning = reasoningDelta
+			__r.streamParsed = parsedPtr
+			__r.reset = extractResult.Reset
+			if extractResult.Reset {
+				select {
+				case out <- __r:
+				case <-adapter.Done():
+					__r.Release()
+				}
+			} else {
+				select {
+				case out <- __r:
+				default:
+					__r.Release()
+				}
+			}
+		} else if extractResult.Reset {
+			select {
+			case <-adapter.Done():
+				return nil
+			default:
+			}
+			__r := getStaticRecursiveAOutput()
+			__r.kind = bamlutils.StreamResultKindStream
+			__r.raw = rawDelta
+			__r.reasoning = reasoningDelta
+			__r.reset = true
+			select {
+			case out <- __r:
+			case <-adapter.Done():
+				__r.Release()
+			}
+		}
+		return nil
+	}, func(opts []bamlclient.CallOptionFunc) (any, error) {
+		driveOpts := opts
+		if clientOverride != "" {
+			driveOpts = append(slices.Clone(opts), bamlclient.WithClient(clientOverride))
+		}
+		stream, streamErr := bamlclient.Stream.StaticRecursiveA(adapter, input.Topic, driveOpts...)
+		if streamErr != nil {
+			return nil, streamErr
+		}
+		var result any
+		var lastErr error
+		for streamVal := range stream {
+			if streamVal.IsError {
+				lastErr = streamVal.Error
+				continue
+			}
+			if streamVal.IsFinal {
+				result = streamVal.Final()
+			}
+		}
+		return result, lastErr
+	}, func(result any, raw string, reasoning string) bamlutils.StreamResult {
+		__r := getStaticRecursiveAOutput()
+		__r.kind = bamlutils.StreamResultKindFinal
+		__r.raw = raw
+		__r.reasoning = reasoning
+		if result != nil {
+			if ptr, ok := result.(*types.A); ok {
+				__r.finalParsed = ptr
+			} else if val, ok := result.(types.A); ok {
+				__r.finalParsed = &val
+			}
+		}
+		return __r
+	})
+}
+func staticRecursiveABuildRequest(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, provider string, retryPolicy *retry.Policy, fallbackChain []string, clientProviders map[string]string, legacyChildren map[string]bool, fallbackTargets map[string]string, fallbackRoundRobin map[string]*bamlutils.RoundRobinInfo, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
+	options, err := makeOptionsFromAdapter(adapter)
+	if err != nil {
+		return err
+	}
+	input, ok := rawInput.(*StaticRecursiveAInput)
+	if !ok {
+		return fmt.Errorf("invalid input type: expected *%s, got %T", "StaticRecursiveAInput", rawInput)
+	}
+	buildRequestFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+		callOpts := options
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(options), bamlclient.WithClient(clientOverride))
+		}
+		httpReq, err := bamlclient.StreamRequest.StaticRecursiveA(ctx, input.Topic, callOpts...)
+		if err != nil {
+			return nil, err
+		}
+		url, urlErr := httpReq.Url()
+		if urlErr != nil {
+			return nil, fmt.Errorf("failed to get URL: %w", urlErr)
+		}
+		method, methodErr := httpReq.Method()
+		if methodErr != nil {
+			return nil, fmt.Errorf("failed to get method: %w", methodErr)
+		}
+		headers, headersErr := httpReq.Headers()
+		if headersErr != nil {
+			return nil, fmt.Errorf("failed to get headers: %w", headersErr)
+		}
+		body, bodyErr := httpReq.Body()
+		if bodyErr != nil {
+			return nil, fmt.Errorf("failed to get body: %w", bodyErr)
+		}
+		bodyText, bodyTextErr := body.Text()
+		if bodyTextErr != nil {
+			return nil, fmt.Errorf("failed to get body text: %w", bodyTextErr)
+		}
+		req := &llmhttp.Request{
+			Body:    bodyText,
+			Headers: headers,
+			Method:  method,
+			URL:     url,
+		}
+		return req, nil
+	}
+	buildBedrockStreamRequestFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+		callOpts := options
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(options), bamlclient.WithClient(clientOverride))
+		}
+		httpReq, err := bamlclient.Request.StaticRecursiveA(ctx, input.Topic, callOpts...)
+		if err != nil {
+			return nil, err
+		}
+		url, urlErr := httpReq.Url()
+		if urlErr != nil {
+			return nil, fmt.Errorf("failed to get URL: %w", urlErr)
+		}
+		method, methodErr := httpReq.Method()
+		if methodErr != nil {
+			return nil, fmt.Errorf("failed to get method: %w", methodErr)
+		}
+		headers, headersErr := httpReq.Headers()
+		if headersErr != nil {
+			return nil, fmt.Errorf("failed to get headers: %w", headersErr)
+		}
+		body, bodyErr := httpReq.Body()
+		if bodyErr != nil {
+			return nil, fmt.Errorf("failed to get body: %w", bodyErr)
+		}
+		bodyText, bodyTextErr := body.Text()
+		if bodyTextErr != nil {
+			return nil, fmt.Errorf("failed to get body text: %w", bodyTextErr)
+		}
+		req := &llmhttp.Request{
+			Body:    bodyText,
+			Headers: headers,
+			Method:  method,
+			URL:     url,
+		}
+		req.URL = strings.Replace(req.URL, "/converse", "/converse-stream", 1)
+		if req.Headers == nil {
+			req.Headers = make(map[string]string)
+		}
+		req.Headers["Accept"] = llmhttp.AWSStreamContentType
+		selectedClient := clientOverride
+		if selectedClient == "" {
+			selectedClient = introspected.FunctionClient["StaticRecursiveA"]
+		}
+		var (
+			bedrockEndpointURL        string
+			bedrockEndpointURLPresent bool
+			bedrockRegion             string
+			bedrockRegionPresent      bool
+			bedrockCreds              llmhttp.BedrockCredentialSelector
+		)
+		if bedrockOpts, ok := introspected.BedrockClientOptionsByName[selectedClient]; ok {
+			bedrockEndpointURL, _ = bedrockOpts.EndpointURL.Resolve()
+			bedrockEndpointURLPresent = bedrockOpts.EndpointURL.IsSet()
+			bedrockRegion, _ = bedrockOpts.Region.Resolve()
+			bedrockRegionPresent = bedrockOpts.Region.IsSet()
+			bedrockCreds.AccessKeyID, _ = bedrockOpts.Credentials.AccessKeyID.Resolve()
+			bedrockCreds.AccessKeyIDPresent = bedrockOpts.Credentials.AccessKeyID.IsSet()
+			bedrockCreds.SecretAccessKey, _ = bedrockOpts.Credentials.SecretAccessKey.Resolve()
+			bedrockCreds.SecretAccessKeyPresent = bedrockOpts.Credentials.SecretAccessKey.IsSet()
+			bedrockCreds.SessionToken, _ = bedrockOpts.Credentials.SessionToken.Resolve()
+			bedrockCreds.SessionTokenPresent = bedrockOpts.Credentials.SessionToken.IsSet()
+			bedrockCreds.Profile, _ = bedrockOpts.Credentials.Profile.Resolve()
+			bedrockCreds.ProfilePresent = bedrockOpts.Credentials.Profile.IsSet()
+		}
+		if authErr := llmhttp.AttachBedrockAuthForClient(ctx, req, llmhttp.BedrockClientAuthOptions{
+			ClientName:         selectedClient,
+			Credentials:        bedrockCreds,
+			EndpointURL:        bedrockEndpointURL,
+			EndpointURLPresent: bedrockEndpointURLPresent,
+			Region:             bedrockRegion,
+			RegionPresent:      bedrockRegionPresent,
+		}); authErr != nil {
+			return nil, authErr
+		}
+		return req, nil
+	}
+	parseStreamFn := func(ctx context.Context, accumulated string) (any, error) {
+		return bamlclient.ParseStream.StaticRecursiveA(ctx, accumulated, options...)
+	}
+	parseFinalFn := func(ctx context.Context, accumulated string) (any, error) {
+		return bamlclient.Parse.StaticRecursiveA(ctx, accumulated, options...)
+	}
+	newResultFn := func(kind bamlutils.StreamResultKind, stream any, final any, raw string, reasoning string, err error, reset bool) bamlutils.StreamResult {
+		r := getStaticRecursiveAOutput()
+		r.kind = kind
+		r.raw = raw
+		r.reasoning = reasoning
+		r.err = err
+		r.reset = reset
+		if stream != nil {
+			if v, ok := stream.(*streamtypes.A); ok {
+				r.streamParsed = v
+			} else if v, ok := stream.(streamtypes.A); ok {
+				r.streamParsed = &v
+			}
+		}
+		if final != nil {
+			if v, ok := final.(*types.A); ok {
+				r.finalParsed = v
+			} else if v, ok := final.(types.A); ok {
+				r.finalParsed = &v
+			}
+		}
+		return r
+	}
+	legacyStreamChildFn := func(ctx context.Context, clientOverride string, _ string, needsRaw bool, sendHeartbeat func()) (any, string, string, error) {
+		callOpts, childOptsErr := makeLegacyChildOptionsFromAdapter(adapter, clientOverride)
+		if childOptsErr != nil {
+			return nil, "", "", childOptsErr
+		}
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(callOpts), bamlclient.WithClient(clientOverride))
+		}
+		return runLegacyChildStream(ctx, needsRaw, sendHeartbeat, func(onTick func(context.Context, pkg.TickReason, pkg.FunctionLog) pkg.FunctionSignal) (any, error) {
+			opts := append(callOpts, bamlclient.WithOnTick(onTick))
+			stream, streamErr := bamlclient.Stream.StaticRecursiveA(ctx, input.Topic, opts...)
+			if streamErr != nil {
+				return nil, streamErr
+			}
+			var result any
+			var lastErr error
+			for streamVal := range stream {
+				if streamVal.IsError {
+					lastErr = streamVal.Error
+					continue
+				}
+				if streamVal.IsFinal {
+					result = streamVal.Final()
+				}
+			}
+			return result, lastErr
+		})
+	}
+	streamConfig := &buildrequest.StreamConfig{
+		BuildBedrockStreamRequest: buildBedrockStreamRequestFn,
+		ClientOverride:            clientOverride,
+		ClientProviders:           clientProviders,
+		FallbackChain:             fallbackChain,
+		FallbackRoundRobin:        fallbackRoundRobin,
+		FallbackTargets:           fallbackTargets,
+		IncludeReasoning:          adapter.IncludeReasoning(),
+		LegacyChildren:            legacyChildren,
+		LegacyStreamChild:         legacyStreamChildFn,
+		MetadataPlan:              plannedMetadata,
+		NeedsPartials:             adapter.StreamMode().NeedsPartials(),
+		NeedsRaw:                  adapter.StreamMode().NeedsRaw(),
+		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
+			return newStaticRecursiveAOutputMetadata(md)
+		},
+		Provider:    provider,
+		RetryPolicy: retryPolicy,
+	}
+	__httpClient := llmhttp.DefaultClient
+	if __c := adapter.HTTPClient(); __c != nil {
+		__httpClient = __c
+	}
+	go func() {
+		defer close(out)
+		gorecovery.GoHandler(func(err error) {
+			__errR := newResultFn(bamlutils.StreamResultKindError, nil, nil, "", "", err, false)
+			select {
+			case out <- __errR:
+			case <-adapter.Done():
+				__errR.Release()
+			}
+		}, func() error {
+			return buildrequest.RunStreamOrchestration(adapter, out, streamConfig, __httpClient, buildRequestFn, parseStreamFn, parseFinalFn, newResultFn)
+		})
+	}()
+	return nil
+}
+func staticRecursiveABuildCallRequest(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, provider string, retryPolicy *retry.Policy, fallbackChain []string, clientProviders map[string]string, legacyChildren map[string]bool, fallbackTargets map[string]string, fallbackRoundRobin map[string]*bamlutils.RoundRobinInfo, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
+	options, err := makeOptionsFromAdapter(adapter)
+	if err != nil {
+		return err
+	}
+	input, ok := rawInput.(*StaticRecursiveAInput)
+	if !ok {
+		return fmt.Errorf("invalid input type: expected *%s, got %T", "StaticRecursiveAInput", rawInput)
+	}
+	buildRequestFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+		callOpts := options
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(options), bamlclient.WithClient(clientOverride))
+		}
+		httpReq, err := bamlclient.Request.StaticRecursiveA(ctx, input.Topic, callOpts...)
+		if err != nil {
+			return nil, err
+		}
+		url, urlErr := httpReq.Url()
+		if urlErr != nil {
+			return nil, fmt.Errorf("failed to get URL: %w", urlErr)
+		}
+		method, methodErr := httpReq.Method()
+		if methodErr != nil {
+			return nil, fmt.Errorf("failed to get method: %w", methodErr)
+		}
+		headers, headersErr := httpReq.Headers()
+		if headersErr != nil {
+			return nil, fmt.Errorf("failed to get headers: %w", headersErr)
+		}
+		body, bodyErr := httpReq.Body()
+		if bodyErr != nil {
+			return nil, fmt.Errorf("failed to get body: %w", bodyErr)
+		}
+		bodyText, bodyTextErr := body.Text()
+		if bodyTextErr != nil {
+			return nil, fmt.Errorf("failed to get body text: %w", bodyTextErr)
+		}
+		req := &llmhttp.Request{
+			Body:    bodyText,
+			Headers: headers,
+			Method:  method,
+			URL:     url,
+		}
+		selectedClient := clientOverride
+		if selectedClient == "" {
+			selectedClient = introspected.FunctionClient["StaticRecursiveA"]
+		}
+		var (
+			bedrockEndpointURL        string
+			bedrockEndpointURLPresent bool
+			bedrockRegion             string
+			bedrockRegionPresent      bool
+			bedrockCreds              llmhttp.BedrockCredentialSelector
+		)
+		if bedrockOpts, ok := introspected.BedrockClientOptionsByName[selectedClient]; ok {
+			bedrockEndpointURL, _ = bedrockOpts.EndpointURL.Resolve()
+			bedrockEndpointURLPresent = bedrockOpts.EndpointURL.IsSet()
+			bedrockRegion, _ = bedrockOpts.Region.Resolve()
+			bedrockRegionPresent = bedrockOpts.Region.IsSet()
+			bedrockCreds.AccessKeyID, _ = bedrockOpts.Credentials.AccessKeyID.Resolve()
+			bedrockCreds.AccessKeyIDPresent = bedrockOpts.Credentials.AccessKeyID.IsSet()
+			bedrockCreds.SecretAccessKey, _ = bedrockOpts.Credentials.SecretAccessKey.Resolve()
+			bedrockCreds.SecretAccessKeyPresent = bedrockOpts.Credentials.SecretAccessKey.IsSet()
+			bedrockCreds.SessionToken, _ = bedrockOpts.Credentials.SessionToken.Resolve()
+			bedrockCreds.SessionTokenPresent = bedrockOpts.Credentials.SessionToken.IsSet()
+			bedrockCreds.Profile, _ = bedrockOpts.Credentials.Profile.Resolve()
+			bedrockCreds.ProfilePresent = bedrockOpts.Credentials.Profile.IsSet()
+		}
+		if authErr := llmhttp.AttachBedrockAuthForClient(ctx, req, llmhttp.BedrockClientAuthOptions{
+			ClientName:         selectedClient,
+			Credentials:        bedrockCreds,
+			EndpointURL:        bedrockEndpointURL,
+			EndpointURLPresent: bedrockEndpointURLPresent,
+			Region:             bedrockRegion,
+			RegionPresent:      bedrockRegionPresent,
+		}); authErr != nil {
+			return nil, authErr
+		}
+		return req, nil
+	}
+	parseFinalFn := func(ctx context.Context, text string) (any, error) {
+		return bamlclient.Parse.StaticRecursiveA(ctx, text, options...)
+	}
+	newResultFn := func(kind bamlutils.StreamResultKind, stream any, final any, raw string, reasoning string, err error, reset bool) bamlutils.StreamResult {
+		r := getStaticRecursiveAOutput()
+		r.kind = kind
+		r.raw = raw
+		r.reasoning = reasoning
+		r.err = err
+		r.reset = reset
+		if final != nil {
+			if v, ok := final.(*types.A); ok {
+				r.finalParsed = v
+			} else if v, ok := final.(types.A); ok {
+				r.finalParsed = &v
+			}
+		}
+		return r
+	}
+	legacyCallChildFn := func(ctx context.Context, clientOverride string, _ string, needsRaw bool, sendHeartbeat func()) (any, string, string, error) {
+		callOpts, childOptsErr := makeLegacyChildOptionsFromAdapter(adapter, clientOverride)
+		if childOptsErr != nil {
+			return nil, "", "", childOptsErr
+		}
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(callOpts), bamlclient.WithClient(clientOverride))
+		}
+		return runLegacyChildStream(ctx, needsRaw, sendHeartbeat, func(onTick func(context.Context, pkg.TickReason, pkg.FunctionLog) pkg.FunctionSignal) (any, error) {
+			opts := append(callOpts, bamlclient.WithOnTick(onTick))
+			stream, streamErr := bamlclient.Stream.StaticRecursiveA(ctx, input.Topic, opts...)
+			if streamErr != nil {
+				return nil, streamErr
+			}
+			var result any
+			var lastErr error
+			for streamVal := range stream {
+				if streamVal.IsError {
+					lastErr = streamVal.Error
+					continue
+				}
+				if streamVal.IsFinal {
+					result = streamVal.Final()
+				}
+			}
+			return result, lastErr
+		})
+	}
+	callConfig := &buildrequest.CallConfig{
+		ClientOverride:     clientOverride,
+		ClientProviders:    clientProviders,
+		FallbackChain:      fallbackChain,
+		FallbackRoundRobin: fallbackRoundRobin,
+		FallbackTargets:    fallbackTargets,
+		IncludeReasoning:   adapter.IncludeReasoning(),
+		LegacyCallChild:    legacyCallChildFn,
+		LegacyChildren:     legacyChildren,
+		MetadataPlan:       plannedMetadata,
+		NeedsRaw:           adapter.StreamMode().NeedsRaw(),
+		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
+			return newStaticRecursiveAOutputMetadata(md)
+		},
+		Provider:    provider,
+		RetryPolicy: retryPolicy,
+	}
+	__httpClient := llmhttp.DefaultClient
+	if __c := adapter.HTTPClient(); __c != nil {
+		__httpClient = __c
+	}
+	__staticServe := deBAMLStaticServe(adapter)
+	__staticShadow := deBAMLStaticShadow(adapter)
+	if __staticServe != nil || __staticShadow != nil {
+		if __staticDescriptor, __staticOK := introspected.StaticPromptDescriptor("StaticRecursiveA"); __staticOK {
+			if __staticServe != nil {
+				installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+					__pr, __pe := bamlclient.Parse.StaticRecursiveA(__pctx, __raw, options...)
+					if __pe != nil {
+						return nil, __pe
+					}
+					return json.Marshal(__pr)
+				}, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[types.A](__cj)
+					return __dv, __de
+				})
+			} else {
+				installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+					__pr, __pe := bamlclient.Parse.StaticRecursiveA(__pctx, __raw, options...)
+					if __pe != nil {
+						return nil, __pe
+					}
+					return json.Marshal(__pr)
+				}, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[types.A](__cj)
+					return __dv, __de
+				})
+			}
+		}
+	}
+	go func() {
+		defer close(out)
+		gorecovery.GoHandler(func(err error) {
+			__errR := newResultFn(bamlutils.StreamResultKindError, nil, nil, "", "", err, false)
+			select {
+			case out <- __errR:
+			case <-adapter.Done():
+				__errR.Release()
+			}
+		}, func() error {
+			return buildrequest.RunCallOrchestration(adapter, out, callConfig, __httpClient, buildRequestFn, parseFinalFn, buildrequest.ExtractResponseContent, buildrequest.ExtractResponseContentBytes, buildrequest.ExtractResponseContentBorrowed, newResultFn)
+		})
+	}()
+	return nil
+}
+func StaticRecursiveA(adapter bamlutils.Adapter, rawInput any) (<-chan bamlutils.StreamResult, error) {
+	out := make(chan bamlutils.StreamResult, 100)
+	var err error
+	mode := adapter.StreamMode()
+	__retryClient := buildrequest.ResolvePrimaryClient(adapter, introspected.FunctionClient["StaticRecursiveA"])
+	__effective := __retryClient
+	var __rrInfo *bamlutils.RoundRobinInfo
+	__rrEffective, __rrInfoUpgrade, __rrErr := buildrequest.ResolveEffectiveClient(adapter, introspected.FunctionClient["StaticRecursiveA"], introspected.FallbackChains, introspected.ClientProvider, introspected.RoundRobinCoordinator)
+	if __rrErr != nil {
+		return nil, __rrErr
+	}
+	__effective = __rrEffective
+	__rrInfo = __rrInfoUpgrade
+	__reg := adapter.OriginalClientRegistry()
+	// Try non-streaming BuildRequest path for /call and /call-with-raw
+	if introspected.Request != nil && (mode == bamlutils.StreamModeCall || mode == bamlutils.StreamModeCallWithRaw) {
+		provider := buildrequest.ResolveClientProvider(__reg, __effective, introspected.ClientProvider)
+		if provider != "" && buildrequest.IsCallProviderSupported(provider) {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__planned := buildrequest.BuildSingleProviderPlanForClient(__effective, provider, retryPolicy, buildrequest.BuildRequestAPIRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveABuildCallRequest(adapter, rawInput, out, provider, retryPolicy, nil, nil, nil, nil, nil, __planned, __effective)
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+	}
+	// Try streaming BuildRequest path for /stream and /stream-with-raw
+	if introspected.StreamRequest != nil && (mode == bamlutils.StreamModeStream || mode == bamlutils.StreamModeStreamWithRaw) {
+		provider := buildrequest.ResolveClientProvider(__reg, __effective, introspected.ClientProvider)
+		if provider != "" && buildrequest.IsProviderSupported(provider) {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__planned := buildrequest.BuildSingleProviderPlanForClient(__effective, provider, retryPolicy, buildrequest.BuildRequestAPIStreamRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveABuildRequest(adapter, rawInput, out, provider, retryPolicy, nil, nil, nil, nil, nil, __planned, __effective)
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+		__resolution, __fbErr := buildrequest.ResolveFallbackChainPlanForClient(__reg, __effective, introspected.FallbackChains, introspected.ClientProvider, buildrequest.IsProviderSupported, buildrequest.PreferAdvancer(adapter, introspected.RoundRobinCoordinator))
+		if __fbErr != nil {
+			return nil, __fbErr
+		}
+		if __resolution != nil && len(__resolution.Chain) > 0 {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__planned := buildrequest.BuildFallbackChainPlanFromResolution(__effective, __resolution, retryPolicy, buildrequest.BuildRequestAPIStreamRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveABuildRequest(adapter, rawInput, out, "", retryPolicy, __resolution.Chain, __resolution.Providers, __resolution.LegacyChildren, __resolution.Targets, __resolution.NestedRoundRobin, __planned, "")
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+	}
+	// Bridge: /call and /call-with-raw via StreamRequest when Request is unavailable
+	if introspected.StreamRequest != nil && (mode == bamlutils.StreamModeCall || mode == bamlutils.StreamModeCallWithRaw) {
+		provider := buildrequest.ResolveClientProvider(__reg, __effective, introspected.ClientProvider)
+		if provider != "" && buildrequest.IsProviderSupported(provider) {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__planned := buildrequest.BuildSingleProviderPlanForClient(__effective, provider, retryPolicy, buildrequest.BuildRequestAPIStreamRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveABuildRequest(adapter, rawInput, out, provider, retryPolicy, nil, nil, nil, nil, nil, __planned, __effective)
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+		__resolution, __fbErr := buildrequest.ResolveFallbackChainPlanForClient(__reg, __effective, introspected.FallbackChains, introspected.ClientProvider, buildrequest.IsProviderSupported, buildrequest.PreferAdvancer(adapter, introspected.RoundRobinCoordinator))
+		if __fbErr != nil {
+			return nil, __fbErr
+		}
+		if __resolution != nil && len(__resolution.Chain) > 0 {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__callChainSupported := len(__resolution.LegacyChildren) == 0
+			if __callChainSupported {
+				for _, __provider := range __resolution.Providers {
+					if !buildrequest.IsCallProviderSupported(__provider) {
+						__callChainSupported = false
+						break
+					}
+				}
+			}
+			if __callChainSupported {
+				__planned := buildrequest.BuildFallbackChainPlanFromResolution(__effective, __resolution, retryPolicy, buildrequest.BuildRequestAPIRequest)
+				__planned.RoundRobin = __rrInfo
+				err = staticRecursiveABuildCallRequest(adapter, rawInput, out, "", retryPolicy, __resolution.Chain, __resolution.Providers, __resolution.LegacyChildren, __resolution.Targets, __resolution.NestedRoundRobin, __planned, "")
+				if err != nil {
+					return nil, err
+				}
+				return out, nil
+			}
+			__planned := buildrequest.BuildFallbackChainPlanFromResolution(__effective, __resolution, retryPolicy, buildrequest.BuildRequestAPIStreamRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveABuildRequest(adapter, rawInput, out, "", retryPolicy, __resolution.Chain, __resolution.Providers, __resolution.LegacyChildren, __resolution.Targets, __resolution.NestedRoundRobin, __planned, "")
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+	}
+	// Legacy path: CallStream + OnTick (for unsupported/empty providers or BAML versions without a BuildRequest surface)
+	__legacyRetryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+	__legacyPredicate := buildrequest.IsProviderSupported
+	__plannedLegacy := buildrequest.BuildLegacyMetadataPlanForClient(__reg, __effective, introspected.ClientProvider[__effective], introspected.FallbackChains, introspected.ClientProvider, __legacyPredicate, __legacyRetryPolicy)
+	__plannedLegacy.RoundRobin = __rrInfo
+	__legacyClientOverride := __effective
+	buildrequest.LogLegacyClassification(adapter, "StaticRecursiveA", __plannedLegacy)
+	switch mode {
+	case bamlutils.StreamModeCall:
+		err = staticRecursiveANoRaw(adapter, rawInput, out, true, __plannedLegacy, __legacyClientOverride)
+	case bamlutils.StreamModeStream:
+		err = staticRecursiveANoRaw(adapter, rawInput, out, false, __plannedLegacy, __legacyClientOverride)
+	case bamlutils.StreamModeCallWithRaw:
+		err = staticRecursiveAFull(adapter, rawInput, out, true, __plannedLegacy, __legacyClientOverride)
+	case bamlutils.StreamModeStreamWithRaw:
+		err = staticRecursiveAFull(adapter, rawInput, out, false, __plannedLegacy, __legacyClientOverride)
+	default:
+		err = fmt.Errorf("unknown StreamMode: %d", mode)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+type StaticRecursiveBInput struct {
+	Topic string `json:"topic"`
+}
+type StaticRecursiveBOutput struct {
+	kind         bamlutils.StreamResultKind
+	raw          string
+	reasoning    string
+	streamParsed *streamtypes.B
+	finalParsed  *types.B
+	err          error
+	reset        bool
+	metadata     *bamlutils.Metadata
+}
+
+func (v *StaticRecursiveBOutput) Kind() bamlutils.StreamResultKind {
+	return v.kind
+}
+func (v *StaticRecursiveBOutput) Stream() any {
+	return v.streamParsed
+}
+func (v *StaticRecursiveBOutput) Final() any {
+	return v.finalParsed
+}
+func (v *StaticRecursiveBOutput) Error() error {
+	return v.err
+}
+func (v *StaticRecursiveBOutput) Raw() string {
+	return v.raw
+}
+func (v *StaticRecursiveBOutput) Reasoning() string {
+	return v.reasoning
+}
+func (v *StaticRecursiveBOutput) Reset() bool {
+	return v.reset
+}
+func (v *StaticRecursiveBOutput) Metadata() *bamlutils.Metadata {
+	return v.metadata
+}
+
+var staticRecursiveBOutputPool = bamlutils.NewPool(func() *StaticRecursiveBOutput {
+	return &StaticRecursiveBOutput{}
+})
+
+func (v *StaticRecursiveBOutput) Release() {
+	if v == nil {
+		return
+	}
+	*v = StaticRecursiveBOutput{}
+	staticRecursiveBOutputPool.Put(v)
+}
+func getStaticRecursiveBOutput() *StaticRecursiveBOutput {
+	return staticRecursiveBOutputPool.Get()
+}
+func newStaticRecursiveBOutputError(err error) *StaticRecursiveBOutput {
+	r := getStaticRecursiveBOutput()
+	r.kind = bamlutils.StreamResultKindError
+	r.err = err
+	return r
+}
+func newStaticRecursiveBOutputMetadata(md *bamlutils.Metadata) *StaticRecursiveBOutput {
+	r := getStaticRecursiveBOutput()
+	r.kind = bamlutils.StreamResultKindMetadata
+	r.metadata = md
+	return r
+}
+func staticRecursiveBNoRaw(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, skipPartials bool, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
+	options, err := makeLegacyStreamOptionsFromAdapter(adapter, clientOverride)
+	if err != nil {
+		return err
+	}
+	input, ok := rawInput.(*StaticRecursiveBInput)
+	if !ok {
+		return fmt.Errorf("invalid input type: expected *%s, got %T", "StaticRecursiveBInput", rawInput)
+	}
+	return runNoRawOrchestration(adapter, out, func() bamlutils.StreamResult {
+		__r := getStaticRecursiveBOutput()
+		__r.kind = bamlutils.StreamResultKindHeartbeat
+		return __r
+	}, func(err error) bamlutils.StreamResult {
+		return newStaticRecursiveBOutputError(err)
+	}, func(__r bamlutils.StreamResult) {
+		__r.Release()
+	}, plannedMetadata, func(md *bamlutils.Metadata) bamlutils.StreamResult {
+		return newStaticRecursiveBOutputMetadata(md)
+	}, func(beforeFinal func(), onTick func(context.Context, pkg.TickReason, pkg.FunctionLog) pkg.FunctionSignal) error {
+		streamOpts := append(options, bamlclient.WithOnTick(onTick))
+		if clientOverride != "" {
+			streamOpts = append(slices.Clone(streamOpts), bamlclient.WithClient(clientOverride))
+		}
+		stream, streamErr := bamlclient.Stream.StaticRecursiveB(adapter, input.Topic, streamOpts...)
+		if streamErr != nil {
+			__errR := newStaticRecursiveBOutputError(streamErr)
+			select {
+			case out <- __errR:
+			case <-adapter.Done():
+				__errR.Release()
+			}
+			return nil
+		}
+		for streamVal := range stream {
+			select {
+			case <-adapter.Done():
+				return nil
+			default:
+			}
+			if streamVal.IsError {
+				__errR := newStaticRecursiveBOutputError(streamVal.Error)
+				select {
+				case out <- __errR:
+				case <-adapter.Done():
+					__errR.Release()
+					return nil
+				}
+				continue
+			}
+			if streamVal.IsFinal {
+				__r := getStaticRecursiveBOutput()
+				__r.kind = bamlutils.StreamResultKindFinal
+				__r.finalParsed = streamVal.Final()
+				beforeFinal()
+				select {
+				case out <- __r:
+				case <-adapter.Done():
+					__r.Release()
+					return nil
+				}
+				continue
+			}
+			if !skipPartials {
+				if __partial := streamVal.Stream(); __partial != nil {
+					__r := getStaticRecursiveBOutput()
+					__r.kind = bamlutils.StreamResultKindStream
+					__r.streamParsed = __partial
+					select {
+					case out <- __r:
+					case <-adapter.Done():
+						__r.Release()
+						return nil
+					default:
+						__r.Release()
+					}
+				}
+			}
+		}
+		return nil
+	})
+}
+func staticRecursiveBFull(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, skipIntermediateParsing bool, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
+	options, err := makeLegacyStreamOptionsFromAdapter(adapter, clientOverride)
+	if err != nil {
+		return err
+	}
+	input, ok := rawInput.(*StaticRecursiveBInput)
+	if !ok {
+		return fmt.Errorf("invalid input type: expected *%s, got %T", "StaticRecursiveBInput", rawInput)
+	}
+	return runFullOrchestration(adapter, out, options, func() bamlutils.StreamResult {
+		__r := getStaticRecursiveBOutput()
+		__r.kind = bamlutils.StreamResultKindHeartbeat
+		return __r
+	}, func(err error, raw string) bamlutils.StreamResult {
+		__r := newStaticRecursiveBOutputError(err)
+		__r.raw = raw
+		return __r
+	}, func(__r bamlutils.StreamResult) {
+		__r.Release()
+	}, plannedMetadata, func(md *bamlutils.Metadata) bamlutils.StreamResult {
+		return newStaticRecursiveBOutputMetadata(md)
+	}, func(funcLog pkg.FunctionLog, extractor *sse.IncrementalExtractor, extractorMu *sync.Mutex) error {
+		calls, callsErr := funcLog.Calls()
+		if callsErr != nil {
+			return nil
+		}
+		callCount := len(calls)
+		if callCount == 0 {
+			return nil
+		}
+		lastCall := calls[callCount-1]
+		streamCall, ok := lastCall.(pkg.LLMStreamCall)
+		if !ok {
+			return nil
+		}
+		provider, provErr := streamCall.Provider()
+		if provErr != nil {
+			return nil
+		}
+		if !sse.IsDeltaProviderSupported(provider) {
+			resolved := false
+			for i := callCount - 1; i >= 0 && !resolved; i-- {
+				if sc, scOk := calls[i].(pkg.LLMStreamCall); scOk {
+					if cp, cpErr := sc.Provider(); cpErr == nil && sse.IsDeltaProviderSupported(cp) {
+						provider = cp
+						resolved = true
+					}
+				}
+			}
+			if !resolved {
+				if clientName, cnErr := streamCall.ClientName(); cnErr == nil && clientName != "" {
+					if reg := adapter.OriginalClientRegistry(); reg != nil {
+						for _, rc := range reg.Clients {
+							if rc != nil && rc.Name == clientName && rc.Provider != "" && sse.IsDeltaProviderSupported(rc.Provider) {
+								provider = rc.Provider
+								resolved = true
+								break
+							}
+						}
+					}
+					if !resolved {
+						if sp, spOk := introspected.ClientProvider[clientName]; spOk && sse.IsDeltaProviderSupported(sp) {
+							provider = sp
+						}
+					}
+				}
+			}
+		}
+		chunks, chunksErr := streamCall.SSEChunks()
+		if chunksErr != nil {
+			return nil
+		}
+		extractorMu.Lock()
+		defer extractorMu.Unlock()
+		extractResult := sse.ExtractFrom(extractor, callCount, provider, chunks)
+		if skipIntermediateParsing {
+			return nil
+		}
+		if extractResult.ParseableDelta == "" && extractResult.RawDelta == "" && extractResult.ReasoningDelta == "" && !extractResult.Reset {
+			return nil
+		}
+		parseable := extractResult.ParseableFull
+		parseableDelta := extractResult.ParseableDelta
+		rawDelta := extractResult.RawDelta
+		reasoningDelta := extractResult.ReasoningDelta
+		if parseable == "" || parseableDelta == "" {
+			select {
+			case <-adapter.Done():
+				return nil
+			default:
+			}
+			__r := getStaticRecursiveBOutput()
+			__r.kind = bamlutils.StreamResultKindStream
+			__r.raw = rawDelta
+			__r.reasoning = reasoningDelta
+			__r.reset = extractResult.Reset
+			if extractResult.Reset {
+				select {
+				case out <- __r:
+				case <-adapter.Done():
+					__r.Release()
+				}
+			} else {
+				select {
+				case out <- __r:
+				default:
+					__r.Release()
+				}
+			}
+			return nil
+		}
+		parsed, parseErr := bamlclient.ParseStream.StaticRecursiveB(adapter, parseable, options...)
+		if parseErr == nil {
+			select {
+			case <-adapter.Done():
+				return nil
+			default:
+			}
+			parsedPtr := &parsed
+			__r := getStaticRecursiveBOutput()
+			__r.kind = bamlutils.StreamResultKindStream
+			__r.raw = rawDelta
+			__r.reasoning = reasoningDelta
+			__r.streamParsed = parsedPtr
+			__r.reset = extractResult.Reset
+			if extractResult.Reset {
+				select {
+				case out <- __r:
+				case <-adapter.Done():
+					__r.Release()
+				}
+			} else {
+				select {
+				case out <- __r:
+				default:
+					__r.Release()
+				}
+			}
+		} else if extractResult.Reset {
+			select {
+			case <-adapter.Done():
+				return nil
+			default:
+			}
+			__r := getStaticRecursiveBOutput()
+			__r.kind = bamlutils.StreamResultKindStream
+			__r.raw = rawDelta
+			__r.reasoning = reasoningDelta
+			__r.reset = true
+			select {
+			case out <- __r:
+			case <-adapter.Done():
+				__r.Release()
+			}
+		}
+		return nil
+	}, func(opts []bamlclient.CallOptionFunc) (any, error) {
+		driveOpts := opts
+		if clientOverride != "" {
+			driveOpts = append(slices.Clone(opts), bamlclient.WithClient(clientOverride))
+		}
+		stream, streamErr := bamlclient.Stream.StaticRecursiveB(adapter, input.Topic, driveOpts...)
+		if streamErr != nil {
+			return nil, streamErr
+		}
+		var result any
+		var lastErr error
+		for streamVal := range stream {
+			if streamVal.IsError {
+				lastErr = streamVal.Error
+				continue
+			}
+			if streamVal.IsFinal {
+				result = streamVal.Final()
+			}
+		}
+		return result, lastErr
+	}, func(result any, raw string, reasoning string) bamlutils.StreamResult {
+		__r := getStaticRecursiveBOutput()
+		__r.kind = bamlutils.StreamResultKindFinal
+		__r.raw = raw
+		__r.reasoning = reasoning
+		if result != nil {
+			if ptr, ok := result.(*types.B); ok {
+				__r.finalParsed = ptr
+			} else if val, ok := result.(types.B); ok {
+				__r.finalParsed = &val
+			}
+		}
+		return __r
+	})
+}
+func staticRecursiveBBuildRequest(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, provider string, retryPolicy *retry.Policy, fallbackChain []string, clientProviders map[string]string, legacyChildren map[string]bool, fallbackTargets map[string]string, fallbackRoundRobin map[string]*bamlutils.RoundRobinInfo, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
+	options, err := makeOptionsFromAdapter(adapter)
+	if err != nil {
+		return err
+	}
+	input, ok := rawInput.(*StaticRecursiveBInput)
+	if !ok {
+		return fmt.Errorf("invalid input type: expected *%s, got %T", "StaticRecursiveBInput", rawInput)
+	}
+	buildRequestFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+		callOpts := options
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(options), bamlclient.WithClient(clientOverride))
+		}
+		httpReq, err := bamlclient.StreamRequest.StaticRecursiveB(ctx, input.Topic, callOpts...)
+		if err != nil {
+			return nil, err
+		}
+		url, urlErr := httpReq.Url()
+		if urlErr != nil {
+			return nil, fmt.Errorf("failed to get URL: %w", urlErr)
+		}
+		method, methodErr := httpReq.Method()
+		if methodErr != nil {
+			return nil, fmt.Errorf("failed to get method: %w", methodErr)
+		}
+		headers, headersErr := httpReq.Headers()
+		if headersErr != nil {
+			return nil, fmt.Errorf("failed to get headers: %w", headersErr)
+		}
+		body, bodyErr := httpReq.Body()
+		if bodyErr != nil {
+			return nil, fmt.Errorf("failed to get body: %w", bodyErr)
+		}
+		bodyText, bodyTextErr := body.Text()
+		if bodyTextErr != nil {
+			return nil, fmt.Errorf("failed to get body text: %w", bodyTextErr)
+		}
+		req := &llmhttp.Request{
+			Body:    bodyText,
+			Headers: headers,
+			Method:  method,
+			URL:     url,
+		}
+		return req, nil
+	}
+	buildBedrockStreamRequestFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+		callOpts := options
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(options), bamlclient.WithClient(clientOverride))
+		}
+		httpReq, err := bamlclient.Request.StaticRecursiveB(ctx, input.Topic, callOpts...)
+		if err != nil {
+			return nil, err
+		}
+		url, urlErr := httpReq.Url()
+		if urlErr != nil {
+			return nil, fmt.Errorf("failed to get URL: %w", urlErr)
+		}
+		method, methodErr := httpReq.Method()
+		if methodErr != nil {
+			return nil, fmt.Errorf("failed to get method: %w", methodErr)
+		}
+		headers, headersErr := httpReq.Headers()
+		if headersErr != nil {
+			return nil, fmt.Errorf("failed to get headers: %w", headersErr)
+		}
+		body, bodyErr := httpReq.Body()
+		if bodyErr != nil {
+			return nil, fmt.Errorf("failed to get body: %w", bodyErr)
+		}
+		bodyText, bodyTextErr := body.Text()
+		if bodyTextErr != nil {
+			return nil, fmt.Errorf("failed to get body text: %w", bodyTextErr)
+		}
+		req := &llmhttp.Request{
+			Body:    bodyText,
+			Headers: headers,
+			Method:  method,
+			URL:     url,
+		}
+		req.URL = strings.Replace(req.URL, "/converse", "/converse-stream", 1)
+		if req.Headers == nil {
+			req.Headers = make(map[string]string)
+		}
+		req.Headers["Accept"] = llmhttp.AWSStreamContentType
+		selectedClient := clientOverride
+		if selectedClient == "" {
+			selectedClient = introspected.FunctionClient["StaticRecursiveB"]
+		}
+		var (
+			bedrockEndpointURL        string
+			bedrockEndpointURLPresent bool
+			bedrockRegion             string
+			bedrockRegionPresent      bool
+			bedrockCreds              llmhttp.BedrockCredentialSelector
+		)
+		if bedrockOpts, ok := introspected.BedrockClientOptionsByName[selectedClient]; ok {
+			bedrockEndpointURL, _ = bedrockOpts.EndpointURL.Resolve()
+			bedrockEndpointURLPresent = bedrockOpts.EndpointURL.IsSet()
+			bedrockRegion, _ = bedrockOpts.Region.Resolve()
+			bedrockRegionPresent = bedrockOpts.Region.IsSet()
+			bedrockCreds.AccessKeyID, _ = bedrockOpts.Credentials.AccessKeyID.Resolve()
+			bedrockCreds.AccessKeyIDPresent = bedrockOpts.Credentials.AccessKeyID.IsSet()
+			bedrockCreds.SecretAccessKey, _ = bedrockOpts.Credentials.SecretAccessKey.Resolve()
+			bedrockCreds.SecretAccessKeyPresent = bedrockOpts.Credentials.SecretAccessKey.IsSet()
+			bedrockCreds.SessionToken, _ = bedrockOpts.Credentials.SessionToken.Resolve()
+			bedrockCreds.SessionTokenPresent = bedrockOpts.Credentials.SessionToken.IsSet()
+			bedrockCreds.Profile, _ = bedrockOpts.Credentials.Profile.Resolve()
+			bedrockCreds.ProfilePresent = bedrockOpts.Credentials.Profile.IsSet()
+		}
+		if authErr := llmhttp.AttachBedrockAuthForClient(ctx, req, llmhttp.BedrockClientAuthOptions{
+			ClientName:         selectedClient,
+			Credentials:        bedrockCreds,
+			EndpointURL:        bedrockEndpointURL,
+			EndpointURLPresent: bedrockEndpointURLPresent,
+			Region:             bedrockRegion,
+			RegionPresent:      bedrockRegionPresent,
+		}); authErr != nil {
+			return nil, authErr
+		}
+		return req, nil
+	}
+	parseStreamFn := func(ctx context.Context, accumulated string) (any, error) {
+		return bamlclient.ParseStream.StaticRecursiveB(ctx, accumulated, options...)
+	}
+	parseFinalFn := func(ctx context.Context, accumulated string) (any, error) {
+		return bamlclient.Parse.StaticRecursiveB(ctx, accumulated, options...)
+	}
+	newResultFn := func(kind bamlutils.StreamResultKind, stream any, final any, raw string, reasoning string, err error, reset bool) bamlutils.StreamResult {
+		r := getStaticRecursiveBOutput()
+		r.kind = kind
+		r.raw = raw
+		r.reasoning = reasoning
+		r.err = err
+		r.reset = reset
+		if stream != nil {
+			if v, ok := stream.(*streamtypes.B); ok {
+				r.streamParsed = v
+			} else if v, ok := stream.(streamtypes.B); ok {
+				r.streamParsed = &v
+			}
+		}
+		if final != nil {
+			if v, ok := final.(*types.B); ok {
+				r.finalParsed = v
+			} else if v, ok := final.(types.B); ok {
+				r.finalParsed = &v
+			}
+		}
+		return r
+	}
+	legacyStreamChildFn := func(ctx context.Context, clientOverride string, _ string, needsRaw bool, sendHeartbeat func()) (any, string, string, error) {
+		callOpts, childOptsErr := makeLegacyChildOptionsFromAdapter(adapter, clientOverride)
+		if childOptsErr != nil {
+			return nil, "", "", childOptsErr
+		}
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(callOpts), bamlclient.WithClient(clientOverride))
+		}
+		return runLegacyChildStream(ctx, needsRaw, sendHeartbeat, func(onTick func(context.Context, pkg.TickReason, pkg.FunctionLog) pkg.FunctionSignal) (any, error) {
+			opts := append(callOpts, bamlclient.WithOnTick(onTick))
+			stream, streamErr := bamlclient.Stream.StaticRecursiveB(ctx, input.Topic, opts...)
+			if streamErr != nil {
+				return nil, streamErr
+			}
+			var result any
+			var lastErr error
+			for streamVal := range stream {
+				if streamVal.IsError {
+					lastErr = streamVal.Error
+					continue
+				}
+				if streamVal.IsFinal {
+					result = streamVal.Final()
+				}
+			}
+			return result, lastErr
+		})
+	}
+	streamConfig := &buildrequest.StreamConfig{
+		BuildBedrockStreamRequest: buildBedrockStreamRequestFn,
+		ClientOverride:            clientOverride,
+		ClientProviders:           clientProviders,
+		FallbackChain:             fallbackChain,
+		FallbackRoundRobin:        fallbackRoundRobin,
+		FallbackTargets:           fallbackTargets,
+		IncludeReasoning:          adapter.IncludeReasoning(),
+		LegacyChildren:            legacyChildren,
+		LegacyStreamChild:         legacyStreamChildFn,
+		MetadataPlan:              plannedMetadata,
+		NeedsPartials:             adapter.StreamMode().NeedsPartials(),
+		NeedsRaw:                  adapter.StreamMode().NeedsRaw(),
+		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
+			return newStaticRecursiveBOutputMetadata(md)
+		},
+		Provider:    provider,
+		RetryPolicy: retryPolicy,
+	}
+	__httpClient := llmhttp.DefaultClient
+	if __c := adapter.HTTPClient(); __c != nil {
+		__httpClient = __c
+	}
+	go func() {
+		defer close(out)
+		gorecovery.GoHandler(func(err error) {
+			__errR := newResultFn(bamlutils.StreamResultKindError, nil, nil, "", "", err, false)
+			select {
+			case out <- __errR:
+			case <-adapter.Done():
+				__errR.Release()
+			}
+		}, func() error {
+			return buildrequest.RunStreamOrchestration(adapter, out, streamConfig, __httpClient, buildRequestFn, parseStreamFn, parseFinalFn, newResultFn)
+		})
+	}()
+	return nil
+}
+func staticRecursiveBBuildCallRequest(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, provider string, retryPolicy *retry.Policy, fallbackChain []string, clientProviders map[string]string, legacyChildren map[string]bool, fallbackTargets map[string]string, fallbackRoundRobin map[string]*bamlutils.RoundRobinInfo, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
+	options, err := makeOptionsFromAdapter(adapter)
+	if err != nil {
+		return err
+	}
+	input, ok := rawInput.(*StaticRecursiveBInput)
+	if !ok {
+		return fmt.Errorf("invalid input type: expected *%s, got %T", "StaticRecursiveBInput", rawInput)
+	}
+	buildRequestFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+		callOpts := options
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(options), bamlclient.WithClient(clientOverride))
+		}
+		httpReq, err := bamlclient.Request.StaticRecursiveB(ctx, input.Topic, callOpts...)
+		if err != nil {
+			return nil, err
+		}
+		url, urlErr := httpReq.Url()
+		if urlErr != nil {
+			return nil, fmt.Errorf("failed to get URL: %w", urlErr)
+		}
+		method, methodErr := httpReq.Method()
+		if methodErr != nil {
+			return nil, fmt.Errorf("failed to get method: %w", methodErr)
+		}
+		headers, headersErr := httpReq.Headers()
+		if headersErr != nil {
+			return nil, fmt.Errorf("failed to get headers: %w", headersErr)
+		}
+		body, bodyErr := httpReq.Body()
+		if bodyErr != nil {
+			return nil, fmt.Errorf("failed to get body: %w", bodyErr)
+		}
+		bodyText, bodyTextErr := body.Text()
+		if bodyTextErr != nil {
+			return nil, fmt.Errorf("failed to get body text: %w", bodyTextErr)
+		}
+		req := &llmhttp.Request{
+			Body:    bodyText,
+			Headers: headers,
+			Method:  method,
+			URL:     url,
+		}
+		selectedClient := clientOverride
+		if selectedClient == "" {
+			selectedClient = introspected.FunctionClient["StaticRecursiveB"]
+		}
+		var (
+			bedrockEndpointURL        string
+			bedrockEndpointURLPresent bool
+			bedrockRegion             string
+			bedrockRegionPresent      bool
+			bedrockCreds              llmhttp.BedrockCredentialSelector
+		)
+		if bedrockOpts, ok := introspected.BedrockClientOptionsByName[selectedClient]; ok {
+			bedrockEndpointURL, _ = bedrockOpts.EndpointURL.Resolve()
+			bedrockEndpointURLPresent = bedrockOpts.EndpointURL.IsSet()
+			bedrockRegion, _ = bedrockOpts.Region.Resolve()
+			bedrockRegionPresent = bedrockOpts.Region.IsSet()
+			bedrockCreds.AccessKeyID, _ = bedrockOpts.Credentials.AccessKeyID.Resolve()
+			bedrockCreds.AccessKeyIDPresent = bedrockOpts.Credentials.AccessKeyID.IsSet()
+			bedrockCreds.SecretAccessKey, _ = bedrockOpts.Credentials.SecretAccessKey.Resolve()
+			bedrockCreds.SecretAccessKeyPresent = bedrockOpts.Credentials.SecretAccessKey.IsSet()
+			bedrockCreds.SessionToken, _ = bedrockOpts.Credentials.SessionToken.Resolve()
+			bedrockCreds.SessionTokenPresent = bedrockOpts.Credentials.SessionToken.IsSet()
+			bedrockCreds.Profile, _ = bedrockOpts.Credentials.Profile.Resolve()
+			bedrockCreds.ProfilePresent = bedrockOpts.Credentials.Profile.IsSet()
+		}
+		if authErr := llmhttp.AttachBedrockAuthForClient(ctx, req, llmhttp.BedrockClientAuthOptions{
+			ClientName:         selectedClient,
+			Credentials:        bedrockCreds,
+			EndpointURL:        bedrockEndpointURL,
+			EndpointURLPresent: bedrockEndpointURLPresent,
+			Region:             bedrockRegion,
+			RegionPresent:      bedrockRegionPresent,
+		}); authErr != nil {
+			return nil, authErr
+		}
+		return req, nil
+	}
+	parseFinalFn := func(ctx context.Context, text string) (any, error) {
+		return bamlclient.Parse.StaticRecursiveB(ctx, text, options...)
+	}
+	newResultFn := func(kind bamlutils.StreamResultKind, stream any, final any, raw string, reasoning string, err error, reset bool) bamlutils.StreamResult {
+		r := getStaticRecursiveBOutput()
+		r.kind = kind
+		r.raw = raw
+		r.reasoning = reasoning
+		r.err = err
+		r.reset = reset
+		if final != nil {
+			if v, ok := final.(*types.B); ok {
+				r.finalParsed = v
+			} else if v, ok := final.(types.B); ok {
+				r.finalParsed = &v
+			}
+		}
+		return r
+	}
+	legacyCallChildFn := func(ctx context.Context, clientOverride string, _ string, needsRaw bool, sendHeartbeat func()) (any, string, string, error) {
+		callOpts, childOptsErr := makeLegacyChildOptionsFromAdapter(adapter, clientOverride)
+		if childOptsErr != nil {
+			return nil, "", "", childOptsErr
+		}
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(callOpts), bamlclient.WithClient(clientOverride))
+		}
+		return runLegacyChildStream(ctx, needsRaw, sendHeartbeat, func(onTick func(context.Context, pkg.TickReason, pkg.FunctionLog) pkg.FunctionSignal) (any, error) {
+			opts := append(callOpts, bamlclient.WithOnTick(onTick))
+			stream, streamErr := bamlclient.Stream.StaticRecursiveB(ctx, input.Topic, opts...)
+			if streamErr != nil {
+				return nil, streamErr
+			}
+			var result any
+			var lastErr error
+			for streamVal := range stream {
+				if streamVal.IsError {
+					lastErr = streamVal.Error
+					continue
+				}
+				if streamVal.IsFinal {
+					result = streamVal.Final()
+				}
+			}
+			return result, lastErr
+		})
+	}
+	callConfig := &buildrequest.CallConfig{
+		ClientOverride:     clientOverride,
+		ClientProviders:    clientProviders,
+		FallbackChain:      fallbackChain,
+		FallbackRoundRobin: fallbackRoundRobin,
+		FallbackTargets:    fallbackTargets,
+		IncludeReasoning:   adapter.IncludeReasoning(),
+		LegacyCallChild:    legacyCallChildFn,
+		LegacyChildren:     legacyChildren,
+		MetadataPlan:       plannedMetadata,
+		NeedsRaw:           adapter.StreamMode().NeedsRaw(),
+		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
+			return newStaticRecursiveBOutputMetadata(md)
+		},
+		Provider:    provider,
+		RetryPolicy: retryPolicy,
+	}
+	__httpClient := llmhttp.DefaultClient
+	if __c := adapter.HTTPClient(); __c != nil {
+		__httpClient = __c
+	}
+	__staticServe := deBAMLStaticServe(adapter)
+	__staticShadow := deBAMLStaticShadow(adapter)
+	if __staticServe != nil || __staticShadow != nil {
+		if __staticDescriptor, __staticOK := introspected.StaticPromptDescriptor("StaticRecursiveB"); __staticOK {
+			if __staticServe != nil {
+				installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+					__pr, __pe := bamlclient.Parse.StaticRecursiveB(__pctx, __raw, options...)
+					if __pe != nil {
+						return nil, __pe
+					}
+					return json.Marshal(__pr)
+				}, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[types.B](__cj)
+					return __dv, __de
+				})
+			} else {
+				installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+					__pr, __pe := bamlclient.Parse.StaticRecursiveB(__pctx, __raw, options...)
+					if __pe != nil {
+						return nil, __pe
+					}
+					return json.Marshal(__pr)
+				}, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[types.B](__cj)
+					return __dv, __de
+				})
+			}
+		}
+	}
+	go func() {
+		defer close(out)
+		gorecovery.GoHandler(func(err error) {
+			__errR := newResultFn(bamlutils.StreamResultKindError, nil, nil, "", "", err, false)
+			select {
+			case out <- __errR:
+			case <-adapter.Done():
+				__errR.Release()
+			}
+		}, func() error {
+			return buildrequest.RunCallOrchestration(adapter, out, callConfig, __httpClient, buildRequestFn, parseFinalFn, buildrequest.ExtractResponseContent, buildrequest.ExtractResponseContentBytes, buildrequest.ExtractResponseContentBorrowed, newResultFn)
+		})
+	}()
+	return nil
+}
+func StaticRecursiveB(adapter bamlutils.Adapter, rawInput any) (<-chan bamlutils.StreamResult, error) {
+	out := make(chan bamlutils.StreamResult, 100)
+	var err error
+	mode := adapter.StreamMode()
+	__retryClient := buildrequest.ResolvePrimaryClient(adapter, introspected.FunctionClient["StaticRecursiveB"])
+	__effective := __retryClient
+	var __rrInfo *bamlutils.RoundRobinInfo
+	__rrEffective, __rrInfoUpgrade, __rrErr := buildrequest.ResolveEffectiveClient(adapter, introspected.FunctionClient["StaticRecursiveB"], introspected.FallbackChains, introspected.ClientProvider, introspected.RoundRobinCoordinator)
+	if __rrErr != nil {
+		return nil, __rrErr
+	}
+	__effective = __rrEffective
+	__rrInfo = __rrInfoUpgrade
+	__reg := adapter.OriginalClientRegistry()
+	// Try non-streaming BuildRequest path for /call and /call-with-raw
+	if introspected.Request != nil && (mode == bamlutils.StreamModeCall || mode == bamlutils.StreamModeCallWithRaw) {
+		provider := buildrequest.ResolveClientProvider(__reg, __effective, introspected.ClientProvider)
+		if provider != "" && buildrequest.IsCallProviderSupported(provider) {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__planned := buildrequest.BuildSingleProviderPlanForClient(__effective, provider, retryPolicy, buildrequest.BuildRequestAPIRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveBBuildCallRequest(adapter, rawInput, out, provider, retryPolicy, nil, nil, nil, nil, nil, __planned, __effective)
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+	}
+	// Try streaming BuildRequest path for /stream and /stream-with-raw
+	if introspected.StreamRequest != nil && (mode == bamlutils.StreamModeStream || mode == bamlutils.StreamModeStreamWithRaw) {
+		provider := buildrequest.ResolveClientProvider(__reg, __effective, introspected.ClientProvider)
+		if provider != "" && buildrequest.IsProviderSupported(provider) {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__planned := buildrequest.BuildSingleProviderPlanForClient(__effective, provider, retryPolicy, buildrequest.BuildRequestAPIStreamRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveBBuildRequest(adapter, rawInput, out, provider, retryPolicy, nil, nil, nil, nil, nil, __planned, __effective)
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+		__resolution, __fbErr := buildrequest.ResolveFallbackChainPlanForClient(__reg, __effective, introspected.FallbackChains, introspected.ClientProvider, buildrequest.IsProviderSupported, buildrequest.PreferAdvancer(adapter, introspected.RoundRobinCoordinator))
+		if __fbErr != nil {
+			return nil, __fbErr
+		}
+		if __resolution != nil && len(__resolution.Chain) > 0 {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__planned := buildrequest.BuildFallbackChainPlanFromResolution(__effective, __resolution, retryPolicy, buildrequest.BuildRequestAPIStreamRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveBBuildRequest(adapter, rawInput, out, "", retryPolicy, __resolution.Chain, __resolution.Providers, __resolution.LegacyChildren, __resolution.Targets, __resolution.NestedRoundRobin, __planned, "")
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+	}
+	// Bridge: /call and /call-with-raw via StreamRequest when Request is unavailable
+	if introspected.StreamRequest != nil && (mode == bamlutils.StreamModeCall || mode == bamlutils.StreamModeCallWithRaw) {
+		provider := buildrequest.ResolveClientProvider(__reg, __effective, introspected.ClientProvider)
+		if provider != "" && buildrequest.IsProviderSupported(provider) {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__planned := buildrequest.BuildSingleProviderPlanForClient(__effective, provider, retryPolicy, buildrequest.BuildRequestAPIStreamRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveBBuildRequest(adapter, rawInput, out, provider, retryPolicy, nil, nil, nil, nil, nil, __planned, __effective)
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+		__resolution, __fbErr := buildrequest.ResolveFallbackChainPlanForClient(__reg, __effective, introspected.FallbackChains, introspected.ClientProvider, buildrequest.IsProviderSupported, buildrequest.PreferAdvancer(adapter, introspected.RoundRobinCoordinator))
+		if __fbErr != nil {
+			return nil, __fbErr
+		}
+		if __resolution != nil && len(__resolution.Chain) > 0 {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__callChainSupported := len(__resolution.LegacyChildren) == 0
+			if __callChainSupported {
+				for _, __provider := range __resolution.Providers {
+					if !buildrequest.IsCallProviderSupported(__provider) {
+						__callChainSupported = false
+						break
+					}
+				}
+			}
+			if __callChainSupported {
+				__planned := buildrequest.BuildFallbackChainPlanFromResolution(__effective, __resolution, retryPolicy, buildrequest.BuildRequestAPIRequest)
+				__planned.RoundRobin = __rrInfo
+				err = staticRecursiveBBuildCallRequest(adapter, rawInput, out, "", retryPolicy, __resolution.Chain, __resolution.Providers, __resolution.LegacyChildren, __resolution.Targets, __resolution.NestedRoundRobin, __planned, "")
+				if err != nil {
+					return nil, err
+				}
+				return out, nil
+			}
+			__planned := buildrequest.BuildFallbackChainPlanFromResolution(__effective, __resolution, retryPolicy, buildrequest.BuildRequestAPIStreamRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveBBuildRequest(adapter, rawInput, out, "", retryPolicy, __resolution.Chain, __resolution.Providers, __resolution.LegacyChildren, __resolution.Targets, __resolution.NestedRoundRobin, __planned, "")
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+	}
+	// Legacy path: CallStream + OnTick (for unsupported/empty providers or BAML versions without a BuildRequest surface)
+	__legacyRetryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+	__legacyPredicate := buildrequest.IsProviderSupported
+	__plannedLegacy := buildrequest.BuildLegacyMetadataPlanForClient(__reg, __effective, introspected.ClientProvider[__effective], introspected.FallbackChains, introspected.ClientProvider, __legacyPredicate, __legacyRetryPolicy)
+	__plannedLegacy.RoundRobin = __rrInfo
+	__legacyClientOverride := __effective
+	buildrequest.LogLegacyClassification(adapter, "StaticRecursiveB", __plannedLegacy)
+	switch mode {
+	case bamlutils.StreamModeCall:
+		err = staticRecursiveBNoRaw(adapter, rawInput, out, true, __plannedLegacy, __legacyClientOverride)
+	case bamlutils.StreamModeStream:
+		err = staticRecursiveBNoRaw(adapter, rawInput, out, false, __plannedLegacy, __legacyClientOverride)
+	case bamlutils.StreamModeCallWithRaw:
+		err = staticRecursiveBFull(adapter, rawInput, out, true, __plannedLegacy, __legacyClientOverride)
+	case bamlutils.StreamModeStreamWithRaw:
+		err = staticRecursiveBFull(adapter, rawInput, out, false, __plannedLegacy, __legacyClientOverride)
+	default:
+		err = fmt.Errorf("unknown StreamMode: %d", mode)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+type StaticRecursiveLoopInput struct {
+	Topic string `json:"topic"`
+}
+type StaticRecursiveLoopOutput struct {
+	kind         bamlutils.StreamResultKind
+	raw          string
+	reasoning    string
+	streamParsed *streamtypes.Loop
+	finalParsed  *types.Loop
+	err          error
+	reset        bool
+	metadata     *bamlutils.Metadata
+}
+
+func (v *StaticRecursiveLoopOutput) Kind() bamlutils.StreamResultKind {
+	return v.kind
+}
+func (v *StaticRecursiveLoopOutput) Stream() any {
+	return v.streamParsed
+}
+func (v *StaticRecursiveLoopOutput) Final() any {
+	return v.finalParsed
+}
+func (v *StaticRecursiveLoopOutput) Error() error {
+	return v.err
+}
+func (v *StaticRecursiveLoopOutput) Raw() string {
+	return v.raw
+}
+func (v *StaticRecursiveLoopOutput) Reasoning() string {
+	return v.reasoning
+}
+func (v *StaticRecursiveLoopOutput) Reset() bool {
+	return v.reset
+}
+func (v *StaticRecursiveLoopOutput) Metadata() *bamlutils.Metadata {
+	return v.metadata
+}
+
+var staticRecursiveLoopOutputPool = bamlutils.NewPool(func() *StaticRecursiveLoopOutput {
+	return &StaticRecursiveLoopOutput{}
+})
+
+func (v *StaticRecursiveLoopOutput) Release() {
+	if v == nil {
+		return
+	}
+	*v = StaticRecursiveLoopOutput{}
+	staticRecursiveLoopOutputPool.Put(v)
+}
+func getStaticRecursiveLoopOutput() *StaticRecursiveLoopOutput {
+	return staticRecursiveLoopOutputPool.Get()
+}
+func newStaticRecursiveLoopOutputError(err error) *StaticRecursiveLoopOutput {
+	r := getStaticRecursiveLoopOutput()
+	r.kind = bamlutils.StreamResultKindError
+	r.err = err
+	return r
+}
+func newStaticRecursiveLoopOutputMetadata(md *bamlutils.Metadata) *StaticRecursiveLoopOutput {
+	r := getStaticRecursiveLoopOutput()
+	r.kind = bamlutils.StreamResultKindMetadata
+	r.metadata = md
+	return r
+}
+func staticRecursiveLoopNoRaw(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, skipPartials bool, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
+	options, err := makeLegacyStreamOptionsFromAdapter(adapter, clientOverride)
+	if err != nil {
+		return err
+	}
+	input, ok := rawInput.(*StaticRecursiveLoopInput)
+	if !ok {
+		return fmt.Errorf("invalid input type: expected *%s, got %T", "StaticRecursiveLoopInput", rawInput)
+	}
+	return runNoRawOrchestration(adapter, out, func() bamlutils.StreamResult {
+		__r := getStaticRecursiveLoopOutput()
+		__r.kind = bamlutils.StreamResultKindHeartbeat
+		return __r
+	}, func(err error) bamlutils.StreamResult {
+		return newStaticRecursiveLoopOutputError(err)
+	}, func(__r bamlutils.StreamResult) {
+		__r.Release()
+	}, plannedMetadata, func(md *bamlutils.Metadata) bamlutils.StreamResult {
+		return newStaticRecursiveLoopOutputMetadata(md)
+	}, func(beforeFinal func(), onTick func(context.Context, pkg.TickReason, pkg.FunctionLog) pkg.FunctionSignal) error {
+		streamOpts := append(options, bamlclient.WithOnTick(onTick))
+		if clientOverride != "" {
+			streamOpts = append(slices.Clone(streamOpts), bamlclient.WithClient(clientOverride))
+		}
+		stream, streamErr := bamlclient.Stream.StaticRecursiveLoop(adapter, input.Topic, streamOpts...)
+		if streamErr != nil {
+			__errR := newStaticRecursiveLoopOutputError(streamErr)
+			select {
+			case out <- __errR:
+			case <-adapter.Done():
+				__errR.Release()
+			}
+			return nil
+		}
+		for streamVal := range stream {
+			select {
+			case <-adapter.Done():
+				return nil
+			default:
+			}
+			if streamVal.IsError {
+				__errR := newStaticRecursiveLoopOutputError(streamVal.Error)
+				select {
+				case out <- __errR:
+				case <-adapter.Done():
+					__errR.Release()
+					return nil
+				}
+				continue
+			}
+			if streamVal.IsFinal {
+				__r := getStaticRecursiveLoopOutput()
+				__r.kind = bamlutils.StreamResultKindFinal
+				__r.finalParsed = streamVal.Final()
+				beforeFinal()
+				select {
+				case out <- __r:
+				case <-adapter.Done():
+					__r.Release()
+					return nil
+				}
+				continue
+			}
+			if !skipPartials {
+				if __partial := streamVal.Stream(); __partial != nil {
+					__r := getStaticRecursiveLoopOutput()
+					__r.kind = bamlutils.StreamResultKindStream
+					__r.streamParsed = __partial
+					select {
+					case out <- __r:
+					case <-adapter.Done():
+						__r.Release()
+						return nil
+					default:
+						__r.Release()
+					}
+				}
+			}
+		}
+		return nil
+	})
+}
+func staticRecursiveLoopFull(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, skipIntermediateParsing bool, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
+	options, err := makeLegacyStreamOptionsFromAdapter(adapter, clientOverride)
+	if err != nil {
+		return err
+	}
+	input, ok := rawInput.(*StaticRecursiveLoopInput)
+	if !ok {
+		return fmt.Errorf("invalid input type: expected *%s, got %T", "StaticRecursiveLoopInput", rawInput)
+	}
+	return runFullOrchestration(adapter, out, options, func() bamlutils.StreamResult {
+		__r := getStaticRecursiveLoopOutput()
+		__r.kind = bamlutils.StreamResultKindHeartbeat
+		return __r
+	}, func(err error, raw string) bamlutils.StreamResult {
+		__r := newStaticRecursiveLoopOutputError(err)
+		__r.raw = raw
+		return __r
+	}, func(__r bamlutils.StreamResult) {
+		__r.Release()
+	}, plannedMetadata, func(md *bamlutils.Metadata) bamlutils.StreamResult {
+		return newStaticRecursiveLoopOutputMetadata(md)
+	}, func(funcLog pkg.FunctionLog, extractor *sse.IncrementalExtractor, extractorMu *sync.Mutex) error {
+		calls, callsErr := funcLog.Calls()
+		if callsErr != nil {
+			return nil
+		}
+		callCount := len(calls)
+		if callCount == 0 {
+			return nil
+		}
+		lastCall := calls[callCount-1]
+		streamCall, ok := lastCall.(pkg.LLMStreamCall)
+		if !ok {
+			return nil
+		}
+		provider, provErr := streamCall.Provider()
+		if provErr != nil {
+			return nil
+		}
+		if !sse.IsDeltaProviderSupported(provider) {
+			resolved := false
+			for i := callCount - 1; i >= 0 && !resolved; i-- {
+				if sc, scOk := calls[i].(pkg.LLMStreamCall); scOk {
+					if cp, cpErr := sc.Provider(); cpErr == nil && sse.IsDeltaProviderSupported(cp) {
+						provider = cp
+						resolved = true
+					}
+				}
+			}
+			if !resolved {
+				if clientName, cnErr := streamCall.ClientName(); cnErr == nil && clientName != "" {
+					if reg := adapter.OriginalClientRegistry(); reg != nil {
+						for _, rc := range reg.Clients {
+							if rc != nil && rc.Name == clientName && rc.Provider != "" && sse.IsDeltaProviderSupported(rc.Provider) {
+								provider = rc.Provider
+								resolved = true
+								break
+							}
+						}
+					}
+					if !resolved {
+						if sp, spOk := introspected.ClientProvider[clientName]; spOk && sse.IsDeltaProviderSupported(sp) {
+							provider = sp
+						}
+					}
+				}
+			}
+		}
+		chunks, chunksErr := streamCall.SSEChunks()
+		if chunksErr != nil {
+			return nil
+		}
+		extractorMu.Lock()
+		defer extractorMu.Unlock()
+		extractResult := sse.ExtractFrom(extractor, callCount, provider, chunks)
+		if skipIntermediateParsing {
+			return nil
+		}
+		if extractResult.ParseableDelta == "" && extractResult.RawDelta == "" && extractResult.ReasoningDelta == "" && !extractResult.Reset {
+			return nil
+		}
+		parseable := extractResult.ParseableFull
+		parseableDelta := extractResult.ParseableDelta
+		rawDelta := extractResult.RawDelta
+		reasoningDelta := extractResult.ReasoningDelta
+		if parseable == "" || parseableDelta == "" {
+			select {
+			case <-adapter.Done():
+				return nil
+			default:
+			}
+			__r := getStaticRecursiveLoopOutput()
+			__r.kind = bamlutils.StreamResultKindStream
+			__r.raw = rawDelta
+			__r.reasoning = reasoningDelta
+			__r.reset = extractResult.Reset
+			if extractResult.Reset {
+				select {
+				case out <- __r:
+				case <-adapter.Done():
+					__r.Release()
+				}
+			} else {
+				select {
+				case out <- __r:
+				default:
+					__r.Release()
+				}
+			}
+			return nil
+		}
+		parsed, parseErr := bamlclient.ParseStream.StaticRecursiveLoop(adapter, parseable, options...)
+		if parseErr == nil {
+			select {
+			case <-adapter.Done():
+				return nil
+			default:
+			}
+			parsedPtr := &parsed
+			__r := getStaticRecursiveLoopOutput()
+			__r.kind = bamlutils.StreamResultKindStream
+			__r.raw = rawDelta
+			__r.reasoning = reasoningDelta
+			__r.streamParsed = parsedPtr
+			__r.reset = extractResult.Reset
+			if extractResult.Reset {
+				select {
+				case out <- __r:
+				case <-adapter.Done():
+					__r.Release()
+				}
+			} else {
+				select {
+				case out <- __r:
+				default:
+					__r.Release()
+				}
+			}
+		} else if extractResult.Reset {
+			select {
+			case <-adapter.Done():
+				return nil
+			default:
+			}
+			__r := getStaticRecursiveLoopOutput()
+			__r.kind = bamlutils.StreamResultKindStream
+			__r.raw = rawDelta
+			__r.reasoning = reasoningDelta
+			__r.reset = true
+			select {
+			case out <- __r:
+			case <-adapter.Done():
+				__r.Release()
+			}
+		}
+		return nil
+	}, func(opts []bamlclient.CallOptionFunc) (any, error) {
+		driveOpts := opts
+		if clientOverride != "" {
+			driveOpts = append(slices.Clone(opts), bamlclient.WithClient(clientOverride))
+		}
+		stream, streamErr := bamlclient.Stream.StaticRecursiveLoop(adapter, input.Topic, driveOpts...)
+		if streamErr != nil {
+			return nil, streamErr
+		}
+		var result any
+		var lastErr error
+		for streamVal := range stream {
+			if streamVal.IsError {
+				lastErr = streamVal.Error
+				continue
+			}
+			if streamVal.IsFinal {
+				result = streamVal.Final()
+			}
+		}
+		return result, lastErr
+	}, func(result any, raw string, reasoning string) bamlutils.StreamResult {
+		__r := getStaticRecursiveLoopOutput()
+		__r.kind = bamlutils.StreamResultKindFinal
+		__r.raw = raw
+		__r.reasoning = reasoning
+		if result != nil {
+			if ptr, ok := result.(*types.Loop); ok {
+				__r.finalParsed = ptr
+			} else if val, ok := result.(types.Loop); ok {
+				__r.finalParsed = &val
+			}
+		}
+		return __r
+	})
+}
+func staticRecursiveLoopBuildRequest(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, provider string, retryPolicy *retry.Policy, fallbackChain []string, clientProviders map[string]string, legacyChildren map[string]bool, fallbackTargets map[string]string, fallbackRoundRobin map[string]*bamlutils.RoundRobinInfo, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
+	options, err := makeOptionsFromAdapter(adapter)
+	if err != nil {
+		return err
+	}
+	input, ok := rawInput.(*StaticRecursiveLoopInput)
+	if !ok {
+		return fmt.Errorf("invalid input type: expected *%s, got %T", "StaticRecursiveLoopInput", rawInput)
+	}
+	buildRequestFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+		callOpts := options
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(options), bamlclient.WithClient(clientOverride))
+		}
+		httpReq, err := bamlclient.StreamRequest.StaticRecursiveLoop(ctx, input.Topic, callOpts...)
+		if err != nil {
+			return nil, err
+		}
+		url, urlErr := httpReq.Url()
+		if urlErr != nil {
+			return nil, fmt.Errorf("failed to get URL: %w", urlErr)
+		}
+		method, methodErr := httpReq.Method()
+		if methodErr != nil {
+			return nil, fmt.Errorf("failed to get method: %w", methodErr)
+		}
+		headers, headersErr := httpReq.Headers()
+		if headersErr != nil {
+			return nil, fmt.Errorf("failed to get headers: %w", headersErr)
+		}
+		body, bodyErr := httpReq.Body()
+		if bodyErr != nil {
+			return nil, fmt.Errorf("failed to get body: %w", bodyErr)
+		}
+		bodyText, bodyTextErr := body.Text()
+		if bodyTextErr != nil {
+			return nil, fmt.Errorf("failed to get body text: %w", bodyTextErr)
+		}
+		req := &llmhttp.Request{
+			Body:    bodyText,
+			Headers: headers,
+			Method:  method,
+			URL:     url,
+		}
+		return req, nil
+	}
+	buildBedrockStreamRequestFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+		callOpts := options
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(options), bamlclient.WithClient(clientOverride))
+		}
+		httpReq, err := bamlclient.Request.StaticRecursiveLoop(ctx, input.Topic, callOpts...)
+		if err != nil {
+			return nil, err
+		}
+		url, urlErr := httpReq.Url()
+		if urlErr != nil {
+			return nil, fmt.Errorf("failed to get URL: %w", urlErr)
+		}
+		method, methodErr := httpReq.Method()
+		if methodErr != nil {
+			return nil, fmt.Errorf("failed to get method: %w", methodErr)
+		}
+		headers, headersErr := httpReq.Headers()
+		if headersErr != nil {
+			return nil, fmt.Errorf("failed to get headers: %w", headersErr)
+		}
+		body, bodyErr := httpReq.Body()
+		if bodyErr != nil {
+			return nil, fmt.Errorf("failed to get body: %w", bodyErr)
+		}
+		bodyText, bodyTextErr := body.Text()
+		if bodyTextErr != nil {
+			return nil, fmt.Errorf("failed to get body text: %w", bodyTextErr)
+		}
+		req := &llmhttp.Request{
+			Body:    bodyText,
+			Headers: headers,
+			Method:  method,
+			URL:     url,
+		}
+		req.URL = strings.Replace(req.URL, "/converse", "/converse-stream", 1)
+		if req.Headers == nil {
+			req.Headers = make(map[string]string)
+		}
+		req.Headers["Accept"] = llmhttp.AWSStreamContentType
+		selectedClient := clientOverride
+		if selectedClient == "" {
+			selectedClient = introspected.FunctionClient["StaticRecursiveLoop"]
+		}
+		var (
+			bedrockEndpointURL        string
+			bedrockEndpointURLPresent bool
+			bedrockRegion             string
+			bedrockRegionPresent      bool
+			bedrockCreds              llmhttp.BedrockCredentialSelector
+		)
+		if bedrockOpts, ok := introspected.BedrockClientOptionsByName[selectedClient]; ok {
+			bedrockEndpointURL, _ = bedrockOpts.EndpointURL.Resolve()
+			bedrockEndpointURLPresent = bedrockOpts.EndpointURL.IsSet()
+			bedrockRegion, _ = bedrockOpts.Region.Resolve()
+			bedrockRegionPresent = bedrockOpts.Region.IsSet()
+			bedrockCreds.AccessKeyID, _ = bedrockOpts.Credentials.AccessKeyID.Resolve()
+			bedrockCreds.AccessKeyIDPresent = bedrockOpts.Credentials.AccessKeyID.IsSet()
+			bedrockCreds.SecretAccessKey, _ = bedrockOpts.Credentials.SecretAccessKey.Resolve()
+			bedrockCreds.SecretAccessKeyPresent = bedrockOpts.Credentials.SecretAccessKey.IsSet()
+			bedrockCreds.SessionToken, _ = bedrockOpts.Credentials.SessionToken.Resolve()
+			bedrockCreds.SessionTokenPresent = bedrockOpts.Credentials.SessionToken.IsSet()
+			bedrockCreds.Profile, _ = bedrockOpts.Credentials.Profile.Resolve()
+			bedrockCreds.ProfilePresent = bedrockOpts.Credentials.Profile.IsSet()
+		}
+		if authErr := llmhttp.AttachBedrockAuthForClient(ctx, req, llmhttp.BedrockClientAuthOptions{
+			ClientName:         selectedClient,
+			Credentials:        bedrockCreds,
+			EndpointURL:        bedrockEndpointURL,
+			EndpointURLPresent: bedrockEndpointURLPresent,
+			Region:             bedrockRegion,
+			RegionPresent:      bedrockRegionPresent,
+		}); authErr != nil {
+			return nil, authErr
+		}
+		return req, nil
+	}
+	parseStreamFn := func(ctx context.Context, accumulated string) (any, error) {
+		return bamlclient.ParseStream.StaticRecursiveLoop(ctx, accumulated, options...)
+	}
+	parseFinalFn := func(ctx context.Context, accumulated string) (any, error) {
+		return bamlclient.Parse.StaticRecursiveLoop(ctx, accumulated, options...)
+	}
+	newResultFn := func(kind bamlutils.StreamResultKind, stream any, final any, raw string, reasoning string, err error, reset bool) bamlutils.StreamResult {
+		r := getStaticRecursiveLoopOutput()
+		r.kind = kind
+		r.raw = raw
+		r.reasoning = reasoning
+		r.err = err
+		r.reset = reset
+		if stream != nil {
+			if v, ok := stream.(*streamtypes.Loop); ok {
+				r.streamParsed = v
+			} else if v, ok := stream.(streamtypes.Loop); ok {
+				r.streamParsed = &v
+			}
+		}
+		if final != nil {
+			if v, ok := final.(*types.Loop); ok {
+				r.finalParsed = v
+			} else if v, ok := final.(types.Loop); ok {
+				r.finalParsed = &v
+			}
+		}
+		return r
+	}
+	legacyStreamChildFn := func(ctx context.Context, clientOverride string, _ string, needsRaw bool, sendHeartbeat func()) (any, string, string, error) {
+		callOpts, childOptsErr := makeLegacyChildOptionsFromAdapter(adapter, clientOverride)
+		if childOptsErr != nil {
+			return nil, "", "", childOptsErr
+		}
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(callOpts), bamlclient.WithClient(clientOverride))
+		}
+		return runLegacyChildStream(ctx, needsRaw, sendHeartbeat, func(onTick func(context.Context, pkg.TickReason, pkg.FunctionLog) pkg.FunctionSignal) (any, error) {
+			opts := append(callOpts, bamlclient.WithOnTick(onTick))
+			stream, streamErr := bamlclient.Stream.StaticRecursiveLoop(ctx, input.Topic, opts...)
+			if streamErr != nil {
+				return nil, streamErr
+			}
+			var result any
+			var lastErr error
+			for streamVal := range stream {
+				if streamVal.IsError {
+					lastErr = streamVal.Error
+					continue
+				}
+				if streamVal.IsFinal {
+					result = streamVal.Final()
+				}
+			}
+			return result, lastErr
+		})
+	}
+	streamConfig := &buildrequest.StreamConfig{
+		BuildBedrockStreamRequest: buildBedrockStreamRequestFn,
+		ClientOverride:            clientOverride,
+		ClientProviders:           clientProviders,
+		FallbackChain:             fallbackChain,
+		FallbackRoundRobin:        fallbackRoundRobin,
+		FallbackTargets:           fallbackTargets,
+		IncludeReasoning:          adapter.IncludeReasoning(),
+		LegacyChildren:            legacyChildren,
+		LegacyStreamChild:         legacyStreamChildFn,
+		MetadataPlan:              plannedMetadata,
+		NeedsPartials:             adapter.StreamMode().NeedsPartials(),
+		NeedsRaw:                  adapter.StreamMode().NeedsRaw(),
+		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
+			return newStaticRecursiveLoopOutputMetadata(md)
+		},
+		Provider:    provider,
+		RetryPolicy: retryPolicy,
+	}
+	__httpClient := llmhttp.DefaultClient
+	if __c := adapter.HTTPClient(); __c != nil {
+		__httpClient = __c
+	}
+	go func() {
+		defer close(out)
+		gorecovery.GoHandler(func(err error) {
+			__errR := newResultFn(bamlutils.StreamResultKindError, nil, nil, "", "", err, false)
+			select {
+			case out <- __errR:
+			case <-adapter.Done():
+				__errR.Release()
+			}
+		}, func() error {
+			return buildrequest.RunStreamOrchestration(adapter, out, streamConfig, __httpClient, buildRequestFn, parseStreamFn, parseFinalFn, newResultFn)
+		})
+	}()
+	return nil
+}
+func staticRecursiveLoopBuildCallRequest(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, provider string, retryPolicy *retry.Policy, fallbackChain []string, clientProviders map[string]string, legacyChildren map[string]bool, fallbackTargets map[string]string, fallbackRoundRobin map[string]*bamlutils.RoundRobinInfo, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
+	options, err := makeOptionsFromAdapter(adapter)
+	if err != nil {
+		return err
+	}
+	input, ok := rawInput.(*StaticRecursiveLoopInput)
+	if !ok {
+		return fmt.Errorf("invalid input type: expected *%s, got %T", "StaticRecursiveLoopInput", rawInput)
+	}
+	buildRequestFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+		callOpts := options
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(options), bamlclient.WithClient(clientOverride))
+		}
+		httpReq, err := bamlclient.Request.StaticRecursiveLoop(ctx, input.Topic, callOpts...)
+		if err != nil {
+			return nil, err
+		}
+		url, urlErr := httpReq.Url()
+		if urlErr != nil {
+			return nil, fmt.Errorf("failed to get URL: %w", urlErr)
+		}
+		method, methodErr := httpReq.Method()
+		if methodErr != nil {
+			return nil, fmt.Errorf("failed to get method: %w", methodErr)
+		}
+		headers, headersErr := httpReq.Headers()
+		if headersErr != nil {
+			return nil, fmt.Errorf("failed to get headers: %w", headersErr)
+		}
+		body, bodyErr := httpReq.Body()
+		if bodyErr != nil {
+			return nil, fmt.Errorf("failed to get body: %w", bodyErr)
+		}
+		bodyText, bodyTextErr := body.Text()
+		if bodyTextErr != nil {
+			return nil, fmt.Errorf("failed to get body text: %w", bodyTextErr)
+		}
+		req := &llmhttp.Request{
+			Body:    bodyText,
+			Headers: headers,
+			Method:  method,
+			URL:     url,
+		}
+		selectedClient := clientOverride
+		if selectedClient == "" {
+			selectedClient = introspected.FunctionClient["StaticRecursiveLoop"]
+		}
+		var (
+			bedrockEndpointURL        string
+			bedrockEndpointURLPresent bool
+			bedrockRegion             string
+			bedrockRegionPresent      bool
+			bedrockCreds              llmhttp.BedrockCredentialSelector
+		)
+		if bedrockOpts, ok := introspected.BedrockClientOptionsByName[selectedClient]; ok {
+			bedrockEndpointURL, _ = bedrockOpts.EndpointURL.Resolve()
+			bedrockEndpointURLPresent = bedrockOpts.EndpointURL.IsSet()
+			bedrockRegion, _ = bedrockOpts.Region.Resolve()
+			bedrockRegionPresent = bedrockOpts.Region.IsSet()
+			bedrockCreds.AccessKeyID, _ = bedrockOpts.Credentials.AccessKeyID.Resolve()
+			bedrockCreds.AccessKeyIDPresent = bedrockOpts.Credentials.AccessKeyID.IsSet()
+			bedrockCreds.SecretAccessKey, _ = bedrockOpts.Credentials.SecretAccessKey.Resolve()
+			bedrockCreds.SecretAccessKeyPresent = bedrockOpts.Credentials.SecretAccessKey.IsSet()
+			bedrockCreds.SessionToken, _ = bedrockOpts.Credentials.SessionToken.Resolve()
+			bedrockCreds.SessionTokenPresent = bedrockOpts.Credentials.SessionToken.IsSet()
+			bedrockCreds.Profile, _ = bedrockOpts.Credentials.Profile.Resolve()
+			bedrockCreds.ProfilePresent = bedrockOpts.Credentials.Profile.IsSet()
+		}
+		if authErr := llmhttp.AttachBedrockAuthForClient(ctx, req, llmhttp.BedrockClientAuthOptions{
+			ClientName:         selectedClient,
+			Credentials:        bedrockCreds,
+			EndpointURL:        bedrockEndpointURL,
+			EndpointURLPresent: bedrockEndpointURLPresent,
+			Region:             bedrockRegion,
+			RegionPresent:      bedrockRegionPresent,
+		}); authErr != nil {
+			return nil, authErr
+		}
+		return req, nil
+	}
+	parseFinalFn := func(ctx context.Context, text string) (any, error) {
+		return bamlclient.Parse.StaticRecursiveLoop(ctx, text, options...)
+	}
+	newResultFn := func(kind bamlutils.StreamResultKind, stream any, final any, raw string, reasoning string, err error, reset bool) bamlutils.StreamResult {
+		r := getStaticRecursiveLoopOutput()
+		r.kind = kind
+		r.raw = raw
+		r.reasoning = reasoning
+		r.err = err
+		r.reset = reset
+		if final != nil {
+			if v, ok := final.(*types.Loop); ok {
+				r.finalParsed = v
+			} else if v, ok := final.(types.Loop); ok {
+				r.finalParsed = &v
+			}
+		}
+		return r
+	}
+	legacyCallChildFn := func(ctx context.Context, clientOverride string, _ string, needsRaw bool, sendHeartbeat func()) (any, string, string, error) {
+		callOpts, childOptsErr := makeLegacyChildOptionsFromAdapter(adapter, clientOverride)
+		if childOptsErr != nil {
+			return nil, "", "", childOptsErr
+		}
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(callOpts), bamlclient.WithClient(clientOverride))
+		}
+		return runLegacyChildStream(ctx, needsRaw, sendHeartbeat, func(onTick func(context.Context, pkg.TickReason, pkg.FunctionLog) pkg.FunctionSignal) (any, error) {
+			opts := append(callOpts, bamlclient.WithOnTick(onTick))
+			stream, streamErr := bamlclient.Stream.StaticRecursiveLoop(ctx, input.Topic, opts...)
+			if streamErr != nil {
+				return nil, streamErr
+			}
+			var result any
+			var lastErr error
+			for streamVal := range stream {
+				if streamVal.IsError {
+					lastErr = streamVal.Error
+					continue
+				}
+				if streamVal.IsFinal {
+					result = streamVal.Final()
+				}
+			}
+			return result, lastErr
+		})
+	}
+	callConfig := &buildrequest.CallConfig{
+		ClientOverride:     clientOverride,
+		ClientProviders:    clientProviders,
+		FallbackChain:      fallbackChain,
+		FallbackRoundRobin: fallbackRoundRobin,
+		FallbackTargets:    fallbackTargets,
+		IncludeReasoning:   adapter.IncludeReasoning(),
+		LegacyCallChild:    legacyCallChildFn,
+		LegacyChildren:     legacyChildren,
+		MetadataPlan:       plannedMetadata,
+		NeedsRaw:           adapter.StreamMode().NeedsRaw(),
+		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
+			return newStaticRecursiveLoopOutputMetadata(md)
+		},
+		Provider:    provider,
+		RetryPolicy: retryPolicy,
+	}
+	__httpClient := llmhttp.DefaultClient
+	if __c := adapter.HTTPClient(); __c != nil {
+		__httpClient = __c
+	}
+	__staticServe := deBAMLStaticServe(adapter)
+	__staticShadow := deBAMLStaticShadow(adapter)
+	if __staticServe != nil || __staticShadow != nil {
+		if __staticDescriptor, __staticOK := introspected.StaticPromptDescriptor("StaticRecursiveLoop"); __staticOK {
+			if __staticServe != nil {
+				installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+					__pr, __pe := bamlclient.Parse.StaticRecursiveLoop(__pctx, __raw, options...)
+					if __pe != nil {
+						return nil, __pe
+					}
+					return json.Marshal(__pr)
+				}, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[types.Loop](__cj)
+					return __dv, __de
+				})
+			} else {
+				installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+					__pr, __pe := bamlclient.Parse.StaticRecursiveLoop(__pctx, __raw, options...)
+					if __pe != nil {
+						return nil, __pe
+					}
+					return json.Marshal(__pr)
+				}, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[types.Loop](__cj)
+					return __dv, __de
+				})
+			}
+		}
+	}
+	go func() {
+		defer close(out)
+		gorecovery.GoHandler(func(err error) {
+			__errR := newResultFn(bamlutils.StreamResultKindError, nil, nil, "", "", err, false)
+			select {
+			case out <- __errR:
+			case <-adapter.Done():
+				__errR.Release()
+			}
+		}, func() error {
+			return buildrequest.RunCallOrchestration(adapter, out, callConfig, __httpClient, buildRequestFn, parseFinalFn, buildrequest.ExtractResponseContent, buildrequest.ExtractResponseContentBytes, buildrequest.ExtractResponseContentBorrowed, newResultFn)
+		})
+	}()
+	return nil
+}
+func StaticRecursiveLoop(adapter bamlutils.Adapter, rawInput any) (<-chan bamlutils.StreamResult, error) {
+	out := make(chan bamlutils.StreamResult, 100)
+	var err error
+	mode := adapter.StreamMode()
+	__retryClient := buildrequest.ResolvePrimaryClient(adapter, introspected.FunctionClient["StaticRecursiveLoop"])
+	__effective := __retryClient
+	var __rrInfo *bamlutils.RoundRobinInfo
+	__rrEffective, __rrInfoUpgrade, __rrErr := buildrequest.ResolveEffectiveClient(adapter, introspected.FunctionClient["StaticRecursiveLoop"], introspected.FallbackChains, introspected.ClientProvider, introspected.RoundRobinCoordinator)
+	if __rrErr != nil {
+		return nil, __rrErr
+	}
+	__effective = __rrEffective
+	__rrInfo = __rrInfoUpgrade
+	__reg := adapter.OriginalClientRegistry()
+	// Try non-streaming BuildRequest path for /call and /call-with-raw
+	if introspected.Request != nil && (mode == bamlutils.StreamModeCall || mode == bamlutils.StreamModeCallWithRaw) {
+		provider := buildrequest.ResolveClientProvider(__reg, __effective, introspected.ClientProvider)
+		if provider != "" && buildrequest.IsCallProviderSupported(provider) {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__planned := buildrequest.BuildSingleProviderPlanForClient(__effective, provider, retryPolicy, buildrequest.BuildRequestAPIRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveLoopBuildCallRequest(adapter, rawInput, out, provider, retryPolicy, nil, nil, nil, nil, nil, __planned, __effective)
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+	}
+	// Try streaming BuildRequest path for /stream and /stream-with-raw
+	if introspected.StreamRequest != nil && (mode == bamlutils.StreamModeStream || mode == bamlutils.StreamModeStreamWithRaw) {
+		provider := buildrequest.ResolveClientProvider(__reg, __effective, introspected.ClientProvider)
+		if provider != "" && buildrequest.IsProviderSupported(provider) {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__planned := buildrequest.BuildSingleProviderPlanForClient(__effective, provider, retryPolicy, buildrequest.BuildRequestAPIStreamRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveLoopBuildRequest(adapter, rawInput, out, provider, retryPolicy, nil, nil, nil, nil, nil, __planned, __effective)
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+		__resolution, __fbErr := buildrequest.ResolveFallbackChainPlanForClient(__reg, __effective, introspected.FallbackChains, introspected.ClientProvider, buildrequest.IsProviderSupported, buildrequest.PreferAdvancer(adapter, introspected.RoundRobinCoordinator))
+		if __fbErr != nil {
+			return nil, __fbErr
+		}
+		if __resolution != nil && len(__resolution.Chain) > 0 {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__planned := buildrequest.BuildFallbackChainPlanFromResolution(__effective, __resolution, retryPolicy, buildrequest.BuildRequestAPIStreamRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveLoopBuildRequest(adapter, rawInput, out, "", retryPolicy, __resolution.Chain, __resolution.Providers, __resolution.LegacyChildren, __resolution.Targets, __resolution.NestedRoundRobin, __planned, "")
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+	}
+	// Bridge: /call and /call-with-raw via StreamRequest when Request is unavailable
+	if introspected.StreamRequest != nil && (mode == bamlutils.StreamModeCall || mode == bamlutils.StreamModeCallWithRaw) {
+		provider := buildrequest.ResolveClientProvider(__reg, __effective, introspected.ClientProvider)
+		if provider != "" && buildrequest.IsProviderSupported(provider) {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__planned := buildrequest.BuildSingleProviderPlanForClient(__effective, provider, retryPolicy, buildrequest.BuildRequestAPIStreamRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveLoopBuildRequest(adapter, rawInput, out, provider, retryPolicy, nil, nil, nil, nil, nil, __planned, __effective)
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+		__resolution, __fbErr := buildrequest.ResolveFallbackChainPlanForClient(__reg, __effective, introspected.FallbackChains, introspected.ClientProvider, buildrequest.IsProviderSupported, buildrequest.PreferAdvancer(adapter, introspected.RoundRobinCoordinator))
+		if __fbErr != nil {
+			return nil, __fbErr
+		}
+		if __resolution != nil && len(__resolution.Chain) > 0 {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__callChainSupported := len(__resolution.LegacyChildren) == 0
+			if __callChainSupported {
+				for _, __provider := range __resolution.Providers {
+					if !buildrequest.IsCallProviderSupported(__provider) {
+						__callChainSupported = false
+						break
+					}
+				}
+			}
+			if __callChainSupported {
+				__planned := buildrequest.BuildFallbackChainPlanFromResolution(__effective, __resolution, retryPolicy, buildrequest.BuildRequestAPIRequest)
+				__planned.RoundRobin = __rrInfo
+				err = staticRecursiveLoopBuildCallRequest(adapter, rawInput, out, "", retryPolicy, __resolution.Chain, __resolution.Providers, __resolution.LegacyChildren, __resolution.Targets, __resolution.NestedRoundRobin, __planned, "")
+				if err != nil {
+					return nil, err
+				}
+				return out, nil
+			}
+			__planned := buildrequest.BuildFallbackChainPlanFromResolution(__effective, __resolution, retryPolicy, buildrequest.BuildRequestAPIStreamRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveLoopBuildRequest(adapter, rawInput, out, "", retryPolicy, __resolution.Chain, __resolution.Providers, __resolution.LegacyChildren, __resolution.Targets, __resolution.NestedRoundRobin, __planned, "")
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+	}
+	// Legacy path: CallStream + OnTick (for unsupported/empty providers or BAML versions without a BuildRequest surface)
+	__legacyRetryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+	__legacyPredicate := buildrequest.IsProviderSupported
+	__plannedLegacy := buildrequest.BuildLegacyMetadataPlanForClient(__reg, __effective, introspected.ClientProvider[__effective], introspected.FallbackChains, introspected.ClientProvider, __legacyPredicate, __legacyRetryPolicy)
+	__plannedLegacy.RoundRobin = __rrInfo
+	__legacyClientOverride := __effective
+	buildrequest.LogLegacyClassification(adapter, "StaticRecursiveLoop", __plannedLegacy)
+	switch mode {
+	case bamlutils.StreamModeCall:
+		err = staticRecursiveLoopNoRaw(adapter, rawInput, out, true, __plannedLegacy, __legacyClientOverride)
+	case bamlutils.StreamModeStream:
+		err = staticRecursiveLoopNoRaw(adapter, rawInput, out, false, __plannedLegacy, __legacyClientOverride)
+	case bamlutils.StreamModeCallWithRaw:
+		err = staticRecursiveLoopFull(adapter, rawInput, out, true, __plannedLegacy, __legacyClientOverride)
+	case bamlutils.StreamModeStreamWithRaw:
+		err = staticRecursiveLoopFull(adapter, rawInput, out, false, __plannedLegacy, __legacyClientOverride)
+	default:
+		err = fmt.Errorf("unknown StreamMode: %d", mode)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+type StaticRecursiveNodeInput struct {
+	Topic string `json:"topic"`
+}
+type StaticRecursiveNodeOutput struct {
+	kind         bamlutils.StreamResultKind
+	raw          string
+	reasoning    string
+	streamParsed *streamtypes.Node
+	finalParsed  *types.Node
+	err          error
+	reset        bool
+	metadata     *bamlutils.Metadata
+}
+
+func (v *StaticRecursiveNodeOutput) Kind() bamlutils.StreamResultKind {
+	return v.kind
+}
+func (v *StaticRecursiveNodeOutput) Stream() any {
+	return v.streamParsed
+}
+func (v *StaticRecursiveNodeOutput) Final() any {
+	return v.finalParsed
+}
+func (v *StaticRecursiveNodeOutput) Error() error {
+	return v.err
+}
+func (v *StaticRecursiveNodeOutput) Raw() string {
+	return v.raw
+}
+func (v *StaticRecursiveNodeOutput) Reasoning() string {
+	return v.reasoning
+}
+func (v *StaticRecursiveNodeOutput) Reset() bool {
+	return v.reset
+}
+func (v *StaticRecursiveNodeOutput) Metadata() *bamlutils.Metadata {
+	return v.metadata
+}
+
+var staticRecursiveNodeOutputPool = bamlutils.NewPool(func() *StaticRecursiveNodeOutput {
+	return &StaticRecursiveNodeOutput{}
+})
+
+func (v *StaticRecursiveNodeOutput) Release() {
+	if v == nil {
+		return
+	}
+	*v = StaticRecursiveNodeOutput{}
+	staticRecursiveNodeOutputPool.Put(v)
+}
+func getStaticRecursiveNodeOutput() *StaticRecursiveNodeOutput {
+	return staticRecursiveNodeOutputPool.Get()
+}
+func newStaticRecursiveNodeOutputError(err error) *StaticRecursiveNodeOutput {
+	r := getStaticRecursiveNodeOutput()
+	r.kind = bamlutils.StreamResultKindError
+	r.err = err
+	return r
+}
+func newStaticRecursiveNodeOutputMetadata(md *bamlutils.Metadata) *StaticRecursiveNodeOutput {
+	r := getStaticRecursiveNodeOutput()
+	r.kind = bamlutils.StreamResultKindMetadata
+	r.metadata = md
+	return r
+}
+func staticRecursiveNodeNoRaw(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, skipPartials bool, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
+	options, err := makeLegacyStreamOptionsFromAdapter(adapter, clientOverride)
+	if err != nil {
+		return err
+	}
+	input, ok := rawInput.(*StaticRecursiveNodeInput)
+	if !ok {
+		return fmt.Errorf("invalid input type: expected *%s, got %T", "StaticRecursiveNodeInput", rawInput)
+	}
+	return runNoRawOrchestration(adapter, out, func() bamlutils.StreamResult {
+		__r := getStaticRecursiveNodeOutput()
+		__r.kind = bamlutils.StreamResultKindHeartbeat
+		return __r
+	}, func(err error) bamlutils.StreamResult {
+		return newStaticRecursiveNodeOutputError(err)
+	}, func(__r bamlutils.StreamResult) {
+		__r.Release()
+	}, plannedMetadata, func(md *bamlutils.Metadata) bamlutils.StreamResult {
+		return newStaticRecursiveNodeOutputMetadata(md)
+	}, func(beforeFinal func(), onTick func(context.Context, pkg.TickReason, pkg.FunctionLog) pkg.FunctionSignal) error {
+		streamOpts := append(options, bamlclient.WithOnTick(onTick))
+		if clientOverride != "" {
+			streamOpts = append(slices.Clone(streamOpts), bamlclient.WithClient(clientOverride))
+		}
+		stream, streamErr := bamlclient.Stream.StaticRecursiveNode(adapter, input.Topic, streamOpts...)
+		if streamErr != nil {
+			__errR := newStaticRecursiveNodeOutputError(streamErr)
+			select {
+			case out <- __errR:
+			case <-adapter.Done():
+				__errR.Release()
+			}
+			return nil
+		}
+		for streamVal := range stream {
+			select {
+			case <-adapter.Done():
+				return nil
+			default:
+			}
+			if streamVal.IsError {
+				__errR := newStaticRecursiveNodeOutputError(streamVal.Error)
+				select {
+				case out <- __errR:
+				case <-adapter.Done():
+					__errR.Release()
+					return nil
+				}
+				continue
+			}
+			if streamVal.IsFinal {
+				__r := getStaticRecursiveNodeOutput()
+				__r.kind = bamlutils.StreamResultKindFinal
+				__r.finalParsed = streamVal.Final()
+				beforeFinal()
+				select {
+				case out <- __r:
+				case <-adapter.Done():
+					__r.Release()
+					return nil
+				}
+				continue
+			}
+			if !skipPartials {
+				if __partial := streamVal.Stream(); __partial != nil {
+					__r := getStaticRecursiveNodeOutput()
+					__r.kind = bamlutils.StreamResultKindStream
+					__r.streamParsed = __partial
+					select {
+					case out <- __r:
+					case <-adapter.Done():
+						__r.Release()
+						return nil
+					default:
+						__r.Release()
+					}
+				}
+			}
+		}
+		return nil
+	})
+}
+func staticRecursiveNodeFull(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, skipIntermediateParsing bool, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
+	options, err := makeLegacyStreamOptionsFromAdapter(adapter, clientOverride)
+	if err != nil {
+		return err
+	}
+	input, ok := rawInput.(*StaticRecursiveNodeInput)
+	if !ok {
+		return fmt.Errorf("invalid input type: expected *%s, got %T", "StaticRecursiveNodeInput", rawInput)
+	}
+	return runFullOrchestration(adapter, out, options, func() bamlutils.StreamResult {
+		__r := getStaticRecursiveNodeOutput()
+		__r.kind = bamlutils.StreamResultKindHeartbeat
+		return __r
+	}, func(err error, raw string) bamlutils.StreamResult {
+		__r := newStaticRecursiveNodeOutputError(err)
+		__r.raw = raw
+		return __r
+	}, func(__r bamlutils.StreamResult) {
+		__r.Release()
+	}, plannedMetadata, func(md *bamlutils.Metadata) bamlutils.StreamResult {
+		return newStaticRecursiveNodeOutputMetadata(md)
+	}, func(funcLog pkg.FunctionLog, extractor *sse.IncrementalExtractor, extractorMu *sync.Mutex) error {
+		calls, callsErr := funcLog.Calls()
+		if callsErr != nil {
+			return nil
+		}
+		callCount := len(calls)
+		if callCount == 0 {
+			return nil
+		}
+		lastCall := calls[callCount-1]
+		streamCall, ok := lastCall.(pkg.LLMStreamCall)
+		if !ok {
+			return nil
+		}
+		provider, provErr := streamCall.Provider()
+		if provErr != nil {
+			return nil
+		}
+		if !sse.IsDeltaProviderSupported(provider) {
+			resolved := false
+			for i := callCount - 1; i >= 0 && !resolved; i-- {
+				if sc, scOk := calls[i].(pkg.LLMStreamCall); scOk {
+					if cp, cpErr := sc.Provider(); cpErr == nil && sse.IsDeltaProviderSupported(cp) {
+						provider = cp
+						resolved = true
+					}
+				}
+			}
+			if !resolved {
+				if clientName, cnErr := streamCall.ClientName(); cnErr == nil && clientName != "" {
+					if reg := adapter.OriginalClientRegistry(); reg != nil {
+						for _, rc := range reg.Clients {
+							if rc != nil && rc.Name == clientName && rc.Provider != "" && sse.IsDeltaProviderSupported(rc.Provider) {
+								provider = rc.Provider
+								resolved = true
+								break
+							}
+						}
+					}
+					if !resolved {
+						if sp, spOk := introspected.ClientProvider[clientName]; spOk && sse.IsDeltaProviderSupported(sp) {
+							provider = sp
+						}
+					}
+				}
+			}
+		}
+		chunks, chunksErr := streamCall.SSEChunks()
+		if chunksErr != nil {
+			return nil
+		}
+		extractorMu.Lock()
+		defer extractorMu.Unlock()
+		extractResult := sse.ExtractFrom(extractor, callCount, provider, chunks)
+		if skipIntermediateParsing {
+			return nil
+		}
+		if extractResult.ParseableDelta == "" && extractResult.RawDelta == "" && extractResult.ReasoningDelta == "" && !extractResult.Reset {
+			return nil
+		}
+		parseable := extractResult.ParseableFull
+		parseableDelta := extractResult.ParseableDelta
+		rawDelta := extractResult.RawDelta
+		reasoningDelta := extractResult.ReasoningDelta
+		if parseable == "" || parseableDelta == "" {
+			select {
+			case <-adapter.Done():
+				return nil
+			default:
+			}
+			__r := getStaticRecursiveNodeOutput()
+			__r.kind = bamlutils.StreamResultKindStream
+			__r.raw = rawDelta
+			__r.reasoning = reasoningDelta
+			__r.reset = extractResult.Reset
+			if extractResult.Reset {
+				select {
+				case out <- __r:
+				case <-adapter.Done():
+					__r.Release()
+				}
+			} else {
+				select {
+				case out <- __r:
+				default:
+					__r.Release()
+				}
+			}
+			return nil
+		}
+		parsed, parseErr := bamlclient.ParseStream.StaticRecursiveNode(adapter, parseable, options...)
+		if parseErr == nil {
+			select {
+			case <-adapter.Done():
+				return nil
+			default:
+			}
+			parsedPtr := &parsed
+			__r := getStaticRecursiveNodeOutput()
+			__r.kind = bamlutils.StreamResultKindStream
+			__r.raw = rawDelta
+			__r.reasoning = reasoningDelta
+			__r.streamParsed = parsedPtr
+			__r.reset = extractResult.Reset
+			if extractResult.Reset {
+				select {
+				case out <- __r:
+				case <-adapter.Done():
+					__r.Release()
+				}
+			} else {
+				select {
+				case out <- __r:
+				default:
+					__r.Release()
+				}
+			}
+		} else if extractResult.Reset {
+			select {
+			case <-adapter.Done():
+				return nil
+			default:
+			}
+			__r := getStaticRecursiveNodeOutput()
+			__r.kind = bamlutils.StreamResultKindStream
+			__r.raw = rawDelta
+			__r.reasoning = reasoningDelta
+			__r.reset = true
+			select {
+			case out <- __r:
+			case <-adapter.Done():
+				__r.Release()
+			}
+		}
+		return nil
+	}, func(opts []bamlclient.CallOptionFunc) (any, error) {
+		driveOpts := opts
+		if clientOverride != "" {
+			driveOpts = append(slices.Clone(opts), bamlclient.WithClient(clientOverride))
+		}
+		stream, streamErr := bamlclient.Stream.StaticRecursiveNode(adapter, input.Topic, driveOpts...)
+		if streamErr != nil {
+			return nil, streamErr
+		}
+		var result any
+		var lastErr error
+		for streamVal := range stream {
+			if streamVal.IsError {
+				lastErr = streamVal.Error
+				continue
+			}
+			if streamVal.IsFinal {
+				result = streamVal.Final()
+			}
+		}
+		return result, lastErr
+	}, func(result any, raw string, reasoning string) bamlutils.StreamResult {
+		__r := getStaticRecursiveNodeOutput()
+		__r.kind = bamlutils.StreamResultKindFinal
+		__r.raw = raw
+		__r.reasoning = reasoning
+		if result != nil {
+			if ptr, ok := result.(*types.Node); ok {
+				__r.finalParsed = ptr
+			} else if val, ok := result.(types.Node); ok {
+				__r.finalParsed = &val
+			}
+		}
+		return __r
+	})
+}
+func staticRecursiveNodeBuildRequest(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, provider string, retryPolicy *retry.Policy, fallbackChain []string, clientProviders map[string]string, legacyChildren map[string]bool, fallbackTargets map[string]string, fallbackRoundRobin map[string]*bamlutils.RoundRobinInfo, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
+	options, err := makeOptionsFromAdapter(adapter)
+	if err != nil {
+		return err
+	}
+	input, ok := rawInput.(*StaticRecursiveNodeInput)
+	if !ok {
+		return fmt.Errorf("invalid input type: expected *%s, got %T", "StaticRecursiveNodeInput", rawInput)
+	}
+	buildRequestFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+		callOpts := options
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(options), bamlclient.WithClient(clientOverride))
+		}
+		httpReq, err := bamlclient.StreamRequest.StaticRecursiveNode(ctx, input.Topic, callOpts...)
+		if err != nil {
+			return nil, err
+		}
+		url, urlErr := httpReq.Url()
+		if urlErr != nil {
+			return nil, fmt.Errorf("failed to get URL: %w", urlErr)
+		}
+		method, methodErr := httpReq.Method()
+		if methodErr != nil {
+			return nil, fmt.Errorf("failed to get method: %w", methodErr)
+		}
+		headers, headersErr := httpReq.Headers()
+		if headersErr != nil {
+			return nil, fmt.Errorf("failed to get headers: %w", headersErr)
+		}
+		body, bodyErr := httpReq.Body()
+		if bodyErr != nil {
+			return nil, fmt.Errorf("failed to get body: %w", bodyErr)
+		}
+		bodyText, bodyTextErr := body.Text()
+		if bodyTextErr != nil {
+			return nil, fmt.Errorf("failed to get body text: %w", bodyTextErr)
+		}
+		req := &llmhttp.Request{
+			Body:    bodyText,
+			Headers: headers,
+			Method:  method,
+			URL:     url,
+		}
+		return req, nil
+	}
+	buildBedrockStreamRequestFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+		callOpts := options
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(options), bamlclient.WithClient(clientOverride))
+		}
+		httpReq, err := bamlclient.Request.StaticRecursiveNode(ctx, input.Topic, callOpts...)
+		if err != nil {
+			return nil, err
+		}
+		url, urlErr := httpReq.Url()
+		if urlErr != nil {
+			return nil, fmt.Errorf("failed to get URL: %w", urlErr)
+		}
+		method, methodErr := httpReq.Method()
+		if methodErr != nil {
+			return nil, fmt.Errorf("failed to get method: %w", methodErr)
+		}
+		headers, headersErr := httpReq.Headers()
+		if headersErr != nil {
+			return nil, fmt.Errorf("failed to get headers: %w", headersErr)
+		}
+		body, bodyErr := httpReq.Body()
+		if bodyErr != nil {
+			return nil, fmt.Errorf("failed to get body: %w", bodyErr)
+		}
+		bodyText, bodyTextErr := body.Text()
+		if bodyTextErr != nil {
+			return nil, fmt.Errorf("failed to get body text: %w", bodyTextErr)
+		}
+		req := &llmhttp.Request{
+			Body:    bodyText,
+			Headers: headers,
+			Method:  method,
+			URL:     url,
+		}
+		req.URL = strings.Replace(req.URL, "/converse", "/converse-stream", 1)
+		if req.Headers == nil {
+			req.Headers = make(map[string]string)
+		}
+		req.Headers["Accept"] = llmhttp.AWSStreamContentType
+		selectedClient := clientOverride
+		if selectedClient == "" {
+			selectedClient = introspected.FunctionClient["StaticRecursiveNode"]
+		}
+		var (
+			bedrockEndpointURL        string
+			bedrockEndpointURLPresent bool
+			bedrockRegion             string
+			bedrockRegionPresent      bool
+			bedrockCreds              llmhttp.BedrockCredentialSelector
+		)
+		if bedrockOpts, ok := introspected.BedrockClientOptionsByName[selectedClient]; ok {
+			bedrockEndpointURL, _ = bedrockOpts.EndpointURL.Resolve()
+			bedrockEndpointURLPresent = bedrockOpts.EndpointURL.IsSet()
+			bedrockRegion, _ = bedrockOpts.Region.Resolve()
+			bedrockRegionPresent = bedrockOpts.Region.IsSet()
+			bedrockCreds.AccessKeyID, _ = bedrockOpts.Credentials.AccessKeyID.Resolve()
+			bedrockCreds.AccessKeyIDPresent = bedrockOpts.Credentials.AccessKeyID.IsSet()
+			bedrockCreds.SecretAccessKey, _ = bedrockOpts.Credentials.SecretAccessKey.Resolve()
+			bedrockCreds.SecretAccessKeyPresent = bedrockOpts.Credentials.SecretAccessKey.IsSet()
+			bedrockCreds.SessionToken, _ = bedrockOpts.Credentials.SessionToken.Resolve()
+			bedrockCreds.SessionTokenPresent = bedrockOpts.Credentials.SessionToken.IsSet()
+			bedrockCreds.Profile, _ = bedrockOpts.Credentials.Profile.Resolve()
+			bedrockCreds.ProfilePresent = bedrockOpts.Credentials.Profile.IsSet()
+		}
+		if authErr := llmhttp.AttachBedrockAuthForClient(ctx, req, llmhttp.BedrockClientAuthOptions{
+			ClientName:         selectedClient,
+			Credentials:        bedrockCreds,
+			EndpointURL:        bedrockEndpointURL,
+			EndpointURLPresent: bedrockEndpointURLPresent,
+			Region:             bedrockRegion,
+			RegionPresent:      bedrockRegionPresent,
+		}); authErr != nil {
+			return nil, authErr
+		}
+		return req, nil
+	}
+	parseStreamFn := func(ctx context.Context, accumulated string) (any, error) {
+		return bamlclient.ParseStream.StaticRecursiveNode(ctx, accumulated, options...)
+	}
+	parseFinalFn := func(ctx context.Context, accumulated string) (any, error) {
+		return bamlclient.Parse.StaticRecursiveNode(ctx, accumulated, options...)
+	}
+	newResultFn := func(kind bamlutils.StreamResultKind, stream any, final any, raw string, reasoning string, err error, reset bool) bamlutils.StreamResult {
+		r := getStaticRecursiveNodeOutput()
+		r.kind = kind
+		r.raw = raw
+		r.reasoning = reasoning
+		r.err = err
+		r.reset = reset
+		if stream != nil {
+			if v, ok := stream.(*streamtypes.Node); ok {
+				r.streamParsed = v
+			} else if v, ok := stream.(streamtypes.Node); ok {
+				r.streamParsed = &v
+			}
+		}
+		if final != nil {
+			if v, ok := final.(*types.Node); ok {
+				r.finalParsed = v
+			} else if v, ok := final.(types.Node); ok {
+				r.finalParsed = &v
+			}
+		}
+		return r
+	}
+	legacyStreamChildFn := func(ctx context.Context, clientOverride string, _ string, needsRaw bool, sendHeartbeat func()) (any, string, string, error) {
+		callOpts, childOptsErr := makeLegacyChildOptionsFromAdapter(adapter, clientOverride)
+		if childOptsErr != nil {
+			return nil, "", "", childOptsErr
+		}
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(callOpts), bamlclient.WithClient(clientOverride))
+		}
+		return runLegacyChildStream(ctx, needsRaw, sendHeartbeat, func(onTick func(context.Context, pkg.TickReason, pkg.FunctionLog) pkg.FunctionSignal) (any, error) {
+			opts := append(callOpts, bamlclient.WithOnTick(onTick))
+			stream, streamErr := bamlclient.Stream.StaticRecursiveNode(ctx, input.Topic, opts...)
+			if streamErr != nil {
+				return nil, streamErr
+			}
+			var result any
+			var lastErr error
+			for streamVal := range stream {
+				if streamVal.IsError {
+					lastErr = streamVal.Error
+					continue
+				}
+				if streamVal.IsFinal {
+					result = streamVal.Final()
+				}
+			}
+			return result, lastErr
+		})
+	}
+	streamConfig := &buildrequest.StreamConfig{
+		BuildBedrockStreamRequest: buildBedrockStreamRequestFn,
+		ClientOverride:            clientOverride,
+		ClientProviders:           clientProviders,
+		FallbackChain:             fallbackChain,
+		FallbackRoundRobin:        fallbackRoundRobin,
+		FallbackTargets:           fallbackTargets,
+		IncludeReasoning:          adapter.IncludeReasoning(),
+		LegacyChildren:            legacyChildren,
+		LegacyStreamChild:         legacyStreamChildFn,
+		MetadataPlan:              plannedMetadata,
+		NeedsPartials:             adapter.StreamMode().NeedsPartials(),
+		NeedsRaw:                  adapter.StreamMode().NeedsRaw(),
+		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
+			return newStaticRecursiveNodeOutputMetadata(md)
+		},
+		Provider:    provider,
+		RetryPolicy: retryPolicy,
+	}
+	__httpClient := llmhttp.DefaultClient
+	if __c := adapter.HTTPClient(); __c != nil {
+		__httpClient = __c
+	}
+	go func() {
+		defer close(out)
+		gorecovery.GoHandler(func(err error) {
+			__errR := newResultFn(bamlutils.StreamResultKindError, nil, nil, "", "", err, false)
+			select {
+			case out <- __errR:
+			case <-adapter.Done():
+				__errR.Release()
+			}
+		}, func() error {
+			return buildrequest.RunStreamOrchestration(adapter, out, streamConfig, __httpClient, buildRequestFn, parseStreamFn, parseFinalFn, newResultFn)
+		})
+	}()
+	return nil
+}
+func staticRecursiveNodeBuildCallRequest(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, provider string, retryPolicy *retry.Policy, fallbackChain []string, clientProviders map[string]string, legacyChildren map[string]bool, fallbackTargets map[string]string, fallbackRoundRobin map[string]*bamlutils.RoundRobinInfo, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
+	options, err := makeOptionsFromAdapter(adapter)
+	if err != nil {
+		return err
+	}
+	input, ok := rawInput.(*StaticRecursiveNodeInput)
+	if !ok {
+		return fmt.Errorf("invalid input type: expected *%s, got %T", "StaticRecursiveNodeInput", rawInput)
+	}
+	buildRequestFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+		callOpts := options
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(options), bamlclient.WithClient(clientOverride))
+		}
+		httpReq, err := bamlclient.Request.StaticRecursiveNode(ctx, input.Topic, callOpts...)
+		if err != nil {
+			return nil, err
+		}
+		url, urlErr := httpReq.Url()
+		if urlErr != nil {
+			return nil, fmt.Errorf("failed to get URL: %w", urlErr)
+		}
+		method, methodErr := httpReq.Method()
+		if methodErr != nil {
+			return nil, fmt.Errorf("failed to get method: %w", methodErr)
+		}
+		headers, headersErr := httpReq.Headers()
+		if headersErr != nil {
+			return nil, fmt.Errorf("failed to get headers: %w", headersErr)
+		}
+		body, bodyErr := httpReq.Body()
+		if bodyErr != nil {
+			return nil, fmt.Errorf("failed to get body: %w", bodyErr)
+		}
+		bodyText, bodyTextErr := body.Text()
+		if bodyTextErr != nil {
+			return nil, fmt.Errorf("failed to get body text: %w", bodyTextErr)
+		}
+		req := &llmhttp.Request{
+			Body:    bodyText,
+			Headers: headers,
+			Method:  method,
+			URL:     url,
+		}
+		selectedClient := clientOverride
+		if selectedClient == "" {
+			selectedClient = introspected.FunctionClient["StaticRecursiveNode"]
+		}
+		var (
+			bedrockEndpointURL        string
+			bedrockEndpointURLPresent bool
+			bedrockRegion             string
+			bedrockRegionPresent      bool
+			bedrockCreds              llmhttp.BedrockCredentialSelector
+		)
+		if bedrockOpts, ok := introspected.BedrockClientOptionsByName[selectedClient]; ok {
+			bedrockEndpointURL, _ = bedrockOpts.EndpointURL.Resolve()
+			bedrockEndpointURLPresent = bedrockOpts.EndpointURL.IsSet()
+			bedrockRegion, _ = bedrockOpts.Region.Resolve()
+			bedrockRegionPresent = bedrockOpts.Region.IsSet()
+			bedrockCreds.AccessKeyID, _ = bedrockOpts.Credentials.AccessKeyID.Resolve()
+			bedrockCreds.AccessKeyIDPresent = bedrockOpts.Credentials.AccessKeyID.IsSet()
+			bedrockCreds.SecretAccessKey, _ = bedrockOpts.Credentials.SecretAccessKey.Resolve()
+			bedrockCreds.SecretAccessKeyPresent = bedrockOpts.Credentials.SecretAccessKey.IsSet()
+			bedrockCreds.SessionToken, _ = bedrockOpts.Credentials.SessionToken.Resolve()
+			bedrockCreds.SessionTokenPresent = bedrockOpts.Credentials.SessionToken.IsSet()
+			bedrockCreds.Profile, _ = bedrockOpts.Credentials.Profile.Resolve()
+			bedrockCreds.ProfilePresent = bedrockOpts.Credentials.Profile.IsSet()
+		}
+		if authErr := llmhttp.AttachBedrockAuthForClient(ctx, req, llmhttp.BedrockClientAuthOptions{
+			ClientName:         selectedClient,
+			Credentials:        bedrockCreds,
+			EndpointURL:        bedrockEndpointURL,
+			EndpointURLPresent: bedrockEndpointURLPresent,
+			Region:             bedrockRegion,
+			RegionPresent:      bedrockRegionPresent,
+		}); authErr != nil {
+			return nil, authErr
+		}
+		return req, nil
+	}
+	parseFinalFn := func(ctx context.Context, text string) (any, error) {
+		return bamlclient.Parse.StaticRecursiveNode(ctx, text, options...)
+	}
+	newResultFn := func(kind bamlutils.StreamResultKind, stream any, final any, raw string, reasoning string, err error, reset bool) bamlutils.StreamResult {
+		r := getStaticRecursiveNodeOutput()
+		r.kind = kind
+		r.raw = raw
+		r.reasoning = reasoning
+		r.err = err
+		r.reset = reset
+		if final != nil {
+			if v, ok := final.(*types.Node); ok {
+				r.finalParsed = v
+			} else if v, ok := final.(types.Node); ok {
+				r.finalParsed = &v
+			}
+		}
+		return r
+	}
+	legacyCallChildFn := func(ctx context.Context, clientOverride string, _ string, needsRaw bool, sendHeartbeat func()) (any, string, string, error) {
+		callOpts, childOptsErr := makeLegacyChildOptionsFromAdapter(adapter, clientOverride)
+		if childOptsErr != nil {
+			return nil, "", "", childOptsErr
+		}
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(callOpts), bamlclient.WithClient(clientOverride))
+		}
+		return runLegacyChildStream(ctx, needsRaw, sendHeartbeat, func(onTick func(context.Context, pkg.TickReason, pkg.FunctionLog) pkg.FunctionSignal) (any, error) {
+			opts := append(callOpts, bamlclient.WithOnTick(onTick))
+			stream, streamErr := bamlclient.Stream.StaticRecursiveNode(ctx, input.Topic, opts...)
+			if streamErr != nil {
+				return nil, streamErr
+			}
+			var result any
+			var lastErr error
+			for streamVal := range stream {
+				if streamVal.IsError {
+					lastErr = streamVal.Error
+					continue
+				}
+				if streamVal.IsFinal {
+					result = streamVal.Final()
+				}
+			}
+			return result, lastErr
+		})
+	}
+	callConfig := &buildrequest.CallConfig{
+		ClientOverride:     clientOverride,
+		ClientProviders:    clientProviders,
+		FallbackChain:      fallbackChain,
+		FallbackRoundRobin: fallbackRoundRobin,
+		FallbackTargets:    fallbackTargets,
+		IncludeReasoning:   adapter.IncludeReasoning(),
+		LegacyCallChild:    legacyCallChildFn,
+		LegacyChildren:     legacyChildren,
+		MetadataPlan:       plannedMetadata,
+		NeedsRaw:           adapter.StreamMode().NeedsRaw(),
+		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
+			return newStaticRecursiveNodeOutputMetadata(md)
+		},
+		Provider:    provider,
+		RetryPolicy: retryPolicy,
+	}
+	__httpClient := llmhttp.DefaultClient
+	if __c := adapter.HTTPClient(); __c != nil {
+		__httpClient = __c
+	}
+	__staticServe := deBAMLStaticServe(adapter)
+	__staticShadow := deBAMLStaticShadow(adapter)
+	if __staticServe != nil || __staticShadow != nil {
+		if __staticDescriptor, __staticOK := introspected.StaticPromptDescriptor("StaticRecursiveNode"); __staticOK {
+			if __staticServe != nil {
+				installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+					__pr, __pe := bamlclient.Parse.StaticRecursiveNode(__pctx, __raw, options...)
+					if __pe != nil {
+						return nil, __pe
+					}
+					return json.Marshal(__pr)
+				}, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[types.Node](__cj)
+					return __dv, __de
+				})
+			} else {
+				installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+					__pr, __pe := bamlclient.Parse.StaticRecursiveNode(__pctx, __raw, options...)
+					if __pe != nil {
+						return nil, __pe
+					}
+					return json.Marshal(__pr)
+				}, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[types.Node](__cj)
+					return __dv, __de
+				})
+			}
+		}
+	}
+	go func() {
+		defer close(out)
+		gorecovery.GoHandler(func(err error) {
+			__errR := newResultFn(bamlutils.StreamResultKindError, nil, nil, "", "", err, false)
+			select {
+			case out <- __errR:
+			case <-adapter.Done():
+				__errR.Release()
+			}
+		}, func() error {
+			return buildrequest.RunCallOrchestration(adapter, out, callConfig, __httpClient, buildRequestFn, parseFinalFn, buildrequest.ExtractResponseContent, buildrequest.ExtractResponseContentBytes, buildrequest.ExtractResponseContentBorrowed, newResultFn)
+		})
+	}()
+	return nil
+}
+func StaticRecursiveNode(adapter bamlutils.Adapter, rawInput any) (<-chan bamlutils.StreamResult, error) {
+	out := make(chan bamlutils.StreamResult, 100)
+	var err error
+	mode := adapter.StreamMode()
+	__retryClient := buildrequest.ResolvePrimaryClient(adapter, introspected.FunctionClient["StaticRecursiveNode"])
+	__effective := __retryClient
+	var __rrInfo *bamlutils.RoundRobinInfo
+	__rrEffective, __rrInfoUpgrade, __rrErr := buildrequest.ResolveEffectiveClient(adapter, introspected.FunctionClient["StaticRecursiveNode"], introspected.FallbackChains, introspected.ClientProvider, introspected.RoundRobinCoordinator)
+	if __rrErr != nil {
+		return nil, __rrErr
+	}
+	__effective = __rrEffective
+	__rrInfo = __rrInfoUpgrade
+	__reg := adapter.OriginalClientRegistry()
+	// Try non-streaming BuildRequest path for /call and /call-with-raw
+	if introspected.Request != nil && (mode == bamlutils.StreamModeCall || mode == bamlutils.StreamModeCallWithRaw) {
+		provider := buildrequest.ResolveClientProvider(__reg, __effective, introspected.ClientProvider)
+		if provider != "" && buildrequest.IsCallProviderSupported(provider) {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__planned := buildrequest.BuildSingleProviderPlanForClient(__effective, provider, retryPolicy, buildrequest.BuildRequestAPIRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveNodeBuildCallRequest(adapter, rawInput, out, provider, retryPolicy, nil, nil, nil, nil, nil, __planned, __effective)
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+	}
+	// Try streaming BuildRequest path for /stream and /stream-with-raw
+	if introspected.StreamRequest != nil && (mode == bamlutils.StreamModeStream || mode == bamlutils.StreamModeStreamWithRaw) {
+		provider := buildrequest.ResolveClientProvider(__reg, __effective, introspected.ClientProvider)
+		if provider != "" && buildrequest.IsProviderSupported(provider) {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__planned := buildrequest.BuildSingleProviderPlanForClient(__effective, provider, retryPolicy, buildrequest.BuildRequestAPIStreamRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveNodeBuildRequest(adapter, rawInput, out, provider, retryPolicy, nil, nil, nil, nil, nil, __planned, __effective)
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+		__resolution, __fbErr := buildrequest.ResolveFallbackChainPlanForClient(__reg, __effective, introspected.FallbackChains, introspected.ClientProvider, buildrequest.IsProviderSupported, buildrequest.PreferAdvancer(adapter, introspected.RoundRobinCoordinator))
+		if __fbErr != nil {
+			return nil, __fbErr
+		}
+		if __resolution != nil && len(__resolution.Chain) > 0 {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__planned := buildrequest.BuildFallbackChainPlanFromResolution(__effective, __resolution, retryPolicy, buildrequest.BuildRequestAPIStreamRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveNodeBuildRequest(adapter, rawInput, out, "", retryPolicy, __resolution.Chain, __resolution.Providers, __resolution.LegacyChildren, __resolution.Targets, __resolution.NestedRoundRobin, __planned, "")
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+	}
+	// Bridge: /call and /call-with-raw via StreamRequest when Request is unavailable
+	if introspected.StreamRequest != nil && (mode == bamlutils.StreamModeCall || mode == bamlutils.StreamModeCallWithRaw) {
+		provider := buildrequest.ResolveClientProvider(__reg, __effective, introspected.ClientProvider)
+		if provider != "" && buildrequest.IsProviderSupported(provider) {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__planned := buildrequest.BuildSingleProviderPlanForClient(__effective, provider, retryPolicy, buildrequest.BuildRequestAPIStreamRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveNodeBuildRequest(adapter, rawInput, out, provider, retryPolicy, nil, nil, nil, nil, nil, __planned, __effective)
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+		__resolution, __fbErr := buildrequest.ResolveFallbackChainPlanForClient(__reg, __effective, introspected.FallbackChains, introspected.ClientProvider, buildrequest.IsProviderSupported, buildrequest.PreferAdvancer(adapter, introspected.RoundRobinCoordinator))
+		if __fbErr != nil {
+			return nil, __fbErr
+		}
+		if __resolution != nil && len(__resolution.Chain) > 0 {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__callChainSupported := len(__resolution.LegacyChildren) == 0
+			if __callChainSupported {
+				for _, __provider := range __resolution.Providers {
+					if !buildrequest.IsCallProviderSupported(__provider) {
+						__callChainSupported = false
+						break
+					}
+				}
+			}
+			if __callChainSupported {
+				__planned := buildrequest.BuildFallbackChainPlanFromResolution(__effective, __resolution, retryPolicy, buildrequest.BuildRequestAPIRequest)
+				__planned.RoundRobin = __rrInfo
+				err = staticRecursiveNodeBuildCallRequest(adapter, rawInput, out, "", retryPolicy, __resolution.Chain, __resolution.Providers, __resolution.LegacyChildren, __resolution.Targets, __resolution.NestedRoundRobin, __planned, "")
+				if err != nil {
+					return nil, err
+				}
+				return out, nil
+			}
+			__planned := buildrequest.BuildFallbackChainPlanFromResolution(__effective, __resolution, retryPolicy, buildrequest.BuildRequestAPIStreamRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveNodeBuildRequest(adapter, rawInput, out, "", retryPolicy, __resolution.Chain, __resolution.Providers, __resolution.LegacyChildren, __resolution.Targets, __resolution.NestedRoundRobin, __planned, "")
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+	}
+	// Legacy path: CallStream + OnTick (for unsupported/empty providers or BAML versions without a BuildRequest surface)
+	__legacyRetryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+	__legacyPredicate := buildrequest.IsProviderSupported
+	__plannedLegacy := buildrequest.BuildLegacyMetadataPlanForClient(__reg, __effective, introspected.ClientProvider[__effective], introspected.FallbackChains, introspected.ClientProvider, __legacyPredicate, __legacyRetryPolicy)
+	__plannedLegacy.RoundRobin = __rrInfo
+	__legacyClientOverride := __effective
+	buildrequest.LogLegacyClassification(adapter, "StaticRecursiveNode", __plannedLegacy)
+	switch mode {
+	case bamlutils.StreamModeCall:
+		err = staticRecursiveNodeNoRaw(adapter, rawInput, out, true, __plannedLegacy, __legacyClientOverride)
+	case bamlutils.StreamModeStream:
+		err = staticRecursiveNodeNoRaw(adapter, rawInput, out, false, __plannedLegacy, __legacyClientOverride)
+	case bamlutils.StreamModeCallWithRaw:
+		err = staticRecursiveNodeFull(adapter, rawInput, out, true, __plannedLegacy, __legacyClientOverride)
+	case bamlutils.StreamModeStreamWithRaw:
+		err = staticRecursiveNodeFull(adapter, rawInput, out, false, __plannedLegacy, __legacyClientOverride)
+	default:
+		err = fmt.Errorf("unknown StreamMode: %d", mode)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+type StaticRecursiveNodeAnnInput struct {
+	Topic string `json:"topic"`
+}
+type StaticRecursiveNodeAnnOutput struct {
+	kind         bamlutils.StreamResultKind
+	raw          string
+	reasoning    string
+	streamParsed *streamtypes.NodeAnn
+	finalParsed  *types.NodeAnn
+	err          error
+	reset        bool
+	metadata     *bamlutils.Metadata
+}
+
+func (v *StaticRecursiveNodeAnnOutput) Kind() bamlutils.StreamResultKind {
+	return v.kind
+}
+func (v *StaticRecursiveNodeAnnOutput) Stream() any {
+	return v.streamParsed
+}
+func (v *StaticRecursiveNodeAnnOutput) Final() any {
+	return v.finalParsed
+}
+func (v *StaticRecursiveNodeAnnOutput) Error() error {
+	return v.err
+}
+func (v *StaticRecursiveNodeAnnOutput) Raw() string {
+	return v.raw
+}
+func (v *StaticRecursiveNodeAnnOutput) Reasoning() string {
+	return v.reasoning
+}
+func (v *StaticRecursiveNodeAnnOutput) Reset() bool {
+	return v.reset
+}
+func (v *StaticRecursiveNodeAnnOutput) Metadata() *bamlutils.Metadata {
+	return v.metadata
+}
+
+var staticRecursiveNodeAnnOutputPool = bamlutils.NewPool(func() *StaticRecursiveNodeAnnOutput {
+	return &StaticRecursiveNodeAnnOutput{}
+})
+
+func (v *StaticRecursiveNodeAnnOutput) Release() {
+	if v == nil {
+		return
+	}
+	*v = StaticRecursiveNodeAnnOutput{}
+	staticRecursiveNodeAnnOutputPool.Put(v)
+}
+func getStaticRecursiveNodeAnnOutput() *StaticRecursiveNodeAnnOutput {
+	return staticRecursiveNodeAnnOutputPool.Get()
+}
+func newStaticRecursiveNodeAnnOutputError(err error) *StaticRecursiveNodeAnnOutput {
+	r := getStaticRecursiveNodeAnnOutput()
+	r.kind = bamlutils.StreamResultKindError
+	r.err = err
+	return r
+}
+func newStaticRecursiveNodeAnnOutputMetadata(md *bamlutils.Metadata) *StaticRecursiveNodeAnnOutput {
+	r := getStaticRecursiveNodeAnnOutput()
+	r.kind = bamlutils.StreamResultKindMetadata
+	r.metadata = md
+	return r
+}
+func staticRecursiveNodeAnnNoRaw(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, skipPartials bool, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
+	options, err := makeLegacyStreamOptionsFromAdapter(adapter, clientOverride)
+	if err != nil {
+		return err
+	}
+	input, ok := rawInput.(*StaticRecursiveNodeAnnInput)
+	if !ok {
+		return fmt.Errorf("invalid input type: expected *%s, got %T", "StaticRecursiveNodeAnnInput", rawInput)
+	}
+	return runNoRawOrchestration(adapter, out, func() bamlutils.StreamResult {
+		__r := getStaticRecursiveNodeAnnOutput()
+		__r.kind = bamlutils.StreamResultKindHeartbeat
+		return __r
+	}, func(err error) bamlutils.StreamResult {
+		return newStaticRecursiveNodeAnnOutputError(err)
+	}, func(__r bamlutils.StreamResult) {
+		__r.Release()
+	}, plannedMetadata, func(md *bamlutils.Metadata) bamlutils.StreamResult {
+		return newStaticRecursiveNodeAnnOutputMetadata(md)
+	}, func(beforeFinal func(), onTick func(context.Context, pkg.TickReason, pkg.FunctionLog) pkg.FunctionSignal) error {
+		streamOpts := append(options, bamlclient.WithOnTick(onTick))
+		if clientOverride != "" {
+			streamOpts = append(slices.Clone(streamOpts), bamlclient.WithClient(clientOverride))
+		}
+		stream, streamErr := bamlclient.Stream.StaticRecursiveNodeAnn(adapter, input.Topic, streamOpts...)
+		if streamErr != nil {
+			__errR := newStaticRecursiveNodeAnnOutputError(streamErr)
+			select {
+			case out <- __errR:
+			case <-adapter.Done():
+				__errR.Release()
+			}
+			return nil
+		}
+		for streamVal := range stream {
+			select {
+			case <-adapter.Done():
+				return nil
+			default:
+			}
+			if streamVal.IsError {
+				__errR := newStaticRecursiveNodeAnnOutputError(streamVal.Error)
+				select {
+				case out <- __errR:
+				case <-adapter.Done():
+					__errR.Release()
+					return nil
+				}
+				continue
+			}
+			if streamVal.IsFinal {
+				__r := getStaticRecursiveNodeAnnOutput()
+				__r.kind = bamlutils.StreamResultKindFinal
+				__r.finalParsed = streamVal.Final()
+				beforeFinal()
+				select {
+				case out <- __r:
+				case <-adapter.Done():
+					__r.Release()
+					return nil
+				}
+				continue
+			}
+			if !skipPartials {
+				if __partial := streamVal.Stream(); __partial != nil {
+					__r := getStaticRecursiveNodeAnnOutput()
+					__r.kind = bamlutils.StreamResultKindStream
+					__r.streamParsed = __partial
+					select {
+					case out <- __r:
+					case <-adapter.Done():
+						__r.Release()
+						return nil
+					default:
+						__r.Release()
+					}
+				}
+			}
+		}
+		return nil
+	})
+}
+func staticRecursiveNodeAnnFull(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, skipIntermediateParsing bool, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
+	options, err := makeLegacyStreamOptionsFromAdapter(adapter, clientOverride)
+	if err != nil {
+		return err
+	}
+	input, ok := rawInput.(*StaticRecursiveNodeAnnInput)
+	if !ok {
+		return fmt.Errorf("invalid input type: expected *%s, got %T", "StaticRecursiveNodeAnnInput", rawInput)
+	}
+	return runFullOrchestration(adapter, out, options, func() bamlutils.StreamResult {
+		__r := getStaticRecursiveNodeAnnOutput()
+		__r.kind = bamlutils.StreamResultKindHeartbeat
+		return __r
+	}, func(err error, raw string) bamlutils.StreamResult {
+		__r := newStaticRecursiveNodeAnnOutputError(err)
+		__r.raw = raw
+		return __r
+	}, func(__r bamlutils.StreamResult) {
+		__r.Release()
+	}, plannedMetadata, func(md *bamlutils.Metadata) bamlutils.StreamResult {
+		return newStaticRecursiveNodeAnnOutputMetadata(md)
+	}, func(funcLog pkg.FunctionLog, extractor *sse.IncrementalExtractor, extractorMu *sync.Mutex) error {
+		calls, callsErr := funcLog.Calls()
+		if callsErr != nil {
+			return nil
+		}
+		callCount := len(calls)
+		if callCount == 0 {
+			return nil
+		}
+		lastCall := calls[callCount-1]
+		streamCall, ok := lastCall.(pkg.LLMStreamCall)
+		if !ok {
+			return nil
+		}
+		provider, provErr := streamCall.Provider()
+		if provErr != nil {
+			return nil
+		}
+		if !sse.IsDeltaProviderSupported(provider) {
+			resolved := false
+			for i := callCount - 1; i >= 0 && !resolved; i-- {
+				if sc, scOk := calls[i].(pkg.LLMStreamCall); scOk {
+					if cp, cpErr := sc.Provider(); cpErr == nil && sse.IsDeltaProviderSupported(cp) {
+						provider = cp
+						resolved = true
+					}
+				}
+			}
+			if !resolved {
+				if clientName, cnErr := streamCall.ClientName(); cnErr == nil && clientName != "" {
+					if reg := adapter.OriginalClientRegistry(); reg != nil {
+						for _, rc := range reg.Clients {
+							if rc != nil && rc.Name == clientName && rc.Provider != "" && sse.IsDeltaProviderSupported(rc.Provider) {
+								provider = rc.Provider
+								resolved = true
+								break
+							}
+						}
+					}
+					if !resolved {
+						if sp, spOk := introspected.ClientProvider[clientName]; spOk && sse.IsDeltaProviderSupported(sp) {
+							provider = sp
+						}
+					}
+				}
+			}
+		}
+		chunks, chunksErr := streamCall.SSEChunks()
+		if chunksErr != nil {
+			return nil
+		}
+		extractorMu.Lock()
+		defer extractorMu.Unlock()
+		extractResult := sse.ExtractFrom(extractor, callCount, provider, chunks)
+		if skipIntermediateParsing {
+			return nil
+		}
+		if extractResult.ParseableDelta == "" && extractResult.RawDelta == "" && extractResult.ReasoningDelta == "" && !extractResult.Reset {
+			return nil
+		}
+		parseable := extractResult.ParseableFull
+		parseableDelta := extractResult.ParseableDelta
+		rawDelta := extractResult.RawDelta
+		reasoningDelta := extractResult.ReasoningDelta
+		if parseable == "" || parseableDelta == "" {
+			select {
+			case <-adapter.Done():
+				return nil
+			default:
+			}
+			__r := getStaticRecursiveNodeAnnOutput()
+			__r.kind = bamlutils.StreamResultKindStream
+			__r.raw = rawDelta
+			__r.reasoning = reasoningDelta
+			__r.reset = extractResult.Reset
+			if extractResult.Reset {
+				select {
+				case out <- __r:
+				case <-adapter.Done():
+					__r.Release()
+				}
+			} else {
+				select {
+				case out <- __r:
+				default:
+					__r.Release()
+				}
+			}
+			return nil
+		}
+		parsed, parseErr := bamlclient.ParseStream.StaticRecursiveNodeAnn(adapter, parseable, options...)
+		if parseErr == nil {
+			select {
+			case <-adapter.Done():
+				return nil
+			default:
+			}
+			parsedPtr := &parsed
+			__r := getStaticRecursiveNodeAnnOutput()
+			__r.kind = bamlutils.StreamResultKindStream
+			__r.raw = rawDelta
+			__r.reasoning = reasoningDelta
+			__r.streamParsed = parsedPtr
+			__r.reset = extractResult.Reset
+			if extractResult.Reset {
+				select {
+				case out <- __r:
+				case <-adapter.Done():
+					__r.Release()
+				}
+			} else {
+				select {
+				case out <- __r:
+				default:
+					__r.Release()
+				}
+			}
+		} else if extractResult.Reset {
+			select {
+			case <-adapter.Done():
+				return nil
+			default:
+			}
+			__r := getStaticRecursiveNodeAnnOutput()
+			__r.kind = bamlutils.StreamResultKindStream
+			__r.raw = rawDelta
+			__r.reasoning = reasoningDelta
+			__r.reset = true
+			select {
+			case out <- __r:
+			case <-adapter.Done():
+				__r.Release()
+			}
+		}
+		return nil
+	}, func(opts []bamlclient.CallOptionFunc) (any, error) {
+		driveOpts := opts
+		if clientOverride != "" {
+			driveOpts = append(slices.Clone(opts), bamlclient.WithClient(clientOverride))
+		}
+		stream, streamErr := bamlclient.Stream.StaticRecursiveNodeAnn(adapter, input.Topic, driveOpts...)
+		if streamErr != nil {
+			return nil, streamErr
+		}
+		var result any
+		var lastErr error
+		for streamVal := range stream {
+			if streamVal.IsError {
+				lastErr = streamVal.Error
+				continue
+			}
+			if streamVal.IsFinal {
+				result = streamVal.Final()
+			}
+		}
+		return result, lastErr
+	}, func(result any, raw string, reasoning string) bamlutils.StreamResult {
+		__r := getStaticRecursiveNodeAnnOutput()
+		__r.kind = bamlutils.StreamResultKindFinal
+		__r.raw = raw
+		__r.reasoning = reasoning
+		if result != nil {
+			if ptr, ok := result.(*types.NodeAnn); ok {
+				__r.finalParsed = ptr
+			} else if val, ok := result.(types.NodeAnn); ok {
+				__r.finalParsed = &val
+			}
+		}
+		return __r
+	})
+}
+func staticRecursiveNodeAnnBuildRequest(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, provider string, retryPolicy *retry.Policy, fallbackChain []string, clientProviders map[string]string, legacyChildren map[string]bool, fallbackTargets map[string]string, fallbackRoundRobin map[string]*bamlutils.RoundRobinInfo, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
+	options, err := makeOptionsFromAdapter(adapter)
+	if err != nil {
+		return err
+	}
+	input, ok := rawInput.(*StaticRecursiveNodeAnnInput)
+	if !ok {
+		return fmt.Errorf("invalid input type: expected *%s, got %T", "StaticRecursiveNodeAnnInput", rawInput)
+	}
+	buildRequestFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+		callOpts := options
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(options), bamlclient.WithClient(clientOverride))
+		}
+		httpReq, err := bamlclient.StreamRequest.StaticRecursiveNodeAnn(ctx, input.Topic, callOpts...)
+		if err != nil {
+			return nil, err
+		}
+		url, urlErr := httpReq.Url()
+		if urlErr != nil {
+			return nil, fmt.Errorf("failed to get URL: %w", urlErr)
+		}
+		method, methodErr := httpReq.Method()
+		if methodErr != nil {
+			return nil, fmt.Errorf("failed to get method: %w", methodErr)
+		}
+		headers, headersErr := httpReq.Headers()
+		if headersErr != nil {
+			return nil, fmt.Errorf("failed to get headers: %w", headersErr)
+		}
+		body, bodyErr := httpReq.Body()
+		if bodyErr != nil {
+			return nil, fmt.Errorf("failed to get body: %w", bodyErr)
+		}
+		bodyText, bodyTextErr := body.Text()
+		if bodyTextErr != nil {
+			return nil, fmt.Errorf("failed to get body text: %w", bodyTextErr)
+		}
+		req := &llmhttp.Request{
+			Body:    bodyText,
+			Headers: headers,
+			Method:  method,
+			URL:     url,
+		}
+		return req, nil
+	}
+	buildBedrockStreamRequestFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+		callOpts := options
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(options), bamlclient.WithClient(clientOverride))
+		}
+		httpReq, err := bamlclient.Request.StaticRecursiveNodeAnn(ctx, input.Topic, callOpts...)
+		if err != nil {
+			return nil, err
+		}
+		url, urlErr := httpReq.Url()
+		if urlErr != nil {
+			return nil, fmt.Errorf("failed to get URL: %w", urlErr)
+		}
+		method, methodErr := httpReq.Method()
+		if methodErr != nil {
+			return nil, fmt.Errorf("failed to get method: %w", methodErr)
+		}
+		headers, headersErr := httpReq.Headers()
+		if headersErr != nil {
+			return nil, fmt.Errorf("failed to get headers: %w", headersErr)
+		}
+		body, bodyErr := httpReq.Body()
+		if bodyErr != nil {
+			return nil, fmt.Errorf("failed to get body: %w", bodyErr)
+		}
+		bodyText, bodyTextErr := body.Text()
+		if bodyTextErr != nil {
+			return nil, fmt.Errorf("failed to get body text: %w", bodyTextErr)
+		}
+		req := &llmhttp.Request{
+			Body:    bodyText,
+			Headers: headers,
+			Method:  method,
+			URL:     url,
+		}
+		req.URL = strings.Replace(req.URL, "/converse", "/converse-stream", 1)
+		if req.Headers == nil {
+			req.Headers = make(map[string]string)
+		}
+		req.Headers["Accept"] = llmhttp.AWSStreamContentType
+		selectedClient := clientOverride
+		if selectedClient == "" {
+			selectedClient = introspected.FunctionClient["StaticRecursiveNodeAnn"]
+		}
+		var (
+			bedrockEndpointURL        string
+			bedrockEndpointURLPresent bool
+			bedrockRegion             string
+			bedrockRegionPresent      bool
+			bedrockCreds              llmhttp.BedrockCredentialSelector
+		)
+		if bedrockOpts, ok := introspected.BedrockClientOptionsByName[selectedClient]; ok {
+			bedrockEndpointURL, _ = bedrockOpts.EndpointURL.Resolve()
+			bedrockEndpointURLPresent = bedrockOpts.EndpointURL.IsSet()
+			bedrockRegion, _ = bedrockOpts.Region.Resolve()
+			bedrockRegionPresent = bedrockOpts.Region.IsSet()
+			bedrockCreds.AccessKeyID, _ = bedrockOpts.Credentials.AccessKeyID.Resolve()
+			bedrockCreds.AccessKeyIDPresent = bedrockOpts.Credentials.AccessKeyID.IsSet()
+			bedrockCreds.SecretAccessKey, _ = bedrockOpts.Credentials.SecretAccessKey.Resolve()
+			bedrockCreds.SecretAccessKeyPresent = bedrockOpts.Credentials.SecretAccessKey.IsSet()
+			bedrockCreds.SessionToken, _ = bedrockOpts.Credentials.SessionToken.Resolve()
+			bedrockCreds.SessionTokenPresent = bedrockOpts.Credentials.SessionToken.IsSet()
+			bedrockCreds.Profile, _ = bedrockOpts.Credentials.Profile.Resolve()
+			bedrockCreds.ProfilePresent = bedrockOpts.Credentials.Profile.IsSet()
+		}
+		if authErr := llmhttp.AttachBedrockAuthForClient(ctx, req, llmhttp.BedrockClientAuthOptions{
+			ClientName:         selectedClient,
+			Credentials:        bedrockCreds,
+			EndpointURL:        bedrockEndpointURL,
+			EndpointURLPresent: bedrockEndpointURLPresent,
+			Region:             bedrockRegion,
+			RegionPresent:      bedrockRegionPresent,
+		}); authErr != nil {
+			return nil, authErr
+		}
+		return req, nil
+	}
+	parseStreamFn := func(ctx context.Context, accumulated string) (any, error) {
+		return bamlclient.ParseStream.StaticRecursiveNodeAnn(ctx, accumulated, options...)
+	}
+	parseFinalFn := func(ctx context.Context, accumulated string) (any, error) {
+		return bamlclient.Parse.StaticRecursiveNodeAnn(ctx, accumulated, options...)
+	}
+	newResultFn := func(kind bamlutils.StreamResultKind, stream any, final any, raw string, reasoning string, err error, reset bool) bamlutils.StreamResult {
+		r := getStaticRecursiveNodeAnnOutput()
+		r.kind = kind
+		r.raw = raw
+		r.reasoning = reasoning
+		r.err = err
+		r.reset = reset
+		if stream != nil {
+			if v, ok := stream.(*streamtypes.NodeAnn); ok {
+				r.streamParsed = v
+			} else if v, ok := stream.(streamtypes.NodeAnn); ok {
+				r.streamParsed = &v
+			}
+		}
+		if final != nil {
+			if v, ok := final.(*types.NodeAnn); ok {
+				r.finalParsed = v
+			} else if v, ok := final.(types.NodeAnn); ok {
+				r.finalParsed = &v
+			}
+		}
+		return r
+	}
+	legacyStreamChildFn := func(ctx context.Context, clientOverride string, _ string, needsRaw bool, sendHeartbeat func()) (any, string, string, error) {
+		callOpts, childOptsErr := makeLegacyChildOptionsFromAdapter(adapter, clientOverride)
+		if childOptsErr != nil {
+			return nil, "", "", childOptsErr
+		}
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(callOpts), bamlclient.WithClient(clientOverride))
+		}
+		return runLegacyChildStream(ctx, needsRaw, sendHeartbeat, func(onTick func(context.Context, pkg.TickReason, pkg.FunctionLog) pkg.FunctionSignal) (any, error) {
+			opts := append(callOpts, bamlclient.WithOnTick(onTick))
+			stream, streamErr := bamlclient.Stream.StaticRecursiveNodeAnn(ctx, input.Topic, opts...)
+			if streamErr != nil {
+				return nil, streamErr
+			}
+			var result any
+			var lastErr error
+			for streamVal := range stream {
+				if streamVal.IsError {
+					lastErr = streamVal.Error
+					continue
+				}
+				if streamVal.IsFinal {
+					result = streamVal.Final()
+				}
+			}
+			return result, lastErr
+		})
+	}
+	streamConfig := &buildrequest.StreamConfig{
+		BuildBedrockStreamRequest: buildBedrockStreamRequestFn,
+		ClientOverride:            clientOverride,
+		ClientProviders:           clientProviders,
+		FallbackChain:             fallbackChain,
+		FallbackRoundRobin:        fallbackRoundRobin,
+		FallbackTargets:           fallbackTargets,
+		IncludeReasoning:          adapter.IncludeReasoning(),
+		LegacyChildren:            legacyChildren,
+		LegacyStreamChild:         legacyStreamChildFn,
+		MetadataPlan:              plannedMetadata,
+		NeedsPartials:             adapter.StreamMode().NeedsPartials(),
+		NeedsRaw:                  adapter.StreamMode().NeedsRaw(),
+		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
+			return newStaticRecursiveNodeAnnOutputMetadata(md)
+		},
+		Provider:    provider,
+		RetryPolicy: retryPolicy,
+	}
+	__httpClient := llmhttp.DefaultClient
+	if __c := adapter.HTTPClient(); __c != nil {
+		__httpClient = __c
+	}
+	go func() {
+		defer close(out)
+		gorecovery.GoHandler(func(err error) {
+			__errR := newResultFn(bamlutils.StreamResultKindError, nil, nil, "", "", err, false)
+			select {
+			case out <- __errR:
+			case <-adapter.Done():
+				__errR.Release()
+			}
+		}, func() error {
+			return buildrequest.RunStreamOrchestration(adapter, out, streamConfig, __httpClient, buildRequestFn, parseStreamFn, parseFinalFn, newResultFn)
+		})
+	}()
+	return nil
+}
+func staticRecursiveNodeAnnBuildCallRequest(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, provider string, retryPolicy *retry.Policy, fallbackChain []string, clientProviders map[string]string, legacyChildren map[string]bool, fallbackTargets map[string]string, fallbackRoundRobin map[string]*bamlutils.RoundRobinInfo, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
+	options, err := makeOptionsFromAdapter(adapter)
+	if err != nil {
+		return err
+	}
+	input, ok := rawInput.(*StaticRecursiveNodeAnnInput)
+	if !ok {
+		return fmt.Errorf("invalid input type: expected *%s, got %T", "StaticRecursiveNodeAnnInput", rawInput)
+	}
+	buildRequestFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+		callOpts := options
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(options), bamlclient.WithClient(clientOverride))
+		}
+		httpReq, err := bamlclient.Request.StaticRecursiveNodeAnn(ctx, input.Topic, callOpts...)
+		if err != nil {
+			return nil, err
+		}
+		url, urlErr := httpReq.Url()
+		if urlErr != nil {
+			return nil, fmt.Errorf("failed to get URL: %w", urlErr)
+		}
+		method, methodErr := httpReq.Method()
+		if methodErr != nil {
+			return nil, fmt.Errorf("failed to get method: %w", methodErr)
+		}
+		headers, headersErr := httpReq.Headers()
+		if headersErr != nil {
+			return nil, fmt.Errorf("failed to get headers: %w", headersErr)
+		}
+		body, bodyErr := httpReq.Body()
+		if bodyErr != nil {
+			return nil, fmt.Errorf("failed to get body: %w", bodyErr)
+		}
+		bodyText, bodyTextErr := body.Text()
+		if bodyTextErr != nil {
+			return nil, fmt.Errorf("failed to get body text: %w", bodyTextErr)
+		}
+		req := &llmhttp.Request{
+			Body:    bodyText,
+			Headers: headers,
+			Method:  method,
+			URL:     url,
+		}
+		selectedClient := clientOverride
+		if selectedClient == "" {
+			selectedClient = introspected.FunctionClient["StaticRecursiveNodeAnn"]
+		}
+		var (
+			bedrockEndpointURL        string
+			bedrockEndpointURLPresent bool
+			bedrockRegion             string
+			bedrockRegionPresent      bool
+			bedrockCreds              llmhttp.BedrockCredentialSelector
+		)
+		if bedrockOpts, ok := introspected.BedrockClientOptionsByName[selectedClient]; ok {
+			bedrockEndpointURL, _ = bedrockOpts.EndpointURL.Resolve()
+			bedrockEndpointURLPresent = bedrockOpts.EndpointURL.IsSet()
+			bedrockRegion, _ = bedrockOpts.Region.Resolve()
+			bedrockRegionPresent = bedrockOpts.Region.IsSet()
+			bedrockCreds.AccessKeyID, _ = bedrockOpts.Credentials.AccessKeyID.Resolve()
+			bedrockCreds.AccessKeyIDPresent = bedrockOpts.Credentials.AccessKeyID.IsSet()
+			bedrockCreds.SecretAccessKey, _ = bedrockOpts.Credentials.SecretAccessKey.Resolve()
+			bedrockCreds.SecretAccessKeyPresent = bedrockOpts.Credentials.SecretAccessKey.IsSet()
+			bedrockCreds.SessionToken, _ = bedrockOpts.Credentials.SessionToken.Resolve()
+			bedrockCreds.SessionTokenPresent = bedrockOpts.Credentials.SessionToken.IsSet()
+			bedrockCreds.Profile, _ = bedrockOpts.Credentials.Profile.Resolve()
+			bedrockCreds.ProfilePresent = bedrockOpts.Credentials.Profile.IsSet()
+		}
+		if authErr := llmhttp.AttachBedrockAuthForClient(ctx, req, llmhttp.BedrockClientAuthOptions{
+			ClientName:         selectedClient,
+			Credentials:        bedrockCreds,
+			EndpointURL:        bedrockEndpointURL,
+			EndpointURLPresent: bedrockEndpointURLPresent,
+			Region:             bedrockRegion,
+			RegionPresent:      bedrockRegionPresent,
+		}); authErr != nil {
+			return nil, authErr
+		}
+		return req, nil
+	}
+	parseFinalFn := func(ctx context.Context, text string) (any, error) {
+		return bamlclient.Parse.StaticRecursiveNodeAnn(ctx, text, options...)
+	}
+	newResultFn := func(kind bamlutils.StreamResultKind, stream any, final any, raw string, reasoning string, err error, reset bool) bamlutils.StreamResult {
+		r := getStaticRecursiveNodeAnnOutput()
+		r.kind = kind
+		r.raw = raw
+		r.reasoning = reasoning
+		r.err = err
+		r.reset = reset
+		if final != nil {
+			if v, ok := final.(*types.NodeAnn); ok {
+				r.finalParsed = v
+			} else if v, ok := final.(types.NodeAnn); ok {
+				r.finalParsed = &v
+			}
+		}
+		return r
+	}
+	legacyCallChildFn := func(ctx context.Context, clientOverride string, _ string, needsRaw bool, sendHeartbeat func()) (any, string, string, error) {
+		callOpts, childOptsErr := makeLegacyChildOptionsFromAdapter(adapter, clientOverride)
+		if childOptsErr != nil {
+			return nil, "", "", childOptsErr
+		}
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(callOpts), bamlclient.WithClient(clientOverride))
+		}
+		return runLegacyChildStream(ctx, needsRaw, sendHeartbeat, func(onTick func(context.Context, pkg.TickReason, pkg.FunctionLog) pkg.FunctionSignal) (any, error) {
+			opts := append(callOpts, bamlclient.WithOnTick(onTick))
+			stream, streamErr := bamlclient.Stream.StaticRecursiveNodeAnn(ctx, input.Topic, opts...)
+			if streamErr != nil {
+				return nil, streamErr
+			}
+			var result any
+			var lastErr error
+			for streamVal := range stream {
+				if streamVal.IsError {
+					lastErr = streamVal.Error
+					continue
+				}
+				if streamVal.IsFinal {
+					result = streamVal.Final()
+				}
+			}
+			return result, lastErr
+		})
+	}
+	callConfig := &buildrequest.CallConfig{
+		ClientOverride:     clientOverride,
+		ClientProviders:    clientProviders,
+		FallbackChain:      fallbackChain,
+		FallbackRoundRobin: fallbackRoundRobin,
+		FallbackTargets:    fallbackTargets,
+		IncludeReasoning:   adapter.IncludeReasoning(),
+		LegacyCallChild:    legacyCallChildFn,
+		LegacyChildren:     legacyChildren,
+		MetadataPlan:       plannedMetadata,
+		NeedsRaw:           adapter.StreamMode().NeedsRaw(),
+		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
+			return newStaticRecursiveNodeAnnOutputMetadata(md)
+		},
+		Provider:    provider,
+		RetryPolicy: retryPolicy,
+	}
+	__httpClient := llmhttp.DefaultClient
+	if __c := adapter.HTTPClient(); __c != nil {
+		__httpClient = __c
+	}
+	__staticServe := deBAMLStaticServe(adapter)
+	__staticShadow := deBAMLStaticShadow(adapter)
+	if __staticServe != nil || __staticShadow != nil {
+		if __staticDescriptor, __staticOK := introspected.StaticPromptDescriptor("StaticRecursiveNodeAnn"); __staticOK {
+			if __staticServe != nil {
+				installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+					__pr, __pe := bamlclient.Parse.StaticRecursiveNodeAnn(__pctx, __raw, options...)
+					if __pe != nil {
+						return nil, __pe
+					}
+					return json.Marshal(__pr)
+				}, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[types.NodeAnn](__cj)
+					return __dv, __de
+				})
+			} else {
+				installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+					__pr, __pe := bamlclient.Parse.StaticRecursiveNodeAnn(__pctx, __raw, options...)
+					if __pe != nil {
+						return nil, __pe
+					}
+					return json.Marshal(__pr)
+				}, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[types.NodeAnn](__cj)
+					return __dv, __de
+				})
+			}
+		}
+	}
+	go func() {
+		defer close(out)
+		gorecovery.GoHandler(func(err error) {
+			__errR := newResultFn(bamlutils.StreamResultKindError, nil, nil, "", "", err, false)
+			select {
+			case out <- __errR:
+			case <-adapter.Done():
+				__errR.Release()
+			}
+		}, func() error {
+			return buildrequest.RunCallOrchestration(adapter, out, callConfig, __httpClient, buildRequestFn, parseFinalFn, buildrequest.ExtractResponseContent, buildrequest.ExtractResponseContentBytes, buildrequest.ExtractResponseContentBorrowed, newResultFn)
+		})
+	}()
+	return nil
+}
+func StaticRecursiveNodeAnn(adapter bamlutils.Adapter, rawInput any) (<-chan bamlutils.StreamResult, error) {
+	out := make(chan bamlutils.StreamResult, 100)
+	var err error
+	mode := adapter.StreamMode()
+	__retryClient := buildrequest.ResolvePrimaryClient(adapter, introspected.FunctionClient["StaticRecursiveNodeAnn"])
+	__effective := __retryClient
+	var __rrInfo *bamlutils.RoundRobinInfo
+	__rrEffective, __rrInfoUpgrade, __rrErr := buildrequest.ResolveEffectiveClient(adapter, introspected.FunctionClient["StaticRecursiveNodeAnn"], introspected.FallbackChains, introspected.ClientProvider, introspected.RoundRobinCoordinator)
+	if __rrErr != nil {
+		return nil, __rrErr
+	}
+	__effective = __rrEffective
+	__rrInfo = __rrInfoUpgrade
+	__reg := adapter.OriginalClientRegistry()
+	// Try non-streaming BuildRequest path for /call and /call-with-raw
+	if introspected.Request != nil && (mode == bamlutils.StreamModeCall || mode == bamlutils.StreamModeCallWithRaw) {
+		provider := buildrequest.ResolveClientProvider(__reg, __effective, introspected.ClientProvider)
+		if provider != "" && buildrequest.IsCallProviderSupported(provider) {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__planned := buildrequest.BuildSingleProviderPlanForClient(__effective, provider, retryPolicy, buildrequest.BuildRequestAPIRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveNodeAnnBuildCallRequest(adapter, rawInput, out, provider, retryPolicy, nil, nil, nil, nil, nil, __planned, __effective)
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+	}
+	// Try streaming BuildRequest path for /stream and /stream-with-raw
+	if introspected.StreamRequest != nil && (mode == bamlutils.StreamModeStream || mode == bamlutils.StreamModeStreamWithRaw) {
+		provider := buildrequest.ResolveClientProvider(__reg, __effective, introspected.ClientProvider)
+		if provider != "" && buildrequest.IsProviderSupported(provider) {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__planned := buildrequest.BuildSingleProviderPlanForClient(__effective, provider, retryPolicy, buildrequest.BuildRequestAPIStreamRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveNodeAnnBuildRequest(adapter, rawInput, out, provider, retryPolicy, nil, nil, nil, nil, nil, __planned, __effective)
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+		__resolution, __fbErr := buildrequest.ResolveFallbackChainPlanForClient(__reg, __effective, introspected.FallbackChains, introspected.ClientProvider, buildrequest.IsProviderSupported, buildrequest.PreferAdvancer(adapter, introspected.RoundRobinCoordinator))
+		if __fbErr != nil {
+			return nil, __fbErr
+		}
+		if __resolution != nil && len(__resolution.Chain) > 0 {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__planned := buildrequest.BuildFallbackChainPlanFromResolution(__effective, __resolution, retryPolicy, buildrequest.BuildRequestAPIStreamRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveNodeAnnBuildRequest(adapter, rawInput, out, "", retryPolicy, __resolution.Chain, __resolution.Providers, __resolution.LegacyChildren, __resolution.Targets, __resolution.NestedRoundRobin, __planned, "")
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+	}
+	// Bridge: /call and /call-with-raw via StreamRequest when Request is unavailable
+	if introspected.StreamRequest != nil && (mode == bamlutils.StreamModeCall || mode == bamlutils.StreamModeCallWithRaw) {
+		provider := buildrequest.ResolveClientProvider(__reg, __effective, introspected.ClientProvider)
+		if provider != "" && buildrequest.IsProviderSupported(provider) {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__planned := buildrequest.BuildSingleProviderPlanForClient(__effective, provider, retryPolicy, buildrequest.BuildRequestAPIStreamRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveNodeAnnBuildRequest(adapter, rawInput, out, provider, retryPolicy, nil, nil, nil, nil, nil, __planned, __effective)
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+		__resolution, __fbErr := buildrequest.ResolveFallbackChainPlanForClient(__reg, __effective, introspected.FallbackChains, introspected.ClientProvider, buildrequest.IsProviderSupported, buildrequest.PreferAdvancer(adapter, introspected.RoundRobinCoordinator))
+		if __fbErr != nil {
+			return nil, __fbErr
+		}
+		if __resolution != nil && len(__resolution.Chain) > 0 {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__callChainSupported := len(__resolution.LegacyChildren) == 0
+			if __callChainSupported {
+				for _, __provider := range __resolution.Providers {
+					if !buildrequest.IsCallProviderSupported(__provider) {
+						__callChainSupported = false
+						break
+					}
+				}
+			}
+			if __callChainSupported {
+				__planned := buildrequest.BuildFallbackChainPlanFromResolution(__effective, __resolution, retryPolicy, buildrequest.BuildRequestAPIRequest)
+				__planned.RoundRobin = __rrInfo
+				err = staticRecursiveNodeAnnBuildCallRequest(adapter, rawInput, out, "", retryPolicy, __resolution.Chain, __resolution.Providers, __resolution.LegacyChildren, __resolution.Targets, __resolution.NestedRoundRobin, __planned, "")
+				if err != nil {
+					return nil, err
+				}
+				return out, nil
+			}
+			__planned := buildrequest.BuildFallbackChainPlanFromResolution(__effective, __resolution, retryPolicy, buildrequest.BuildRequestAPIStreamRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveNodeAnnBuildRequest(adapter, rawInput, out, "", retryPolicy, __resolution.Chain, __resolution.Providers, __resolution.LegacyChildren, __resolution.Targets, __resolution.NestedRoundRobin, __planned, "")
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+	}
+	// Legacy path: CallStream + OnTick (for unsupported/empty providers or BAML versions without a BuildRequest surface)
+	__legacyRetryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+	__legacyPredicate := buildrequest.IsProviderSupported
+	__plannedLegacy := buildrequest.BuildLegacyMetadataPlanForClient(__reg, __effective, introspected.ClientProvider[__effective], introspected.FallbackChains, introspected.ClientProvider, __legacyPredicate, __legacyRetryPolicy)
+	__plannedLegacy.RoundRobin = __rrInfo
+	__legacyClientOverride := __effective
+	buildrequest.LogLegacyClassification(adapter, "StaticRecursiveNodeAnn", __plannedLegacy)
+	switch mode {
+	case bamlutils.StreamModeCall:
+		err = staticRecursiveNodeAnnNoRaw(adapter, rawInput, out, true, __plannedLegacy, __legacyClientOverride)
+	case bamlutils.StreamModeStream:
+		err = staticRecursiveNodeAnnNoRaw(adapter, rawInput, out, false, __plannedLegacy, __legacyClientOverride)
+	case bamlutils.StreamModeCallWithRaw:
+		err = staticRecursiveNodeAnnFull(adapter, rawInput, out, true, __plannedLegacy, __legacyClientOverride)
+	case bamlutils.StreamModeStreamWithRaw:
+		err = staticRecursiveNodeAnnFull(adapter, rawInput, out, false, __plannedLegacy, __legacyClientOverride)
+	default:
+		err = fmt.Errorf("unknown StreamMode: %d", mode)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 type StaticRoleChatInput struct {
 	Topic string `json:"topic"`
 	Count int64  `json:"count"`
@@ -4478,6 +8863,66 @@ var Methods = map[string]bamlutils.StreamingMethod{
 			return new(string)
 		},
 	},
+	"StaticRecursiveA": {
+		Impl: StaticRecursiveA,
+		MakeInput: func() any {
+			return new(StaticRecursiveAInput)
+		},
+		MakeOutput: func() any {
+			return new(types.A)
+		},
+		MakeStreamOutput: func() any {
+			return new(streamtypes.A)
+		},
+	},
+	"StaticRecursiveB": {
+		Impl: StaticRecursiveB,
+		MakeInput: func() any {
+			return new(StaticRecursiveBInput)
+		},
+		MakeOutput: func() any {
+			return new(types.B)
+		},
+		MakeStreamOutput: func() any {
+			return new(streamtypes.B)
+		},
+	},
+	"StaticRecursiveLoop": {
+		Impl: StaticRecursiveLoop,
+		MakeInput: func() any {
+			return new(StaticRecursiveLoopInput)
+		},
+		MakeOutput: func() any {
+			return new(types.Loop)
+		},
+		MakeStreamOutput: func() any {
+			return new(streamtypes.Loop)
+		},
+	},
+	"StaticRecursiveNode": {
+		Impl: StaticRecursiveNode,
+		MakeInput: func() any {
+			return new(StaticRecursiveNodeInput)
+		},
+		MakeOutput: func() any {
+			return new(types.Node)
+		},
+		MakeStreamOutput: func() any {
+			return new(streamtypes.Node)
+		},
+	},
+	"StaticRecursiveNodeAnn": {
+		Impl: StaticRecursiveNodeAnn,
+		MakeInput: func() any {
+			return new(StaticRecursiveNodeAnnInput)
+		},
+		MakeOutput: func() any {
+			return new(types.NodeAnn)
+		},
+		MakeStreamOutput: func() any {
+			return new(streamtypes.NodeAnn)
+		},
+	},
 	"StaticRoleChat": {
 		Impl: StaticRoleChat,
 		MakeInput: func() any {
@@ -4580,6 +9025,116 @@ func parseStaticPrimitiveArgsStream(adapter bamlutils.Adapter, raw string) (any,
 	}
 	return result, nil
 }
+func parseStaticRecursiveA(adapter bamlutils.Adapter, raw string) (any, error) {
+	options, err := makeOptionsFromAdapter(adapter)
+	if err != nil {
+		return nil, err
+	}
+	result, parseErr := bamlclient.Parse.StaticRecursiveA(adapter, raw, options...)
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	return result, nil
+}
+func parseStaticRecursiveAStream(adapter bamlutils.Adapter, raw string) (any, error) {
+	options, err := makeOptionsFromAdapter(adapter)
+	if err != nil {
+		return nil, err
+	}
+	result, parseErr := bamlclient.ParseStream.StaticRecursiveA(adapter, raw, options...)
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	return result, nil
+}
+func parseStaticRecursiveB(adapter bamlutils.Adapter, raw string) (any, error) {
+	options, err := makeOptionsFromAdapter(adapter)
+	if err != nil {
+		return nil, err
+	}
+	result, parseErr := bamlclient.Parse.StaticRecursiveB(adapter, raw, options...)
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	return result, nil
+}
+func parseStaticRecursiveBStream(adapter bamlutils.Adapter, raw string) (any, error) {
+	options, err := makeOptionsFromAdapter(adapter)
+	if err != nil {
+		return nil, err
+	}
+	result, parseErr := bamlclient.ParseStream.StaticRecursiveB(adapter, raw, options...)
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	return result, nil
+}
+func parseStaticRecursiveLoop(adapter bamlutils.Adapter, raw string) (any, error) {
+	options, err := makeOptionsFromAdapter(adapter)
+	if err != nil {
+		return nil, err
+	}
+	result, parseErr := bamlclient.Parse.StaticRecursiveLoop(adapter, raw, options...)
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	return result, nil
+}
+func parseStaticRecursiveLoopStream(adapter bamlutils.Adapter, raw string) (any, error) {
+	options, err := makeOptionsFromAdapter(adapter)
+	if err != nil {
+		return nil, err
+	}
+	result, parseErr := bamlclient.ParseStream.StaticRecursiveLoop(adapter, raw, options...)
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	return result, nil
+}
+func parseStaticRecursiveNode(adapter bamlutils.Adapter, raw string) (any, error) {
+	options, err := makeOptionsFromAdapter(adapter)
+	if err != nil {
+		return nil, err
+	}
+	result, parseErr := bamlclient.Parse.StaticRecursiveNode(adapter, raw, options...)
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	return result, nil
+}
+func parseStaticRecursiveNodeStream(adapter bamlutils.Adapter, raw string) (any, error) {
+	options, err := makeOptionsFromAdapter(adapter)
+	if err != nil {
+		return nil, err
+	}
+	result, parseErr := bamlclient.ParseStream.StaticRecursiveNode(adapter, raw, options...)
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	return result, nil
+}
+func parseStaticRecursiveNodeAnn(adapter bamlutils.Adapter, raw string) (any, error) {
+	options, err := makeOptionsFromAdapter(adapter)
+	if err != nil {
+		return nil, err
+	}
+	result, parseErr := bamlclient.Parse.StaticRecursiveNodeAnn(adapter, raw, options...)
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	return result, nil
+}
+func parseStaticRecursiveNodeAnnStream(adapter bamlutils.Adapter, raw string) (any, error) {
+	options, err := makeOptionsFromAdapter(adapter)
+	if err != nil {
+		return nil, err
+	}
+	result, parseErr := bamlclient.ParseStream.StaticRecursiveNodeAnn(adapter, raw, options...)
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	return result, nil
+}
 func parseStaticRoleChat(adapter bamlutils.Adapter, raw string) (any, error) {
 	options, err := makeOptionsFromAdapter(adapter)
 	if err != nil {
@@ -4631,6 +9186,41 @@ var ParseMethods = map[string]bamlutils.ParseMethod{
 			return new(string)
 		},
 		StreamImpl: parseStaticPrimitiveArgsStream,
+	},
+	"StaticRecursiveA": {
+		Impl: parseStaticRecursiveA,
+		MakeOutput: func() any {
+			return new(types.A)
+		},
+		StreamImpl: parseStaticRecursiveAStream,
+	},
+	"StaticRecursiveB": {
+		Impl: parseStaticRecursiveB,
+		MakeOutput: func() any {
+			return new(types.B)
+		},
+		StreamImpl: parseStaticRecursiveBStream,
+	},
+	"StaticRecursiveLoop": {
+		Impl: parseStaticRecursiveLoop,
+		MakeOutput: func() any {
+			return new(types.Loop)
+		},
+		StreamImpl: parseStaticRecursiveLoopStream,
+	},
+	"StaticRecursiveNode": {
+		Impl: parseStaticRecursiveNode,
+		MakeOutput: func() any {
+			return new(types.Node)
+		},
+		StreamImpl: parseStaticRecursiveNodeStream,
+	},
+	"StaticRecursiveNodeAnn": {
+		Impl: parseStaticRecursiveNodeAnn,
+		MakeOutput: func() any {
+			return new(types.NodeAnn)
+		},
+		StreamImpl: parseStaticRecursiveNodeAnnStream,
 	},
 	"StaticRoleChat": {
 		Impl: parseStaticRoleChat,

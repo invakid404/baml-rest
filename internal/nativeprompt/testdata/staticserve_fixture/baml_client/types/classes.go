@@ -20,6 +20,240 @@ import (
 	"github.com/boundaryml/baml/engine/language_client_go/pkg/cffi"
 )
 
+type A struct {
+	Value string `json:"value"`
+	B     *B     `json:"b"`
+}
+
+func (c *A) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "A" {
+		panic(fmt.Sprintf("expected A, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "value":
+			c.Value = baml.Decode(valueHolder).Interface().(string)
+
+		case "b":
+			c.B = baml.Decode(valueHolder).Interface().(*B)
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class A", key))
+
+		}
+	}
+
+}
+
+func (c A) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["value"] = c.Value
+
+	fields["b"] = c.B
+
+	return baml.EncodeClass("A", fields, nil)
+}
+
+func (c A) BamlTypeName() string {
+	return "A"
+}
+
+type B struct {
+	Value string `json:"value"`
+	A     *A     `json:"a"`
+}
+
+func (c *B) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "B" {
+		panic(fmt.Sprintf("expected B, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "value":
+			c.Value = baml.Decode(valueHolder).Interface().(string)
+
+		case "a":
+			c.A = baml.Decode(valueHolder).Interface().(*A)
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class B", key))
+
+		}
+	}
+
+}
+
+func (c B) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["value"] = c.Value
+
+	fields["a"] = c.A
+
+	return baml.EncodeClass("B", fields, nil)
+}
+
+func (c B) BamlTypeName() string {
+	return "B"
+}
+
+type Loop struct {
+	Next *Loop `json:"next"`
+}
+
+func (c *Loop) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Loop" {
+		panic(fmt.Sprintf("expected Loop, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "next":
+			c.Next = baml.Decode(valueHolder).Interface().(*Loop)
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Loop", key))
+
+		}
+	}
+
+}
+
+func (c Loop) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["next"] = c.Next
+
+	return baml.EncodeClass("Loop", fields, nil)
+}
+
+func (c Loop) BamlTypeName() string {
+	return "Loop"
+}
+
+type Node struct {
+	Value string `json:"value"`
+	Next  *Node  `json:"next"`
+}
+
+func (c *Node) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Node" {
+		panic(fmt.Sprintf("expected Node, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "value":
+			c.Value = baml.Decode(valueHolder).Interface().(string)
+
+		case "next":
+			c.Next = baml.Decode(valueHolder).Interface().(*Node)
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Node", key))
+
+		}
+	}
+
+}
+
+func (c Node) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["value"] = c.Value
+
+	fields["next"] = c.Next
+
+	return baml.EncodeClass("Node", fields, nil)
+}
+
+func (c Node) BamlTypeName() string {
+	return "Node"
+}
+
+type NodeAnn struct {
+	Value string   `json:"value"`
+	Next  *NodeAnn `json:"next"`
+}
+
+func (c *NodeAnn) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "NodeAnn" {
+		panic(fmt.Sprintf("expected NodeAnn, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "value":
+			c.Value = baml.Decode(valueHolder).Interface().(string)
+
+		case "next":
+			c.Next = baml.Decode(valueHolder).Interface().(*NodeAnn)
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class NodeAnn", key))
+
+		}
+	}
+
+}
+
+func (c NodeAnn) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["value"] = c.Value
+
+	fields["next"] = c.Next
+
+	return baml.EncodeClass("NodeAnn", fields, nil)
+}
+
+func (c NodeAnn) BamlTypeName() string {
+	return "NodeAnn"
+}
+
 type StaticAnswer struct {
 	Answer     string `json:"answer"`
 	Confidence int64  `json:"confidence"`

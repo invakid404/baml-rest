@@ -37,6 +37,19 @@ import (
 // NOT a generic decoder standing in for arbitrary shapes: the proof obligation is per
 // admitted return type, enforced by the narrowed gate + the per-shape differential.
 //
+// De-BAML Phase 2 (recursive classes) EXTENDS the proven set with three recursive
+// pointer-carrier shapes: the self-recursive Node{Value string; Next *Node} and the
+// mutual A{Value string; B *B} <-> B{Value string; A *A} SCC. BAML's Go generator
+// lowers `T?` to a `*T` pointer, so these are legal recursive Go structs that
+// encoding/json decodes cleanly (the alias-only Go ICE is not implicated — classes go
+// through pointer indirection). Their strict typed decode reproduces BAML's CFFI
+// Decode byte-for-byte once the static absent-optional normalizer makes an omitted
+// terminal marshal as `"next":null` (matching BAML's nil-pointer marshal). These
+// shapes are admitted ONLY through the isProvenRecursiveStaticReturn fingerprint +
+// the static-recursion manifest (24 positive rows across depths 0/1/2/N and both
+// terminal encodings + the pair-guard row); every other recursive/alias shape stays
+// declined PRE-CLAIM.
+//
 // SENSITIVE: canonicalJSON is parsed provider output and T carries the model's full
 // structured response; the caller treats both like the response body and never logs
 // them.

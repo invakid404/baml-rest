@@ -47,3 +47,15 @@ class B {
 class Loop {
   next Loop?
 }
+
+// A recursively-@stream.*-annotated variant of the Node shape (only for the SERVE
+// fixture). @stream.done on the value field is PRESERVED by static lowering onto this
+// final non-streaming descriptor, so the exact recursive fingerprint DECLINES it and
+// the route falls back to BAML with ZERO native sockets (the stream-annotation
+// zero-socket ROUTE regression). It is NOT in the differential oracle. (Named NodeAnn,
+// NOT NodeStream: a `<method>Stream` name collides with the generated stream-parse
+// helper of the un-annotated Node method.)
+class NodeAnn {
+  value string @stream.done
+  next NodeAnn?
+}

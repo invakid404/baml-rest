@@ -476,6 +476,26 @@ func oracleCases() []oracleCase {
 		completionCase("StaticCompletionOutputFormat/trees", "StaticCompletionOutputFormat",
 			map[string]any{"topic": "trees"},
 			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticCompletionOutputFormat("trees") }),
+
+		// De-BAML Phase 2 (recursive classes): bare ctx.output_format Completions whose
+		// RETURN is a recursive class. Render parity proves native RenderStatic reproduces
+		// BAML v0.223's output_format block for a self-recursive class (Node) and both
+		// roots of a mutual SCC (A, B). The recursive PARSE differential (depths/terminals)
+		// lives in the separate static-recursion manifest, not this render oracle.
+		completionCase("StaticRecursiveNode/self", "StaticRecursiveNode",
+			map[string]any{"topic": "a short list"},
+			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticRecursiveNode("a short list") }),
+		completionCase("StaticRecursiveA/mutual_a", "StaticRecursiveA",
+			map[string]any{"topic": "an a/b chain"},
+			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticRecursiveA("an a/b chain") }),
+		completionCase("StaticRecursiveB/mutual_b", "StaticRecursiveB",
+			map[string]any{"topic": "a b/a chain"},
+			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticRecursiveB("a b/a chain") }),
+		// The one-field Loop pair-guard witness renders like any recursive class (the
+		// served fingerprint declines it at PARSE admission, not render).
+		completionCase("StaticRecursiveLoop/one_field", "StaticRecursiveLoop",
+			map[string]any{"topic": "a loop"},
+			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticRecursiveLoop("a loop") }),
 	}
 }
 

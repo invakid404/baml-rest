@@ -34,8 +34,8 @@ func (*parse_stream) StaticCompletion(ctx context.Context, text string, opts ...
 	}
 
 	args := baml.BamlFunctionArguments{
-		Kwargs:	map[string]any{"text": text, "stream": true},
-		Env:	getEnvVars(callOpts.env),
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
 	}
 
 	if callOpts.clientRegistry != nil {
@@ -81,8 +81,8 @@ func (*parse_stream) StaticCompletionOutputFormat(ctx context.Context, text stri
 	}
 
 	args := baml.BamlFunctionArguments{
-		Kwargs:	map[string]any{"text": text, "stream": true},
-		Env:	getEnvVars(callOpts.env),
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
 	}
 
 	if callOpts.clientRegistry != nil {
@@ -128,8 +128,8 @@ func (*parse_stream) StaticOutputFormat(ctx context.Context, text string, opts .
 	}
 
 	args := baml.BamlFunctionArguments{
-		Kwargs:	map[string]any{"text": text, "stream": true},
-		Env:	getEnvVars(callOpts.env),
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
 	}
 
 	if callOpts.clientRegistry != nil {
@@ -175,8 +175,8 @@ func (*parse_stream) StaticPrimitiveArgs(ctx context.Context, text string, opts 
 	}
 
 	args := baml.BamlFunctionArguments{
-		Kwargs:	map[string]any{"text": text, "stream": true},
-		Env:	getEnvVars(callOpts.env),
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
 	}
 
 	if callOpts.clientRegistry != nil {
@@ -213,6 +213,241 @@ func (*parse_stream) StaticPrimitiveArgs(ctx context.Context, text string, opts 
 	return casted, nil
 }
 
+// / Parse version of StaticRecursiveA (Takes in string and returns stream_types.A)
+func (*parse_stream) StaticRecursiveA(ctx context.Context, text string, opts ...CallOptionFunc) (stream_types.A, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticRecursiveA: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(ctx, "StaticRecursiveA", encoded)
+	if err != nil {
+		return stream_types.A{}, err
+	}
+
+	casted := (result).(stream_types.A)
+
+	return casted, nil
+}
+
+// / Parse version of StaticRecursiveB (Takes in string and returns stream_types.B)
+func (*parse_stream) StaticRecursiveB(ctx context.Context, text string, opts ...CallOptionFunc) (stream_types.B, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticRecursiveB: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(ctx, "StaticRecursiveB", encoded)
+	if err != nil {
+		return stream_types.B{}, err
+	}
+
+	casted := (result).(stream_types.B)
+
+	return casted, nil
+}
+
+// / Parse version of StaticRecursiveLoop (Takes in string and returns stream_types.Loop)
+func (*parse_stream) StaticRecursiveLoop(ctx context.Context, text string, opts ...CallOptionFunc) (stream_types.Loop, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticRecursiveLoop: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(ctx, "StaticRecursiveLoop", encoded)
+	if err != nil {
+		return stream_types.Loop{}, err
+	}
+
+	casted := (result).(stream_types.Loop)
+
+	return casted, nil
+}
+
+// / Parse version of StaticRecursiveNode (Takes in string and returns stream_types.Node)
+func (*parse_stream) StaticRecursiveNode(ctx context.Context, text string, opts ...CallOptionFunc) (stream_types.Node, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticRecursiveNode: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(ctx, "StaticRecursiveNode", encoded)
+	if err != nil {
+		return stream_types.Node{}, err
+	}
+
+	casted := (result).(stream_types.Node)
+
+	return casted, nil
+}
+
+// / Parse version of StaticRecursiveNodeAnn (Takes in string and returns stream_types.NodeAnn)
+func (*parse_stream) StaticRecursiveNodeAnn(ctx context.Context, text string, opts ...CallOptionFunc) (stream_types.NodeAnn, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticRecursiveNodeAnn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(ctx, "StaticRecursiveNodeAnn", encoded)
+	if err != nil {
+		return stream_types.NodeAnn{}, err
+	}
+
+	casted := (result).(stream_types.NodeAnn)
+
+	return casted, nil
+}
+
 // / Parse version of StaticRoleChat (Takes in string and returns string)
 func (*parse_stream) StaticRoleChat(ctx context.Context, text string, opts ...CallOptionFunc) (string, error) {
 
@@ -222,8 +457,8 @@ func (*parse_stream) StaticRoleChat(ctx context.Context, text string, opts ...Ca
 	}
 
 	args := baml.BamlFunctionArguments{
-		Kwargs:	map[string]any{"text": text, "stream": true},
-		Env:	getEnvVars(callOpts.env),
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
 	}
 
 	if callOpts.clientRegistry != nil {

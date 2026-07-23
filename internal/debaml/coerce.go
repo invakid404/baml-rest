@@ -276,7 +276,11 @@ func (f *coerceFlags) toCandidate(out json.RawMessage, originIndex int) candidat
 // for those is deferred to the rest of the Mcoerce milestone (#546). See
 // coercePrimitive / coerceList / coerceEnum / coerceLiteral / coerceClass for the
 // per-kind boundary.
-func coerce(b *schema.Bundle, t schema.Type, input value, f *coerceFlags) (json.RawMessage, error) {
+// cctx is the path-local pair-guard context (see pair_guard.go), threaded through
+// EVERY final recursive descent so an admitted recursive-class family coerces under
+// BAML's (ClassKey, value) circular-reference guard with no depth cap. It is nil for
+// leaf callers and the stream path (which never carries a recursive class).
+func coerce(b *schema.Bundle, t schema.Type, input value, f *coerceFlags, cctx *coerceCtx) (json.RawMessage, error) {
 	switch t.Kind {
 	case schema.TypePrimitive:
 		// Primitives are lenient in Mcoerce-b (numeric-string parse, float→int
@@ -289,13 +293,13 @@ func coerce(b *schema.Bundle, t schema.Type, input value, f *coerceFlags) (json.
 	case schema.TypeEnum:
 		return coerceEnum(b, t.Name, input, f)
 	case schema.TypeClass:
-		return coerceClass(b, t.Name, t.Mode, input, f)
+		return coerceClass(b, t.Name, t.Mode, input, f, cctx)
 	case schema.TypeList:
-		return coerceList(b, t.Elem, input, f)
+		return coerceList(b, t.Elem, input, f, cctx)
 	case schema.TypeMap:
-		return coerceMap(b, t.Key, t.Value, input, f)
+		return coerceMap(b, t.Key, t.Value, input, f, cctx)
 	case schema.TypeUnion:
-		return coerceUnionSafe(b, t.Union, input, f)
+		return coerceUnionSafe(b, t.Union, input, f, cctx)
 	default:
 		return nil, fmt.Errorf("debaml: cannot coerce type kind %q", t.Kind)
 	}
@@ -1246,16 +1250,26 @@ func enumMatchCandidates(e *schema.EnumDef) []matchCandidate {
 // Every score-bearing flag (ExtraKey / ImpliedKey / OptionalDefaultFromNoValue /
 // DefaultFromNoValue / DefaultButHadUnparseableValue) and any flagged child folds
 // into cf, so a nullable-union claim can require this class arm to be clean.
-func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input value, cf *coerceFlags) (json.RawMessage, error) {
+func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input value, cf *coerceFlags, cctx *coerceCtx) (json.RawMessage, error) {
 	cls, ok := b.FindClass(name, mode)
 	if !ok {
 		return nil, fmt.Errorf("debaml: unknown class %q", name)
 	}
+	// BAML's Class::coerce circular-reference guard (coerce_class.rs), BEFORE the
+	// array/implied work: a repeated (ClassKey, value) on the active COERCE path is a
+	// circular reference → BAML's parsing error. Derive a CHILD context carrying this
+	// pair for every descent below, so siblings inherit the ancestor path but never
+	// poison each other. No depth cap. (cctx nil-safe: an empty context never fires.)
+	key := schema.ClassKey{Name: name, Mode: mode}
+	if cctx.coerceHas(key, input) {
+		return nil, errCircularReference(name)
+	}
+	child := cctx.enterCoerce(key, input)
 	// ARRAY input → coerce_array_to_singular over the items coerced INTO the class
 	// (coerce_class.rs). M3d claims only the MULTI-field all-required-flat-leaf shape
 	// (coerceClassArray); every other shape DECLINES (see coerceClassArray).
 	if input.kind == valArray {
-		return coerceClassArray(b, cls, name, mode, input.arrV, cf)
+		return coerceClassArray(b, cls, name, mode, input.arrV, cf, child)
 	}
 	cf.setKind(candClass)
 	nF := len(cls.Fields)
@@ -1287,7 +1301,7 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 	// stricter than BAML); a hard failure propagates.
 	resolveMatched := func(i int, v value) error {
 		childF := &coerceFlags{}
-		o, err := coerce(b, cls.Fields[i].Type, v, childF)
+		o, err := coerce(b, cls.Fields[i].Type, v, childF, child)
 		if err == nil {
 			out[i] = o
 			filled[i] = true
@@ -1346,7 +1360,7 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 	// ExtraKey+default/error path).
 	coerceImplied := func(v value) error {
 		childF := &coerceFlags{}
-		o, err := coerce(b, cls.Fields[0].Type, v, childF)
+		o, err := coerce(b, cls.Fields[0].Type, v, childF, child)
 		if err == nil {
 			out[0] = o
 			filled[0] = true
@@ -1545,7 +1559,7 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 //   - a class with any DEFAULTABLE / OPTIONAL / nested field would build a competing
 //     completed_instance (defaults fill the missing required fields), whose scoring
 //     against the array-to-singular candidate native does not model.
-func coerceClassArray(b *schema.Bundle, cls *schema.ClassDef, name string, mode schema.StreamingMode, items []value, cf *coerceFlags) (json.RawMessage, error) {
+func coerceClassArray(b *schema.Bundle, cls *schema.ClassDef, name string, mode schema.StreamingMode, items []value, cf *coerceFlags, cctx *coerceCtx) (json.RawMessage, error) {
 	if !classAllRequiredFlatLeaf(cls) {
 		// Single-field (implied-key competition) or a defaultable/optional/nested
 		// field (completed_instance competition) — both DECLINE (M3d+).
@@ -1555,7 +1569,7 @@ func coerceClassArray(b *schema.Bundle, cls *schema.ClassDef, name string, mode 
 	tu := cf != nil && cf.targetIsUnion
 	w, err := coerceArrayToSingular(items, tu, func(item value) (json.RawMessage, *coerceFlags, error) {
 		itemCf := &coerceFlags{targetIsUnion: tu}
-		out, e := coerce(b, classType, item, itemCf)
+		out, e := coerce(b, classType, item, itemCf, cctx)
 		return out, itemCf, e
 	}, nil)
 	if err != nil {
@@ -1657,7 +1671,7 @@ func defaultValue(t schema.Type) (json.RawMessage, bool) {
 // child's own flags) are threaded into cf so the nullable-union clean-only rule
 // (coerceUnionSafe) sees a flagged list arm and declines it against the scored
 // null arm — Mcoerce-c does not score collection arms against null.
-func coerceList(b *schema.Bundle, elem *schema.Type, input value, cf *coerceFlags) (json.RawMessage, error) {
+func coerceList(b *schema.Bundle, elem *schema.Type, input value, cf *coerceFlags, cctx *coerceCtx) (json.RawMessage, error) {
 	if elem == nil {
 		return nil, fmt.Errorf("debaml: list type missing element")
 	}
@@ -1673,7 +1687,7 @@ func coerceList(b *schema.Bundle, elem *schema.Type, input value, cf *coerceFlag
 		if cf != nil {
 			cf.singleToArray = true
 		}
-		out, keep, err := coerceListChild(b, *elem, input, cf)
+		out, keep, err := coerceListChild(b, *elem, input, cf, cctx)
 		if err != nil {
 			return nil, err
 		}
@@ -1696,7 +1710,7 @@ func coerceList(b *schema.Bundle, elem *schema.Type, input value, cf *coerceFlag
 
 	first := true
 	for i := range input.arrV {
-		out, keep, err := coerceListChild(b, *elem, input.arrV[i], cf)
+		out, keep, err := coerceListChild(b, *elem, input.arrV[i], cf, cctx)
 		if err != nil {
 			return nil, err
 		}
@@ -1731,9 +1745,9 @@ func coerceList(b *schema.Bundle, elem *schema.Type, input value, cf *coerceFlag
 //     error to propagate, or an ErrDeBAMLParseUnsupported DECLINE because the
 //     child could be a DEFERRED Mcoerce-d success or carried number-display
 //     uncertainty, so native falls back rather than skip an item BAML might keep.
-func coerceListChild(b *schema.Bundle, elem schema.Type, item value, cf *coerceFlags) (json.RawMessage, bool, error) {
+func coerceListChild(b *schema.Bundle, elem schema.Type, item value, cf *coerceFlags, cctx *coerceCtx) (json.RawMessage, bool, error) {
 	childF := &coerceFlags{}
-	out, err := coerce(b, elem, item, childF)
+	out, err := coerce(b, elem, item, childF, cctx)
 	if err == nil {
 		// Kept: the child value's TOTAL score counts toward the list score
 		// (types.rs List score = own conditions + sum of item scores), so fold
@@ -2042,7 +2056,7 @@ func bamlCommaNumberParses(s string) bool {
 // conditions plus each accepted entry's key conditions (empty, 0) plus value
 // score. M3 scores a non-null map arm against the null arm (DefaultButHadValue
 // 110) rather than the pre-M3 clean-only decline.
-func coerceMap(b *schema.Bundle, keyT, valT *schema.Type, input value, cf *coerceFlags) (json.RawMessage, error) {
+func coerceMap(b *schema.Bundle, keyT, valT *schema.Type, input value, cf *coerceFlags, cctx *coerceCtx) (json.RawMessage, error) {
 	if keyT == nil || valT == nil {
 		return nil, fmt.Errorf("debaml: map type missing key or value")
 	}
@@ -2076,7 +2090,7 @@ func coerceMap(b *schema.Bundle, keyT, valT *schema.Type, input value, cf *coerc
 		f := &input.objV[i]
 		// VALUE first (BAML coerce_map order): a proven value error skips the
 		// entry WITHOUT coercing the key.
-		child, keepVal, err := coerceMapValueChild(b, *valT, f.val, cf)
+		child, keepVal, err := coerceMapValueChild(b, *valT, f.val, cf, cctx)
 		if err != nil {
 			return nil, err // hard/invariant error, or decline-the-whole-map.
 		}
@@ -2123,9 +2137,9 @@ func coerceMap(b *schema.Bundle, keyT, valT *schema.Type, input value, cf *coerc
 // value's total score DOES fold into the map here (M3 drops the pre-M3
 // "map own flags only" score.rs shortcut). The child's number-display uncertainty
 // is still propagated.
-func coerceMapValueChild(b *schema.Bundle, valT schema.Type, val value, cf *coerceFlags) (json.RawMessage, bool, error) {
+func coerceMapValueChild(b *schema.Bundle, valT schema.Type, val value, cf *coerceFlags, cctx *coerceCtx) (json.RawMessage, bool, error) {
 	childF := &coerceFlags{}
-	out, err := coerce(b, valT, val, childF)
+	out, err := coerce(b, valT, val, childF, cctx)
 	if err == nil {
 		cf.foldChild(childF) // map score += accepted value score (key conds are empty=0)
 		return out, true, nil
@@ -2655,7 +2669,7 @@ func setWinnerCf(cf *coerceFlags, w candidate) {
 // there is no array-to-singular here (an int/float/bool arm declines ARRAY input,
 // declining the union). cf carries the winner's score/kind up to an outer scored
 // context (a union that is itself a class field / list element).
-func coerceUnionSafe(b *schema.Bundle, u *schema.UnionType, input value, cf *coerceFlags) (json.RawMessage, error) {
+func coerceUnionSafe(b *schema.Bundle, u *schema.UnionType, input value, cf *coerceFlags, cctx *coerceCtx) (json.RawMessage, error) {
 	if u == nil {
 		return nil, fmt.Errorf("debaml: union type missing payload")
 	}
@@ -2689,7 +2703,7 @@ func coerceUnionSafe(b *schema.Bundle, u *schema.UnionType, input value, cf *coe
 		}
 		w, err := selectUnionArms(1, true, func(i int) (json.RawMessage, *coerceFlags, error) {
 			armF := &coerceFlags{targetIsUnion: true}
-			out, e := coerce(b, u.Variants[0], input, armF)
+			out, e := coerce(b, u.Variants[0], input, armF, cctx)
 			return out, armF, e
 		})
 		if err != nil {
@@ -2704,7 +2718,7 @@ func coerceUnionSafe(b *schema.Bundle, u *schema.UnionType, input value, cf *coe
 	if err := checkSupportedUnionShape(b, u); err != nil {
 		return nil, err
 	}
-	return coerceUnionSafeMulti(b, u.Variants, input, u.Nullable, cf)
+	return coerceUnionSafeMulti(b, u.Variants, input, u.Nullable, cf, cctx)
 }
 
 // coerceUnionSafeMulti resolves a proven-safe multi-variant union (a scalar/
@@ -2747,11 +2761,11 @@ func coerceUnionSafe(b *schema.Bundle, u *schema.UnionType, input value, cf *coe
 // and the class pick_best special ordering (phase 2). The old disjoint-key /
 // >=2-field class gate is gone: overlapping and single-field class arms are resolved
 // by pick_best rather than declined.
-func coerceUnionSafeMulti(b *schema.Bundle, variants []schema.Type, input value, nullable bool, cf *coerceFlags) (json.RawMessage, error) {
+func coerceUnionSafeMulti(b *schema.Bundle, variants []schema.Type, input value, nullable bool, cf *coerceFlags, cctx *coerceCtx) (json.RawMessage, error) {
 	// Phase 1: try_cast pass (coerce_union.rs try_cast_union, run by field_type.rs
 	// BEFORE the lenient coerce). The FIRST non-null arm whose STRICT native-type
 	// cast succeeds is BAML's winner at score 0.
-	if w, matched, err := tryCastUnion(b, variants, input); err != nil {
+	if w, matched, err := tryCastUnion(b, variants, input, cctx); err != nil {
 		return nil, err
 	} else if matched {
 		setWinnerCf(cf, w)
@@ -2762,7 +2776,7 @@ func coerceUnionSafeMulti(b *schema.Bundle, variants []schema.Type, input value,
 	// when nullable.
 	w, err := selectUnionArms(len(variants), nullable, func(i int) (json.RawMessage, *coerceFlags, error) {
 		armF := &coerceFlags{targetIsUnion: true}
-		out, e := coerce(b, variants[i], input, armF)
+		out, e := coerce(b, variants[i], input, armF, cctx)
 		return out, armF, e
 	})
 	if err != nil {
@@ -2798,10 +2812,10 @@ func coerceUnionSafeMulti(b *schema.Bundle, variants []schema.Type, input value,
 // err) only for a value native cannot emit (a JSON number that parses to a
 // non-finite float) or a hard/invariant failure (unknown class/enum / malformed arm
 // type), which declines/propagates.
-func tryCastUnion(b *schema.Bundle, variants []schema.Type, input value) (candidate, bool, error) {
+func tryCastUnion(b *schema.Bundle, variants []schema.Type, input value, cctx *coerceCtx) (candidate, bool, error) {
 	var filtered []candidate
 	for i := range variants {
-		c, matched, err := tryCastArm(b, variants[i], input)
+		c, matched, err := tryCastArm(b, variants[i], input, cctx)
 		if err != nil {
 			return candidate{}, false, err
 		}
@@ -2864,20 +2878,20 @@ func tryCastUnion(b *schema.Bundle, variants []schema.Type, input value) (candid
 // pass wrongly early-returns [1] while BAML's try_cast picks list<string>→["1"].
 // Skipping list/union try_cast here is exactly that over-claim. Every other kind
 // (recursive alias / media / tuple) never appears as a supported union arm.
-func tryCastArm(b *schema.Bundle, t schema.Type, input value) (candidate, bool, error) {
+func tryCastArm(b *schema.Bundle, t schema.Type, input value, cctx *coerceCtx) (candidate, bool, error) {
 	switch t.Kind {
 	case schema.TypeClass:
-		out, kind, matched, err := tryCastClass(b, t.Name, t.Mode, input)
+		out, kind, matched, err := tryCastClass(b, t.Name, t.Mode, input, cctx)
 		if err != nil || !matched {
 			return candidate{}, matched, err
 		}
 		return candidate{output: out, kind: kind, score: 0}, true, nil
 	case schema.TypeMap:
-		return tryCastMap(b, t.Key, t.Value, input)
+		return tryCastMap(b, t.Key, t.Value, input, cctx)
 	case schema.TypeList:
-		return tryCastArray(b, t.Elem, input)
+		return tryCastArray(b, t.Elem, input, cctx)
 	case schema.TypeUnion:
-		return tryCastUnionArm(b, t.Union, input)
+		return tryCastUnionArm(b, t.Union, input, cctx)
 	case schema.TypePrimitive:
 		switch t.Primitive {
 		case schema.PrimitiveString:
@@ -2956,7 +2970,7 @@ func tryCastArm(b *schema.Bundle, t schema.Type, input value) (candidate, bool, 
 // unproven — coerceMap declines duplicates too), so the arm falls to the lenient
 // pass, which also declines the whole map, declining the union (safe under-claim).
 // Entries are emitted in INPUT key order under their ORIGINAL key strings.
-func tryCastMap(b *schema.Bundle, keyT, valT *schema.Type, input value) (candidate, bool, error) {
+func tryCastMap(b *schema.Bundle, keyT, valT *schema.Type, input value, cctx *coerceCtx) (candidate, bool, error) {
 	if keyT == nil || valT == nil {
 		return candidate{}, false, fmt.Errorf("debaml: map type missing key or value")
 	}
@@ -2975,7 +2989,7 @@ func tryCastMap(b *schema.Bundle, keyT, valT *schema.Type, input value) (candida
 	buf.WriteByte('{')
 	for i := range input.objV {
 		e := &input.objV[i]
-		vc, matched, err := tryCastArm(b, *valT, e.val)
+		vc, matched, err := tryCastArm(b, *valT, e.val, cctx)
 		if err != nil {
 			return candidate{}, false, err
 		}
@@ -3012,7 +3026,7 @@ func tryCastMap(b *schema.Bundle, keyT, valT *schema.Type, input value) (candida
 // single-non-null-arm optional) each try_cast independently, and BAML's hint is a
 // no-op for them (a non-union element carries no UnionMatch; a single-arm-optional's
 // only hint is its lone arm), so ignoring the hint here is faithful.
-func tryCastArray(b *schema.Bundle, elem *schema.Type, input value) (candidate, bool, error) {
+func tryCastArray(b *schema.Bundle, elem *schema.Type, input value, cctx *coerceCtx) (candidate, bool, error) {
 	if elem == nil {
 		return candidate{}, false, fmt.Errorf("debaml: list type missing element")
 	}
@@ -3023,7 +3037,7 @@ func tryCastArray(b *schema.Bundle, elem *schema.Type, input value) (candidate, 
 	var buf bytes.Buffer
 	buf.WriteByte('[')
 	for i := range input.arrV {
-		ec, matched, err := tryCastArm(b, *elem, input.arrV[i])
+		ec, matched, err := tryCastArm(b, *elem, input.arrV[i], cctx)
 		if err != nil {
 			return candidate{}, false, err
 		}
@@ -3048,7 +3062,7 @@ func tryCastArray(b *schema.Bundle, elem *schema.Type, input value) (candidate, 
 // via tryCastUnion (first score-0 wins; a non-zero map arm is pick_best'd). A
 // non-null input to a union with no try_casting arm returns not-matched (the caller
 // — tryCastMap / tryCastArray — fails fast to the lenient pass).
-func tryCastUnionArm(b *schema.Bundle, u *schema.UnionType, input value) (candidate, bool, error) {
+func tryCastUnionArm(b *schema.Bundle, u *schema.UnionType, input value, cctx *coerceCtx) (candidate, bool, error) {
 	if u == nil {
 		return candidate{}, false, fmt.Errorf("debaml: union type missing payload")
 	}
@@ -3059,7 +3073,7 @@ func tryCastUnionArm(b *schema.Bundle, u *schema.UnionType, input value) (candid
 		}
 		return candidate{}, false, nil
 	}
-	return tryCastUnion(b, u.Variants, input)
+	return tryCastUnion(b, u.Variants, input, cctx)
 }
 
 // tryCastClass ports Class::try_cast (ir_ref/coerce_class.rs) — the STRICT phase-1
@@ -3079,7 +3093,7 @@ func tryCastUnionArm(b *schema.Bundle, u *schema.UnionType, input value) (candid
 // match (extra key, missing field, or a field that does not try_cast — the caller
 // falls to the lenient phase, or the next arm); (nil, _, false, err) only for a
 // hard/invariant failure (unknown class, or a malformed field arm type).
-func tryCastClass(b *schema.Bundle, name string, mode schema.StreamingMode, input value) (json.RawMessage, candKind, bool, error) {
+func tryCastClass(b *schema.Bundle, name string, mode schema.StreamingMode, input value, cctx *coerceCtx) (json.RawMessage, candKind, bool, error) {
 	cls, ok := b.FindClass(name, mode)
 	if !ok {
 		return nil, 0, false, fmt.Errorf("debaml: unknown class %q", name)
@@ -3090,6 +3104,16 @@ func tryCastClass(b *schema.Bundle, name string, mode schema.StreamingMode, inpu
 		// paths, not the strict cast).
 		return nil, candClass, false, nil
 	}
+	// BAML's Class::try_cast circular-reference guard (ir_ref/coerce_class.rs), on the
+	// SEPARATE try_cast active set, after the object check and before field recursion:
+	// a repeated (ClassKey, value) on the active TRY_CAST path is a normal strict
+	// NO-MATCH (None) — NOT a claimed error, unlike the coerce set. Derive a child
+	// try_cast context carrying this pair for the field recursion below.
+	key := schema.ClassKey{Name: name, Mode: mode}
+	if cctx.tryCastHas(key, input) {
+		return nil, candClass, false, nil
+	}
+	child := cctx.enterTryCast(key, input)
 	nF := len(cls.Fields)
 	assigned := make([]value, nF)
 	present := make([]bool, nF)
@@ -3125,7 +3149,7 @@ func tryCastClass(b *schema.Bundle, name string, mode schema.StreamingMode, inpu
 			// phase would default/error it instead).
 			return nil, candClass, false, nil
 		}
-		fc, matched, err := tryCastArm(b, cls.Fields[j].Type, assigned[j])
+		fc, matched, err := tryCastArm(b, cls.Fields[j].Type, assigned[j], child)
 		if err != nil {
 			return nil, candClass, false, err
 		}
@@ -3397,7 +3421,9 @@ func coerceStreamDoneLeaf(b *schema.Bundle, t schema.Type, input value) (json.Ra
 	if input.incomplete {
 		return nil, errStreamDeleted
 	}
-	out, err := coerce(b, t, input, &coerceFlags{})
+	// The stream lane never carries a recursive class (SupportsNativeStreamBundle
+	// keeps its blanket cycle/union decline), so a nil pair-guard context is correct.
+	out, err := coerce(b, t, input, &coerceFlags{}, nil)
 	if err != nil {
 		// §5.9.1 greedy-recovery — invalid-enum partial disposition. A COMPLETE
 		// done-required leaf that PROVABLY fails coercion is, in PARTIAL (stream) mode,

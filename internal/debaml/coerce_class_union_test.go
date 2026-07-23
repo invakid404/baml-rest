@@ -43,7 +43,7 @@ func TestTryCastClass_Strict(t *testing.T) {
 	b, aT := classBundle(t, s, "A") // A{id int, name string}
 
 	assertMatch := func(name string, in value, wantOut string, wantMatched bool) {
-		out, kind, matched, err := tryCastClass(b, aT.Name, aT.Mode, in)
+		out, kind, matched, err := tryCastClass(b, aT.Name, aT.Mode, in, nil)
 		if err != nil {
 			t.Fatalf("%s: unexpected err: %v", name, err)
 		}

@@ -317,6 +317,302 @@ func StaticPrimitiveArgs(ctx context.Context, text string, count int64, ratio fl
 	}
 }
 
+func StaticRecursiveA(ctx context.Context, topic string, opts ...CallOptionFunc) (types.A, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "StaticRecursiveA", encoded, callOpts.onTick)
+		if err != nil {
+			return types.A{}, err
+		}
+
+		if result.Error != nil {
+			return types.A{}, result.Error
+		}
+
+		casted := (result.Data).(types.A)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "StaticRecursiveA", encoded, callOpts.onTick)
+		if err != nil {
+			return types.A{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.A{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.A), nil
+			}
+		}
+
+		return types.A{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func StaticRecursiveB(ctx context.Context, topic string, opts ...CallOptionFunc) (types.B, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "StaticRecursiveB", encoded, callOpts.onTick)
+		if err != nil {
+			return types.B{}, err
+		}
+
+		if result.Error != nil {
+			return types.B{}, result.Error
+		}
+
+		casted := (result.Data).(types.B)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "StaticRecursiveB", encoded, callOpts.onTick)
+		if err != nil {
+			return types.B{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.B{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.B), nil
+			}
+		}
+
+		return types.B{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func StaticRecursiveLoop(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Loop, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "StaticRecursiveLoop", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Loop{}, err
+		}
+
+		if result.Error != nil {
+			return types.Loop{}, result.Error
+		}
+
+		casted := (result.Data).(types.Loop)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "StaticRecursiveLoop", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Loop{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Loop{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Loop), nil
+			}
+		}
+
+		return types.Loop{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func StaticRecursiveNode(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Node, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "StaticRecursiveNode", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Node{}, err
+		}
+
+		if result.Error != nil {
+			return types.Node{}, result.Error
+		}
+
+		casted := (result.Data).(types.Node)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "StaticRecursiveNode", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Node{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Node{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Node), nil
+			}
+		}
+
+		return types.Node{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
 func StaticRoleChat(ctx context.Context, topic string, count int64, opts ...CallOptionFunc) (string, error) {
 
 	var callOpts callOption

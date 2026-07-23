@@ -41,8 +41,8 @@ func (*build_request) StaticCompletion(ctx context.Context, topic string, opts .
 	}
 
 	args := baml.BamlFunctionArguments{
-		Kwargs:	map[string]any{"topic": topic, "stream": false},
-		Env:	getEnvVars(callOpts.env),
+		Kwargs: map[string]any{"topic": topic, "stream": false},
+		Env:    getEnvVars(callOpts.env),
 	}
 
 	if callOpts.clientRegistry != nil {
@@ -87,8 +87,8 @@ func (*build_request) StaticCompletionOutputFormat(ctx context.Context, topic st
 	}
 
 	args := baml.BamlFunctionArguments{
-		Kwargs:	map[string]any{"topic": topic, "stream": false},
-		Env:	getEnvVars(callOpts.env),
+		Kwargs: map[string]any{"topic": topic, "stream": false},
+		Env:    getEnvVars(callOpts.env),
 	}
 
 	if callOpts.clientRegistry != nil {
@@ -133,8 +133,8 @@ func (*build_request) StaticOutputFormat(ctx context.Context, topic string, opts
 	}
 
 	args := baml.BamlFunctionArguments{
-		Kwargs:	map[string]any{"topic": topic, "stream": false},
-		Env:	getEnvVars(callOpts.env),
+		Kwargs: map[string]any{"topic": topic, "stream": false},
+		Env:    getEnvVars(callOpts.env),
 	}
 
 	if callOpts.clientRegistry != nil {
@@ -179,8 +179,8 @@ func (*build_request) StaticPrimitiveArgs(ctx context.Context, text string, coun
 	}
 
 	args := baml.BamlFunctionArguments{
-		Kwargs:	map[string]any{"text": text, "count": count, "ratio": ratio, "flag": flag, "stream": false},
-		Env:	getEnvVars(callOpts.env),
+		Kwargs: map[string]any{"text": text, "count": count, "ratio": ratio, "flag": flag, "stream": false},
+		Env:    getEnvVars(callOpts.env),
 	}
 
 	if callOpts.clientRegistry != nil {
@@ -208,6 +208,236 @@ func (*build_request) StaticPrimitiveArgs(ctx context.Context, text string, coun
 	return bamlRuntime.BuildRequest(ctx, "StaticPrimitiveArgs", encoded)
 }
 
+// Build HTTP request for StaticRecursiveA (returns baml.HTTPRequest)
+func (*build_request) StaticRecursiveA(ctx context.Context, topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticRecursiveA: %w", err)
+		panic(wrapped_err)
+	}
+
+	return bamlRuntime.BuildRequest(ctx, "StaticRecursiveA", encoded)
+}
+
+// Build HTTP request for StaticRecursiveB (returns baml.HTTPRequest)
+func (*build_request) StaticRecursiveB(ctx context.Context, topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticRecursiveB: %w", err)
+		panic(wrapped_err)
+	}
+
+	return bamlRuntime.BuildRequest(ctx, "StaticRecursiveB", encoded)
+}
+
+// Build HTTP request for StaticRecursiveLoop (returns baml.HTTPRequest)
+func (*build_request) StaticRecursiveLoop(ctx context.Context, topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticRecursiveLoop: %w", err)
+		panic(wrapped_err)
+	}
+
+	return bamlRuntime.BuildRequest(ctx, "StaticRecursiveLoop", encoded)
+}
+
+// Build HTTP request for StaticRecursiveNode (returns baml.HTTPRequest)
+func (*build_request) StaticRecursiveNode(ctx context.Context, topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticRecursiveNode: %w", err)
+		panic(wrapped_err)
+	}
+
+	return bamlRuntime.BuildRequest(ctx, "StaticRecursiveNode", encoded)
+}
+
+// Build HTTP request for StaticRecursiveNodeAnn (returns baml.HTTPRequest)
+func (*build_request) StaticRecursiveNodeAnn(ctx context.Context, topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticRecursiveNodeAnn: %w", err)
+		panic(wrapped_err)
+	}
+
+	return bamlRuntime.BuildRequest(ctx, "StaticRecursiveNodeAnn", encoded)
+}
+
 // Build HTTP request for StaticRoleChat (returns baml.HTTPRequest)
 func (*build_request) StaticRoleChat(ctx context.Context, topic string, count int64, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
 
@@ -225,8 +455,8 @@ func (*build_request) StaticRoleChat(ctx context.Context, topic string, count in
 	}
 
 	args := baml.BamlFunctionArguments{
-		Kwargs:	map[string]any{"topic": topic, "count": count, "stream": false},
-		Env:	getEnvVars(callOpts.env),
+		Kwargs: map[string]any{"topic": topic, "count": count, "stream": false},
+		Env:    getEnvVars(callOpts.env),
 	}
 
 	if callOpts.clientRegistry != nil {

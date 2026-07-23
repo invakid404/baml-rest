@@ -15,6 +15,182 @@ package type_builder
 
 import baml "github.com/boundaryml/baml/engine/language_client_go/pkg"
 
+type AClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *AClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *AClassView) PropertyValue() (ClassPropertyView, error) {
+	return t.inner.Property("value")
+}
+
+func (t *AClassView) PropertyB() (ClassPropertyView, error) {
+	return t.inner.Property("b")
+}
+
+func (t *TypeBuilder) A() (*AClassView, error) {
+	bld, err := t.inner.Class("A")
+	if err != nil {
+		return nil, err
+	}
+	return &AClassView{inner: bld}, nil
+}
+
+func (t *AClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type BClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *BClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *BClassView) PropertyValue() (ClassPropertyView, error) {
+	return t.inner.Property("value")
+}
+
+func (t *BClassView) PropertyA() (ClassPropertyView, error) {
+	return t.inner.Property("a")
+}
+
+func (t *TypeBuilder) B() (*BClassView, error) {
+	bld, err := t.inner.Class("B")
+	if err != nil {
+		return nil, err
+	}
+	return &BClassView{inner: bld}, nil
+}
+
+func (t *BClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type LoopClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *LoopClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *LoopClassView) PropertyNext() (ClassPropertyView, error) {
+	return t.inner.Property("next")
+}
+
+func (t *TypeBuilder) Loop() (*LoopClassView, error) {
+	bld, err := t.inner.Class("Loop")
+	if err != nil {
+		return nil, err
+	}
+	return &LoopClassView{inner: bld}, nil
+}
+
+func (t *LoopClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type NodeClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *NodeClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *NodeClassView) PropertyValue() (ClassPropertyView, error) {
+	return t.inner.Property("value")
+}
+
+func (t *NodeClassView) PropertyNext() (ClassPropertyView, error) {
+	return t.inner.Property("next")
+}
+
+func (t *TypeBuilder) Node() (*NodeClassView, error) {
+	bld, err := t.inner.Class("Node")
+	if err != nil {
+		return nil, err
+	}
+	return &NodeClassView{inner: bld}, nil
+}
+
+func (t *NodeClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type NodeAnnClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *NodeAnnClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *NodeAnnClassView) PropertyValue() (ClassPropertyView, error) {
+	return t.inner.Property("value")
+}
+
+func (t *NodeAnnClassView) PropertyNext() (ClassPropertyView, error) {
+	return t.inner.Property("next")
+}
+
+func (t *TypeBuilder) NodeAnn() (*NodeAnnClassView, error) {
+	bld, err := t.inner.Class("NodeAnn")
+	if err != nil {
+		return nil, err
+	}
+	return &NodeAnnClassView{inner: bld}, nil
+}
+
+func (t *NodeAnnClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
 type StaticAnswerClassView struct {
 	inner baml.ClassBuilder
 }

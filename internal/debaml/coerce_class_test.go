@@ -62,7 +62,7 @@ func TestCoerceClass_FieldAssignment(t *testing.T) {
 	// ExtraKey is score-bearing: a class with an extra key is not clean.
 	b, ct := classBundle(t, s, "Baml_Rest_DynamicOutput")
 	cf := &coerceFlags{}
-	if _, err := coerceClass(b, ct.Name, ct.Mode, objVal(fld("a", numV("1")), fld("b", strVv("x")), fld("extra", numV("9"))), cf); err != nil {
+	if _, err := coerceClass(b, ct.Name, ct.Mode, objVal(fld("a", numV("1")), fld("b", strVv("x")), fld("extra", numV("9"))), cf, nil); err != nil {
 		t.Fatalf("coerceClass extra: %v", err)
 	}
 	if !cf.isFlagged() {
@@ -70,7 +70,7 @@ func TestCoerceClass_FieldAssignment(t *testing.T) {
 	}
 	// A clean object (no extras) must NOT flag.
 	cfClean := &coerceFlags{}
-	if _, err := coerceClass(b, ct.Name, ct.Mode, objVal(fld("a", numV("1")), fld("b", strVv("x"))), cfClean); err != nil {
+	if _, err := coerceClass(b, ct.Name, ct.Mode, objVal(fld("a", numV("1")), fld("b", strVv("x"))), cfClean, nil); err != nil {
 		t.Fatalf("coerceClass clean: %v", err)
 	}
 	if cfClean.isFlagged() {
@@ -90,7 +90,7 @@ func TestCoerceClass_SingleFieldObjectImpliedKey(t *testing.T) {
 	// The implied path is score-bearing (ImpliedKey + JsonToString).
 	b, ct := classBundle(t, strBox, "Box")
 	cf := &coerceFlags{}
-	if _, err := coerceClass(b, ct.Name, ct.Mode, objVal(fld("foo", numV("5"))), cf); err != nil {
+	if _, err := coerceClass(b, ct.Name, ct.Mode, objVal(fld("foo", numV("5"))), cf, nil); err != nil {
 		t.Fatalf("implied-key: %v", err)
 	}
 	if !cf.isFlagged() {
@@ -122,7 +122,7 @@ func TestCoerceClass_SingleFieldScalarInferredObject(t *testing.T) {
 	// InferedObject is cost 0; the ONLY score-bearing flag is the child ImpliedKey.
 	b, ct := classBundle(t, intBox, "Box")
 	cf := &coerceFlags{}
-	if _, err := coerceClass(b, ct.Name, ct.Mode, numV("5"), cf); err != nil {
+	if _, err := coerceClass(b, ct.Name, ct.Mode, numV("5"), cf, nil); err != nil {
 		t.Fatalf("inferred-object: %v", err)
 	}
 	if !cf.isFlagged() {
@@ -142,7 +142,7 @@ func TestCoerceClass_SingleFieldScalarInferredObject(t *testing.T) {
 	requireUnsupported(t, strBox, `{"u":null}`)
 	// Directly: coerceClass on a bare null declines with the fallback sentinel.
 	bn, cn := classBundle(t, strBox, "Box")
-	if _, err := coerceClass(bn, cn.Name, cn.Mode, nullVal(), nil); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+	if _, err := coerceClass(bn, cn.Name, cn.Mode, nullVal(), nil, nil); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
 		t.Errorf("single-field string class <- null: expected ErrDeBAMLParseUnsupported, got %v", err)
 	}
 
@@ -165,7 +165,7 @@ func TestCoerceClass_MissingOptionalNull(t *testing.T) {
 
 	b, ct := classBundle(t, s, "Baml_Rest_DynamicOutput")
 	cf := &coerceFlags{}
-	out, err := coerceClass(b, ct.Name, ct.Mode, objVal(fld("name", strVv("Ada"))), cf)
+	out, err := coerceClass(b, ct.Name, ct.Mode, objVal(fld("name", strVv("Ada"))), cf, nil)
 	if err != nil {
 		t.Fatalf("missing optional: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestCoerceClass_RequiredDefaults(t *testing.T) {
 	// Each default flags cf.
 	b, ct := classBundle(t, listS, "C")
 	cf := &coerceFlags{}
-	if _, err := coerceClass(b, ct.Name, ct.Mode, objVal(), cf); err != nil {
+	if _, err := coerceClass(b, ct.Name, ct.Mode, objVal(), cf, nil); err != nil {
 		t.Fatalf("list default: %v", err)
 	}
 	if !cf.isFlagged() {
@@ -222,7 +222,7 @@ func TestCoerceClass_MapFieldDefaultButUnparseable(t *testing.T) {
 
 	b, ct := classBundle(t, mapS, "C")
 	cf := &coerceFlags{}
-	if _, err := coerceClass(b, ct.Name, ct.Mode, objVal(fld("m", strVv("bad"))), cf); err != nil {
+	if _, err := coerceClass(b, ct.Name, ct.Mode, objVal(fld("m", strVv("bad"))), cf, nil); err != nil {
 		t.Fatalf("map default-but-unparseable: %v", err)
 	}
 	if !cf.isFlagged() {
@@ -260,7 +260,7 @@ func TestCoerceClass_ArrayDeclines(t *testing.T) {
 
 	// Direct coerceClass with an array declines with the sentinel.
 	b, ct := classBundle(t, intBox, "Box")
-	if _, err := coerceClass(b, ct.Name, ct.Mode, arrVal(numV("1")), nil); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+	if _, err := coerceClass(b, ct.Name, ct.Mode, arrVal(numV("1")), nil, nil); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
 		t.Errorf("array->class: expected ErrDeBAMLParseUnsupported, got %v", err)
 	}
 }
@@ -381,11 +381,11 @@ func TestCoerceClass_Fixture40SingleFieldUnionClaimed(t *testing.T) {
 	// Both single-field classes DO absorb the scalar via inferred-object: each
 	// coerceClass succeeds (the phase-2 successes pick_best chooses between).
 	bA, aT := classBundle(t, s, "A")
-	if _, err := coerceClass(bA, aT.Name, aT.Mode, numV("5"), nil); err != nil {
+	if _, err := coerceClass(bA, aT.Name, aT.Mode, numV("5"), nil, nil); err != nil {
 		t.Errorf("A{val int} must absorb scalar 5 via inferred-object: %v", err)
 	}
 	bB, bT := classBundle(t, s, "B")
-	if _, err := coerceClass(bB, bT.Name, bT.Mode, numV("5"), nil); err != nil {
+	if _, err := coerceClass(bB, bT.Name, bT.Mode, numV("5"), nil, nil); err != nil {
 		t.Errorf("B{num int} must absorb scalar 5 via inferred-object: %v", err)
 	}
 }
@@ -408,7 +408,7 @@ func TestCoerceClass_ClaimedChildErrorPropagates(t *testing.T) {
 	// The same tie via a single-field implied-key path also propagates: Box{a
 	// enum} with a non-matching object whose Display substring-ties both values.
 	b, ct := classBundle(t, s, "Baml_Rest_DynamicOutput")
-	if _, err := coerceClass(b, ct.Name, ct.Mode, objVal(fld("animal", strVv("cat dog"))), nil); err == nil {
+	if _, err := coerceClass(b, ct.Name, ct.Mode, objVal(fld("animal", strVv("cat dog"))), nil, nil); err == nil {
 		t.Errorf("substring-tie field must claim an error, got nil")
 	} else if errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
 		t.Errorf("substring-tie field must be a CLAIMED error, got fallback sentinel: %v", err)

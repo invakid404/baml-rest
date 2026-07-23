@@ -37,7 +37,7 @@ func coerceViaBundle(s *bamlutils.DynamicOutputSchema, raw string) (string, erro
 	if !ok {
 		return "", unsupported("no cleanly-claimable JSON candidate")
 	}
-	out, err := coerce(bundle, bundle.Target, parsed, nil)
+	out, err := coerce(bundle, bundle.Target, parsed, nil, nil)
 	if err != nil {
 		return "", err
 	}
