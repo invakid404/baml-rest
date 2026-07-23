@@ -106,6 +106,43 @@ func NewStream(reg prometheus.Registerer) (bamlutils.NativeStreamServeFunc, erro
 // FlagEnabled all true, RouteKindStatic), exactly as the dynamic serve path's
 // toAdmissionInput does — then translates the recorded observation into a forced
 // NativeStaticDeclined result.
+// NewStaticServe constructs the nanollm-backed native STATIC SERVE implementation
+// (de-BAML Slice 8C) and returns it as the neutral [bamlutils.NativeStaticServeFunc]
+// a SERVE-profile worker installs via workerboot.Options.NativeStaticServeFactory
+// (only while the umbrella flag is on). It is the SERVING twin of [NewStaticObserve]:
+// for an admitted static unary `/call` it runs the FULL pre-socket predicate
+// (descriptor envelope, arg-binder match, Return-Bundle lower/support + the proven
+// return-shape gate, RenderStatic, canonical body, nanollm New/Prepare, and the
+// strict BAML `Request.<Method>` no-send plan compare) and, on a full would-admit,
+// CLAIMS the attempt and performs exactly ONE provider RoundTrip — native
+// translate/extract, native static SAP over the selected Return Bundle, and the S5
+// same-response BAML `Parse.<Method>` safety compare — returning the winning
+// flattened canonical JSON. Every unsupported shape declines PRE-SOCKET so BAML
+// serves it, and from the claim onward a failure is TERMINAL (never a BAML resend).
+//
+// It is a thin pass-through to the SAME relocated Slice-6 serve core (canary), so
+// the static and dynamic serving paths drive byte-identical transport. With the
+// umbrella flag off the generated static seam never installs the callback, so the
+// static path stays byte-identical BAML with zero native FFI / socket / plan build.
+func NewStaticServe(reg prometheus.Registerer) (bamlutils.NativeStaticServeFunc, error) {
+	return canary.NewStaticServeFunc(reg)
+}
+
+// NewStaticShadow constructs the nanollm-backed native STATIC Stage-1 SHADOW
+// comparator (de-BAML Slice 8C) and returns it as the neutral
+// [bamlutils.NativeStaticShadowFunc] a SHADOW-profile worker installs via
+// workerboot.Options.NativeStaticShadowFactory. For an eligible generated static
+// `/call` it runs the FULL pre-socket admission predicate + the strict BAML
+// `Request.<Method>` plan compare and, on a full plan match, threads an OnResponse
+// continuation onto its declined outcome; the orchestrator invokes it with BAML's
+// already-fetched bytes AFTER BAML serves, and native compares its translate/extract/
+// static-SAP/typed-decode against BAML's parse of the SAME bytes — with ZERO native
+// sends. It ALWAYS declines so BAML serves. With the umbrella flag off the generated
+// static seam never installs it. It reuses the SAME serve core as [NewStaticServe].
+func NewStaticShadow(reg prometheus.Registerer) (bamlutils.NativeStaticShadowFunc, error) {
+	return canary.NewStaticShadowFunc(reg)
+}
+
 func NewStaticObserve(reg prometheus.Registerer) (bamlutils.NativeStaticObserveFunc, error) {
 	return func(ctx context.Context, inv bamlutils.NativeStaticInvocation) bamlutils.NativeStaticResult {
 		si := admission.StaticInput{

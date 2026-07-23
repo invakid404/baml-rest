@@ -1,6 +1,8 @@
 package admission
 
 import (
+	"errors"
+
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -224,12 +226,39 @@ const (
 	ResponseCompareFieldRaw        ResponseCompareField = "raw"
 	ResponseCompareFieldReasoning  ResponseCompareField = "reasoning"
 	ResponseCompareFieldError      ResponseCompareField = "error"
+	// ResponseCompareFieldTyped is the de-BAML Slice 8C STATIC shadow's typed-result
+	// facet: native canonical JSON and the same-response BAML parse are each decoded
+	// through the per-method DecodeNativeStaticFinal into the concrete generated return
+	// type and compared, proving the typed decode (not just the canonical bytes) is
+	// BAML-equivalent over BAML's captured bytes.
+	ResponseCompareFieldTyped ResponseCompareField = "typed"
 )
 
 // NewMetrics constructs the collectors and registers them on reg. It fails if a
 // family is already registered, surfacing a double-registration instead of
 // silently shadowing it. Pass the worker's private registry.
 func NewMetrics(reg prometheus.Registerer) (*Metrics, error) {
+	return newMetrics(reg, false)
+}
+
+// NewMetricsReusing is NewMetrics but REUSES an already-registered de-BAML collector
+// (same name + labels) instead of failing on duplicate registration. It exists for
+// the de-BAML Slice 8C SERVE profile, which installs BOTH the dynamic unary serve
+// (nativeserve.New -> NewMetrics) AND the static serve (nativeserve.NewStaticServe ->
+// this) via separate workerboot factories on the SAME worker registry: without reuse
+// the second registration fails with "duplicate metrics collector registration
+// attempted" and the worker exits before its go-plugin handshake. On a fresh registry
+// (a static-only caller / a test) it behaves exactly like NewMetrics, so both serve
+// implementations share ONE collector set and write the SAME series.
+func NewMetricsReusing(reg prometheus.Registerer) (*Metrics, error) {
+	return newMetrics(reg, true)
+}
+
+// newMetrics constructs the de-BAML collector set and registers it on reg. When
+// reuse is true, an AlreadyRegisteredError for a *prometheus.CounterVec rebinds the
+// field to the existing collector instead of failing, so a second de-BAML serve
+// implementation on the same registry shares one collector set.
+func newMetrics(reg prometheus.Registerer, reuse bool) (*Metrics, error) {
 	m := &Metrics{
 		declines: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "baml_rest_debaml_declines_total",
@@ -261,21 +290,44 @@ func NewMetrics(reg prometheus.Registerer) (*Metrics, error) {
 		}, []string{"source"}),
 	}
 	// Register every collector in a fixed order, rolling back the ones already
-	// registered if a later Register fails, so a partial-registration error never
-	// leaves stray de-BAML collectors on a reused registry. The success path is
-	// unchanged (all collectors register in the same order as before, with the S2
-	// bedrock credential-source family appended last).
-	registered := make([]prometheus.Collector, 0, 7)
-	for _, c := range []prometheus.Collector{
-		m.declines, m.attempts, m.planCompare, m.responseCompare, m.nativeSockets, m.fallback, m.bedrockCredSrc,
-	} {
-		if err := reg.Register(c); err != nil {
+	// registered by THIS call if a later Register fails, so a partial-registration
+	// error never leaves stray de-BAML collectors on a reused registry. The success
+	// path is unchanged (all collectors register in the same order as before, with the
+	// S2 bedrock credential-source family appended last). When reuse is set, an
+	// AlreadyRegisteredError rebinds the field to the existing collector (a second
+	// de-BAML serve on the same registry) instead of failing.
+	type collectorSpec struct {
+		col *prometheus.CounterVec
+		set func(*prometheus.CounterVec)
+	}
+	specs := []collectorSpec{
+		{m.declines, func(c *prometheus.CounterVec) { m.declines = c }},
+		{m.attempts, func(c *prometheus.CounterVec) { m.attempts = c }},
+		{m.planCompare, func(c *prometheus.CounterVec) { m.planCompare = c }},
+		{m.responseCompare, func(c *prometheus.CounterVec) { m.responseCompare = c }},
+		{m.nativeSockets, func(c *prometheus.CounterVec) { m.nativeSockets = c }},
+		{m.fallback, func(c *prometheus.CounterVec) { m.fallback = c }},
+		{m.bedrockCredSrc, func(c *prometheus.CounterVec) { m.bedrockCredSrc = c }},
+	}
+	registered := make([]prometheus.Collector, 0, len(specs))
+	for _, s := range specs {
+		if err := reg.Register(s.col); err != nil {
+			var are prometheus.AlreadyRegisteredError
+			if reuse && errors.As(err, &are) {
+				// Rebind this field to the already-registered collector so both serve
+				// implementations write the SAME series; do NOT track it for rollback
+				// (this call did not register it).
+				if existing, ok := are.ExistingCollector.(*prometheus.CounterVec); ok {
+					s.set(existing)
+					continue
+				}
+			}
 			for _, done := range registered {
 				reg.Unregister(done)
 			}
 			return nil, err
 		}
-		registered = append(registered, c)
+		registered = append(registered, s.col)
 	}
 	// Pre-initialize the invariant flag="off" series to zero so the paging alert
 	// `increase(baml_rest_debaml_native_sockets_total{flag="off"}[window]) > 0`

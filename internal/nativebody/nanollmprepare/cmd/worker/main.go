@@ -80,5 +80,15 @@ func main() {
 		// change. Installed ONLY under the umbrella flag (this whole branch is skipped
 		// when the flag is off), so the static observer is hard-off and 100% BAML then.
 		NativeStaticObserveFactory: nativeserve.NewStaticObserve,
+		// The STATIC SERVE factory (de-BAML Slice 8C): returns the neutral
+		// bamlutils.NativeStaticServeFunc the generated static /call seam installs — it
+		// actually SERVES an admitted static unary /call natively (one exact RoundTrip,
+		// native static SAP over the selected Return Bundle, the S5 same-response BAML
+		// parse safety compare) or declines PRE-SOCKET to BAML. It reuses the SAME serve
+		// core as nativeserve.New. Installed ALONGSIDE the observer in the serve profile;
+		// the generated static /call seam PREFERS the serve callback when present
+		// (mirroring the dynamic serve-over-shadow precedence), so the observer is the
+		// no-send fallback for a shadow/observe-only build. Skipped when the flag is off.
+		NativeStaticServeFactory: nativeserve.NewStaticServe,
 	})
 }

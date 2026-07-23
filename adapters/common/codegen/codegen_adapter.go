@@ -218,6 +218,22 @@ func emitFrameworkAdapter(out *jen.File, opts Options) {
 		jen.Comment("declines to BAML), so it never changes what BAML serves."),
 		jen.Id("nativeStaticObserver").Qual(bamlutilsPkg, "NativeStaticObserveFunc"),
 		jen.Line(),
+		jen.Comment("nativeStaticServe is the native STATIC SERVE implementation (de-BAML"),
+		jen.Comment("Slice 8C), injected by a SERVE-profile worker for the same"),
+		jen.Comment("module-boundary reason as nativeServe. Non-nil ONLY in a serve worker"),
+		jen.Comment("with the flag on; nil in every default/flag-off build, leaving the"),
+		jen.Comment("generated static /call serve seam nil/hard-off. It SERVES admitted"),
+		jen.Comment("static unary /call natively (one send), declining pre-socket to BAML"),
+		jen.Comment("for every unsupported shape."),
+		jen.Id("nativeStaticServe").Qual(bamlutilsPkg, "NativeStaticServeFunc"),
+		jen.Line(),
+		jen.Comment("nativeStaticShadow is the native STATIC Stage-1 SHADOW comparator"),
+		jen.Comment("(de-BAML Slice 8C), injected by a SHADOW-profile worker. Non-nil ONLY in"),
+		jen.Comment("a shadow worker with the flag on; nil in every default/serve/flag-off"),
+		jen.Comment("build. BAML stays the SOLE sender; native parses the captured response"),
+		jen.Comment("bytes to compare (ZERO native sends), then declines so BAML serves."),
+		jen.Id("nativeStaticShadow").Qual(bamlutilsPkg, "NativeStaticShadowFunc"),
+		jen.Line(),
 		jen.Comment("rrAdvancer is the per-request round-robin Advancer installed by the"),
 		jen.Comment("worker; nil falls back to the introspected Coordinator."),
 		jen.Id("rrAdvancer").Qual(bamlutilsPkg, "RoundRobinAdvancer"),
@@ -692,6 +708,44 @@ func emitFrameworkAdapterDeBAML(out *jen.File, bamlutilsPkg string) {
 		Id("NativeStaticObserver").Params().Qual(bamlutilsPkg, "NativeStaticObserveFunc").
 		Block(
 			jen.Return(jen.Id("b").Dot("nativeStaticObserver")),
+		)
+
+	// SetNativeStaticServeComparator / NativeStaticServeComparator are the STATIC
+	// SERVE twins (de-BAML Slice 8C): the narrow optional interfaces a SERVE-profile
+	// worker and the generated static /call serve seam use to install and read the
+	// native static SERVE implementation. Kept off bamlutils.Adapter like the other
+	// native accessors; nil in every default build. When non-nil AND the umbrella
+	// flag is on, the generated /call seam serves an admitted static call natively;
+	// otherwise it declines pre-socket and BAML serves.
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("SetNativeStaticServeComparator").Params(jen.Id("fn").Qual(bamlutilsPkg, "NativeStaticServeFunc")).
+		Block(
+			jen.Id("b").Dot("nativeStaticServe").Op("=").Id("fn"),
+		)
+
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("NativeStaticServeComparator").Params().Qual(bamlutilsPkg, "NativeStaticServeFunc").
+		Block(
+			jen.Return(jen.Id("b").Dot("nativeStaticServe")),
+		)
+
+	// SetNativeStaticShadowComparator / NativeStaticShadowComparator are the STATIC
+	// Stage-1 SHADOW twins (de-BAML Slice 8C): the narrow optional interfaces a
+	// SHADOW-profile worker and the generated static /call seam use to install and read
+	// the native static shadow comparator. Kept off bamlutils.Adapter; nil in every
+	// default build. When non-nil AND the umbrella flag is on AND no serve callback is
+	// installed, the generated /call seam runs a no-send shadow comparison (BAML sole
+	// sender) per admitted static call.
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("SetNativeStaticShadowComparator").Params(jen.Id("fn").Qual(bamlutilsPkg, "NativeStaticShadowFunc")).
+		Block(
+			jen.Id("b").Dot("nativeStaticShadow").Op("=").Id("fn"),
+		)
+
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("NativeStaticShadowComparator").Params().Qual(bamlutilsPkg, "NativeStaticShadowFunc").
+		Block(
+			jen.Return(jen.Id("b").Dot("nativeStaticShadow")),
 		)
 }
 

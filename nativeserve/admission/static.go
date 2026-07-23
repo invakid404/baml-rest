@@ -3,6 +3,7 @@ package admission
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
@@ -92,6 +93,7 @@ const (
 	reasonReturnBundleInvalid          Reason = "return_bundle_invalid"
 	reasonReturnBundleNotOutputUsable  Reason = "return_bundle_not_output_usable"
 	reasonReturnBundleFinalUnsupported Reason = "return_bundle_native_final_unsupported"
+	reasonReturnShapeUnproven          Reason = "return_shape_decoder_unproven"
 	reasonStaticDescriptorStricter     Reason = "static_descriptor_stricter"
 
 	reasonStaticPromptUnsupported Reason = "static_prompt_unsupported"
@@ -180,87 +182,184 @@ type StaticObservation struct {
 // descriptor's literal model — and never appears in the request body.
 const staticAlias = "baml_rest_static"
 
+// staticPrepared is the request-scoped output of the static predicate through
+// nanollm Prepare: the KEPT-ALIVE nanollm engine, the prepared plan, the lowered
+// Return Bundle (the native static SAP surface), the exact-attempt request derived
+// from the plan, and the alias. The observe path (AdmitStatic) closes the engine
+// immediately; the serve path (AdmitStaticClaim) hands it to the serve core, which
+// owns closing it. The client is NEVER left open on a decline.
+type staticPrepared struct {
+	client       *nanollm.Client
+	prepared     *nanollm.PreparedRequest
+	bundle       *schema.Bundle
+	exactRequest *llmhttp.ExactAttemptRequest
+	alias        string
+}
+
+func (p *staticPrepared) close() {
+	if p != nil && p.client != nil {
+		p.client.Close()
+		p.client = nil
+	}
+}
+
 // AdmitStatic runs the static unary no-send admission predicate and returns the
 // recorded observation. It ALWAYS declines: it opens no socket, RoundTrips nothing,
 // and returns whether the static route WOULD have admitted (byte-matched BAML's
 // plan), MISMATCHED, or DECLINED at a specific gate. The caller forces the decline
-// regardless of the observation.
+// regardless of the observation. It is the OBSERVE-ONLY twin of [AdmitStaticClaim]:
+// both share admitStaticThroughPrepare + the plan compare, but AdmitStatic closes
+// the request-scoped engine immediately (no serve) while AdmitStaticClaim keeps it
+// alive as a claim.
 //
 // The predicate order mirrors the dynamic admitCore where the two overlap and the
 // proven no-send static chain (SupportsStatic -> RenderStatic -> NormalizeStaticClient
 // -> BuildOpenAIChat -> nanollm Prepare -> BAML Request.<Method> compare) elsewhere.
 func AdmitStatic(ctx context.Context, in StaticInput) StaticObservation {
+	prep, dec := admitStaticThroughPrepare(ctx, in)
+	if dec != nil {
+		return *dec
+	}
+	// OBSERVE-ONLY: close the request-scoped engine immediately — no serve, no socket.
+	defer prep.close()
+	return staticPlanCompareObservation(ctx, in, prep)
+}
+
+// AdmitStaticClaim runs the SAME static unary predicate as [AdmitStatic] but, on a
+// full would-admit (every gate passed AND the native plan byte-matched BAML's
+// `Request.<Method>` plan), returns a *StaticClaim that KEEPS the request-scoped
+// nanollm engine alive so the serve core can RoundTrip and TranslateResponse on the
+// exact client Prepare produced the plan on (de-BAML Slice 8C). Every pre-claim
+// decline/mismatch returns a *StaticDecline error and guarantees NO socket occurred
+// (the engine is closed before returning), so the caller runs BAML for the same
+// call in the same request — the exact tri-state pre-claim boundary.
+func AdmitStaticClaim(ctx context.Context, in StaticInput) (*StaticClaim, error) {
+	prep, dec := admitStaticThroughPrepare(ctx, in)
+	if dec != nil {
+		return nil, staticDeclineFromObs(*dec)
+	}
+	// Return-shape gate (SERVE-only): the native serve path can only OWN a return
+	// shape whose per-method generated DecodeNativeStaticFinal mapper is
+	// BAML-v0.223-differential-proven. SupportsNativeFinalBundle admits more than the
+	// proven-decoder set (optionals, enums, nested classes, lists, maps), so a shape
+	// the parser supports but the decoder has not proven declines PRE-CLAIM here so
+	// BAML serves. Codegen emits a serve seam for exactly this set; this is the
+	// runtime backstop that keeps the two in lockstep. The observe path (AdmitStatic)
+	// does NOT apply this gate — it measures parser attachment, not decoder support.
+	if !admittedStaticReturnShape(prep.bundle) {
+		prep.close()
+		return nil, staticDeclineFromObs(declineStatic(bamlutils.NativeStaticFamilyDescriptorEnvelope, StagePrompt, reasonReturnShapeUnproven))
+	}
+	obs := staticPlanCompareObservation(ctx, in, prep)
+	if obs.Observation != bamlutils.NativeStaticObserveWouldAdmit {
+		// A plan mismatch or a plan-compare decline: close the engine (no socket) and
+		// hand a decline to the serve core so BAML serves.
+		prep.close()
+		return nil, staticDeclineFromObs(obs)
+	}
+	// Would-admit: transfer ownership of the kept-alive engine to the claim.
+	return &StaticClaim{
+		client:       prep.client,
+		Prepared:     prep.prepared,
+		Bundle:       prep.bundle,
+		ExactRequest: prep.exactRequest,
+		Alias:        prep.alias,
+	}, nil
+}
+
+// admitStaticThroughPrepare runs the static predicate layers 1-6 (build/flag/route,
+// mode, orchestration plan, descriptor envelope + arg binder, Return-Bundle
+// lower/support, static prompt render, client normalize + canonical body, nanollm
+// New/Prepare). On success it returns a *staticPrepared whose engine is KEPT ALIVE
+// (the caller decides whether to close or claim it); on any gate decline it returns
+// a *StaticObservation and leaves NO engine open. It performs NO plan compare and
+// opens NO socket.
+func admitStaticThroughPrepare(ctx context.Context, in StaticInput) (*staticPrepared, *StaticObservation) {
+	decline := func(family bamlutils.NativeStaticObserveFamily, stage Stage, reason Reason) (*staticPrepared, *StaticObservation) {
+		o := declineStatic(family, stage, reason)
+		return nil, &o
+	}
+
 	// --- Layer 1: build / flag / route --------------------------------------
 	if err := ctx.Err(); err != nil {
-		return declineStatic(bamlutils.NativeStaticFamilyCapability, StageContext, ReasonContextCancelled)
+		return decline(bamlutils.NativeStaticFamilyCapability, StageContext, ReasonContextCancelled)
 	}
 	if in.RouteKind != RouteKindStatic {
-		return declineStatic(bamlutils.NativeStaticFamilyCapability, StageMethod, reasonRouteKindNotStatic)
+		return decline(bamlutils.NativeStaticFamilyCapability, StageMethod, reasonRouteKindNotStatic)
 	}
 	if !in.WorkerCapable {
-		return declineStatic(bamlutils.NativeStaticFamilyCapability, StageCapability, ReasonWorkerNotCapable)
+		return decline(bamlutils.NativeStaticFamilyCapability, StageCapability, ReasonWorkerNotCapable)
 	}
 	if !in.RequestAPIPresent {
-		return declineStatic(bamlutils.NativeStaticFamilyCapability, StageCapability, ReasonRequestAPIAbsent)
+		return decline(bamlutils.NativeStaticFamilyCapability, StageCapability, ReasonRequestAPIAbsent)
 	}
 	if !in.OnBuildRequestRoute {
-		return declineStatic(bamlutils.NativeStaticFamilyCapability, StageCapability, ReasonNotBuildReqRoute)
+		return decline(bamlutils.NativeStaticFamilyCapability, StageCapability, ReasonNotBuildReqRoute)
 	}
 	if !in.FlagEnabled {
-		return declineStatic(bamlutils.NativeStaticFamilyCapability, StageFlag, ReasonFlagDisabled)
+		return decline(bamlutils.NativeStaticFamilyCapability, StageFlag, ReasonFlagDisabled)
 	}
 
 	// --- Mode gate: FAIL CLOSED before any render/Prepare -------------------
-	// AdmitStatic proves ONLY the unary FINAL surface. A stream mode (or any
+	// The predicate proves ONLY the unary FINAL surface. A stream mode (or any
 	// unrecognized mode) declines here — before render, body build, nanollm New, or
-	// Prepare — so a NativeStaticModeStream invocation can NEVER reach would_admit.
-	// The parse-only mode is served by AdmitStaticParse, so it must not reach here.
+	// Prepare — so a NativeStaticModeStream invocation can NEVER reach would_admit
+	// or a claim. The parse-only mode is served by AdmitStaticParse, so it must not
+	// reach here.
 	if in.Mode != bamlutils.NativeStaticModeFinal {
-		return declineStatic(bamlutils.NativeStaticFamilyClient, StageMode, reasonModeNotFinal)
+		return decline(bamlutils.NativeStaticFamilyClient, StageMode, reasonModeNotFinal)
 	}
-	// Call-with-raw's native static envelope is not proven in 8B; decline it at the
-	// mode gate (truthful — the generated seam forwards adapter.StreamMode().NeedsRaw()).
+	// Call-with-raw's native static envelope is not proven; decline it at the mode
+	// gate (truthful — the generated seam forwards adapter.StreamMode().NeedsRaw()).
 	if in.Raw {
-		return declineStatic(bamlutils.NativeStaticFamilyClient, StageMode, reasonCallWithRawUnprove)
+		return decline(bamlutils.NativeStaticFamilyClient, StageMode, reasonCallWithRawUnprove)
 	}
 
 	// --- Layer 2: whole orchestration plan + selected-child facts -----------
-	// The narrow 8B matrix is unary final/parse-only, a single resolved leaf, the
+	// The narrow matrix is unary final/parse-only, a single resolved leaf, the
 	// descriptor default client, no override/strategy/retry/proxy. Any broader shape
 	// is a MEASURED client decline BEFORE the descriptor is even lowered.
 	if !in.SingleLeaf {
-		return declineStatic(bamlutils.NativeStaticFamilyClient, StageStrategy, ReasonNotSingleLeaf)
+		return decline(bamlutils.NativeStaticFamilyClient, StageStrategy, ReasonNotSingleLeaf)
 	}
 	if in.HasFallbackChain {
-		return declineStatic(bamlutils.NativeStaticFamilyClient, StageStrategy, ReasonFallbackChain)
+		return decline(bamlutils.NativeStaticFamilyClient, StageStrategy, ReasonFallbackChain)
 	}
 	if in.HasRoundRobin {
-		return declineStatic(bamlutils.NativeStaticFamilyClient, StageStrategy, reasonRoundRobinStrategy)
+		return decline(bamlutils.NativeStaticFamilyClient, StageStrategy, reasonRoundRobinStrategy)
 	}
 	if in.HasRequestRetryOverride {
-		return declineStatic(bamlutils.NativeStaticFamilyClient, StageStrategy, reasonRequestRetryOverride)
+		return decline(bamlutils.NativeStaticFamilyClient, StageStrategy, reasonRequestRetryOverride)
 	}
-	// A non-empty client override is only admissible if it is PROVABLY byte-identical
-	// to the descriptor's default ClientConfig. 8B has no such proof, so any override
-	// is a conservative client decline (scope §3 static-client gate).
-	if in.ClientOverride != "" {
-		return declineStatic(bamlutils.NativeStaticFamilyClient, StageStrategy, reasonClientOverride)
+	// A non-empty client override is admissible ONLY when it NAMES the descriptor's
+	// own resolved default client (in.Descriptor.Client) — the generated /call
+	// orchestrator always surfaces the resolved leaf client name as the override, even
+	// for a single default-client request, so declining every non-empty override would
+	// decline the entire generated default-client route. Naming the default client
+	// selects the SAME client config the descriptor baked; a DIFFERENT name is an
+	// unproven override and declines. The strict BAML `Request.<Method>` plan compare
+	// (staticPlanMatches) is the byte-exact safety net: if a runtime registry redefined
+	// that client name with different options, native (descriptor ClientConfig) and
+	// BAML (runtime registry) would produce different plans and decline at plan compare.
+	if in.ClientOverride != "" && in.ClientOverride != in.Descriptor.Client {
+		return decline(bamlutils.NativeStaticFamilyClient, StageStrategy, reasonClientOverride)
 	}
 
 	// --- Layer 3: descriptor envelope --------------------------------------
 	fn := in.Descriptor
 	if d := checkStaticEnvelope(fn, in.Method); d != nil {
-		return *d
+		return nil, d
 	}
 	// Arg binder EXACTLY matches the descriptor's declared arguments (final only —
 	// a parse has no arguments).
 	if d := checkArgBinder(fn.Args, in.ArgOrder, in.Args); d != "" {
-		return declineStatic(bamlutils.NativeStaticFamilyDescriptorEnvelope, StageMethod, d)
+		return decline(bamlutils.NativeStaticFamilyDescriptorEnvelope, StageMethod, d)
 	}
 
 	// --- Layer 3b: Return Bundle lower / validate / native final support ----
-	if _, d := checkStaticReturnBundle(fn); d != nil {
-		return *d
+	bundle, d := checkStaticReturnBundle(fn)
+	if d != nil {
+		return nil, d
 	}
 
 	// --- Layer 4: static prompt render support ------------------------------
@@ -268,38 +367,38 @@ func AdmitStatic(ctx context.Context, in StaticInput) StaticObservation {
 		var pd *nativeprompt.Decline
 		if errors.As(serr, &pd) && pd.Feature == nativeprompt.FeatureStaticDescriptor {
 			// A stricter envelope decline than the explicit checks above.
-			return declineStatic(bamlutils.NativeStaticFamilyDescriptorEnvelope, StagePrompt, reasonStaticDescriptorStricter)
+			return decline(bamlutils.NativeStaticFamilyDescriptorEnvelope, StagePrompt, reasonStaticDescriptorStricter)
 		}
-		return declineStatic(bamlutils.NativeStaticFamilyPrompt, StagePrompt, reasonStaticPromptUnsupported)
+		return decline(bamlutils.NativeStaticFamilyPrompt, StagePrompt, reasonStaticPromptUnsupported)
 	}
 	rendered, rerr := nativeprompt.RenderStatic(fn, in.Args)
 	if rerr != nil {
 		// SupportsStatic shares the preparer, so a render error here is unexpected —
 		// still a pre-socket decline (BAML serves), classified as a prompt decline.
-		return declineStatic(bamlutils.NativeStaticFamilyPrompt, StagePrompt, reasonStaticRenderFailed)
+		return decline(bamlutils.NativeStaticFamilyPrompt, StagePrompt, reasonStaticRenderFailed)
 	}
 
 	// --- Layer 5: static client normalize + canonical body ------------------
 	if in.Provider != "openai" {
-		return declineStatic(bamlutils.NativeStaticFamilyClient, StageStrategy, reasonProviderNotOpenAI)
+		return decline(bamlutils.NativeStaticFamilyClient, StageStrategy, reasonProviderNotOpenAI)
 	}
 	alias := staticAliasOr(in.Alias)
 	intent, cerr := nativebody.NormalizeStaticClient(fn.ClientConfig, alias, false)
 	if cerr != nil {
-		return declineStatic(bamlutils.NativeStaticFamilyClient, StageStrategy, reasonStaticClientUnsupport)
+		return decline(bamlutils.NativeStaticFamilyClient, StageStrategy, reasonStaticClientUnsupport)
 	}
 	baseURL, apiKey, terr := staticTransport(fn.ClientConfig)
 	if terr != "" {
-		return declineStatic(bamlutils.NativeStaticFamilyClient, StageStrategy, terr)
+		return decline(bamlutils.NativeStaticFamilyClient, StageStrategy, terr)
 	}
 	native, borr := nativebody.BuildOpenAIChat(rendered, intent)
 	if borr != nil {
-		return declineStatic(bamlutils.NativeStaticFamilyClient, StagePrompt, reasonCanonicalBodyUnsuppor)
+		return decline(bamlutils.NativeStaticFamilyClient, StagePrompt, reasonCanonicalBodyUnsuppor)
 	}
 
 	// --- Layer 6: nanollm New/Prepare (NO SEND) -----------------------------
 	if err := ctx.Err(); err != nil {
-		return declineStatic(bamlutils.NativeStaticFamilyCapability, StageContext, ReasonContextCancelled)
+		return decline(bamlutils.NativeStaticFamilyCapability, StageContext, ReasonContextCancelled)
 	}
 	client, nerr := nanollm.New(nanollm.Config{
 		Models: []nanollm.ModelConfig{{
@@ -313,9 +412,8 @@ func AdmitStatic(ctx context.Context, in StaticInput) StaticObservation {
 		UseProcessEnv: false,
 	})
 	if nerr != nil {
-		return declineStatic(bamlutils.NativeStaticFamilyPrepare, StagePrepare, reasonNanollmNewFailed)
+		return decline(bamlutils.NativeStaticFamilyPrepare, StagePrepare, reasonNanollmNewFailed)
 	}
-	defer client.Close()
 
 	prep, perr := client.Prepare(nanollm.Request{
 		Model:  alias,
@@ -324,10 +422,27 @@ func AdmitStatic(ctx context.Context, in StaticInput) StaticObservation {
 		Stream: false,
 	})
 	if perr != nil {
-		return declineStatic(bamlutils.NativeStaticFamilyPrepare, StagePrepare, reasonNanollmPrepareFailed)
+		// Prepare failed AFTER New succeeded: close the engine so no decline path
+		// leaks a live client.
+		client.Close()
+		return decline(bamlutils.NativeStaticFamilyPrepare, StagePrepare, reasonNanollmPrepareFailed)
 	}
 
-	// --- Layer 7: strict BAML Request.<Method> no-send plan compare ---------
+	return &staticPrepared{
+		client:       client,
+		prepared:     prep,
+		bundle:       bundle,
+		exactRequest: exactRequestFromPlan(prep),
+		alias:        alias,
+	}, nil
+}
+
+// staticPlanCompareObservation runs the strict BAML `Request.<Method>` no-send plan
+// compare (predicate layer 7) over a prepared static request and returns the
+// tri-state observation: would-admit (byte match), plan-mismatch (Prepare OK but
+// plan differs), or a decline (missing/failed BAML builder, a send-path
+// rewrite/proxy, or a snapshot construction error). It opens NO socket.
+func staticPlanCompareObservation(ctx context.Context, in StaticInput, prep *staticPrepared) StaticObservation {
 	if in.BuildBAMLRequest == nil {
 		return declineStatic(bamlutils.NativeStaticFamilyPrepare, StagePrepare, reasonNoBAMLPlanClosure)
 	}
@@ -338,11 +453,11 @@ func AdmitStatic(ctx context.Context, in StaticInput) StaticObservation {
 	// A send-path rewrite/proxy on the EFFECTIVE target would make a byte "match"
 	// meaningless (BAML sends elsewhere); decline pre-plan-record like the dynamic
 	// path does, against the prepared URL.
-	if in.WouldRewriteOrProxy != nil && in.WouldRewriteOrProxy(prep.URL) {
+	if in.WouldRewriteOrProxy != nil && in.WouldRewriteOrProxy(prep.prepared.URL) {
 		return declineStatic(bamlutils.NativeStaticFamilyClient, StageStrategy, ReasonURLRewriteOrProxy)
 	}
 
-	match, cmpReason := staticPlanMatches(bamlReq, prep)
+	match, cmpReason := staticPlanMatches(bamlReq, prep.prepared)
 	if cmpReason != "" {
 		return declineStatic(bamlutils.NativeStaticFamilyPrepare, StagePrepare, cmpReason)
 	}
@@ -357,8 +472,8 @@ func AdmitStatic(ctx context.Context, in StaticInput) StaticObservation {
 		}
 	}
 
-	// Proven up to — but NOT including — the RoundTrip. 8B records the would-admit
-	// and forces the decline; a later serving slice could CLAIM here.
+	// Proven up to — but NOT including — the RoundTrip. The observe path records this
+	// and forces the decline; the claim path CLAIMS here.
 	return StaticObservation{
 		Observation: bamlutils.NativeStaticObserveWouldAdmit,
 		Family:      bamlutils.NativeStaticFamilyNone,
@@ -491,6 +606,123 @@ func checkStaticReturnBundle(fn promptdescriptor.Function) (*schema.Bundle, *Sta
 	// MEASURE stream support but NEVER claim a stream route.
 	_ = debaml.SupportsNativeStreamBundle(bundle)
 	return bundle, nil
+}
+
+// admittedStaticReturnShape reports whether the lowered Return Bundle is inside the
+// INITIAL admitted return-shape set — the EXACT shapes whose generated
+// DecodeNativeStaticFinal mapper is BAML-v0.223-**differential-proven** (see
+// internal/nativebody/nanollmprepare/static/mapper_differential_integration_test.go).
+// It MUST stay in exact lockstep with the codegen decoder-emission gate
+// (adapters/common/codegen `isAdmittedStaticServeReturn`): codegen emits a serve seam
+// + mapper ONLY for the same set, and this is the runtime backstop.
+//
+// The set is deliberately NARROWED to EXACTLY the two shapes the v0.223 differential
+// covers (review P1.3) — NOT every flat class of bare string/int fields (which would
+// let an UNTESTED class such as `C{count int; title string; extra string}` claim a
+// send with no BAML differential). A shape outside the precisely-proven set declines
+// PRE-CLAIM so it is never served on an unproven bridge (scope §8.1):
+//
+//   - a top-level primitive STRING target — proven by StaticCompletion. No
+//     enums/classes/aliases/recursion, no target constraints.
+//   - a flat class target with EXACTLY the two fields, in order, `answer` (string)
+//     then `confidence` (int), no @alias/constraints, single class, no nested/list/
+//     map/union/enum/alias/recursion — the exact StaticAnswer{answer:string,
+//     confidence:int} shape the mapper differential proves.
+//
+// Every other shape — a top-level int/float/bool scalar, ANY other class (different
+// field names/types/order/count, a float/bool field, optionals, enums, unions, maps,
+// lists, nested/recursive classes, aliases, field aliases, constraints) — declines
+// until its OWN mapper + v0.223 differential fixture + explicit gate is added. This is
+// the precise "every admitted shape has a mapper + fixture" boundary.
+func admittedStaticReturnShape(b *schema.Bundle) bool {
+	if b == nil {
+		return false
+	}
+	// No recursion/alias carriers, and no enums (enum decode is not proven).
+	if len(b.RecursiveClasses) > 0 || len(b.StructuralRecursiveAliases) > 0 || len(b.Enums) > 0 {
+		return false
+	}
+	switch b.Target.Kind {
+	case schema.TypePrimitive:
+		// PROVEN scalar target: top-level string ONLY (StaticCompletion). int/float/bool
+		// scalar returns have no v0.223 differential method, so decline.
+		return len(b.Classes) == 0 && isProvenStaticStringScalar(b.Target)
+	case schema.TypeClass:
+		// PROVEN class target: EXACTLY the StaticAnswer{answer:string, confidence:int}
+		// field shape (names + types + order), single class, no constraints. Reject a
+		// CONSTRAINED (`-> C @check/@assert(...)`) or DYNAMIC (`@@dynamic`) class target
+		// at the usage site too — schema.Type carries Meta.Constraints + Dynamic on the
+		// target independently of the resolved ClassDef, so neither may slip the gate.
+		if b.Target.Dynamic || len(b.Target.Meta.Constraints) > 0 {
+			return false
+		}
+		if len(b.Classes) != 1 {
+			return false
+		}
+		cd, ok := b.FindClass(b.Target.Name, b.Target.Mode)
+		if !ok || len(cd.Constraints) > 0 || len(cd.Fields) != 2 {
+			return false
+		}
+		return isProvenStaticField(cd.Fields[0], "answer", schema.PrimitiveString) &&
+			isProvenStaticField(cd.Fields[1], "confidence", schema.PrimitiveInt)
+	default:
+		return false
+	}
+}
+
+// isProvenStaticStringScalar reports whether t is a bare, constraint-free primitive
+// STRING — the only proven top-level scalar return (StaticCompletion).
+func isProvenStaticStringScalar(t schema.Type) bool {
+	return t.Kind == schema.TypePrimitive && len(t.Meta.Constraints) == 0 && t.Primitive == schema.PrimitiveString
+}
+
+// isProvenStaticField reports whether f is EXACTLY the named, bare (no @alias, no
+// constraints) primitive field of kind prim — a field of the differential-proven
+// StaticAnswer shape. Requiring the field name + type + no-alias is what keeps the
+// admitted class shape to precisely the shape the mapper differential covers, so no
+// structurally-different (untested) class can claim a send.
+func isProvenStaticField(f schema.ClassField, name string, prim schema.PrimitiveKind) bool {
+	if f.Name.Alias != nil || f.Name.Name != name {
+		return false
+	}
+	if f.Type.Dynamic || len(f.Type.Meta.Constraints) > 0 {
+		return false
+	}
+	return f.Type.Kind == schema.TypePrimitive && f.Type.Primitive == prim
+}
+
+// NewStaticResponseClient builds a FRESH request-scoped nanollm engine for the SAME
+// static descriptor client (base_url/api_key/target model from the descriptor's
+// ClientConfig), purely to TranslateResponse over BAML's already-fetched bytes in the
+// Stage-1 SHADOW comparison. It opens NO socket — the returned engine is used only by
+// execute.ConsumeResponse's non-transport translate/extract/SAP. It mirrors the
+// admitStaticThroughPrepare client build (layers 5-6) and is the static twin of the
+// dynamic shadow's NewResponseClient. The caller MUST Close the returned engine.
+func NewStaticResponseClient(fn promptdescriptor.Function, alias string) (*nanollm.Client, string, error) {
+	alias = staticAliasOr(alias)
+	intent, cerr := nativebody.NormalizeStaticClient(fn.ClientConfig, alias, false)
+	if cerr != nil {
+		return nil, "", cerr
+	}
+	baseURL, apiKey, terr := staticTransport(fn.ClientConfig)
+	if terr != "" {
+		return nil, "", fmt.Errorf("nativeserve: static response client: %s", terr)
+	}
+	client, nerr := nanollm.New(nanollm.Config{
+		Models: []nanollm.ModelConfig{{
+			Name:       alias,
+			Model:      "openai/" + intent.TargetModel,
+			APIKey:     apiKey,
+			BaseURL:    baseURL,
+			MaxRetries: 0,
+		}},
+		Env:           nil,
+		UseProcessEnv: false,
+	})
+	if nerr != nil {
+		return nil, "", nerr
+	}
+	return client, intent.TargetModel, nil
 }
 
 // staticAliasOr returns the caller alias or the fixed internal default.

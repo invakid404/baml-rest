@@ -156,10 +156,27 @@ type NativeStaticInvocation struct {
 
 	// DecodeNativeFinal maps this method's native canonical JSON into its concrete
 	// generated Go return type. It is DEFINED here so the generated per-method
-	// decoder has a stable neutral home, but is UNUSED in 8B — the observer never
-	// serves a native final, so it never decodes one. A later serving slice (8C)
-	// invokes it after an admitted native RoundTrip. Nil in 8B callers.
+	// decoder has a stable neutral home, but is UNUSED by the isolated serve core
+	// (de-BAML Slice 8C): the winning flattened JSON (native or the same-response
+	// BAML parse) is returned as NativeStaticServeResult.FinalJSON and decoded by
+	// the generated /call seam itself — where the concrete return type lives — via
+	// the per-method DecodeNativeStaticFinal helper. It is carried for shape parity
+	// with the dynamic seam and for a caller that prefers an in-boundary decode.
+	// Nil in the observe-only 8B callers.
 	DecodeNativeFinal func(canonicalJSON []byte) (any, error)
+
+	// IncludeReasoning mirrors CallConfig.IncludeReasoning: whether the caller opted
+	// into surfacing provider reasoning/thinking text on the structured reasoning
+	// channel. It gates the native reasoning extraction channel in the serve core.
+	// False for the observe-only 8B callers and for a plain `call`.
+	IncludeReasoning bool
+
+	// SendHeartbeat is the neutral first-2xx liveness signal the native transport
+	// MUST fire the instant it reads 2xx response headers (before buffering the
+	// body) so the pool's hung detector observes liveness on a slow body. It is
+	// idempotent and best-effort; nil in the observe-only 8B callers (no socket is
+	// ever opened) and normalized to a no-op by the serve core.
+	SendHeartbeat func()
 }
 
 // NativeStaticObservation is the tri-state outcome the observer RECORDS for an
@@ -265,3 +282,160 @@ type NativeStaticResult struct {
 // native worker with the umbrella flag on; nil in every default production build,
 // every BAML-only worker, and every flag-off build.
 type NativeStaticObserveFunc func(ctx context.Context, inv NativeStaticInvocation) NativeStaticResult
+
+// ---------------------------------------------------------------------------
+// De-BAML Slice 8C — static unary SHADOW→SERVE seam.
+//
+// This is the SERVING twin of NativeStaticObserveFunc: for an admitted static
+// unary `/call` it actually SERVES natively — it opens exactly ONE provider
+// socket, translates/extracts the response, runs the native static SAP over the
+// selected Return Bundle, then runs BAML `Parse.<Method>` on the SAME bytes ONLY
+// as a differential/safety compare, and returns the winning flattened canonical
+// JSON. Everything crossing the boundary stays neutral: no nanollm type, no
+// internal/* type; the generated /call seam decodes the returned FinalJSON into
+// the method's concrete return type via the per-method DecodeNativeStaticFinal.
+//
+// It reuses the SAME NativeStaticInvocation the observer receives (descriptor,
+// exact args, selected-child facts, BuildBAMLRequest / BAMLOnlyParse closures)
+// plus IncludeReasoning + SendHeartbeat. The concrete nanollm-backed serve
+// implementation is injected by the isolated SERVE worker at the binary entry
+// point ONLY under the umbrella flag; a nil func — every default production build
+// and every flag-off build — leaves the generated static seam's serve callback
+// nil and every request byte-identical BAML.
+//
+// Ownership boundary (mirrors NativeServeFunc exactly): BEFORE it CLAIMS the
+// native attempt, the callback may return a stable DECLINE and guarantees NO
+// provider RoundTrip occurred — the generated seam then runs BAML's
+// `Request.<Method>` / `Parse.<Method>` for the same call exactly as today. From
+// the CLAIM onward every terminal condition is a SUCCESS or a typed FAILURE; there
+// is never a hidden BAML resend after the claim, and BAML `Parse.<Method>` over
+// the identical completed response is permitted as a safety comparator only — it
+// may never build or send a second provider request.
+//
+// SENSITIVE: the SUCCESS payload (FinalJSON / Raw / Reasoning) is parsed provider
+// output; treat it like the response body and never log/serialize/emit the struct
+// wholesale — see the package doc.
+
+// Bounded, secret-free winner-engine tokens for a native-served static final. They
+// mirror NativeServeEngineNative / NativeServeEngineBAMLParse so a dashboard can
+// tell WHICH engine produced the served final without carrying any content.
+const (
+	// NativeStaticServeEngineNative: native transport + native static SAP produced
+	// the served final.
+	NativeStaticServeEngineNative = "native"
+	// NativeStaticServeEngineBAMLParse: native owned the single provider request,
+	// but BAML `Parse.<Method>` (on the SAME bytes) produced the served final —
+	// either because native SAP declined the shape or because native/BAML
+	// structured output drifted and BAML's parse is served for safety.
+	NativeStaticServeEngineBAMLParse = "native_baml_parse"
+)
+
+// NativeStaticServeDisposition is the tri-state outcome of a native static serve
+// attempt, mirroring NativeServeDisposition. The zero value is
+// NativeStaticServeDeclined, so a zero-valued result safely means "declined, BAML
+// serves".
+type NativeStaticServeDisposition uint8
+
+const (
+	// NativeStaticServeDeclined: the implementation did NOT claim a native attempt
+	// and guarantees no provider socket occurred. The generated seam runs BAML's
+	// `Request.<Method>` / `Parse.<Method>` for the same call exactly as today.
+	// Stage/Reason are stable tokens.
+	NativeStaticServeDeclined NativeStaticServeDisposition = iota
+	// NativeStaticServeSucceeded: native owned the single provider request and
+	// produced the served final. FinalJSON is the winning flattened canonical JSON
+	// (native SAP or the same-response BAML parse); Raw/Reasoning are the owned
+	// /call-with-raw channels; WinnerEngine is the bounded engine token.
+	NativeStaticServeSucceeded
+	// NativeStaticServeFailed: native claimed the attempt (a socket MAY have opened)
+	// and then failed. Err is the typed error handed to the outer policy;
+	// RawDiagnostic is the owned raw body/text retained for details.raw. The
+	// generated seam NEVER falls through to a second BAML send for the same call.
+	NativeStaticServeFailed
+)
+
+// NativeStaticServeResult is the neutral tri-state result of a native static serve
+// attempt. Its Stage/Reason (decline) and WinnerEngine tokens are secret-free
+// bounded enums, but the SUCCESS payload is SENSITIVE — FinalJSON is parsed
+// provider output and Raw/Reasoning are the provider's own text; treat them like
+// the response body and never log/serialize/emit the struct wholesale.
+type NativeStaticServeResult struct {
+	// Disposition selects which field group below is meaningful.
+	Disposition NativeStaticServeDisposition
+
+	// Declined-only: stable, secret-free stage/reason (bounded enum-like tokens;
+	// never free-form text or a secret) describing WHERE/WHY native stepped aside.
+	Stage  string
+	Reason string
+
+	// Succeeded-only: the winning flattened canonical JSON (native static SAP or the
+	// same-response BAML parse), the owned /call-with-raw raw + reasoning channels,
+	// and the bounded winner-engine token (NativeStaticServeEngineNative or
+	// NativeStaticServeEngineBAMLParse). The generated /call seam decodes FinalJSON
+	// into the method's concrete return type via DecodeNativeStaticFinal.
+	//
+	// Ownership contract: FinalJSON/Raw/Reasoning MUST NOT alias any transport
+	// buffer once the callback returns — the implementation owns them outright.
+	FinalJSON    []byte
+	Raw          string
+	Reasoning    string
+	WinnerEngine string
+
+	// Failed-only: the typed error handed to the outer policy (use existing typed
+	// classes — *llmhttp.HTTPError, *buildrequest.OutputParseError, llmhttp
+	// transport errors — so the outer policy behaves exactly as for a BAML attempt),
+	// plus an optional owned raw diagnostic retained as details.raw.
+	Err           error
+	RawDiagnostic string
+}
+
+// NativeStaticServeFunc actually serves one admitted static unary `/call` natively
+// (or declines pre-socket to BAML). Installed AND enabled only in a SERVE deploy
+// profile with the umbrella flag on; nil in every default production build and
+// every flag-off build.
+type NativeStaticServeFunc func(ctx context.Context, inv NativeStaticInvocation) NativeStaticServeResult
+
+// ---------------------------------------------------------------------------
+// De-BAML Slice 8C — static unary Stage-1 SHADOW seam.
+//
+// This is the STAGE-1 twin of the SERVE seam and the response-comparing twin of the
+// no-send OBSERVE seam: BAML remains the SOLE provider sender, and native consumes
+// BAML's ALREADY-FETCHED response bytes to compare its own translate/extract/SAP/
+// typed-decode against BAML's parse of the SAME bytes — with ZERO native sends.
+//
+// The comparator runs the full no-send admission predicate + the strict BAML
+// `Request.<Method>` plan compare (like OBSERVE), then — on a full plan match —
+// returns an OnResponse continuation the generated seam threads onto its declined
+// NativeCallOutcome (OnResponseShadow). The orchestrator invokes OnResponse with
+// BAML's fetched (status, body) AFTER BAML serves; it opens no socket, issues no
+// RoundTrip, and never changes what BAML serves. It is the MEASURED shadow-parse the
+// cutover gate requires — NOT inferred from a serve claim.
+//
+// SENSITIVE: the OnResponse bytes are provider output; the comparator records only
+// bounded per-facet match/mismatch tokens, never the content — see the package doc.
+
+// NativeStaticShadowResult is the neutral result of one static shadow comparison. The
+// comparator ALWAYS declines (BAML serves): Stage/Reason are the bounded admission /
+// shadow tokens, and OnResponse — non-nil ONLY when the request plan matched every
+// facet — is the same-response continuation the generated seam forwards onto its
+// declined NativeCallOutcome.OnResponseShadow.
+type NativeStaticShadowResult struct {
+	// Stage/Reason are stable, secret-free tokens (the admission stage/reason on a
+	// decline, or the bounded shadow tokens) describing the routing decision.
+	Stage  string
+	Reason string
+
+	// OnResponse is the same-response native-vs-BAML comparison continuation. It is
+	// non-nil ONLY on a full plan match; the orchestrator invokes it EXACTLY once with
+	// BAML's already-fetched status+body AFTER BAML serves. It opens no socket, issues
+	// no RoundTrip, and its return value is discarded — it only records bounded
+	// per-facet comparison tokens. Nil means "no same-response compare for this
+	// request" (an admission/plan decline, or the comparator seam off).
+	OnResponse func(ctx context.Context, status int, body []byte)
+}
+
+// NativeStaticShadowFunc runs one no-send STATIC shadow comparison for an eligible
+// generated static method and ALWAYS declines so BAML serves. Installed AND enabled
+// only in a SHADOW deploy profile with the umbrella flag on; nil in every default
+// production build, every serve/BAML-only worker, and every flag-off build.
+type NativeStaticShadowFunc func(ctx context.Context, inv NativeStaticInvocation) NativeStaticShadowResult

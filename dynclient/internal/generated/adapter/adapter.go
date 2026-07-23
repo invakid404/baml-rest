@@ -120,6 +120,22 @@ type BamlAdapter struct {
 	// declines to BAML), so it never changes what BAML serves.
 	nativeStaticObserver bamlutils.NativeStaticObserveFunc
 
+	// nativeStaticServe is the native STATIC SERVE implementation (de-BAML
+	// Slice 8C), injected by a SERVE-profile worker for the same
+	// module-boundary reason as nativeServe. Non-nil ONLY in a serve worker
+	// with the flag on; nil in every default/flag-off build, leaving the
+	// generated static /call serve seam nil/hard-off. It SERVES admitted
+	// static unary /call natively (one send), declining pre-socket to BAML
+	// for every unsupported shape.
+	nativeStaticServe bamlutils.NativeStaticServeFunc
+
+	// nativeStaticShadow is the native STATIC Stage-1 SHADOW comparator
+	// (de-BAML Slice 8C), injected by a SHADOW-profile worker. Non-nil ONLY in
+	// a shadow worker with the flag on; nil in every default/serve/flag-off
+	// build. BAML stays the SOLE sender; native parses the captured response
+	// bytes to compare (ZERO native sends), then declines so BAML serves.
+	nativeStaticShadow bamlutils.NativeStaticShadowFunc
+
 	// rrAdvancer is the per-request round-robin Advancer installed by the
 	// worker; nil falls back to the introspected Coordinator.
 	rrAdvancer bamlutils.RoundRobinAdvancer
@@ -309,6 +325,18 @@ func (b *BamlAdapter) SetNativeStaticObserver(fn bamlutils.NativeStaticObserveFu
 }
 func (b *BamlAdapter) NativeStaticObserver() bamlutils.NativeStaticObserveFunc {
 	return b.nativeStaticObserver
+}
+func (b *BamlAdapter) SetNativeStaticServeComparator(fn bamlutils.NativeStaticServeFunc) {
+	b.nativeStaticServe = fn
+}
+func (b *BamlAdapter) NativeStaticServeComparator() bamlutils.NativeStaticServeFunc {
+	return b.nativeStaticServe
+}
+func (b *BamlAdapter) SetNativeStaticShadowComparator(fn bamlutils.NativeStaticShadowFunc) {
+	b.nativeStaticShadow = fn
+}
+func (b *BamlAdapter) NativeStaticShadowComparator() bamlutils.NativeStaticShadowFunc {
+	return b.nativeStaticShadow
 }
 func (b *BamlAdapter) SetRoundRobinAdvancer(advancer bamlutils.RoundRobinAdvancer) {
 	b.rrAdvancer = advancer

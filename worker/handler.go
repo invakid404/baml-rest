@@ -134,6 +134,28 @@ type Config struct {
 	// serve/shadow mutual exclusion — a native worker may install it alongside the
 	// serve or shadow callback, or on its own.
 	NativeStaticObserver bamlutils.NativeStaticObserveFunc
+
+	// NativeStaticServeComparator is the neutral native STATIC SERVE implementation
+	// (de-BAML Slice 8C). Non-nil ONLY in a SERVE-profile worker with the umbrella
+	// flag on; every default/shadow/flag-off build leaves it nil, so the generated
+	// static /call seam's serve callback stays nil/hard-off and the request stays
+	// byte-identical to today. It is installed on every adapter via the narrow
+	// nativeStaticServeSetter interface, gated by DeBAMLConfig().Enabled at the seam.
+	// It SERVES admitted static unary /call (one send, tri-state pre-claim decline to
+	// BAML), coexisting with the dynamic serve/stream callbacks; it is the static
+	// twin of NativeServeComparator.
+	NativeStaticServeComparator bamlutils.NativeStaticServeFunc
+
+	// NativeStaticShadowComparator is the neutral native STATIC Stage-1 SHADOW
+	// comparator (de-BAML Slice 8C). Non-nil ONLY in a SHADOW-profile worker with the
+	// umbrella flag on; every default/serve/flag-off build leaves it nil. It runs the
+	// no-send admission + plan compare and, on a match, compares native's parse of
+	// BAML's captured bytes against BAML's parse — with ZERO native sends — then
+	// declines so BAML serves. Installed on every adapter via the narrow
+	// nativeStaticShadowSetter interface. It is the static twin of
+	// NativeShadowComparator; the generated /call seam PREFERS serve over shadow over
+	// observe.
+	NativeStaticShadowComparator bamlutils.NativeStaticShadowFunc
 }
 
 // deBAMLRendererSetter is the narrow optional interface the adapter
@@ -185,6 +207,24 @@ type nativeStreamServeSetter interface {
 // generated adapter does. nil observer ⇒ nothing installed ⇒ static seam hard-off.
 type nativeStaticObserverSetter interface {
 	SetNativeStaticObserver(bamlutils.NativeStaticObserveFunc)
+}
+
+// nativeStaticServeSetter is the SERVE twin of nativeStaticObserverSetter (de-BAML
+// Slice 8C): the narrow optional interface the adapter implements to receive the
+// native static SERVE implementation. Kept off the bamlutils.Adapter interface for
+// the same reason as the other native setters. nil implementation ⇒ nothing
+// installed ⇒ static /call serve seam hard-off.
+type nativeStaticServeSetter interface {
+	SetNativeStaticServeComparator(bamlutils.NativeStaticServeFunc)
+}
+
+// nativeStaticShadowSetter is the SHADOW twin of nativeStaticServeSetter (de-BAML
+// Slice 8C Stage-1): the narrow optional interface the adapter implements to receive
+// the native static SHADOW comparator. Kept off the bamlutils.Adapter interface for
+// the same reason as the other native setters. nil comparator ⇒ nothing installed ⇒
+// static /call shadow seam hard-off.
+type nativeStaticShadowSetter interface {
+	SetNativeStaticShadowComparator(bamlutils.NativeStaticShadowFunc)
 }
 
 // ErrRuntimeRequired is returned by New when Config.Runtime is nil.
@@ -253,6 +293,20 @@ type Handler struct {
 	// declines, so it never changes what BAML serves.
 	nativeStaticObserver bamlutils.NativeStaticObserveFunc
 
+	// nativeStaticServe is the neutral native STATIC SERVE implementation (de-BAML
+	// Slice 8C), injected only in the SERVE deploy profile with the flag on (nil in
+	// every default/shadow/flag-off build). Installed on every adapter in
+	// configureAdapter; the generated static /call seam gates it on
+	// DeBAMLConfig().Enabled and otherwise leaves the serve callback nil/hard-off.
+	nativeStaticServe bamlutils.NativeStaticServeFunc
+
+	// nativeStaticShadow is the neutral native STATIC Stage-1 SHADOW comparator
+	// (de-BAML Slice 8C), injected only in the SHADOW deploy profile with the flag on
+	// (nil in every default/serve/flag-off build). Installed on every adapter in
+	// configureAdapter; the generated static /call seam gates it on
+	// DeBAMLConfig().Enabled + serve-absent, otherwise leaving it nil/hard-off.
+	nativeStaticShadow bamlutils.NativeStaticShadowFunc
+
 	sharedStateHook hookStorage
 
 	noSharedStateWarnOnce    sync.Once
@@ -294,6 +348,8 @@ func New(cfg Config) (*Handler, error) {
 		nativeServe:          cfg.NativeServeComparator,
 		nativeStreamServe:    cfg.NativeStreamServeComparator,
 		nativeStaticObserver: cfg.NativeStaticObserver,
+		nativeStaticServe:    cfg.NativeStaticServeComparator,
+		nativeStaticShadow:   cfg.NativeStaticShadowComparator,
 	}
 	if cfg.SharedState != nil {
 		h.SetSharedStateHook(cfg.SharedState)
@@ -359,6 +415,22 @@ func (h *Handler) configureAdapter(adapter bamlutils.Adapter) {
 	// behaviour.
 	if setter, ok := adapter.(nativeStaticObserverSetter); ok {
 		setter.SetNativeStaticObserver(h.nativeStaticObserver)
+	}
+	// Install the native STATIC SERVE implementation (de-BAML Slice 8C; nil in every
+	// default/shadow/flag-off build, so this is a no-op there). The generated static
+	// /call seam builds a serving native callback when this is non-nil AND
+	// DeBAMLConfig().Enabled; on a pre-claim decline it runs BAML's Request.<Method> /
+	// Parse.<Method> for the same call.
+	if setter, ok := adapter.(nativeStaticServeSetter); ok {
+		setter.SetNativeStaticServeComparator(h.nativeStaticServe)
+	}
+	// Install the native STATIC Stage-1 SHADOW comparator (de-BAML Slice 8C; nil in
+	// every default/serve/flag-off build, so this is a no-op there). The generated
+	// static /call seam builds a shadow callback when this is non-nil AND
+	// DeBAMLConfig().Enabled AND no serve callback is installed; BAML remains the sole
+	// sender and native only parses the captured response bytes.
+	if setter, ok := adapter.(nativeStaticShadowSetter); ok {
+		setter.SetNativeStaticShadowComparator(h.nativeStaticShadow)
 	}
 }
 

@@ -27,6 +27,7 @@ import (
 	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/nativeworker"
 	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/shadow"
 	"github.com/invakid404/baml-rest/internal/workerboot"
+	"github.com/invakid404/baml-rest/nativeserve"
 )
 
 func main() {
@@ -56,5 +57,13 @@ func main() {
 		// bamlutils.NativeShadowFunc the generated dynamic call seam installs as
 		// the Slice-1 native child-attempt callback.
 		NativeShadowFactory: shadow.NewShadowFunc,
+		// The STATIC Stage-1 SHADOW factory (de-BAML Slice 8C): returns the neutral
+		// bamlutils.NativeStaticShadowFunc the generated static /call seam installs when
+		// no serve callback is present. For an admitted static /call it runs the no-send
+		// admission + plan compare and, on a match, compares native's parse of BAML's
+		// captured bytes against BAML's parse — BAML stays the SOLE sender, ZERO native
+		// sends — then declines so BAML serves. Installed ALONGSIDE the dynamic shadow in
+		// the shadow profile; skipped entirely when the umbrella flag is off.
+		NativeStaticShadowFactory: nativeserve.NewStaticShadow,
 	})
 }

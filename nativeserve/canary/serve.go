@@ -58,6 +58,7 @@ const (
 	reasonPlanMismatch    = "plan_mismatch"
 	reasonPlanExpired     = "plan_expired"
 	reasonPlannerError    = "planner_error"
+	reasonNilOutputSchema = "nil_output_schema"
 )
 
 // errNativeServePanic backstops a panic AFTER the claim: a socket may have opened,
@@ -83,6 +84,14 @@ type Server struct {
 	// production non-openai mapping, so the trusted verification path is otherwise
 	// unreachable through Serve. Production never rebinds it.
 	admitClaim func(ctx context.Context, in admission.Input) (*admission.Claim, error)
+
+	// staticAdmitClaim is the static admission step ServeStatic runs (de-BAML Slice
+	// 8C). It defaults to admission.AdmitStaticClaim (the real production predicate)
+	// and is OVERRIDDEN ONLY by same-package tests to inject a SYNTHETIC static claim
+	// so the post-claim serving pipeline (exact one-send, static SAP, S5 same-response
+	// compare, tri-state mapping) is exercised without a live BAML plan oracle.
+	// Production never rebinds it.
+	staticAdmitClaim func(ctx context.Context, in admission.StaticInput) (*admission.StaticClaim, error)
 }
 
 // NewServer builds a Server recording on m and sending admitted plans through exec
@@ -95,6 +104,7 @@ func NewServer(m *admission.Metrics, exec *llmhttp.ExactExecutor) *Server {
 	}
 	s := &Server{admitter: admission.NewAdmitter(m, exec), metrics: m, exec: exec}
 	s.admitClaim = s.admitter.AdmitClaim
+	s.staticAdmitClaim = admission.AdmitStaticClaim
 	return s
 }
 
@@ -146,6 +156,18 @@ func (s *Server) Serve(ctx context.Context, req bamlutils.NativeServeRequest) (r
 	// inside AdmitClaim; racing the post-2xx pipeline is caught in mapAttempt.)
 	if ctx.Err() != nil {
 		return declineResult(stageServe, reasonServedBAMLCtx)
+	}
+
+	// Pre-socket nil-schema guard (de-BAML Slice 8C): NativeServeRequest.OutputSchema
+	// is nullable, and the dynamic serve path pre-wraps the schema-neutral parser as
+	// execute.DynamicParse(debaml.Parse, req.OutputSchema) below — a pre-supplied
+	// ParseResponse that SHORT-CIRCUITS RunAttempt's resolveParse nil-schema guard, so
+	// a nil schema would otherwise surface only inside the CLAIMED parse, after the
+	// socket opened. A nil schema can never parse natively, so decline to BAML here
+	// with ZERO native work (no planner, no claim, no socket) — availability-first,
+	// and BAML serves with its own runtime schema.
+	if req.OutputSchema == nil {
+		return declineResult(stageServe, reasonNilOutputSchema)
 	}
 
 	claim, err := s.admitClaim(ctx, toAdmissionInput(req))
@@ -228,11 +250,13 @@ func (s *Server) Serve(ctx context.Context, req bamlutils.NativeServeRequest) (r
 	defer recordSocket(admission.NativeSocketTransportError)
 
 	res, aerr := execute.RunAttempt(ctx, execute.AttemptConfig{
-		Client:           claim.Client(),
-		Prepared:         claim.Prepared,
-		Executor:         s.exec,
-		Parse:            debaml.Parse,
-		OutputSchema:     req.OutputSchema,
+		Client:   claim.Client(),
+		Prepared: claim.Prepared,
+		Executor: s.exec,
+		// Schema-neutral parser (de-BAML Slice 8C): the dynamic serve path captures
+		// its DynamicOutputSchema in the closure, so execute stays schema-agnostic —
+		// the static serve path captures a Return Bundle instead (ServeStatic).
+		ParseResponse:    execute.DynamicParse(debaml.Parse, req.OutputSchema),
 		IncludeReasoning: req.IncludeReasoning,
 		// The merged S5 first-2xx heartbeat: fired before the body is buffered so
 		// the pool hung-detector sees liveness on a slow body.

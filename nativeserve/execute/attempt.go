@@ -168,15 +168,42 @@ type AttemptResult struct {
 	SAPInvoked bool
 }
 
+// ParseResponseFunc is the SCHEMA-NEUTRAL native structured-output parser the
+// response pipeline consumes (de-BAML Slice 8C): given the assistant text
+// extracted from a 2xx response, it returns the flattened canonical JSON on a
+// CLEAN claim, [bamlutils.ErrDeBAMLParseUnsupported] on a parity-decline (the
+// caller records OutcomeParseDeclined), or any other error for a CLAIMED native
+// parse failure (propagated so the differential catches drift).
+//
+// It is the seam that makes the response side schema-agnostic: a DYNAMIC caller
+// builds it by capturing a *bamlutils.DynamicOutputSchema (see [DynamicParse]); a
+// STATIC caller builds it by capturing the validated *schema.Bundle from a generated
+// method's descriptor Return (debaml.ParseStaticBundle) — so this package never
+// needs to know which schema flavour produced the bytes.
+type ParseResponseFunc func(ctx context.Context, raw string) ([]byte, error)
+
 // AttemptConfig is the input to RunAttempt: the nanollm client (for
 // TranslateResponse with the attempted alias), the fresh Phase-5-admitted plan,
 // the exact transport executor (built by the caller over a loopback-guarded
-// RoundTripper — the adapter stays transport-agnostic), and the native parser +
-// carried output schema.
+// RoundTripper — the adapter stays transport-agnostic), and the schema-neutral
+// response parser closure.
 type AttemptConfig struct {
-	Client           *nanollm.Client
-	Prepared         *nanollm.PreparedRequest
-	Executor         *llmhttp.ExactExecutor
+	Client   *nanollm.Client
+	Prepared *nanollm.PreparedRequest
+	Executor *llmhttp.ExactExecutor
+
+	// ParseResponse is the schema-neutral parser (de-BAML Slice 8C). It is the
+	// PREFERRED input: when non-nil the pipeline drives it directly and needs no
+	// OutputSchema. A static serve caller sets it to a closure capturing the
+	// descriptor Return Bundle; the production dynamic serve caller sets it to a
+	// closure capturing the DynamicOutputSchema.
+	ParseResponse ParseResponseFunc
+
+	// Parse + OutputSchema are the DYNAMIC compatibility inputs, retained so the
+	// existing gated dynamic oracles keep constructing the config unchanged: when
+	// ParseResponse is nil they are normalized into a ParseResponseFunc via
+	// [DynamicParse]. Exactly one of {ParseResponse} or {Parse+OutputSchema} must
+	// be supplied.
 	Parse            bamlutils.DeBAMLParseFunc
 	OutputSchema     *bamlutils.DynamicOutputSchema
 	IncludeReasoning bool
@@ -200,15 +227,58 @@ type AttemptConfig struct {
 // while BAML remains the sole provider send.
 //
 // Client + Alias are the request-scoped nanollm client and the EXACT attempted
-// alias TranslateResponse is called with (never a primary alias); Parse is the
-// native SAP; OutputSchema is the carried dynamic output schema; IncludeReasoning
-// gates the reasoning extraction channel.
+// alias TranslateResponse is called with (never a primary alias); ParseResponse is
+// the schema-neutral native SAP closure; IncludeReasoning gates the reasoning
+// extraction channel. Parse + OutputSchema are the dynamic compatibility inputs
+// (see AttemptConfig) normalized into a ParseResponseFunc when ParseResponse is nil.
 type ConsumeConfig struct {
-	Client           *nanollm.Client
-	Alias            string
+	Client        *nanollm.Client
+	Alias         string
+	ParseResponse ParseResponseFunc
+
 	Parse            bamlutils.DeBAMLParseFunc
 	OutputSchema     *bamlutils.DynamicOutputSchema
 	IncludeReasoning bool
+}
+
+// DynamicParse adapts the dynamic native parser + a carried DynamicOutputSchema
+// into a schema-neutral ParseResponseFunc. It is the compatibility bridge for the
+// existing dynamic serve/shadow callers and gated oracles: the response pipeline
+// only ever sees the neutral closure, so it stays schema-agnostic. A nil parse or
+// schema yields a closure that reports a config error on first use, matching the
+// pre-refactor nil guards.
+func DynamicParse(parse bamlutils.DeBAMLParseFunc, schema *bamlutils.DynamicOutputSchema) ParseResponseFunc {
+	return func(ctx context.Context, raw string) ([]byte, error) {
+		if parse == nil {
+			return nil, fmt.Errorf("nativeserve: nil parse function")
+		}
+		if schema == nil {
+			return nil, fmt.Errorf("nativeserve: nil output schema")
+		}
+		out, err := parse(ctx, bamlutils.DeBAMLParseRequest{Raw: raw, OutputSchema: schema, Stream: false})
+		if err != nil {
+			return nil, err
+		}
+		return out.JSON, nil
+	}
+}
+
+// resolveParse resolves the schema-neutral parser: the explicit ParseResponse when
+// present, else the DYNAMIC compatibility inputs (Parse + OutputSchema) normalized
+// via DynamicParse. It returns a config error only when neither is supplied, so the
+// pre-refactor "nil parse / nil schema" guards are preserved for both RunAttempt
+// and ConsumeResponse.
+func resolveParse(pr ParseResponseFunc, parse bamlutils.DeBAMLParseFunc, schema *bamlutils.DynamicOutputSchema) (ParseResponseFunc, error) {
+	if pr != nil {
+		return pr, nil
+	}
+	if parse == nil {
+		return nil, fmt.Errorf("nativeserve: nil parse function")
+	}
+	if schema == nil {
+		return nil, fmt.Errorf("nativeserve: nil output schema")
+	}
+	return DynamicParse(parse, schema), nil
 }
 
 // RunAttempt performs exactly one native unary attempt and returns the typed
@@ -235,11 +305,12 @@ func RunAttempt(ctx context.Context, cfg AttemptConfig) (*AttemptResult, error) 
 	if cfg.Executor == nil {
 		return nil, fmt.Errorf("nativeserve: nil exact executor")
 	}
-	if cfg.Parse == nil {
-		return nil, fmt.Errorf("nativeserve: nil parse function")
-	}
-	if cfg.OutputSchema == nil {
-		return nil, fmt.Errorf("nativeserve: nil output schema")
+	// Resolve the schema-neutral parser up front (ParseResponse, else the dynamic
+	// compat inputs) so a missing/incomplete parse config is rejected BEFORE the
+	// socket, exactly as the pre-refactor nil guards were.
+	parseResp, perr := resolveParse(cfg.ParseResponse, cfg.Parse, cfg.OutputSchema)
+	if perr != nil {
+		return nil, perr
 	}
 
 	prep := cfg.Prepared
@@ -289,8 +360,7 @@ func RunAttempt(ctx context.Context, cfg AttemptConfig) (*AttemptResult, error) 
 	return ConsumeResponse(ctx, ConsumeConfig{
 		Client:           cfg.Client,
 		Alias:            prep.Meta.ModelAlias,
-		Parse:            cfg.Parse,
-		OutputSchema:     cfg.OutputSchema,
+		ParseResponse:    parseResp,
 		IncludeReasoning: cfg.IncludeReasoning,
 	}, resp.StatusCode, resp.Body)
 }
@@ -332,11 +402,12 @@ func ConsumeResponse(ctx context.Context, cfg ConsumeConfig, status int, body []
 	if cfg.Client == nil {
 		return nil, fmt.Errorf("nativeserve: nil nanollm client")
 	}
-	if cfg.Parse == nil {
-		return nil, fmt.Errorf("nativeserve: nil parse function")
-	}
-	if cfg.OutputSchema == nil {
-		return nil, fmt.Errorf("nativeserve: nil output schema")
+	// Resolve the schema-neutral parser (ParseResponse, else the dynamic compat
+	// inputs). A missing/incomplete parse config is a pre-response guard: (nil, err)
+	// with no response context to preserve, exactly as before.
+	parseResp, perr := resolveParse(cfg.ParseResponse, cfg.Parse, cfg.OutputSchema)
+	if perr != nil {
+		return nil, perr
 	}
 
 	res := &AttemptResult{
@@ -414,36 +485,35 @@ func ConsumeResponse(ctx context.Context, cfg ConsumeConfig, status int, body []
 		return res, err
 	}
 
-	// SAP is invoked exactly here and nowhere else on the 2xx path.
+	// SAP is invoked exactly here and nowhere else on the 2xx path. The parser is
+	// the schema-neutral closure: DYNAMIC callers capture a DynamicOutputSchema,
+	// STATIC callers capture the descriptor Return Bundle — this pipeline is blind
+	// to which.
 	res.SAPInvoked = true
-	parsed, perr := cfg.Parse(ctx, bamlutils.DeBAMLParseRequest{
-		Raw:          parseable,
-		OutputSchema: cfg.OutputSchema,
-		Stream:       false,
-	})
+	parsedJSON, sperr := parseResp(ctx, parseable)
 	// Cancellation gate AFTER SAP: a cancel that raced the parser wins over any
 	// parse decline/error/success classification.
 	if err := ctx.Err(); err != nil {
 		return res, err
 	}
-	if perr != nil {
+	if sperr != nil {
 		// A clean decline is a parity-decline recorded as data (no fallback
 		// rejoined here — no serving change in this phase). Any OTHER parse
 		// error is a CLAIMED native failure and propagates UNCHANGED so the
 		// differential can catch native-vs-BAML drift.
-		if errors.Is(perr, bamlutils.ErrDeBAMLParseUnsupported) {
+		if errors.Is(sperr, bamlutils.ErrDeBAMLParseUnsupported) {
 			res.Outcome = OutcomeParseDeclined
-			res.DeclineReason = perr.Error()
+			res.DeclineReason = sperr.Error()
 			return res, nil
 		}
 		// A CLAIMED (non-decline) native parse failure. res carries the response
 		// context — AssistantText/Raw/Reasoning (SAPInvoked==true) — so the serving
 		// mapper can attach the extracted assistant text as details.raw.
-		return res, perr
+		return res, sperr
 	}
 
 	res.Outcome = OutcomeStructured
-	res.Structured = parsed.JSON
+	res.Structured = parsedJSON
 	return res, nil
 }
 
