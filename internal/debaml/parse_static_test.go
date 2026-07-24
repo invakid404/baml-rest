@@ -77,11 +77,12 @@ func TestParseStaticBundle_NilBundleDeclines(t *testing.T) {
 	}
 }
 
-// TestParseStaticBundle_RecursiveDeclines proves the correct 8C recursion decline:
-// a Bundle carrying a recursive class is out of the native FINAL surface and
-// declines here (defensive backstop to the admission-side SupportsNativeFinalBundle
-// gate), so a later recursion slice lifts BOTH gates in internal/debaml with no
-// nativeserve change.
+// TestParseStaticBundle_RecursiveDeclines proves a REQUIRED class edge
+// (Node{value; next Node} — NOT the admitted nullable `next Node?`) stays a #583
+// residual decline even after Phase 2: admittedRecursiveClassProfile rejects the
+// non-optional edge, so ParseStaticBundle falls to the blanket recursive-class
+// decline. (The admitted nullable family is covered by
+// recursive_profile_test.go's TestParseStaticBundle_RecursiveNodeClaim.)
 func TestParseStaticBundle_RecursiveDeclines(t *testing.T) {
 	d := schemadescriptor.Bundle{
 		Version: schemadescriptor.Version,

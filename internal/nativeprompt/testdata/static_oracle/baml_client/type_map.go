@@ -21,6 +21,14 @@ import (
 )
 
 var typeMap = map[string]reflect.Type{
+	"TYPES.A":                   reflect.TypeOf(types.A{}),
+	"STREAM_TYPES.A":            reflect.TypeOf(stream_types.A{}),
+	"TYPES.B":                   reflect.TypeOf(types.B{}),
+	"STREAM_TYPES.B":            reflect.TypeOf(stream_types.B{}),
+	"TYPES.Loop":                reflect.TypeOf(types.Loop{}),
+	"STREAM_TYPES.Loop":         reflect.TypeOf(stream_types.Loop{}),
+	"TYPES.Node":                reflect.TypeOf(types.Node{}),
+	"STREAM_TYPES.Node":         reflect.TypeOf(stream_types.Node{}),
 	"TYPES.StaticAnswer":        reflect.TypeOf(types.StaticAnswer{}),
 	"STREAM_TYPES.StaticAnswer": reflect.TypeOf(stream_types.StaticAnswer{}),
 }

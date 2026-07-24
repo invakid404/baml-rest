@@ -51,7 +51,14 @@ func ParseStaticBundle(ctx context.Context, bundle *schema.Bundle, raw string) (
 	if err := bundle.ValidateOutput(); err != nil {
 		return bamlutils.DeBAMLParseResult{}, unsupportedErr("validate static bundle", err)
 	}
-	if err := checkSupported(bundle); err != nil {
+	// Use the SAME final-profile support predicate admission applies
+	// (SupportsNativeFinalBundle), NOT a bare checkSupported. This keeps the direct
+	// static parse from drifting from the route: the recursion-aware profile admits the
+	// narrow recursive-class family (self Node, mutual A<->B) exactly as admission does,
+	// and declines every out-of-family recursive/union/cycle shape the marker gate would.
+	// For the non-recursive 8C corpus (top-level string, StaticAnswer) this is
+	// behaviour-identical — both pass the final cut-line — so the static pin is unchanged.
+	if err := SupportsNativeFinalBundle(bundle); err != nil {
 		return bamlutils.DeBAMLParseResult{}, err
 	}
 
@@ -66,13 +73,29 @@ func ParseStaticBundle(ctx context.Context, bundle *schema.Bundle, raw string) (
 
 	// Coerce the candidate against the Bundle target. A top-level coercion needs no
 	// cleanliness accumulator (nil flags): a nullable target's own null/clean
-	// decision is made inside coerceUnionSafe, exactly as the dynamic final path.
-	out, err := coerce(bundle, bundle.Target, parsed, nil)
+	// decision is made inside coerceUnionSafe, exactly as the dynamic final path. A
+	// FRESH pair-guard context (empty coerce/try_cast active sets) threads BAML's
+	// path-local (ClassKey, value) circular-reference guard through every recursive
+	// descent — no depth cap — so the admitted recursive-class family coerces safely.
+	out, err := coerce(bundle, bundle.Target, parsed, nil, &coerceCtx{})
 	if err != nil {
 		// coerce returns ErrDeBAMLParseUnsupported where native is merely stricter
 		// than BAML's lenient coercers (DECLINE → fall back); any other error is a
 		// CLAIMED parse failure BAML would also hit, propagated unchanged for parity.
 		return bamlutils.DeBAMLParseResult{}, err
+	}
+	// Static absent-optional normalizer (admitted recursive-class family ONLY): coerce
+	// OMITS an absent optional from its object output, but BAML marshals the optional's
+	// nil pointer as an explicit null. Insert null for the absent admitted nullable-class
+	// edge, in schema field order, so an OMITTED terminal produces the SAME canonical
+	// bytes as BAML's pointer→nil→null marshal ({"value":"x","next":null}) — a byte-exact
+	// FinalJSON, not merely a semantically-equal decode. Non-recursive bundles (the 8C
+	// corpus carries no optionals) skip this entirely, so their bytes are unchanged.
+	if prof, ok := admittedRecursiveClassProfile(bundle); ok {
+		out, err = normalizeRecursiveFinal(out, bundle.Target, bundle, prof)
+		if err != nil {
+			return bamlutils.DeBAMLParseResult{}, err
+		}
 	}
 	return bamlutils.DeBAMLParseResult{JSON: out}, nil
 }

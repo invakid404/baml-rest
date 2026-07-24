@@ -122,6 +122,106 @@ func TestAdmittedStaticReturnShape_RecursionEnumAliasDeclines(t *testing.T) {
 	}
 }
 
+// TestIsProvenRecursiveStaticReturn pins the de-BAML Phase 2 recursive-return
+// fingerprint: the self-recursive Node and the mutual A<->B SCC (both roots) ADMIT;
+// every out-of-family recursive shape (required edge, reordered fields, extra field,
+// one-field Loop, non-string value, field @alias, self-not-mutual edge) DECLINES.
+func TestIsProvenRecursiveStaticReturn(t *testing.T) {
+	str := schemadescriptor.Type{Kind: schemadescriptor.TypePrimitive, Primitive: schemadescriptor.PrimitiveString}
+	intT := schemadescriptor.Type{Kind: schemadescriptor.TypePrimitive, Primitive: schemadescriptor.PrimitiveInt}
+	classRef := func(n string) schemadescriptor.Type {
+		return schemadescriptor.Type{Kind: schemadescriptor.TypeClass, Name: n, Mode: schemadescriptor.NonStreaming}
+	}
+	nullableClass := func(n string) schemadescriptor.Type {
+		return schemadescriptor.Type{Kind: schemadescriptor.TypeUnion, Union: &schemadescriptor.UnionType{
+			Nullable: true, Variants: []schemadescriptor.Type{classRef(n)},
+		}}
+	}
+	fld := func(name string, ty schemadescriptor.Type) schemadescriptor.ClassField {
+		return schemadescriptor.ClassField{Name: schemadescriptor.Name{Name: name}, Type: ty}
+	}
+	cls := func(name string, fields ...schemadescriptor.ClassField) schemadescriptor.ClassDef {
+		return schemadescriptor.ClassDef{Name: schemadescriptor.Name{Name: name}, Mode: schemadescriptor.NonStreaming, Fields: fields}
+	}
+	node := func(fields ...schemadescriptor.ClassField) schemadescriptor.Bundle {
+		return schemadescriptor.Bundle{
+			Version: schemadescriptor.Version, Method: "M", Target: classRef("Node"),
+			Classes: []schemadescriptor.ClassDef{cls("Node", fields...)}, RecursiveClasses: []string{"Node"},
+		}
+	}
+	ab := func(root string) schemadescriptor.Bundle {
+		return schemadescriptor.Bundle{
+			Version: schemadescriptor.Version, Method: "M", Target: classRef(root),
+			Classes: []schemadescriptor.ClassDef{
+				cls("A", fld("value", str), fld("b", nullableClass("B"))),
+				cls("B", fld("value", str), fld("a", nullableClass("A"))),
+			},
+			RecursiveClasses: []string{"A", "B"},
+		}
+	}
+
+	cases := []struct {
+		name string
+		desc schemadescriptor.Bundle
+		want bool
+	}{
+		{"node_self_ADMIT", node(fld("value", str), fld("next", nullableClass("Node"))), true},
+		{"mutual_A_ADMIT", ab("A"), true},
+		{"mutual_B_ADMIT", ab("B"), true},
+		{"required_edge_DECLINE", node(fld("value", str), fld("next", classRef("Node"))), false},
+		{"reordered_fields_DECLINE", node(fld("next", nullableClass("Node")), fld("value", str)), false},
+		{"three_fields_DECLINE", node(fld("value", str), fld("extra", str), fld("next", nullableClass("Node"))), false},
+		{"int_value_DECLINE", node(fld("value", intT), fld("next", nullableClass("Node"))), false},
+		// P0 exactness: a same-SHAPED but non-canonical class/field-named schema must NOT
+		// claim a socket.
+		{"other_non_canonical_names_DECLINE", schemadescriptor.Bundle{
+			Version: schemadescriptor.Version, Method: "M", Target: classRef("Other"),
+			Classes:          []schemadescriptor.ClassDef{cls("Other", fld("payload", str), fld("child", nullableClass("Other")))},
+			RecursiveClasses: []string{"Other"},
+		}, false},
+		{"wrong_field_names_DECLINE", node(fld("val", str), fld("next", nullableClass("Node"))), false},
+		{"mutual_wrong_edge_field_DECLINE", func() schemadescriptor.Bundle {
+			d := ab("A")
+			d.Classes[0].Fields[1].Name.Name = "bee" // A's edge must be named "b"
+			return d
+		}(), false},
+		// P0 (round 2): @stream.* annotations survive static lowering onto a final
+		// descriptor, so an OTHERWISE-EXACT Node carrying one must NOT claim a socket.
+		// These ISOLATE the stream cause (exact Node name/fields; only a @stream.* differs).
+		{"stream_class_annotated_DECLINE", func() schemadescriptor.Bundle {
+			d := node(fld("value", str), fld("next", nullableClass("Node")))
+			d.Classes[0].Stream = schemadescriptor.StreamingBehavior{Done: true}
+			return d
+		}(), false},
+		{"stream_value_field_annotated_DECLINE", func() schemadescriptor.Bundle {
+			d := node(fld("value", str), fld("next", nullableClass("Node")))
+			d.Classes[0].Fields[0].Type.Meta.Stream = schemadescriptor.StreamingBehavior{Done: true}
+			return d
+		}(), false},
+		{"stream_field_needed_DECLINE", func() schemadescriptor.Bundle {
+			d := node(fld("value", str), fld("next", nullableClass("Node")))
+			d.Classes[0].Fields[0].StreamingNeeded = true
+			return d
+		}(), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := schema.FromStaticDescriptor(tc.desc)
+			if err != nil {
+				// Some out-of-family shapes (a required self edge) are rejected at
+				// lowering — also a valid pre-claim decline.
+				if tc.want {
+					t.Fatalf("FromStaticDescriptor rejected an ADMIT case: %v", err)
+				}
+				return
+			}
+			if got := admittedStaticReturnShape(b); got != tc.want {
+				t.Errorf("admittedStaticReturnShape = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestAdmittedStaticReturnShape_FieldAliasDeclines proves a class field @alias
 // declines (the JSON key would diverge from the generated struct tag).
 func TestAdmittedStaticReturnShape_FieldAliasDeclines(t *testing.T) {

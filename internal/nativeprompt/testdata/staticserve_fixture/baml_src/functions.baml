@@ -112,3 +112,16 @@ function StaticRecursiveLoop(topic: string) -> Loop {
     {{ ctx.output_format }}
   "#
 }
+
+// De-BAML Phase 2 (recursive classes) — the @stream.*-annotated zero-socket ROUTE
+// regression. The return descriptor is NodeAnn{value string @stream.done; next
+// NodeAnn?}; static lowering preserves the @stream.done annotation, so the served
+// fingerprint DECLINES it pre-transport and the generated /call opens ZERO native
+// sockets (BAML serves). Serve-fixture only; not in the differential oracle.
+function StaticRecursiveNodeAnn(topic: string) -> NodeAnn {
+  client StaticOracleClient
+  prompt #"
+    Summarize {{ topic }} as an annotated linked list.
+    {{ ctx.output_format }}
+  "#
+}

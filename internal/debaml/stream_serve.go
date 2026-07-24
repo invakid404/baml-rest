@@ -81,7 +81,9 @@ func SupportsNativeStreamBundle(bundle *schema.Bundle) error {
 	if err := checkSupported(bundle); err != nil {
 		return err
 	}
-	if err := checkStreamRootSupported(bundle); err != nil {
+	// The STREAM lane keeps its blanket cycle/union declines: unary static-final only,
+	// never a static streaming change. Pass a nil recursive profile.
+	if err := checkStreamRootSupported(bundle, nil); err != nil {
 		return err
 	}
 	// parseStream applies the stream-annotation guard on top of checkSupported;
@@ -140,7 +142,14 @@ func SupportsNativeStreamBundle(bundle *schema.Bundle) error {
 // proven by the rigorous type-space differential's strict + deferred-byte-check legs and the
 // corpus acceptance probe). The five-trigger exception is deferred debt, NOT a lowered §5.9
 // bar — exact per-boundary parity for them stays the target (ledger #583).
-func checkStreamRootSupported(b *schema.Bundle) error {
+// checkStreamRootSupported applies the root-class stream cut-line. prof is nil for
+// the stream lane and every non-recursive final bundle — the blanket cycle/union
+// declines then run UNCHANGED. For an admitted recursive-class final bundle prof is
+// non-nil: the blanket class-cycle decline is skipped (the cycle IS the admitted
+// SCC) and the blanket union decline is narrowed to typeGraphHasNonAdmittedUnion, so
+// EXACTLY the admitted direct nullable-class edges are exempt while every other union
+// (and every other cut-line) still declines.
+func checkStreamRootSupported(b *schema.Bundle, prof *recProfile) error {
 	if rootFieldIsStringAbsorbing(b) {
 		return unsupported("stream: single string-absorbing-field root class (BAML allow_as_string->class diverges)")
 	}
@@ -168,13 +177,18 @@ func checkStreamRootSupported(b *schema.Bundle) error {
 		// rootFieldIsStringAbsorbing, but this separate single-field-root recovery still applies.)
 		return unsupported("stream: single nested-class-field root class (BAML inferred-object recovery native cannot reproduce)")
 	}
-	if typeGraphHasClassCycle(b) {
+	if prof == nil && typeGraphHasClassCycle(b) {
 		// A self- or mutually-recursive class graph (Node{next:Node}, A<->B). The proven-safe
 		// admitted core is a FINITE acyclic class tree (the generative differential enumerates
 		// only bounded acyclic shapes); a cyclic schema is outside it AND would make the
 		// recursive-descent gate below (checkNested) non-terminating. Decline it pre-transport —
 		// a conservative under-claim on an out-of-core shape (never an over-claim), consistent
 		// with the native lane admitting only what it can prove byte-exact.
+		//
+		// EXEMPT for the admitted recursive-class FINAL profile (prof != nil): the cycle is the
+		// proven SCC. checkNested still terminates on it — its seen-set guard stops re-descent —
+		// and coercion is data-driven (finite JSON), guarded by the path-local pair-guard, so no
+		// depth cap is needed. The stream lane always passes prof==nil and keeps this decline.
 		return unsupported("stream: recursive/cyclic class graph (outside the finite acyclic admitted core)")
 	}
 	if typeGraphHasNestedList(b) {
@@ -191,12 +205,21 @@ func checkStreamRootSupported(b *schema.Bundle) error {
 	if graphHasGreedyCommaRisk(b) {
 		return unsupported("stream: non-last unquoted-scalar class field or scalar map value (BAML greedy-read cascade across a tight comma diverges)")
 	}
-	if typeGraphHasUnion(b) {
-		// A UNION or OPTIONAL/NULLABLE field whose non-null value STREAMS incomplete
-		// declines at coerceStream ("mixed-union semantic streaming deferred"), while
-		// BAML keeps the partial value — a divergence for any admitted stream that
-		// could carry such a value. Decline any union anywhere in the graph.
-		return unsupported("stream: union/optional field in the type graph (mixed-union semantic streaming deferred)")
+	if prof == nil {
+		if typeGraphHasUnion(b) {
+			// A UNION or OPTIONAL/NULLABLE field whose non-null value STREAMS incomplete
+			// declines at coerceStream ("mixed-union semantic streaming deferred"), while
+			// BAML keeps the partial value — a divergence for any admitted stream that
+			// could carry such a value. Decline any union anywhere in the graph.
+			return unsupported("stream: union/optional field in the type graph (mixed-union semantic streaming deferred)")
+		}
+	} else if typeGraphHasNonAdmittedUnion(b, *prof) {
+		// Admitted recursive-class FINAL profile: EXACTLY the direct nullable single-class
+		// SCC edges (`next Node?`, `b B?`, `a A?`) are exempt; every OTHER union anywhere —
+		// a multi-arm union, a nullable non-class union, a nullable list/map — still declines.
+		// This catches checkSupportedType's nullable-union null fast path so no non-admitted
+		// nullable union can be claimed on the recursive final lane before a non-null value.
+		return unsupported("final: non-admitted union in the recursive type graph")
 	}
 	if typeGraphHasNonStringMapKey(b) {
 		// BAML admits enum / string-literal / union-of-literal map keys and, when a
@@ -314,20 +337,21 @@ func typeGraphHasUnsafeNestedClass(b *schema.Bundle) bool {
 	if !ok {
 		return false
 	}
-	var checkNested func(t schema.Type, seen map[string]bool) bool
-	checkNested = func(t schema.Type, seen map[string]bool) bool {
+	var checkNested func(t schema.Type, seen map[schema.ClassKey]bool) bool
+	checkNested = func(t schema.Type, seen map[schema.ClassKey]bool) bool {
 		if t.Kind != schema.TypeClass {
 			return false
 		}
 		cls, ok := b.FindClass(t.Name, t.Mode)
-		if !ok || seen[t.Name] {
+		if !ok || seen[classKeyOf(t)] {
 			// seen guard: a class already visited on this walk has had its whole subtree
 			// checked; re-descending would loop forever on a cyclic graph (matches the
 			// sibling classSubtreeHasList). checkStreamRootSupported already declines a
 			// cyclic graph up front, so this is defense-in-depth for a direct caller.
+			// Keyed by ClassKey so distinct-mode definitions are never merged/skipped.
 			return false
 		}
-		seen[t.Name] = true
+		seen[classKeyOf(t)] = true
 		if nestedClassUnsafe(b, cls) {
 			return true
 		}
@@ -338,7 +362,7 @@ func typeGraphHasUnsafeNestedClass(b *schema.Bundle) bool {
 		}
 		return false
 	}
-	seen := map[string]bool{}
+	seen := map[schema.ClassKey]bool{}
 	for i := range root.Fields {
 		if checkNested(root.Fields[i].Type, seen) {
 			return true
@@ -363,7 +387,10 @@ func typeGraphHasClassCycle(b *schema.Bundle) bool {
 		gray  = 1 // on the current DFS stack
 		black = 2 // fully explored, acyclic
 	)
-	color := map[string]int{}
+	// Color by schema.ClassKey{Name, Mode}, NOT name alone: the schema deliberately
+	// supports one canonical name in two streaming modes, and a name-only visited map
+	// would merge two distinct definitions → a false cycle (or a skipped edge).
+	color := map[schema.ClassKey]int{}
 	// classRefs collects every class TYPE referenced by t (a bare class, or a class inside a
 	// list/map/tuple/union), without following the reference — the DFS follows them.
 	var classRefs func(t schema.Type, out *[]schema.Type)
@@ -400,13 +427,14 @@ func typeGraphHasClassCycle(b *schema.Bundle) bool {
 		if !ok {
 			return false
 		}
-		switch color[t.Name] {
+		key := classKeyOf(t)
+		switch color[key] {
 		case gray:
 			return true // back-edge to a class on the current path
 		case black:
 			return false // already fully explored, acyclic
 		}
-		color[t.Name] = gray
+		color[key] = gray
 		for i := range cls.Fields {
 			var refs []schema.Type
 			classRefs(cls.Fields[i].Type, &refs)
@@ -416,7 +444,7 @@ func typeGraphHasClassCycle(b *schema.Bundle) bool {
 				}
 			}
 		}
-		color[t.Name] = black
+		color[key] = black
 		return false
 	}
 	return dfs(b.Target)
@@ -440,7 +468,7 @@ func nestedClassUnsafe(b *schema.Bundle, cls *schema.ClassDef) bool {
 				return true
 			}
 		case schema.TypeClass:
-			if classSubtreeHasList(b, ft, map[string]bool{}) {
+			if classSubtreeHasList(b, ft, map[schema.ClassKey]bool{}) {
 				childWithList = true
 			}
 		}
@@ -457,15 +485,15 @@ func nestedClassUnsafe(b *schema.Bundle, cls *schema.ClassDef) bool {
 }
 
 // classSubtreeHasList reports whether the class t (or any class nested under it) has a list field.
-func classSubtreeHasList(b *schema.Bundle, t schema.Type, seen map[string]bool) bool {
+func classSubtreeHasList(b *schema.Bundle, t schema.Type, seen map[schema.ClassKey]bool) bool {
 	if t.Kind != schema.TypeClass {
 		return false
 	}
 	cls, ok := b.FindClass(t.Name, t.Mode)
-	if !ok || seen[t.Name] {
+	if !ok || seen[classKeyOf(t)] {
 		return false
 	}
-	seen[t.Name] = true
+	seen[classKeyOf(t)] = true
 	for i := range cls.Fields {
 		ft := cls.Fields[i].Type
 		if ft.Kind == schema.TypeList {
@@ -915,13 +943,26 @@ func SupportsNativeFinalBundle(bundle *schema.Bundle) error {
 	if bundle == nil {
 		return unsupported("nil bundle")
 	}
+	// De-BAML Phase 2: classify the bundle against the narrow static-final
+	// recursive-class family FIRST. An admitted family (self Node, mutual A<->B)
+	// runs the recursion-aware cut-line (recursive-class reject skipped, blanket
+	// cycle/union declines narrowed to EXACTLY the admitted direct nullable-class
+	// edges); everything else (non-recursive, or a recursive shape outside the
+	// family) runs the UNCHANGED cut-line, so the dynamic 289 pin and the 8C static
+	// pin stay byte-for-byte unchanged.
+	if prof, ok := admittedRecursiveClassProfile(bundle); ok {
+		if err := checkSupportedRecursive(bundle, prof); err != nil {
+			return err
+		}
+		return checkStreamRootSupported(bundle, &prof)
+	}
 	if err := checkSupported(bundle); err != nil {
 		return err
 	}
 	// The single string-absorbing-field root class diverges on the FINAL too
 	// (LIVE-CAPTURED: a bare `"just a string"` final makes BAML error while native
 	// over-emits {"field":"just a string"}), so decline it here as well.
-	return checkStreamRootSupported(bundle)
+	return checkStreamRootSupported(bundle, nil)
 }
 
 // lowerForSupport lowers + validates a dynamic output schema exactly as the
