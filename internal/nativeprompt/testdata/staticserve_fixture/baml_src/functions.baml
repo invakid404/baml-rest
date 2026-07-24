@@ -125,3 +125,28 @@ function StaticRecursiveNodeAnn(topic: string) -> NodeAnn {
     {{ ctx.output_format }}
   "#
 }
+
+// De-BAML Phase 3a (recursive ALIASES) — the SERVED direct five-arm JSON return.
+// Bare ctx.output_format Completion whose return descriptor is the structural
+// recursive alias `JSON`. Proves the native static-final lane renders, serves, and
+// byte-exactly reproduces BAML v0.223's Parse for a recursive-alias return
+// (map sorted-public / insertion-internal, broad-union scoring/hint, null -> []).
+function StaticRecursiveAliasJSON(topic: string) -> JSON {
+  client StaticOracleClient
+  prompt #"
+    Summarize {{ topic }} as arbitrary JSON.
+    {{ ctx.output_format }}
+  "#
+}
+
+// De-BAML Phase 3a — the DECLINED-oracle wider JsonValue return. The served
+// fingerprint DECLINES it (float + null arms, non-`JSON` name), so native falls
+// back to BAML with ZERO native sockets. Used ONLY by the decline/null-distinction
+// differential (JsonValue null -> nil alias pointer, vs served JSON null -> []).
+function StaticRecursiveAliasJsonValue(topic: string) -> JsonValue {
+  client StaticOracleClient
+  prompt #"
+    Summarize {{ topic }} as arbitrary JSON (wide).
+    {{ ctx.output_format }}
+  "#
+}

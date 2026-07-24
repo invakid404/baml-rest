@@ -73,3 +73,39 @@ func DecodeStaticFinal[T any](canonicalJSON []byte) (T, error) {
 	}
 	return v, nil
 }
+
+// DecodeStaticAliasFinal is the de-BAML Phase 3a (recursive ALIASES) NARROW per-method
+// materializer/decoder for the served structural-recursive-alias union return (the
+// direct five-arm JSON alias), kept SEPARATE from [DecodeStaticFinal] so the generic
+// decoder's proof set (scalars / flat classes / recursive-class pointer carriers) is
+// NOT silently widened to aliases/unions/ordered-maps.
+//
+// Unlike the generic decoder it does NOT set DisallowUnknownFields: the generated
+// alias carrier (BAML's types.JSON — a Union5.../Union6... value union) is NOT a struct
+// with a fixed field set but a tagged union whose own UnmarshalJSON dispatches the
+// arms, so a struct-field allowlist is meaningless for it (and DisallowUnknownFields is
+// silently ignored for a type with a custom UnmarshalJSON anyway). It IS still a STRICT
+// single-value decode (a trailing second value is malformed). Its BAML-equivalence is
+// proven per admitted alias by the v0.223 recursive-alias differential: the native
+// static SAP emits the SORTED-public canonical bytes (json.Marshal of the equivalent
+// Go value — sorted map keys + HTML escaping), byte-identical to the generated static
+// callback (Parse.<Method> then json.Marshal on types.JSON), and this decode maps those
+// canonical bytes back to the concrete generated union via its generated UnmarshalJSON.
+//
+// SENSITIVE: canonicalJSON is parsed provider output and T carries the model's full
+// structured response; the caller treats both like the response body and never logs
+// them.
+func DecodeStaticAliasFinal[T any](canonicalJSON []byte) (T, error) {
+	var v T
+	dec := stdjson.NewDecoder(bytes.NewReader(canonicalJSON))
+	if err := dec.Decode(&v); err != nil {
+		return v, fmt.Errorf("bamlutils: decode static alias final: %w", err)
+	}
+	if err := dec.Decode(new(stdjson.RawMessage)); err != io.EOF {
+		if err == nil {
+			return v, fmt.Errorf("bamlutils: decode static alias final: unexpected trailing JSON value")
+		}
+		return v, fmt.Errorf("bamlutils: decode static alias final: trailing content: %w", err)
+	}
+	return v, nil
+}

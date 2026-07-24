@@ -329,7 +329,11 @@ func TestStaticServingCutover_RecursivePartition(t *testing.T) {
 		t.Fatalf("recursive served corpus %v != frozen %v", gotRecursive, wantRecursive)
 	}
 
-	// Partition completeness: legacy ∪ recursive-served ∪ declined == SyncMethods.
+	// Partition completeness: legacy ∪ recursive-served ∪ recursive-declined ∪
+	// alias-served ∪ alias-declined == SyncMethods. The alias corpora (de-BAML Phase 3a,
+	// alias_cutover_manifest_test.go) are folded in so this anti-omission stays exact as
+	// new families are added — the frozen recursive corpus {Node, A, B} above is
+	// unchanged.
 	partition := map[string]bool{}
 	for _, m := range legacyStaticMethods {
 		partition[m] = true
@@ -340,12 +344,18 @@ func TestStaticServingCutover_RecursivePartition(t *testing.T) {
 	for _, r := range staticServingCorpusDeclined {
 		partition[r.name] = true
 	}
+	for _, r := range staticServingCorpusAlias {
+		partition[r.name] = true
+	}
+	for _, r := range staticServingCorpusAliasDeclined {
+		partition[r.name] = true
+	}
 	if len(partition) != len(introspected.SyncMethods) {
 		t.Fatalf("partition covers %d methods but SyncMethods has %d", len(partition), len(introspected.SyncMethods))
 	}
 	for m := range introspected.SyncMethods {
 		if !partition[m] {
-			t.Errorf("emitted method %q is not covered by any partition (legacy/recursive/declined)", m)
+			t.Errorf("emitted method %q is not covered by any partition (legacy/recursive/alias/declined)", m)
 		}
 	}
 }

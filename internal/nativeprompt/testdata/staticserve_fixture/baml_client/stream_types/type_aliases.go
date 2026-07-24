@@ -12,3 +12,6 @@
 //  $ go install github.com/boundaryml/baml/baml-cli
 
 package stream_types
+
+type JSON = *Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString
+type JsonValue = *Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString

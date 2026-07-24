@@ -300,6 +300,23 @@ func coerce(b *schema.Bundle, t schema.Type, input value, f *coerceFlags, cctx *
 		return coerceMap(b, t.Key, t.Value, input, f, cctx)
 	case schema.TypeUnion:
 		return coerceUnionSafe(b, t.Union, input, f, cctx)
+	case schema.TypeRecursiveAlias:
+		// De-BAML Phase 3a: the admitted structural-recursive alias (JSON). The
+		// alias-specific EXACT scored path (alias_coerce.go) reproduces BAML's
+		// coerce_alias -> coerce_union (null -> [], IndexMap map order, broad-union
+		// scoring/hint); the FINAL bytes are SORTED-public (marshalPublic). Reached
+		// ONLY for the admitted family (the fingerprint forbids an alias inside any
+		// other bundle), so a top-level nil f is the common case; a non-nil enclosing
+		// accumulator folds the alias result's inherent score.
+		av, af, _, err := aliasCoerceValue(b, input, cctx)
+		if err != nil {
+			return nil, err
+		}
+		if af != nil {
+			f.foldChild(af)
+			f.setKind(af.kind)
+		}
+		return av.marshalPublic()
 	default:
 		return nil, fmt.Errorf("debaml: cannot coerce type kind %q", t.Kind)
 	}

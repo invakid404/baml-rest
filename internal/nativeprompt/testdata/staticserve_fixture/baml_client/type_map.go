@@ -33,4 +33,16 @@ var typeMap = map[string]reflect.Type{
 	"STREAM_TYPES.NodeAnn":      reflect.TypeOf(stream_types.NodeAnn{}),
 	"TYPES.StaticAnswer":        reflect.TypeOf(types.StaticAnswer{}),
 	"STREAM_TYPES.StaticAnswer": reflect.TypeOf(stream_types.StaticAnswer{}),
+
+	"TYPES.List__JSON__Map__string_JSON__bool__int__string":                  reflect.TypeOf(types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString{}),
+	"TYPES.List__JsonValue__Map__string_JsonValue__bool__float__int__string": reflect.TypeOf(types.Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString{}),
+
+	"STREAM_TYPES.List__JSON__Map__string_JSON__bool__int__string":                  reflect.TypeOf(stream_types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString{}),
+	"STREAM_TYPES.List__JsonValue__Map__string_JsonValue__bool__float__int__string": reflect.TypeOf(stream_types.Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString{}),
+
+	"TYPES.JSON":      reflect.TypeOf(types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString{}),
+	"TYPES.JsonValue": reflect.TypeOf((*types.Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString)(nil)),
+
+	"STREAM_TYPES.JSON":      reflect.TypeOf((*stream_types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString)(nil)),
+	"STREAM_TYPES.JsonValue": reflect.TypeOf((*stream_types.Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString)(nil)),
 }

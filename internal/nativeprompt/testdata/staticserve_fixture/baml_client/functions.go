@@ -391,6 +391,154 @@ func StaticRecursiveA(ctx context.Context, topic string, opts ...CallOptionFunc)
 	}
 }
 
+func StaticRecursiveAliasJSON(ctx context.Context, topic string, opts ...CallOptionFunc) (types.JSON, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "StaticRecursiveAliasJSON", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString{}, err
+		}
+
+		if result.Error != nil {
+			return types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString{}, result.Error
+		}
+
+		casted := (result.Data).(types.JSON)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "StaticRecursiveAliasJSON", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.JSON), nil
+			}
+		}
+
+		return types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func StaticRecursiveAliasJsonValue(ctx context.Context, topic string, opts ...CallOptionFunc) (types.JsonValue, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "StaticRecursiveAliasJsonValue", encoded, callOpts.onTick)
+		if err != nil {
+			return nil, err
+		}
+
+		if result.Error != nil {
+			return nil, result.Error
+		}
+
+		casted := (result.Data).(types.JsonValue)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "StaticRecursiveAliasJsonValue", encoded, callOpts.onTick)
+		if err != nil {
+			return nil, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return nil, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.JsonValue), nil
+			}
+		}
+
+		return nil, fmt.Errorf("No data returned from stream")
+	}
+}
+
 func StaticRecursiveB(ctx context.Context, topic string, opts ...CallOptionFunc) (types.B, error) {
 
 	var callOpts callOption

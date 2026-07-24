@@ -158,6 +158,19 @@ func reorderStaticByBundle(data []byte, t schema.Type, bundle *schema.Bundle) ([
 		}
 		return canonicalScalar(data)
 
+	case schema.TypeRecursiveAlias:
+		// De-BAML Phase 3a: a structural-recursive alias (the served JSON) resolves to a
+		// DYNAMIC JSON value — any nesting of scalar / list / map, whose shape is
+		// input-driven, not schema-driven. The map materialization contract is
+		// insertion-INTERNAL but SORTED-public, so the /call comparator must canonicalize
+		// BOTH the native FinalJSON and the BAML-callback bytes to the sorted-public form
+		// (recursively sorted map keys) with consistent HTML escaping before the order
+		// compare. The prior default case compacted maps in place (insertion order), which
+		// is insufficient for an alias that resolves to a map. canonicalizeAliasJSON
+		// re-emits with json.Marshal (sorted map keys + HTML escaping) while preserving
+		// exact integer number tokens (UseNumber, no float64 round-trip).
+		return canonicalizeAliasJSON(data)
+
 	default:
 		// Primitives, enums, literals, maps (insertion-order preserved), and TypeTop:
 		// compacted, with string scalars re-escaped to native's SetEscapeHTML(false) so
@@ -168,6 +181,28 @@ func reorderStaticByBundle(data []byte, t schema.Type, bundle *schema.Bundle) ([
 
 func isJSONNull(data []byte) bool {
 	return bytes.Equal(bytes.TrimSpace(data), []byte("null"))
+}
+
+// canonicalizeAliasJSON re-emits a dynamic recursive-alias JSON value in the canonical
+// SORTED-public form: json.Marshal of the decoded value sorts every (nested) map key
+// lexically and HTML-escapes < > & — the exact public byte shape the generated static
+// callback produces (json.Marshal on the generated types.JSON union). Decoding with
+// UseNumber keeps integer number tokens EXACT (no float64 round-trip that would corrupt
+// a large integer), and a value that does not decode as JSON falls back to plain
+// compaction. Applied to BOTH the native FinalJSON and the BAML-callback bytes, so an
+// (internal) insertion-order difference never reads as an order/content divergence.
+func canonicalizeAliasJSON(data []byte) ([]byte, error) {
+	dec := stdjson.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return compactJSON(data)
+	}
+	out, err := stdjson.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("parity: canonicalize alias json: %w", err)
+	}
+	return out, nil
 }
 
 // canonicalScalar compacts data, and for a JSON STRING re-encodes it with

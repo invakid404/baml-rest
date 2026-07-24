@@ -711,6 +711,30 @@ func rewriteMapStringTypeExprs(body string, pkgIdx *pkgTypeIndex) (string, bool)
 	return body, changed
 }
 
+// recursiveAliasMapDecodeFn selects the runtime decode function spliced in for a
+// RECURSIVE structural-alias map arm (`map<string, T>` where T is a self-referential
+// alias, e.g. the `JSON` / `JsonValue` unions). The dynamic client links the PATCHED
+// baml fork and uses `baml.DecodeToOrderedValue`; the de-BAML STATIC serve/oracle
+// fixtures link the STOCK github.com/boundaryml/baml@v0.223.0 runtime, which does NOT
+// export DecodeToOrderedValue (it is a patched-fork-only addition — stock pkg/lib.go
+// has only Decode / DecodeToValue). This arm materialises a plain `map[string]T` and
+// deliberately LOSES CFFI insertion order either way (see the generated
+// `bamlNativeMapAs_*` helpers, which accept either the ordered carrier or a plain
+// map), so `baml.DecodeToValue` — present in BOTH runtimes — is byte-for-byte
+// equivalent for this arm. The stock/static path is opted in via
+// BAML_HACKS_STOCK_STATIC_MAP_DECODE=1 (set only by
+// scripts/regen-staticserve-fixture.sh for the stock-baml staticserve_fixture);
+// the DEFAULT keeps DecodeToOrderedValue so the checked-in patched dynclient
+// regeneration stays byte-unchanged.
+func recursiveAliasMapDecodeFn() string {
+	switch os.Getenv("BAML_HACKS_STOCK_STATIC_MAP_DECODE") {
+	case "1", "true":
+		return "baml.DecodeToValue"
+	default:
+		return "baml.DecodeToOrderedValue"
+	}
+}
+
 // rewriteStaticMapDecodeAsserts rewrites every
 // `baml.Decode(<expr>).Interface().(<typeExpr>)` substring into a
 // helper-driven typed conversion when <typeExpr> is a static map type.
@@ -787,7 +811,7 @@ func rewriteStaticMapDecodeAsserts(body string, pkgIdx *pkgTypeIndex) (string, b
 		if elemName, ok := recursiveMapAssertElement(typeExpr, pkgIdx); ok {
 			isPtr := strings.HasPrefix(strings.TrimSpace(typeExpr), "*")
 			helperName := nativeMapHelperName(elemName, isPtr)
-			replacement := fmt.Sprintf("%s(baml.DecodeToOrderedValue(%s))", helperName, decodeArg)
+			replacement := fmt.Sprintf("%s(%s(%s))", helperName, recursiveAliasMapDecodeFn(), decodeArg)
 			body = body[:decodeStart] + replacement + body[assertCloseIdx+1:]
 			searchFrom = decodeStart + len(replacement)
 			changed = true
@@ -1308,7 +1332,7 @@ func isDynamicValueType(t string) bool {
 }
 
 // isInsideStringLiteral reports whether absIdx falls inside a `"..."`
-// or `` `...` `` string literal in body. Walks the body left-to-right
+// or “ `...` “ string literal in body. Walks the body left-to-right
 // counting literal boundaries; the walk is O(absIdx) but only runs
 // once per `map[string]` candidate so total work stays linear.
 func isInsideStringLiteral(body string, absIdx int) bool {
