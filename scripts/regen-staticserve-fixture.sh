@@ -73,10 +73,26 @@ CGO_ENABLED=0 go run ./cmd/introspect \
   --baml-module-path "github.com/boundaryml/baml"
 
 # --- staticserve_fixture: ctx-first + lazy-runtime client ---------------------
+# The dynamic-order-client hack ADDS ordered_map_static.go helper files (one per
+# schema-type package that carries a recursive structural-alias map arm — the
+# de-BAML Phase 3a JSON / JsonValue unions). BAML's codegen REFUSES to run when the
+# output directory contains a file it did not itself generate, so a second regen
+# would abort on these hack-added helpers. Remove them before regenerating so the
+# fixture regeneration stays IDEMPOTENT (a clean second run). rm -f no-ops on a
+# fresh tree where the helpers do not yet exist.
+find "$SF/baml_client" -name ordered_map_static.go -delete
 regen_client "$SF"
 
 echo "==> [$SF] cmd/hacks (context-fix + lazy-runtime + …)"
-go run ./cmd/hacks --skip-baml-module-patch \
+# The staticserve_fixture links the STOCK github.com/boundaryml/baml@v0.223.0
+# runtime, which — unlike the patched dynclient fork — does NOT export
+# DecodeToOrderedValue. A recursive structural-alias map arm (the de-BAML Phase 3a
+# JSON / JsonValue unions) would otherwise be rewritten to a patched-only
+# DecodeToOrderedValue call and fail to compile. BAML_HACKS_STOCK_STATIC_MAP_DECODE=1
+# selects baml.DecodeToValue (present in stock) for that arm — byte-equivalent since
+# the arm materialises a plain map[string]T and loses CFFI order either way. The
+# default (unset) keeps DecodeToOrderedValue so the patched dynclient stays unchanged.
+BAML_HACKS_STOCK_STATIC_MAP_DECODE=1 go run ./cmd/hacks --skip-baml-module-patch \
   --baml-client-dir "$SF/baml_client" --baml-version "$BAML_VERSION"
 
 # The BAML generator emits a stray absolute type_builder import

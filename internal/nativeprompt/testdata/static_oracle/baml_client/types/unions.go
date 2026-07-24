@@ -12,3 +12,701 @@
 //  $ go install github.com/boundaryml/baml/baml-cli
 
 package types
+
+import (
+	"encoding/json"
+	"fmt"
+
+	baml "github.com/boundaryml/baml/engine/language_client_go/pkg"
+	"github.com/boundaryml/baml/engine/language_client_go/pkg/cffi"
+)
+
+type Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString struct {
+	variant string
+
+	variant_Int *int64
+
+	variant_String *string
+
+	variant_Bool *bool
+
+	variant_ListJSON *[]JSON
+
+	variant_MapStringKeyJSONValue *map[string]JSON
+}
+
+func (u *Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString) Decode(holder *cffi.CFFIValueUnionVariant, typeMap baml.TypeMap) {
+	valueHolder := holder.Value
+	variantName := holder.ValueOptionName
+	switch variantName {
+	case "int":
+		u.variant = "Int"
+		value := baml.Decode(valueHolder).Int()
+		u.variant_Int = &value
+	case "string":
+		u.variant = "String"
+		value := baml.Decode(valueHolder).Interface().(string)
+		u.variant_String = &value
+	case "bool":
+		u.variant = "Bool"
+		value := baml.Decode(valueHolder).Bool()
+		u.variant_Bool = &value
+	case "List__JSON":
+		u.variant = "ListJSON"
+		value := baml.Decode(valueHolder).Interface().([]JSON)
+		u.variant_ListJSON = &value
+	case "Map__string_JSON":
+		u.variant = "MapStringKeyJSONValue"
+		value := baml.Decode(valueHolder).Interface().(map[string]JSON)
+		u.variant_MapStringKeyJSONValue = &value
+
+	default:
+		panic(fmt.Sprintf("invalid union variant: %s", variantName))
+	}
+}
+
+func (u Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString) Encode() (*cffi.HostValue, error) {
+	switch u.variant {
+
+	case "Int":
+		return baml.EncodeValue(*u.variant_Int)
+
+	case "String":
+		return baml.EncodeValue(*u.variant_String)
+
+	case "Bool":
+		return baml.EncodeValue(*u.variant_Bool)
+
+	case "ListJSON":
+		return baml.EncodeValue(*u.variant_ListJSON)
+
+	case "MapStringKeyJSONValue":
+		return baml.EncodeValue(*u.variant_MapStringKeyJSONValue)
+
+	case "":
+		return nil, fmt.Errorf("invalid union variant: [unset]")
+	}
+
+	return nil, fmt.Errorf("invalid union variant: %s", u.variant)
+}
+
+func (u Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString) BamlTypeName() string {
+	return "Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString"
+}
+
+func (u Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString) MarshalJSON() ([]byte, error) {
+	switch u.variant {
+
+	case "Int":
+		return json.Marshal(u.variant_Int)
+
+	case "String":
+		return json.Marshal(u.variant_String)
+
+	case "Bool":
+		return json.Marshal(u.variant_Bool)
+
+	case "ListJSON":
+		return json.Marshal(u.variant_ListJSON)
+
+	case "MapStringKeyJSONValue":
+		return json.Marshal(u.variant_MapStringKeyJSONValue)
+
+	}
+
+	return nil, fmt.Errorf("invalid union variant: %s", u.variant)
+}
+
+func (u *Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString) UnmarshalJSON(data []byte) error {
+	var err error
+
+	err = json.Unmarshal(data, &u.variant_Int)
+	if err == nil {
+		u.variant = "Int"
+		return nil
+	} else {
+		u.variant_Int = nil
+	}
+
+	err = json.Unmarshal(data, &u.variant_String)
+	if err == nil {
+		u.variant = "String"
+		return nil
+	} else {
+		u.variant_String = nil
+	}
+
+	err = json.Unmarshal(data, &u.variant_Bool)
+	if err == nil {
+		u.variant = "Bool"
+		return nil
+	} else {
+		u.variant_Bool = nil
+	}
+
+	err = json.Unmarshal(data, &u.variant_ListJSON)
+	if err == nil {
+		u.variant = "ListJSON"
+		return nil
+	} else {
+		u.variant_ListJSON = nil
+	}
+
+	err = json.Unmarshal(data, &u.variant_MapStringKeyJSONValue)
+	if err == nil {
+		u.variant = "MapStringKeyJSONValue"
+		return nil
+	} else {
+		u.variant_MapStringKeyJSONValue = nil
+	}
+
+	return fmt.Errorf("invalid union variant: %s", string(data))
+}
+
+func Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString__NewInt(v int64) Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString {
+
+	return Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString{
+		variant:     "Int",
+		variant_Int: &v,
+	}
+}
+
+func (u *Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString) SetInt(v int64) {
+
+	u.variant = "Int"
+	u.variant_Int = &v
+
+	u.variant_String = nil
+
+	u.variant_Bool = nil
+
+	u.variant_ListJSON = nil
+
+	u.variant_MapStringKeyJSONValue = nil
+
+}
+
+func (u *Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString) IsInt() bool {
+	return u.variant == "Int"
+}
+
+func (u *Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString) AsInt() *int64 {
+	if u.variant != "Int" {
+		return nil
+	}
+	return u.variant_Int
+}
+
+func Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString__NewString(v string) Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString {
+
+	return Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString{
+		variant:        "String",
+		variant_String: &v,
+	}
+}
+
+func (u *Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString) SetString(v string) {
+
+	u.variant = "String"
+	u.variant_String = &v
+
+	u.variant_Int = nil
+
+	u.variant_Bool = nil
+
+	u.variant_ListJSON = nil
+
+	u.variant_MapStringKeyJSONValue = nil
+
+}
+
+func (u *Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString) IsString() bool {
+	return u.variant == "String"
+}
+
+func (u *Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString) AsString() *string {
+	if u.variant != "String" {
+		return nil
+	}
+	return u.variant_String
+}
+
+func Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString__NewBool(v bool) Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString {
+
+	return Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString{
+		variant:      "Bool",
+		variant_Bool: &v,
+	}
+}
+
+func (u *Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString) SetBool(v bool) {
+
+	u.variant = "Bool"
+	u.variant_Bool = &v
+
+	u.variant_Int = nil
+
+	u.variant_String = nil
+
+	u.variant_ListJSON = nil
+
+	u.variant_MapStringKeyJSONValue = nil
+
+}
+
+func (u *Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString) IsBool() bool {
+	return u.variant == "Bool"
+}
+
+func (u *Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString) AsBool() *bool {
+	if u.variant != "Bool" {
+		return nil
+	}
+	return u.variant_Bool
+}
+
+func Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString__NewListJSON(v []JSON) Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString {
+
+	return Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString{
+		variant:          "ListJSON",
+		variant_ListJSON: &v,
+	}
+}
+
+func (u *Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString) SetListJSON(v []JSON) {
+
+	u.variant = "ListJSON"
+	u.variant_ListJSON = &v
+
+	u.variant_Int = nil
+
+	u.variant_String = nil
+
+	u.variant_Bool = nil
+
+	u.variant_MapStringKeyJSONValue = nil
+
+}
+
+func (u *Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString) IsListJSON() bool {
+	return u.variant == "ListJSON"
+}
+
+func (u *Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString) AsListJSON() *[]JSON {
+	if u.variant != "ListJSON" {
+		return nil
+	}
+	return u.variant_ListJSON
+}
+
+func Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString__NewMapStringKeyJSONValue(v map[string]JSON) Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString {
+
+	return Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString{
+		variant:                       "MapStringKeyJSONValue",
+		variant_MapStringKeyJSONValue: &v,
+	}
+}
+
+func (u *Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString) SetMapStringKeyJSONValue(v map[string]JSON) {
+
+	u.variant = "MapStringKeyJSONValue"
+	u.variant_MapStringKeyJSONValue = &v
+
+	u.variant_Int = nil
+
+	u.variant_String = nil
+
+	u.variant_Bool = nil
+
+	u.variant_ListJSON = nil
+
+}
+
+func (u *Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString) IsMapStringKeyJSONValue() bool {
+	return u.variant == "MapStringKeyJSONValue"
+}
+
+func (u *Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString) AsMapStringKeyJSONValue() *map[string]JSON {
+	if u.variant != "MapStringKeyJSONValue" {
+		return nil
+	}
+	return u.variant_MapStringKeyJSONValue
+}
+
+type Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString struct {
+	variant string
+
+	variant_Int *int64
+
+	variant_Float *float64
+
+	variant_Bool *bool
+
+	variant_String *string
+
+	variant_ListJsonValue *[]JsonValue
+
+	variant_MapStringKeyJsonValueValue *map[string]JsonValue
+}
+
+func (u *Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString) Decode(holder *cffi.CFFIValueUnionVariant, typeMap baml.TypeMap) {
+	valueHolder := holder.Value
+	variantName := holder.ValueOptionName
+	switch variantName {
+	case "int":
+		u.variant = "Int"
+		value := baml.Decode(valueHolder).Int()
+		u.variant_Int = &value
+	case "float":
+		u.variant = "Float"
+		value := baml.Decode(valueHolder).Float()
+		u.variant_Float = &value
+	case "bool":
+		u.variant = "Bool"
+		value := baml.Decode(valueHolder).Bool()
+		u.variant_Bool = &value
+	case "string":
+		u.variant = "String"
+		value := baml.Decode(valueHolder).Interface().(string)
+		u.variant_String = &value
+	case "List__JsonValue":
+		u.variant = "ListJsonValue"
+		value := baml.Decode(valueHolder).Interface().([]JsonValue)
+		u.variant_ListJsonValue = &value
+	case "Map__string_JsonValue":
+		u.variant = "MapStringKeyJsonValueValue"
+		value := baml.Decode(valueHolder).Interface().(map[string]JsonValue)
+		u.variant_MapStringKeyJsonValueValue = &value
+
+	default:
+		panic(fmt.Sprintf("invalid union variant: %s", variantName))
+	}
+}
+
+func (u Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString) Encode() (*cffi.HostValue, error) {
+	switch u.variant {
+
+	case "Int":
+		return baml.EncodeValue(*u.variant_Int)
+
+	case "Float":
+		return baml.EncodeValue(*u.variant_Float)
+
+	case "Bool":
+		return baml.EncodeValue(*u.variant_Bool)
+
+	case "String":
+		return baml.EncodeValue(*u.variant_String)
+
+	case "ListJsonValue":
+		return baml.EncodeValue(*u.variant_ListJsonValue)
+
+	case "MapStringKeyJsonValueValue":
+		return baml.EncodeValue(*u.variant_MapStringKeyJsonValueValue)
+
+	case "":
+		return nil, fmt.Errorf("invalid union variant: [unset]")
+	}
+
+	return nil, fmt.Errorf("invalid union variant: %s", u.variant)
+}
+
+func (u Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString) BamlTypeName() string {
+	return "Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString"
+}
+
+func (u Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString) MarshalJSON() ([]byte, error) {
+	switch u.variant {
+
+	case "Int":
+		return json.Marshal(u.variant_Int)
+
+	case "Float":
+		return json.Marshal(u.variant_Float)
+
+	case "Bool":
+		return json.Marshal(u.variant_Bool)
+
+	case "String":
+		return json.Marshal(u.variant_String)
+
+	case "ListJsonValue":
+		return json.Marshal(u.variant_ListJsonValue)
+
+	case "MapStringKeyJsonValueValue":
+		return json.Marshal(u.variant_MapStringKeyJsonValueValue)
+
+	}
+
+	return nil, fmt.Errorf("invalid union variant: %s", u.variant)
+}
+
+func (u *Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString) UnmarshalJSON(data []byte) error {
+	var err error
+
+	err = json.Unmarshal(data, &u.variant_Int)
+	if err == nil {
+		u.variant = "Int"
+		return nil
+	} else {
+		u.variant_Int = nil
+	}
+
+	err = json.Unmarshal(data, &u.variant_Float)
+	if err == nil {
+		u.variant = "Float"
+		return nil
+	} else {
+		u.variant_Float = nil
+	}
+
+	err = json.Unmarshal(data, &u.variant_Bool)
+	if err == nil {
+		u.variant = "Bool"
+		return nil
+	} else {
+		u.variant_Bool = nil
+	}
+
+	err = json.Unmarshal(data, &u.variant_String)
+	if err == nil {
+		u.variant = "String"
+		return nil
+	} else {
+		u.variant_String = nil
+	}
+
+	err = json.Unmarshal(data, &u.variant_ListJsonValue)
+	if err == nil {
+		u.variant = "ListJsonValue"
+		return nil
+	} else {
+		u.variant_ListJsonValue = nil
+	}
+
+	err = json.Unmarshal(data, &u.variant_MapStringKeyJsonValueValue)
+	if err == nil {
+		u.variant = "MapStringKeyJsonValueValue"
+		return nil
+	} else {
+		u.variant_MapStringKeyJsonValueValue = nil
+	}
+
+	return fmt.Errorf("invalid union variant: %s", string(data))
+}
+
+func Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString__NewInt(v int64) Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString {
+
+	return Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString{
+		variant:     "Int",
+		variant_Int: &v,
+	}
+}
+
+func (u *Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString) SetInt(v int64) {
+
+	u.variant = "Int"
+	u.variant_Int = &v
+
+	u.variant_Float = nil
+
+	u.variant_Bool = nil
+
+	u.variant_String = nil
+
+	u.variant_ListJsonValue = nil
+
+	u.variant_MapStringKeyJsonValueValue = nil
+
+}
+
+func (u *Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString) IsInt() bool {
+	return u.variant == "Int"
+}
+
+func (u *Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString) AsInt() *int64 {
+	if u.variant != "Int" {
+		return nil
+	}
+	return u.variant_Int
+}
+
+func Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString__NewFloat(v float64) Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString {
+
+	return Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString{
+		variant:       "Float",
+		variant_Float: &v,
+	}
+}
+
+func (u *Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString) SetFloat(v float64) {
+
+	u.variant = "Float"
+	u.variant_Float = &v
+
+	u.variant_Int = nil
+
+	u.variant_Bool = nil
+
+	u.variant_String = nil
+
+	u.variant_ListJsonValue = nil
+
+	u.variant_MapStringKeyJsonValueValue = nil
+
+}
+
+func (u *Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString) IsFloat() bool {
+	return u.variant == "Float"
+}
+
+func (u *Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString) AsFloat() *float64 {
+	if u.variant != "Float" {
+		return nil
+	}
+	return u.variant_Float
+}
+
+func Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString__NewBool(v bool) Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString {
+
+	return Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString{
+		variant:      "Bool",
+		variant_Bool: &v,
+	}
+}
+
+func (u *Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString) SetBool(v bool) {
+
+	u.variant = "Bool"
+	u.variant_Bool = &v
+
+	u.variant_Int = nil
+
+	u.variant_Float = nil
+
+	u.variant_String = nil
+
+	u.variant_ListJsonValue = nil
+
+	u.variant_MapStringKeyJsonValueValue = nil
+
+}
+
+func (u *Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString) IsBool() bool {
+	return u.variant == "Bool"
+}
+
+func (u *Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString) AsBool() *bool {
+	if u.variant != "Bool" {
+		return nil
+	}
+	return u.variant_Bool
+}
+
+func Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString__NewString(v string) Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString {
+
+	return Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString{
+		variant:        "String",
+		variant_String: &v,
+	}
+}
+
+func (u *Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString) SetString(v string) {
+
+	u.variant = "String"
+	u.variant_String = &v
+
+	u.variant_Int = nil
+
+	u.variant_Float = nil
+
+	u.variant_Bool = nil
+
+	u.variant_ListJsonValue = nil
+
+	u.variant_MapStringKeyJsonValueValue = nil
+
+}
+
+func (u *Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString) IsString() bool {
+	return u.variant == "String"
+}
+
+func (u *Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString) AsString() *string {
+	if u.variant != "String" {
+		return nil
+	}
+	return u.variant_String
+}
+
+func Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString__NewListJsonValue(v []JsonValue) Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString {
+
+	return Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString{
+		variant:               "ListJsonValue",
+		variant_ListJsonValue: &v,
+	}
+}
+
+func (u *Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString) SetListJsonValue(v []JsonValue) {
+
+	u.variant = "ListJsonValue"
+	u.variant_ListJsonValue = &v
+
+	u.variant_Int = nil
+
+	u.variant_Float = nil
+
+	u.variant_Bool = nil
+
+	u.variant_String = nil
+
+	u.variant_MapStringKeyJsonValueValue = nil
+
+}
+
+func (u *Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString) IsListJsonValue() bool {
+	return u.variant == "ListJsonValue"
+}
+
+func (u *Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString) AsListJsonValue() *[]JsonValue {
+	if u.variant != "ListJsonValue" {
+		return nil
+	}
+	return u.variant_ListJsonValue
+}
+
+func Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString__NewMapStringKeyJsonValueValue(v map[string]JsonValue) Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString {
+
+	return Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString{
+		variant:                            "MapStringKeyJsonValueValue",
+		variant_MapStringKeyJsonValueValue: &v,
+	}
+}
+
+func (u *Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString) SetMapStringKeyJsonValueValue(v map[string]JsonValue) {
+
+	u.variant = "MapStringKeyJsonValueValue"
+	u.variant_MapStringKeyJsonValueValue = &v
+
+	u.variant_Int = nil
+
+	u.variant_Float = nil
+
+	u.variant_Bool = nil
+
+	u.variant_String = nil
+
+	u.variant_ListJsonValue = nil
+
+}
+
+func (u *Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString) IsMapStringKeyJsonValueValue() bool {
+	return u.variant == "MapStringKeyJsonValueValue"
+}
+
+func (u *Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString) AsMapStringKeyJsonValueValue() *map[string]JsonValue {
+	if u.variant != "MapStringKeyJsonValueValue" {
+		return nil
+	}
+	return u.variant_MapStringKeyJsonValueValue
+}

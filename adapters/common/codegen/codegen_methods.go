@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"slices"
@@ -87,6 +88,37 @@ func (me *methodEmitter) finalResultTypeCode() jen.Code {
 		return st.Clone()
 	}
 	return me.finalResultType
+}
+
+// jsonUnmarshalerType is the interface a generated TAGGED-UNION carrier (BAML's
+// types.JSON — a recursive structural-alias return, Union5.../Union6...) implements via
+// its generated UnmarshalJSON, while a flat or recursive CLASS carrier and a scalar
+// return do NOT (classes/scalars use encoding/json's default reflection decode). It is
+// the generate-time signal [finalResultDecoderName] uses to route the recursive-alias
+// return through the NARROW alias decoder.
+var jsonUnmarshalerType = reflect.TypeOf((*json.Unmarshaler)(nil)).Elem()
+
+// finalResultDecoderName selects the bamlutils static-final decoder for this method's
+// return: DecodeStaticAliasFinal for a recursive-alias UNION carrier (detected by its
+// custom UnmarshalJSON), else the generic DecodeStaticFinal. Keeping the alias on a
+// distinct, separately-proven decoder is what stops the generic decoder's proof set
+// (scalars / flat classes / recursive-class pointer carriers) from being silently
+// widened to aliases/unions/ordered-maps (de-BAML Phase 3a).
+func (me *methodEmitter) finalResultDecoderName() string {
+	if me.syncFuncType != nil && me.syncFuncType.NumOut() >= 1 {
+		out := me.syncFuncType.Out(0)
+		if out.Kind() == reflect.Interface {
+			return "DecodeStaticFinal"
+		}
+		// A value union (JSON -> Union5, UnmarshalJSON on *Union5) is caught by
+		// PointerTo(out); a NULLABLE alias (JsonValue -> *Union6, UnmarshalJSON on the
+		// pointer type itself) is caught by out. A nullable CLASS (*Node / *StaticAnswer)
+		// implements neither (classes carry no custom JSON methods), so it stays generic.
+		if out.Implements(jsonUnmarshalerType) || reflect.PointerTo(out).Implements(jsonUnmarshalerType) {
+			return "DecodeStaticAliasFinal"
+		}
+	}
+	return "DecodeStaticFinal"
 }
 
 // newMethodEmitter validates the method's reflect signature and (on

@@ -1176,7 +1176,7 @@ func (me *methodEmitter) emitBuildCallRequest() {
 		decodeFinalClosure := func() jen.Code {
 			return jen.Func().Params(jen.Id("__cj").Index().Byte()).Params(jen.Any(), jen.Error()).Block(
 				jen.List(jen.Id("__dv"), jen.Id("__de")).Op(":=").
-					Qual(g.pkgs.InterfacesPkg, "DecodeStaticFinal").Index(me.finalResultTypeCode()).Call(jen.Id("__cj")),
+					Qual(g.pkgs.InterfacesPkg, me.finalResultDecoderName()).Index(me.finalResultTypeCode()).Call(jen.Id("__cj")),
 				jen.Return(jen.Id("__dv"), jen.Id("__de")),
 			)
 		}

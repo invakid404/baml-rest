@@ -260,6 +260,100 @@ func (*parse) StaticRecursiveA(text string, opts ...CallOptionFunc) (types.A, er
 	return casted, nil
 }
 
+// / Parse version of StaticRecursiveAliasJSON (Takes in string and returns types.JSON)
+func (*parse) StaticRecursiveAliasJSON(text string, opts ...CallOptionFunc) (types.JSON, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticRecursiveAliasJSON: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "StaticRecursiveAliasJSON", encoded)
+	if err != nil {
+		return types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString{}, err
+	}
+
+	casted := (result).(types.JSON)
+
+	return casted, nil
+}
+
+// / Parse version of StaticRecursiveAliasJsonValue (Takes in string and returns types.JsonValue)
+func (*parse) StaticRecursiveAliasJsonValue(text string, opts ...CallOptionFunc) (types.JsonValue, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticRecursiveAliasJsonValue: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "StaticRecursiveAliasJsonValue", encoded)
+	if err != nil {
+		return nil, err
+	}
+
+	casted := (result).(types.JsonValue)
+
+	return casted, nil
+}
+
 // / Parse version of StaticRecursiveB (Takes in string and returns types.B)
 func (*parse) StaticRecursiveB(text string, opts ...CallOptionFunc) (types.B, error) {
 

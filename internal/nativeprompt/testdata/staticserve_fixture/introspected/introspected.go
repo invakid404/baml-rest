@@ -18,49 +18,49 @@ import (
 var Stream = bamlclient.Stream
 
 // StreamMethods is a map from method name to argument names
-var StreamMethods = map[string][]string{"StaticCompletion": []string{"topic"}, "StaticCompletionOutputFormat": []string{"topic"}, "StaticOutputFormat": []string{"topic"}, "StaticPrimitiveArgs": []string{"text", "count", "ratio", "flag"}, "StaticRecursiveA": []string{"topic"}, "StaticRecursiveB": []string{"topic"}, "StaticRecursiveLoop": []string{"topic"}, "StaticRecursiveNode": []string{"topic"}, "StaticRecursiveNodeAnn": []string{"topic"}, "StaticRoleChat": []string{"topic", "count"}}
+var StreamMethods = map[string][]string{"StaticCompletion": []string{"topic"}, "StaticCompletionOutputFormat": []string{"topic"}, "StaticOutputFormat": []string{"topic"}, "StaticPrimitiveArgs": []string{"text", "count", "ratio", "flag"}, "StaticRecursiveA": []string{"topic"}, "StaticRecursiveAliasJSON": []string{"topic"}, "StaticRecursiveAliasJsonValue": []string{"topic"}, "StaticRecursiveB": []string{"topic"}, "StaticRecursiveLoop": []string{"topic"}, "StaticRecursiveNode": []string{"topic"}, "StaticRecursiveNodeAnn": []string{"topic"}, "StaticRoleChat": []string{"topic", "count"}}
 
 // SyncMethods maps sync function names to their argument names
-var SyncMethods = map[string][]string{"StaticCompletion": []string{"topic"}, "StaticCompletionOutputFormat": []string{"topic"}, "StaticOutputFormat": []string{"topic"}, "StaticPrimitiveArgs": []string{"text", "count", "ratio", "flag"}, "StaticRecursiveA": []string{"topic"}, "StaticRecursiveB": []string{"topic"}, "StaticRecursiveLoop": []string{"topic"}, "StaticRecursiveNode": []string{"topic"}, "StaticRecursiveNodeAnn": []string{"topic"}, "StaticRoleChat": []string{"topic", "count"}}
+var SyncMethods = map[string][]string{"StaticCompletion": []string{"topic"}, "StaticCompletionOutputFormat": []string{"topic"}, "StaticOutputFormat": []string{"topic"}, "StaticPrimitiveArgs": []string{"text", "count", "ratio", "flag"}, "StaticRecursiveA": []string{"topic"}, "StaticRecursiveAliasJSON": []string{"topic"}, "StaticRecursiveAliasJsonValue": []string{"topic"}, "StaticRecursiveB": []string{"topic"}, "StaticRecursiveLoop": []string{"topic"}, "StaticRecursiveNode": []string{"topic"}, "StaticRecursiveNodeAnn": []string{"topic"}, "StaticRoleChat": []string{"topic", "count"}}
 
 // SyncFuncs maps sync function names to their function values (for reflection)
-var SyncFuncs = map[string]any{"StaticCompletion": bamlclient.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.StaticCompletionOutputFormat, "StaticOutputFormat": bamlclient.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.StaticRecursiveA, "StaticRecursiveB": bamlclient.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.StaticRecursiveNode, "StaticRecursiveNodeAnn": bamlclient.StaticRecursiveNodeAnn, "StaticRoleChat": bamlclient.StaticRoleChat}
+var SyncFuncs = map[string]any{"StaticCompletion": bamlclient.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.StaticCompletionOutputFormat, "StaticOutputFormat": bamlclient.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.StaticRecursiveA, "StaticRecursiveAliasJSON": bamlclient.StaticRecursiveAliasJSON, "StaticRecursiveAliasJsonValue": bamlclient.StaticRecursiveAliasJsonValue, "StaticRecursiveB": bamlclient.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.StaticRecursiveNode, "StaticRecursiveNodeAnn": bamlclient.StaticRecursiveNodeAnn, "StaticRoleChat": bamlclient.StaticRoleChat}
 
 // Parse is the parse API for parsing raw LLM responses into final types
 var Parse = bamlclient.Parse
 
 // ParseMethods is a set of method names available on Parse
-var ParseMethods = map[string]struct{}{"StaticCompletion": {}, "StaticCompletionOutputFormat": {}, "StaticOutputFormat": {}, "StaticPrimitiveArgs": {}, "StaticRecursiveA": {}, "StaticRecursiveB": {}, "StaticRecursiveLoop": {}, "StaticRecursiveNode": {}, "StaticRecursiveNodeAnn": {}, "StaticRoleChat": {}}
+var ParseMethods = map[string]struct{}{"StaticCompletion": {}, "StaticCompletionOutputFormat": {}, "StaticOutputFormat": {}, "StaticPrimitiveArgs": {}, "StaticRecursiveA": {}, "StaticRecursiveAliasJSON": {}, "StaticRecursiveAliasJsonValue": {}, "StaticRecursiveB": {}, "StaticRecursiveLoop": {}, "StaticRecursiveNode": {}, "StaticRecursiveNodeAnn": {}, "StaticRoleChat": {}}
 
 // ParseStream is the parse_stream API for parsing raw LLM responses into partial/stream types
 var ParseStream = bamlclient.ParseStream
 
 // ParseStreamMethods is a set of method names available on ParseStream
-var ParseStreamMethods = map[string]struct{}{"StaticCompletion": {}, "StaticCompletionOutputFormat": {}, "StaticOutputFormat": {}, "StaticPrimitiveArgs": {}, "StaticRecursiveA": {}, "StaticRecursiveB": {}, "StaticRecursiveLoop": {}, "StaticRecursiveNode": {}, "StaticRecursiveNodeAnn": {}, "StaticRoleChat": {}}
+var ParseStreamMethods = map[string]struct{}{"StaticCompletion": {}, "StaticCompletionOutputFormat": {}, "StaticOutputFormat": {}, "StaticPrimitiveArgs": {}, "StaticRecursiveA": {}, "StaticRecursiveAliasJSON": {}, "StaticRecursiveAliasJsonValue": {}, "StaticRecursiveB": {}, "StaticRecursiveLoop": {}, "StaticRecursiveNode": {}, "StaticRecursiveNodeAnn": {}, "StaticRoleChat": {}}
 
 // ParseStreamFuncs maps ParseStream method names to their function values (for reflection)
-var ParseStreamFuncs = map[string]any{"StaticCompletion": bamlclient.ParseStream.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.ParseStream.StaticCompletionOutputFormat, "StaticOutputFormat": bamlclient.ParseStream.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.ParseStream.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.ParseStream.StaticRecursiveA, "StaticRecursiveB": bamlclient.ParseStream.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.ParseStream.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.ParseStream.StaticRecursiveNode, "StaticRecursiveNodeAnn": bamlclient.ParseStream.StaticRecursiveNodeAnn, "StaticRoleChat": bamlclient.ParseStream.StaticRoleChat}
+var ParseStreamFuncs = map[string]any{"StaticCompletion": bamlclient.ParseStream.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.ParseStream.StaticCompletionOutputFormat, "StaticOutputFormat": bamlclient.ParseStream.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.ParseStream.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.ParseStream.StaticRecursiveA, "StaticRecursiveAliasJSON": bamlclient.ParseStream.StaticRecursiveAliasJSON, "StaticRecursiveAliasJsonValue": bamlclient.ParseStream.StaticRecursiveAliasJsonValue, "StaticRecursiveB": bamlclient.ParseStream.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.ParseStream.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.ParseStream.StaticRecursiveNode, "StaticRecursiveNodeAnn": bamlclient.ParseStream.StaticRecursiveNodeAnn, "StaticRoleChat": bamlclient.ParseStream.StaticRoleChat}
 
 // Request is the BAML Request singleton for building non-streaming HTTP requests
 var Request = bamlclient.Request
 
 // RequestFuncs maps Request method names to their function values (for reflection)
-var RequestFuncs = map[string]any{"StaticCompletion": bamlclient.Request.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.Request.StaticCompletionOutputFormat, "StaticOutputFormat": bamlclient.Request.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.Request.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.Request.StaticRecursiveA, "StaticRecursiveB": bamlclient.Request.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.Request.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.Request.StaticRecursiveNode, "StaticRecursiveNodeAnn": bamlclient.Request.StaticRecursiveNodeAnn, "StaticRoleChat": bamlclient.Request.StaticRoleChat}
+var RequestFuncs = map[string]any{"StaticCompletion": bamlclient.Request.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.Request.StaticCompletionOutputFormat, "StaticOutputFormat": bamlclient.Request.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.Request.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.Request.StaticRecursiveA, "StaticRecursiveAliasJSON": bamlclient.Request.StaticRecursiveAliasJSON, "StaticRecursiveAliasJsonValue": bamlclient.Request.StaticRecursiveAliasJsonValue, "StaticRecursiveB": bamlclient.Request.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.Request.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.Request.StaticRecursiveNode, "StaticRecursiveNodeAnn": bamlclient.Request.StaticRecursiveNodeAnn, "StaticRoleChat": bamlclient.Request.StaticRoleChat}
 
 // StreamRequest is the BAML StreamRequest singleton for building streaming HTTP requests
 var StreamRequest = bamlclient.StreamRequest
 
 // StreamRequestFuncs maps StreamRequest method names to their function values (for reflection)
-var StreamRequestFuncs = map[string]any{"StaticCompletion": bamlclient.StreamRequest.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.StreamRequest.StaticCompletionOutputFormat, "StaticOutputFormat": bamlclient.StreamRequest.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.StreamRequest.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.StreamRequest.StaticRecursiveA, "StaticRecursiveB": bamlclient.StreamRequest.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.StreamRequest.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.StreamRequest.StaticRecursiveNode, "StaticRecursiveNodeAnn": bamlclient.StreamRequest.StaticRecursiveNodeAnn, "StaticRoleChat": bamlclient.StreamRequest.StaticRoleChat}
+var StreamRequestFuncs = map[string]any{"StaticCompletion": bamlclient.StreamRequest.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.StreamRequest.StaticCompletionOutputFormat, "StaticOutputFormat": bamlclient.StreamRequest.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.StreamRequest.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.StreamRequest.StaticRecursiveA, "StaticRecursiveAliasJSON": bamlclient.StreamRequest.StaticRecursiveAliasJSON, "StaticRecursiveAliasJsonValue": bamlclient.StreamRequest.StaticRecursiveAliasJsonValue, "StaticRecursiveB": bamlclient.StreamRequest.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.StreamRequest.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.StreamRequest.StaticRecursiveNode, "StaticRecursiveNodeAnn": bamlclient.StreamRequest.StaticRecursiveNodeAnn, "StaticRoleChat": bamlclient.StreamRequest.StaticRoleChat}
 
 // SupportsWithClient is true when baml_client exposes WithClient(string) (BAML v0.219.0+)
 var SupportsWithClient = true
 
 // FunctionClient maps BAML function names to their default client name
-var FunctionClient = map[string]string{"StaticCompletion": "StaticOracleClient", "StaticCompletionOutputFormat": "StaticOracleClient", "StaticOutputFormat": "StaticOracleClient", "StaticPrimitiveArgs": "StaticOracleClient", "StaticRecursiveA": "StaticOracleClient", "StaticRecursiveB": "StaticOracleClient", "StaticRecursiveLoop": "StaticOracleClient", "StaticRecursiveNode": "StaticOracleClient", "StaticRecursiveNodeAnn": "StaticOracleClient", "StaticRoleChat": "StaticOracleClient"}
+var FunctionClient = map[string]string{"StaticCompletion": "StaticOracleClient", "StaticCompletionOutputFormat": "StaticOracleClient", "StaticOutputFormat": "StaticOracleClient", "StaticPrimitiveArgs": "StaticOracleClient", "StaticRecursiveA": "StaticOracleClient", "StaticRecursiveAliasJSON": "StaticOracleClient", "StaticRecursiveAliasJsonValue": "StaticOracleClient", "StaticRecursiveB": "StaticOracleClient", "StaticRecursiveLoop": "StaticOracleClient", "StaticRecursiveNode": "StaticOracleClient", "StaticRecursiveNodeAnn": "StaticOracleClient", "StaticRoleChat": "StaticOracleClient"}
 
 // FunctionProvider maps BAML function names to their default provider string
-var FunctionProvider = map[string]string{"StaticCompletion": "openai", "StaticCompletionOutputFormat": "openai", "StaticOutputFormat": "openai", "StaticPrimitiveArgs": "openai", "StaticRecursiveA": "openai", "StaticRecursiveB": "openai", "StaticRecursiveLoop": "openai", "StaticRecursiveNode": "openai", "StaticRecursiveNodeAnn": "openai", "StaticRoleChat": "openai"}
+var FunctionProvider = map[string]string{"StaticCompletion": "openai", "StaticCompletionOutputFormat": "openai", "StaticOutputFormat": "openai", "StaticPrimitiveArgs": "openai", "StaticRecursiveA": "openai", "StaticRecursiveAliasJSON": "openai", "StaticRecursiveAliasJsonValue": "openai", "StaticRecursiveB": "openai", "StaticRecursiveLoop": "openai", "StaticRecursiveNode": "openai", "StaticRecursiveNodeAnn": "openai", "StaticRoleChat": "openai"}
 
 // ClientProvider maps BAML client names to their provider strings
 var ClientProvider = map[string]string{"EmptyBodyClient": "openai", "EscapedModelClient": "openai", "RichBodyClient": "openai", "StaticOracleClient": "openai"}
@@ -527,6 +527,184 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				Kind: schemadescriptor.TypeClass,
 				Mode: schemadescriptor.NonStreaming,
 				Name: "A",
+			},
+			Version: 1,
+		},
+		Version: 2,
+	}
+}, "StaticRecursiveAliasJSON": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
+			Name: "topic",
+			Type: &bamlparser.TypeExpr{
+				Kind:      bamlparser.KindPrimitive,
+				Primitive: "string",
+				Span: bamlparser.Span{
+					Col:   42,
+					End:   5512,
+					Line:  134,
+					Start: 5506,
+				},
+			},
+		}},
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "http://127.0.0.1:17654/v1",
+				},
+			}},
+		},
+		Method:   "StaticRecursiveAliasJSON",
+		Prompt:   "\n    Summarize {{ topic }} as arbitrary JSON.\n    {{ ctx.output_format }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Method: "StaticRecursiveAliasJSON",
+			StructuralRecursiveAliases: []schemadescriptor.RecursiveAliasDef{schemadescriptor.RecursiveAliasDef{
+				Name: "JSON",
+				Target: schemadescriptor.Type{
+					Kind: schemadescriptor.TypeUnion,
+					Union: &schemadescriptor.UnionType{Variants: []schemadescriptor.Type{schemadescriptor.Type{
+						Kind:      schemadescriptor.TypePrimitive,
+						Primitive: schemadescriptor.PrimitiveInt,
+					}, schemadescriptor.Type{
+						Kind:      schemadescriptor.TypePrimitive,
+						Primitive: schemadescriptor.PrimitiveString,
+					}, schemadescriptor.Type{
+						Kind:      schemadescriptor.TypePrimitive,
+						Primitive: schemadescriptor.PrimitiveBool,
+					}, schemadescriptor.Type{
+						Elem: &schemadescriptor.Type{
+							Kind: schemadescriptor.TypeRecursiveAlias,
+							Mode: schemadescriptor.NonStreaming,
+							Name: "JSON",
+						},
+						Kind: schemadescriptor.TypeList,
+					}, schemadescriptor.Type{
+						Key: &schemadescriptor.Type{
+							Kind:      schemadescriptor.TypePrimitive,
+							Primitive: schemadescriptor.PrimitiveString,
+						},
+						Kind: schemadescriptor.TypeMap,
+						Value: &schemadescriptor.Type{
+							Kind: schemadescriptor.TypeRecursiveAlias,
+							Mode: schemadescriptor.NonStreaming,
+							Name: "JSON",
+						},
+					}}},
+				},
+			}},
+			Target: schemadescriptor.Type{
+				Kind: schemadescriptor.TypeRecursiveAlias,
+				Mode: schemadescriptor.NonStreaming,
+				Name: "JSON",
+			},
+			Version: 1,
+		},
+		Version: 2,
+	}
+}, "StaticRecursiveAliasJsonValue": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
+			Name: "topic",
+			Type: &bamlparser.TypeExpr{
+				Kind:      bamlparser.KindPrimitive,
+				Primitive: "string",
+				Span: bamlparser.Span{
+					Col:   47,
+					End:   6023,
+					Line:  146,
+					Start: 6017,
+				},
+			},
+		}},
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "http://127.0.0.1:17654/v1",
+				},
+			}},
+		},
+		Method:   "StaticRecursiveAliasJsonValue",
+		Prompt:   "\n    Summarize {{ topic }} as arbitrary JSON (wide).\n    {{ ctx.output_format }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Method: "StaticRecursiveAliasJsonValue",
+			StructuralRecursiveAliases: []schemadescriptor.RecursiveAliasDef{schemadescriptor.RecursiveAliasDef{
+				Name: "JsonValue",
+				Target: schemadescriptor.Type{
+					Kind: schemadescriptor.TypeUnion,
+					Union: &schemadescriptor.UnionType{
+						Nullable: true,
+						Variants: []schemadescriptor.Type{schemadescriptor.Type{
+							Kind:      schemadescriptor.TypePrimitive,
+							Primitive: schemadescriptor.PrimitiveInt,
+						}, schemadescriptor.Type{
+							Kind:      schemadescriptor.TypePrimitive,
+							Primitive: schemadescriptor.PrimitiveFloat,
+						}, schemadescriptor.Type{
+							Kind:      schemadescriptor.TypePrimitive,
+							Primitive: schemadescriptor.PrimitiveBool,
+						}, schemadescriptor.Type{
+							Kind:      schemadescriptor.TypePrimitive,
+							Primitive: schemadescriptor.PrimitiveString,
+						}, schemadescriptor.Type{
+							Elem: &schemadescriptor.Type{
+								Kind: schemadescriptor.TypeRecursiveAlias,
+								Mode: schemadescriptor.NonStreaming,
+								Name: "JsonValue",
+							},
+							Kind: schemadescriptor.TypeList,
+						}, schemadescriptor.Type{
+							Key: &schemadescriptor.Type{
+								Kind:      schemadescriptor.TypePrimitive,
+								Primitive: schemadescriptor.PrimitiveString,
+							},
+							Kind: schemadescriptor.TypeMap,
+							Value: &schemadescriptor.Type{
+								Kind: schemadescriptor.TypeRecursiveAlias,
+								Mode: schemadescriptor.NonStreaming,
+								Name: "JsonValue",
+							},
+						}},
+					},
+				},
+			}},
+			Target: schemadescriptor.Type{
+				Kind: schemadescriptor.TypeRecursiveAlias,
+				Mode: schemadescriptor.NonStreaming,
+				Name: "JsonValue",
 			},
 			Version: 1,
 		},

@@ -943,6 +943,15 @@ func SupportsNativeFinalBundle(bundle *schema.Bundle) error {
 	if bundle == nil {
 		return unsupported("nil bundle")
 	}
+	// De-BAML Phase 3a: classify the bundle against the narrow static-final
+	// recursive-ALIAS family FIRST (before the recursive-class profile and before the
+	// generic checkSupported). The fingerprint (the exact direct five-arm JSON alias)
+	// IS the complete cut-line — a value-neutral structural proof — so an admitted
+	// alias family needs no further support check; every other alias bundle falls
+	// through to checkSupported's blanket structural-recursive-alias decline unchanged.
+	if IsProvenRecursiveAliasStaticFamily(bundle) {
+		return nil
+	}
 	// De-BAML Phase 2: classify the bundle against the narrow static-final
 	// recursive-class family FIRST. An admitted family (self Node, mutual A<->B)
 	// runs the recursion-aware cut-line (recursive-class reject skipped, blanket

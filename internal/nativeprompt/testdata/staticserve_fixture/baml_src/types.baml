@@ -59,3 +59,19 @@ class NodeAnn {
   value string @stream.done
   next NodeAnn?
 }
+
+// De-BAML Phase 3a (recursive ALIASES) — the SERVED structural-recursive alias.
+// The EXACT five-arm direct JSON family the native static-final lane serves
+// byte-exact vs BAML v0.223: int | string | bool | JSON[] | map<string, JSON>.
+// One canonical `JSON` alias, list element = map value = the same bare `JSON`,
+// a bare string map key, exactly the five ordered non-null arms, NO float/null
+// arm. Its recursive list/map descendants are part of the served family.
+type JSON = int | string | bool | JSON[] | map<string, JSON>
+
+// The WIDER #583 residual: JsonValue adds a `float` arm plus an explicit `null`
+// arm (so the whole alias is nullable) and a distinct name. It is a DECLINED
+// oracle witness only — the served fingerprint (IsProvenRecursiveAliasStaticFamily)
+// DECLINES it, so native falls back to BAML with zero native sockets. Its
+// differential proves the null distinction: `JsonValue` null -> nil alias pointer,
+// where the served `JSON` null -> [] (the non-nullable list fallback).
+type JsonValue = int | float | bool | string | null | JsonValue[] | map<string, JsonValue>

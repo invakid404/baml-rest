@@ -638,6 +638,15 @@ func admittedStaticReturnShape(b *schema.Bundle) bool {
 	if b == nil {
 		return false
 	}
+	// De-BAML Phase 3a: the admitted structural-recursive-ALIAS family (the direct
+	// five-arm JSON alias) is served through the NARROW per-method alias
+	// materializer/decoder, gated by the SAME exact fingerprint the root-owned parser
+	// profile uses (debaml.IsProvenRecursiveAliasStaticFamily). Checked BEFORE the
+	// generic alias reject below so the served shape and the parser stay in exact
+	// lockstep; every OTHER alias bundle still declines at the reject.
+	if isProvenRecursiveAliasStaticReturn(b) {
+		return true
+	}
 	// Structural recursive aliases and enums stay declined (no proven decoder).
 	if len(b.StructuralRecursiveAliases) > 0 || len(b.Enums) > 0 {
 		return false
@@ -676,6 +685,17 @@ func admittedStaticReturnShape(b *schema.Bundle) bool {
 	default:
 		return false
 	}
+}
+
+// isProvenRecursiveAliasStaticReturn reports whether the lowered Return Bundle is
+// EXACTLY the direct five-arm JSON alias
+// (type JSON = int | string | bool | JSON[] | map<string, JSON>). It delegates to
+// debaml.IsProvenRecursiveAliasStaticFamily so the isolated nativeserve serve gate and
+// the root-owned parser profile stay in EXACT lockstep — a newly-added or wider alias
+// (the #583 JsonValue, a renamed/wrapped alias, a float/null arm) can never claim a
+// socket until it brings its own oracle rows and is intentionally admitted.
+func isProvenRecursiveAliasStaticReturn(b *schema.Bundle) bool {
+	return debaml.IsProvenRecursiveAliasStaticFamily(b)
 }
 
 // isProvenStaticStringScalar reports whether t is a bare, constraint-free primitive

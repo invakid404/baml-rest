@@ -496,6 +496,16 @@ func oracleCases() []oracleCase {
 		completionCase("StaticRecursiveLoop/one_field", "StaticRecursiveLoop",
 			map[string]any{"topic": "a loop"},
 			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticRecursiveLoop("a loop") }),
+		// De-BAML Phase 3a (recursive aliases): the served direct five-arm JSON alias and
+		// the wider declined-oracle JsonValue render as ordinary bare-ctx.output_format
+		// completions (the served fingerprint / decline distinction is a PARSE concern,
+		// tested in the separate recursive-alias differential, not this render oracle).
+		completionCase("StaticRecursiveAliasJSON/json", "StaticRecursiveAliasJSON",
+			map[string]any{"topic": "arbitrary json"},
+			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticRecursiveAliasJSON("arbitrary json") }),
+		completionCase("StaticRecursiveAliasJsonValue/jsonvalue", "StaticRecursiveAliasJsonValue",
+			map[string]any{"topic": "wide json"},
+			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticRecursiveAliasJsonValue("wide json") }),
 	}
 }
 

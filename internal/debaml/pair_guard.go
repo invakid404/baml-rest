@@ -30,67 +30,151 @@ import (
 // it needs NO depth cap. A nil *coerceCtx is an empty context (no active pairs), so a
 // leaf / stream / dynamic-final caller may pass nil.
 
-// pairFrame is one (ClassKey, value) entry on a path-local active set. Frames are
+// De-BAML Phase 3a (recursive aliases) extends the Phase-2 pair-guard to a TAGGED
+// identity so a recursive CLASS and a recursive ALIAS with the same spelling can
+// never collide on one active set: BAML keys the coerce/try_cast visited sets by the
+// pair (class-or-alias NAME string, value), and a class name and an alias name live
+// in the same string namespace only because BAML's IR guarantees they are distinct.
+// Native keeps them distinct STRUCTURALLY via pairKind so a future name overlap can
+// never merge a class frame with an alias frame.
+type pairKind uint8
+
+const (
+	pairKindClass pairKind = iota
+	pairKindAlias
+)
+
+// pairKey is the tagged (kind, identity) half of a pair-guard frame key. For a class
+// it carries the (name, mode) ClassKey; for a structural recursive alias it carries
+// the alias name (aliases have no streaming mode). The two never compare equal across
+// kinds because kind is part of the struct.
+type pairKey struct {
+	kind  pairKind
+	class schema.ClassKey // meaningful iff kind == pairKindClass
+	alias string          // meaningful iff kind == pairKindAlias
+}
+
+func classPairKey(k schema.ClassKey) pairKey { return pairKey{kind: pairKindClass, class: k} }
+func aliasPairKey(name string) pairKey       { return pairKey{kind: pairKindAlias, alias: name} }
+
+// pairFrame is one (pairKey, value) entry on a path-local active set. Frames are
 // immutable and chained parent-first.
 type pairFrame struct {
-	key  schema.ClassKey
+	key  pairKey
 	val  *value
 	prev *pairFrame
 }
 
 // coerceCtx carries the SEPARATE Class::coerce and Class::try_cast active pair sets
 // threaded through every final recursive descent. The two sets are independent: a
-// class visited on the coerce path does not block the same class on a try_cast path
-// and vice-versa, matching BAML's two ParsingContext sets.
+// class/alias visited on the coerce path does not block the same key on a try_cast
+// path and vice-versa, matching BAML's two ParsingContext sets.
+//
+// hint is BAML's ctx.union_variant_hint: the winning union-variant index carried from
+// the PREVIOUS array element to the next SIBLING (coerce_array's enter_scope_with_hint),
+// tried first by the union coercer. It is nil (no hint) everywhere EXCEPT an array's
+// sibling scope, and is RESET to nil by every ordinary enter_scope (map values, class
+// fields) AND by the class/alias pair entry (visit_class_value_pair), matching stock
+// BAML. The class family never sets it, so the 289/8C/Phase-2 paths are unaffected.
 type coerceCtx struct {
 	coerceChain  *pairFrame
 	tryCastChain *pairFrame
+	hint         *int
 }
 
-func (c *coerceCtx) coerceHas(key schema.ClassKey, v value) bool {
+func (c *coerceCtx) has(chain func(*coerceCtx) *pairFrame, key pairKey, v value) bool {
 	if c == nil {
 		return false
 	}
-	for f := c.coerceChain; f != nil; f = f.prev {
+	for f := chain(c); f != nil; f = f.prev {
 		if f.key == key && valueEqual(*f.val, v) {
 			return true
 		}
 	}
 	return false
+}
+
+func coerceChainOf(c *coerceCtx) *pairFrame  { return c.coerceChain }
+func tryCastChainOf(c *coerceCtx) *pairFrame { return c.tryCastChain }
+
+func (c *coerceCtx) coerceHas(key schema.ClassKey, v value) bool {
+	return c.has(coerceChainOf, classPairKey(key), v)
 }
 
 func (c *coerceCtx) tryCastHas(key schema.ClassKey, v value) bool {
-	if c == nil {
-		return false
-	}
-	for f := c.tryCastChain; f != nil; f = f.prev {
-		if f.key == key && valueEqual(*f.val, v) {
-			return true
-		}
-	}
-	return false
+	return c.has(tryCastChainOf, classPairKey(key), v)
 }
 
-// enterCoerce derives a CHILD context that adds (key, v) to the coerce set and
-// inherits the try_cast set unchanged. The parent is not mutated (path-local).
-func (c *coerceCtx) enterCoerce(key schema.ClassKey, v value) *coerceCtx {
-	var cc, tc *pairFrame
-	if c != nil {
-		cc, tc = c.coerceChain, c.tryCastChain
+// coerceHasAlias / tryCastHasAlias are the recursive-ALIAS twins of coerceHas /
+// tryCastHas: they check the tagged alias key (alias name, value) on the respective
+// active set.
+func (c *coerceCtx) coerceHasAlias(name string, v value) bool {
+	return c.has(coerceChainOf, aliasPairKey(name), v)
+}
+
+func (c *coerceCtx) tryCastHasAlias(name string, v value) bool {
+	return c.has(tryCastChainOf, aliasPairKey(name), v)
+}
+
+// chains returns the parent's two frame chains (nil-safe).
+func (c *coerceCtx) chains() (*pairFrame, *pairFrame) {
+	if c == nil {
+		return nil, nil
 	}
+	return c.coerceChain, c.tryCastChain
+}
+
+// enterCoerceKey derives a CHILD context that adds (key, v) to the coerce set,
+// inherits the try_cast set unchanged, and RESETS the hint (visit_class_value_pair
+// sets union_variant_hint to None). The parent is not mutated (path-local).
+func (c *coerceCtx) enterCoerceKey(key pairKey, v value) *coerceCtx {
+	cc, tc := c.chains()
 	vv := v
 	return &coerceCtx{coerceChain: &pairFrame{key: key, val: &vv, prev: cc}, tryCastChain: tc}
 }
 
-// enterTryCast derives a CHILD context that adds (key, v) to the try_cast set and
-// inherits the coerce set unchanged.
-func (c *coerceCtx) enterTryCast(key schema.ClassKey, v value) *coerceCtx {
-	var cc, tc *pairFrame
-	if c != nil {
-		cc, tc = c.coerceChain, c.tryCastChain
-	}
+// enterTryCastKey derives a CHILD context that adds (key, v) to the try_cast set,
+// inherits the coerce set unchanged, and RESETS the hint.
+func (c *coerceCtx) enterTryCastKey(key pairKey, v value) *coerceCtx {
+	cc, tc := c.chains()
 	vv := v
 	return &coerceCtx{coerceChain: cc, tryCastChain: &pairFrame{key: key, val: &vv, prev: tc}}
+}
+
+func (c *coerceCtx) enterCoerce(key schema.ClassKey, v value) *coerceCtx {
+	return c.enterCoerceKey(classPairKey(key), v)
+}
+
+func (c *coerceCtx) enterTryCast(key schema.ClassKey, v value) *coerceCtx {
+	return c.enterTryCastKey(classPairKey(key), v)
+}
+
+// enterCoerceAlias / enterTryCastAlias are the recursive-ALIAS twins: they add the
+// tagged alias pair to the respective active set (and reset the hint), matching
+// coerce_alias / try_cast_alias's visit_class_value_pair.
+func (c *coerceCtx) enterCoerceAlias(name string, v value) *coerceCtx {
+	return c.enterCoerceKey(aliasPairKey(name), v)
+}
+
+func (c *coerceCtx) enterTryCastAlias(name string, v value) *coerceCtx {
+	return c.enterTryCastKey(aliasPairKey(name), v)
+}
+
+// enterScope derives a CHILD context that inherits BOTH active sets unchanged and
+// RESETS the hint to nil — BAML's ParsingContext::enter_scope (map values, class
+// fields, the SingleToArray implied element). The two frame chains are shared by
+// pointer, so the child sees ancestor pairs but adds none.
+func (c *coerceCtx) enterScope() *coerceCtx {
+	cc, tc := c.chains()
+	return &coerceCtx{coerceChain: cc, tryCastChain: tc}
+}
+
+// enterScopeWithHint derives a CHILD context that inherits both active sets and
+// CARRIES the given union-variant hint — BAML's enter_scope_with_hint, used only for
+// the next array sibling. A nil hint is equivalent to enterScope.
+func (c *coerceCtx) enterScopeWithHint(hint *int) *coerceCtx {
+	cc, tc := c.chains()
+	return &coerceCtx{coerceChain: cc, tryCastChain: tc, hint: hint}
 }
 
 // valueEqual reports STRUCTURAL equality of two native jsonish values, INCLUDING
