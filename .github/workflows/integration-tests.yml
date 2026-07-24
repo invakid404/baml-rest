@@ -104,7 +104,7 @@ jobs:
         # cleanly on forks / when the secret is absent instead of running
         # login-action with empty credentials.
         if: ${{ env.DOCKERHUB_USERNAME != '' }}
-        uses: docker/login-action@v4.2.0
+        uses: docker/login-action@v4.5.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
