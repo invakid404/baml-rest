@@ -54,24 +54,11 @@ import (
 // structured response; the caller treats both like the response body and never logs
 // them.
 func DecodeStaticFinal[T any](canonicalJSON []byte) (T, error) {
-	var v T
-	dec := stdjson.NewDecoder(bytes.NewReader(canonicalJSON))
-	// Reject a field the concrete return type does not declare — BAML's CFFI Decode
-	// panics on an unexpected class field, so a strict rejection (rather than a silent
-	// drop) is the faithful analogue for the admitted class shapes.
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&v); err != nil {
-		return v, fmt.Errorf("bamlutils: decode static final: %w", err)
-	}
-	// Require a SINGLE JSON value: a trailing second value / non-whitespace is
-	// malformed input, never a silently-accepted first value.
-	if err := dec.Decode(new(stdjson.RawMessage)); err != io.EOF {
-		if err == nil {
-			return v, fmt.Errorf("bamlutils: decode static final: unexpected trailing JSON value")
-		}
-		return v, fmt.Errorf("bamlutils: decode static final: trailing content: %w", err)
-	}
-	return v, nil
+	// disallowUnknownFields=true: reject a field the concrete return type does not
+	// declare — BAML's CFFI Decode panics on an unexpected class field, so a strict
+	// rejection (rather than a silent drop) is the faithful analogue for the admitted
+	// class shapes.
+	return decodeStaticStrict[T](canonicalJSON, "bamlutils: decode static final", true)
 }
 
 // DecodeStaticAliasFinal is the de-BAML Phase 3a (recursive ALIASES) NARROW per-method
@@ -96,16 +83,76 @@ func DecodeStaticFinal[T any](canonicalJSON []byte) (T, error) {
 // structured response; the caller treats both like the response body and never logs
 // them.
 func DecodeStaticAliasFinal[T any](canonicalJSON []byte) (T, error) {
+	// disallowUnknownFields=false: the generated alias carrier is a tagged UNION with
+	// its own UnmarshalJSON (not a fixed-field struct), so a field allowlist is
+	// meaningless for it (and DisallowUnknownFields is ignored for a custom-Unmarshal
+	// type anyway) — see the doc comment above.
+	return decodeStaticStrict[T](canonicalJSON, "bamlutils: decode static alias final", false)
+}
+
+// DecodeStaticAliasStream is the de-BAML Phase 3b (recursive-alias STREAMING) NARROW
+// per-method decoder for the served alias's PARTIAL and final stream carrier. It is kept
+// SEPARATE from both [DecodeStaticFinal] (the generic proof set) and [DecodeStaticAliasFinal]
+// (the value-union FINAL carrier) so neither is widened by the stream lane.
+//
+// It is instantiated with the generated STREAM carrier stream_types.JSON — a POINTER union
+// (*Union5…), distinct from the value union types.JSON the final decoder uses. The native
+// static-stream SAP (debaml.ParseStaticStreamPartial / …Final) emits the SORTED-public
+// canonical bytes (json.Marshal of the equivalent Go value — sorted map keys + HTML
+// escaping), byte-identical to stock BAML v0.223's ParseStream.<Method> then json.Marshal;
+// this decode maps those bytes back to the concrete generated pointer union via its
+// generated UnmarshalJSON. Its byte/event-exactness is proven per admitted alias by the
+// strict per-prefix + SSE-replay differentials.
+//
+// TYPED-NIL: the generated result wrapper distinguishes a typed-nil stream_types.JSON (a
+// present-but-null partial) from an untyped nil (no event). For the served non-nullable
+// JSON alias every emitted partial is a concrete value, so a typed-nil never arises; a
+// `null` input would still decode to a typed-nil *Union5 here (never a decode error), which
+// the caller may forward as a present partial. It is a STRICT single-value decode (a
+// trailing second value is malformed).
+//
+// SENSITIVE: canonicalJSON is parsed provider output and T carries the model's full
+// structured response; the caller treats both like the response body and never logs them.
+func DecodeStaticAliasStream[T any](canonicalJSON []byte) (T, error) {
+	// disallowUnknownFields=false: the generated STREAM carrier is a POINTER union with
+	// its own UnmarshalJSON (not a fixed-field struct), same rationale as the alias
+	// final decoder above.
+	return decodeStaticStrict[T](canonicalJSON, "bamlutils: decode static alias stream", false)
+}
+
+// decodeStaticStrict is the shared strict-JSON-decode + trailing-EOF core that the three
+// exported per-lane static decoders ([DecodeStaticFinal], [DecodeStaticAliasFinal],
+// [DecodeStaticAliasStream]) delegate to; it is the SINGLE place the strict-decode contract
+// lives, so the three lanes cannot drift.
+//
+// It performs ONE strict decode of a SINGLE JSON value into T and then requires EOF: a
+// trailing second value / non-whitespace is malformed input, never a silently-accepted
+// first value.
+//
+// errPrefix is prepended to every error so each exported decoder keeps its OWN narrow error
+// strings byte-for-byte (`<prefix>: <cause>`, `<prefix>: unexpected trailing JSON value`,
+// `<prefix>: trailing content: <cause>`). disallowUnknownFields gates
+// DisallowUnknownFields: only [DecodeStaticFinal]'s class-shape proof set rejects an
+// unexpected field; the alias/union carriers dispatch their own UnmarshalJSON and cannot
+// meaningfully allowlist struct fields (and DisallowUnknownFields is ignored for a
+// custom-Unmarshal type regardless), so they pass false.
+//
+// SENSITIVE: canonicalJSON is parsed provider output and T carries the model's full
+// structured response; the caller treats both like the response body and never logs them.
+func decodeStaticStrict[T any](canonicalJSON []byte, errPrefix string, disallowUnknownFields bool) (T, error) {
 	var v T
 	dec := stdjson.NewDecoder(bytes.NewReader(canonicalJSON))
+	if disallowUnknownFields {
+		dec.DisallowUnknownFields()
+	}
 	if err := dec.Decode(&v); err != nil {
-		return v, fmt.Errorf("bamlutils: decode static alias final: %w", err)
+		return v, fmt.Errorf("%s: %w", errPrefix, err)
 	}
 	if err := dec.Decode(new(stdjson.RawMessage)); err != io.EOF {
 		if err == nil {
-			return v, fmt.Errorf("bamlutils: decode static alias final: unexpected trailing JSON value")
+			return v, fmt.Errorf("%s: unexpected trailing JSON value", errPrefix)
 		}
-		return v, fmt.Errorf("bamlutils: decode static alias final: trailing content: %w", err)
+		return v, fmt.Errorf("%s: trailing content: %w", errPrefix, err)
 	}
 	return v, nil
 }

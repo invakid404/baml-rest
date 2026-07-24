@@ -4,6 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
 	pkg "github.com/boundaryml/baml/engine/language_client_go/pkg"
 	goconcurrentqueue "github.com/enriquebris/goconcurrentqueue"
 	gorecovery "github.com/gregwebs/go-recovery"
@@ -17,11 +23,6 @@ import (
 	types "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/staticserve_fixture/baml_client/types"
 	adapter "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/staticserve_fixture/generated/adapter"
 	introspected "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/staticserve_fixture/introspected"
-	"slices"
-	"strings"
-	"sync"
-	"sync/atomic"
-	"time"
 )
 
 type StaticCompletionInput struct {
@@ -565,6 +566,18 @@ func staticCompletionBuildRequest(adapter bamlutils.Adapter, rawInput any, out c
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
+	}
+	__staticStreamServe := deBAMLStaticStreamServe(adapter)
+	if __staticStreamServe != nil {
+		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticCompletion"); __staticStreamOK {
+			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+				return __dv, __de
+			}, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+				return __dv, __de
+			})
+		}
 	}
 	go func() {
 		defer close(out)
@@ -1443,6 +1456,18 @@ func staticCompletionOutputFormatBuildRequest(adapter bamlutils.Adapter, rawInpu
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamServe := deBAMLStaticStreamServe(adapter)
+	if __staticStreamServe != nil {
+		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticCompletionOutputFormat"); __staticStreamOK {
+			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticAnswer](__cj)
+				return __dv, __de
+			}, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAnswer](__cj)
+				return __dv, __de
+			})
+		}
+	}
 	go func() {
 		defer close(out)
 		gorecovery.GoHandler(func(err error) {
@@ -2319,6 +2344,18 @@ func staticOutputFormatBuildRequest(adapter bamlutils.Adapter, rawInput any, out
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
+	}
+	__staticStreamServe := deBAMLStaticStreamServe(adapter)
+	if __staticStreamServe != nil {
+		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticOutputFormat"); __staticStreamOK {
+			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticAnswer](__cj)
+				return __dv, __de
+			}, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAnswer](__cj)
+				return __dv, __de
+			})
+		}
 	}
 	go func() {
 		defer close(out)
@@ -3199,6 +3236,23 @@ func staticPrimitiveArgsBuildRequest(adapter bamlutils.Adapter, rawInput any, ou
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
+	}
+	__staticStreamServe := deBAMLStaticStreamServe(adapter)
+	if __staticStreamServe != nil {
+		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticPrimitiveArgs"); __staticStreamOK {
+			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{
+				"count": input.Count,
+				"flag":  input.Flag,
+				"ratio": input.Ratio,
+				"text":  input.Text,
+			}, []string{"text", "count", "ratio", "flag"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+				return __dv, __de
+			}, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+				return __dv, __de
+			})
+		}
 	}
 	go func() {
 		defer close(out)
@@ -4087,6 +4141,18 @@ func staticRecursiveABuildRequest(adapter bamlutils.Adapter, rawInput any, out c
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamServe := deBAMLStaticStreamServe(adapter)
+	if __staticStreamServe != nil {
+		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRecursiveA"); __staticStreamOK {
+			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.A](__cj)
+				return __dv, __de
+			}, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticFinal[types.A](__cj)
+				return __dv, __de
+			})
+		}
+	}
 	go func() {
 		defer close(out)
 		gorecovery.GoHandler(func(err error) {
@@ -4963,6 +5029,18 @@ func staticRecursiveAliasJsonBuildRequest(adapter bamlutils.Adapter, rawInput an
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
+	}
+	__staticStreamServe := deBAMLStaticStreamServe(adapter)
+	if __staticStreamServe != nil {
+		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRecursiveAliasJSON"); __staticStreamOK {
+			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticAliasStream[*streamtypes.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
+				return __dv, __de
+			}, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticAliasFinal[types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
+				return __dv, __de
+			})
+		}
 	}
 	go func() {
 		defer close(out)
@@ -5841,6 +5919,18 @@ func staticRecursiveAliasJsonValueBuildRequest(adapter bamlutils.Adapter, rawInp
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamServe := deBAMLStaticStreamServe(adapter)
+	if __staticStreamServe != nil {
+		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRecursiveAliasJsonValue"); __staticStreamOK {
+			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticFinal[*streamtypes.Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString](__cj)
+				return __dv, __de
+			}, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticAliasFinal[*types.Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString](__cj)
+				return __dv, __de
+			})
+		}
+	}
 	go func() {
 		defer close(out)
 		gorecovery.GoHandler(func(err error) {
@@ -6717,6 +6807,18 @@ func staticRecursiveBBuildRequest(adapter bamlutils.Adapter, rawInput any, out c
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
+	}
+	__staticStreamServe := deBAMLStaticStreamServe(adapter)
+	if __staticStreamServe != nil {
+		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRecursiveB"); __staticStreamOK {
+			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.B](__cj)
+				return __dv, __de
+			}, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticFinal[types.B](__cj)
+				return __dv, __de
+			})
+		}
 	}
 	go func() {
 		defer close(out)
@@ -7595,6 +7697,18 @@ func staticRecursiveLoopBuildRequest(adapter bamlutils.Adapter, rawInput any, ou
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamServe := deBAMLStaticStreamServe(adapter)
+	if __staticStreamServe != nil {
+		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRecursiveLoop"); __staticStreamOK {
+			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.Loop](__cj)
+				return __dv, __de
+			}, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticFinal[types.Loop](__cj)
+				return __dv, __de
+			})
+		}
+	}
 	go func() {
 		defer close(out)
 		gorecovery.GoHandler(func(err error) {
@@ -8471,6 +8585,18 @@ func staticRecursiveNodeBuildRequest(adapter bamlutils.Adapter, rawInput any, ou
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
+	}
+	__staticStreamServe := deBAMLStaticStreamServe(adapter)
+	if __staticStreamServe != nil {
+		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRecursiveNode"); __staticStreamOK {
+			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.Node](__cj)
+				return __dv, __de
+			}, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticFinal[types.Node](__cj)
+				return __dv, __de
+			})
+		}
 	}
 	go func() {
 		defer close(out)
@@ -9349,6 +9475,18 @@ func staticRecursiveNodeAnnBuildRequest(adapter bamlutils.Adapter, rawInput any,
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamServe := deBAMLStaticStreamServe(adapter)
+	if __staticStreamServe != nil {
+		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRecursiveNodeAnn"); __staticStreamOK {
+			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.NodeAnn](__cj)
+				return __dv, __de
+			}, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticFinal[types.NodeAnn](__cj)
+				return __dv, __de
+			})
+		}
+	}
 	go func() {
 		defer close(out)
 		gorecovery.GoHandler(func(err error) {
@@ -10226,6 +10364,21 @@ func staticRoleChatBuildRequest(adapter bamlutils.Adapter, rawInput any, out cha
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
+	}
+	__staticStreamServe := deBAMLStaticStreamServe(adapter)
+	if __staticStreamServe != nil {
+		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRoleChat"); __staticStreamOK {
+			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{
+				"count": input.Count,
+				"topic": input.Topic,
+			}, []string{"topic", "count"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+				return __dv, __de
+			}, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+				return __dv, __de
+			})
+		}
 	}
 	go func() {
 		defer close(out)

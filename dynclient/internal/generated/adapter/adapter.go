@@ -129,6 +129,15 @@ type BamlAdapter struct {
 	// for every unsupported shape.
 	nativeStaticServe bamlutils.NativeStaticServeFunc
 
+	// nativeStaticStreamServe is the native STATIC STREAM SERVE implementation
+	// (de-BAML Phase 3b), injected by a SERVE-profile worker for the same
+	// module-boundary reason as nativeStaticServe. Non-nil ONLY in a serve worker
+	// with the flag on; nil in every default/flag-off build, leaving the generated
+	// static /stream serve seam nil/hard-off. It SERVES admitted static streams
+	// natively (one DoStream RoundTrip), declining pre-transport to BAML for every
+	// unsupported shape.
+	nativeStaticStreamServe bamlutils.NativeStaticStreamServeFunc
+
 	// nativeStaticShadow is the native STATIC Stage-1 SHADOW comparator
 	// (de-BAML Slice 8C), injected by a SHADOW-profile worker. Non-nil ONLY in
 	// a shadow worker with the flag on; nil in every default/serve/flag-off
@@ -331,6 +340,12 @@ func (b *BamlAdapter) SetNativeStaticServeComparator(fn bamlutils.NativeStaticSe
 }
 func (b *BamlAdapter) NativeStaticServeComparator() bamlutils.NativeStaticServeFunc {
 	return b.nativeStaticServe
+}
+func (b *BamlAdapter) SetNativeStaticStreamServeComparator(fn bamlutils.NativeStaticStreamServeFunc) {
+	b.nativeStaticStreamServe = fn
+}
+func (b *BamlAdapter) NativeStaticStreamServeComparator() bamlutils.NativeStaticStreamServeFunc {
+	return b.nativeStaticStreamServe
 }
 func (b *BamlAdapter) SetNativeStaticShadowComparator(fn bamlutils.NativeStaticShadowFunc) {
 	b.nativeStaticShadow = fn

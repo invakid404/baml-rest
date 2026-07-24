@@ -55,6 +55,38 @@ import (
 func Parse(ctx context.Context, req bamlutils.DeBAMLParseRequest) (bamlutils.DeBAMLParseResult, error) {
 	_ = ctx // M1 parsing is a local CPU operation; no cancellation points.
 
+	if req.StaticStreamDescriptor != nil {
+		// De-BAML Phase 3b: static-stream parse. Lower the descriptor's FINAL
+		// non-streaming Return Bundle (the STREAMING profile is derived internally by
+		// the static-stream entrypoints), then route to the partial or final closure.
+		// This reuses the existing DeBAMLParseFunc seam so the generated static-stream
+		// installer needs no new injected parse callback. For a bundle OUTSIDE the
+		// admitted alias family both entrypoints decline (SupportsNativeStaticStreamBundle
+		// is closed), so this returns the fallback sentinel and BAML serves.
+		//
+		// Lane selection mirrors the DeBAMLParseRequest contract (bamlutils/interfaces.go):
+		// StreamFinal → the native STREAM-FINAL parse (five-arm stream-family gate + BAML
+		// EOF object-completion); Stream → the native stream PARTIAL parse; NEITHER flag set
+		// → the ORDINARY non-stream final parse. The ordinary-final entrypoint is
+		// [ParseStaticBundle] (the final-family support gate, NO stream-final completion) —
+		// NOT [ParseStaticStreamFinal], whose narrow stream-family gate + completeUnclosedFinal
+		// EOF completion would wrongly decline an ordinary supported static-final shape (or
+		// accept an EOF completion an ordinary final would not). The generated installer always
+		// sets exactly one flag, so the both-false case is latent — but it must still honour the
+		// contract's ordinary-final semantics.
+		bundle, err := schema.FromStaticDescriptor(req.StaticStreamDescriptor.Return)
+		if err != nil {
+			return bamlutils.DeBAMLParseResult{}, unsupportedErr("lower static stream descriptor", err)
+		}
+		if req.StreamFinal {
+			return ParseStaticStreamFinal(ctx, bundle, req.Raw)
+		}
+		if req.Stream {
+			return ParseStaticStreamPartial(ctx, bundle, req.Raw)
+		}
+		return ParseStaticBundle(ctx, bundle, req.Raw)
+	}
+
 	if req.StreamFinal {
 		// De-BAML native STREAM FINAL (Phase 7D): the NATIVE-ONLY final parser for a
 		// completed native stream. It applies BAML's EOF object-completion and treats
