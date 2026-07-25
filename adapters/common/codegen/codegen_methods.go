@@ -52,6 +52,15 @@ type methodEmitter struct {
 	streamType      parsedReflectType
 	streamTypePtr   *jen.Statement
 	isDynamicStream bool
+	// streamOutType is the reflect.Type of the method's ParseStream return (the generated
+	// STREAM carrier, e.g. stream_types.JSON — a POINTER union). Used by
+	// streamResultDecoderName to route the recursive-alias stream through the narrow
+	// DecodeStaticAliasStream. When a method has no usable ParseStream func it FALLS BACK to
+	// the sync FINAL return type (newMethodEmitter below); it is nil only when neither a
+	// ParseStream nor a sync return type is available. The fallback is harmless: a final-lane
+	// value union (e.g. types.JSON) fails isAdmittedJSONAliasStreamCarrier's pointer check, so
+	// routing still yields the generic DecodeStaticFinal.
+	streamOutType reflect.Type
 
 	finalResultType jen.Code
 
@@ -88,6 +97,105 @@ func (me *methodEmitter) finalResultTypeCode() jen.Code {
 		return st.Clone()
 	}
 	return me.finalResultType
+}
+
+// streamResultTypeCode returns a FRESH clone of the method's STREAM result type
+// expression (the ParseStream return, e.g. stream_types.JSON). Mirrors
+// finalResultTypeCode; a single-use jennifer node must be cloned per rendered site.
+func (me *methodEmitter) streamResultTypeCode() jen.Code {
+	if me.streamType.statement != nil {
+		return me.streamType.statement.Clone()
+	}
+	return jen.Any()
+}
+
+// streamResultDecoderName selects the bamlutils static-STREAM PARTIAL decoder for this
+// method's ParseStream return: DecodeStaticAliasStream ONLY for the EXACT admitted five-arm
+// JSON stream carrier (stream_types.JSON — the *Union5 pointer union), else the generic
+// DecodeStaticFinal. It deliberately does NOT route on a bare json.Unmarshaler check (which
+// would also catch the wider StaticRecursiveAliasJsonValue *Union6 carrier): the narrow
+// alias-stream decoder is bound to the served fingerprint ONLY, so every other stream carrier
+// — the declined JsonValue, a scalar, a class — stays on its generic decoder (dead at runtime
+// on the decline path, but no longer mis-selected). It is the streaming twin of
+// finalResultDecoderName; keeping the alias on a distinct, separately-proven stream decoder
+// stops the generic decoder's proof set from being widened.
+func (me *methodEmitter) streamResultDecoderName() string {
+	if isAdmittedJSONAliasStreamCarrier(me.streamOutType) {
+		return "DecodeStaticAliasStream"
+	}
+	return "DecodeStaticFinal"
+}
+
+// isAdmittedJSONAliasStreamCarrier reports whether t is EXACTLY the admitted five-arm JSON
+// stream carrier: a POINTER to a tagged-union struct whose arms are precisely
+// {int64, string, bool, []JSON, map[string]JSON} — where the list element and map value both
+// reference the SAME pointer union recursively (JSON = *Union5…), the map key is string, and
+// there is NO other arm. It is a STRUCTURAL fingerprint (not a type-name match), so the wider
+// JsonValue carrier (*Union6…, which adds a float64 arm + a null-able alias) and every other
+// stream carrier are rejected. Mirrors the runtime debaml.IsProvenRecursiveAliasStaticStreamFamily
+// fingerprint at codegen time so the emitted decoder selection cannot drift from admission.
+func isAdmittedJSONAliasStreamCarrier(t reflect.Type) bool {
+	if t == nil || t.Kind() != reflect.Pointer {
+		return false
+	}
+	st := t.Elem()
+	if st.Kind() != reflect.Struct {
+		return false
+	}
+	var hasInt, hasStr, hasBool, hasList, hasMap bool
+	arms := 0
+	discriminators := 0
+	for i := 0; i < st.NumField(); i++ {
+		f := st.Field(i).Type
+		if f.Kind() == reflect.String {
+			// The single `variant` discriminator tag (not an arm). BOUND it to exactly one
+			// below so a carrier with the five arms PLUS a second string-kind field (a
+			// state/tag field, a `type MyTag string`) cannot silently widen this fingerprint.
+			discriminators++
+			continue
+		}
+		if f.Kind() != reflect.Pointer {
+			return false
+		}
+		switch e := f.Elem(); e.Kind() {
+		case reflect.Int64:
+			hasInt = true
+			arms++
+		case reflect.String:
+			hasStr = true
+			arms++
+		case reflect.Bool:
+			hasBool = true
+			arms++
+		case reflect.Slice:
+			if e.Elem() != t { // []JSON — element is the pointer union itself
+				return false
+			}
+			hasList = true
+			arms++
+		case reflect.Map:
+			if e.Key().Kind() != reflect.String || e.Elem() != t { // map[string]JSON
+				return false
+			}
+			hasMap = true
+			arms++
+		default:
+			return false // any other arm (e.g. a float64 arm → the wider JsonValue) → reject
+		}
+	}
+	// EXACTLY the five arms + EXACTLY one discriminator: the total field set is bounded, so no
+	// extra field of any kind can be present on an admitted carrier.
+	return discriminators == 1 && arms == 5 && hasInt && hasStr && hasBool && hasList && hasMap
+}
+
+// IsAdmittedJSONAliasStreamCarrier is the EXPORTED view of [isAdmittedJSONAliasStreamCarrier],
+// provided solely so a cross-package agreement test can pin this codegen-time fingerprint in
+// lockstep with the runtime debaml.IsProvenRecursiveAliasStaticStreamFamily predicate — the two
+// are independently-maintained implementations of the same admitted-shape contract, so a test
+// that drives BOTH over the same carriers turns silent drift (one updated, the other not) into a
+// CI failure. It has NO other callers; production code uses the unexported form.
+func IsAdmittedJSONAliasStreamCarrier(t reflect.Type) bool {
+	return isAdmittedJSONAliasStreamCarrier(t)
 }
 
 // jsonUnmarshalerType is the interface a generated TAGGED-UNION carrier (BAML's
@@ -258,6 +366,7 @@ func (me *methodEmitter) emitInputAndOutputStructs() {
 			me.streamType = parseReflectType(parseStreamFuncType.Out(0))
 			me.streamTypePtr = jen.Op("*").Add(me.streamType.statement.Clone())
 			me.isDynamicStream = hasDynamicPropertiesForType(parseStreamFuncType.Out(0))
+			me.streamOutType = parseStreamFuncType.Out(0)
 		}
 	}
 	// Fallback to final type if we couldn't get stream type
@@ -265,6 +374,9 @@ func (me *methodEmitter) emitInputAndOutputStructs() {
 		me.streamType = me.finalType
 		me.streamTypePtr = me.finalTypePtr
 		me.isDynamicStream = me.isDynamicFinal
+		if me.syncFuncType != nil && me.syncFuncType.NumOut() >= 1 {
+			me.streamOutType = me.syncFuncType.Out(0)
+		}
 	}
 
 	// Output struct holds: kind, raw LLM response, typed parsed values, error,

@@ -346,3 +346,174 @@ func installNativeStaticShadow(
 		return outcome
 	}
 }
+
+// nativeStaticStreamServeGetter is the STREAMING twin of nativeStaticServeGetter
+// (de-BAML Phase 3b): the narrow optional interface the adapter implements to expose the
+// installed native static STREAM SERVE implementation. Kept off bamlutils.Adapter.
+type nativeStaticStreamServeGetter interface {
+	NativeStaticStreamServeComparator() bamlutils.NativeStaticStreamServeFunc
+}
+
+// deBAMLStaticStreamParserGetter exposes the injected native parser, reused for the
+// static-stream partial/final parse via DeBAMLParseRequest.StaticStreamDescriptor (the
+// generated adapter cannot import internal/debaml, so the parse crosses the boundary as
+// this neutral DeBAMLParseFunc). It is a distinct interface name from the dynamic seam's
+// deBAMLParserGetter so both may coexist in one generated package.
+type deBAMLStaticStreamParserGetter interface {
+	DeBAMLParser() bamlutils.DeBAMLParseFunc
+}
+
+// deBAMLStaticStreamServe returns the installed native static STREAM serve implementation
+// when the de-BAML umbrella flag is on AND a serve callback is wired (a SERVE-profile
+// worker), else nil — the hard-off default that keeps every static stream byte-identical
+// BAML. The generated /stream seam checks this FIRST, so with the flag off (or no serve
+// callback) it never performs the StaticPromptDescriptor lookup or installs a native
+// stream attempt: the path is the byte-identical BAML path.
+func deBAMLStaticStreamServe(adapter bamlutils.Adapter) bamlutils.NativeStaticStreamServeFunc {
+	if !adapter.DeBAMLConfig().Enabled {
+		return nil
+	}
+	getter, ok := adapter.(nativeStaticStreamServeGetter)
+	if !ok {
+		return nil
+	}
+	return getter.NativeStaticStreamServeComparator()
+}
+
+// installNativeStaticStream installs the de-BAML Phase 3b native STATIC STREAM SERVE
+// attempt (StreamConfig.NativeAttempt) + the NATIVE-ONLY partial/final parser closures on
+// the static StreamRequest path. It is emitted ONLY for a static serve method's
+// StreamRequest builder (never the unary BuildCallRequest), and it is a RUNTIME no-op
+// unless the ACTUAL public mode is a REAL /stream{,-with-raw} request — so a unary
+// /call{,-with-raw} bridged through the StreamRequest builder NEVER admits/claims a native
+// stream and stays byte-identical BAML.
+//
+// serve is the ALREADY-RESOLVED, non-nil native static stream serve callback (the caller
+// gated the descriptor lookup on deBAMLStaticStreamServe being non-nil). The injected
+// parser is resolved here and driven in STATIC-STREAM mode via
+// DeBAMLParseRequest.StaticStreamDescriptor; absent parser leaves the seam off. The
+// native-only closures NEVER fall back to BAML (I6): a partial decline is a benign
+// no-emit, a final decline/failure is TERMINAL for the claimed stream.
+//
+// SENSITIVE: fn/args carry secret material; this never logs, serializes, or emits them.
+func installNativeStaticStream(
+	cfg *buildrequest.StreamConfig,
+	serve bamlutils.NativeStaticStreamServeFunc,
+	adapter bamlutils.Adapter,
+	fn promptdescriptor.Function,
+	args map[string]any,
+	argOrder []string,
+	singleLeaf bool,
+	hasFallbackChain bool,
+	hasRoundRobin bool,
+	hasRetry bool,
+	decodeStreamPartial func(canonicalJSON []byte) (any, error),
+	decodeStreamFinal func(canonicalJSON []byte) (any, error),
+) {
+	// PUBLIC-MODE gate: install ONLY for a REAL /stream{,-with-raw} request. A unary call
+	// bridged through the StreamRequest builder resolves a unary mode here and is left
+	// byte-identical BAML — the native seam is NEVER installed on the unary bridge.
+	publicMode := adapter.StreamMode()
+	if publicMode != bamlutils.StreamModeStream && publicMode != bamlutils.StreamModeStreamWithRaw {
+		return
+	}
+	// Resolve the injected parser (reused for the static-stream partial/final parse).
+	pg, ok := adapter.(deBAMLStaticStreamParserGetter)
+	if !ok {
+		return
+	}
+	parse := pg.DeBAMLParser()
+	if parse == nil {
+		return
+	}
+	// The effective send client whose WouldRewriteOrProxy applies rewrites/proxying at
+	// execution time; nil falls back to the default client.
+	httpClient := adapter.HTTPClient()
+	if httpClient == nil {
+		httpClient = llmhttp.DefaultClient
+	}
+	streamMode := bamlutils.NativeStreamModeStream
+	if publicMode == bamlutils.StreamModeStreamWithRaw {
+		streamMode = bamlutils.NativeStreamModeStreamWithRaw
+	}
+
+	// NATIVE-ONLY partial parser: drive the injected parser in STATIC-STREAM mode
+	// (StaticStreamDescriptor + Stream=true) and map ANY error to a benign no-emit
+	// (nil, nil), NEVER a BAML fallback. A partial never terminates a stream.
+	cfg.NativeParseStream = func(ctx context.Context, accumulated string) (any, error) {
+		descriptor := fn
+		res, perr := parse(ctx, bamlutils.DeBAMLParseRequest{StaticStreamDescriptor: &descriptor, Raw: accumulated, Stream: true})
+		if perr != nil {
+			return nil, nil
+		}
+		if len(res.JSON) == 0 {
+			return nil, nil
+		}
+		// Decode the SORTED-public canonical bytes into the concrete generated STREAM carrier
+		// (stream_types.JSON, a pointer union) via the narrow static-alias stream decoder. A
+		// decode failure is non-terminal for a partial: skip this tick.
+		out, derr := decodeStreamPartial(res.JSON)
+		if derr != nil {
+			return nil, nil
+		}
+		return out, nil
+	}
+
+	// NATIVE-ONLY final parser: drive the injected parser with StreamFinal=true. It NEVER
+	// falls back to BAML — a non-nil error is TERMINAL for the claimed stream.
+	cfg.NativeParseFinal = func(ctx context.Context, accumulated string) (any, error) {
+		descriptor := fn
+		res, perr := parse(ctx, bamlutils.DeBAMLParseRequest{StaticStreamDescriptor: &descriptor, Raw: accumulated, StreamFinal: true})
+		if perr != nil {
+			return nil, perr
+		}
+		// Decode the completed canonical bytes into the concrete FINAL carrier.
+		out, derr := decodeStreamFinal(res.JSON)
+		if derr != nil {
+			return nil, fmt.Errorf("decode native static stream final: %w", derr)
+		}
+		return out, nil
+	}
+
+	cfg.NativeAttemptEnabled = true
+	cfg.PlannedEngine = "native"
+	cfg.NativeMode = streamMode
+	cfg.NativeAttempt = func(ctx context.Context, att buildrequest.NativeStreamAttempt) buildrequest.NativeStreamOutcome {
+		descriptor := fn
+		res := serve(ctx, bamlutils.NativeStaticStreamInvocation{
+			Method:                  fn.Method,
+			Descriptor:              descriptor,
+			Args:                    args,
+			ArgOrder:                argOrder,
+			Mode:                    streamMode,
+			Provider:                att.Provider,
+			ClientOverride:          att.ClientOverride,
+			SingleLeaf:              singleLeaf,
+			HasFallbackChain:        hasFallbackChain,
+			HasRoundRobin:           hasRoundRobin,
+			HasRequestRetryOverride: hasRetry,
+			WouldRewriteOrProxy:     httpClient.WouldRewriteOrProxy,
+			NeedsPartials:           att.NeedsPartials,
+			NeedsRaw:                att.NeedsRaw,
+			IncludeReasoning:        att.IncludeReasoning,
+			BuildBAMLRequest:        att.BuildBAMLRequest,
+			EmitDelta:               att.EmitDelta,
+			SendHeaders:             att.SendHeaders,
+			SendFirstBody:           att.SendFirstBody,
+		})
+		switch res.Disposition {
+		case bamlutils.NativeStreamCompleted:
+			return buildrequest.CompleteNativeStream(res.WinnerEngine)
+		case bamlutils.NativeStreamFailedAfterClaim:
+			return buildrequest.FailNativeStreamAfterClaim(res.Err, res.RawDiagnostic)
+		case bamlutils.NativeStreamDeclined:
+			return buildrequest.DeclineNativeStream(
+				buildrequest.NativeDeclineStage(res.Stage),
+				buildrequest.NativeDeclineReason(res.Reason),
+			)
+		default:
+			return buildrequest.FailNativeStreamAfterClaim(
+				fmt.Errorf("native static stream serve returned unknown disposition %d", res.Disposition), "")
+		}
+	}
+}

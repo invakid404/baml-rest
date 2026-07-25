@@ -128,6 +128,29 @@ func NewStaticServe(reg prometheus.Registerer) (bamlutils.NativeStaticServeFunc,
 	return canary.NewStaticServeFunc(reg)
 }
 
+// NewStaticStream constructs the nanollm-backed native STATIC STREAM SERVE
+// implementation (de-BAML Phase 3b) and returns it as the neutral
+// [bamlutils.NativeStaticStreamServeFunc] a SERVE-profile worker installs via
+// workerboot.Options.NativeStaticStreamServeFactory (only while the umbrella flag is
+// on). It is the STREAMING twin of [NewStaticServe]: for an admitted generated static
+// `/stream{,-with-raw}` request it runs the FULL pre-socket static-stream predicate
+// (descriptor envelope, arg-binder match, Return-Bundle lower/support + the static-stream
+// return-shape gate, RenderStatic, the streaming canonical body, nanollm New/Prepare with
+// Stream:true, and the strict BAML **StreamRequest** no-send plan compare) and, on a full
+// would-admit, CLAIMS the transport and drives one exact DoStream RoundTrip; the
+// orchestrator owns the native-only partial + final parsers. Every unsupported shape
+// declines PRE-TRANSPORT so BAML serves it, and from the claim onward a failure is
+// TERMINAL (never a BAML resend/retry/replay).
+//
+// It is a thin pass-through to the relocated serve core (canary). With the umbrella flag
+// off the generated static stream seam never installs the callback, so the static stream
+// path stays byte-identical BAML with zero native FFI / socket / plan build. reg is
+// retained for signature symmetry with [NewStaticServe]; the static stream lane records no
+// per-lane counters this phase.
+func NewStaticStream(reg prometheus.Registerer) (bamlutils.NativeStaticStreamServeFunc, error) {
+	return canary.NewStaticStreamServeFunc(reg)
+}
+
 // NewStaticShadow constructs the nanollm-backed native STATIC Stage-1 SHADOW
 // comparator (de-BAML Slice 8C) and returns it as the neutral
 // [bamlutils.NativeStaticShadowFunc] a SHADOW-profile worker installs via

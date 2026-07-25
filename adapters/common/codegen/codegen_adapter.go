@@ -227,6 +227,15 @@ func emitFrameworkAdapter(out *jen.File, opts Options) {
 		jen.Comment("for every unsupported shape."),
 		jen.Id("nativeStaticServe").Qual(bamlutilsPkg, "NativeStaticServeFunc"),
 		jen.Line(),
+		jen.Comment("nativeStaticStreamServe is the native STATIC STREAM SERVE implementation"),
+		jen.Comment("(de-BAML Phase 3b), injected by a SERVE-profile worker for the same"),
+		jen.Comment("module-boundary reason as nativeStaticServe. Non-nil ONLY in a serve worker"),
+		jen.Comment("with the flag on; nil in every default/flag-off build, leaving the generated"),
+		jen.Comment("static /stream serve seam nil/hard-off. It SERVES admitted static streams"),
+		jen.Comment("natively (one DoStream RoundTrip), declining pre-transport to BAML for every"),
+		jen.Comment("unsupported shape."),
+		jen.Id("nativeStaticStreamServe").Qual(bamlutilsPkg, "NativeStaticStreamServeFunc"),
+		jen.Line(),
 		jen.Comment("nativeStaticShadow is the native STATIC Stage-1 SHADOW comparator"),
 		jen.Comment("(de-BAML Slice 8C), injected by a SHADOW-profile worker. Non-nil ONLY in"),
 		jen.Comment("a shadow worker with the flag on; nil in every default/serve/flag-off"),
@@ -727,6 +736,25 @@ func emitFrameworkAdapterDeBAML(out *jen.File, bamlutilsPkg string) {
 		Id("NativeStaticServeComparator").Params().Qual(bamlutilsPkg, "NativeStaticServeFunc").
 		Block(
 			jen.Return(jen.Id("b").Dot("nativeStaticServe")),
+		)
+
+	// SetNativeStaticStreamServeComparator / NativeStaticStreamServeComparator are the
+	// STATIC STREAM SERVE twins (de-BAML Phase 3b): the narrow optional interfaces a
+	// SERVE-profile worker and the generated static /stream serve seam use to install and
+	// read the native static STREAM SERVE implementation. Kept off bamlutils.Adapter like
+	// the other native accessors; nil in every default build. When non-nil AND the
+	// umbrella flag is on, the generated /stream seam serves an admitted static stream
+	// natively; otherwise it declines pre-transport and BAML serves.
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("SetNativeStaticStreamServeComparator").Params(jen.Id("fn").Qual(bamlutilsPkg, "NativeStaticStreamServeFunc")).
+		Block(
+			jen.Id("b").Dot("nativeStaticStreamServe").Op("=").Id("fn"),
+		)
+
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("NativeStaticStreamServeComparator").Params().Qual(bamlutilsPkg, "NativeStaticStreamServeFunc").
+		Block(
+			jen.Return(jen.Id("b").Dot("nativeStaticStreamServe")),
 		)
 
 	// SetNativeStaticShadowComparator / NativeStaticShadowComparator are the STATIC

@@ -11,6 +11,7 @@ import (
 	"github.com/bytedance/sonic"
 
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
+	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
 )
 
 type StreamResult interface {
@@ -1049,10 +1050,11 @@ type DeBAMLParseRequest struct {
 	// OutputSchema is the dynamic output schema the raw text is coerced
 	// against. Nil is unsupported — the native parser needs a schema.
 	OutputSchema *DynamicOutputSchema
-	// Stream selects parse-stream (partial) semantics. The M1 native
-	// parser returns ErrDeBAMLParseUnsupported for Stream=true; the field
-	// exists now so the seam is not redesigned when native streaming
-	// lands.
+	// Stream selects parse-stream (partial) semantics. Parse routes a Stream=true
+	// request to the native streaming partial parser (or, when StaticStreamDescriptor
+	// is set, to debaml.ParseStaticStreamPartial); a prefix outside the supported
+	// streaming shape declines with ErrDeBAMLParseUnsupported. Mutually exclusive with
+	// StreamFinal, which takes precedence.
 	Stream bool
 
 	// StreamFinal selects the de-BAML native STREAM FINAL parse (Phase 7D): the
@@ -1064,6 +1066,19 @@ type DeBAMLParseRequest struct {
 	// false the request is the ordinary non-stream final parse; Stream and
 	// StreamFinal are mutually exclusive (StreamFinal takes precedence).
 	StreamFinal bool
+
+	// StaticStreamDescriptor selects the de-BAML native STATIC-STREAM parse (Phase
+	// 3b): when non-nil, the raw text is parsed against the descriptor's Return
+	// Bundle (lowered internally by the root parser via schema.FromStaticDescriptor)
+	// through the static-stream parse entrypoints (debaml.ParseStaticStreamPartial for
+	// Stream=true, debaml.ParseStaticStreamFinal for StreamFinal=true) INSTEAD of a
+	// dynamic OutputSchema. It reuses the existing DeBAMLParseFunc seam (already wired
+	// on the worker) so the generated static-stream installer needs no new injected
+	// parse callback; OutputSchema is ignored when it is set. Nil on every dynamic
+	// parse request. It is the transport-mode label's parse twin — the Bundle it
+	// lowers is the FINAL non-streaming Return; the STREAMING profile is derived
+	// internally inside the neutral internal/debaml closure.
+	StaticStreamDescriptor *promptdescriptor.Function
 }
 
 // DeBAMLParseResult is a native de-BAML parser's successful output.

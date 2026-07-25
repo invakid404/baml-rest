@@ -132,6 +132,19 @@ type Options struct {
 	// the observer, is NOT part of the dynamic serve/shadow mutual exclusion.
 	NativeStaticServeFactory func(reg prometheus.Registerer) (bamlutils.NativeStaticServeFunc, error)
 
+	// NativeStaticStreamServeFactory, when non-nil, builds the native STATIC STREAM
+	// SERVE implementation (de-BAML Phase 3b, the streaming twin of Slice 8C unary
+	// serve) a SERVE-profile worker injects while the umbrella flag is on. It is called
+	// ONCE at startup with the worker's private Prometheus registry; the returned
+	// NativeStaticStreamServeFunc is installed on every adapter. The generated static
+	// /stream{,-with-raw} seam turns it into a serving callback only when it is non-nil
+	// AND the umbrella flag is enabled: it SERVES an admitted static stream natively (one
+	// exact DoStream RoundTrip, the native-only partial/final parsers owned by the
+	// orchestrator), and every unsupported shape declines PRE-TRANSPORT so BAML serves
+	// it. A returned error exits the process non-zero (fails the go-plugin handshake).
+	// nil in every non-serve build. It is the streaming twin of NativeStaticServeFactory.
+	NativeStaticStreamServeFactory func(reg prometheus.Registerer) (bamlutils.NativeStaticStreamServeFunc, error)
+
 	// NativeStaticShadowFactory, when non-nil, builds the native STATIC Stage-1 SHADOW
 	// comparator (de-BAML Slice 8C) a SHADOW-profile worker injects while the umbrella
 	// flag is on. Called ONCE at startup with the worker's private registry; the
@@ -227,7 +240,10 @@ func Run(opts Options) {
 	// profiles are not wired together in practice.
 	rolloutMode, nativeServing := nativeLaneStatus(
 		opts.NativeServeFactory != nil,
-		opts.NativeStaticServeFactory != nil,
+		// A static SERVE lane is present when either the unary static serve OR the
+		// Phase-3b static STREAM serve factory is wired (they ship together in the serve
+		// profile), so a static-stream-inclusive cohort reports "serve", not BAML-only.
+		opts.NativeStaticServeFactory != nil || opts.NativeStaticStreamServeFactory != nil,
 		opts.NativeShadowFactory != nil,
 		opts.NativeStaticShadowFactory != nil,
 		deBAMLConfig.Enabled,
@@ -449,6 +465,24 @@ func Run(opts Options) {
 		nativeStaticServe = fn
 	}
 
+	// Build the native STATIC STREAM SERVE implementation (de-BAML Phase 3b; nil except
+	// in a SERVE-profile worker with the flag on). A non-nil factory returning an error
+	// or a nil func without an error is fatal, so a serve cohort never silently streams
+	// all-BAML while reporting a serve build.
+	var nativeStaticStreamServe bamlutils.NativeStaticStreamServeFunc
+	if opts.NativeStaticStreamServeFactory != nil {
+		fn, err := opts.NativeStaticStreamServeFactory(metricsReg)
+		if err != nil {
+			logger.Error("failed to build native static stream serve implementation", "err", err.Error())
+			os.Exit(1)
+		}
+		if fn == nil {
+			logger.Error("native static stream serve factory returned a nil implementation without an error; a serve worker must not stream all-BAML while reporting a serve build")
+			os.Exit(1)
+		}
+		nativeStaticStreamServe = fn
+	}
+
 	// Build the native STATIC Stage-1 SHADOW comparator (de-BAML Slice 8C; nil except
 	// in a SHADOW-profile worker with the flag on). A non-nil factory returning an
 	// error or a nil func without an error is fatal.
@@ -510,6 +544,12 @@ func Run(opts Options) {
 		// is enabled AND no serve callback is installed, the generated static /call seam
 		// runs a no-send shadow comparison per admitted static call — BAML sole sender.
 		NativeStaticShadowComparator: nativeStaticShadow,
+		// Install the native STATIC STREAM SERVE implementation (de-BAML Phase 3b; nil
+		// except in a SERVE-profile worker with the flag on). When non-nil AND the
+		// umbrella flag is enabled the generated static /stream{,-with-raw} seam serves an
+		// admitted static stream natively (one exact DoStream RoundTrip); unsupported
+		// traffic declines pre-transport to BAML.
+		NativeStaticStreamServeComparator: nativeStaticStreamServe,
 	})
 	if err != nil {
 		logger.Error("failed to construct worker handler", "err", err.Error())

@@ -446,6 +446,24 @@ func (me *methodEmitter) parseFinalFnBody(textVar string) []jen.Code {
 // sets the AWS event-stream Accept header, and attaches AWSAuth. Wire
 // it into StreamConfig as BuildBedrockStreamRequest. The orchestrator
 // dispatches on provider.
+// decodeClosure emits the shared per-method static decode closure
+//
+//	func(__cj []byte) (any, error) { __dv, __de := <decoderName>[<typeCode>](__cj); return __dv, __de }
+//
+// The three static decode sites — the stream PARTIAL and stream FINAL closures in
+// [methodEmitter.emitBuildRequest] and the /call FINAL closure in
+// [methodEmitter.emitBuildCallRequest] — build this IDENTICAL shape, differing ONLY by the
+// bamlutils decoder name + the concrete carrier type code, so they share this one emitter.
+// It is a pure emitter DRY refactor: the rendered Go is byte-identical to the previous inline
+// form. typeCode must be a FRESH node per call (the *ResultTypeCode helpers already .Clone()).
+func (me *methodEmitter) decodeClosure(decoderName string, typeCode jen.Code) *jen.Statement {
+	return jen.Func().Params(jen.Id("__cj").Index().Byte()).Params(jen.Any(), jen.Error()).Block(
+		jen.List(jen.Id("__dv"), jen.Id("__de")).Op(":=").
+			Qual(me.g.pkgs.InterfacesPkg, decoderName).Index(typeCode).Call(jen.Id("__cj")),
+		jen.Return(jen.Id("__dv"), jen.Id("__de")),
+	)
+}
+
 func (me *methodEmitter) emitBuildRequest() {
 	g := me.g
 	if g.intro.StreamRequest == nil {
@@ -800,6 +818,54 @@ func (me *methodEmitter) emitBuildRequest() {
 				jen.Id("plannedMetadata").Op("!=").Nil().Op("&&").
 					Id("plannedMetadata").Dot("RoundRobin").Op("!=").Nil(),
 				jen.Id("__httpClient").Dot("WouldRewriteOrProxy"),
+			),
+		)
+	}
+
+	// De-BAML Phase 3b native STATIC STREAM child-attempt install. Emitted ONLY for a
+	// static serve method's StreamRequest builder (never the unary BuildCallRequest), so
+	// the TRUE-unary /call path carries no static-stream hook. installNativeStaticStream
+	// additionally no-ops at RUNTIME unless the ACTUAL public mode is a real
+	// /stream{,-with-raw} request, so a unary call bridged through this StreamRequest
+	// builder is left byte-identical BAML. FLAG-OFF IDENTITY: deBAMLStaticStreamServe is
+	// resolved FIRST and the descriptor lookup + install are gated on it being non-nil, so
+	// a flag-off / non-serve build performs no StaticPromptDescriptor lookup and stays
+	// byte-identical BAML. The strategy facts + retry override mirror the unary
+	// installNativeStaticCall call exactly. Emitted only for pure-scalar methods
+	// (!hasReleaseConverted), the same slice-pool-race reasoning as the unary serve seam.
+	if me.g.isDeBAMLStaticServeMethod(me.methodName) && !me.hasReleaseConverted {
+		me.g.emittedDeBAMLStaticCall = true
+		// Per-method narrow decoders: the PARTIAL bytes decode into the concrete generated
+		// STREAM carrier (DecodeStaticAliasStream[stream_types.JSON]) and the FINAL bytes into
+		// the concrete FINAL carrier (the same decoder the /call seam uses). Non-alias static
+		// methods never claim a stream (admission declines them), so their generic decoder is
+		// dead at runtime but must type-check.
+		decodeStreamPartialClosure := me.decodeClosure(me.streamResultDecoderName(), me.streamResultTypeCode())
+		decodeStreamFinalClosure := me.decodeClosure(me.finalResultDecoderName(), me.finalResultTypeCode())
+		buildRequestBody = append(buildRequestBody,
+			jen.List(jen.Id("__staticStreamServe")).Op(":=").Id("deBAMLStaticStreamServe").Call(jen.Id("adapter")),
+			jen.If(jen.Id("__staticStreamServe").Op("!=").Nil()).Block(
+				jen.If(
+					jen.List(jen.Id("__staticStreamDescriptor"), jen.Id("__staticStreamOK")).Op(":=").
+						Qual(g.pkgs.IntrospectedPkg, "StaticPromptDescriptor").Call(jen.Lit(me.methodName)),
+					jen.Id("__staticStreamOK"),
+				).Block(
+					jen.Id("installNativeStaticStream").Call(
+						jen.Id("streamConfig"),
+						jen.Id("__staticStreamServe"),
+						jen.Id("adapter"),
+						jen.Id("__staticStreamDescriptor"),
+						me.staticArgBinderMap(),
+						me.staticArgOrderSlice(),
+						jen.Len(jen.Id("fallbackChain")).Op("==").Lit(0),
+						jen.Len(jen.Id("fallbackChain")).Op(">").Lit(0),
+						jen.Id("plannedMetadata").Op("!=").Nil().Op("&&").
+							Id("plannedMetadata").Dot("RoundRobin").Op("!=").Nil(),
+						jen.Id("retryPolicy").Op("!=").Nil(),
+						decodeStreamPartialClosure,
+						decodeStreamFinalClosure,
+					),
+				),
 			),
 		)
 	}
@@ -1174,11 +1240,7 @@ func (me *methodEmitter) emitBuildCallRequest() {
 			)
 		}
 		decodeFinalClosure := func() jen.Code {
-			return jen.Func().Params(jen.Id("__cj").Index().Byte()).Params(jen.Any(), jen.Error()).Block(
-				jen.List(jen.Id("__dv"), jen.Id("__de")).Op(":=").
-					Qual(g.pkgs.InterfacesPkg, me.finalResultDecoderName()).Index(me.finalResultTypeCode()).Call(jen.Id("__cj")),
-				jen.Return(jen.Id("__dv"), jen.Id("__de")),
-			)
+			return me.decodeClosure(me.finalResultDecoderName(), me.finalResultTypeCode())
 		}
 		installStatic := func(installer, resolved string) jen.Code {
 			return jen.Id(installer).Call(

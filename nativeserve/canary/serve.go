@@ -59,6 +59,7 @@ const (
 	reasonPlanExpired     = "plan_expired"
 	reasonPlannerError    = "planner_error"
 	reasonNilOutputSchema = "nil_output_schema"
+	reasonNilEmitDelta    = "nil_emit_delta"
 )
 
 // errNativeServePanic backstops a panic AFTER the claim: a socket may have opened,

@@ -90,5 +90,14 @@ func main() {
 		// (mirroring the dynamic serve-over-shadow precedence), so the observer is the
 		// no-send fallback for a shadow/observe-only build. Skipped when the flag is off.
 		NativeStaticServeFactory: nativeserve.NewStaticServe,
+		// The STATIC STREAM SERVE factory (de-BAML Phase 3b): returns the neutral
+		// bamlutils.NativeStaticStreamServeFunc the generated static /stream{,-with-raw}
+		// seam installs as StreamConfig.NativeAttempt — it actually SERVES an admitted
+		// static stream natively (one exact RoundTrip driving nanollm DoStream over the
+		// selected Return Bundle, the native-only partial/final parsers owned by the
+		// orchestrator) or declines PRE-TRANSPORT to BAML. Installed ALONGSIDE the unary
+		// static serve factory (both live in the serve profile) and mirrors the
+		// dynamic serve/stream factory pair. Skipped when the flag is off.
+		NativeStaticStreamServeFactory: nativeserve.NewStaticStream,
 	})
 }
