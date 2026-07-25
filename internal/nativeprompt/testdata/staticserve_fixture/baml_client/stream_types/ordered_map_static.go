@@ -85,6 +85,45 @@ func bamlNativeMapAs_JsonValue(value any) map[string]JsonValue {
 	return nil
 }
 
+// bamlNativeMapAs_JsonValueReordered converts the runtime ordered carrier produced
+// by baml.DecodeToOrderedValue into a native map[string]JsonValueReordered.
+// The recursive-type-alias path keeps the field as a native
+// Go map (CFFI insertion order is lost on this arm) so the
+// rewriter avoids the Go compiler ICE on baml.OrderedMap[T]
+// where T is a self-referential alias.
+func bamlNativeMapAs_JsonValueReordered(value any) map[string]JsonValueReordered {
+	if bamlStaticMapCarrierIsNil(value) {
+		return nil
+	}
+	if typed, ok := value.(map[string]JsonValueReordered); ok {
+		return typed
+	}
+	if ptr, ok := value.(*map[string]JsonValueReordered); ok {
+		if ptr == nil {
+			return nil
+		}
+		return *ptr
+	}
+	if ranger, ok := value.(interface {
+		RangeAny(func(string, any) bool)
+		Len() int
+	}); ok {
+		out := make(map[string]JsonValueReordered, ranger.Len())
+		ranger.RangeAny(func(k string, v any) bool {
+			if v == nil {
+				out[k] = nil
+				return true
+			}
+			if cv, ok := v.(JsonValueReordered); ok {
+				out[k] = cv
+			}
+			return true
+		})
+		return out
+	}
+	return nil
+}
+
 // bamlStaticMapCarrierIsNil reports whether the decode carrier handed
 // to a static-map helper is effectively nil — including a typed-nil
 // pointer (or other nilable kind) wrapped in a non-nil interface. Such

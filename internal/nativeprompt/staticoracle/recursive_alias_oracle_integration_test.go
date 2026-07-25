@@ -9,9 +9,15 @@
 // (the EXACT production static callback — HTML-escaped, sorted-public map keys), never
 // the unsafe dynamic Cgo route. It also decodes the native canonical JSON through the
 // SAME narrow DecodeStaticAliasFinal carrier the generated serve seam uses and asserts
-// the re-marshaled concrete union equals the native bytes. The wider JsonValue is
-// exercised as a zero-native-socket DECLINE + the null-distinction witness
-// (JsonValue null -> null, vs served JSON null -> []).
+// the re-marshaled concrete union equals the native bytes.
+//
+// De-BAML Phase 3c adds the SECOND served family, `JsonValue`, as a sibling strict
+// differential (jsonvalue_alias_oracle_integration_test.go) driven through the SAME
+// helpers. This JSON manifest is deliberately left FROZEN — same rows, same helper, same
+// assertions — so it keeps proving the Phase-3a bytes rather than being re-derived
+// alongside the new family. The null-distinction witness below now compares two SERVED
+// families (JSON null -> [], JsonValue null -> typed nil / public `null`) instead of a
+// served-vs-declined pair.
 
 package staticoracle
 
@@ -145,9 +151,11 @@ func TestAliasStaticDifferential(t *testing.T) {
 	t.Logf("alias JSON differential: %d rows raw-byte + concrete round-trip exact", len(rows))
 }
 
-// TestAliasStaticDifferential_NullDistinction pins the crux distinction: the served
-// non-nullable JSON coerces null -> [] (the list fallback), while the wider declined
-// JsonValue coerces null -> null (nil alias pointer). Both compared against stock BAML.
+// TestAliasStaticDifferential_NullDistinction pins the crux distinction between the two
+// SERVED families: the non-nullable JSON coerces null -> [] (the list fallback), while
+// the nullable JsonValue coerces null -> null (a typed-nil alias pointer). Both legs are
+// compared against stock BAML, and since Phase 3c BOTH are also produced NATIVELY — so
+// this is now a served-vs-served semantic-delta proof, not a served-vs-declined one.
 func TestAliasStaticDifferential_NullDistinction(t *testing.T) {
 	ctx := context.Background()
 	jsonBundle := lowerReturn(t, "StaticRecursiveAliasJSON")
@@ -167,8 +175,9 @@ func TestAliasStaticDifferential_NullDistinction(t *testing.T) {
 		t.Fatalf("BAML JSON null -> %s, want []", b)
 	}
 
-	// JsonValue null -> null (BAML), and native DECLINES the whole family (nil pointer
-	// serving is not part of Phase 3a), so the route falls back to BAML.
+	// JsonValue null -> null on BOTH legs (Phase 3c): BAML returns a nil alias pointer
+	// that marshals to `null`, and native's nullable try_cast fast path returns the
+	// first-class typed null — it must NEVER take the JSON list fallback.
 	jvVal, jverr := aliasParseJsonValue(`null`)
 	if jverr != nil {
 		t.Fatalf("BAML Parse JsonValue(null): %v", jverr)
@@ -176,18 +185,62 @@ func TestAliasStaticDifferential_NullDistinction(t *testing.T) {
 	if b := aliasJSONMarshal(t, jvVal); string(b) != `null` {
 		t.Fatalf("BAML JsonValue null -> %s, want null (nil alias pointer)", b)
 	}
+	jvBundle := lowerReturn(t, "StaticRecursiveAliasJsonValue")
+	jvRes, jverr2 := debaml.ParseStaticBundle(ctx, jvBundle, `null`)
+	if jverr2 != nil {
+		t.Fatalf("native ParseStaticBundle JsonValue(null): %v", jverr2)
+	}
+	if string(jvRes.JSON) != `null` {
+		t.Fatalf("JsonValue null native -> %s, want null (typed null, NOT the JSON [] trap)", jvRes.JSON)
+	}
+	// And the generated FINAL carrier materializes it as a TYPED NIL pointer whose
+	// re-marshal is `null` — a present decoded value, not a decode failure.
+	typedNil, derr := bamlutils.DecodeStaticAliasFinal[types.JsonValue](jvRes.JSON)
+	if derr != nil {
+		t.Fatalf("DecodeStaticAliasFinal[types.JsonValue](null): %v", derr)
+	}
+	if typedNil != nil {
+		t.Fatalf("DecodeStaticAliasFinal[types.JsonValue](null) = %#v, want a typed nil pointer", typedNil)
+	}
+	if b := aliasJSONMarshal(t, typedNil); string(b) != `null` {
+		t.Fatalf("typed-nil JsonValue re-marshal -> %s, want null", b)
+	}
+	// The SERVED JSON family's own materializer must stay a CONCRETE value for `[]`
+	// (the counterpart assertion the scope pins alongside the typed nil).
+	concreteJSON, cerr := bamlutils.DecodeStaticAliasFinal[types.JSON]([]byte(`[]`))
+	if cerr != nil {
+		t.Fatalf("DecodeStaticAliasFinal[types.JSON]([]): %v", cerr)
+	}
+	if b := aliasJSONMarshal(t, concreteJSON); string(b) != `[]` {
+		t.Fatalf("JSON [] carrier re-marshal -> %s, want []", b)
+	}
 }
 
-// TestAliasStaticDifferential_JsonValueDeclines proves the wider JsonValue is a
-// zero-native-socket DECLINE at BOTH the parser support gate and the exact fingerprint,
-// so native never claims it and BAML serves.
-func TestAliasStaticDifferential_JsonValueDeclines(t *testing.T) {
-	jv := lowerReturn(t, "StaticRecursiveAliasJsonValue")
-	if debaml.IsProvenRecursiveAliasStaticFamily(jv) {
-		t.Fatal("JsonValue must NOT be the proven alias family (float+null arms, non-JSON name)")
+// TestAliasStaticDifferential_JsonValueReorderedDeclines is the Phase-3c RESIDUAL
+// decline witness, replacing the old JsonValue decline now that JsonValue is served. The
+// witness alias has the IDENTICAL arm set and nullability as the served `JsonValue` with
+// only the arm ORDER changed (float before int) and a different name, so it is the
+// NEAREST possible negative: it proves the fingerprint pins the canonical name AND the
+// ordered variant list, not merely "a nullable recursive alias with these arm kinds".
+func TestAliasStaticDifferential_JsonValueReorderedDeclines(t *testing.T) {
+	rw := lowerReturn(t, "StaticRecursiveAliasJsonValueReordered")
+	if debaml.IsProvenRecursiveAliasStaticFamily(rw) {
+		t.Fatal("the reordered witness must NOT be the proven JSON alias family")
 	}
-	if err := debaml.SupportsNativeFinalBundle(jv); err == nil {
-		t.Fatal("JsonValue must DECLINE SupportsNativeFinalBundle (structural recursive alias reject)")
+	if debaml.IsProvenJsonValueRecursiveAliasStaticFamily(rw) {
+		t.Fatal("the reordered witness must NOT be the proven JsonValue alias family (arm order + name are pinned)")
+	}
+	if debaml.IsProvenServedRecursiveAliasStaticFamily(rw) {
+		t.Fatal("the reordered witness must NOT be a served alias family at all")
+	}
+	if debaml.IsProvenRecursiveAliasStaticStreamFamily(rw) {
+		t.Fatal("the reordered witness must NOT be the proven static-STREAM alias family")
+	}
+	if err := debaml.SupportsNativeFinalBundle(rw); err == nil {
+		t.Fatal("the reordered witness must DECLINE SupportsNativeFinalBundle (structural recursive alias reject)")
+	}
+	if err := debaml.SupportsNativeStaticStreamBundle(rw); err == nil {
+		t.Fatal("the reordered witness must DECLINE SupportsNativeStaticStreamBundle")
 	}
 }
 

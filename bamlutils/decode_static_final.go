@@ -61,9 +61,11 @@ func DecodeStaticFinal[T any](canonicalJSON []byte) (T, error) {
 	return decodeStaticStrict[T](canonicalJSON, "bamlutils: decode static final", true)
 }
 
-// DecodeStaticAliasFinal is the de-BAML Phase 3a (recursive ALIASES) NARROW per-method
-// materializer/decoder for the served structural-recursive-alias union return (the
-// direct five-arm JSON alias), kept SEPARATE from [DecodeStaticFinal] so the generic
+// DecodeStaticAliasFinal is the de-BAML Phase 3a/3c (recursive ALIASES) NARROW per-method
+// materializer/decoder for a served structural-recursive-alias union return (the direct
+// five-arm `JSON` alias, or the nullable six-stored-variant `JsonValue` alias whose
+// carrier is a POINTER union and therefore decodes a `null` to a typed nil), kept SEPARATE
+// from [DecodeStaticFinal] so the generic
 // decoder's proof set (scalars / flat classes / recursive-class pointer carriers) is
 // NOT silently widened to aliases/unions/ordered-maps.
 //
@@ -95,21 +97,30 @@ func DecodeStaticAliasFinal[T any](canonicalJSON []byte) (T, error) {
 // SEPARATE from both [DecodeStaticFinal] (the generic proof set) and [DecodeStaticAliasFinal]
 // (the value-union FINAL carrier) so neither is widened by the stream lane.
 //
-// It is instantiated with the generated STREAM carrier stream_types.JSON — a POINTER union
-// (*Union5…), distinct from the value union types.JSON the final decoder uses. The native
-// static-stream SAP (debaml.ParseStaticStreamPartial / …Final) emits the SORTED-public
-// canonical bytes (json.Marshal of the equivalent Go value — sorted map keys + HTML
-// escaping), byte-identical to stock BAML v0.223's ParseStream.<Method> then json.Marshal;
-// this decode maps those bytes back to the concrete generated pointer union via its
-// generated UnmarshalJSON. Its byte/event-exactness is proven per admitted alias by the
-// strict per-prefix + SSE-replay differentials.
+// It is instantiated with the generated STREAM carrier stream_types.JSON — a *Union5
+// pointer union, distinct from the value union types.JSON the final decoder uses.
+// The native static-stream SAP (debaml.ParseStaticStreamPartial / …Final) emits the
+// SORTED-public canonical bytes (json.Marshal of the equivalent Go value — sorted map keys
+// + HTML escaping), byte-identical to stock BAML v0.223's ParseStream.<Method> then
+// json.Marshal; this decode maps those bytes back to the concrete generated pointer union
+// via its generated UnmarshalJSON. Its byte/event-exactness is proven per admitted alias by
+// the strict per-prefix + SSE-replay differentials.
 //
-// TYPED-NIL: the generated result wrapper distinguishes a typed-nil stream_types.JSON (a
-// present-but-null partial) from an untyped nil (no event). For the served non-nullable
-// JSON alias every emitted partial is a concrete value, so a typed-nil never arises; a
-// `null` input would still decode to a typed-nil *Union5 here (never a decode error), which
-// the caller may forward as a present partial. It is a STRICT single-value decode (a
-// trailing second value is malformed).
+// TYPED-NIL: the generated result wrapper distinguishes a typed-nil carrier (a
+// present-but-null partial) from an untyped nil (no event), and the two served families
+// use that distinction differently:
+//
+//   - `JSON` is NON-nullable, so every emitted partial is a concrete value and a typed nil
+//     never arises from the native path (a `null` input would still decode to a typed-nil
+//     *Union5 here, never a decode error).
+//   - `JsonValue` IS nullable, and a `null` partial through its *Union6 carrier is a
+//     FIRST-CLASS typed nil whose re-marshal is `null` — a value that must be forwarded as
+//     a present partial, never collapsed into "no event". That family is FINAL-served only
+//     today (its streaming gate is closed, see internal/debaml/static_stream_serve.go), so
+//     this decoder is not instantiated with its stream carrier in production; the contract
+//     is stated here because the differential exercises it and a later slice will.
+//
+// It is a STRICT single-value decode (a trailing second value is malformed).
 //
 // SENSITIVE: canonicalJSON is parsed provider output and T carries the model's full
 // structured response; the caller treats both like the response body and never logs them.

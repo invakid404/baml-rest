@@ -14,9 +14,15 @@
 // The codegen fingerprint's own doc comment promises it "mirrors" the runtime predicate so
 // the emitted decoder selection cannot drift from admission — but that guarantee otherwise
 // rests entirely on manual synchronization. This test drives BOTH predicates over the SAME
-// carriers (the exact five-arm JSON alias, the wider JsonValue, and representative
+// carriers (the exact five-arm JSON alias, the six-arm JsonValue, and representative
 // non-matching shapes) and FAILS on any disagreement, so a future change to one predicate but
 // not the other is caught in CI rather than silently mis-routing the decoder at runtime.
+//
+// De-BAML Phase 3c keeps the agreement EXACT rather than one-way. `JsonValue` is served on
+// the FINAL lane but declined on the STREAM lane (internal/debaml/static_stream_serve.go
+// explains why), so the stream-side codegen fingerprint was deliberately left five-arm-only:
+// both sides say "no" for the JsonValue carrier, and [TestAliasFinalVsStreamAdmissionSplit]
+// below pins that the FINAL side still says "yes".
 
 package staticoracle
 
@@ -41,31 +47,37 @@ func TestStreamCarrierFingerprintAgreement(t *testing.T) {
 	}{
 		{
 			method:  "StaticRecursiveAliasJSON",
-			carrier: reflect.TypeOf(bamlclient.ParseStream.StaticRecursiveAliasJSON).Out(0),
+			carrier: streamCarrierFor(t, "StaticRecursiveAliasJSON"),
 			admit:   true,
 			note:    "the exact five-arm JSON alias (int|string|bool|[]JSON|map<string,JSON>)",
 		},
 		{
 			method:  "StaticRecursiveAliasJsonValue",
-			carrier: reflect.TypeOf(bamlclient.ParseStream.StaticRecursiveAliasJsonValue).Out(0),
+			carrier: streamCarrierFor(t, "StaticRecursiveAliasJsonValue"),
 			admit:   false,
-			note:    "the WIDER JsonValue carrier (adds a float64 arm + a null-able alias)",
+			note:    "the six-arm nullable JsonValue carrier — FINAL-served since Phase 3c, but STREAM-declined",
+		},
+		{
+			method:  "StaticRecursiveAliasJsonValueReordered",
+			carrier: streamCarrierFor(t, "StaticRecursiveAliasJsonValueReordered"),
+			admit:   false,
+			note:    "the Phase-3c residual decline witness (JsonValue's arm set, float before int)",
 		},
 		{
 			method:  "StaticCompletion",
-			carrier: reflect.TypeOf(bamlclient.ParseStream.StaticCompletion).Out(0),
+			carrier: streamCarrierFor(t, "StaticCompletion"),
 			admit:   false,
 			note:    "a top-level string scalar (not a pointer union)",
 		},
 		{
 			method:  "StaticRecursiveNode",
-			carrier: reflect.TypeOf(bamlclient.ParseStream.StaticRecursiveNode).Out(0),
+			carrier: streamCarrierFor(t, "StaticRecursiveNode"),
 			admit:   false,
 			note:    "a recursive CLASS carrier (pointer graph, not the alias union)",
 		},
 		{
 			method:  "StaticOutputFormat",
-			carrier: reflect.TypeOf(bamlclient.ParseStream.StaticOutputFormat).Out(0),
+			carrier: streamCarrierFor(t, "StaticOutputFormat"),
 			admit:   false,
 			note:    "a flat class carrier (StaticAnswer)",
 		},
@@ -130,4 +142,81 @@ type syntheticAliasCarrierExtraField struct {
 	vBool *bool
 	vList *[]*syntheticAliasCarrierExtraField
 	vMap  *map[string]*syntheticAliasCarrierExtraField
+}
+
+// TestAliasFinalVsStreamAdmissionSplit pins the Phase-3c admission ASYMMETRY end to end: the
+// `JsonValue` family is admitted by the FINAL predicates and the FINAL decoder selection,
+// and declined by the STREAM predicate and the STREAM decoder selection — while `JSON` is
+// admitted by both.
+//
+// The split is not incidental. The static-stream gate admits by descriptor SHAPE pre-socket
+// and a claimed stream has no route back to BAML, so a family whose parse can decline on a
+// VALUE must not claim a stream socket; the unary lane repairs the same response through
+// BAML parse-only, so it can. Asserting both halves here means neither can drift on its own.
+func TestAliasFinalVsStreamAdmissionSplit(t *testing.T) {
+	cases := []struct {
+		method string
+		// wantAliasFinal: admitted by the served-ALIAS final predicate.
+		// wantFinalSupported: final-supported at all (a Phase-2 class or an 8C scalar is
+		// final-supported without being an alias family).
+		// wantStrm: admitted by the static-STREAM gate.
+		wantAliasFinal, wantFinalSupported, wantStrm bool
+	}{
+		{"StaticRecursiveAliasJSON", true, true, true},
+		{"StaticRecursiveAliasJsonValue", true, true, false},
+		{"StaticRecursiveAliasJsonValueReordered", false, false, false},
+		{"StaticRecursiveNode", false, true, false},
+		{"StaticCompletion", false, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method, func(t *testing.T) {
+			bundle := lowerReturn(t, tc.method)
+			if got := debaml.IsProvenServedRecursiveAliasStaticFamily(bundle); got != tc.wantAliasFinal {
+				t.Errorf("served-ALIAS final predicate = %v, want %v", got, tc.wantAliasFinal)
+			}
+			if got := debaml.SupportsNativeFinalBundle(bundle) == nil; got != tc.wantFinalSupported {
+				t.Errorf("SupportsNativeFinalBundle ok = %v, want %v", got, tc.wantFinalSupported)
+			}
+			if got := debaml.IsProvenRecursiveAliasStaticStreamFamily(bundle); got != tc.wantStrm {
+				t.Errorf("STREAM served = %v, want %v", got, tc.wantStrm)
+			}
+			if got := debaml.SupportsNativeStaticStreamBundle(bundle) == nil; got != tc.wantStrm {
+				t.Errorf("SupportsNativeStaticStreamBundle ok = %v, want %v", got, tc.wantStrm)
+			}
+			// The codegen STREAM carrier fingerprint must track the runtime STREAM gate
+			// exactly — including saying "no" for the FINAL-served JsonValue carrier.
+			carrier := streamCarrierFor(t, tc.method)
+			if got := codegen.IsAdmittedJSONAliasStreamCarrier(carrier); got != tc.wantStrm {
+				t.Errorf("codegen stream carrier admit = %v, want %v (must equal the runtime STREAM gate)", got, tc.wantStrm)
+			}
+		})
+	}
+}
+
+// streamCarrierFor returns the generated ParseStream return type for one fixture method —
+// exactly what codegen fingerprints as methodEmitter.streamOutType.
+//
+// It is the SINGLE source of truth for the fingerprint input: both the agreement table and
+// TestAliasFinalVsStreamAdmissionSplit resolve carriers through it, so a future method
+// rename cannot be applied in one place only and leave the other test silently
+// fingerprinting the wrong carrier. It t.Fatalf's on an unwired method rather than
+// returning a nil type, so a new table row must be wired here explicitly.
+func streamCarrierFor(t *testing.T, method string) reflect.Type {
+	t.Helper()
+	switch method {
+	case "StaticRecursiveAliasJSON":
+		return reflect.TypeOf(bamlclient.ParseStream.StaticRecursiveAliasJSON).Out(0)
+	case "StaticRecursiveAliasJsonValue":
+		return reflect.TypeOf(bamlclient.ParseStream.StaticRecursiveAliasJsonValue).Out(0)
+	case "StaticRecursiveAliasJsonValueReordered":
+		return reflect.TypeOf(bamlclient.ParseStream.StaticRecursiveAliasJsonValueReordered).Out(0)
+	case "StaticRecursiveNode":
+		return reflect.TypeOf(bamlclient.ParseStream.StaticRecursiveNode).Out(0)
+	case "StaticCompletion":
+		return reflect.TypeOf(bamlclient.ParseStream.StaticCompletion).Out(0)
+	case "StaticOutputFormat":
+		return reflect.TypeOf(bamlclient.ParseStream.StaticOutputFormat).Out(0)
+	}
+	t.Fatalf("no stream carrier wired for %q", method)
+	return nil
 }

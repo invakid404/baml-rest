@@ -638,12 +638,15 @@ func admittedStaticReturnShape(b *schema.Bundle) bool {
 	if b == nil {
 		return false
 	}
-	// De-BAML Phase 3a: the admitted structural-recursive-ALIAS family (the direct
-	// five-arm JSON alias) is served through the NARROW per-method alias
-	// materializer/decoder, gated by the SAME exact fingerprint the root-owned parser
-	// profile uses (debaml.IsProvenRecursiveAliasStaticFamily). Checked BEFORE the
-	// generic alias reject below so the served shape and the parser stay in exact
-	// lockstep; every OTHER alias bundle still declines at the reject.
+	// De-BAML Phase 3a/3c: the admitted structural-recursive-ALIAS families (the direct
+	// five-arm `JSON` alias and the nullable six-stored-variant `JsonValue` alias) are
+	// served through the NARROW per-method alias materializer/decoder, gated by the SAME
+	// exact fingerprints the root-owned parser profile uses
+	// (debaml.IsProvenServedRecursiveAliasStaticFamily — the exact OR of the two
+	// name-pinned predicates, spelled ONCE in the root package so the two admission
+	// lanes cannot drift). Checked BEFORE the generic alias reject below so the served
+	// shapes and the parser stay in exact lockstep; every OTHER alias bundle still
+	// declines at the reject.
 	if isProvenRecursiveAliasStaticReturn(b) {
 		return true
 	}
@@ -688,14 +691,20 @@ func admittedStaticReturnShape(b *schema.Bundle) bool {
 }
 
 // isProvenRecursiveAliasStaticReturn reports whether the lowered Return Bundle is
-// EXACTLY the direct five-arm JSON alias
-// (type JSON = int | string | bool | JSON[] | map<string, JSON>). It delegates to
-// debaml.IsProvenRecursiveAliasStaticFamily so the isolated nativeserve serve gate and
-// the root-owned parser profile stay in EXACT lockstep — a newly-added or wider alias
-// (the #583 JsonValue, a renamed/wrapped alias, a float/null arm) can never claim a
-// socket until it brings its own oracle rows and is intentionally admitted.
+// EXACTLY one of the two served recursive-alias families:
+//
+//	type JSON      = int | string | bool | JSON[] | map<string, JSON>
+//	type JsonValue = int | float | bool | string | null
+//	               | JsonValue[] | map<string, JsonValue>
+//
+// It delegates to debaml.IsProvenServedRecursiveAliasStaticFamily so the isolated
+// nativeserve serve gate and the root-owned parser profile stay in EXACT lockstep — a
+// newly-added or wider alias (a renamed/wrapped alias, an extra or reordered arm) can
+// never claim a socket until it brings its own oracle rows and is intentionally
+// admitted. The OR lives in the root package, NOT here: spelling it in this isolated
+// module is exactly how the final gate and the stream gate would drift apart.
 func isProvenRecursiveAliasStaticReturn(b *schema.Bundle) bool {
-	return debaml.IsProvenRecursiveAliasStaticFamily(b)
+	return debaml.IsProvenServedRecursiveAliasStaticFamily(b)
 }
 
 // isProvenStaticStringScalar reports whether t is a bare, constraint-free primitive

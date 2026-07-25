@@ -119,9 +119,19 @@ func stripJSONComments(s string) string {
 // against the schema then fails in a way BAML would also fail (handled by
 // the caller after this returns true).
 func extractCandidate(raw string) (value, bool) {
+	return extractCandidateMode(raw, numModeLegacy)
+}
+
+// extractCandidateMode is [extractCandidate] parameterized by the number/bare-token
+// classification mode (alias_number.go). Every legacy caller goes through
+// [extractCandidate] ([numModeLegacy]); the admitted `JsonValue` alias lane passes
+// [numModeSerde], which makes the strict step reject a serde-rejected number token
+// (so the candidate falls through to the fixing parser exactly as in BAML) and gives
+// the fixing parser BAML's i64/u64/finite-f64/STRING bare-token conversion.
+func extractCandidateMode(raw string, nm numMode) (value, bool) {
 	// 1. Strict whole-input parse.
 	if trimmed := strings.TrimSpace(raw); trimmed != "" {
-		if v, err := strictDecode(trimmed); err == nil {
+		if v, err := strictDecodeMode(trimmed, nm); err == nil {
 			return v, true
 		}
 	}
@@ -129,7 +139,7 @@ func extractCandidate(raw string) (value, bool) {
 	// 2. Markdown fenced block: strict, then conservative fix, on the fence
 	//    content (BAML recurses into the fence with fixes enabled).
 	if fence, ok := extractFenceContent(raw); ok {
-		return decodeSpan(strings.TrimSpace(fence))
+		return decodeSpan(strings.TrimSpace(fence), nm)
 	}
 
 	// 3. First balanced JSON object/array embedded in prose: strict, then
@@ -144,7 +154,7 @@ func extractCandidate(raw string) (value, bool) {
 		if containsUnquotedBracket(raw[end:]) {
 			return value{}, false
 		}
-		return decodeSpan(span)
+		return decodeSpan(span, nm)
 	}
 
 	return value{}, false
@@ -155,11 +165,11 @@ func extractCandidate(raw string) (value, bool) {
 // false (fall back to BAML), never a claimed error — a span that merely
 // needs an out-of-subset repair is exactly the fixing-parser case M2a
 // defers.
-func decodeSpan(span string) (value, bool) {
-	if v, err := strictDecode(span); err == nil {
+func decodeSpan(span string, nm numMode) (value, bool) {
+	if v, err := strictDecodeMode(span, nm); err == nil {
 		return v, true
 	}
-	if v, err := fixParse(span); err == nil {
+	if v, err := fixParseMode(span, nm); err == nil {
 		return v, true
 	}
 	return value{}, false
@@ -321,9 +331,18 @@ func extractBalancedSpan(raw string) (span string, end int, ok bool) {
 // parse error: a claim only happens when a candidate is found AND stream
 // coercion against the schema succeeds (handled by the caller).
 func streamExtractCandidate(raw string) (value, bool) {
+	return streamExtractCandidateMode(raw, numModeLegacy)
+}
+
+// streamExtractCandidateMode is [streamExtractCandidate] parameterized by the
+// number/bare-token classification mode (alias_number.go) — the STREAMING twin of
+// [extractCandidateMode]. Every legacy caller goes through
+// [streamExtractCandidate] ([numModeLegacy]); the admitted `JsonValue` alias lane
+// passes [numModeSerde].
+func streamExtractCandidateMode(raw string, nm numMode) (value, bool) {
 	// 1. Strict whole-input parse — a fully-closed, complete value.
 	if trimmed := strings.TrimSpace(raw); trimmed != "" {
-		if v, err := strictDecode(trimmed); err == nil {
+		if v, err := strictDecodeMode(trimmed, nm); err == nil {
 			return v, true
 		}
 	}
@@ -341,10 +360,10 @@ func streamExtractCandidate(raw string) (value, bool) {
 		// so backticks INSIDE a string value stay part of the span, not the remainder.)
 		if span, end, closed, spanOk := extractBalancedSpanStream(trimmed); spanOk && closed {
 			if strings.Trim(trimmed[end:], " \t\r\n`") == "" {
-				return decodeSpanStream(span)
+				return decodeSpanStream(span, nm)
 			}
 		}
-		return decodeSpanStream(trimmed)
+		return decodeSpanStream(trimmed, nm)
 	}
 
 	// 3. First balanced-or-truncated object/array span embedded in prose.
@@ -359,7 +378,7 @@ func streamExtractCandidate(raw string) (value, bool) {
 		// and an UNTERMINATED span runs to EOF, so trailing whitespace may be INSIDE an
 		// open string (e.g. `{"a":"café ` streaming) — trimming it would drop string
 		// content BAML keeps. Inter-token whitespace is handled by the fixer.
-		return decodeSpanStream(span)
+		return decodeSpanStream(span, nm)
 	}
 
 	return value{}, false
@@ -370,11 +389,11 @@ func streamExtractCandidate(raw string) (value, bool) {
 // streaming fixing pass (which recovers open objects/arrays/strings, drops
 // still-streaming keys, and tags per-value completion). A span the streaming
 // subset declines returns false (fall back to BAML).
-func decodeSpanStream(span string) (value, bool) {
-	if v, err := strictDecode(span); err == nil {
+func decodeSpanStream(span string, nm numMode) (value, bool) {
+	if v, err := strictDecodeMode(span, nm); err == nil {
 		return v, true
 	}
-	return streamFix(span)
+	return streamFixMode(span, nm)
 }
 
 // extractFenceContentStream is the streaming variant of extractFenceContent: it

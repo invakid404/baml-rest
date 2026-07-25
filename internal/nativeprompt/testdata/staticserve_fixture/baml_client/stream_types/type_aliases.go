@@ -15,3 +15,4 @@ package stream_types
 
 type JSON = *Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString
 type JsonValue = *Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString
+type JsonValueReordered = *Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString

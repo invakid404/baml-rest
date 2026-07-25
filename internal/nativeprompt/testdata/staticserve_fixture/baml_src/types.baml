@@ -68,10 +68,33 @@ class NodeAnn {
 // arm. Its recursive list/map descendants are part of the served family.
 type JSON = int | string | bool | JSON[] | map<string, JSON>
 
-// The WIDER #583 residual: JsonValue adds a `float` arm plus an explicit `null`
-// arm (so the whole alias is nullable) and a distinct name. It is a DECLINED
-// oracle witness only — the served fingerprint (IsProvenRecursiveAliasStaticFamily)
-// DECLINES it, so native falls back to BAML with zero native sockets. Its
-// differential proves the null distinction: `JsonValue` null -> nil alias pointer,
-// where the served `JSON` null -> [] (the non-nullable list fallback).
+// De-BAML Phase 3c (recursive ALIASES) — the SECOND SERVED structural-recursive
+// alias. JsonValue adds a `float` arm plus an explicit `null` arm (so the whole
+// alias is nullable) and a distinct name; it is admitted by its OWN canonical
+// name-pinned fingerprint (IsProvenJsonValueRecursiveAliasStaticFamily), NOT by a
+// widening of the `JSON` one. Its lowered form is a NULLABLE union with exactly the
+// six ordered stored variants int, float, bool, string, JsonValue[],
+// map<string, JsonValue>. Its differential proves the two deltas versus `JSON`: the
+// int-vs-float scored split (1 -> int, 1.0/1.5 -> float, byte-exact Go float
+// formatting) and the first-class typed null (`JsonValue` null -> nil alias pointer
+// / public `null`, where the served `JSON` null -> [] the list fallback).
 type JsonValue = int | float | bool | string | null | JsonValue[] | map<string, JsonValue>
+
+// De-BAML Phase 3c — the RESIDUAL DECLINE witness that takes over the
+// declined-oracle role now that JsonValue is served. It is the NEAREST possible
+// negative: the IDENTICAL arm SET and nullability as JsonValue, with only the arm
+// ORDER changed (float before int) and the name changed. Stock BAML v0.223 accepts
+// and generates it, but the served fingerprint pins BOTH the canonical name AND the
+// ordered variant list, so it declines PRE-TRANSPORT with zero native sockets and
+// BAML serves it. That keeps "an alias indistinguishable from the served family
+// except for arm order still declines" a concrete, generated-oracle-backed proof
+// rather than an assertion about the distant non-alias decline rows.
+//
+// (An arm-COUNT witness — JsonValue plus an extra `map<string, string>` arm — was
+// tried first, per the scope's preference for a wider sibling. Stock v0.223 accepts
+// it, but the fixture's ordered-map client hack does not cover a non-recursive map
+// arm inside a structural-alias union, so the fixture would not compile. The scope's
+// stated fallback, a renamed/reordered alias, is used instead; the arm-COUNT,
+// arm-KIND, nullability and metadata rejections are pinned separately by the
+// synthetic-bundle fingerprint tests in internal/debaml.)
+type JsonValueReordered = float | int | bool | string | null | JsonValueReordered[] | map<string, JsonValueReordered>

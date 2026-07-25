@@ -113,12 +113,19 @@ func (me *methodEmitter) streamResultTypeCode() jen.Code {
 // method's ParseStream return: DecodeStaticAliasStream ONLY for the EXACT admitted five-arm
 // JSON stream carrier (stream_types.JSON — the *Union5 pointer union), else the generic
 // DecodeStaticFinal. It deliberately does NOT route on a bare json.Unmarshaler check (which
-// would also catch the wider StaticRecursiveAliasJsonValue *Union6 carrier): the narrow
-// alias-stream decoder is bound to the served fingerprint ONLY, so every other stream carrier
-// — the declined JsonValue, a scalar, a class — stays on its generic decoder (dead at runtime
-// on the decline path, but no longer mis-selected). It is the streaming twin of
-// finalResultDecoderName; keeping the alias on a distinct, separately-proven stream decoder
+// would also catch the StaticRecursiveAliasJsonValue *Union6 carrier): the narrow
+// alias-stream decoder is bound to the STREAM-served fingerprint ONLY, so every other stream
+// carrier — the stream-declined JsonValue, a scalar, a class — stays on its generic decoder
+// (dead at runtime on the decline path, but no longer mis-selected). It is the streaming twin
+// of finalResultDecoderName; keeping the alias on a distinct, separately-proven stream decoder
 // stops the generic decoder's proof set from being widened.
+//
+// De-BAML Phase 3c deliberately did NOT widen this to the six-arm JsonValue carrier. That
+// family is served on the FINAL lane only — finalResultDecoderName already routes it through
+// DecodeStaticAliasFinal via its json.Unmarshaler pointer receiver — while its STREAM gate
+// stays closed (internal/debaml/static_stream_serve.go documents why). Keeping the stream
+// fingerprint five-arm-only is what keeps codegen and the runtime stream gate in exact
+// agreement rather than merely one-way compatible.
 func (me *methodEmitter) streamResultDecoderName() string {
 	if isAdmittedJSONAliasStreamCarrier(me.streamOutType) {
 		return "DecodeStaticAliasStream"
@@ -130,9 +137,9 @@ func (me *methodEmitter) streamResultDecoderName() string {
 // stream carrier: a POINTER to a tagged-union struct whose arms are precisely
 // {int64, string, bool, []JSON, map[string]JSON} — where the list element and map value both
 // reference the SAME pointer union recursively (JSON = *Union5…), the map key is string, and
-// there is NO other arm. It is a STRUCTURAL fingerprint (not a type-name match), so the wider
-// JsonValue carrier (*Union6…, which adds a float64 arm + a null-able alias) and every other
-// stream carrier are rejected. Mirrors the runtime debaml.IsProvenRecursiveAliasStaticStreamFamily
+// there is NO other arm. It is a STRUCTURAL fingerprint (not a type-name match), so the
+// six-arm JsonValue carrier (*Union6…, which adds a float64 arm + a nullable alias — served
+// on the FINAL lane, stream-declined) and every other stream carrier are rejected. Mirrors the runtime debaml.IsProvenRecursiveAliasStaticStreamFamily
 // fingerprint at codegen time so the emitted decoder selection cannot drift from admission.
 func isAdmittedJSONAliasStreamCarrier(t reflect.Type) bool {
 	if t == nil || t.Kind() != reflect.Pointer {
@@ -180,7 +187,7 @@ func isAdmittedJSONAliasStreamCarrier(t reflect.Type) bool {
 			hasMap = true
 			arms++
 		default:
-			return false // any other arm (e.g. a float64 arm → the wider JsonValue) → reject
+			return false // any other arm (e.g. a float64 arm → the six-arm JsonValue) → reject
 		}
 	}
 	// EXACTLY the five arms + EXACTLY one discriminator: the total field set is bounded, so no
@@ -220,8 +227,10 @@ func (me *methodEmitter) finalResultDecoderName() string {
 		}
 		// A value union (JSON -> Union5, UnmarshalJSON on *Union5) is caught by
 		// PointerTo(out); a NULLABLE alias (JsonValue -> *Union6, UnmarshalJSON on the
-		// pointer type itself) is caught by out. A nullable CLASS (*Node / *StaticAnswer)
-		// implements neither (classes carry no custom JSON methods), so it stays generic.
+		// pointer type itself) is caught by out — which is exactly how the Phase-3c
+		// FINAL-served JsonValue reaches the narrow alias decoder without any change here.
+		// A nullable CLASS (*Node / *StaticAnswer) implements neither (classes carry no
+		// custom JSON methods), so it stays generic.
 		if out.Implements(jsonUnmarshalerType) || reflect.PointerTo(out).Implements(jsonUnmarshalerType) {
 			return "DecodeStaticAliasFinal"
 		}
