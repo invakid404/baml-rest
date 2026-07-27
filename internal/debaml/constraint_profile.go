@@ -427,6 +427,11 @@ func exceedsExactIntegerRange(this ConstraintValue, expr string) bool {
 	if !everyNumericTokenIsProvablySmall(expr) {
 		return true
 	}
+	// Subscript and slice bounds reach Value.AsInt inside the VM, where nothing
+	// can be wrapped. See [bracketBoundsAreProvablySafe].
+	if !bracketBoundsAreProvablySafe(expr) {
+		return true
+	}
 	if !containsArithmeticByte(expr) {
 		return false
 	}
@@ -439,6 +444,87 @@ func exceedsExactIntegerRange(this ConstraintValue, expr string) bool {
 // costs coverage, under-detecting would cost the guarantee.
 func containsArithmeticByte(expr string) bool {
 	return strings.ContainsAny(expr, "+-*/%")
+}
+
+// bracketBoundsAreProvablySafe covers the last two AsInt consumers, and they are
+// the only ones that are neither a filter nor a test: the VM's own subscript and
+// slice operators.
+//
+//	value.Value.GetItem   value.go:1174-1221   `key.AsInt()` per payload arm
+//	State.evalSlice       state.go:2919-2939   start, stop AND step
+//
+// Neither is reachable by wrapping anything. They are executed by the engine
+// between evaluating the index expression and using it, and this package cannot
+// hook the pinned dependency there. The reachable case needs no hazardous input
+// at all — it manufactures the float inside the expression:
+//
+//	[1,2,3][(("9223372036854" ~ "775808")|float):]|length == 3
+//
+// Both string tokens are short, so everyNumericTokenIsProvablySmall admits them;
+// `~`, `|` and the slice carry none of the `+-*/%` bytes that would invoke the
+// numeric sublanguage; and `|float` legitimately returns a non-IsActualInt float,
+// which containsInexactInteger passes by design. evalSlice then does
+// int64(2^63): MinInt64 on linux/amd64, normalised to a start of 0, so native
+// answered TRUE with the full slice. Stock's i64::try_from SATURATES to i64::MAX,
+// giving an empty slice and FALSE.
+//
+// So the bound is enforced STRUCTURALLY, before evaluation, in the same posture
+// as the arithmetic gate: inside any `[...]` region, only LITERALS are admitted —
+// small decimal integers (optionally negated), string literals, and the `,` and
+// `:` separators. An index or bound that is computed, filtered, concatenated,
+// fractional or in any way derived is refused, whatever it would have evaluated
+// to. That covers GetItem and all three of evalSlice's bounds at once, and it
+// covers a list literal in the same sweep because the rule is about the REGION,
+// not about deciding which kind of `[` this is — a distinction a hand scanner
+// would have to get right, and the one thing rounds 5 and 6 proved it will not.
+//
+// Fail-closed on anything the scan cannot classify: an unbalanced bracket, a
+// nested bracket, a backslash inside a string, or an unterminated string.
+func bracketBoundsAreProvablySafe(expr string) bool {
+	depth := 0
+	for i := 0; i < len(expr); i++ {
+		c := expr[i]
+		switch {
+		case c == '"' || c == '\'':
+			// A string literal, inside brackets or out. Consume it here so a `[`
+			// in its body is never mistaken for a subscript.
+			quote := c
+			i++
+			for ; i < len(expr) && expr[i] != quote; i++ {
+				if expr[i] == '\\' {
+					return false // an escape: not something to guess at
+				}
+			}
+			if i >= len(expr) {
+				return false // unterminated
+			}
+		case c == '[':
+			depth++
+			if depth > 1 {
+				return false // a nested bracket region is not analysed
+			}
+		case c == ']':
+			depth--
+			if depth < 0 {
+				return false
+			}
+		case depth == 0:
+			// Outside brackets everything is somebody else's problem.
+		case c >= '0' && c <= '9', c == '.', c == ',', c == ':', c == '-',
+			c == ' ', c == '\t', c == '\n', c == '\r', c == '\f', c == '\v':
+			// Numeric literals, negation, and the separators. A LITERAL is safe at
+			// any of these positions — including a fractional one — because
+			// everyNumericTokenIsProvablySmall has already capped every source
+			// numeric token at 15 integer digits, well inside the range where both
+			// engines convert alike. `.` also lets an ordinary list literal such as
+			// `[1,2.5]` through, which is not a subscript at all. The hazard this
+			// guard exists for is a DERIVED bound, and every way of deriving one
+			// needs a letter, quote, pipe, paren or bracket — all refused below.
+		default:
+			return false // an identifier, filter, call, operator or attribute
+		}
+	}
+	return depth == 0
 }
 
 // maxSmallDigits is 15 because 10^15 - 1 < 2^53, so any accepted integer — and

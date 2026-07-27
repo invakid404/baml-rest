@@ -252,12 +252,11 @@ func TestConstraintValueEnumIsAString(t *testing.T) {
 // a bool converts to i64 but NOT to f64.
 func TestConstraintSumFilter(t *testing.T) {
 	for expr, want := range map[string]string{
-		"[1,2]|sum":    "3",
-		"[1,2.5]|sum":  "3.5",
-		"[1,2.0]|sum":  "3", // 2.0 IS an i64 to minijinja, so this stays an int
-		"[true,1]|sum": "2", // bool -> i64, and the i64 arm wins
-		`["a"]|sum`:    "0", // neither arm applies
-		"[]|sum":       "0",
+		"[1,2]|sum":   "3",
+		"[1,2.5]|sum": "3.5",
+		"[1,2.0]|sum": "3", // 2.0 IS an i64 to minijinja, so this stays an int
+		`["a"]|sum`:   "0", // neither arm applies
+		"[]|sum":      "0",
 	} {
 		got, err := RenderConstraintExpression(NullValue(), expr)
 		if err != nil {
@@ -266,6 +265,18 @@ func TestConstraintSumFilter(t *testing.T) {
 		if got != want {
 			t.Errorf("render %q = %q, want %q", expr, got, want)
 		}
+	}
+
+	// ACCEPTED COST, round 14. The bool arm is no longer reachable from a list
+	// literal: subscript and slice bounds reach Value.AsInt inside the VM, where
+	// nothing can be wrapped, so the profile admits only LITERAL numbers, strings
+	// and separators inside `[...]` (see bracketBoundsAreProvablySafe). A bare
+	// `true`/`false`/`none` keyword is refused with the rest, because deciding
+	// whether a given `[` opens a list literal or a subscript is exactly the
+	// hand-lexing that failed open in rounds 5 and 6. The bool -> i64 rule itself
+	// is unchanged in the engine; it is only unreachable from this syntax.
+	if _, err := RenderConstraintExpression(NullValue(), "[true,1]|sum"); !errors.Is(err, ErrConstraintUnsupported) {
+		t.Errorf("`[true,1]|sum`: expected the bracket-literal refusal, got %v", err)
 	}
 
 	// `Vec<Value>` accepts only a sequence or iterable, so a string, a mapping

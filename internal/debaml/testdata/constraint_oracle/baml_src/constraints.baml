@@ -342,6 +342,18 @@ class Batch_const {
     @check(payload_round_small_pow, {{ (2.000000000000000 ** 3) == 8.0 }})
     @check(payload_round_in_range, {{ (562949953421312.000000000000001 ** 1) * 4 > 0.0 }})
     @check(asint_ctl_literal_even, {{ 4 is even }})
+    @check(slice_start_bigfloat, {{ [1,2,3][(("9223372036854" ~ "775808")|float):]|length == 3 }})
+    @check(slice_stop_bigfloat, {{ [1,2,3][:(("9223372036854" ~ "775808")|float)]|length == 3 }})
+    @check(slice_step_bigfloat, {{ [1,2,3][::(("9223372036854" ~ "775808")|float)]|length == 3 }})
+    @check(index_bigfloat, {{ [1,2,3][(("9223372036854" ~ "775808")|float)] == 1 }})
+    @check(index_float_literal, {{ [1,2,3][1.0] == 2 }})
+    @check(index_nested_brackets, {{ [[1],[2]][0][0] == 1 }})
+    @check(index_ctl_literal, {{ [1,2,3][0] == 1 }})
+    @check(slice_ctl_from, {{ [1,2,3][1:]|length == 2 }})
+    @check(slice_ctl_to, {{ [1,2,3][:2]|length == 2 }})
+    @check(slice_ctl_step, {{ [1,2,3][::2]|length == 2 }})
+    @check(slice_ctl_all_three, {{ [1,2,3][0:3:1]|length == 3 }})
+    @check(index_ctl_list_literal, {{ "a" in ["a","b"] }})
 }
 
 function Batch_constFn(topic: string) -> Batch_const {
@@ -429,6 +441,9 @@ class Batch_str {
     @check(this_str_regex, {{ this|regex_match("^Hello") }})
     @check(this_str_index, {{ this[0] == "H" }})
     @check(this_str_isstring, {{ this is string }})
+    @check(slice_this_bigfloat, {{ this[(("9223372036854" ~ "775808")|float):] == "H" }})
+    @check(index_ctl_string, {{ this[0] == "H" }})
+    @check(slice_ctl_string, {{ this[1:3] == "el" }})
 }
 
 function Batch_strFn(topic: string) -> Batch_str {
@@ -499,6 +514,12 @@ class Batch_list {
     @check(this_list_isseq, {{ this is sequence }})
     @check(this_list_eq, {{ this == [1,2,3] }})
     @check(this_list_string, {{ (this|string)[0] == "[" }})
+    @check(index_this_bigfloat, {{ this[(("9223372036854" ~ "775808")|float)] == 1 }})
+    @check(index_filter_derived, {{ this[this|length] == 1 }})
+    @check(slice_filter_derived, {{ this[0:this|length]|length == 3 }})
+    @check(index_intcast_derived, {{ this["9007199254740993"|int] == 1 }})
+    @check(index_ctl_this, {{ this[0] == 1 }})
+    @check(slice_ctl_this, {{ this[1:]|length == 2 }})
 }
 
 function Batch_listFn(topic: string) -> Batch_list {
@@ -564,6 +585,7 @@ class Batch_map {
     @check(this_map_string_len, {{ (this|string)|length == 24 }})
     @check(this_map_values_join, {{ this.values()|join(",") == "1,2,3" }})
     @check(this_map_concat, {{ (this ~ "")|length == 24 }})
+    @check(index_ctl_mapping, {{ this["z"] == 1 }})
 }
 
 function Batch_mapFn(topic: string) -> Batch_map {

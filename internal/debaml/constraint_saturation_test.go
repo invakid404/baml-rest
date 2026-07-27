@@ -917,3 +917,100 @@ func TestEveryRegisteredTestIsGuarded(t *testing.T) {
 		t.Errorf("only %d/%d registered tests were proven guarded", exercised, len(exprs))
 	}
 }
+
+// TestSubscriptAndSliceBoundsMustBeLiterals closes the last two AsInt consumers,
+// and the only two that are neither a filter nor a test: the VM's own subscript
+// and slice operators.
+//
+//	value.Value.GetItem   value.go:1174-1221   key.AsInt() per payload arm
+//	State.evalSlice       state.go:2919-2939   start, stop AND step
+//
+// Neither can be wrapped — the engine runs them between evaluating the index and
+// using it — so the bound is structural, in the same posture as the arithmetic
+// gate: inside `[...]`, only literals. The reachable case needs no hazardous
+// input at all; it manufactures the float in the expression, and every source
+// token in it is short enough to pass the numeric-token gate.
+func TestSubscriptAndSliceBoundsMustBeLiterals(t *testing.T) {
+	const bigFloat = `(("9223372036854" ~ "775808")|float)`
+	list := ListValue([]ConstraintValue{IntValue(1), IntValue(2), IntValue(3)})
+	str := StringValue("abcdef")
+
+	for name, tc := range map[string]struct {
+		this ConstraintValue
+		expr string
+	}{
+		// The reviewer's exact case, then the other two slice bounds.
+		"slice start":     {NullValue(), `[1,2,3][` + bigFloat + `:]|length == 3`},
+		"slice stop":      {NullValue(), `[1,2,3][:` + bigFloat + `]|length == 3`},
+		"slice step":      {NullValue(), `[1,2,3][::` + bigFloat + `]|length == 3`},
+		"direct index":    {NullValue(), `[1,2,3][` + bigFloat + `] == 1`},
+		"index over this": {list, `this[` + bigFloat + `] == 1`},
+		"slice over this": {str, `this[` + bigFloat + `:] == "a"`},
+		// Any DERIVED bound, hazardous or not — the profile does not evaluate it
+		// to find out.
+		"filter-derived index": {list, `this[this|length] == 1`},
+		"filter-derived bound": {list, `this[0:this|length]|length == 3`},
+		"int-cast index":       {list, `this["9007199254740993"|int] == 1`},
+		// Nested brackets are not analysed, so they refuse.
+		"nested brackets": {NullValue(), `[[1],[2]][0][0] == 1`},
+	} {
+		if got, err := EvaluateConstraint(tc.this, tc.expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%s: %q answered (%v, %v); a subscript or slice bound reaches Value.AsInt inside the VM",
+				name, tc.expr, got, err)
+		}
+	}
+
+	// Literal bounds stay admitted — the guard is about PROVENANCE, not about
+	// banning indexing. A source integer token is already capped at 15 digits by
+	// everyNumericTokenIsProvablySmall, so it cannot reach the conversion
+	// boundary.
+	for name, tc := range map[string]struct {
+		this ConstraintValue
+		expr string
+		want bool
+	}{
+		"literal index":     {NullValue(), `[1,2,3][0] == 1`, true},
+		"slice from":        {NullValue(), `[1,2,3][1:]|length == 2`, true},
+		"slice to":          {NullValue(), `[1,2,3][:2]|length == 2`, true},
+		"slice step":        {NullValue(), `[1,2,3][::2]|length == 2`, true},
+		"all three bounds":  {NullValue(), `[1,2,3][0:3:1]|length == 3`, true},
+		"list literal":      {NullValue(), `[1,2,3]|length == 3`, true},
+		"string list":       {NullValue(), `"a" in ["a","b"]`, true},
+		"index over this":   {ListValue([]ConstraintValue{IntValue(1), IntValue(2), IntValue(3)}), `this[0] == 1`, true},
+		"slice over this":   {ListValue([]ConstraintValue{IntValue(1), IntValue(2), IntValue(3)}), `this[1:]|length == 2`, true},
+		"string index":      {StringValue("abcdef"), `this[0] == "a"`, true},
+		"string slice":      {StringValue("abcdef"), `this[1:3] == "bc"`, true},
+		"mapping subscript": {MapValue([]ConstraintEntry{{Key: "k", Value: IntValue(7)}}), `this["k"] == 7`, true},
+	} {
+		got, err := EvaluateConstraint(tc.this, tc.expr)
+		if err != nil {
+			t.Errorf("%s: %q was refused (%v); a literal bound is provably in range", name, tc.expr, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s: %q = %v, want %v", name, tc.expr, got, tc.want)
+		}
+	}
+}
+
+// TestBracketScannerFailsClosed exercises the scanner itself, because rounds 5
+// and 6 established that a hand scanner which allows what it does not model is
+// the bug rather than the fix. Every shape it cannot classify must refuse.
+func TestBracketScannerFailsClosed(t *testing.T) {
+	for _, expr := range []string{
+		`[1,2,3][0`,            // unbalanced open
+		`[1,2,3]0]`,            // unbalanced close
+		`[[1,2],[3]]|length`,   // nested
+		`["a\"b"][0]`,          // an escape inside a string
+		`["unterminated][0]`,   // unterminated string
+		`[this][0]`,            // an identifier as a bracket element
+		`[1|abs][0]`,           // a filter inside brackets
+		`[1,2,3][0|int]`,       // a filter as the index
+		`[1,2,3][ "a" ~ "b" ]`, // a concatenation as the index
+	} {
+		if got, err := EvaluateConstraint(NullValue(), expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%q answered (%v, %v); the bracket scan must fail closed on anything it cannot classify",
+				expr, got, err)
+		}
+	}
+}
