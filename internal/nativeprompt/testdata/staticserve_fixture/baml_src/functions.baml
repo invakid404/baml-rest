@@ -139,14 +139,36 @@ function StaticRecursiveAliasJSON(topic: string) -> JSON {
   "#
 }
 
-// De-BAML Phase 3a — the DECLINED-oracle wider JsonValue return. The served
-// fingerprint DECLINES it (float + null arms, non-`JSON` name), so native falls
-// back to BAML with ZERO native sockets. Used ONLY by the decline/null-distinction
-// differential (JsonValue null -> nil alias pointer, vs served JSON null -> []).
+// De-BAML Phase 3c — the SECOND SERVED recursive-alias return, FINAL LANE ONLY. Bare
+// ctx.output_format Completion whose return descriptor is the nullable structural
+// recursive alias `JsonValue`. Proves the native static lane renders, serves, and
+// byte-exactly reproduces BAML v0.223's Parse for the float+null family (int-vs-float
+// scoring, Go float formatting, first-class typed null).
+//
+// STREAMING IS NOT ADMITTED for this family: /stream declines pre-transport and BAML
+// serves it, so this method appears in the served corpus of the FINAL cutover manifest
+// and on the DECLINED side of the stream manifest. The stream gate admits by descriptor
+// shape pre-socket and a claimed stream has no route back to BAML, so a family whose
+// parse can still decline on a VALUE must not claim a stream socket — see
+// internal/debaml/static_stream_serve.go for the full reasoning and the residual ledger
+// that gates reopening it.
 function StaticRecursiveAliasJsonValue(topic: string) -> JsonValue {
   client StaticOracleClient
   prompt #"
     Summarize {{ topic }} as arbitrary JSON (wide).
+    {{ ctx.output_format }}
+  "#
+}
+
+// De-BAML Phase 3c — the RESIDUAL DECLINED-oracle return. Its alias has the SAME arm
+// set and nullability as the served JsonValue with only the arm ORDER (and the name)
+// changed, so the name-and-order-pinned fingerprint DECLINES it pre-transport: native
+// opens ZERO sockets and BAML serves. It is the nearest generated negative witness for
+// the Phase-3c fingerprint.
+function StaticRecursiveAliasJsonValueReordered(topic: string) -> JsonValueReordered {
+  client StaticOracleClient
+  prompt #"
+    Summarize {{ topic }} as arbitrary JSON (reordered arms).
     {{ ctx.output_format }}
   "#
 }

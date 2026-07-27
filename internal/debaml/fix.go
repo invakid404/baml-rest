@@ -40,7 +40,14 @@ var errFixUnsupported = errors.New("debaml: fix: unsupported construct")
 // (recovery schemas always target object/list/class shapes, and a strict
 // scalar is already handled by the strict decode that runs first).
 func fixParse(s string) (value, error) {
-	p := &fixer{s: s}
+	return fixParseMode(s, numModeLegacy)
+}
+
+// fixParseMode is [fixParse] parameterized by the bare-token classification mode
+// (alias_number.go). Every legacy caller goes through [fixParse] ([numModeLegacy]);
+// the admitted `JsonValue` alias lane passes [numModeSerde].
+func fixParseMode(s string, nm numMode) (value, error) {
+	p := &fixer{s: s, nm: nm}
 	p.skipWS()
 	if p.eof() {
 		return value{}, errFixUnsupported
@@ -67,6 +74,14 @@ func fixParse(s string) (value, error) {
 type fixer struct {
 	s   string
 	pos int
+
+	// nm selects how a BARE (unquoted) scalar token is classified. It is
+	// [numModeLegacy] for every pre-Phase-3c caller (the conservative
+	// true/false/null-or-strict-JSON-number subset, with anything else declining) and
+	// [numModeSerde] only for the admitted `JsonValue` alias lane, which needs BAML's
+	// exact fixing-parser conversion (i64 -> u64 -> finite f64 -> unquoted STRING).
+	// See alias_number.go.
+	nm numMode
 }
 
 // Terminator sets for an unquoted scalar value, by enclosing collection.
@@ -342,7 +357,7 @@ func (p *fixer) parseUnquotedScalar(term string) (value, error) {
 			return value{}, errFixUnsupported
 		}
 	}
-	return classifyScalar(raw)
+	return classifyScalarMode(raw, p.nm)
 }
 
 // classifyScalar resolves a trimmed bare token to a value, matching BAML's
@@ -496,7 +511,14 @@ func (p *fixer) parseSingleQuoted() (string, error) {
 // than model the deletion (M4c). The final decoders never call this, so
 // value.incomplete stays false on the final-parse path.
 func streamFix(s string) (value, bool) {
-	p := &fixer{s: s}
+	return streamFixMode(s, numModeLegacy)
+}
+
+// streamFixMode is [streamFix] parameterized by the bare-token classification mode
+// (alias_number.go). Every legacy caller goes through [streamFix] ([numModeLegacy]);
+// the admitted `JsonValue` alias lane passes [numModeSerde].
+func streamFixMode(s string, nm numMode) (value, bool) {
+	p := &fixer{s: s, nm: nm}
 	p.skipWS()
 	if p.eof() {
 		return value{}, false
@@ -792,7 +814,7 @@ func (p *fixer) parseUnquotedScalarStream(term string) (value, error) {
 	p.skipWS()
 	if p.eof() {
 		// Ran to EOF with no terminator → still streaming → Incomplete.
-		v, err := classifyScalar(raw)
+		v, err := classifyScalarMode(raw, p.nm)
 		if err != nil {
 			// A token that is not (yet) a valid JSON number/bool/null literal — e.g. the
 			// partial `5e` of a streaming `5e0`. §5.9.1 greedy-recovery: for a STRING target
@@ -833,7 +855,7 @@ func (p *fixer) parseUnquotedScalarStream(term string) (value, error) {
 		// Fall through.
 	}
 	// Terminated by a proper delimiter → Complete.
-	return classifyScalar(raw)
+	return classifyScalarMode(raw, p.nm)
 }
 
 // greedyObjectValueTail reproduces BAML's fixing-parser InObjectValue greedy scan

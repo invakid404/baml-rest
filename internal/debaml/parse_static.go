@@ -66,7 +66,13 @@ func ParseStaticBundle(ctx context.Context, bundle *schema.Bundle, raw string) (
 	// then extract the single cleanly-claimable JSON candidate (strict → markdown
 	// fence → balanced span, each strict-then-M2a-fixed). No cleanly-claimable
 	// candidate DECLINES (never claims) — BAML may still recover it.
-	parsed, ok := extractCandidate(stripJSONComments(raw))
+	//
+	// De-BAML Phase 3c: the admitted `JsonValue` alias lane extracts under
+	// [numModeSerde] so bare numeric tokens classify exactly as BAML v0.223 does for a
+	// family that has BOTH an int and a float arm (alias_number.go). Every other
+	// bundle — including the Phase-3a `JSON` family — keeps [numModeLegacy], so their
+	// candidates are byte-for-byte the ones they extract today.
+	parsed, ok := extractCandidateMode(stripJSONComments(raw), bundleNumMode(bundle))
 	if !ok {
 		return bamlutils.DeBAMLParseResult{}, unsupported("no cleanly-claimable JSON candidate")
 	}

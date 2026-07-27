@@ -151,8 +151,16 @@ func (c *StaticStreamClaim) Close() {
 // lockstep. It DELIBERATELY does NOT reuse admittedStaticReturnShape (a final decoder gate
 // that admits unrelated final-only shapes): stream admission is NOT inherited from final.
 //
-// True ONLY for the proven recursive-alias family (the exact five-arm JSON alias); false for
-// every other bundle, which declines pre-claim and is served by BAML.
+// True ONLY for the STREAM-served recursive-alias family (the exact five-arm `JSON`
+// alias); false for every other bundle, which declines pre-claim and is served by BAML.
+//
+// It is deliberately NARROWER than admittedStaticReturnShape, which also admits the
+// nullable six-stored-variant `JsonValue` family for the FINAL lane. The stream gate
+// admits by descriptor SHAPE pre-socket and a claimed stream has no route back to BAML,
+// so a family whose parse can decline on a VALUE must not claim a stream socket; the
+// unary lane repairs the same response through BAML parse-only, so it can. The root
+// package owns that distinction (internal/debaml/static_stream_serve.go); this gate just
+// asks the STREAM predicate, never the wider FINAL one.
 func admittedStaticStreamReturnShape(b *schema.Bundle) bool {
 	return debaml.IsProvenRecursiveAliasStaticStreamFamily(b)
 }
@@ -169,8 +177,8 @@ func AdmitStaticStreamClaim(ctx context.Context, in StaticStreamInput) (*StaticS
 
 	// --- Return-shape gate (EARLY): the SERVE-only static-stream shape gate. Placed
 	// before any render / client normalize / nanollm New / Prepare so a stream OUTSIDE the
-	// admitted five-arm JSON alias family declines here doing ZERO nanollm work and opening
-	// NO socket. ---
+	// STREAM-admitted five-arm JSON alias family declines here doing ZERO nanollm work and
+	// opening NO socket. ---
 	if !admittedStaticStreamReturnShape(bundle) {
 		return nil, staticDeclineFromObs(declineStatic(bamlutils.NativeStaticFamilyDescriptorEnvelope, StagePrompt, reasonReturnShapeUnproven))
 	}

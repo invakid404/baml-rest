@@ -116,7 +116,11 @@ func TestAliasCoerce_OrderedInternalVsSortedPublic(t *testing.T) {
 	if !ok {
 		t.Fatal("extractCandidate failed")
 	}
-	tree, err := coerceAliasTree(b, parsed, &coerceCtx{})
+	prof, ok := admittedRecursiveAliasProfile(b)
+	if !ok {
+		t.Fatal("jsonAliasBundle must classify as the proven JSON alias family")
+	}
+	tree, err := coerceAliasTree(b, prof, parsed, &coerceCtx{})
 	if err != nil {
 		t.Fatalf("coerceAliasTree: %v", err)
 	}

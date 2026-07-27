@@ -4,12 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"slices"
-	"strings"
-	"sync"
-	"sync/atomic"
-	"time"
-
 	pkg "github.com/boundaryml/baml/engine/language_client_go/pkg"
 	goconcurrentqueue "github.com/enriquebris/goconcurrentqueue"
 	gorecovery "github.com/gregwebs/go-recovery"
@@ -23,6 +17,11 @@ import (
 	types "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/staticserve_fixture/baml_client/types"
 	adapter "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/staticserve_fixture/generated/adapter"
 	introspected "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/staticserve_fixture/introspected"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
 type StaticCompletionInput struct {
@@ -6266,6 +6265,895 @@ func StaticRecursiveAliasJsonValue(adapter bamlutils.Adapter, rawInput any) (<-c
 	return out, nil
 }
 
+type StaticRecursiveAliasJsonValueReorderedInput struct {
+	Topic string `json:"topic"`
+}
+type StaticRecursiveAliasJsonValueReorderedOutput struct {
+	kind         bamlutils.StreamResultKind
+	raw          string
+	reasoning    string
+	streamParsed **streamtypes.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString
+	finalParsed  **types.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString
+	err          error
+	reset        bool
+	metadata     *bamlutils.Metadata
+}
+
+func (v *StaticRecursiveAliasJsonValueReorderedOutput) Kind() bamlutils.StreamResultKind {
+	return v.kind
+}
+func (v *StaticRecursiveAliasJsonValueReorderedOutput) Stream() any {
+	return v.streamParsed
+}
+func (v *StaticRecursiveAliasJsonValueReorderedOutput) Final() any {
+	return v.finalParsed
+}
+func (v *StaticRecursiveAliasJsonValueReorderedOutput) Error() error {
+	return v.err
+}
+func (v *StaticRecursiveAliasJsonValueReorderedOutput) Raw() string {
+	return v.raw
+}
+func (v *StaticRecursiveAliasJsonValueReorderedOutput) Reasoning() string {
+	return v.reasoning
+}
+func (v *StaticRecursiveAliasJsonValueReorderedOutput) Reset() bool {
+	return v.reset
+}
+func (v *StaticRecursiveAliasJsonValueReorderedOutput) Metadata() *bamlutils.Metadata {
+	return v.metadata
+}
+
+var staticRecursiveAliasJsonValueReorderedOutputPool = bamlutils.NewPool(func() *StaticRecursiveAliasJsonValueReorderedOutput {
+	return &StaticRecursiveAliasJsonValueReorderedOutput{}
+})
+
+func (v *StaticRecursiveAliasJsonValueReorderedOutput) Release() {
+	if v == nil {
+		return
+	}
+	*v = StaticRecursiveAliasJsonValueReorderedOutput{}
+	staticRecursiveAliasJsonValueReorderedOutputPool.Put(v)
+}
+func getStaticRecursiveAliasJsonValueReorderedOutput() *StaticRecursiveAliasJsonValueReorderedOutput {
+	return staticRecursiveAliasJsonValueReorderedOutputPool.Get()
+}
+func newStaticRecursiveAliasJsonValueReorderedOutputError(err error) *StaticRecursiveAliasJsonValueReorderedOutput {
+	r := getStaticRecursiveAliasJsonValueReorderedOutput()
+	r.kind = bamlutils.StreamResultKindError
+	r.err = err
+	return r
+}
+func newStaticRecursiveAliasJsonValueReorderedOutputMetadata(md *bamlutils.Metadata) *StaticRecursiveAliasJsonValueReorderedOutput {
+	r := getStaticRecursiveAliasJsonValueReorderedOutput()
+	r.kind = bamlutils.StreamResultKindMetadata
+	r.metadata = md
+	return r
+}
+func staticRecursiveAliasJsonValueReorderedNoRaw(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, skipPartials bool, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
+	options, err := makeLegacyStreamOptionsFromAdapter(adapter, clientOverride)
+	if err != nil {
+		return err
+	}
+	input, ok := rawInput.(*StaticRecursiveAliasJsonValueReorderedInput)
+	if !ok {
+		return fmt.Errorf("invalid input type: expected *%s, got %T", "StaticRecursiveAliasJsonValueReorderedInput", rawInput)
+	}
+	return runNoRawOrchestration(adapter, out, func() bamlutils.StreamResult {
+		__r := getStaticRecursiveAliasJsonValueReorderedOutput()
+		__r.kind = bamlutils.StreamResultKindHeartbeat
+		return __r
+	}, func(err error) bamlutils.StreamResult {
+		return newStaticRecursiveAliasJsonValueReorderedOutputError(err)
+	}, func(__r bamlutils.StreamResult) {
+		__r.Release()
+	}, plannedMetadata, func(md *bamlutils.Metadata) bamlutils.StreamResult {
+		return newStaticRecursiveAliasJsonValueReorderedOutputMetadata(md)
+	}, func(beforeFinal func(), onTick func(context.Context, pkg.TickReason, pkg.FunctionLog) pkg.FunctionSignal) error {
+		streamOpts := append(options, bamlclient.WithOnTick(onTick))
+		if clientOverride != "" {
+			streamOpts = append(slices.Clone(streamOpts), bamlclient.WithClient(clientOverride))
+		}
+		stream, streamErr := bamlclient.Stream.StaticRecursiveAliasJsonValueReordered(adapter, input.Topic, streamOpts...)
+		if streamErr != nil {
+			__errR := newStaticRecursiveAliasJsonValueReorderedOutputError(streamErr)
+			select {
+			case out <- __errR:
+			case <-adapter.Done():
+				__errR.Release()
+			}
+			return nil
+		}
+		for streamVal := range stream {
+			select {
+			case <-adapter.Done():
+				return nil
+			default:
+			}
+			if streamVal.IsError {
+				__errR := newStaticRecursiveAliasJsonValueReorderedOutputError(streamVal.Error)
+				select {
+				case out <- __errR:
+				case <-adapter.Done():
+					__errR.Release()
+					return nil
+				}
+				continue
+			}
+			if streamVal.IsFinal {
+				__r := getStaticRecursiveAliasJsonValueReorderedOutput()
+				__r.kind = bamlutils.StreamResultKindFinal
+				__r.finalParsed = streamVal.Final()
+				beforeFinal()
+				select {
+				case out <- __r:
+				case <-adapter.Done():
+					__r.Release()
+					return nil
+				}
+				continue
+			}
+			if !skipPartials {
+				if __partial := streamVal.Stream(); __partial != nil {
+					__r := getStaticRecursiveAliasJsonValueReorderedOutput()
+					__r.kind = bamlutils.StreamResultKindStream
+					__r.streamParsed = __partial
+					select {
+					case out <- __r:
+					case <-adapter.Done():
+						__r.Release()
+						return nil
+					default:
+						__r.Release()
+					}
+				}
+			}
+		}
+		return nil
+	})
+}
+func staticRecursiveAliasJsonValueReorderedFull(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, skipIntermediateParsing bool, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
+	options, err := makeLegacyStreamOptionsFromAdapter(adapter, clientOverride)
+	if err != nil {
+		return err
+	}
+	input, ok := rawInput.(*StaticRecursiveAliasJsonValueReorderedInput)
+	if !ok {
+		return fmt.Errorf("invalid input type: expected *%s, got %T", "StaticRecursiveAliasJsonValueReorderedInput", rawInput)
+	}
+	return runFullOrchestration(adapter, out, options, func() bamlutils.StreamResult {
+		__r := getStaticRecursiveAliasJsonValueReorderedOutput()
+		__r.kind = bamlutils.StreamResultKindHeartbeat
+		return __r
+	}, func(err error, raw string) bamlutils.StreamResult {
+		__r := newStaticRecursiveAliasJsonValueReorderedOutputError(err)
+		__r.raw = raw
+		return __r
+	}, func(__r bamlutils.StreamResult) {
+		__r.Release()
+	}, plannedMetadata, func(md *bamlutils.Metadata) bamlutils.StreamResult {
+		return newStaticRecursiveAliasJsonValueReorderedOutputMetadata(md)
+	}, func(funcLog pkg.FunctionLog, extractor *sse.IncrementalExtractor, extractorMu *sync.Mutex) error {
+		calls, callsErr := funcLog.Calls()
+		if callsErr != nil {
+			return nil
+		}
+		callCount := len(calls)
+		if callCount == 0 {
+			return nil
+		}
+		lastCall := calls[callCount-1]
+		streamCall, ok := lastCall.(pkg.LLMStreamCall)
+		if !ok {
+			return nil
+		}
+		provider, provErr := streamCall.Provider()
+		if provErr != nil {
+			return nil
+		}
+		if !sse.IsDeltaProviderSupported(provider) {
+			resolved := false
+			for i := callCount - 1; i >= 0 && !resolved; i-- {
+				if sc, scOk := calls[i].(pkg.LLMStreamCall); scOk {
+					if cp, cpErr := sc.Provider(); cpErr == nil && sse.IsDeltaProviderSupported(cp) {
+						provider = cp
+						resolved = true
+					}
+				}
+			}
+			if !resolved {
+				if clientName, cnErr := streamCall.ClientName(); cnErr == nil && clientName != "" {
+					if reg := adapter.OriginalClientRegistry(); reg != nil {
+						for _, rc := range reg.Clients {
+							if rc != nil && rc.Name == clientName && rc.Provider != "" && sse.IsDeltaProviderSupported(rc.Provider) {
+								provider = rc.Provider
+								resolved = true
+								break
+							}
+						}
+					}
+					if !resolved {
+						if sp, spOk := introspected.ClientProvider[clientName]; spOk && sse.IsDeltaProviderSupported(sp) {
+							provider = sp
+						}
+					}
+				}
+			}
+		}
+		chunks, chunksErr := streamCall.SSEChunks()
+		if chunksErr != nil {
+			return nil
+		}
+		extractorMu.Lock()
+		defer extractorMu.Unlock()
+		extractResult := sse.ExtractFrom(extractor, callCount, provider, chunks)
+		if skipIntermediateParsing {
+			return nil
+		}
+		if extractResult.ParseableDelta == "" && extractResult.RawDelta == "" && extractResult.ReasoningDelta == "" && !extractResult.Reset {
+			return nil
+		}
+		parseable := extractResult.ParseableFull
+		parseableDelta := extractResult.ParseableDelta
+		rawDelta := extractResult.RawDelta
+		reasoningDelta := extractResult.ReasoningDelta
+		if parseable == "" || parseableDelta == "" {
+			select {
+			case <-adapter.Done():
+				return nil
+			default:
+			}
+			__r := getStaticRecursiveAliasJsonValueReorderedOutput()
+			__r.kind = bamlutils.StreamResultKindStream
+			__r.raw = rawDelta
+			__r.reasoning = reasoningDelta
+			__r.reset = extractResult.Reset
+			if extractResult.Reset {
+				select {
+				case out <- __r:
+				case <-adapter.Done():
+					__r.Release()
+				}
+			} else {
+				select {
+				case out <- __r:
+				default:
+					__r.Release()
+				}
+			}
+			return nil
+		}
+		parsed, parseErr := bamlclient.ParseStream.StaticRecursiveAliasJsonValueReordered(adapter, parseable, options...)
+		if parseErr == nil {
+			select {
+			case <-adapter.Done():
+				return nil
+			default:
+			}
+			parsedPtr := &parsed
+			__r := getStaticRecursiveAliasJsonValueReorderedOutput()
+			__r.kind = bamlutils.StreamResultKindStream
+			__r.raw = rawDelta
+			__r.reasoning = reasoningDelta
+			__r.streamParsed = parsedPtr
+			__r.reset = extractResult.Reset
+			if extractResult.Reset {
+				select {
+				case out <- __r:
+				case <-adapter.Done():
+					__r.Release()
+				}
+			} else {
+				select {
+				case out <- __r:
+				default:
+					__r.Release()
+				}
+			}
+		} else if extractResult.Reset {
+			select {
+			case <-adapter.Done():
+				return nil
+			default:
+			}
+			__r := getStaticRecursiveAliasJsonValueReorderedOutput()
+			__r.kind = bamlutils.StreamResultKindStream
+			__r.raw = rawDelta
+			__r.reasoning = reasoningDelta
+			__r.reset = true
+			select {
+			case out <- __r:
+			case <-adapter.Done():
+				__r.Release()
+			}
+		}
+		return nil
+	}, func(opts []bamlclient.CallOptionFunc) (any, error) {
+		driveOpts := opts
+		if clientOverride != "" {
+			driveOpts = append(slices.Clone(opts), bamlclient.WithClient(clientOverride))
+		}
+		stream, streamErr := bamlclient.Stream.StaticRecursiveAliasJsonValueReordered(adapter, input.Topic, driveOpts...)
+		if streamErr != nil {
+			return nil, streamErr
+		}
+		var result any
+		var lastErr error
+		for streamVal := range stream {
+			if streamVal.IsError {
+				lastErr = streamVal.Error
+				continue
+			}
+			if streamVal.IsFinal {
+				result = streamVal.Final()
+			}
+		}
+		return result, lastErr
+	}, func(result any, raw string, reasoning string) bamlutils.StreamResult {
+		__r := getStaticRecursiveAliasJsonValueReorderedOutput()
+		__r.kind = bamlutils.StreamResultKindFinal
+		__r.raw = raw
+		__r.reasoning = reasoning
+		if result != nil {
+			if ptr, ok := result.(**types.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString); ok {
+				__r.finalParsed = ptr
+			} else if val, ok := result.(*types.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString); ok {
+				__r.finalParsed = &val
+			}
+		}
+		return __r
+	})
+}
+func staticRecursiveAliasJsonValueReorderedBuildRequest(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, provider string, retryPolicy *retry.Policy, fallbackChain []string, clientProviders map[string]string, legacyChildren map[string]bool, fallbackTargets map[string]string, fallbackRoundRobin map[string]*bamlutils.RoundRobinInfo, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
+	options, err := makeOptionsFromAdapter(adapter)
+	if err != nil {
+		return err
+	}
+	input, ok := rawInput.(*StaticRecursiveAliasJsonValueReorderedInput)
+	if !ok {
+		return fmt.Errorf("invalid input type: expected *%s, got %T", "StaticRecursiveAliasJsonValueReorderedInput", rawInput)
+	}
+	buildRequestFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+		callOpts := options
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(options), bamlclient.WithClient(clientOverride))
+		}
+		httpReq, err := bamlclient.StreamRequest.StaticRecursiveAliasJsonValueReordered(ctx, input.Topic, callOpts...)
+		if err != nil {
+			return nil, err
+		}
+		url, urlErr := httpReq.Url()
+		if urlErr != nil {
+			return nil, fmt.Errorf("failed to get URL: %w", urlErr)
+		}
+		method, methodErr := httpReq.Method()
+		if methodErr != nil {
+			return nil, fmt.Errorf("failed to get method: %w", methodErr)
+		}
+		headers, headersErr := httpReq.Headers()
+		if headersErr != nil {
+			return nil, fmt.Errorf("failed to get headers: %w", headersErr)
+		}
+		body, bodyErr := httpReq.Body()
+		if bodyErr != nil {
+			return nil, fmt.Errorf("failed to get body: %w", bodyErr)
+		}
+		bodyText, bodyTextErr := body.Text()
+		if bodyTextErr != nil {
+			return nil, fmt.Errorf("failed to get body text: %w", bodyTextErr)
+		}
+		req := &llmhttp.Request{
+			Body:    bodyText,
+			Headers: headers,
+			Method:  method,
+			URL:     url,
+		}
+		return req, nil
+	}
+	buildBedrockStreamRequestFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+		callOpts := options
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(options), bamlclient.WithClient(clientOverride))
+		}
+		httpReq, err := bamlclient.Request.StaticRecursiveAliasJsonValueReordered(ctx, input.Topic, callOpts...)
+		if err != nil {
+			return nil, err
+		}
+		url, urlErr := httpReq.Url()
+		if urlErr != nil {
+			return nil, fmt.Errorf("failed to get URL: %w", urlErr)
+		}
+		method, methodErr := httpReq.Method()
+		if methodErr != nil {
+			return nil, fmt.Errorf("failed to get method: %w", methodErr)
+		}
+		headers, headersErr := httpReq.Headers()
+		if headersErr != nil {
+			return nil, fmt.Errorf("failed to get headers: %w", headersErr)
+		}
+		body, bodyErr := httpReq.Body()
+		if bodyErr != nil {
+			return nil, fmt.Errorf("failed to get body: %w", bodyErr)
+		}
+		bodyText, bodyTextErr := body.Text()
+		if bodyTextErr != nil {
+			return nil, fmt.Errorf("failed to get body text: %w", bodyTextErr)
+		}
+		req := &llmhttp.Request{
+			Body:    bodyText,
+			Headers: headers,
+			Method:  method,
+			URL:     url,
+		}
+		req.URL = strings.Replace(req.URL, "/converse", "/converse-stream", 1)
+		if req.Headers == nil {
+			req.Headers = make(map[string]string)
+		}
+		req.Headers["Accept"] = llmhttp.AWSStreamContentType
+		selectedClient := clientOverride
+		if selectedClient == "" {
+			selectedClient = introspected.FunctionClient["StaticRecursiveAliasJsonValueReordered"]
+		}
+		var (
+			bedrockEndpointURL        string
+			bedrockEndpointURLPresent bool
+			bedrockRegion             string
+			bedrockRegionPresent      bool
+			bedrockCreds              llmhttp.BedrockCredentialSelector
+		)
+		if bedrockOpts, ok := introspected.BedrockClientOptionsByName[selectedClient]; ok {
+			bedrockEndpointURL, _ = bedrockOpts.EndpointURL.Resolve()
+			bedrockEndpointURLPresent = bedrockOpts.EndpointURL.IsSet()
+			bedrockRegion, _ = bedrockOpts.Region.Resolve()
+			bedrockRegionPresent = bedrockOpts.Region.IsSet()
+			bedrockCreds.AccessKeyID, _ = bedrockOpts.Credentials.AccessKeyID.Resolve()
+			bedrockCreds.AccessKeyIDPresent = bedrockOpts.Credentials.AccessKeyID.IsSet()
+			bedrockCreds.SecretAccessKey, _ = bedrockOpts.Credentials.SecretAccessKey.Resolve()
+			bedrockCreds.SecretAccessKeyPresent = bedrockOpts.Credentials.SecretAccessKey.IsSet()
+			bedrockCreds.SessionToken, _ = bedrockOpts.Credentials.SessionToken.Resolve()
+			bedrockCreds.SessionTokenPresent = bedrockOpts.Credentials.SessionToken.IsSet()
+			bedrockCreds.Profile, _ = bedrockOpts.Credentials.Profile.Resolve()
+			bedrockCreds.ProfilePresent = bedrockOpts.Credentials.Profile.IsSet()
+		}
+		if authErr := llmhttp.AttachBedrockAuthForClient(ctx, req, llmhttp.BedrockClientAuthOptions{
+			ClientName:         selectedClient,
+			Credentials:        bedrockCreds,
+			EndpointURL:        bedrockEndpointURL,
+			EndpointURLPresent: bedrockEndpointURLPresent,
+			Region:             bedrockRegion,
+			RegionPresent:      bedrockRegionPresent,
+		}); authErr != nil {
+			return nil, authErr
+		}
+		return req, nil
+	}
+	parseStreamFn := func(ctx context.Context, accumulated string) (any, error) {
+		return bamlclient.ParseStream.StaticRecursiveAliasJsonValueReordered(ctx, accumulated, options...)
+	}
+	parseFinalFn := func(ctx context.Context, accumulated string) (any, error) {
+		return bamlclient.Parse.StaticRecursiveAliasJsonValueReordered(ctx, accumulated, options...)
+	}
+	newResultFn := func(kind bamlutils.StreamResultKind, stream any, final any, raw string, reasoning string, err error, reset bool) bamlutils.StreamResult {
+		r := getStaticRecursiveAliasJsonValueReorderedOutput()
+		r.kind = kind
+		r.raw = raw
+		r.reasoning = reasoning
+		r.err = err
+		r.reset = reset
+		if stream != nil {
+			if v, ok := stream.(**streamtypes.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString); ok {
+				r.streamParsed = v
+			} else if v, ok := stream.(*streamtypes.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString); ok {
+				r.streamParsed = &v
+			}
+		}
+		if final != nil {
+			if v, ok := final.(**types.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString); ok {
+				r.finalParsed = v
+			} else if v, ok := final.(*types.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString); ok {
+				r.finalParsed = &v
+			}
+		}
+		return r
+	}
+	legacyStreamChildFn := func(ctx context.Context, clientOverride string, _ string, needsRaw bool, sendHeartbeat func()) (any, string, string, error) {
+		callOpts, childOptsErr := makeLegacyChildOptionsFromAdapter(adapter, clientOverride)
+		if childOptsErr != nil {
+			return nil, "", "", childOptsErr
+		}
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(callOpts), bamlclient.WithClient(clientOverride))
+		}
+		return runLegacyChildStream(ctx, needsRaw, sendHeartbeat, func(onTick func(context.Context, pkg.TickReason, pkg.FunctionLog) pkg.FunctionSignal) (any, error) {
+			opts := append(callOpts, bamlclient.WithOnTick(onTick))
+			stream, streamErr := bamlclient.Stream.StaticRecursiveAliasJsonValueReordered(ctx, input.Topic, opts...)
+			if streamErr != nil {
+				return nil, streamErr
+			}
+			var result any
+			var lastErr error
+			for streamVal := range stream {
+				if streamVal.IsError {
+					lastErr = streamVal.Error
+					continue
+				}
+				if streamVal.IsFinal {
+					result = streamVal.Final()
+				}
+			}
+			return result, lastErr
+		})
+	}
+	streamConfig := &buildrequest.StreamConfig{
+		BuildBedrockStreamRequest: buildBedrockStreamRequestFn,
+		ClientOverride:            clientOverride,
+		ClientProviders:           clientProviders,
+		FallbackChain:             fallbackChain,
+		FallbackRoundRobin:        fallbackRoundRobin,
+		FallbackTargets:           fallbackTargets,
+		IncludeReasoning:          adapter.IncludeReasoning(),
+		LegacyChildren:            legacyChildren,
+		LegacyStreamChild:         legacyStreamChildFn,
+		MetadataPlan:              plannedMetadata,
+		NeedsPartials:             adapter.StreamMode().NeedsPartials(),
+		NeedsRaw:                  adapter.StreamMode().NeedsRaw(),
+		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
+			return newStaticRecursiveAliasJsonValueReorderedOutputMetadata(md)
+		},
+		Provider:    provider,
+		RetryPolicy: retryPolicy,
+	}
+	__httpClient := llmhttp.DefaultClient
+	if __c := adapter.HTTPClient(); __c != nil {
+		__httpClient = __c
+	}
+	__staticStreamServe := deBAMLStaticStreamServe(adapter)
+	if __staticStreamServe != nil {
+		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRecursiveAliasJsonValueReordered"); __staticStreamOK {
+			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticFinal[*streamtypes.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString](__cj)
+				return __dv, __de
+			}, func(__cj []byte) (any, error) {
+				__dv, __de := bamlutils.DecodeStaticAliasFinal[*types.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString](__cj)
+				return __dv, __de
+			})
+		}
+	}
+	go func() {
+		defer close(out)
+		gorecovery.GoHandler(func(err error) {
+			__errR := newResultFn(bamlutils.StreamResultKindError, nil, nil, "", "", err, false)
+			select {
+			case out <- __errR:
+			case <-adapter.Done():
+				__errR.Release()
+			}
+		}, func() error {
+			return buildrequest.RunStreamOrchestration(adapter, out, streamConfig, __httpClient, buildRequestFn, parseStreamFn, parseFinalFn, newResultFn)
+		})
+	}()
+	return nil
+}
+func staticRecursiveAliasJsonValueReorderedBuildCallRequest(adapter bamlutils.Adapter, rawInput any, out chan bamlutils.StreamResult, provider string, retryPolicy *retry.Policy, fallbackChain []string, clientProviders map[string]string, legacyChildren map[string]bool, fallbackTargets map[string]string, fallbackRoundRobin map[string]*bamlutils.RoundRobinInfo, plannedMetadata *bamlutils.Metadata, clientOverride string) error {
+	options, err := makeOptionsFromAdapter(adapter)
+	if err != nil {
+		return err
+	}
+	input, ok := rawInput.(*StaticRecursiveAliasJsonValueReorderedInput)
+	if !ok {
+		return fmt.Errorf("invalid input type: expected *%s, got %T", "StaticRecursiveAliasJsonValueReorderedInput", rawInput)
+	}
+	buildRequestFn := func(ctx context.Context, clientOverride string) (*llmhttp.Request, error) {
+		callOpts := options
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(options), bamlclient.WithClient(clientOverride))
+		}
+		httpReq, err := bamlclient.Request.StaticRecursiveAliasJsonValueReordered(ctx, input.Topic, callOpts...)
+		if err != nil {
+			return nil, err
+		}
+		url, urlErr := httpReq.Url()
+		if urlErr != nil {
+			return nil, fmt.Errorf("failed to get URL: %w", urlErr)
+		}
+		method, methodErr := httpReq.Method()
+		if methodErr != nil {
+			return nil, fmt.Errorf("failed to get method: %w", methodErr)
+		}
+		headers, headersErr := httpReq.Headers()
+		if headersErr != nil {
+			return nil, fmt.Errorf("failed to get headers: %w", headersErr)
+		}
+		body, bodyErr := httpReq.Body()
+		if bodyErr != nil {
+			return nil, fmt.Errorf("failed to get body: %w", bodyErr)
+		}
+		bodyText, bodyTextErr := body.Text()
+		if bodyTextErr != nil {
+			return nil, fmt.Errorf("failed to get body text: %w", bodyTextErr)
+		}
+		req := &llmhttp.Request{
+			Body:    bodyText,
+			Headers: headers,
+			Method:  method,
+			URL:     url,
+		}
+		selectedClient := clientOverride
+		if selectedClient == "" {
+			selectedClient = introspected.FunctionClient["StaticRecursiveAliasJsonValueReordered"]
+		}
+		var (
+			bedrockEndpointURL        string
+			bedrockEndpointURLPresent bool
+			bedrockRegion             string
+			bedrockRegionPresent      bool
+			bedrockCreds              llmhttp.BedrockCredentialSelector
+		)
+		if bedrockOpts, ok := introspected.BedrockClientOptionsByName[selectedClient]; ok {
+			bedrockEndpointURL, _ = bedrockOpts.EndpointURL.Resolve()
+			bedrockEndpointURLPresent = bedrockOpts.EndpointURL.IsSet()
+			bedrockRegion, _ = bedrockOpts.Region.Resolve()
+			bedrockRegionPresent = bedrockOpts.Region.IsSet()
+			bedrockCreds.AccessKeyID, _ = bedrockOpts.Credentials.AccessKeyID.Resolve()
+			bedrockCreds.AccessKeyIDPresent = bedrockOpts.Credentials.AccessKeyID.IsSet()
+			bedrockCreds.SecretAccessKey, _ = bedrockOpts.Credentials.SecretAccessKey.Resolve()
+			bedrockCreds.SecretAccessKeyPresent = bedrockOpts.Credentials.SecretAccessKey.IsSet()
+			bedrockCreds.SessionToken, _ = bedrockOpts.Credentials.SessionToken.Resolve()
+			bedrockCreds.SessionTokenPresent = bedrockOpts.Credentials.SessionToken.IsSet()
+			bedrockCreds.Profile, _ = bedrockOpts.Credentials.Profile.Resolve()
+			bedrockCreds.ProfilePresent = bedrockOpts.Credentials.Profile.IsSet()
+		}
+		if authErr := llmhttp.AttachBedrockAuthForClient(ctx, req, llmhttp.BedrockClientAuthOptions{
+			ClientName:         selectedClient,
+			Credentials:        bedrockCreds,
+			EndpointURL:        bedrockEndpointURL,
+			EndpointURLPresent: bedrockEndpointURLPresent,
+			Region:             bedrockRegion,
+			RegionPresent:      bedrockRegionPresent,
+		}); authErr != nil {
+			return nil, authErr
+		}
+		return req, nil
+	}
+	parseFinalFn := func(ctx context.Context, text string) (any, error) {
+		return bamlclient.Parse.StaticRecursiveAliasJsonValueReordered(ctx, text, options...)
+	}
+	newResultFn := func(kind bamlutils.StreamResultKind, stream any, final any, raw string, reasoning string, err error, reset bool) bamlutils.StreamResult {
+		r := getStaticRecursiveAliasJsonValueReorderedOutput()
+		r.kind = kind
+		r.raw = raw
+		r.reasoning = reasoning
+		r.err = err
+		r.reset = reset
+		if final != nil {
+			if v, ok := final.(**types.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString); ok {
+				r.finalParsed = v
+			} else if v, ok := final.(*types.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString); ok {
+				r.finalParsed = &v
+			}
+		}
+		return r
+	}
+	legacyCallChildFn := func(ctx context.Context, clientOverride string, _ string, needsRaw bool, sendHeartbeat func()) (any, string, string, error) {
+		callOpts, childOptsErr := makeLegacyChildOptionsFromAdapter(adapter, clientOverride)
+		if childOptsErr != nil {
+			return nil, "", "", childOptsErr
+		}
+		if clientOverride != "" {
+			callOpts = append(slices.Clone(callOpts), bamlclient.WithClient(clientOverride))
+		}
+		return runLegacyChildStream(ctx, needsRaw, sendHeartbeat, func(onTick func(context.Context, pkg.TickReason, pkg.FunctionLog) pkg.FunctionSignal) (any, error) {
+			opts := append(callOpts, bamlclient.WithOnTick(onTick))
+			stream, streamErr := bamlclient.Stream.StaticRecursiveAliasJsonValueReordered(ctx, input.Topic, opts...)
+			if streamErr != nil {
+				return nil, streamErr
+			}
+			var result any
+			var lastErr error
+			for streamVal := range stream {
+				if streamVal.IsError {
+					lastErr = streamVal.Error
+					continue
+				}
+				if streamVal.IsFinal {
+					result = streamVal.Final()
+				}
+			}
+			return result, lastErr
+		})
+	}
+	callConfig := &buildrequest.CallConfig{
+		ClientOverride:     clientOverride,
+		ClientProviders:    clientProviders,
+		FallbackChain:      fallbackChain,
+		FallbackRoundRobin: fallbackRoundRobin,
+		FallbackTargets:    fallbackTargets,
+		IncludeReasoning:   adapter.IncludeReasoning(),
+		LegacyCallChild:    legacyCallChildFn,
+		LegacyChildren:     legacyChildren,
+		MetadataPlan:       plannedMetadata,
+		NeedsRaw:           adapter.StreamMode().NeedsRaw(),
+		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
+			return newStaticRecursiveAliasJsonValueReorderedOutputMetadata(md)
+		},
+		Provider:    provider,
+		RetryPolicy: retryPolicy,
+	}
+	__httpClient := llmhttp.DefaultClient
+	if __c := adapter.HTTPClient(); __c != nil {
+		__httpClient = __c
+	}
+	__staticServe := deBAMLStaticServe(adapter)
+	__staticShadow := deBAMLStaticShadow(adapter)
+	if __staticServe != nil || __staticShadow != nil {
+		if __staticDescriptor, __staticOK := introspected.StaticPromptDescriptor("StaticRecursiveAliasJsonValueReordered"); __staticOK {
+			if __staticServe != nil {
+				installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+					__pr, __pe := bamlclient.Parse.StaticRecursiveAliasJsonValueReordered(__pctx, __raw, options...)
+					if __pe != nil {
+						return nil, __pe
+					}
+					return json.Marshal(__pr)
+				}, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticAliasFinal[*types.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString](__cj)
+					return __dv, __de
+				})
+			} else {
+				installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+					__pr, __pe := bamlclient.Parse.StaticRecursiveAliasJsonValueReordered(__pctx, __raw, options...)
+					if __pe != nil {
+						return nil, __pe
+					}
+					return json.Marshal(__pr)
+				}, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticAliasFinal[*types.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString](__cj)
+					return __dv, __de
+				})
+			}
+		}
+	}
+	go func() {
+		defer close(out)
+		gorecovery.GoHandler(func(err error) {
+			__errR := newResultFn(bamlutils.StreamResultKindError, nil, nil, "", "", err, false)
+			select {
+			case out <- __errR:
+			case <-adapter.Done():
+				__errR.Release()
+			}
+		}, func() error {
+			return buildrequest.RunCallOrchestration(adapter, out, callConfig, __httpClient, buildRequestFn, parseFinalFn, buildrequest.ExtractResponseContent, buildrequest.ExtractResponseContentBytes, buildrequest.ExtractResponseContentBorrowed, newResultFn)
+		})
+	}()
+	return nil
+}
+func StaticRecursiveAliasJsonValueReordered(adapter bamlutils.Adapter, rawInput any) (<-chan bamlutils.StreamResult, error) {
+	out := make(chan bamlutils.StreamResult, 100)
+	var err error
+	mode := adapter.StreamMode()
+	__retryClient := buildrequest.ResolvePrimaryClient(adapter, introspected.FunctionClient["StaticRecursiveAliasJsonValueReordered"])
+	__effective := __retryClient
+	var __rrInfo *bamlutils.RoundRobinInfo
+	__rrEffective, __rrInfoUpgrade, __rrErr := buildrequest.ResolveEffectiveClient(adapter, introspected.FunctionClient["StaticRecursiveAliasJsonValueReordered"], introspected.FallbackChains, introspected.ClientProvider, introspected.RoundRobinCoordinator)
+	if __rrErr != nil {
+		return nil, __rrErr
+	}
+	__effective = __rrEffective
+	__rrInfo = __rrInfoUpgrade
+	__reg := adapter.OriginalClientRegistry()
+	// Try non-streaming BuildRequest path for /call and /call-with-raw
+	if introspected.Request != nil && (mode == bamlutils.StreamModeCall || mode == bamlutils.StreamModeCallWithRaw) {
+		provider := buildrequest.ResolveClientProvider(__reg, __effective, introspected.ClientProvider)
+		if provider != "" && buildrequest.IsCallProviderSupported(provider) {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__planned := buildrequest.BuildSingleProviderPlanForClient(__effective, provider, retryPolicy, buildrequest.BuildRequestAPIRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveAliasJsonValueReorderedBuildCallRequest(adapter, rawInput, out, provider, retryPolicy, nil, nil, nil, nil, nil, __planned, __effective)
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+	}
+	// Try streaming BuildRequest path for /stream and /stream-with-raw
+	if introspected.StreamRequest != nil && (mode == bamlutils.StreamModeStream || mode == bamlutils.StreamModeStreamWithRaw) {
+		provider := buildrequest.ResolveClientProvider(__reg, __effective, introspected.ClientProvider)
+		if provider != "" && buildrequest.IsProviderSupported(provider) {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__planned := buildrequest.BuildSingleProviderPlanForClient(__effective, provider, retryPolicy, buildrequest.BuildRequestAPIStreamRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveAliasJsonValueReorderedBuildRequest(adapter, rawInput, out, provider, retryPolicy, nil, nil, nil, nil, nil, __planned, __effective)
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+		__resolution, __fbErr := buildrequest.ResolveFallbackChainPlanForClient(__reg, __effective, introspected.FallbackChains, introspected.ClientProvider, buildrequest.IsProviderSupported, buildrequest.PreferAdvancer(adapter, introspected.RoundRobinCoordinator))
+		if __fbErr != nil {
+			return nil, __fbErr
+		}
+		if __resolution != nil && len(__resolution.Chain) > 0 {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__planned := buildrequest.BuildFallbackChainPlanFromResolution(__effective, __resolution, retryPolicy, buildrequest.BuildRequestAPIStreamRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveAliasJsonValueReorderedBuildRequest(adapter, rawInput, out, "", retryPolicy, __resolution.Chain, __resolution.Providers, __resolution.LegacyChildren, __resolution.Targets, __resolution.NestedRoundRobin, __planned, "")
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+	}
+	// Bridge: /call and /call-with-raw via StreamRequest when Request is unavailable
+	if introspected.StreamRequest != nil && (mode == bamlutils.StreamModeCall || mode == bamlutils.StreamModeCallWithRaw) {
+		provider := buildrequest.ResolveClientProvider(__reg, __effective, introspected.ClientProvider)
+		if provider != "" && buildrequest.IsProviderSupported(provider) {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__planned := buildrequest.BuildSingleProviderPlanForClient(__effective, provider, retryPolicy, buildrequest.BuildRequestAPIStreamRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveAliasJsonValueReorderedBuildRequest(adapter, rawInput, out, provider, retryPolicy, nil, nil, nil, nil, nil, __planned, __effective)
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+		__resolution, __fbErr := buildrequest.ResolveFallbackChainPlanForClient(__reg, __effective, introspected.FallbackChains, introspected.ClientProvider, buildrequest.IsProviderSupported, buildrequest.PreferAdvancer(adapter, introspected.RoundRobinCoordinator))
+		if __fbErr != nil {
+			return nil, __fbErr
+		}
+		if __resolution != nil && len(__resolution.Chain) > 0 {
+			retryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+			__callChainSupported := len(__resolution.LegacyChildren) == 0
+			if __callChainSupported {
+				for _, __provider := range __resolution.Providers {
+					if !buildrequest.IsCallProviderSupported(__provider) {
+						__callChainSupported = false
+						break
+					}
+				}
+			}
+			if __callChainSupported {
+				__planned := buildrequest.BuildFallbackChainPlanFromResolution(__effective, __resolution, retryPolicy, buildrequest.BuildRequestAPIRequest)
+				__planned.RoundRobin = __rrInfo
+				err = staticRecursiveAliasJsonValueReorderedBuildCallRequest(adapter, rawInput, out, "", retryPolicy, __resolution.Chain, __resolution.Providers, __resolution.LegacyChildren, __resolution.Targets, __resolution.NestedRoundRobin, __planned, "")
+				if err != nil {
+					return nil, err
+				}
+				return out, nil
+			}
+			__planned := buildrequest.BuildFallbackChainPlanFromResolution(__effective, __resolution, retryPolicy, buildrequest.BuildRequestAPIStreamRequest)
+			__planned.RoundRobin = __rrInfo
+			err = staticRecursiveAliasJsonValueReorderedBuildRequest(adapter, rawInput, out, "", retryPolicy, __resolution.Chain, __resolution.Providers, __resolution.LegacyChildren, __resolution.Targets, __resolution.NestedRoundRobin, __planned, "")
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+	}
+	// Legacy path: CallStream + OnTick (for unsupported/empty providers or BAML versions without a BuildRequest surface)
+	__legacyRetryPolicy := buildrequest.ResolveStrategyAwareRetryPolicy(adapter, __retryClient, __effective, introspected.ClientRetryPolicy[__retryClient], introspected.ClientRetryPolicy[__effective], introspected.RetryPolicies)
+	__legacyPredicate := buildrequest.IsProviderSupported
+	__plannedLegacy := buildrequest.BuildLegacyMetadataPlanForClient(__reg, __effective, introspected.ClientProvider[__effective], introspected.FallbackChains, introspected.ClientProvider, __legacyPredicate, __legacyRetryPolicy)
+	__plannedLegacy.RoundRobin = __rrInfo
+	__legacyClientOverride := __effective
+	buildrequest.LogLegacyClassification(adapter, "StaticRecursiveAliasJsonValueReordered", __plannedLegacy)
+	switch mode {
+	case bamlutils.StreamModeCall:
+		err = staticRecursiveAliasJsonValueReorderedNoRaw(adapter, rawInput, out, true, __plannedLegacy, __legacyClientOverride)
+	case bamlutils.StreamModeStream:
+		err = staticRecursiveAliasJsonValueReorderedNoRaw(adapter, rawInput, out, false, __plannedLegacy, __legacyClientOverride)
+	case bamlutils.StreamModeCallWithRaw:
+		err = staticRecursiveAliasJsonValueReorderedFull(adapter, rawInput, out, true, __plannedLegacy, __legacyClientOverride)
+	case bamlutils.StreamModeStreamWithRaw:
+		err = staticRecursiveAliasJsonValueReorderedFull(adapter, rawInput, out, false, __plannedLegacy, __legacyClientOverride)
+	default:
+		err = fmt.Errorf("unknown StreamMode: %d", mode)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 type StaticRecursiveBInput struct {
 	Topic string `json:"topic"`
 }
@@ -10806,6 +11694,18 @@ var Methods = map[string]bamlutils.StreamingMethod{
 			return new(*streamtypes.Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString)
 		},
 	},
+	"StaticRecursiveAliasJsonValueReordered": {
+		Impl: StaticRecursiveAliasJsonValueReordered,
+		MakeInput: func() any {
+			return new(StaticRecursiveAliasJsonValueReorderedInput)
+		},
+		MakeOutput: func() any {
+			return new(*types.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString)
+		},
+		MakeStreamOutput: func() any {
+			return new(*streamtypes.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString)
+		},
+	},
 	"StaticRecursiveB": {
 		Impl: StaticRecursiveB,
 		MakeInput: func() any {
@@ -11022,6 +11922,28 @@ func parseStaticRecursiveAliasJsonValueStream(adapter bamlutils.Adapter, raw str
 	}
 	return result, nil
 }
+func parseStaticRecursiveAliasJsonValueReordered(adapter bamlutils.Adapter, raw string) (any, error) {
+	options, err := makeOptionsFromAdapter(adapter)
+	if err != nil {
+		return nil, err
+	}
+	result, parseErr := bamlclient.Parse.StaticRecursiveAliasJsonValueReordered(adapter, raw, options...)
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	return result, nil
+}
+func parseStaticRecursiveAliasJsonValueReorderedStream(adapter bamlutils.Adapter, raw string) (any, error) {
+	options, err := makeOptionsFromAdapter(adapter)
+	if err != nil {
+		return nil, err
+	}
+	result, parseErr := bamlclient.ParseStream.StaticRecursiveAliasJsonValueReordered(adapter, raw, options...)
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	return result, nil
+}
 func parseStaticRecursiveB(adapter bamlutils.Adapter, raw string) (any, error) {
 	options, err := makeOptionsFromAdapter(adapter)
 	if err != nil {
@@ -11182,6 +12104,13 @@ var ParseMethods = map[string]bamlutils.ParseMethod{
 			return new(*types.Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString)
 		},
 		StreamImpl: parseStaticRecursiveAliasJsonValueStream,
+	},
+	"StaticRecursiveAliasJsonValueReordered": {
+		Impl: parseStaticRecursiveAliasJsonValueReordered,
+		MakeOutput: func() any {
+			return new(*types.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString)
+		},
+		StreamImpl: parseStaticRecursiveAliasJsonValueReorderedStream,
 	},
 	"StaticRecursiveB": {
 		Impl: parseStaticRecursiveB,

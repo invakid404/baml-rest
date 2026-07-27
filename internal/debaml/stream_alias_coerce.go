@@ -2,15 +2,27 @@ package debaml
 
 import (
 	"encoding/json"
+	"math"
 	"strconv"
 	"strings"
 
 	"github.com/invakid404/baml-rest/internal/schema"
 )
 
-// De-BAML Phase 3b (recursive-alias STREAMING) — the completion-aware alias stream
-// coercer + BAML semantic-streaming, the streaming twin of the Phase-3a final coercer
-// (alias_coerce.go).
+// De-BAML Phase 3b/3c (recursive-alias STREAMING) — the completion-aware alias stream
+// coercer + BAML semantic-streaming, the streaming twin of the Phase-3a/3c final
+// coercer (alias_coerce.go). It handles BOTH alias families, parameterized by
+// [recAliasProfile].
+//
+// ADMISSION vs CAPABILITY. Only `JSON` is admitted to the production streaming lane. The
+// `JsonValue` code below is COMPLETE and proven at the parser level (the strict gate-free
+// per-prefix differential agrees with stock v0.223 on 100% of the surface it owns), but the
+// family's stream gate is CLOSED: a claimed stream has no route back to BAML, and this
+// family's parse can still decline on a VALUE (the negative zero in alias_coerce.go, plus
+// the shared #583 jsonish-recovery residual). [staticStreamAliasProfile] carries the full
+// reasoning, and TestJsonValueStreamResidualLedger enumerates the exact blocker set that
+// must be empty before the gate is opened. Treat the JsonValue paths here as built-dark, in
+// the same sense Phase 3b's Phase A was.
 //
 // BAML's streaming pipeline for a partial is: jsonish parser (→ Value) → field_type.coerce
 // (arm selection, UNCHANGED from final) → validate_streaming_state (process_node /
@@ -33,8 +45,36 @@ import (
 // A dropped leaf inside a list drops the element (list filter); inside a map drops the whole
 // key/value entry (map filter); at the root a dropped/absent JSON arm is the root-optional
 // no-emit or the SingleToArray→[] fallback (see [coerceStreamAliasRoot] / [aliasRootScalar]).
+//
+// PHASE 3c — the `JsonValue` family NEVER DROPS. This is the single biggest streaming
+// finding, settled against the LIVE stock-v0.223 per-prefix oracle rather than inferred
+// from the primitive required-done rule, and it is proven row-by-row by the strict
+// per-prefix differential:
+//
+//	stock v0.223 ParseStream.StaticRecursiveAliasJsonValue(prefix)
+//	  ==  stock v0.223 Parse.StaticRecursiveAliasJsonValue(prefix)   for EVERY prefix.
+//
+// The mechanism is the float arm. For `JSON` an incomplete float-shaped number reaches
+// the required-done INT arm and is dropped (`1.` → [], `[1.` → [[]]). For `JsonValue`
+// the `float` arm (arm 1) absorbs every number whose as_i64 is None, so the int arm only
+// ever wins on a CLEAN, COMPLETE i64 token — which BAML keeps mid-stream — and the float
+// arm is not required-done in v0.223 (LIVE: `1.`→1, `1.2`→1.2, `[1.`→[1], `{"a":1.`
+// →{"a":1}). bool/null are intrinsically complete once recognized, and string/list/map
+// are not required-done. So no `JsonValue` node is ever deleted by semantic streaming,
+// and its partial cadence is exactly its final coercion of the same prefix.
+//
+// The other Phase-3c streaming facts, all LIVE-CAPTURED:
+//
+//   - `null` is a PRESENT typed-null partial (`null`), never `[]` and never a no-emit.
+//     A present null inside a list/map is KEPT, not filtered (`[null`→[null],
+//     `{"a":null`→{"a":null}).
+//   - the null-keyword PREFIXES `n`/`nu`/`nul` are incomplete unquoted STRINGS
+//     (`"n"`/`"nu"`/`"nul"`), reselecting to the null arm only at the complete `null`.
+//   - an incomplete float token `1.` is the FLOAT arm (f64 1.0 → public `1`), while a
+//     non-f64-parseable numeric prefix (`1e`, `1.2e`) is the STRING arm, reselecting to
+//     float once a valid suffix arrives (`1.2e`→"1.2e", `1.2e5`→120000).
 
-// aliasStreamValue is the private carrier for a partially-coerced JSON value. Unlike the
+// aliasStreamValue is the private carrier for a partially-coerced alias value. Unlike the
 // Phase-3a [aliasValue] it retains the selected arm (kind) + ordered children so the
 // semantic-streaming filter can drop elements/entries before the public projection. The map
 // arm keeps ordered entries (BAML IndexMap order) so the public sorted marshal matches
@@ -49,6 +89,7 @@ import (
 type aliasStreamValue struct {
 	kind aliasKind
 	i    int64
+	f    float64
 	s    string
 	b    bool
 	arr  []aliasStreamValue
@@ -67,6 +108,14 @@ func (av aliasStreamValue) toAny() any {
 	switch av.kind {
 	case akInt:
 		return av.i
+	case akFloat:
+		// Same public projection as the final carrier: Go json.Marshal of the coerced
+		// float64, byte-identical to the generated Union6.MarshalJSON of BAML's f64.
+		return av.f
+	case akNull:
+		// A PRESENT typed null — the stream twin of the final [akNull]. It marshals to
+		// `null` and is a genuine EMIT, never collapsed into "no event".
+		return nil
 	case akString:
 		return av.s
 	case akBool:
@@ -92,10 +141,34 @@ func (av aliasStreamValue) marshalPublic() (json.RawMessage, error) {
 	return json.Marshal(av.toAny())
 }
 
-// ParseAliasStreamPartial is the gate-free native partial entry the Phase-3b per-prefix
-// DIFFERENTIAL drives (the streaming twin of ParseStaticBundle): it strips comments,
-// extracts a completion-bearing jsonish value from the accumulated prefix, coerces it
-// against the JSON alias with semantic streaming, and returns (sorted-public bytes, emit).
+// aliasStreamHasNegativeZero is the stream twin of [aliasHasNegativeZero]: the streaming
+// carrier is the SAME generated *Union6, so a coerced negative zero is unprovable in this
+// lane too. See [errNegativeZeroFloat] for why.
+func aliasStreamHasNegativeZero(av aliasStreamValue) bool {
+	switch av.kind {
+	case akFloat:
+		return av.f == 0 && math.Signbit(av.f)
+	case akArray:
+		for i := range av.arr {
+			if aliasStreamHasNegativeZero(av.arr[i]) {
+				return true
+			}
+		}
+	case akMap:
+		for i := range av.obj {
+			if aliasStreamHasNegativeZero(av.obj[i].val) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ParseAliasStreamPartial is the gate-free native partial entry the Phase-3b/3c
+// per-prefix DIFFERENTIAL drives (the streaming twin of ParseStaticBundle): it strips
+// comments, extracts a completion-bearing jsonish value from the accumulated prefix,
+// coerces it against the admitted alias family with semantic streaming, and returns
+// (sorted-public bytes, emit).
 // It runs the parser DIRECTLY (bypassing SupportsNativeStaticStreamBundle) so the oracle /
 // per-prefix differential can prove byte/event-exactness against stock BAML without the
 // admission gate in the way. This entry is GATE-FREE by design; the PRODUCTION path is
@@ -109,6 +182,13 @@ func ParseAliasStreamPartial(b *schema.Bundle, raw string) (json.RawMessage, boo
 	if b == nil {
 		return nil, false, unsupported("nil static stream bundle")
 	}
+	// Classify the family ONCE and thread the profile through the whole partial: the
+	// root scalar disposition, the number-token mode, and the per-arm streaming rules
+	// are all profile-driven, so the two families can never be mixed mid-prefix.
+	prof, ok := admittedServedRecursiveAliasProfile(b)
+	if !ok {
+		return nil, false, unsupported("static stream: not a served recursive-alias family")
+	}
 	stripped := stripJSONComments(raw)
 	// Trim LEADING whitespace only — the value starts after it; trailing whitespace may be
 	// INSIDE an open quoted string (BAML keeps it), so it must not be trimmed here.
@@ -120,8 +200,8 @@ func ParseAliasStreamPartial(b *schema.Bundle, raw string) (json.RawMessage, boo
 	// routes to the shared streaming extractor, which reproduces BAML's object/array/
 	// greedy-comma cadence AND its prose/fence recovery (path-3 span / fenced block).
 	if strings.ContainsAny(stripped, "{[") {
-		if v, ok := streamExtractCandidate(stripped); ok {
-			return coerceStreamAliasRoot(b, v)
+		if v, ok := streamExtractCandidateMode(stripped, profileNumMode(prof)); ok {
+			return coerceStreamAliasRoot(b, prof, v)
 		}
 		// else fall through to the scalar/string recovery below.
 	}
@@ -168,20 +248,59 @@ func ParseAliasStreamPartial(b *schema.Bundle, raw string) (json.RawMessage, boo
 		}
 		return out, true, nil
 	}
-	// ROOT unquoted-scalar recovery (oracle-driven): a clean integer → int; complete
-	// true/false → bool; null → [] (non-nullable list fallback); a float / incomplete
-	// number → [] (the incomplete required-done int drops → SingleToArray → circular → []);
-	// every other unquoted token (an incomplete keyword, a lone `-`, a bareword) → the token
-	// as an (incomplete) STRING. The scalar token ends at the first whitespace.
+	// ROOT unquoted-scalar recovery (oracle-driven). The scalar token ends at the first
+	// whitespace. `JSON` keeps its frozen Phase-3b classification ([aliasRootScalar]);
+	// `JsonValue` uses its own profile-driven one ([jsonValueRootScalar]).
 	tok := lead
 	if i := strings.IndexAny(lead, " \t\r\n"); i >= 0 {
 		tok = lead[:i]
+	}
+	if prof.isJsonValue() {
+		return jsonValueRootScalar(b, prof, tok)
 	}
 	out, err := aliasRootScalar(tok).marshalPublic()
 	if err != nil {
 		return nil, false, err
 	}
 	return out, true, nil
+}
+
+// jsonValueRootScalar is the Phase-3c ROOT unquoted-scalar recovery: it rebuilds the
+// jsonish value BAML would have parsed for the bare token through the SAME two number
+// paths the rest of the family uses (alias_number.go) — a STRICT (serde) decode first,
+// then the fixing parser's bare-token conversion — and then runs the ordinary alias
+// stream coercion over it. Routing the root through the shared coercer (instead of a
+// bespoke token table) is what makes the root agree with the identical token inside a
+// list or map, and it is what gives the root its three distinct dispositions:
+//
+//	`1`   -> strict Number, as_i64 Some   -> int arm    -> 1
+//	`-0`  -> strict Number, as_i64 None   -> float arm  -> -0        (negative zero)
+//	`1.`  -> fixing Number (f64 1.0)      -> float arm  -> 1
+//	`1e`  -> fixing: not a number         -> string arm -> "1e"
+//	`null`-> strict Null                  -> NULL arm   -> null      (a PRESENT emit)
+//	`nul` -> fixing: not a number/keyword -> string arm -> "nul"
+//
+// All six are LIVE-CAPTURED against stock v0.223 and re-proven per prefix by the strict
+// differential.
+func jsonValueRootScalar(b *schema.Bundle, prof recAliasProfile, tok string) (json.RawMessage, bool, error) {
+	v, err := strictDecodeMode(tok, numModeSerde)
+	if err != nil {
+		// Not valid strict JSON (or a serde-rejected number): BAML's fixing parser owns
+		// the bare token. classifyScalarSerde never fails — the family's `string` arm
+		// receives whatever is not a keyword or a number.
+		v, err = classifyScalarSerde(tok)
+		if err != nil {
+			return nil, false, err
+		}
+		// The token ran to the end of the streamed prefix, so it is still building. The
+		// STRICT branch above deliberately leaves `incomplete` false, mirroring the
+		// fixing parser's own rule that a value closed by its proper form is Complete;
+		// either way the bit is inert for this family (it feeds only the pair guard,
+		// which a finite bare scalar never reaches, and the required-done drop, which
+		// `JsonValue` has none of).
+		v.incomplete = true
+	}
+	return coerceStreamAliasRoot(b, prof, v)
 }
 
 // aliasRootScalar classifies a ROOT unquoted scalar token (trimmed, non-empty, not starting
@@ -257,14 +376,18 @@ func isNumberishToken(tok string) bool {
 	return (c == '-' || c == '+') && len(tok) > 1 && tok[1] >= '0' && tok[1] <= '9'
 }
 
-// coerceStreamAliasRoot is the ParseStaticStreamPartial entry for the admitted JSON alias.
-// It coerces the completion-bearing input against the alias, applies the ROOT semantic-
-// streaming disposition (the root streaming type is Union[JSON, null], optionalized by
-// BAML's converter), and returns the sorted-public partial bytes + whether to EMIT. A
-// dropped root value (an incomplete required-done scalar) is a no-emit today; the exact
-// root null/[] disposition is pinned by the differential.
-func coerceStreamAliasRoot(b *schema.Bundle, input value) (json.RawMessage, bool, error) {
-	asv, _, dropped, err := coerceStreamAliasValue(b, input, &coerceCtx{})
+// coerceStreamAliasRoot is the ParseStaticStreamPartial entry for an admitted alias
+// family. It coerces the completion-bearing input against the alias, applies the ROOT
+// semantic-streaming disposition (the root streaming type is Union[<alias>, null],
+// optionalized by BAML's converter), and returns the sorted-public partial bytes +
+// whether to EMIT. A dropped root value (an incomplete required-done scalar) is a
+// no-emit; the exact root null/[] disposition is pinned by the differential.
+//
+// For `JsonValue` nothing is ever dropped (see the file header), so the emit decision is
+// total and a typed NULL root emits the bytes `null` — a PRESENT partial, never
+// collapsed into "no event".
+func coerceStreamAliasRoot(b *schema.Bundle, prof recAliasProfile, input value) (json.RawMessage, bool, error) {
+	asv, _, dropped, err := coerceStreamAliasValue(b, prof, input, &coerceCtx{})
 	if err != nil {
 		// A claimed coercion failure (e.g. a circular reference at the true root, which
 		// is unreachable for finite JSON) — surface as no-emit; the differential proves
@@ -272,9 +395,15 @@ func coerceStreamAliasRoot(b *schema.Bundle, input value) (json.RawMessage, bool
 		return nil, false, err
 	}
 	if dropped {
-		// The root JSON arm was dropped by semantic streaming (incomplete required-done
+		// The root alias arm was dropped by semantic streaming (incomplete required-done
 		// scalar). No partial this tick.
 		return nil, false, nil
+	}
+	if aliasStreamHasNegativeZero(asv) {
+		// The one value the served seam cannot carry byte-exactly — see
+		// [errNegativeZeroFloat]. The stream carrier is the SAME generated union, so the
+		// partial is declined for the identical reason; the route falls back to BAML.
+		return nil, false, errNegativeZeroFloat
 	}
 	out, merr := asv.marshalPublic()
 	if merr != nil {
@@ -283,61 +412,72 @@ func coerceStreamAliasRoot(b *schema.Bundle, input value) (json.RawMessage, bool
 	return out, true, nil
 }
 
-// coerceStreamAliasValue coerces one value against the JSON alias and applies the per-node
-// semantic-streaming rule STRUCTURALLY — from the selected arm + the parsed value's shape, with
+// coerceStreamAliasValue coerces one value against the admitted alias family and applies the
+// per-node semantic-streaming rule STRUCTURALLY — from the selected arm + the parsed value's shape, with
 // no completion state threaded or read. It returns the carrier, the WINNING union-arm index
 // (armIdx — the same value the array-sibling hint carries; -1 on error / no arm), whether the
-// node was DROPPED by the required-done rule (e.g. a float-shaped number on the int arm), and a
-// claimed error. It REUSES the Phase-3a arm selection (aliasCoerceValue) to pick the winning arm
+// node was DROPPED by the required-done rule (`JSON` only — e.g. a float-shaped number on its
+// int arm; `JsonValue` never drops), and a claimed error. It REUSES the Phase-3a arm selection (aliasCoerceValue) to pick the winning arm
 // index ONCE, then materialises that arm with streaming semantics + fresh per-child re-selection;
 // the returned armIdx lets a list caller carry the next-sibling hint without a second selection pass.
-func coerceStreamAliasValue(b *schema.Bundle, input value, cctx *coerceCtx) (aliasStreamValue, int, bool, error) {
-	av, _, armIdx, err := aliasCoerceValue(b, input, cctx)
+func coerceStreamAliasValue(b *schema.Bundle, prof recAliasProfile, input value, cctx *coerceCtx) (aliasStreamValue, int, bool, error) {
+	av, _, armIdx, err := aliasCoerceValue(b, prof, input, cctx)
 	if err != nil {
-		return aliasStreamValue{}, -1, true, err
+		return aliasStreamValue{}, aliasArmNone, true, err
 	}
-	variants, verr := aliasVariants(b)
-	if verr != nil {
-		return aliasStreamValue{}, -1, false, verr
-	}
-	if armIdx < 0 || armIdx >= len(variants) {
-		return aliasStreamValue{}, -1, false, unsupported("alias stream: arm index out of range")
-	}
-	arm := variants[armIdx]
-	switch arm.Kind {
-	case schema.TypePrimitive:
-		asv, dropped, aerr := streamScalarArm(av, arm.Primitive, input)
+	// Dispatch on the SELECTED ARM, which [aliasValue.kind] already records. The IMPLICIT
+	// null arm of a nullable union has no stored-variant index (aliasArmNone), so the
+	// carrier kind — not the index — is the authoritative arm identity here; armIdx is
+	// returned only as the next array sibling's hint.
+	switch av.kind {
+	case akInt, akFloat, akString, akBool:
+		asv, dropped, aerr := streamScalarArm(prof, av, input)
 		return asv, armIdx, dropped, aerr
-	case schema.TypeList:
-		asv, dropped, aerr := streamListArm(b, input, cctx)
+	case akNull:
+		// A PRESENT typed null (nullable fast path). Null is intrinsically complete in
+		// BAML's jsonish (value.rs), so it is never required-done-dropped: it EMITS.
+		return aliasStreamValue{kind: akNull}, armIdx, false, nil
+	case akArray:
+		asv, dropped, aerr := streamListArm(b, prof, input, cctx)
 		return asv, armIdx, dropped, aerr
-	case schema.TypeMap:
-		asv, dropped, aerr := streamMapArm(b, input, cctx)
+	case akMap:
+		asv, dropped, aerr := streamMapArm(b, prof, input, cctx)
 		return asv, armIdx, dropped, aerr
 	default:
-		return aliasStreamValue{}, -1, false, unsupported("alias stream: unexpected arm kind")
+		return aliasStreamValue{}, aliasArmNone, false, unsupported("alias stream: unexpected arm kind")
 	}
 }
 
-// streamScalarArm materialises a leaf arm (int/string/bool) and applies the required-done
-// drop. int/bool are required-done: an incomplete one is DROPPED (returns dropped=true).
-// string is NOT required-done: an incomplete string is kept as a partial.
-func streamScalarArm(av aliasValue, prim schema.PrimitiveKind, input value) (aliasStreamValue, bool, error) {
-	switch prim {
-	case schema.PrimitiveInt:
-		// A FLOAT number is DROPPED (int is required-done; a streamed float's precision is
-		// "incomplete", so the int drops → its container drops it / the root falls to the
-		// list fallback []). A clean INTEGER token is KEPT even mid-stream — BAML treats an
-		// integer as a complete i64 value the instant it has digits (LIVE-PROVEN: `[1` → [1],
-		// `[1,2` → [1,2]).
-		if input.kind == valNumber && strings.ContainsAny(input.numV.String(), ".eE") {
+// streamScalarArm materialises a leaf arm (int/float/string/bool) and applies the
+// required-done drop for the selected FAMILY.
+//
+//   - `JSON` (frozen Phase-3b behaviour): int/bool are required-done; a number whose text
+//     is FLOAT-shaped reaches the int arm and is DROPPED, and every other case is kept.
+//   - `JsonValue`: NOTHING is dropped. The float arm absorbs every number whose as_i64 is
+//     None, so the int arm only ever wins on a clean COMPLETE i64 token, and the float arm
+//     is not required-done in v0.223 — both LIVE-PROVEN and re-proven per prefix by the
+//     strict differential (see the file header).
+func streamScalarArm(prof recAliasProfile, av aliasValue, input value) (aliasStreamValue, bool, error) {
+	switch av.kind {
+	case akInt:
+		// JSON ONLY: a FLOAT number is DROPPED (int is required-done; a streamed float's
+		// precision is "incomplete", so the int drops → its container drops it / the root
+		// falls to the list fallback []). A clean INTEGER token is KEPT even mid-stream —
+		// BAML treats an integer as a complete i64 value the instant it has digits
+		// (LIVE-PROVEN: `[1` → [1], `[1,2` → [1,2]). For `JsonValue` this branch is
+		// unreachable: a float-shaped number never reaches its int arm.
+		if !prof.isJsonValue() && input.kind == valNumber && strings.ContainsAny(input.numV.String(), ".eE") {
 			return aliasStreamValue{}, true, nil // dropped (float precision incomplete)
 		}
 		return aliasStreamValue{kind: akInt, i: av.i}, false, nil
-	case schema.PrimitiveBool:
+	case akFloat:
+		// JsonValue ONLY. NOT required-done in v0.223: an incomplete float token keeps its
+		// partial value (LIVE: `1.`→1, `[1.2`→[1.2]).
+		return aliasStreamValue{kind: akFloat, f: av.f}, false, nil
+	case akBool:
 		// Bool is intrinsically complete once recognized; a recognized bool is kept.
 		return aliasStreamValue{kind: akBool, b: av.b}, false, nil
-	case schema.PrimitiveString:
+	case akString:
 		// String is NOT required-done: kept even when incomplete.
 		return aliasStreamValue{kind: akString, s: av.s}, false, nil
 	default:
@@ -348,23 +488,30 @@ func streamScalarArm(av aliasValue, prim schema.PrimitiveKind, input value) (ali
 // streamListArm materialises the list arm with per-element streaming: each element is
 // coerced fresh (re-selecting its arm), and an element DROPPED by semantic streaming is
 // filtered out (like BAML's List filter_map). A non-array input is SingleToArray-wrapped;
-// the implied element re-enters the alias on the same (JSON, input) pair → circular →
-// dropped → the empty list (matching the Phase-3a null→[] behaviour). The list itself is
+// the implied element re-enters the alias on the same (alias, input) pair → circular →
+// dropped → the empty list (the Phase-3a `JSON` null→[] behaviour). The list itself is
 // NOT required-done, so it is kept as a partial regardless of its own completion.
-func streamListArm(b *schema.Bundle, input value, cctx *coerceCtx) (aliasStreamValue, bool, error) {
+//
+// For `JsonValue` a PRESENT typed-null element is never filtered (LIVE: `[null`→[null],
+// `[null,null]`→[null,null]) — the filter drops only semantic-streaming DROPS, and that
+// family has none.
+func streamListArm(b *schema.Bundle, prof recAliasProfile, input value, cctx *coerceCtx) (aliasStreamValue, bool, error) {
 	out := aliasStreamValue{kind: akArray}
 	if input.kind != valArray {
 		// SingleToArray of a non-array: the implied element re-enters the alias on the SAME
-		// (JSON, input) pair → circular-reference → dropped as ArrayItemParseError → the
-		// empty list. This is the Phase-3a null→[] mechanism; the element ALWAYS
-		// circular-drops for this family, so materialise [] directly (no recursion).
+		// (alias, input) pair → circular-reference → dropped as ArrayItemParseError → the
+		// empty list. This is the Phase-3a `JSON` null→[] mechanism; the element ALWAYS
+		// circular-drops there, so materialise [] directly (no recursion). For `JsonValue`
+		// the list arm is only ever SELECTED for an actual array (its strict arms are total
+		// over the jsonish kinds and a null takes the nullable fast path), so this branch
+		// is unreachable for that family.
 		out.arr = []aliasStreamValue{}
 		return out, false, nil
 	}
 	var lastHint *int
 	for i := range input.arrV {
 		childCtx := cctx.enterScopeWithHint(lastHint)
-		asv, childArm, dropped, err := coerceStreamAliasValue(b, input.arrV[i], childCtx)
+		asv, childArm, dropped, err := coerceStreamAliasValue(b, prof, input.arrV[i], childCtx)
 		if err != nil {
 			// A claimed error (circular ref) on an element → drop it (ArrayItemParseError).
 			continue
@@ -377,8 +524,7 @@ func streamListArm(b *schema.Bundle, input value, cctx *coerceCtx) (aliasStreamV
 		// selection coerceStreamAliasValue already computed for this element (via
 		// aliasCoerceValue), so reusing it is byte-identical to a fresh re-selection while
 		// avoiding a second pass.
-		hh := childArm
-		lastHint = &hh
+		lastHint = aliasSiblingHint(childArm)
 	}
 	if out.arr == nil {
 		out.arr = []aliasStreamValue{}
@@ -388,16 +534,17 @@ func streamListArm(b *schema.Bundle, input value, cctx *coerceCtx) (aliasStreamV
 
 // streamMapArm materialises the map arm with per-ENTRY streaming: each value is coerced
 // fresh, and an entry whose value is DROPPED by semantic streaming has its whole key/value
-// entry filtered out (BAML's Map filter_map). Entries insert in input order with IndexMap
+// entry filtered out (BAML's Map filter_map). A `JsonValue` entry whose value is a PRESENT
+// typed null is KEPT (LIVE: `{"a":null`→{"a":null}) — that family drops nothing. Entries insert in input order with IndexMap
 // overwrite-at-first-position. The map itself is NOT required-done. A non-object input is a
 // type mismatch (the arm would not have been selected).
-func streamMapArm(b *schema.Bundle, input value, cctx *coerceCtx) (aliasStreamValue, bool, error) {
+func streamMapArm(b *schema.Bundle, prof recAliasProfile, input value, cctx *coerceCtx) (aliasStreamValue, bool, error) {
 	out := aliasStreamValue{kind: akMap}
 	index := map[string]int{}
 	for i := range input.objV {
 		key := input.objV[i].key
 		child := cctx.enterScope() // enter_scope(key) resets the hint
-		asv, _, dropped, err := coerceStreamAliasValue(b, input.objV[i].val, child)
+		asv, _, dropped, err := coerceStreamAliasValue(b, prof, input.objV[i].val, child)
 		if err != nil || dropped {
 			// MapValueParseError / dropped value → skip the whole entry.
 			continue

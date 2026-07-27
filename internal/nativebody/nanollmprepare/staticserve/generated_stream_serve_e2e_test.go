@@ -544,14 +544,27 @@ type declinedStreamRow struct {
 	drive func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error)
 }
 
-// declinedStreamRows enumerates EVERY non-JSON fixture static-serve stream method (the wider
-// JsonValue alias, both recursive-class SCCs + their annotated/loop variants, the flat/scalar
-// classes, and the multi-arg/role methods). None is the exact five-arm JSON alias, so all
-// decline pre-transport.
+// declinedStreamRows enumerates EVERY non-JSON fixture static-serve stream method (the
+// FINAL-served-but-STREAM-DECLINED JsonValue alias and its arm-reordered witness, both
+// recursive-class SCCs + their annotated/loop variants, the flat/scalar classes, and the
+// multi-arg/role methods). None is the exact five-arm JSON alias, so all decline
+// pre-transport.
+//
+// De-BAML Phase 3c KEEPS StaticRecursiveAliasJsonValue here even though it is served on
+// the FINAL lane. The static-stream gate admits by DESCRIPTOR SHAPE pre-socket, and a
+// claimed native stream has no route back to BAML (a partial-parser error becomes no
+// event; a final-parser error is TERMINAL), so a family whose parse can decline on a
+// VALUE — the shared #583 jsonish-recovery residual plus this family's negative-zero
+// decline — must not claim a stream socket. The unary lane has no such hazard (BAML
+// parse-only repairs the same response), which is why the FINAL manifest serves it. See
+// internal/debaml/static_stream_serve.go.
 func declinedStreamRows() []declinedStreamRow {
 	return []declinedStreamRow{
 		{"StaticRecursiveAliasJsonValue", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
 			return fixture.StaticRecursiveAliasJsonValue(a, &fixture.StaticRecursiveAliasJsonValueInput{Topic: "wide"})
+		}},
+		{"StaticRecursiveAliasJsonValueReordered", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
+			return fixture.StaticRecursiveAliasJsonValueReordered(a, &fixture.StaticRecursiveAliasJsonValueReorderedInput{Topic: "reordered"})
 		}},
 		{"StaticCompletion", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
 			return fixture.StaticCompletion(a, &fixture.StaticCompletionInput{Topic: "t"})
