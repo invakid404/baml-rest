@@ -2,6 +2,7 @@ package debaml
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -115,14 +116,19 @@ func TestEvaluateConstraintBooleanContract(t *testing.T) {
 	}
 }
 
-// TestConstraintValueMappingOrder pins the reason maps and classes are projected
-// as an ordered object rather than minijinja-Go's native mapping: BAML's
-// BamlMap is an IndexMap and its insertion order is observable inside the
-// predicate, while a Go map enumerates SORTED.
+// TestConstraintValueMappingIsOrderedInTheModelButOpaqueInTheEngine pins the
+// split the profile draws around mappings.
+//
+// The MODEL is lossless: BAML's BamlMap is an IndexMap, and insertion order
+// survives into ConstraintValue and out through MarshalJSON. The ENGINE is not:
+// minijinja-Go can represent a mapping either order-faithfully (an object,
+// invisible to `in`) or membership-faithfully (a Go map, enumerated sorted),
+// never both, so the evaluator refuses any expression whose answer depends on
+// which one it picked. What survives is the order-independent surface.
 //
 // "z","a","m" is deliberately neither sorted nor reverse-sorted, so a sorted
 // implementation cannot pass by accident.
-func TestConstraintValueMappingOrder(t *testing.T) {
+func TestConstraintValueMappingIsOrderedInTheModelButOpaqueInTheEngine(t *testing.T) {
 	entries := []ConstraintEntry{
 		{Key: "z", Value: IntValue(1)},
 		{Key: "a", Value: IntValue(2)},
@@ -130,22 +136,39 @@ func TestConstraintValueMappingOrder(t *testing.T) {
 	}
 	for _, this := range []ConstraintValue{MapValue(entries), ClassValue("Probe", entries)} {
 		t.Run(this.Kind().String(), func(t *testing.T) {
+			// The model keeps the order.
+			got, err := json.Marshal(this)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if want := `{"z":1,"a":2,"m":3}`; string(got) != want {
+				t.Fatalf("model marshalled %s, want %s (insertion order)", got, want)
+			}
+
+			// The order-independent surface still decides.
 			for expr, want := range map[string]string{
-				`this|list|join(",")`:     "z,a,m",
-				`this.keys()|join(",")`:   "z,a,m",
-				`this.values()|join(",")`: "1,2,3",
-				`this|length`:             "3",
-				`this.z`:                  "1",
-				`this["m"]`:               "3",
-				`this.get("q", 9)`:        "9",
-				`this|string`:             `{"z": 1, "a": 2, "m": 3}`,
+				`this|length`: "3",
+				`this.z`:      "1",
+				`this["m"]`:   "3",
 			} {
 				got, err := RenderConstraintExpression(this, expr)
 				if err != nil {
-					t.Fatalf("render %q: %v", expr, err)
+					t.Errorf("render %q: %v", expr, err)
+					continue
 				}
 				if got != want {
 					t.Errorf("render %q = %q, want %q", expr, got, want)
+				}
+			}
+
+			// Anything that would expose the order — or membership — is refused.
+			for _, expr := range []string{
+				`this|list|join(",")`, `this|first`, `this|last`, `this|items`,
+				`this|tojson`, `this|string`, `this.keys()`, `this.values()`,
+				`this.get("z")`, `"z" in this`,
+			} {
+				if _, err := RenderConstraintExpression(this, expr); !errors.Is(err, ErrConstraintUnsupported) {
+					t.Errorf("render %q should be outside the profile; got err=%v", expr, err)
 				}
 			}
 		})
@@ -168,15 +191,18 @@ func TestConstraintValueTypeNameIsInvisible(t *testing.T) {
 	if got := IntValue(1).TypeName(); got != "" {
 		t.Errorf("scalar TypeName = %q, want empty", got)
 	}
-	// The name reaches neither the value nor the expression namespace.
-	for _, expr := range []string{`this|list|join(",")`, `this|string`} {
-		got, err := RenderConstraintExpression(cls, expr)
-		if err != nil {
-			t.Fatalf("render %q: %v", expr, err)
-		}
-		if strings.Contains(got, "Probe") {
-			t.Errorf("render %q = %q, which leaks the class name", expr, got)
-		}
+	// The name is not addressable, and not in the marshalled document either.
+	if _, err := EvaluateConstraint(cls, `this.Probe is defined`); err != nil {
+		t.Errorf("unexpected error probing for the class name: %v", err)
+	} else if ok, _ := EvaluateConstraint(cls, `this.Probe is defined`); ok {
+		t.Error("the class name is addressable as an attribute; it must be dropped")
+	}
+	doc, err := json.Marshal(cls)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(doc), "Probe") {
+		t.Errorf("marshalled class %s leaks the class name", doc)
 	}
 	if got, err := RenderConstraintExpression(enum, "this"); err != nil || got != "RED" {
 		t.Errorf(`render bare enum = (%q, %v), want ("RED", nil)`, got, err)
@@ -385,5 +411,181 @@ func TestConstraintExpressionIsWrappedVerbatim(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "debaml:") {
 		t.Fatalf("compile error %q should be wrapped by the evaluator", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The proven profile (constraint_profile.go).
+// ---------------------------------------------------------------------------
+
+// TestConstraintProfileNeverAnswersOutsideTheProfile is the unit-lane statement
+// of the evaluator's contract: every shape the profile excludes must come back
+// as ErrConstraintUnsupported, never as a usable boolean.
+//
+// Each entry is a MEASURED divergence from stock BAML v0.223.0 — the stock side
+// of every one is pinned by the corresponding case in
+// internal/debaml/constraintoracle. This test is the cheap, CGO-free half: it
+// pins native's side so a guard cannot be removed without a red unit lane.
+func TestConstraintProfileNeverAnswersOutsideTheProfile(t *testing.T) {
+	mapping := MapValue([]ConstraintEntry{
+		{Key: "z", Value: IntValue(1)},
+		{Key: "a", Value: IntValue(2)},
+		{Key: "m", Value: IntValue(3)},
+	})
+	class := ClassValue("Probe", []ConstraintEntry{
+		{Key: "b", Value: IntValue(1)},
+		{Key: "a", Value: StringValue("x")},
+	})
+
+	cases := []struct {
+		name string
+		this ConstraintValue
+		expr string
+		why  string
+	}{
+		// Representation-sensitive over a mapping — caught by the agreement
+		// check, not by any per-filter guard.
+		{"membership_map", mapping, `"z" in this`, "`in` is invisible to the ordered projection"},
+		{"membership_class", class, `"a" in this`, "same, class-shaped"},
+		{"iteration_order", mapping, `this|list|join(",") == "z,a,m"`, "order differs between projections"},
+		{"first", mapping, `this|first == "z"`, "idem"},
+		{"keys_method", mapping, `this.keys()|join(",") == "z,a,m"`, "pycompat map methods exist on only one projection"},
+		{"render", mapping, `(this|string)[2] == "z"`, "rendering embeds the order"},
+		{"concat", mapping, `(this ~ "")[2] == "z"`, "`~` renders, and is an operator with no filter hook"},
+
+		// Shapes wrong in EVERY representation — caught by an explicit guard.
+		{"length_none", NullValue(), "none|length == 0", "minijinja rejects a lengthless value"},
+		{"length_undefined", NullValue(), "nosuchvar|length == 0", "idem"},
+		{"split", StringValue("a,b"), `this|split(",")|length == 2`, "minijinja's split is a lazy iterator"},
+		{"last_map", mapping, `this|last == "m"`, "minijinja rejects a mapping"},
+		{"items_map", mapping, "this|items|length == 3", "items sorts here, preserves order there"},
+		{"tojson_map", mapping, `(this|tojson)[2] == "z"`, "idem"},
+		{"tojson_nested", NullValue(), `[{"a":1}]|tojson == "x"`, "a nested mapping is equally order-bearing"},
+		{"maplit_order", NullValue(), `({"z":1,"a":2}|list|join(",")) == "z,a"`, "a mapping literal is minijinja-Go's own, enumerated sorted"},
+		{"divisibleby_zero", IntValue(1), "this is divisibleby(0)", "stock BAML aborts the process"},
+
+		// Contract narrowing: the pycompat string/sequence surface has no hook
+		// in minijinja-Go, so it is outside the profile BY CONSTRUCTION.
+		{"pycompat_upper", NullValue(), `"abc".upper() == "ABC"`, "no unknown-method callback"},
+		{"pycompat_format", NullValue(), `"{:,}".format(1234567) == "1,234,567"`, "idem"},
+		{"pycompat_seq_count", NullValue(), "[1,1].count(1) == 2", "idem"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := EvaluateConstraint(tc.this, tc.expr)
+			if err == nil {
+				t.Fatalf("%q answered %v; it is outside the profile (%s) and must refuse", tc.expr, got, tc.why)
+			}
+			if !errors.Is(err, ErrConstraintUnsupported) {
+				t.Fatalf("%q refused with %v, which does not wrap ErrConstraintUnsupported", tc.expr, err)
+			}
+		})
+	}
+}
+
+// TestConstraintProfileStillAnswersInsideIt is the other half: narrowing must
+// not have swallowed the surface the evaluator exists to decide. If any of
+// these starts refusing, a guard has become over-broad.
+func TestConstraintProfileStillAnswersInsideIt(t *testing.T) {
+	mapping := MapValue([]ConstraintEntry{{Key: "z", Value: IntValue(1)}, {Key: "a", Value: IntValue(2)}})
+	class := ClassValue("Probe", []ConstraintEntry{{Key: "b", Value: IntValue(1)}, {Key: "a", Value: StringValue("x")}})
+
+	cases := []struct {
+		this ConstraintValue
+		expr string
+		want bool
+	}{
+		// Mappings keep everything that is representation-independent.
+		{mapping, "this|length == 2", true},
+		{mapping, `this["z"] == 1`, true},
+		{mapping, "this.a == 2", true},
+		{mapping, "this is mapping", true},
+		{mapping, `this == {"z":1,"a":2}`, true},
+		{mapping, `(this|dictsort|first|first) == "a"`, true},
+		{mapping, "this.q is undefined", true},
+		{class, `this.a == "x"`, true},
+		{class, "this.b + 1 == 2", true},
+		{class, "this|length == 2", true},
+		// Everything not involving a mapping is untouched by the profile.
+		{IntValue(7), "this > 0", true},
+		{StringValue("Hello"), `this|length == 5`, true},
+		{StringValue("Hello"), `"ell" in this`, true},
+		{ListValue([]ConstraintValue{IntValue(1), IntValue(2)}), "this|sum == 3", true},
+		{ListValue([]ConstraintValue{IntValue(1), IntValue(2)}), "1 in this", true},
+		{ListValue([]ConstraintValue{IntValue(1), IntValue(2)}), `this|join(",") == "1,2"`, true},
+		{EnumValue("Hue", "RED"), `this == "RED"`, true},
+		{NullValue(), "this == none", true},
+		{NullValue(), "4 is divisibleby(2)", true},
+		{NullValue(), `"abc"|length == 3`, true},
+		{NullValue(), `[1,2]|tojson == "[1,2]"`, true},
+	}
+	for _, tc := range cases {
+		got, err := EvaluateConstraint(tc.this, tc.expr)
+		if err != nil {
+			t.Errorf("%q over %s refused (%v); it is inside the profile", tc.expr, tc.this.Kind(), err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%q over %s = %v, want %v", tc.expr, tc.this.Kind(), got, tc.want)
+		}
+	}
+}
+
+// TestConstraintMediaIsRefused pins the media contract.
+//
+// BAML's two conversions disagree on this one arm — `Value::from_serialize`
+// (the path evaluate_predicate takes) emits the BamlMedia serde document, while
+// `From<BamlValue> for minijinja::Value` (the prompt renderer's path) wraps it
+// in a magic-marker object — and no media value can reach a constraint on the
+// native path to decide between them: schema.Bundle.ValidateOutput rejects
+// every media output before parsing ("media is not usable as an output type",
+// internal/schema/validate.go:65). Rather than ship an unprovable conversion,
+// the profile refuses media, at any depth.
+func TestConstraintMediaIsRefused(t *testing.T) {
+	mime := "image/png"
+	media := MediaValue(ConstraintMedia{
+		MediaType: "Image",
+		MimeType:  &mime,
+		Content: ConstraintMediaContent{
+			Tag:    "Url",
+			Fields: []ConstraintEntry{{Key: "url", Value: StringValue("https://example.invalid/x.png")}},
+		},
+	})
+	for name, this := range map[string]ConstraintValue{
+		"bare":     media,
+		"in_list":  ListValue([]ConstraintValue{media}),
+		"in_class": ClassValue("Doc", []ConstraintEntry{{Key: "img", Value: media}}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := EvaluateConstraint(this, "true"); !errors.Is(err, ErrConstraintUnsupported) {
+				t.Fatalf("a media-bearing value evaluated (err=%v); media is outside the profile", err)
+			}
+		})
+	}
+}
+
+// TestEveryEvaluatorErrorIsTheSentinel pins the contract's totality: there is
+// no error path out of the evaluator that a caller could mistake for anything
+// other than "decline to BAML".
+func TestEveryEvaluatorErrorIsTheSentinel(t *testing.T) {
+	for _, expr := range []string{
+		"this |",           // compile error
+		"1|nosuchfilter",   // unknown filter
+		"1 is nosuchtest",  // unknown test
+		"nosuchfn()",       // unknown function
+		"this",             // non-boolean render
+		`"abc".upper()`,    // pycompat
+		`"a,b"|split(",")`, // profile guard
+		"none|length",      // profile guard
+	} {
+		_, err := EvaluateConstraint(IntValue(1), expr)
+		if err == nil {
+			t.Errorf("%q did not error", expr)
+			continue
+		}
+		if !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%q returned %v, which does not wrap ErrConstraintUnsupported", expr, err)
+		}
 	}
 }

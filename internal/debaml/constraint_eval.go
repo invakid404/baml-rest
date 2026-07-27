@@ -40,7 +40,7 @@ import (
 // the exact strings "true"/"false". BAML surfaces it as a coercion failure of
 // the constrained node ("Failed to evaluate constraints: ..."), i.e. it is NOT
 // a false check — it rejects the value outright.
-var errConstraintNotBoolean = fmt.Errorf("debaml: predicate did not evaluate to a boolean")
+var errConstraintNotBoolean = fmt.Errorf("%w: predicate did not evaluate to a boolean", ErrConstraintUnsupported)
 
 // newConstraintEnv builds the minijinja environment BAML installs for constraint
 // evaluation, matching jinja_helpers.rs get_env() (:7-36) line for line:
@@ -63,15 +63,16 @@ var errConstraintNotBoolean = fmt.Errorf("debaml: predicate did not evaluate to 
 //     independent of how the port names an anonymous template.
 //   - UNKNOWN-METHOD CALLBACK. minijinja-Go v2.16.0 exposes no
 //     environment-level unknown-method hook (there is no SetUnknownMethodCallback;
-//     state.go dispatches obj.CallMethod then GetAttr and otherwise errors). The
-//     pycompat MAP methods are therefore implemented on the mapping object the
-//     value model owns ([orderedMapping.CallMethod], a port of
-//     minijinja-contrib 2.16.0 pycompat.rs:276-318). The STRING and SEQUENCE
-//     halves (`"s".upper()`, `"{}".format(x)`, `[1,2].count(1)`, …) cannot be:
-//     a Go string Value has no method table and wrapping it in an object would
-//     stop it being a string everywhere else. Those calls raise an evaluation
-//     ERROR here where BAML answers — which is the safe direction (an error
-//     declines to BAML) but IS a real gap, measured by the differential harness.
+//     state.go dispatches obj.CallMethod then GetAttr and otherwise errors), and
+//     a Go string Value has no method table to hang one on — wrapping it in an
+//     object would stop it being a string for `|length`, `in`, comparison and
+//     every string filter. minijinja-contrib's pycompat surface is therefore not
+//     implementable against this engine, and rather than half-implement it the
+//     evaluator's CONTRACT EXCLUDES it: `"s".upper()`, `"{}".format(x)`,
+//     `[1,2].count(1)` and the rest are outside the proven profile BY
+//     CONSTRUCTION and return ErrConstraintUnsupported. See constraint_profile.go
+//     for the contract, and constraintoracle for the stock proof that native
+//     refuses exactly there and nowhere it could have answered correctly.
 //
 // constraintEnv is built once and shared. The environment is immutable after
 // construction — the only entry point is TemplateFromString, which compiles
@@ -101,6 +102,7 @@ func newConstraintEnv() *mj.Environment {
 	env.AddFilter("sum", filterSum)
 
 	withdrawNonBAMLBuiltins(env)
+	installProfileGuards(env)
 
 	return env
 }
@@ -157,6 +159,49 @@ func withdrawNonBAMLBuiltins(env *mj.Environment) {
 // failure into a coercion error on the constrained node, never into a passing
 // or failing check.
 func RenderConstraintExpression(this ConstraintValue, expression string) (string, error) {
+	return renderConstraint(this, expression)
+}
+
+// renderConstraint renders the predicate under the proven profile.
+//
+// A value carrying no mapping is rendered once — there is nothing for the
+// representation-agreement check to disagree about. A value carrying a mapping
+// is rendered TWICE, under the ordered projection and under minijinja-Go's
+// native mapping, and the result is returned only if the two runs agree on
+// BOTH the output and whether they errored. See the profile notes in
+// constraint_profile.go for why that is the mechanism rather than a longer
+// list of filter guards.
+func renderConstraint(this ConstraintValue, expression string) (string, error) {
+	if hasMedia(this) {
+		return "", unsupportedConstraint("media values are outside the profile and unreachable on the native path")
+	}
+
+	primary, primaryErr := renderOnce(this, expression, mappingOrdered)
+	if !hasMapping(this) {
+		return primary, primaryErr
+	}
+
+	second, secondErr := renderOnce(this, expression, mappingNative)
+	switch {
+	case primaryErr != nil && secondErr != nil:
+		// Both refused; the expression is unsupported either way, and the
+		// primary error is the more informative one.
+		return "", primaryErr
+	case (primaryErr == nil) != (secondErr == nil):
+		return "", unsupportedConstraint(
+			"result depends on how the mapping is represented (one projection errored, the other did not): %v / %v",
+			primaryErr, secondErr)
+	case primary != second:
+		return "", unsupportedConstraint(
+			"result depends on how the mapping is represented (%q ordered vs %q native); "+
+				"membership and iteration order over a mapping are outside the profile",
+			primary, second)
+	}
+	return primary, nil
+}
+
+// renderOnce is one evaluation under a single mapping projection.
+func renderOnce(this ConstraintValue, expression string, mode mappingMode) (string, error) {
 	env := constraintEnv()
 	// jinja_helpers.rs:76 — `format!(r#"{{{{ {} }}}}"#, expression.0)`, i.e. the
 	// literal "{{ ", the bare source, then " }}". The single space on each side
@@ -164,11 +209,11 @@ func RenderConstraintExpression(this ConstraintValue, expression string) (string
 	// the template `<string>`, the same name Rust's render_str uses.
 	tmpl, err := env.TemplateFromString("{{ " + expression + " }}")
 	if err != nil {
-		return "", fmt.Errorf("debaml: compile constraint expression: %w", err)
+		return "", unsupportedConstraint("compile constraint expression: %v", err)
 	}
-	out, err := tmpl.Render(map[string]mjvalue.Value{"this": this.toMinijinja()})
+	out, err := tmpl.Render(map[string]mjvalue.Value{"this": this.toMinijinjaMode(mode)})
 	if err != nil {
-		return "", fmt.Errorf("debaml: evaluate constraint expression: %w", err)
+		return "", unsupportedConstraint("evaluate constraint expression: %v", err)
 	}
 	return out, nil
 }
@@ -182,13 +227,17 @@ func RenderConstraintExpression(this ConstraintValue, expression string) (string
 // of the constrained node, not as a failed check, so a caller must never map it
 // to `status: failed`.
 //
-// FAIL-CLOSED CONTRACT for the future serving slice. Any error returned here —
-// unknown filter, unknown method, bad operand, non-boolean render — means
-// native could not reproduce BAML's answer and the request must decline to
-// BAML. Errors are strictly MORE common here than in BAML (see the pycompat
-// note on [newConstraintEnv]), which is the safe asymmetry. The differential
-// harness enumerates where the two disagree WITHOUT erroring; those shapes must
-// be declined by expression shape, not trusted.
+// FAIL-CLOSED CONTRACT. The return is either a boolean byte-identical to BAML
+// v0.223's, or an error wrapping [ErrConstraintUnsupported] — never a usable
+// boolean BAML would have decided differently, and never one BAML would have
+// refused to decide at all. Every error path carries the sentinel (compile
+// errors, unknown filters and methods, non-boolean renders, and the profile
+// guards alike), so errors.Is is a total test for "native could not decide" and
+// a caller can treat it uniformly as "decline to BAML".
+//
+// constraint_profile.go states what the profile excludes and why; the stock
+// differential (internal/debaml/constraintoracle) enforces the contract case by
+// case against real BAML, and fails on any result stock did not also produce.
 func EvaluateConstraint(this ConstraintValue, expression string) (bool, error) {
 	rendered, err := RenderConstraintExpression(this, expression)
 	if err != nil {

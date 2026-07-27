@@ -1427,6 +1427,154 @@ func Batch_struFn(ctx context.Context, topic string, opts ...CallOptionFunc) (ty
 	}
 }
 
+func Iso_divzeroFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_divzero, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Iso_divzeroFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_divzero{}, err
+		}
+
+		if result.Error != nil {
+			return types.Iso_divzero{}, result.Error
+		}
+
+		casted := (result.Data).(types.Iso_divzero)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_divzeroFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_divzero{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Iso_divzero{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Iso_divzero), nil
+			}
+		}
+
+		return types.Iso_divzero{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func Iso_f_length_intFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_f_length_int, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Iso_f_length_intFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_f_length_int{}, err
+		}
+
+		if result.Error != nil {
+			return types.Iso_f_length_int{}, result.Error
+		}
+
+		casted := (result.Data).(types.Iso_f_length_int)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_f_length_intFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_f_length_int{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Iso_f_length_int{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Iso_f_length_int), nil
+			}
+		}
+
+		return types.Iso_f_length_int{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
 func Iso_f_length_noneFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_f_length_none, error) {
 
 	var callOpts callOption
@@ -1498,6 +1646,80 @@ func Iso_f_length_noneFn(ctx context.Context, topic string, opts ...CallOptionFu
 		}
 
 		return types.Iso_f_length_none{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func Iso_f_length_undefinedFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_f_length_undefined, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Iso_f_length_undefinedFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_f_length_undefined{}, err
+		}
+
+		if result.Error != nil {
+			return types.Iso_f_length_undefined{}, result.Error
+		}
+
+		casted := (result.Data).(types.Iso_f_length_undefined)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_f_length_undefinedFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_f_length_undefined{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Iso_f_length_undefined{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Iso_f_length_undefined), nil
+			}
+		}
+
+		return types.Iso_f_length_undefined{}, fmt.Errorf("No data returned from stream")
 	}
 }
 

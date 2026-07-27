@@ -27,7 +27,7 @@
 //
 // # How it works
 //
-//   - corpus.go enumerates 310 (expression, `this`) cases. The expression
+//   - corpus_test.go enumerates 320 (expression, `this`) cases. The expression
 //     surface is enumerated from the minijinja-go/v2 v2.16.0 API — every
 //     registered filter, test, global function and operator — NOT inferred from
 //     what the prompt renderer happens to use, plus the operator/value cases the
@@ -42,8 +42,12 @@
 //     JinjaExpression stock reports back in Check.Expression, not the .baml
 //     attribute text, because BAML's attribute lexer doubles backslashes — over
 //     the corpus's ConstraintValue.
-//   - Both outcomes are PINNED per case, so this is a differential test and a
-//     regression pin at once: a change on either side fails.
+//   - TestConstraintProfileIsFailClosed then asserts the CONTRACT, live: for
+//     every case, native must reproduce stock exactly or refuse with
+//     ErrConstraintUnsupported. There is no allowance to widen and no bucket for
+//     "known difference" — a native answer stock did not produce is a failure.
+//     Both outcomes are also pinned per case, so a change on either side has to
+//     be acknowledged rather than absorbed.
 //
 // # Regenerating
 //
@@ -68,9 +72,15 @@ package constraintoracle
 
 import (
 	stdjson "encoding/json"
+	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
+	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -87,6 +97,10 @@ const (
 	fixtureBAMLPath = "../testdata/constraint_oracle/baml_src/constraints.baml"
 	// writeFixtureEnv rewrites the fixture instead of comparing (see the package comment).
 	writeFixtureEnv = "BAML_CONSTRAINT_FIXTURE_WRITE"
+	// fixtureSrcDir holds every .baml the stock client was generated from.
+	fixtureSrcDir = "../testdata/constraint_oracle/baml_src"
+	// sourceMapPath is the generated client's verbatim copy of those sources.
+	sourceMapPath = "../testdata/constraint_oracle/baml_client/baml_source_map.go"
 
 	// rootGoModPath is the root module's go.mod, from this package's CWD.
 	rootGoModPath = "../../../go.mod"
@@ -138,12 +152,19 @@ func TestConstraintFixtureDrift(t *testing.T) {
 		if _, ok := groupByName(c.Group); !ok {
 			t.Fatalf("case %q references unknown group %q", c.Label, c.Group)
 		}
-		if (c.Stock != c.Native) && c.Note == "" {
-			t.Fatalf("case %q diverges (stock=%s native=%s) but carries no Note explaining it",
-				c.Label, c.Stock, c.Native)
+		// A Note is required exactly where the profile COSTS something: native
+		// refused an expression stock actually decided. Where stock also refused
+		// (outError / outNoChecks), the two agree in substance and a Note would
+		// be noise. A Note anywhere else is stale.
+		stockDecided := c.Stock == outTrue || c.Stock == outFalse
+		wantNote := c.Native == outUnsupported && stockDecided
+		if wantNote && c.Note == "" {
+			t.Fatalf("case %q: native refuses an expression stock decided (stock=%s) but carries no Note naming the guard",
+				c.Label, c.Stock)
 		}
-		if (c.Stock == c.Native) && c.Note != "" {
-			t.Fatalf("case %q agrees but carries a divergence Note", c.Label)
+		if !wantNote && c.Note != "" {
+			t.Fatalf("case %q carries a Note but is not a profile cost (stock=%s native=%s)",
+				c.Label, c.Stock, c.Native)
 		}
 	}
 
@@ -164,6 +185,91 @@ func TestConstraintFixtureDrift(t *testing.T) {
 			"Regenerate with %s=1 and re-run the stock BAML generator (see the package comment).",
 			fixtureBAMLPath, writeFixtureEnv)
 	}
+}
+
+// TestGeneratedClientIsFresh proves the checked-in stock client was generated
+// from the checked-in .baml sources, and not from an older revision of them.
+//
+// This is not paranoia. TestConstraintFixtureDrift only relates the corpus to
+// baml_src; on its own, an isolated case could keep its label and its pinned
+// outcome while the client the stock leg actually drives still carries the OLD
+// expression — and the differential would quietly compare native against the
+// wrong oracle. The generated client embeds every source file verbatim in
+// baml_source_map.go's file_map, so comparing that map against the files on
+// disk closes the loop: source -> client -> test.
+func TestGeneratedClientIsFresh(t *testing.T) {
+	embedded := parseGeneratedSourceMap(t)
+	if len(embedded) == 0 {
+		t.Fatal("generated client embeds no source map")
+	}
+	entries, err := os.ReadDir(fixtureSrcDir)
+	if err != nil {
+		t.Fatalf("read %s: %v", fixtureSrcDir, err)
+	}
+	seen := 0
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".baml" {
+			continue
+		}
+		seen++
+		onDisk, err := os.ReadFile(filepath.Join(fixtureSrcDir, e.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", e.Name(), err)
+		}
+		inClient, ok := embedded[e.Name()]
+		if !ok {
+			t.Errorf("%s is not in the generated client's source map: the client is stale, regenerate it (see the package comment)", e.Name())
+			continue
+		}
+		if inClient != string(onDisk) {
+			t.Errorf("%s differs from the copy embedded in the generated client: the client is STALE and the stock leg is driving a different project.\n"+
+				"Regenerate it (see the package comment).\n  on disk: %d bytes\n  in client: %d bytes",
+				e.Name(), len(onDisk), len(inClient))
+		}
+	}
+	if seen != len(embedded) {
+		t.Errorf("baml_src has %d .baml files but the generated client embeds %d; the client is stale", seen, len(embedded))
+	}
+}
+
+// parseGeneratedSourceMap reads baml_source_map.go's file_map literal.
+//
+// The map and its accessor are unexported in the generated package, so the
+// contents are recovered from the syntax tree rather than called. Parsing beats
+// string matching here: the generated literal's escaping is BAML's choice, and
+// strconv.Unquote gives the bytes it actually denotes.
+func parseGeneratedSourceMap(t *testing.T) map[string]string {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, sourceMapPath, nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", sourceMapPath, err)
+	}
+	out := map[string]string{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		vs, ok := n.(*ast.ValueSpec)
+		if !ok || len(vs.Names) != 1 || vs.Names[0].Name != "file_map" || len(vs.Values) != 1 {
+			return true
+		}
+		lit, ok := vs.Values[0].(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		for _, elt := range lit.Elts {
+			kv, ok := elt.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			key, kerr := strconv.Unquote(kv.Key.(*ast.BasicLit).Value)
+			val, verr := strconv.Unquote(kv.Value.(*ast.BasicLit).Value)
+			if kerr != nil || verr != nil {
+				t.Fatalf("unquote %s entry: %v / %v", sourceMapPath, kerr, verr)
+			}
+			out[key] = val
+		}
+		return false
+	})
+	return out
 }
 
 // ---------------------------------------------------------------------------
@@ -244,7 +350,7 @@ func stockOutcome(r stockResult, label string) (legOutcome, shared.Check) {
 func nativeOutcome(this debaml.ConstraintValue, expr string) (legOutcome, error) {
 	ok, err := debaml.EvaluateConstraint(this, expr)
 	if err != nil {
-		return outError, err
+		return outUnsupported, err
 	}
 	if ok {
 		return outTrue, nil
@@ -367,43 +473,87 @@ func TestConstraintExpressionDifferential(t *testing.T) {
 // divergence cannot appear without someone editing this number and writing the
 // Note that goes with it.
 //
-// The three buckets are not equally serious:
+// The two buckets, and what separates them:
 //
-//   - agree — the two engines produce the same boolean, or both error.
-//   - nativeOnlyError — native errors where BAML answers. SAFE: an evaluation
-//     error means the request declines to BAML, so native can never serve a
-//     wrong result from one of these. Almost all of them are the pycompat
-//     string/sequence methods minijinja-Go cannot host.
-//   - unsafe — native ANSWERS where BAML errors, or the two answer differently.
-//     These are the ones a future admission slice must decline by expression
-//     shape; each carries a Note naming the exact engine seam.
+//   - agree — native produced exactly what stock produced (the same boolean, or
+//     both refused). This is proven parity.
+//   - unsupported — native refused with ErrConstraintUnsupported. SAFE by
+//     construction: the caller declines to BAML, so no wrong result can be
+//     served. This is the measured COST of the profile, not a divergence.
+//
+// There is deliberately no third bucket. A case where native answers something
+// stock did not is a defect, and TestConstraintProfileIsFailClosed fails on it.
 const (
-	wantAgree           = 271
-	wantNativeOnlyError = 30
-	wantUnsafe          = 9
+	wantAgree       = 236
+	wantUnsupported = 84
 )
 
-func TestConstraintDivergenceInventory(t *testing.T) {
-	var agree, nativeOnlyError, unsafe int
-	var unsafeLabels []string
+// TestConstraintProfileIsFailClosed is the load-bearing assertion of this
+// package, and the reason the evaluator can be handed to a serving slice.
+//
+// For EVERY case it requires, live against stock BAML v0.223.0:
+//
+//	native outcome == stock outcome   OR   native outcome == outUnsupported
+//
+// i.e. native either reproduces BAML exactly or declines to decide. Any other
+// combination — native answering true where stock answered false, native
+// answering at all where stock refused the value — fails here. Nothing about
+// this test can be satisfied by recording a known difference: there is no
+// allowance to widen.
+//
+// It runs over the LIVE legs, not the pinned columns, so it cannot pass because
+// the corpus was edited to match.
+func TestConstraintProfileIsFailClosed(t *testing.T) {
+	var violations []string
 	for _, c := range constraintCases {
-		switch {
-		case c.Stock == c.Native:
-			agree++
-		case c.Native == outError:
-			nativeOnlyError++
-		default:
-			unsafe++
-			unsafeLabels = append(unsafeLabels, fmt.Sprintf("%s (stock=%s native=%s)", c.Label, c.Stock, c.Native))
+		g, ok := groupByName(c.Group)
+		if !ok {
+			t.Fatalf("case %q references unknown group %q", c.Label, c.Group)
+		}
+		gotStock, _ := stockOutcome(runStock(t, c.bamlMethod(), g.Input), c.Label)
+		gotNative, nativeErr := nativeOutcome(g.This, c.retainedExpr())
+
+		if gotNative == outUnsupported {
+			if !errors.Is(nativeErr, debaml.ErrConstraintUnsupported) {
+				violations = append(violations, fmt.Sprintf(
+					"%s: native refused with an error that does not wrap ErrConstraintUnsupported: %v",
+					c.Label, nativeErr))
+			}
+			continue
+		}
+		if gotNative != gotStock {
+			violations = append(violations, fmt.Sprintf(
+				"%s: native answered %s where stock produced %s — expr %q",
+				c.Label, gotNative, gotStock, c.retainedExpr()))
 		}
 	}
-	if agree != wantAgree || nativeOnlyError != wantNativeOnlyError || unsafe != wantUnsafe {
-		t.Fatalf("divergence inventory changed: agree=%d (want %d), native-only-error=%d (want %d), unsafe=%d (want %d)\nunsafe: %s",
-			agree, wantAgree, nativeOnlyError, wantNativeOnlyError, unsafe, wantUnsafe,
-			strings.Join(unsafeLabels, "\n        "))
+	if len(violations) > 0 {
+		t.Fatalf("the evaluator is NOT fail-closed; %d case(s) produce a result stock does not:\n  %s",
+			len(violations), strings.Join(violations, "\n  "))
 	}
-	if total := agree + nativeOnlyError + unsafe; total != len(constraintCases) {
-		t.Fatalf("inventory covers %d of %d cases", total, len(constraintCases))
+}
+
+// TestConstraintProfileCost pins how much the fail-closed profile gives up, so
+// a change that quietly widens or narrows it has to be acknowledged.
+func TestConstraintProfileCost(t *testing.T) {
+	var agree, unsupported int
+	for _, c := range constraintCases {
+		switch {
+		case c.Native == outUnsupported:
+			unsupported++
+		case c.Stock == c.Native:
+			agree++
+		default:
+			t.Fatalf("case %q pins native=%s against stock=%s; the corpus may only pin agreement or outUnsupported",
+				c.Label, c.Native, c.Stock)
+		}
+	}
+	if agree != wantAgree || unsupported != wantUnsupported {
+		t.Fatalf("profile cost changed: agree=%d (want %d), unsupported=%d (want %d)",
+			agree, wantAgree, unsupported, wantUnsupported)
+	}
+	if agree+unsupported != len(constraintCases) {
+		t.Fatalf("cost covers %d of %d cases", agree+unsupported, len(constraintCases))
 	}
 }
 

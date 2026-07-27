@@ -623,6 +623,70 @@ func (t *Batch_struClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 
+type Iso_divzeroClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_divzeroClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_divzeroClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_divzero() (*Iso_divzeroClassView, error) {
+	bld, err := t.inner.Class("Iso_divzero")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_divzeroClassView{inner: bld}, nil
+}
+
+func (t *Iso_divzeroClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_f_length_intClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_f_length_intClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_f_length_intClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_f_length_int() (*Iso_f_length_intClassView, error) {
+	bld, err := t.inner.Class("Iso_f_length_int")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_f_length_intClassView{inner: bld}, nil
+}
+
+func (t *Iso_f_length_intClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
 type Iso_f_length_noneClassView struct {
 	inner baml.ClassBuilder
 }
@@ -652,6 +716,38 @@ func (t *TypeBuilder) Iso_f_length_none() (*Iso_f_length_noneClassView, error) {
 }
 
 func (t *Iso_f_length_noneClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_f_length_undefinedClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_f_length_undefinedClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_f_length_undefinedClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_f_length_undefined() (*Iso_f_length_undefinedClassView, error) {
+	bld, err := t.inner.Class("Iso_f_length_undefined")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_f_length_undefinedClassView{inner: bld}, nil
+}
+
+func (t *Iso_f_length_undefinedClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 

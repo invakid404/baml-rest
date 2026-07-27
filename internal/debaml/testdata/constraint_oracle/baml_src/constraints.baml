@@ -208,6 +208,12 @@ class Batch_const {
     @check(f_default_boolean, {{ ""|default("b", true) == "b" }})
     @check(f_string_list, {{ ([1,2]|string)[0] == "[" }})
     @check(f_string_map, {{ ({"z":1}|string)[0] == "{" }})
+    @check(f_maplit_order, {{ ({"z":1,"a":2}|list|join(",")) == "z,a" }})
+    @check(f_maplit_first, {{ {"z":1,"a":2}|first == "z" }})
+    @check(f_maplit_string, {{ ({"z":1,"a":2}|string)[2] == "z" }})
+    @check(f_maplit_reverse, {{ ({"z":1,"a":2}|reverse|first) == "a" }})
+    @check(f_split_first, {{ "a,b"|split(",")|first == "a" }})
+    @check(f_split_join, {{ ("a,b"|split(",")|join("-")) == "a-b" }})
 }
 
 function Batch_constFn(topic: string) -> Batch_const {
@@ -423,6 +429,7 @@ class Batch_map {
     @check(this_map_string, {{ (this|string)[0] == "{" }})
     @check(this_map_string_len, {{ (this|string)|length == 24 }})
     @check(this_map_values_join, {{ this.values()|join(",") == "1,2,3" }})
+    @check(this_map_concat, {{ (this ~ "")|length == 24 }})
 }
 
 function Batch_mapFn(topic: string) -> Batch_map {
@@ -443,6 +450,7 @@ class Batch_cls {
     @check(this_cls_keys, {{ this.keys()|join(",") == "b,a,c" }})
     @check(this_cls_string_len, {{ (this|string)|length == 33 }})
     @check(this_cls_nested_index, {{ this.c[0] == 1 }})
+    @check(this_cls_concat, {{ (this ~ "")|length == 33 }})
 }
 
 function Batch_clsFn(topic: string) -> Batch_cls {
@@ -474,6 +482,17 @@ class Batch_null {
 }
 
 function Batch_nullFn(topic: string) -> Batch_null {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+// Driven ONLY by TestStockDivisibleByZeroIsProcessFatal, from a subprocess:
+// stock BAML v0.223 aborts the process on this expression.
+class Iso_divzero {
+  v int @check(divzero, {{ this is divisibleby(0) }})
+}
+
+function Iso_divzeroFn(topic: string) -> Iso_divzero {
   client ConstraintOracleClient
   prompt #"{{ topic }} {{ ctx.output_format }}"#
 }
@@ -699,6 +718,24 @@ class Iso_this_map_last {
 }
 
 function Iso_this_map_lastFn(topic: string) -> Iso_this_map_last {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_f_length_undefined {
+  v int @check(f_length_undefined, {{ nosuchvar|length == 0 }})
+}
+
+function Iso_f_length_undefinedFn(topic: string) -> Iso_f_length_undefined {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_f_length_int {
+  v int @check(f_length_int, {{ 1|length == 0 }})
+}
+
+function Iso_f_length_intFn(topic: string) -> Iso_f_length_int {
   client ConstraintOracleClient
   prompt #"{{ topic }} {{ ctx.output_format }}"#
 }

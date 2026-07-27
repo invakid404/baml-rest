@@ -918,6 +918,100 @@ func (*parse) Batch_struFn(text string, opts ...CallOptionFunc) (types.Batch_str
 	return casted, nil
 }
 
+// / Parse version of Iso_divzeroFn (Takes in string and returns types.Iso_divzero)
+func (*parse) Iso_divzeroFn(text string, opts ...CallOptionFunc) (types.Iso_divzero, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_divzeroFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_divzeroFn", encoded)
+	if err != nil {
+		return types.Iso_divzero{}, err
+	}
+
+	casted := (result).(types.Iso_divzero)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_f_length_intFn (Takes in string and returns types.Iso_f_length_int)
+func (*parse) Iso_f_length_intFn(text string, opts ...CallOptionFunc) (types.Iso_f_length_int, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_f_length_intFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_f_length_intFn", encoded)
+	if err != nil {
+		return types.Iso_f_length_int{}, err
+	}
+
+	casted := (result).(types.Iso_f_length_int)
+
+	return casted, nil
+}
+
 // / Parse version of Iso_f_length_noneFn (Takes in string and returns types.Iso_f_length_none)
 func (*parse) Iso_f_length_noneFn(text string, opts ...CallOptionFunc) (types.Iso_f_length_none, error) {
 
@@ -961,6 +1055,53 @@ func (*parse) Iso_f_length_noneFn(text string, opts ...CallOptionFunc) (types.Is
 	}
 
 	casted := (result).(types.Iso_f_length_none)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_f_length_undefinedFn (Takes in string and returns types.Iso_f_length_undefined)
+func (*parse) Iso_f_length_undefinedFn(text string, opts ...CallOptionFunc) (types.Iso_f_length_undefined, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_f_length_undefinedFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_f_length_undefinedFn", encoded)
+	if err != nil {
+		return types.Iso_f_length_undefined{}, err
+	}
+
+	casted := (result).(types.Iso_f_length_undefined)
 
 	return casted, nil
 }

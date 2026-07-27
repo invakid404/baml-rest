@@ -234,7 +234,7 @@ func MediaValue(m ConstraintMedia) ConstraintValue {
 // BAML's insertion order. Maps and classes are therefore projected as an
 // ordered mapping OBJECT ([orderedMapping]) whose iteration is the BAML order.
 // The one construct that costs is `in` over a mapping — see [orderedMapping].
-func (v ConstraintValue) toMinijinja() mjvalue.Value {
+func (v ConstraintValue) toMinijinjaMode(mode mappingMode) mjvalue.Value {
 	switch v.kind {
 	case ConstraintKindNull:
 		return mjvalue.None()
@@ -256,42 +256,17 @@ func (v ConstraintValue) toMinijinja() mjvalue.Value {
 	case ConstraintKindList:
 		items := make([]mjvalue.Value, len(v.list))
 		for i, item := range v.list {
-			items[i] = item.toMinijinja()
+			items[i] = item.toMinijinjaMode(mode)
 		}
 		return mjvalue.FromSlice(items)
 	case ConstraintKindMap, ConstraintKindClass:
-		return newOrderedMapping(v.entries)
-	case ConstraintKindMedia:
-		return v.media.toMinijinja()
+		return newMapping(v.entries, mode)
 	default:
+		// ConstraintKindMedia never reaches here: renderConstraint refuses a
+		// media-bearing value before conversion (see hasMedia). Undefined is the
+		// fail-safe for any kind added without updating this switch.
 		return mjvalue.Undefined()
 	}
-}
-
-// toMinijinja projects a media value as its serde document, matching
-// `Value::from_serialize` over BamlMedia (media.rs:30-46):
-//
-//	{"media_type": "<Variant>", "mime_type": <string|none>,
-//	 "content": {"<Tag>": {<fields>}}}
-//
-// The nested externally-tagged content arm is a one-entry mapping keyed by the
-// serde variant name. Unreachable today; see [ConstraintMedia].
-func (m *ConstraintMedia) toMinijinja() mjvalue.Value {
-	if m == nil {
-		return mjvalue.None()
-	}
-	mime := mjvalue.None()
-	if m.MimeType != nil {
-		mime = mjvalue.FromString(*m.MimeType)
-	}
-	content := newOrderedMapping([]ConstraintEntry{
-		{Key: m.Content.Tag, Value: MapValue(m.Content.Fields)},
-	})
-	return newOrderedMappingValues([]orderedEntry{
-		{key: "media_type", val: mjvalue.FromString(m.MediaType)},
-		{key: "mime_type", val: mime},
-		{key: "content", val: content},
-	})
 }
 
 // orderedEntry is one already-converted mapping entry.
@@ -329,10 +304,24 @@ type orderedMapping struct {
 	keys []string
 }
 
-func newOrderedMapping(entries []ConstraintEntry) mjvalue.Value {
+// newMapping projects a BAML map/class under the requested representation. The
+// two differ only in which faithfulness they buy — see the profile notes in
+// constraint_profile.go; renderConstraint requires both to agree before it
+// trusts an answer.
+func newMapping(entries []ConstraintEntry, mode mappingMode) mjvalue.Value {
+	if mode == mappingNative {
+		// minijinja-Go's own mapping: membership (`in`) and equality are
+		// faithful, iteration is SORTED. A duplicate key keeps the last binding,
+		// which cannot arise from a BAML IndexMap.
+		plain := make(map[string]mjvalue.Value, len(entries))
+		for _, e := range entries {
+			plain[e.Key] = e.Value.toMinijinjaMode(mode)
+		}
+		return mjvalue.FromMap(plain)
+	}
 	converted := make([]orderedEntry, len(entries))
 	for i, e := range entries {
-		converted[i] = orderedEntry{key: e.Key, val: e.Value.toMinijinja()}
+		converted[i] = orderedEntry{key: e.Key, val: e.Value.toMinijinjaMode(mode)}
 	}
 	return newOrderedMappingValues(converted)
 }

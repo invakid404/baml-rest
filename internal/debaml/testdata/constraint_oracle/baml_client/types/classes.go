@@ -818,6 +818,90 @@ func (c Batch_stru) BamlTypeName() string {
 	return "Batch_stru"
 }
 
+type Iso_divzero struct {
+	V Checked[int64] `json:"v"`
+}
+
+func (c *Iso_divzero) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_divzero" {
+		panic(fmt.Sprintf("expected Iso_divzero, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_divzero", key))
+
+		}
+	}
+
+}
+
+func (c Iso_divzero) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_divzero", fields, nil)
+}
+
+func (c Iso_divzero) BamlTypeName() string {
+	return "Iso_divzero"
+}
+
+type Iso_f_length_int struct {
+	V Checked[int64] `json:"v"`
+}
+
+func (c *Iso_f_length_int) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_f_length_int" {
+		panic(fmt.Sprintf("expected Iso_f_length_int, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_f_length_int", key))
+
+		}
+	}
+
+}
+
+func (c Iso_f_length_int) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_f_length_int", fields, nil)
+}
+
+func (c Iso_f_length_int) BamlTypeName() string {
+	return "Iso_f_length_int"
+}
+
 type Iso_f_length_none struct {
 	V Checked[int64] `json:"v"`
 }
@@ -858,6 +942,48 @@ func (c Iso_f_length_none) Encode() (*cffi.HostValue, error) {
 
 func (c Iso_f_length_none) BamlTypeName() string {
 	return "Iso_f_length_none"
+}
+
+type Iso_f_length_undefined struct {
+	V Checked[int64] `json:"v"`
+}
+
+func (c *Iso_f_length_undefined) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_f_length_undefined" {
+		panic(fmt.Sprintf("expected Iso_f_length_undefined, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_f_length_undefined", key))
+
+		}
+	}
+
+}
+
+func (c Iso_f_length_undefined) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_f_length_undefined", fields, nil)
+}
+
+func (c Iso_f_length_undefined) BamlTypeName() string {
+	return "Iso_f_length_undefined"
 }
 
 type Iso_f_regex_noarg struct {

@@ -113,6 +113,14 @@ func renderFixtureBAML() string {
 		writeFixtureFunction(&b, name)
 	}
 
+	// The one declaration that is NOT a corpus case: `is divisibleby(0)` aborts
+	// the stock process, so it can only be observed from a subprocess. See
+	// divisibleby_zero_test.go, which is its only driver.
+	b.WriteString("\n// Driven ONLY by TestStockDivisibleByZeroIsProcessFatal, from a subprocess:\n")
+	b.WriteString("// stock BAML v0.223 aborts the process on this expression.\n")
+	fmt.Fprintf(&b, "class %sdivzero {\n  v int @check(divzero, {{ this is divisibleby(0) }})\n}\n", isoPrefix)
+	writeFixtureFunction(&b, isoPrefix+"divzero")
+
 	for _, c := range constraintCases {
 		if !c.isolated() {
 			continue
