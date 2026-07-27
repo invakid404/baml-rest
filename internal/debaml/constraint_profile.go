@@ -469,14 +469,42 @@ func isProvablySmallNumber(run string) bool {
 // The closed numeric sublanguage.
 // ---------------------------------------------------------------------------
 
-// numeric is a value in the sublanguage: a float (exempt, because f64 semantics
-// agree between the engines), an integer whose magnitude is tracked with
-// saturating arithmetic, or a comparison result.
+// numeric is a value in the sublanguage: a comparison result, or a number
+// classified by the PAYLOAD TYPE minijinja-Go would store it as.
+//
+// The classification is engineInt, NOT the source spelling, and the difference
+// is load-bearing. Rounds 9 and 10 both modelled "written with a `.`" as
+// "exempt, because both engines are IEEE-754 f64 from here on", and that premise
+// failed twice — first because a float op must not clear an already-crossed
+// integer, then because `Pow` and `Rem` PROMOTE an integral float into an actual
+// int64. Round 11 removes the premise instead of guarding it again: a node is
+// bounded as an integer exactly when the engine holds it as one.
+//
+// WHY THAT IS SOUND. Every engineInt node carries a magnitude bound, and the
+// profile refuses the whole expression if any of them reaches 2^53. Under that
+// condition every node has the SAME value in both engines:
+//
+//   - an engineInt node below 2^53 is exactly representable in f64, so
+//     minijinja-Go's `FromInt(int64(f1 op f2))` and stock's i128 agree, and it
+//     also equals the f64 stock may be holding instead (stock keeps a promoted
+//     power as f64 — same number, different box);
+//   - a non-engineInt node is f64 in BOTH engines. minijinja-Go reaches that
+//     state only when an operand is a float64 payload, and any float operand
+//     puts stock in f64 too. IEEE-754 is deterministic, so no bound is needed —
+//     which is why `999999999999999.0 * 999999999999999.0` still decides.
+//
+// The only bridges between the two worlds are the promoting ops, and each is
+// handled where it happens: see [parsePow] and [parseMul].
 type numeric struct {
-	isFloat bool
-	isBool  bool
-	neg     bool
-	mag     uint64
+	// engineInt is true when minijinja-Go stores this value as an int64. A float
+	// LITERAL is not engineInt — `2.0` is a float64 payload until a promoting op
+	// reads it through AsInt.
+	engineInt bool
+	isBool    bool
+	neg       bool
+	// mag bounds |value| for an engineInt node. For a float literal it bounds the
+	// literal itself, which is what [parsePow] needs to bound a promoted power.
+	mag uint64
 	// nonNegLiteral marks a node that IS a non-negative integer literal — a bare
 	// digit run, possibly wrapped in parentheses. Any operator, and unary minus,
 	// clear it. It is the only provenance the operators below will accept,
@@ -485,6 +513,9 @@ type numeric struct {
 	nonNegLiteral bool
 	// nonNegFloatLiteral is the same provenance rule for a non-negative FLOAT
 	// literal (`2.0`, `0.5`), and mag then carries a CEILING on its magnitude.
+	// integralFloatLiteral additionally records whether that literal is what
+	// AsInt calls an integer (`2.0` yes, `2.5` no), which decides whether a
+	// promoting op turns it into an int64.
 	//
 	// It exists because "a float operand means both engines stay in f64" is
 	// FALSE for this engine: minijinja-Go PROMOTES AN INTEGRAL FLOAT TO AN
@@ -512,9 +543,13 @@ type numeric struct {
 	//
 	// Both promoting ops are therefore handled explicitly: `%` admits only
 	// non-negative INTEGER literals (see [parseMul]), so a float can never reach
-	// Rem; and `**` bounds a float base exactly like an integer one (see
-	// [parsePow]).
-	nonNegFloatLiteral bool
+	// Rem; and `**` bounds a promoted power as an integer and hands it on as one,
+	// so the ORDINARY integer machinery covers everything downstream of it (see
+	// [parsePow]). That last part is round 11: bounding the power at its own node
+	// was not enough, because `(2.0 ** 52) * (2.0 ** 11)` is two in-range
+	// promoted integers whose PRODUCT is 2^63.
+	nonNegFloatLiteral   bool
+	integralFloatLiteral bool
 	// saturated is STICKY, and that is the whole point of it.
 	//
 	// It records that SOME sub-expression already reached or passed 2^53 — where
@@ -528,7 +563,7 @@ type numeric struct {
 	// Stock keeps the prefix in i128 (…990 and …991), and those are still two
 	// DISTINCT f64 values at the float handoff, so it answers false. minijinja-Go
 	// did each Add through float64, rounding both prefixes to …992, so it answers
-	// true. Before round 9 the `+ 0.0` returned a fresh numeric{isFloat: true} and
+	// true. Before round 9 the `+ 0.0` returned a fresh float-typed numeric and
 	// dropped the bit, and the whole expression was admitted.
 	//
 	// THE INVARIANT: every production that returns a numeric ORs IN the saturated
@@ -715,12 +750,18 @@ func (p *numericParser) parseMul() (numeric, bool) {
 			}
 			left = combineNumeric(left, right, func(a, _ uint64) uint64 { return a })
 		case p.accept("/"):
-			// True division is f64 on both sides, so sign is immaterial.
+			// True division is f64 on both sides, so sign is immaterial — and
+			// minijinja-Go's Value.Div returns FromFloat UNCONDITIONALLY, even for
+			// two actual ints, so the result is never an engine integer no matter
+			// what went in. Saturation still carries.
 			right, ok := p.parsePow()
 			if !ok {
 				return numeric{}, false
 			}
-			left = combineNumeric(left, right, func(a, _ uint64) uint64 { return a })
+			if left.isBool || right.isBool {
+				return numeric{}, false
+			}
+			left = numeric{saturated: left.saturated || right.saturated}
 		default:
 			return left, true
 		}
@@ -768,7 +809,7 @@ func (p *numericParser) parsePow() (numeric, bool) {
 	if !exp.nonNegLiteral || exp.mag >= powExponentLimit {
 		return numeric{}, false
 	}
-	if base.isFloat {
+	if !base.engineInt {
 		// A FLOAT BASE IS NOT EXEMPT: `Pow` PROMOTES AN INTEGRAL FLOAT TO AN
 		// INTEGER.
 		//
@@ -792,13 +833,24 @@ func (p *numericParser) parsePow() (numeric, bool) {
 		if !base.nonNegFloatLiteral {
 			return numeric{}, false
 		}
+		if !base.integralFloatLiteral {
+			// AsInt REJECTS a non-integral float (`2.5` is not math.Trunc(2.5)),
+			// so neither engine leaves f64 and no integer bound applies. STICKY:
+			// the saturation bit still carries. See [numeric.saturated].
+			return numeric{saturated: base.saturated || exp.saturated}, true
+		}
+		// PROMOTED. The engine hands back an int64, so this node IS an integer
+		// from here on — bounded now, and, crucially, handed downstream as
+		// engineInt so that a LATER integer op is bounded too. Round 10 bounded
+		// only this node, which left `(2.0 ** 52) * (2.0 ** 11)` — two in-range
+		// promoted integers whose product is 2^63 — admitted.
 		m := satPow(base.mag, exp.mag)
-		// STICKY: a float BASE also does not clear a base that already crossed
-		// 2^53. See [numeric.saturated].
-		return numeric{isFloat: true, saturated: base.saturated || exp.saturated || m >= maxExactInt}, true
+		return numeric{engineInt: true, mag: m,
+			saturated: base.saturated || exp.saturated || m >= maxExactInt}, true
 	}
 	m := satPow(base.mag, exp.mag)
-	return numeric{mag: m, saturated: base.saturated || exp.saturated || m >= maxExactInt}, true
+	return numeric{engineInt: true, mag: m,
+		saturated: base.saturated || exp.saturated || m >= maxExactInt}, true
 }
 
 func (p *numericParser) parseUnary() (numeric, bool) {
@@ -842,26 +894,28 @@ func (p *numericParser) parsePrimary() (numeric, bool) {
 		return numeric{}, false
 	}
 	if dot := strings.IndexByte(run, '.'); dot >= 0 {
-		// A float literal carries a CEILING on its magnitude, because it is not
-		// exempt from the integer bound once it reaches an op that promotes it
-		// (see [parsePow]). isProvablySmallNumber has already limited the integer
-		// part to 15 digits, so this cannot itself overflow.
+		// A float LITERAL is a float64 payload in the engine, so it is not
+		// engineInt — but it carries a CEILING on its magnitude, because it stops
+		// being exempt the moment a promoting op reads it (see [parsePow]).
+		// isProvablySmallNumber has already limited the integer part to 15 digits,
+		// so this cannot itself overflow.
 		var mag uint64
 		for i := 0; i < dot; i++ {
 			mag = satMul(mag, 10)
 			mag = satAdd(mag, uint64(run[i]-'0'))
 		}
-		if strings.Trim(run[dot+1:], "0") != "" {
+		integral := strings.Trim(run[dot+1:], "0") == ""
+		if !integral {
 			mag = satAdd(mag, 1) // round the fraction up
 		}
-		return numeric{isFloat: true, nonNegFloatLiteral: true, mag: mag}, true
+		return numeric{nonNegFloatLiteral: true, integralFloatLiteral: integral, mag: mag}, true
 	}
 	var mag uint64
 	for i := 0; i < len(run); i++ {
 		mag = satMul(mag, 10)
 		mag = satAdd(mag, uint64(run[i]-'0'))
 	}
-	return numeric{mag: mag, nonNegLiteral: true, saturated: mag >= maxExactInt}, true
+	return numeric{engineInt: true, mag: mag, nonNegLiteral: true, saturated: mag >= maxExactInt}, true
 }
 
 // combineNumeric applies an integer magnitude rule, propagating float-ness
@@ -871,15 +925,25 @@ func combineNumeric(a, b numeric, mag func(x, y uint64) uint64) numeric {
 	if a.isBool || b.isBool {
 		return numeric{saturated: true}
 	}
-	if a.isFloat || b.isFloat {
-		// STICKY: a mixed int/float operation must NOT launder an operand that
-		// already crossed 2^53. See [numeric.saturated] for the case.
-		return numeric{isFloat: true, saturated: a.saturated || b.saturated}
+	if !a.engineInt || !b.engineInt {
+		// The engine keeps this in float64 — Add/Sub/Mul/FloorDiv all gate their
+		// integer result on isActualInt, which is false for a float64 payload —
+		// and so does stock, because any float operand puts it in f64. IEEE-754
+		// is deterministic across the two, so no magnitude bound applies here.
+		//
+		// STICKY: a mixed operation must still NOT launder an operand that
+		// already crossed 2^53. See [numeric.saturated].
+		return numeric{saturated: a.saturated || b.saturated}
 	}
+	// BOTH operands are int64 in the engine, whatever they were SPELLED as — a
+	// promoted `2.0 ** 52` arrives here as an integer of magnitude 2^52, and its
+	// product with `2.0 ** 11` saturates exactly as `4503599627370496 * 2048`
+	// would. That is the round-11 fix: one bound, reached through the payload
+	// type rather than through the source text.
 	m := mag(a.mag, b.mag)
 	// A computed value is never a literal, so it can never satisfy the
 	// operators that require one. This is what closes `2 ** (0 - 1)`.
-	return numeric{mag: m, saturated: a.saturated || b.saturated || m >= maxExactInt}
+	return numeric{engineInt: true, mag: m, saturated: a.saturated || b.saturated || m >= maxExactInt}
 }
 
 // powExponentLimit is where stock stops: minijinja converts a `**` exponent to

@@ -67,6 +67,13 @@ type exact struct {
 	// engine INTEGER out of an operand that was not an actual int — the round-10
 	// class. It is only used to prove the generator reaches that path.
 	promoted bool
+	// compositional is the round-11 shape specifically: the crossing happened at
+	// THIS op, both operands were individually in range, and at least one of them
+	// was a promoted integral float. `(2.0 ** 52) * (2.0 ** 11)` is the case the
+	// review reported. Counting it is what proves the generator reaches "a
+	// below-bound promoted integer subsequently reaches an ordinary integer
+	// operation", which round 10's version did not.
+	compositional bool
 }
 
 // twoP53 is the first integer minijinja-Go's float64 arithmetic can no longer
@@ -85,13 +92,15 @@ func absRat(r *big.Rat) *big.Rat { return new(big.Rat).Abs(r) }
 // back as an int64 — and THAT is what makes the 2^53 bound apply, whether the
 // operands were spelled `2` or `2.0`.
 func node(r *big.Rat, engineInt, promotedHere bool, a, b exact) exact {
-	crossed := a.crossed || b.crossed
-	if engineInt && absRat(r).Cmp(twoP53) >= 0 {
-		crossed = true
-	}
+	crossedHere := engineInt && absRat(r).Cmp(twoP53) >= 0
 	f, _ := r.Float64()
-	return exact{actualInt: engineInt, r: r, f: f, crossed: crossed,
-		promoted: a.promoted || b.promoted || promotedHere}
+	return exact{
+		actualInt: engineInt, r: r, f: f,
+		crossed:  a.crossed || b.crossed || crossedHere,
+		promoted: a.promoted || b.promoted || promotedHere,
+		compositional: a.compositional || b.compositional ||
+			(crossedHere && !a.crossed && !b.crossed && (a.promoted || b.promoted)),
+	}
 }
 
 // intLiterals are all <= 15 digits, so they pass the token gate and the
@@ -150,11 +159,23 @@ func (g *exprGen) term(depth int) (string, exact) {
 		s, v := g.term(depth - 1)
 		return "(-" + s + ")", node(new(big.Rat).Neg(v.r), v.actualInt, false, v, exact{})
 	case 1:
-		// A power with a small non-negative integer LITERAL exponent — the only
-		// exponent shape the whitelist admits, so this exercises the accepted path
-		// rather than bouncing off the literal check.
+		// A power with a non-negative integer LITERAL exponent — the only exponent
+		// shape the whitelist admits, so this exercises the accepted path rather
+		// than bouncing off the literal check.
+		//
+		// The exponent range reaches past 2^53 ON PURPOSE. Round 10's version
+		// stopped at 4, so a promoted power was always tiny and the generator
+		// could not produce the round-11 shape: a below-bound promoted integer
+		// that only crosses when a LATER integer op consumes it. Ranging over
+		// 0..40 means two such powers routinely multiply past the bound.
 		base, bv := g.term(depth - 1)
+		// Mostly small, so ordinary in-range arithmetic still gets generated and
+		// the "did anything get ANSWERED" guard below stays meaningful; large a
+		// fifth of the time, so the crossings are reached too.
 		e := g.rng.Intn(5)
+		if g.rng.Intn(5) == 0 {
+			e = g.rng.Intn(41)
+		}
 		expr := "(" + base + ") ** " + fmt.Sprint(e)
 		r := ratPow(bv.r, e)
 		// Pow reads BOTH operands through AsInt, so an INTEGRAL FLOAT base is
@@ -167,6 +188,19 @@ func (g *exprGen) term(depth int) (string, exact) {
 	}
 	left, lv := g.term(depth - 1)
 	right, rv := g.term(depth - 1)
+
+	if g.rng.Intn(6) == 0 {
+		// THE ROUND-11 SHAPE, generated on purpose rather than hoped for: two
+		// integral-float powers, each individually in range, combined by an
+		// integer op. `(2.0 ** 52) * (2.0 ** 11)` is this with i=52, j=11.
+		bases := []string{"2.0", "4.0", "10.0"}
+		bl, br := bases[g.rng.Intn(len(bases))], bases[g.rng.Intn(len(bases))]
+		i, j := g.rng.Intn(40), g.rng.Intn(40)
+		left = fmt.Sprintf("(%s ** %d)", bl, i)
+		right = fmt.Sprintf("(%s ** %d)", br, j)
+		lv = powNode(bl, i)
+		rv = powNode(br, j)
+	}
 
 	op := []string{"+", "-", "*", "/", "//", "%"}[g.rng.Intn(6)]
 	// Neither engine survives a zero divisor, and the model cannot represent it
@@ -226,13 +260,29 @@ func ratTruncRem(a, b *big.Rat) *big.Rat {
 	return new(big.Rat).Sub(a, new(big.Rat).Mul(b, new(big.Rat).SetInt(t)))
 }
 
+// powNode is the model for `<integral float literal> ** e`: minijinja-Go's Pow
+// AsInt-promotes the base, so the result is an actual int64 whenever it stays
+// inside int64 range.
+func powNode(base string, e int) exact {
+	bv := exact{r: ratFromString(base)}
+	bv.f, _ = bv.r.Float64()
+	r := ratPow(bv.r, e)
+	res, _ := r.Float64()
+	engineInt := bv.isIntegral() && res == math.Trunc(res) &&
+		!math.IsInf(res, 0) && math.Abs(res) <= math.MaxInt64
+	return node(r, engineInt, engineInt && !bv.actualInt, bv, exact{})
+}
+
 // predicate wraps two arithmetic terms in a comparison, because
 // EvaluateConstraint requires the render to be exactly "true" or "false".
-func (g *exprGen) predicate(depth int) (expr string, crossed, promoted bool) {
+func (g *exprGen) predicate(depth int) (expr string, crossed, promoted, compositional bool) {
 	left, lv := g.term(depth)
 	right, rv := g.term(depth)
 	op := []string{"==", "!=", "<", ">", "<=", ">="}[g.rng.Intn(6)]
-	return left + " " + op + " " + right, lv.crossed || rv.crossed, lv.promoted || rv.promoted
+	return left + " " + op + " " + right,
+		lv.crossed || rv.crossed,
+		lv.promoted || rv.promoted,
+		lv.compositional || rv.compositional
 }
 
 func TestSaturationIsStickyUnderRandomArithmetic(t *testing.T) {
@@ -244,11 +294,14 @@ func TestSaturationIsStickyUnderRandomArithmetic(t *testing.T) {
 	g := &exprGen{rng: rand.New(rand.NewSource(20260727))}
 
 	const iterations = 20000
-	var crossedCases, decidedCases, refusedInRange, promotedCrossings int
+	var crossedCases, decidedCases, refusedInRange, promotedCrossings, compositionalCrossings int
 	for i := 0; i < iterations; i++ {
-		expr, crossed, promoted := g.predicate(3)
+		expr, crossed, promoted, compositional := g.predicate(3)
 		if crossed && promoted {
 			promotedCrossings++
+		}
+		if compositional {
+			compositionalCrossings++
 		}
 		got, err := EvaluateConstraint(NullValue(), expr)
 
@@ -273,6 +326,11 @@ func TestSaturationIsStickyUnderRandomArithmetic(t *testing.T) {
 	// Guard against a vacuous pass in BOTH directions: the generator must have
 	// produced crossings for the property to mean anything, and it must also have
 	// produced answers, or a profile that refused everything would pass.
+	if compositionalCrossings < 50 {
+		t.Errorf("only %d generated crossings were COMPOSITIONAL — a below-bound promoted integral "+
+			"float reaching a later integer op. That is the round-11 shape, and a generator that "+
+			"does not reach it cannot prove the bound follows the payload type", compositionalCrossings)
+	}
 	if promotedCrossings < 50 {
 		t.Errorf("only %d generated crossings came through an INTEGRAL-FLOAT operand; "+
 			"the generator is not exercising the Rem/Pow promotion that round 10 closed", promotedCrossings)
@@ -290,9 +348,10 @@ func TestSaturationIsStickyUnderRandomArithmetic(t *testing.T) {
 		t.Errorf("only %d/%d in-range expressions were ANSWERED; the profile may have become a blanket refusal",
 			decidedCases, iterations)
 	}
-	t.Logf("%d crossed (all refused; %d of them only because an integral float was promoted to an integer), "+
+	t.Logf("%d crossed (all refused; %d involved a promoted integral float, %d of those only crossed "+
+		"COMPOSITIONALLY — two in-range promoted operands meeting a later integer op), "+
 		"%d answered, %d in-range but refused for another whitelist reason",
-		crossedCases, promotedCrossings, decidedCases, refusedInRange)
+		crossedCases, promotedCrossings, compositionalCrossings, decidedCases, refusedInRange)
 }
 
 // TestSaturationSurvivesEveryFloatProducingPath is the case-level companion to
@@ -441,6 +500,120 @@ func TestIntegralFloatsAreNotExemptFromTheIntegerBound(t *testing.T) {
 		got, err := EvaluateConstraint(NullValue(), expr)
 		if err != nil {
 			t.Errorf("non-promoting float arithmetic %q was refused (%v)", expr, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%q = %v, want %v", expr, got, want)
+		}
+	}
+}
+
+// TestPromotedIntegralFloatCompositionsAreBounded is the round-11 regression,
+// and it is a DETERMINISTIC sweep rather than a sample.
+//
+// Round 10 bounded a promoted power at its own node and then handed the result
+// on as "a float", so two individually in-range promoted integers could be
+// multiplied without any bound at all:
+//
+//	(2.0 ** 52) * (2.0 ** 11) > 0.0
+//
+// minijinja-Go's Pow AsInt-promotes each side to an actual int64, Mul sees two
+// actual ints and computes FromInt(int64(2^52 * 2^11)) = int64(float64(2^63)) —
+// MinInt64 on linux/amd64 — so native answered FALSE; stock keeps both powers in
+// f64, gets +2^63 and answers TRUE.
+//
+// The sweep below pins the boundary itself rather than the one reported pair:
+// `2.0 ** i` is an integer of magnitude 2^i, so the product's bound is 2^(i+j)
+// and the expression must be admitted exactly while i+j < 53.
+func TestPromotedIntegralFloatCompositionsAreBounded(t *testing.T) {
+	const limit = 40 // i+j spans 0..80, so the sweep crosses 53 from both sides
+	for i := 0; i <= limit; i++ {
+		for j := 0; j <= limit; j++ {
+			expr := fmt.Sprintf("(2.0 ** %d) * (2.0 ** %d) > 0.0", i, j)
+			got, err := EvaluateConstraint(NullValue(), expr)
+			crosses := i+j >= 53
+			switch {
+			case crosses && !errors.Is(err, ErrConstraintUnsupported):
+				t.Fatalf("%s: product bound is 2^%d, at or past 2^53 — must refuse, answered (%v, %v)",
+					expr, i+j, got, err)
+			case !crosses && err != nil:
+				t.Fatalf("%s: product bound is 2^%d, well inside 2^53 — must decide, refused with %v",
+					expr, i+j, err)
+			case !crosses && !got:
+				t.Fatalf("%s = false, want true", expr)
+			}
+		}
+	}
+
+	// The same sweep for the additive operators, whose bound is the conservative
+	// SUM from round 8: 2^i + 2^j.
+	for i := 0; i <= 54; i++ {
+		for j := 0; j <= 54; j++ {
+			for _, op := range []string{"+", "-"} {
+				expr := fmt.Sprintf("(2.0 ** %d) %s (2.0 ** %d) > -1.0", i, op, j)
+				_, err := EvaluateConstraint(NullValue(), expr)
+				crosses := satAdd(satPow(2, uint64(i)), satPow(2, uint64(j))) >= maxExactInt
+				if crosses != errors.Is(err, ErrConstraintUnsupported) {
+					t.Fatalf("%s: crosses=%v but err=%v", expr, crosses, err)
+				}
+			}
+		}
+	}
+}
+
+// TestEngineIntegerTrackingFollowsThePayloadNotTheSpelling states the round-11
+// model directly: the bound follows minijinja-Go's STORED payload type, so an
+// integral float that the engine promoted is an integer everywhere downstream,
+// and a value the engine keeps in float64 is not bounded at all.
+func TestEngineIntegerTrackingFollowsThePayloadNotTheSpelling(t *testing.T) {
+	// PROMOTED, therefore bounded — every one of these reaches an integer op
+	// carrying a promoted integral-float power.
+	for name, expr := range map[string]string{
+		"the reported composition":  "(2.0 ** 52) * (2.0 ** 11) > 0.0",
+		"split evenly":              "(2.0 ** 26) * (2.0 ** 27) > 0.0",
+		"promoted times an int":     "(2.0 ** 52) * 2 > 0.0",
+		"int times a promoted":      "2 * (2.0 ** 52) > 0.0",
+		"promoted plus a promoted":  "(2.0 ** 52) + (2.0 ** 52) > 0.0",
+		"promoted minus a promoted": "(2.0 ** 52) - (2.0 ** 52) == 0",
+		"nested composition":        "((2.0 ** 26) * (2.0 ** 26)) * 2 > 0.0",
+		"promoted as a pow base":    "(2.0 ** 52) ** 2 > 0.0",
+		"another base":              "(4.0 ** 26) * (4.0 ** 1) > 0.0",
+		"base ten":                  "(10.0 ** 15) * (10.0 ** 3) > 0.0",
+		"promoted into floordiv":    "(2.0 ** 52) // 1 > 0",
+		"promoted into modulo":      "(2.0 ** 52) % 3 == 1",
+		"promoted then compared":    "(2.0 ** 52) * (2.0 ** 11) == 9223372036854775808",
+	} {
+		if got, err := EvaluateConstraint(NullValue(), expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%s: %q answered (%v, %v); a promoted integral float must stay bounded downstream",
+				name, expr, got, err)
+		}
+	}
+
+	// NOT promoted, therefore NOT bounded — the engine keeps these in float64
+	// and so does stock, so bounding them would be a pure loss.
+	for expr, want := range map[string]bool{
+		// A float64 operand keeps Mul/Add out of their integer arm, even when the
+		// other side is a promoted integer.
+		"(2.0 ** 52) * 2.0 > 0.0": true,
+		"(2.0 ** 52) + 1.0 > 0.0": true,
+		// AsInt REJECTS a non-integral base, so no promotion happens at all.
+		"(2.5 ** 2) * (2.5 ** 2) == 39.0625": true,
+		"2.5 ** 2 == 6.25":                   true,
+		"0.5 ** 3 == 0.125":                  true,
+		// Ordinary float arithmetic, unbounded in both engines.
+		"999999999999999.0 * 999999999999999.0 > 0.0": true,
+		"999999999999999.0 + 999999999999999.0 > 0.0": true,
+		"7.0 / 2.0 == 3.5":                            true,
+		// In-range promoted compositions still decide.
+		"(2.0 ** 3) * (2.0 ** 4) == 128.0": true,
+		"(2.0 ** 3) + (2.0 ** 4) == 24.0":  true,
+		"(2.0 ** 3) - 1 == 7":              true,
+		"2.0 ** 52 > 0.0":                  true,
+		"10.0 ** 3 == 1000.0":              true,
+	} {
+		got, err := EvaluateConstraint(NullValue(), expr)
+		if err != nil {
+			t.Errorf("%q was refused (%v); the payload-type bound is over-broad", expr, err)
 			continue
 		}
 		if got != want {
