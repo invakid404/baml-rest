@@ -361,6 +361,18 @@ class Batch_const {
     @check(slice_ctl_negative_start, {{ [1,2,3][-1:]|length == 1 }})
     @check(index_ctl_negative, {{ [1,2,3][-1] == 3 }})
     @check(list_ctl_fractional_elems, {{ [1.5,2.5]|sum == 4.0 }})
+    @check(arity_divisibleby_float, {{ 1.5 is divisibleby(0.5) }})
+    @check(arity_divisibleby_float_subject, {{ 4.0 is divisibleby(2) }})
+    @check(arity_divisibleby_float_divisor, {{ 4 is divisibleby(2.0) }})
+    @check(arity_ctl_divisibleby_int, {{ 9 is divisibleby(3) }})
+    @check(arity_ctl_slice_two, {{ [1,2,3]|slice(2)|length == 2 }})
+    @check(arity_ctl_batch_two, {{ [1,2,3]|batch(2)|length == 2 }})
+    @check(arity_ctl_replace_two, {{ "aaa"|replace("a","b") == "bbb" }})
+    @check(neg_ctl_slice_start, {{ [1,2,3][-1:]|length == 1 }})
+    @check(neg_ctl_slice_start_two, {{ [1,2,3][-2:]|length == 2 }})
+    @check(neg_ctl_slice_stop, {{ [1,2,3][:-1]|length == 2 }})
+    @check(neg_ctl_index, {{ [1,2,3][-1] == 3 }})
+    @check(neg_ctl_step_reverse, {{ [1,2,3][::-1]|length == 3 }})
 }
 
 function Batch_constFn(topic: string) -> Batch_const {
@@ -527,6 +539,7 @@ class Batch_list {
     @check(index_intcast_derived, {{ this["9007199254740993"|int] == 1 }})
     @check(index_ctl_this, {{ this[0] == 1 }})
     @check(slice_ctl_this, {{ this[1:]|length == 2 }})
+    @check(neg_ctl_this_slice, {{ this[-1:]|length == 1 }})
 }
 
 function Batch_listFn(topic: string) -> Batch_list {
@@ -1106,6 +1119,87 @@ class Iso_slice_this_fractional {
 }
 
 function Iso_slice_this_fractionalFn(topic: string) -> Iso_slice_this_fractional {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_arity_slice_zero {
+  v int @check(arity_slice_zero, {{ [1,2,3]|slice(0)|length == 1 }})
+}
+
+function Iso_arity_slice_zeroFn(topic: string) -> Iso_arity_slice_zero {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_arity_slice_fractional {
+  v int @check(arity_slice_fractional, {{ [1,2,3]|slice(1.5)|length == 1 }})
+}
+
+function Iso_arity_slice_fractionalFn(topic: string) -> Iso_arity_slice_fractional {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_arity_batch_zero {
+  v int @check(arity_batch_zero, {{ [1,2,3]|batch(0)|length == 1 }})
+}
+
+function Iso_arity_batch_zeroFn(topic: string) -> Iso_arity_batch_zero {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_arity_batch_fractional {
+  v int @check(arity_batch_fractional, {{ [1,2,3]|batch(1.5)|length == 1 }})
+}
+
+function Iso_arity_batch_fractionalFn(topic: string) -> Iso_arity_batch_fractional {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_arity_replace_extra_arg {
+  v int @check(arity_replace_extra_arg, {{ "aaa"|replace("a","b",1) == "baa" }})
+}
+
+function Iso_arity_replace_extra_argFn(topic: string) -> Iso_arity_replace_extra_arg {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_arity_tojson_indent_frac {
+  v int @check(arity_tojson_indent_frac, {{ [1,2]|tojson(indent=1.5) != "" }})
+}
+
+function Iso_arity_tojson_indent_fracFn(topic: string) -> Iso_arity_tojson_indent_frac {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_arity_truncate_zero {
+  v string @check(arity_truncate_zero, {{ this|truncate(0) != "" }})
+}
+
+function Iso_arity_truncate_zeroFn(topic: string) -> Iso_arity_truncate_zero {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_arity_indent_fractional {
+  v string @check(arity_indent_fractional, {{ this|indent(1.5) != "" }})
+}
+
+function Iso_arity_indent_fractionalFn(topic: string) -> Iso_arity_indent_fractional {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_arity_format_extra_arg {
+  v int @check(arity_format_extra_arg, {{ 1|format("%d","x") == "1" }})
+}
+
+function Iso_arity_format_extra_argFn(topic: string) -> Iso_arity_format_extra_arg {
   client ConstraintOracleClient
   prompt #"{{ topic }} {{ ctx.output_format }}"#
 }

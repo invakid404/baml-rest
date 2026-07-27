@@ -242,6 +242,31 @@ func installProfileGuards(env *mj.Environment) {
 					return false, unsupportedConstraint("`divisibleby(0)`; stock BAML v0.223 aborts the process on it")
 				}
 			}
+			// INTEGRAL OPERANDS ONLY. minijinja-Go's TestDivisibleBy performs the
+			// test only when BOTH operands pass AsInt, and returns a plain false
+			// otherwise. Stock's tests.rs coerces and has an explicit F64 BRANCH,
+			// so `1.5 is divisibleby(0.5)` is TRUE there (1.5 % 0.5 == 0) and was
+			// false here — a wrong boolean at perfectly ordinary magnitudes, which
+			// the round-13 guard could not see because it bounds MAGNITUDE, not
+			// semantics.
+			//
+			// An INTEGRAL operand is fine however it is spelled: AsInt promotes it,
+			// so Go computes `4 % 2` where stock computes `4.0 % 2.0`, and below
+			// 2^53 — which [containsAsIntHazard] has already established — those
+			// agree exactly, including for negative values, since Go's `%` and
+			// Rust's are both truncated. Only the NON-INTEGRAL branch is
+			// unrepresented in the port, and that is declined rather than
+			// reimplemented.
+			if nonIntegralNumber(val) {
+				return false, unsupportedConstraint(
+					"`divisibleby` over a non-integral subject; stock has an f64 branch minijinja-Go lacks")
+			}
+			for _, a := range args {
+				if nonIntegralNumber(a) {
+					return false, unsupportedConstraint(
+						"`divisibleby` with a non-integral divisor; stock has an f64 branch minijinja-Go lacks")
+				}
+			}
 			return tests.TestDivisibleBy(state, val, args)
 		}))
 
@@ -429,10 +454,19 @@ func exceedsExactIntegerRange(this ConstraintValue, expr string) bool {
 	}
 	// Subscript and slice bounds reach Value.AsInt inside the VM, where nothing
 	// can be wrapped. See [bracketBoundsAreProvablySafe].
-	if !bracketBoundsAreProvablySafe(expr) {
+	blanked, ok := bracketRegionsBlanked(expr)
+	if !ok {
 		return true
 	}
-	if !containsArithmeticByte(expr) {
+	// The arithmetic gate runs over the expression with those VALIDATED bracket
+	// regions blanked out. `[1,2,3][-1:]` carries a `-`, but it is bracket syntax
+	// — a negative bound, which the region check has already proved is a bare
+	// `-?d+` — not arithmetic, and stock evaluates it happily. Sending the whole
+	// expression to parseNumeric because of it was a round-15 over-decline. The
+	// blanking is safe precisely BECAUSE the region was validated first: it
+	// contains only literals and separators, so no binary operator can hide in
+	// what was removed.
+	if !containsArithmeticByte(blanked) {
 		return false
 	}
 	n, ok := parseNumeric(expr)
@@ -480,34 +514,50 @@ func containsArithmeticByte(expr string) bool {
 //
 // Fail-closed on anything the scan cannot classify: an unbalanced bracket, a
 // nested bracket, a backslash inside a string, or an unterminated string.
+// bracketBoundsAreProvablySafe reports whether every bracket region is safe.
 func bracketBoundsAreProvablySafe(expr string) bool {
+	_, ok := bracketRegionsBlanked(expr)
+	return ok
+}
+
+// bracketRegionsBlanked validates every bracket region and returns the
+// expression with those regions replaced by spaces, so a later byte-level check
+// cannot mistake bracket syntax for something else.
+func bracketRegionsBlanked(expr string) (string, bool) {
+	out := []byte(expr)
+	blank := func(from, to int) {
+		for k := from; k <= to && k < len(out); k++ {
+			out[k] = ' '
+		}
+	}
 	for i := 0; i < len(expr); i++ {
 		switch expr[i] {
 		case '"', '\'':
 			j, ok := skipStringLiteral(expr, i)
 			if !ok {
-				return false
+				return "", false
 			}
 			i = j
 		case ']':
-			return false // a close with no open
+			return "", false // a close with no open
 		case '[':
 			j, ok := matchingBracket(expr, i)
 			if !ok {
-				return false
+				return "", false
 			}
 			region := expr[i+1 : j]
 			if bracketIsListLiteral(expr, i) {
 				if !listLiteralRegionIsSafe(region) {
-					return false
+					return "", false
 				}
 			} else if !subscriptRegionIsSafe(region) {
-				return false
+				return "", false
 			}
+			blank(i, j)
 			i = j
 		}
 	}
-	return true
+	return string(out), true
 }
 
 // bracketIsListLiteral classifies the `[` at open. It answers TRUE only where a
@@ -1304,6 +1354,9 @@ func guardIntegerResult(name string, builtin mj.FilterFunc) mj.FilterFunc {
 				return mjvalue.Undefined(), asIntHazardError(name)
 			}
 		}
+		if err := checkArgumentParity(name, args, kwargs); err != nil {
+			return mjvalue.Undefined(), err
+		}
 		out, err := builtin(state, val, args, kwargs)
 		if err != nil {
 			return out, err
@@ -1334,8 +1387,124 @@ func guardTestInput(name string, builtin mj.TestFunc) mj.TestFunc {
 				return false, asIntHazardError("is " + name)
 			}
 		}
+		if err := checkArgumentParity("is "+name, args, nil); err != nil {
+			return false, err
+		}
 		return builtin(state, val, args)
 	}
+}
+
+// maxProvenArity is how many positional arguments each retained builtin is
+// PROVEN to accept identically. minijinja-Go is more permissive than stock in
+// several places, and a tolerated extra argument is not a small difference: it
+// is native answering where stock raises TooManyArguments.
+//
+//	"aaa"|replace("a", "b", 1)   native "baa", stock TooManyArguments
+//
+// minijinja-Go's FilterReplace takes an optional third count; the pinned stock
+// `replace` is (value, from, to). Anything above its entry here is declined, and
+// anything NOT listed is capped at one argument, so a builtin nobody enumerated
+// is declined on the same terms rather than admitted by omission.
+var maxProvenArity = map[string]int{
+	"replace": 2, "selectattr": 2, "rejectattr": 2, "slice": 1, "batch": 1,
+	"round": 1, "indent": 1, "truncate": 1, "join": 1, "split": 1, "default": 1,
+	"d": 1, "format": 1, "attr": 1, "groupby": 1, "zip": 1, "chain": 1,
+	"map": 1, "select": 1, "reject": 1, "regex_match": 1, "sum": 0, "tojson": 0,
+	"length": 0, "count": 0, "abs": 0, "int": 0, "float": 0, "first": 0,
+	"last": 0, "reverse": 0, "list": 0, "unique": 0, "items": 0, "dictsort": 0,
+	"lines": 0, "pprint": 0, "string": 0, "bool": 0, "safe": 0, "escape": 0,
+	"e": 0, "upper": 0, "lower": 0, "capitalize": 0, "title": 0, "trim": 0,
+}
+
+// countDefaultingFilters silently substitute a default when minijinja-Go's
+// AsInt fails or yields a non-positive count, where stock types the same
+// parameter as `usize` and ERRORS:
+//
+//	[1,2,3]|slice(0)|length == 1     native true, stock errors (count == 0)
+//	[1,2,3]|slice(1.5)|length == 1   native true, stock rejects 1.5
+//
+// FilterSlice initialises sliceCount to 1 and changes it only for
+// `AsInt() && c > 0`, so both zero and a fraction silently mean one slice.
+var countDefaultingFilters = map[string]bool{
+	"slice": true, "batch": true, "truncate": true, "indent": true,
+}
+
+// coercingNumericArg lists the builtins whose numeric argument is an operand
+// rather than a typed count. Stock coerces those, so requiring an integer TYPE
+// would be an over-decline; the builtin's own guard bounds them instead.
+var coercingNumericArg = map[string]bool{"divisibleby": true}
+
+// checkArgumentParity is the ARGUMENT half of the proven-parity posture the
+// numerics already use. Round 13's guard bounded a value's MAGNITUDE; this one
+// bounds its SHAPE, because the two engines also disagree about arity, about
+// coercion, and about what happens at an edge value like 0 or 1.5 — all at
+// perfectly ordinary magnitudes.
+//
+// Three rules, each declining rather than reimplementing:
+//
+//  1. ARITY. More positional arguments than [maxProvenArity] allows, or any
+//     unlisted builtin given more than one, is declined.
+//  2. KEYWORD arguments are declined outright. minijinja-Go's kwargs handling is
+//     port surface; stock's argument adapters differ per filter, and
+//     `tojson(indent=1.5)` is the reachable example.
+//  3. NUMERIC arguments must be actual INTEGERS — never a float, however small —
+//     and must be positive for the count-defaulting filters. A fractional
+//     argument is where stock's typed conversion errors and minijinja-Go
+//     silently defaults.
+func checkArgumentParity(name string, args []mjvalue.Value, kwargs map[string]mjvalue.Value) error {
+	base := strings.TrimPrefix(name, "is ")
+	maxArgs, listed := maxProvenArity[base]
+	if !listed {
+		maxArgs = 1
+	}
+	if len(args) > maxArgs {
+		return unsupportedConstraint(
+			"`%s` was given %d arguments; only %d is proven identical to stock, which raises "+
+				"TooManyArguments where minijinja-Go accepts an extra one", name, len(args), maxArgs)
+	}
+	if len(kwargs) > 0 {
+		return unsupportedConstraint(
+			"`%s` was given keyword arguments; minijinja-Go's kwargs handling is port surface and "+
+				"stock's argument adapters differ per filter", name)
+	}
+	for _, a := range args {
+		if a.Kind() != mjvalue.KindNumber {
+			continue
+		}
+		if coercingNumericArg[base] {
+			// This builtin's numeric argument is a VALUE, not a typed count, and
+			// stock coerces it rather than requiring an integer type. Its own
+			// registration checks integrality on the terms that actually matter
+			// (see the `divisibleby` guard in installProfileGuards).
+			continue
+		}
+		if !a.IsActualInt() {
+			return unsupportedConstraint(
+				"`%s` was given a non-integer numeric argument; stock types these as usize/i64 and "+
+					"ERRORS on a fraction, while minijinja-Go silently falls back to a default", name)
+		}
+		n, ok := a.AsInt()
+		if !ok {
+			return unsupportedConstraint("`%s` was given an unreadable numeric argument", name)
+		}
+		if countDefaultingFilters[base] && n < 1 {
+			return unsupportedConstraint(
+				"`%s` was given a count of %d; minijinja-Go silently substitutes 1 for a non-positive "+
+					"count where stock's usize parameter errors", name, n)
+		}
+	}
+	return nil
+}
+
+// nonIntegralNumber reports whether a value is a number the engines would treat
+// differently in a promoting context: a float64 payload that is not integral, so
+// minijinja-Go's AsInt rejects it while stock's coercion keeps it in f64.
+func nonIntegralNumber(v mjvalue.Value) bool {
+	if v.Kind() != mjvalue.KindNumber || v.IsActualInt() {
+		return false
+	}
+	f, ok := v.AsFloat()
+	return !ok || f != math.Trunc(f)
 }
 
 func asIntHazardError(name string) error {

@@ -1294,6 +1294,429 @@ func (*parse_stream) Batch_struFn(text string, opts ...CallOptionFunc) (stream_t
 	return casted, nil
 }
 
+// / Parse version of Iso_arity_batch_fractionalFn (Takes in string and returns stream_types.Iso_arity_batch_fractional)
+func (*parse_stream) Iso_arity_batch_fractionalFn(text string, opts ...CallOptionFunc) (stream_types.Iso_arity_batch_fractional, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_arity_batch_fractionalFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_arity_batch_fractionalFn", encoded)
+	if err != nil {
+		return stream_types.Iso_arity_batch_fractional{}, err
+	}
+
+	casted := (result).(stream_types.Iso_arity_batch_fractional)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_arity_batch_zeroFn (Takes in string and returns stream_types.Iso_arity_batch_zero)
+func (*parse_stream) Iso_arity_batch_zeroFn(text string, opts ...CallOptionFunc) (stream_types.Iso_arity_batch_zero, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_arity_batch_zeroFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_arity_batch_zeroFn", encoded)
+	if err != nil {
+		return stream_types.Iso_arity_batch_zero{}, err
+	}
+
+	casted := (result).(stream_types.Iso_arity_batch_zero)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_arity_format_extra_argFn (Takes in string and returns stream_types.Iso_arity_format_extra_arg)
+func (*parse_stream) Iso_arity_format_extra_argFn(text string, opts ...CallOptionFunc) (stream_types.Iso_arity_format_extra_arg, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_arity_format_extra_argFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_arity_format_extra_argFn", encoded)
+	if err != nil {
+		return stream_types.Iso_arity_format_extra_arg{}, err
+	}
+
+	casted := (result).(stream_types.Iso_arity_format_extra_arg)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_arity_indent_fractionalFn (Takes in string and returns stream_types.Iso_arity_indent_fractional)
+func (*parse_stream) Iso_arity_indent_fractionalFn(text string, opts ...CallOptionFunc) (stream_types.Iso_arity_indent_fractional, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_arity_indent_fractionalFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_arity_indent_fractionalFn", encoded)
+	if err != nil {
+		return stream_types.Iso_arity_indent_fractional{}, err
+	}
+
+	casted := (result).(stream_types.Iso_arity_indent_fractional)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_arity_replace_extra_argFn (Takes in string and returns stream_types.Iso_arity_replace_extra_arg)
+func (*parse_stream) Iso_arity_replace_extra_argFn(text string, opts ...CallOptionFunc) (stream_types.Iso_arity_replace_extra_arg, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_arity_replace_extra_argFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_arity_replace_extra_argFn", encoded)
+	if err != nil {
+		return stream_types.Iso_arity_replace_extra_arg{}, err
+	}
+
+	casted := (result).(stream_types.Iso_arity_replace_extra_arg)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_arity_slice_fractionalFn (Takes in string and returns stream_types.Iso_arity_slice_fractional)
+func (*parse_stream) Iso_arity_slice_fractionalFn(text string, opts ...CallOptionFunc) (stream_types.Iso_arity_slice_fractional, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_arity_slice_fractionalFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_arity_slice_fractionalFn", encoded)
+	if err != nil {
+		return stream_types.Iso_arity_slice_fractional{}, err
+	}
+
+	casted := (result).(stream_types.Iso_arity_slice_fractional)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_arity_slice_zeroFn (Takes in string and returns stream_types.Iso_arity_slice_zero)
+func (*parse_stream) Iso_arity_slice_zeroFn(text string, opts ...CallOptionFunc) (stream_types.Iso_arity_slice_zero, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_arity_slice_zeroFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_arity_slice_zeroFn", encoded)
+	if err != nil {
+		return stream_types.Iso_arity_slice_zero{}, err
+	}
+
+	casted := (result).(stream_types.Iso_arity_slice_zero)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_arity_tojson_indent_fracFn (Takes in string and returns stream_types.Iso_arity_tojson_indent_frac)
+func (*parse_stream) Iso_arity_tojson_indent_fracFn(text string, opts ...CallOptionFunc) (stream_types.Iso_arity_tojson_indent_frac, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_arity_tojson_indent_fracFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_arity_tojson_indent_fracFn", encoded)
+	if err != nil {
+		return stream_types.Iso_arity_tojson_indent_frac{}, err
+	}
+
+	casted := (result).(stream_types.Iso_arity_tojson_indent_frac)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_arity_truncate_zeroFn (Takes in string and returns stream_types.Iso_arity_truncate_zero)
+func (*parse_stream) Iso_arity_truncate_zeroFn(text string, opts ...CallOptionFunc) (stream_types.Iso_arity_truncate_zero, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_arity_truncate_zeroFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_arity_truncate_zeroFn", encoded)
+	if err != nil {
+		return stream_types.Iso_arity_truncate_zero{}, err
+	}
+
+	casted := (result).(stream_types.Iso_arity_truncate_zero)
+
+	return casted, nil
+}
+
 // / Parse version of Iso_divzeroFn (Takes in string and returns stream_types.Iso_divzero)
 func (*parse_stream) Iso_divzeroFn(text string, opts ...CallOptionFunc) (stream_types.Iso_divzero, error) {
 

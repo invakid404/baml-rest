@@ -1154,6 +1154,384 @@ func (c Batch_stru) BamlTypeName() string {
 	return "Batch_stru"
 }
 
+type Iso_arity_batch_fractional struct {
+	V Checked[int64] `json:"v"`
+}
+
+func (c *Iso_arity_batch_fractional) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_arity_batch_fractional" {
+		panic(fmt.Sprintf("expected Iso_arity_batch_fractional, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_arity_batch_fractional", key))
+
+		}
+	}
+
+}
+
+func (c Iso_arity_batch_fractional) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_arity_batch_fractional", fields, nil)
+}
+
+func (c Iso_arity_batch_fractional) BamlTypeName() string {
+	return "Iso_arity_batch_fractional"
+}
+
+type Iso_arity_batch_zero struct {
+	V Checked[int64] `json:"v"`
+}
+
+func (c *Iso_arity_batch_zero) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_arity_batch_zero" {
+		panic(fmt.Sprintf("expected Iso_arity_batch_zero, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_arity_batch_zero", key))
+
+		}
+	}
+
+}
+
+func (c Iso_arity_batch_zero) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_arity_batch_zero", fields, nil)
+}
+
+func (c Iso_arity_batch_zero) BamlTypeName() string {
+	return "Iso_arity_batch_zero"
+}
+
+type Iso_arity_format_extra_arg struct {
+	V Checked[int64] `json:"v"`
+}
+
+func (c *Iso_arity_format_extra_arg) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_arity_format_extra_arg" {
+		panic(fmt.Sprintf("expected Iso_arity_format_extra_arg, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_arity_format_extra_arg", key))
+
+		}
+	}
+
+}
+
+func (c Iso_arity_format_extra_arg) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_arity_format_extra_arg", fields, nil)
+}
+
+func (c Iso_arity_format_extra_arg) BamlTypeName() string {
+	return "Iso_arity_format_extra_arg"
+}
+
+type Iso_arity_indent_fractional struct {
+	V Checked[string] `json:"v"`
+}
+
+func (c *Iso_arity_indent_fractional) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_arity_indent_fractional" {
+		panic(fmt.Sprintf("expected Iso_arity_indent_fractional, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[string])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_arity_indent_fractional", key))
+
+		}
+	}
+
+}
+
+func (c Iso_arity_indent_fractional) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_arity_indent_fractional", fields, nil)
+}
+
+func (c Iso_arity_indent_fractional) BamlTypeName() string {
+	return "Iso_arity_indent_fractional"
+}
+
+type Iso_arity_replace_extra_arg struct {
+	V Checked[int64] `json:"v"`
+}
+
+func (c *Iso_arity_replace_extra_arg) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_arity_replace_extra_arg" {
+		panic(fmt.Sprintf("expected Iso_arity_replace_extra_arg, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_arity_replace_extra_arg", key))
+
+		}
+	}
+
+}
+
+func (c Iso_arity_replace_extra_arg) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_arity_replace_extra_arg", fields, nil)
+}
+
+func (c Iso_arity_replace_extra_arg) BamlTypeName() string {
+	return "Iso_arity_replace_extra_arg"
+}
+
+type Iso_arity_slice_fractional struct {
+	V Checked[int64] `json:"v"`
+}
+
+func (c *Iso_arity_slice_fractional) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_arity_slice_fractional" {
+		panic(fmt.Sprintf("expected Iso_arity_slice_fractional, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_arity_slice_fractional", key))
+
+		}
+	}
+
+}
+
+func (c Iso_arity_slice_fractional) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_arity_slice_fractional", fields, nil)
+}
+
+func (c Iso_arity_slice_fractional) BamlTypeName() string {
+	return "Iso_arity_slice_fractional"
+}
+
+type Iso_arity_slice_zero struct {
+	V Checked[int64] `json:"v"`
+}
+
+func (c *Iso_arity_slice_zero) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_arity_slice_zero" {
+		panic(fmt.Sprintf("expected Iso_arity_slice_zero, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_arity_slice_zero", key))
+
+		}
+	}
+
+}
+
+func (c Iso_arity_slice_zero) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_arity_slice_zero", fields, nil)
+}
+
+func (c Iso_arity_slice_zero) BamlTypeName() string {
+	return "Iso_arity_slice_zero"
+}
+
+type Iso_arity_tojson_indent_frac struct {
+	V Checked[int64] `json:"v"`
+}
+
+func (c *Iso_arity_tojson_indent_frac) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_arity_tojson_indent_frac" {
+		panic(fmt.Sprintf("expected Iso_arity_tojson_indent_frac, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_arity_tojson_indent_frac", key))
+
+		}
+	}
+
+}
+
+func (c Iso_arity_tojson_indent_frac) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_arity_tojson_indent_frac", fields, nil)
+}
+
+func (c Iso_arity_tojson_indent_frac) BamlTypeName() string {
+	return "Iso_arity_tojson_indent_frac"
+}
+
+type Iso_arity_truncate_zero struct {
+	V Checked[string] `json:"v"`
+}
+
+func (c *Iso_arity_truncate_zero) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_arity_truncate_zero" {
+		panic(fmt.Sprintf("expected Iso_arity_truncate_zero, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[string])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_arity_truncate_zero", key))
+
+		}
+	}
+
+}
+
+func (c Iso_arity_truncate_zero) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_arity_truncate_zero", fields, nil)
+}
+
+func (c Iso_arity_truncate_zero) BamlTypeName() string {
+	return "Iso_arity_truncate_zero"
+}
+
 type Iso_divzero struct {
 	V Checked[int64] `json:"v"`
 }

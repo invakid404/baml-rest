@@ -1030,3 +1030,123 @@ func TestBracketScannerFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+// TestBuiltinArgumentParity is the ARGUMENT half of the proven-parity posture.
+//
+// Rounds 10-15 bounded what a value's MAGNITUDE could do. These diverge at
+// perfectly ordinary magnitudes, because the two engines also disagree about
+// ARITY, about COERCION, and about what happens at an EDGE value:
+//
+//	1.5 is divisibleby(0.5)          native false, stock TRUE  (stock has an f64 branch)
+//	[1,2,3]|slice(0)|length == 1     native true,  stock ERRORS (usize count == 0)
+//	[1,2,3]|slice(1.5)|length == 1   native true,  stock ERRORS (usize rejects 1.5)
+//	"aaa"|replace("a","b",1)         native "baa", stock ERRORS (TooManyArguments)
+//
+// Each is declined rather than reimplemented, per the standing preference: the
+// port-only default, arity and coercion paths are not proven identical, so they
+// are outside the profile.
+func TestBuiltinArgumentParity(t *testing.T) {
+	str := StringValue("abcdef")
+	for name, tc := range map[string]struct {
+		this ConstraintValue
+		expr string
+	}{
+		// P1.1 — divisibleby's f64 branch exists only in stock.
+		"divisibleby, both fractional":    {NullValue(), `1.5 is divisibleby(0.5)`},
+		"divisibleby, fractional subject": {NullValue(), `1.5 is divisibleby(1)`},
+		"divisibleby, fractional divisor": {NullValue(), `4 is divisibleby(1.5)`},
+		// P1.2 — a count that minijinja-Go defaults and stock rejects.
+		"slice(0)":    {NullValue(), `[1,2,3]|slice(0)|length == 1`},
+		"slice(1.5)":  {NullValue(), `[1,2,3]|slice(1.5)|length == 1`},
+		"batch(0)":    {NullValue(), `[1,2,3]|batch(0)|length == 1`},
+		"batch(1.5)":  {NullValue(), `[1,2,3]|batch(1.5)|length == 1`},
+		"truncate(0)": {str, `this|truncate(0) != ""`},
+		"indent(1.5)": {str, `this|indent(1.5) != ""`},
+		// P1.2 — arity, and keyword arguments.
+		"replace with a count": {NullValue(), `"aaa"|replace("a","b",1) == "baa"`},
+		"format with an extra": {NullValue(), `1|format("%d","x") == "1"`},
+		"tojson(indent=1.5)":   {NullValue(), `[1,2]|tojson(indent=1.5) != ""`},
+		"sum(attribute=)":      {NullValue(), `[{"a":1}]|sum(attribute="a") == 1`},
+	} {
+		if got, err := EvaluateConstraint(tc.this, tc.expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%s: %q answered (%v, %v); this arity/coercion path is not proven identical to stock",
+				name, tc.expr, got, err)
+		}
+	}
+
+	// The proven forms must still decide — the guard is about the SHAPE of a
+	// call, not a ban on arguments.
+	for name, tc := range map[string]struct {
+		this ConstraintValue
+		expr string
+		want bool
+	}{
+		"divisibleby, both ints": {NullValue(), `9 is divisibleby(3)`, true},
+		"divisibleby, false":     {NullValue(), `9 is divisibleby(2)`, false},
+		// An INTEGRAL float is admitted however it is spelled: AsInt promotes it,
+		// so Go computes `4 % 2` where stock computes `4.0 % 2.0`, and below 2^53
+		// those agree exactly. Only the non-integral branch is unrepresented.
+		"divisibleby, integral float subject": {NullValue(), `4.0 is divisibleby(2)`, true},
+		"divisibleby, integral float divisor": {NullValue(), `4 is divisibleby(2.0)`, true},
+		"slice(2)":                            {NullValue(), `[1,2,3]|slice(2)|length == 2`, true},
+		"batch(2)":                            {NullValue(), `[1,2,3]|batch(2)|length == 2`, true},
+		"replace, two args":                   {NullValue(), `"aaa"|replace("a","b") == "bbb"`, true},
+		"join":                                {NullValue(), `["a","b"]|join(",") == "a,b"`, true},
+		"upper":                               {StringValue("hi"), `this|upper == "HI"`, true},
+	} {
+		got, err := EvaluateConstraint(tc.this, tc.expr)
+		if err != nil {
+			t.Errorf("%s: %q was refused (%v); the parity guard is over-broad", name, tc.expr, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s: %q = %v, want %v", name, tc.expr, got, tc.want)
+		}
+	}
+}
+
+// TestNegativeBracketBoundsAreNotArithmetic pins the round-15 over-decline the
+// review flagged as P2.1.
+//
+// `[1,2,3][-1:]|length == 1` carries a `-`, but it is BRACKET SYNTAX — a
+// negative bound, which the region check has already proved is a bare `-?d+` —
+// not arithmetic. The global byte check sent the whole expression to
+// parseNumeric because of it, and parseNumeric cannot parse a list-and-filter
+// expression, so a form stock answers TRUE on was refused. The arithmetic gate
+// now runs over the expression with VALIDATED bracket regions blanked out,
+// which is safe precisely because they were validated first: only literals and
+// separators are removed, so no binary operator can hide in them.
+func TestNegativeBracketBoundsAreNotArithmetic(t *testing.T) {
+	list := ListValue([]ConstraintValue{IntValue(1), IntValue(2), IntValue(3)})
+	for expr, want := range map[string]bool{
+		`[1,2,3][-1:]|length == 1`:  true,
+		`[1,2,3][-2:]|length == 2`:  true,
+		`[1,2,3][:-1]|length == 2`:  true,
+		`[1,2,3][::-1]|length == 3`: true,
+		`[1,2,3][-1] == 3`:          true,
+		`[1,-2,3]|length == 3`:      true,
+	} {
+		got, err := EvaluateConstraint(NullValue(), expr)
+		if err != nil {
+			t.Errorf("%q was refused (%v); a negative bound is bracket syntax, not arithmetic", expr, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%q = %v, want %v", expr, got, want)
+		}
+	}
+	if got, err := EvaluateConstraint(list, `this[-1:]|length == 1`); err != nil || !got {
+		t.Errorf(`this[-1:] over a list = (%v, %v), want (true, nil)`, got, err)
+	}
+
+	// REAL arithmetic outside a bracket stays gated exactly as before, and a
+	// derived bound inside one stays refused.
+	for _, expr := range []string{
+		`[1,2,3][0] - 1 == 0`,           // arithmetic outside the bracket
+		`[1,2,3][this|length - 1] == 3`, // a derived bound
+	} {
+		if _, err := EvaluateConstraint(list, expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%q must stay gated; got err=%v", expr, err)
+		}
+	}
+}

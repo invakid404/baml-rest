@@ -879,6 +879,294 @@ func (t *Batch_struClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 
+type Iso_arity_batch_fractionalClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_arity_batch_fractionalClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_arity_batch_fractionalClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_arity_batch_fractional() (*Iso_arity_batch_fractionalClassView, error) {
+	bld, err := t.inner.Class("Iso_arity_batch_fractional")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_arity_batch_fractionalClassView{inner: bld}, nil
+}
+
+func (t *Iso_arity_batch_fractionalClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_arity_batch_zeroClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_arity_batch_zeroClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_arity_batch_zeroClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_arity_batch_zero() (*Iso_arity_batch_zeroClassView, error) {
+	bld, err := t.inner.Class("Iso_arity_batch_zero")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_arity_batch_zeroClassView{inner: bld}, nil
+}
+
+func (t *Iso_arity_batch_zeroClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_arity_format_extra_argClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_arity_format_extra_argClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_arity_format_extra_argClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_arity_format_extra_arg() (*Iso_arity_format_extra_argClassView, error) {
+	bld, err := t.inner.Class("Iso_arity_format_extra_arg")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_arity_format_extra_argClassView{inner: bld}, nil
+}
+
+func (t *Iso_arity_format_extra_argClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_arity_indent_fractionalClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_arity_indent_fractionalClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_arity_indent_fractionalClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_arity_indent_fractional() (*Iso_arity_indent_fractionalClassView, error) {
+	bld, err := t.inner.Class("Iso_arity_indent_fractional")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_arity_indent_fractionalClassView{inner: bld}, nil
+}
+
+func (t *Iso_arity_indent_fractionalClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_arity_replace_extra_argClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_arity_replace_extra_argClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_arity_replace_extra_argClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_arity_replace_extra_arg() (*Iso_arity_replace_extra_argClassView, error) {
+	bld, err := t.inner.Class("Iso_arity_replace_extra_arg")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_arity_replace_extra_argClassView{inner: bld}, nil
+}
+
+func (t *Iso_arity_replace_extra_argClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_arity_slice_fractionalClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_arity_slice_fractionalClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_arity_slice_fractionalClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_arity_slice_fractional() (*Iso_arity_slice_fractionalClassView, error) {
+	bld, err := t.inner.Class("Iso_arity_slice_fractional")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_arity_slice_fractionalClassView{inner: bld}, nil
+}
+
+func (t *Iso_arity_slice_fractionalClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_arity_slice_zeroClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_arity_slice_zeroClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_arity_slice_zeroClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_arity_slice_zero() (*Iso_arity_slice_zeroClassView, error) {
+	bld, err := t.inner.Class("Iso_arity_slice_zero")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_arity_slice_zeroClassView{inner: bld}, nil
+}
+
+func (t *Iso_arity_slice_zeroClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_arity_tojson_indent_fracClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_arity_tojson_indent_fracClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_arity_tojson_indent_fracClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_arity_tojson_indent_frac() (*Iso_arity_tojson_indent_fracClassView, error) {
+	bld, err := t.inner.Class("Iso_arity_tojson_indent_frac")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_arity_tojson_indent_fracClassView{inner: bld}, nil
+}
+
+func (t *Iso_arity_tojson_indent_fracClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_arity_truncate_zeroClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_arity_truncate_zeroClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_arity_truncate_zeroClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_arity_truncate_zero() (*Iso_arity_truncate_zeroClassView, error) {
+	bld, err := t.inner.Class("Iso_arity_truncate_zero")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_arity_truncate_zeroClassView{inner: bld}, nil
+}
+
+func (t *Iso_arity_truncate_zeroClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
 type Iso_divzeroClassView struct {
 	inner baml.ClassBuilder
 }

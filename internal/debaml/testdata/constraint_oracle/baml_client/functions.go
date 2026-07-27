@@ -2019,6 +2019,672 @@ func Batch_struFn(ctx context.Context, topic string, opts ...CallOptionFunc) (ty
 	}
 }
 
+func Iso_arity_batch_fractionalFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_arity_batch_fractional, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Iso_arity_batch_fractionalFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_arity_batch_fractional{}, err
+		}
+
+		if result.Error != nil {
+			return types.Iso_arity_batch_fractional{}, result.Error
+		}
+
+		casted := (result.Data).(types.Iso_arity_batch_fractional)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_arity_batch_fractionalFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_arity_batch_fractional{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Iso_arity_batch_fractional{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Iso_arity_batch_fractional), nil
+			}
+		}
+
+		return types.Iso_arity_batch_fractional{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func Iso_arity_batch_zeroFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_arity_batch_zero, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Iso_arity_batch_zeroFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_arity_batch_zero{}, err
+		}
+
+		if result.Error != nil {
+			return types.Iso_arity_batch_zero{}, result.Error
+		}
+
+		casted := (result.Data).(types.Iso_arity_batch_zero)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_arity_batch_zeroFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_arity_batch_zero{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Iso_arity_batch_zero{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Iso_arity_batch_zero), nil
+			}
+		}
+
+		return types.Iso_arity_batch_zero{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func Iso_arity_format_extra_argFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_arity_format_extra_arg, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Iso_arity_format_extra_argFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_arity_format_extra_arg{}, err
+		}
+
+		if result.Error != nil {
+			return types.Iso_arity_format_extra_arg{}, result.Error
+		}
+
+		casted := (result.Data).(types.Iso_arity_format_extra_arg)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_arity_format_extra_argFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_arity_format_extra_arg{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Iso_arity_format_extra_arg{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Iso_arity_format_extra_arg), nil
+			}
+		}
+
+		return types.Iso_arity_format_extra_arg{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func Iso_arity_indent_fractionalFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_arity_indent_fractional, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Iso_arity_indent_fractionalFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_arity_indent_fractional{}, err
+		}
+
+		if result.Error != nil {
+			return types.Iso_arity_indent_fractional{}, result.Error
+		}
+
+		casted := (result.Data).(types.Iso_arity_indent_fractional)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_arity_indent_fractionalFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_arity_indent_fractional{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Iso_arity_indent_fractional{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Iso_arity_indent_fractional), nil
+			}
+		}
+
+		return types.Iso_arity_indent_fractional{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func Iso_arity_replace_extra_argFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_arity_replace_extra_arg, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Iso_arity_replace_extra_argFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_arity_replace_extra_arg{}, err
+		}
+
+		if result.Error != nil {
+			return types.Iso_arity_replace_extra_arg{}, result.Error
+		}
+
+		casted := (result.Data).(types.Iso_arity_replace_extra_arg)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_arity_replace_extra_argFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_arity_replace_extra_arg{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Iso_arity_replace_extra_arg{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Iso_arity_replace_extra_arg), nil
+			}
+		}
+
+		return types.Iso_arity_replace_extra_arg{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func Iso_arity_slice_fractionalFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_arity_slice_fractional, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Iso_arity_slice_fractionalFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_arity_slice_fractional{}, err
+		}
+
+		if result.Error != nil {
+			return types.Iso_arity_slice_fractional{}, result.Error
+		}
+
+		casted := (result.Data).(types.Iso_arity_slice_fractional)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_arity_slice_fractionalFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_arity_slice_fractional{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Iso_arity_slice_fractional{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Iso_arity_slice_fractional), nil
+			}
+		}
+
+		return types.Iso_arity_slice_fractional{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func Iso_arity_slice_zeroFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_arity_slice_zero, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Iso_arity_slice_zeroFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_arity_slice_zero{}, err
+		}
+
+		if result.Error != nil {
+			return types.Iso_arity_slice_zero{}, result.Error
+		}
+
+		casted := (result.Data).(types.Iso_arity_slice_zero)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_arity_slice_zeroFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_arity_slice_zero{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Iso_arity_slice_zero{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Iso_arity_slice_zero), nil
+			}
+		}
+
+		return types.Iso_arity_slice_zero{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func Iso_arity_tojson_indent_fracFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_arity_tojson_indent_frac, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Iso_arity_tojson_indent_fracFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_arity_tojson_indent_frac{}, err
+		}
+
+		if result.Error != nil {
+			return types.Iso_arity_tojson_indent_frac{}, result.Error
+		}
+
+		casted := (result.Data).(types.Iso_arity_tojson_indent_frac)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_arity_tojson_indent_fracFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_arity_tojson_indent_frac{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Iso_arity_tojson_indent_frac{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Iso_arity_tojson_indent_frac), nil
+			}
+		}
+
+		return types.Iso_arity_tojson_indent_frac{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func Iso_arity_truncate_zeroFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_arity_truncate_zero, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Iso_arity_truncate_zeroFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_arity_truncate_zero{}, err
+		}
+
+		if result.Error != nil {
+			return types.Iso_arity_truncate_zero{}, result.Error
+		}
+
+		casted := (result.Data).(types.Iso_arity_truncate_zero)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_arity_truncate_zeroFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_arity_truncate_zero{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Iso_arity_truncate_zero{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Iso_arity_truncate_zero), nil
+			}
+		}
+
+		return types.Iso_arity_truncate_zero{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
 func Iso_divzeroFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_divzero, error) {
 
 	var callOpts callOption
