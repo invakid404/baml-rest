@@ -88,9 +88,10 @@ internal/bamlprofile/profileoracle
 # in internal/debaml/constraintoracle, and its baml_client imports the stock
 # github.com/boundaryml/baml runtime — embedding it would make the root server
 # binary ship a SECOND generated BAML client. Excluded here (cmd/embed includes
-# testdata dirs by default) so the root embed manifest gains only the two new
-# production evaluator files, mirroring
-# internal/nativeprompt/testdata/static_oracle above.
+# testdata dirs by default) so the root embed manifest gains only the production
+# evaluator files (constraint_eval.go, constraint_profile.go and
+# constraint_value.go), mirroring internal/nativeprompt/testdata/static_oracle
+# above.
 internal/debaml/testdata/constraint_oracle
 
 # de-BAML Phase 4b + 5.1 gated nanollm Prepare validation: a SEPARATE, test-only

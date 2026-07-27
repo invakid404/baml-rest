@@ -287,3 +287,242 @@ func hasMedia(v ConstraintValue) bool {
 	}
 	return false
 }
+
+// ---------------------------------------------------------------------------
+// The numeric boundary.
+// ---------------------------------------------------------------------------
+
+// maxExactInt is 2^53: the largest magnitude at which an integer survives a
+// float64 round trip. It is the boundary of everything below.
+const maxExactInt uint64 = 1 << 53
+
+// minijinja-Go performs ALL integer arithmetic in float64 and converts back
+// (value/ops.go Add/Sub/Mul/Div/Pow: `if isActualInt(v) && isActualInt(other) {
+// return FromInt(int64(f1 - f2)) }`), and Value.Equal / Value.Compare likewise
+// compare numbers as float64. minijinja in Rust keeps i64 arithmetic exact.
+// Two distinct wrong answers follow, and both were live before this guard:
+//
+//	9007199254740993 == 9007199254740992     -> native TRUE, BAML false
+//	    2^53+1 and 2^53 are the same float64, so the comparison conflates them.
+//	    Wrong on EVERY architecture.
+//
+//	9223372036854775807 - 1 == 9223372036854775806   -> ARCHITECTURE-DEPENDENT
+//	    i64::MAX rounds UP to 2^63 as a float64, so the subtraction leaves a
+//	    value outside int64's range and `int64(f)` is implementation-defined in
+//	    Go: arm64 saturates to i64::MAX, amd64 yields i64::MIN. Measured with one
+//	    cross-compiled binary: darwin/arm64 renders "true", linux/amd64 renders
+//	    "false", and BAML says true. This is why the differential passed locally
+//	    and failed in CI — the same source, the same engine, a different answer.
+//
+// Neither is reachable by guarding a filter: `-` and `==` are operators. So the
+// boundary is enforced BEFORE evaluation, over the whole expression, by bounding
+// the magnitude any integer in it could reach.
+
+// exceedsExactIntegerRange reports whether the expression could involve an
+// integer outside the exactly-representable range, and must therefore be
+// refused.
+//
+// The bound is deliberately CONSERVATIVE and computed statically, because the
+// engine does not expose intermediates: starting from the largest integer the
+// expression can see — in the bound value or as a literal in the source — each
+// magnitude-growing operator in the source is applied to the running bound,
+// saturating. If the bound reaches 2^53, the expression is refused even though a
+// particular evaluation might have stayed exact. Over-refusing costs coverage;
+// under-refusing would return a wrong boolean, which the contract forbids.
+//
+// Only `**`, `*`, `+` and `-` grow magnitude. `/` produces a float (identical
+// f64 semantics in both engines), and `//` and `%` shrink. Floats are exempt
+// throughout: they are f64 on both sides, so their arithmetic already agrees.
+func exceedsExactIntegerRange(this ConstraintValue, expr string) bool {
+	m := maxAbsInt(this)
+	lit, pow, mul, addSub := scanIntegerSource(expr)
+	if lit > m {
+		m = lit
+	}
+	if m == 0 {
+		// No integer anywhere: nothing to lose precision.
+		return false
+	}
+	if m >= maxExactInt {
+		return true
+	}
+
+	bound := m
+	for i := 0; i < pow && bound < maxExactInt; i++ {
+		bound = satPow(bound, m)
+	}
+	for i := 0; i < mul && bound < maxExactInt; i++ {
+		bound = satMul(bound, m)
+	}
+	for i := 0; i < addSub && bound < maxExactInt; i++ {
+		bound = satAdd(bound, m)
+	}
+	return bound >= maxExactInt
+}
+
+// maxAbsInt is the largest integer magnitude anywhere in a constraint value.
+// Floats are skipped: they are f64 on both sides already.
+func maxAbsInt(v ConstraintValue) uint64 {
+	switch v.kind {
+	case ConstraintKindInt:
+		if v.i < 0 {
+			// -(-1<<63) overflows int64; convert through uint64 instead.
+			return uint64(-(v.i + 1)) + 1
+		}
+		return uint64(v.i)
+	case ConstraintKindList:
+		var m uint64
+		for _, item := range v.list {
+			if n := maxAbsInt(item); n > m {
+				m = n
+			}
+		}
+		return m
+	case ConstraintKindMap, ConstraintKindClass:
+		var m uint64
+		for _, e := range v.entries {
+			if n := maxAbsInt(e.Value); n > m {
+				m = n
+			}
+		}
+		return m
+	}
+	return 0
+}
+
+// scanIntegerSource finds the largest INTEGER literal in the expression and
+// counts the magnitude-growing operators, ignoring both string literals and
+// float literals.
+//
+// This is a lexical scan, not a parse — minijinja-Go's parser is under
+// internal/ and cannot be imported. That is sound in this direction: the scan
+// can only over-count operators and over-estimate literals, and both push
+// towards refusing.
+func scanIntegerSource(expr string) (maxLit uint64, pow, mul, addSub int) {
+	for i := 0; i < len(expr); {
+		c := expr[i]
+		switch {
+		case c == '"' || c == '\'':
+			i = skipStringLiteral(expr, i)
+		case c >= '0' && c <= '9' && !isIdentByte(prevByte(expr, i)):
+			var n uint64
+			n, i = scanNumericLiteral(expr, i)
+			if n > maxLit {
+				maxLit = n
+			}
+		case c == '*':
+			if i+1 < len(expr) && expr[i+1] == '*' {
+				pow++
+				i += 2
+			} else {
+				mul++
+				i++
+			}
+		case c == '+' || c == '-':
+			addSub++
+			i++
+		default:
+			i++
+		}
+	}
+	return maxLit, pow, mul, addSub
+}
+
+// skipStringLiteral returns the index just past the literal starting at i,
+// honouring backslash escapes. An unterminated literal consumes the rest (the
+// expression will fail to compile anyway).
+func skipStringLiteral(s string, i int) int {
+	quote := s[i]
+	for i++; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			i++
+		case quote:
+			return i + 1
+		}
+	}
+	return len(s)
+}
+
+// scanNumericLiteral consumes one numeric literal. A literal with a fractional
+// part or an exponent is a FLOAT and contributes 0, since float arithmetic
+// agrees between the engines. An integer too large for uint64 saturates, which
+// refuses.
+func scanNumericLiteral(s string, i int) (uint64, int) {
+	start := i
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	isFloat := false
+	if i < len(s) && s[i] == '.' && i+1 < len(s) && s[i+1] >= '0' && s[i+1] <= '9' {
+		isFloat = true
+		for i++; i < len(s) && s[i] >= '0' && s[i] <= '9'; i++ {
+		}
+	}
+	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
+		isFloat = true
+		i++
+		if i < len(s) && (s[i] == '+' || s[i] == '-') {
+			i++
+		}
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
+		}
+	}
+	if isFloat {
+		return 0, i
+	}
+	var n uint64
+	for _, d := range []byte(s[start:i]) {
+		n = satMul(n, 10)
+		n = satAdd(n, uint64(d-'0'))
+		if n >= maxExactInt {
+			return maxExactInt, i
+		}
+	}
+	return n, i
+}
+
+func prevByte(s string, i int) byte {
+	if i == 0 {
+		return 0
+	}
+	return s[i-1]
+}
+
+// isIdentByte reports whether b can be part of an identifier or an attribute
+// path, so digits inside `f_sum_1` or `this.c0` are not read as literals.
+func isIdentByte(b byte) bool {
+	return b == '_' || b == '.' ||
+		(b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
+
+// Saturating helpers. Everything saturates at maxExactInt, which is the point
+// at which the answer is refused anyway.
+func satAdd(a, b uint64) uint64 {
+	if a > maxExactInt-b {
+		return maxExactInt
+	}
+	return a + b
+}
+
+func satMul(a, b uint64) uint64 {
+	if a == 0 || b == 0 {
+		return 0
+	}
+	if a > maxExactInt/b {
+		return maxExactInt
+	}
+	return a * b
+}
+
+func satPow(base, exp uint64) uint64 {
+	result := uint64(1)
+	for i := uint64(0); i < exp; i++ {
+		result = satMul(result, base)
+		if result >= maxExactInt {
+			return maxExactInt
+		}
+	}
+	return result
+}

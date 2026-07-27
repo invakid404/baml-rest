@@ -27,7 +27,7 @@
 //
 // # How it works
 //
-//   - corpus_test.go enumerates 320 (expression, `this`) cases. The expression
+//   - corpus_test.go enumerates 330 (expression, `this`) cases. The expression
 //     surface is enumerated from the minijinja-go/v2 v2.16.0 API — every
 //     registered filter, test, global function and operator — NOT inferred from
 //     what the prompt renderer happens to use, plus the operator/value cases the
@@ -64,10 +64,18 @@
 //	CGO_ENABLED=1 go test -tags integration ./internal/debaml/constraintoracle
 //
 // Requires CGO and the stock BAML v0.223.0 CFFI library (auto-located under the
-// user BAML cache dir), exactly like the #597/#603 oracles. Like those, it is a
-// local proof artifact: CI runs `go test -tags=integration ./integration/...`,
-// so this package is compile-checked by `go build -tags integration ./...` and
-// run by hand when the evaluator or the pinned engine changes.
+// user BAML cache dir), exactly like the #597/#603 oracles.
+//
+// UNLIKE those, this package is NOT a hand-run artifact: .github/workflows/
+// constraint-oracle.yml runs exactly this command on every change under
+// internal/debaml/**, because the fail-closed contract is only worth as much as
+// its enforcement. (The general integration matrix runs
+// `go test -tags=integration ./integration/...`, which does not reach here —
+// nor does `go build -tags integration ./...`, which skips _test.go files and
+// testdata directories.) A local run and a CI run are not interchangeable: the
+// 64-bit numeric boundary this evaluator guards produced DIFFERENT answers on
+// darwin/arm64 and linux/amd64 before the guard existed, so the CI lane is the
+// authority.
 package constraintoracle
 
 import (
@@ -484,8 +492,8 @@ func TestConstraintExpressionDifferential(t *testing.T) {
 // There is deliberately no third bucket. A case where native answers something
 // stock did not is a defect, and TestConstraintProfileIsFailClosed fails on it.
 const (
-	wantAgree       = 236
-	wantUnsupported = 84
+	wantAgree       = 238
+	wantUnsupported = 92
 )
 
 // TestConstraintProfileIsFailClosed is the load-bearing assertion of this

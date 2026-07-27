@@ -8,7 +8,7 @@ import (
 )
 
 // Unit-lane cover for the constraint evaluator. The AUTHORITATIVE proof is the
-// stock BAML v0.223.0 differential in internal/debaml/constraintoracle (310
+// stock BAML v0.223.0 differential in internal/debaml/constraintoracle (330
 // cases, //go:build integration). These tests are the parts of that claim that
 // can be pinned without CGO and a generated client, so they run in the ordinary
 // `go test ./...` lane and catch a regression before anyone reaches for the
@@ -16,8 +16,9 @@ import (
 //
 //   - BAML's OWN jinja_helpers.rs unit tests (:102-218);
 //   - the evaluate_predicate contract (exact "true"/"false", else an error);
-//   - the value model's insertion-ordered mappings and enum-to-string erasure;
-//   - the five builtins withdrawn because BAML's minijinja build lacks them.
+//   - the value model's mappings and enum-to-string erasure;
+//   - the five builtins withdrawn because BAML's minijinja build lacks them;
+//   - the fail-closed profile, including the 64-bit numeric boundary.
 
 // TestJinjaHelpersPinnedRenders reproduces the render_expression, regex_match
 // and sum_filter assertions from BAML's own test module
@@ -586,6 +587,72 @@ func TestEveryEvaluatorErrorIsTheSentinel(t *testing.T) {
 		}
 		if !errors.Is(err, ErrConstraintUnsupported) {
 			t.Errorf("%q returned %v, which does not wrap ErrConstraintUnsupported", expr, err)
+		}
+	}
+}
+
+// TestNumericBoundaryIsRefusedOnEveryArchitecture pins the 64-bit numeric
+// boundary, the divergence that made the differential pass on darwin/arm64 and
+// FAIL on linux/amd64 (PR #649 CI run 30262325503).
+//
+// minijinja-Go computes and compares integers as float64 (value/ops.go
+// Add/Sub/Mul: `FromInt(int64(f1 - f2))`; Value.Equal compares via AsFloat),
+// while minijinja in Rust keeps i64 exact. Two distinct wrong answers follow,
+// and this test pins the refusal of both — plus, deliberately, the cases just
+// INSIDE the boundary that must still decide, so the guard cannot be widened
+// into a blanket ban on arithmetic.
+func TestNumericBoundaryIsRefusedOnEveryArchitecture(t *testing.T) {
+	refused := []struct {
+		expr string
+		why  string
+	}{
+		// Wrong on every architecture: 2^53 and 2^53+1 are the same float64.
+		{"9007199254740993 == 9007199254740992", "float64 conflates neighbours past 2^53"},
+		{"9007199254740992 == 9007199254740992", "exactly at the boundary"},
+		{"9007199254740990 + 1 == 9007199254740991", "the sum reaches the boundary"},
+		// ARCHITECTURE-DEPENDENT: i64::MAX rounds up to 2^63 as a float64, so
+		// int64(f) is out of range — arm64 saturates, amd64 does not.
+		{"9223372036854775807 - 1 == 9223372036854775806", "the i64::MAX case that split arm64 from amd64"},
+		{"0 - 9223372036854775807 == -9223372036854775807", "same, negative"},
+		// The result escapes even though both operands are exact.
+		{"3037000500 * 3037000500 > 9007199254740992", "the product escapes the exact range"},
+		{"2 ** 10 == 1024", "exponentiation can escape from small operands"},
+	}
+	for _, tc := range refused {
+		if got, err := EvaluateConstraint(NullValue(), tc.expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%q answered %v (err=%v); it must be refused — %s", tc.expr, got, err, tc.why)
+		}
+	}
+
+	// A large integer arriving through the VALUE, not a literal, is equally
+	// unsafe and equally refused.
+	if _, err := EvaluateConstraint(IntValue(9007199254740993), "this > 0"); !errors.Is(err, ErrConstraintUnsupported) {
+		t.Errorf("a value-model integer past 2^53 must be refused; got err=%v", err)
+	}
+	if _, err := EvaluateConstraint(ListValue([]ConstraintValue{IntValue(1), IntValue(1 << 60)}), "this|length == 2"); !errors.Is(err, ErrConstraintUnsupported) {
+		t.Errorf("a large integer nested in a list must be refused; got err=%v", err)
+	}
+
+	// Just inside the boundary, and arithmetic that provably cannot escape it,
+	// must still DECIDE — otherwise the guard has swallowed the surface the
+	// evaluator exists for.
+	decided := map[string]bool{
+		"9007199254740991 == 9007199254740991": true, // 2^53 - 1, exactly representable
+		"1000 * 1000 == 1000000":               true,
+		"2 ** 3 == 8":                          true,
+		"1 + 1 == 2":                           true,
+		"7 // 2 == 3":                          true,
+		"1.0e300 > 1.0e299":                    true, // floats are f64 on both sides
+		"0.1 + 0.2 == 0.3":                     false,
+	}
+	for expr, want := range decided {
+		got, err := EvaluateConstraint(IntValue(7), expr)
+		if err != nil {
+			t.Errorf("%q was refused (%v); it is inside the exact range", expr, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%q = %v, want %v", expr, got, want)
 		}
 	}
 }

@@ -214,6 +214,15 @@ class Batch_const {
     @check(f_maplit_reverse, {{ ({"z":1,"a":2}|reverse|first) == "a" }})
     @check(f_split_first, {{ "a,b"|split(",")|first == "a" }})
     @check(f_split_join, {{ ("a,b"|split(",")|join("-")) == "a-b" }})
+    @check(num_exact_max, {{ 9007199254740991 == 9007199254740991 }})
+    @check(num_conflate, {{ 9007199254740993 == 9007199254740992 }})
+    @check(num_at_boundary, {{ 9007199254740992 == 9007199254740992 }})
+    @check(num_add_escape, {{ 9007199254740990 + 1 == 9007199254740991 }})
+    @check(num_i64_min, {{ 0 - 9223372036854775807 == -9223372036854775807 }})
+    @check(num_mul_escape, {{ 3037000500 * 3037000500 > 9007199254740992 }})
+    @check(num_small_mul, {{ 1000 * 1000 == 1000000 }})
+    @check(num_pow_small, {{ 2 ** 3 == 8 }})
+    @check(num_float_big, {{ 1.0e300 > 1.0e299 }})
 }
 
 function Batch_constFn(topic: string) -> Batch_const {
@@ -230,6 +239,7 @@ class Batch_int7 {
     @check(this_int_arith, {{ this + 1 == 8 }})
     @check(this_int_string, {{ this|string == "7" }})
     @check(this_int_in, {{ this in [7] }})
+    @check(this_int_big_cmp, {{ this * 1000000000 < 9007199254740992 }})
 }
 
 function Batch_int7Fn(topic: string) -> Batch_int7 {

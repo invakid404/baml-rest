@@ -175,6 +175,12 @@ func renderConstraint(this ConstraintValue, expression string) (string, error) {
 	if hasMedia(this) {
 		return "", unsupportedConstraint("media values are outside the profile and unreachable on the native path")
 	}
+	if exceedsExactIntegerRange(this, expression) {
+		return "", unsupportedConstraint(
+			"integer magnitude can reach the inexact float64 range (>= 2^53); minijinja-Go computes and " +
+				"compares integers as float64, so the answer would be wrong and, past 2^63, " +
+				"architecture-dependent")
+	}
 
 	primary, primaryErr := renderOnce(this, expression, mappingOrdered)
 	if !hasMapping(this) {
