@@ -483,6 +483,38 @@ type numeric struct {
 	// because a computed operand's SIGN cannot be established here and the
 	// engines disagree on exactly the signed cases (see [parseMul]/[parsePow]).
 	nonNegLiteral bool
+	// nonNegFloatLiteral is the same provenance rule for a non-negative FLOAT
+	// literal (`2.0`, `0.5`), and mag then carries a CEILING on its magnitude.
+	//
+	// It exists because "a float operand means both engines stay in f64" is
+	// FALSE for this engine: minijinja-Go PROMOTES AN INTEGRAL FLOAT TO AN
+	// INTEGER inside two of its numeric ops, and an integer it manufactures that
+	// way is subject to the same 2^53 (and int64-conversion) divergence as any
+	// other. The census of value/ops.go v2.16.0, one row per numeric op, by the
+	// predicate it uses to decide whether to return an integer:
+	//
+	//	Add       isActualInt(v) && isActualInt(other)   NO promotion
+	//	Sub       isActualInt(v) && isActualInt(other)   NO promotion
+	//	Mul       isActualInt(v) && isActualInt(other)   NO promotion
+	//	Div       always FromFloat                       NO promotion
+	//	FloorDiv  isActualInt(v) && isActualInt(other)   NO promotion
+	//	Rem       v.AsInt() && other.AsInt()             PROMOTES
+	//	Pow       v.AsInt() && other.AsInt() >= 0        PROMOTES
+	//	Neg       type switch on float64                 NO promotion
+	//
+	// isActualInt type-switches on the STORED payload (`_, ok := v.data.(int64)`)
+	// so `2.0` is not an actual int; AsInt accepts any integral float64
+	// (`d == math.Trunc(d)`) so `2.0` IS an int to it. That difference is the
+	// whole hole. Mul has three further AsInt reads, but they are the
+	// string/sequence repetition arms and need a string or seq operand, which
+	// this sublanguage cannot produce — a string literal or identifier fails the
+	// parse.
+	//
+	// Both promoting ops are therefore handled explicitly: `%` admits only
+	// non-negative INTEGER literals (see [parseMul]), so a float can never reach
+	// Rem; and `**` bounds a float base exactly like an integer one (see
+	// [parsePow]).
+	nonNegFloatLiteral bool
 	// saturated is STICKY, and that is the whole point of it.
 	//
 	// It records that SOME sub-expression already reached or passed 2^53 — where
@@ -508,7 +540,7 @@ type numeric struct {
 	//	parseAdd    + and -             via combineNumeric
 	//	parseMul    *, /, //, %         via combineNumeric
 	//	parsePow    integer base        base.saturated || exp.saturated || overflow
-	//	parsePow    float base          base.saturated || exp.saturated
+	//	parsePow    float base          base.saturated || exp.saturated || overflow
 	//	parseUnary  - and +             returns the operand struct, bit intact
 	//	parsePrimary  ( expr )          returns the inner struct, bit intact
 	//	parsePrimary  literal           leaf: set iff the literal itself is >= 2^53
@@ -665,6 +697,15 @@ func (p *numericParser) parseMul() (numeric, bool) {
 			// 1 there, and `1 // -2` is -1 here and 0 there. Only non-negative
 			// literal operands are proven identical, and a computed operand's sign
 			// is not something this parser will try to establish.
+			//
+			// The same rule is ALSO what keeps `Rem`'s integral-float promotion
+			// out of reach. Rem is the other op that reads its operands through
+			// AsInt (`if i1, ok := v.AsInt(); ok { if i2, ok := other.AsInt() …
+			// return FromInt(i1 % i2) }`), so `1000000000000000.0 * 1000.0 % 3`
+			// would hand int64() a float past 2^63. nonNegLiteral is an INTEGER
+			// literal — a float literal never sets it — so no float operand, and
+			// no computed operand, can reach either operator. See [parsePow] for
+			// the promotion this profile has to model rather than exclude.
 			right, ok := p.parsePow()
 			if !ok {
 				return numeric{}, false
@@ -728,9 +769,33 @@ func (p *numericParser) parsePow() (numeric, bool) {
 		return numeric{}, false
 	}
 	if base.isFloat {
-		// STICKY: a float BASE does not clear a base that already crossed 2^53.
-		// See [numeric.saturated].
-		return numeric{isFloat: true, saturated: base.saturated || exp.saturated}, true
+		// A FLOAT BASE IS NOT EXEMPT: `Pow` PROMOTES AN INTEGRAL FLOAT TO AN
+		// INTEGER.
+		//
+		// minijinja-Go's Value.Pow computes math.Pow in f64 and then tries to
+		// hand back an INTEGER: `if _, ok1 := v.AsInt(); ok1 { if i2, ok2 :=
+		// other.AsInt(); ok2 && i2 >= 0 { if result == math.Trunc(result) &&
+		// result <= math.MaxInt64 … return FromInt(int64(result)) } }`. AsInt
+		// ACCEPTS an integral float64 — `2.0` is `(2, true)` — so `2.0 ** 63`
+		// takes that branch. math.MaxInt64 as an untyped constant rounds UP to
+		// 2^63 in the f64 comparison, so the guard passes at exactly 2^63 and
+		// int64(float64(2^63)) is the same invalid conversion that produced the
+		// round-3 op_i64max failure: MinInt64 on linux/amd64, saturated on arm64.
+		// The predicate `2.0 ** 63 > 0.0` is then FALSE natively, while stock
+		// coerces the float base to F64, calls powf and answers TRUE.
+		//
+		// So the base is bounded exactly like an integer one, and — like the
+		// exponent — only a MANIFEST non-negative literal is accepted, because
+		// the magnitude of a COMPUTED float cannot be bounded here: `/` by a
+		// fraction grows it without limit (`2.0 / 0.0000000000001`), and this
+		// profile does not evaluate.
+		if !base.nonNegFloatLiteral {
+			return numeric{}, false
+		}
+		m := satPow(base.mag, exp.mag)
+		// STICKY: a float BASE also does not clear a base that already crossed
+		// 2^53. See [numeric.saturated].
+		return numeric{isFloat: true, saturated: base.saturated || exp.saturated || m >= maxExactInt}, true
 	}
 	m := satPow(base.mag, exp.mag)
 	return numeric{mag: m, saturated: base.saturated || exp.saturated || m >= maxExactInt}, true
@@ -743,7 +808,9 @@ func (p *numericParser) parseUnary() (numeric, bool) {
 			return numeric{}, false
 		}
 		n.neg = !n.neg
-		n.nonNegLiteral = false // negated: no longer a non-negative literal
+		// Negated: no longer a NON-NEGATIVE literal, in either flavour.
+		n.nonNegLiteral = false
+		n.nonNegFloatLiteral = false
 		return n, true
 	}
 	if p.accept("+") {
@@ -774,8 +841,20 @@ func (p *numericParser) parsePrimary() (numeric, bool) {
 	if !isProvablySmallNumber(run) {
 		return numeric{}, false
 	}
-	if strings.ContainsRune(run, '.') {
-		return numeric{isFloat: true}, true
+	if dot := strings.IndexByte(run, '.'); dot >= 0 {
+		// A float literal carries a CEILING on its magnitude, because it is not
+		// exempt from the integer bound once it reaches an op that promotes it
+		// (see [parsePow]). isProvablySmallNumber has already limited the integer
+		// part to 15 digits, so this cannot itself overflow.
+		var mag uint64
+		for i := 0; i < dot; i++ {
+			mag = satMul(mag, 10)
+			mag = satAdd(mag, uint64(run[i]-'0'))
+		}
+		if strings.Trim(run[dot+1:], "0") != "" {
+			mag = satAdd(mag, 1) // round the fraction up
+		}
+		return numeric{isFloat: true, nonNegFloatLiteral: true, mag: mag}, true
 	}
 	var mag uint64
 	for i := 0; i < len(run); i++ {

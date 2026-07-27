@@ -40,6 +40,11 @@ env:
 
 jobs:
   constraint-oracle:
+    # linux/amd64 ON PURPOSE. Part of what this job proves is architecture
+    # dependent: Go's out-of-range int64(float64) conversion SATURATES on arm64
+    # and does not on amd64, so the round-3 `op_i64max` divergence and the
+    # round-10 integral-float `2.0 ** 63` promotion are only observable here.
+    # A macOS/arm64 developer run is a weaker check, not an equivalent one.
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

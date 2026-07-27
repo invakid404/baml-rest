@@ -27,7 +27,7 @@
 //
 // # How it works
 //
-//   - corpus_test.go enumerates 408 (expression, `this`) cases. The expression
+//   - corpus_test.go enumerates 429 (expression, `this`) cases. The expression
 //     surface is enumerated from the minijinja-go/v2 v2.16.0 API — every
 //     registered filter, test, global function and operator — NOT inferred from
 //     what the prompt renderer happens to use, plus the operator/value cases the
@@ -65,6 +65,14 @@
 //
 // Requires CGO and the stock BAML v0.223.0 CFFI library (auto-located under the
 // user BAML cache dir), exactly like the #597/#603 oracles.
+//
+// ARCHITECTURE MATTERS HERE. Go's out-of-range int64(float64) conversion is
+// implementation-defined: arm64 saturates, amd64 does not. Two of the
+// divergences this corpus pins — the round-3 `op_i64max` case and the round-10
+// integral-float `2.0 ** 63` promotion, where minijinja-Go's Pow reads its
+// operands through AsInt and hands int64() a value at 2^63 — therefore only
+// SHOW on linux/amd64. The dedicated workflow pins that runner for exactly this
+// reason, so a local darwin/arm64 pass is a weaker signal than a green CI job.
 //
 // UNLIKE those, this package is NOT a hand-run artifact: .github/workflows/
 // constraint-oracle.yml runs exactly this command on every change under
@@ -492,8 +500,8 @@ func TestConstraintExpressionDifferential(t *testing.T) {
 // There is deliberately no third bucket. A case where native answers something
 // stock did not is a defect, and TestConstraintProfileIsFailClosed fails on it.
 const (
-	wantAgree       = 252
-	wantUnsupported = 156
+	wantAgree       = 260
+	wantUnsupported = 169
 )
 
 // TestConstraintProfileIsFailClosed is the load-bearing assertion of this
