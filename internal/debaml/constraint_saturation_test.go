@@ -780,3 +780,140 @@ func TestFloatLiteralsAreClassifiedByTheParsedPayload(t *testing.T) {
 		}
 	}
 }
+
+// hazardFloat is 2^63 exactly, as a float64. It is the round-13 reproducer:
+// minijinja-Go's AsInt float arm is int64(d) after `d == math.Trunc(d)`, and
+// int64(float64(2^63)) is MinInt64 on linux/amd64 (arm64 saturates), while
+// stock's minijinja fork converts F64 to i128 when `(val as i64 as f64) == val`
+// and Rust SATURATES 2^63 to i64::MAX. MinInt64 is even, i64::MAX is odd — so
+// `this is even` was true natively and false in stock.
+func hazardFloat() ConstraintValue { return FloatValue(math.Ldexp(1, 63)) }
+
+// TestAsIntHazardIsRefusedWhereverAValueCanReachABuiltin pins the round-13
+// class. The guard is keyed on the VALUE, not on a list of builtin names, so an
+// AsInt-consuming builtin nobody enumerated is covered on the same terms.
+func TestAsIntHazardIsRefusedWhereverAValueCanReachABuiltin(t *testing.T) {
+	big := hazardFloat()
+	list := ListValue([]ConstraintValue{IntValue(2), IntValue(3), hazardFloat()})
+	nested := ClassValue("C", []ConstraintEntry{{Key: "v", Value: hazardFloat()}})
+
+	for name, tc := range map[string]struct {
+		this ConstraintValue
+		expr string
+	}{
+		// The reported reproducer, both polarities.
+		"even":        {big, "this is even"},
+		"odd":         {big, "this is odd"},
+		"divisibleby": {big, "this is divisibleby(2)"},
+		"integer":     {big, "this is integer"},
+		// Filters that read their subject through AsInt.
+		"abs":    {big, "this|abs > 0"},
+		"int":    {big, "this|int > 0"},
+		"format": {big, `this|format("%d") == "x"`},
+		"round":  {big, "this|round > 0"},
+		// And ones that do not — the guard is on the value, so they refuse too.
+		"string":     {big, `this|string == "x"`},
+		"comparison": {big, "this > 0"},
+		// Reached through select/reject dispatch, which is how a list element
+		// gets into `even` without ever being the subject.
+		"select":  {list, `this|select("even")|list|length == 2`},
+		"reject":  {list, `this|reject("odd")|list|length == 2`},
+		"sum":     {list, "this|sum > 0"},
+		"first":   {list, "this|first is even"},
+		"element": {list, "this[2] is even"},
+		// At depth inside a class, which is where a real BAML value would carry it.
+		"nested in a class": {nested, "this.v is even"},
+	} {
+		got, err := EvaluateConstraint(tc.this, tc.expr)
+		if !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%s: %q over a 2^63 float answered (%v, %v); AsInt converts it differently in the two engines",
+				name, tc.expr, got, err)
+		}
+	}
+
+	// In-range controls. Below 2^53 an integral float converts to the SAME int64
+	// in both engines and a non-integral one is rejected by both, so these are
+	// proven and must still decide — the guard is a boundary, not a ban on
+	// floats.
+	small := FloatValue(4)
+	smallList := ListValue([]ConstraintValue{IntValue(2), IntValue(3), IntValue(4)})
+	for name, tc := range map[string]struct {
+		this ConstraintValue
+		expr string
+		want bool
+	}{
+		"small float even":      {small, "this is even", true},
+		"small float odd":       {small, "this is odd", false},
+		"small float divisible": {small, "this is divisibleby(2)", true},
+		"small float abs":       {small, "this|abs == 4", true},
+		"small float compare":   {small, "this > 0", true},
+		"non-integral float":    {FloatValue(2.5), "this is even", false},
+		"integer this":          {IntValue(4), "this is even", true},
+		"literal":               {NullValue(), "4 is even", true},
+		"int list select":       {smallList, `this|select("even")|list|length == 2`, true},
+		"int list reject":       {smallList, `this|reject("odd")|list|length == 2`, true},
+	} {
+		got, err := EvaluateConstraint(tc.this, tc.expr)
+		if err != nil {
+			t.Errorf("%s: %q was refused (%v); the AsInt guard is over-broad", name, tc.expr, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s: %q = %v, want %v", name, tc.expr, got, tc.want)
+		}
+	}
+}
+
+// TestEveryRegisteredTestIsGuarded proves the guard is installed on EVERY test
+// minijinja-Go registers, not just the ones known to call AsInt.
+//
+// It proves it behaviourally rather than by comparing two hand-written lists:
+// for each test name, the SAME expression must decide over an in-range value and
+// refuse over the hazard value. An arity or type error would fail the first leg,
+// so the second leg cannot pass vacuously.
+func TestEveryRegisteredTestIsGuarded(t *testing.T) {
+	// Every name from minijinja-Go v2.16.0 defaults.go that is spellable as
+	// `x is NAME`, EXCEPT `containing` — a minijinja-contrib test BAML does not
+	// build, which [withdrawNonBAMLBuiltins] turns into an unknown-test error, so
+	// it must stay withdrawn rather than guarded. The operator aliases (`==`,
+	// `!=`, `<`, `<=`, `>`, `>=`) are the same functions under names the template
+	// grammar cannot address here.
+	exprs := map[string]string{
+		"defined": "this is defined", "undefined": "this is undefined",
+		"none": "this is none", "true": "this is true", "false": "this is false",
+		"odd": "this is odd", "even": "this is even",
+		"divisibleby": "this is divisibleby(2)",
+		"eq":          "this is eq(4)", "equalto": "this is equalto(4)",
+		"ne": "this is ne(4)", "lt": "this is lt(9)", "lessthan": "this is lessthan(9)",
+		"le": "this is le(9)", "gt": "this is gt(1)", "greaterthan": "this is greaterthan(1)",
+		"ge": "this is ge(1)", "in": "this is in([4])",
+		"string": "this is string", "number": "this is number",
+		"integer": "this is integer", "int": "this is int", "float": "this is float",
+		"boolean": "this is boolean", "sequence": "this is sequence",
+		"mapping": "this is mapping", "iterable": "this is iterable",
+		"sameas": "this is sameas(4)",
+		"safe":   "this is safe", "escaped": "this is escaped",
+		"lower": "this is lower", "upper": "this is upper",
+		"filter": `this is filter("upper")`, "test": `this is test("even")`,
+		"startingwith": `this is startingwith("4")`, "endingwith": `this is endingwith("4")`,
+	}
+
+	var exercised int
+	for name, expr := range exprs {
+		// Leg 1: the expression is well-formed and decides over an in-range value.
+		if _, err := EvaluateConstraint(FloatValue(4), expr); err != nil {
+			t.Errorf("%s: %q did not decide over an in-range float (%v); the sweep would be vacuous for it",
+				name, expr, err)
+			continue
+		}
+		// Leg 2: the same expression refuses over the hazard value.
+		if got, err := EvaluateConstraint(hazardFloat(), expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("test %q is NOT guarded: %q answered (%v, %v) over a 2^63 float", name, expr, got, err)
+			continue
+		}
+		exercised++
+	}
+	if exercised < len(exprs) {
+		t.Errorf("only %d/%d registered tests were proven guarded", exercised, len(exprs))
+	}
+}

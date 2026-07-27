@@ -239,6 +239,102 @@ func (t *Batch_f25ClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 
+type Batch_fbigClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Batch_fbigClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Batch_fbigClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Batch_fbig() (*Batch_fbigClassView, error) {
+	bld, err := t.inner.Class("Batch_fbig")
+	if err != nil {
+		return nil, err
+	}
+	return &Batch_fbigClassView{inner: bld}, nil
+}
+
+func (t *Batch_fbigClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Batch_flistbigClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Batch_flistbigClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Batch_flistbigClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Batch_flistbig() (*Batch_flistbigClassView, error) {
+	bld, err := t.inner.Class("Batch_flistbig")
+	if err != nil {
+		return nil, err
+	}
+	return &Batch_flistbigClassView{inner: bld}, nil
+}
+
+func (t *Batch_flistbigClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Batch_flistsmClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Batch_flistsmClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Batch_flistsmClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Batch_flistsm() (*Batch_flistsmClassView, error) {
+	bld, err := t.inner.Class("Batch_flistsm")
+	if err != nil {
+		return nil, err
+	}
+	return &Batch_flistsmClassView{inner: bld}, nil
+}
+
+func (t *Batch_flistsmClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
 type Batch_int0ClassView struct {
 	inner baml.ClassBuilder
 }

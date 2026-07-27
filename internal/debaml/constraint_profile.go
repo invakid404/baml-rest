@@ -191,22 +191,59 @@ func installProfileGuards(env *mj.Environment) {
 		builtins[name] = guardForeignMapping(name, builtins[name])
 	}
 
-	// The integer-result guard, applied to EVERY filter without exception.
+	// The number guard, applied to EVERY filter without exception: an
+	// out-of-range number may neither go IN nor come OUT.
 	for name, builtin := range builtins {
 		env.AddFilter(name, guardIntegerResult(name, builtin))
+	}
+
+	// The same INPUT guard over EVERY test minijinja-Go registers. Round 12 wrapped
+	// only `divisibleby`, so `even`/`odd` — which read their input through AsInt —
+	// were reachable with any value at all. Written out rather than iterated
+	// because minijinja-Go exports no accessor for its registered tests, and a
+	// list that must be complete is safer explicit than inferred; the coverage is
+	// asserted behaviourally by TestEveryRegisteredTestIsGuarded.
+	//
+	// `containing` is deliberately ABSENT: it is a minijinja-contrib test BAML
+	// does not build, and [withdrawNonBAMLBuiltins] replaces it with an
+	// unknown-test error. Re-registering it here would silently reinstate it —
+	// which is exactly what happened on the first attempt, and the live corpus
+	// caught it as an UNSAFE row (stock errors, native answered).
+	for name, builtin := range map[string]mj.TestFunc{
+		"defined": tests.TestDefined, "undefined": tests.TestUndefined,
+		"none": tests.TestNone, "true": tests.TestTrue, "false": tests.TestFalse,
+		"odd": tests.TestOdd, "even": tests.TestEven,
+		"eq": tests.TestEq, "equalto": tests.TestEq, "==": tests.TestEq,
+		"ne": tests.TestNe, "!=": tests.TestNe,
+		"lt": tests.TestLt, "lessthan": tests.TestLt, "<": tests.TestLt,
+		"le": tests.TestLe, "<=": tests.TestLe,
+		"gt": tests.TestGt, "greaterthan": tests.TestGt, ">": tests.TestGt,
+		"ge": tests.TestGe, ">=": tests.TestGe,
+		"in": tests.TestIn, "string": tests.TestString, "number": tests.TestNumber,
+		"integer": tests.TestInteger, "int": tests.TestInteger,
+		"float": tests.TestFloat, "boolean": tests.TestBoolean,
+		"sequence": tests.TestSequence, "mapping": tests.TestMapping,
+		"iterable":     tests.TestIterable,
+		"startingwith": tests.TestStartingWith, "endingwith": tests.TestEndingWith,
+		"safe": tests.TestSafe, "escaped": tests.TestSafe,
+		"sameas": tests.TestSameAs, "lower": tests.TestLower, "upper": tests.TestUpper,
+		"filter": tests.TestFilter, "test": tests.TestTest,
+	} {
+		env.AddTest(name, guardTestInput(name, builtin))
 	}
 
 	// `divisibleby(0)`: minijinja-Go answers false; stock BAML v0.223 takes the
 	// process down (a Rust panic on the CFFI callback thread that a Go caller
 	// cannot recover from). Proven by TestStockDivisibleByZeroIsUnobservable.
-	env.AddTest("divisibleby", func(state filters.State, val mjvalue.Value, args []mjvalue.Value) (bool, error) {
-		if len(args) == 1 {
-			if d, ok := args[0].AsInt(); ok && d == 0 {
-				return false, unsupportedConstraint("`divisibleby(0)`; stock BAML v0.223 aborts the process on it")
+	env.AddTest("divisibleby", guardTestInput("divisibleby",
+		func(state filters.State, val mjvalue.Value, args []mjvalue.Value) (bool, error) {
+			if len(args) == 1 {
+				if d, ok := args[0].AsInt(); ok && d == 0 {
+					return false, unsupportedConstraint("`divisibleby(0)`; stock BAML v0.223 aborts the process on it")
+				}
 			}
-		}
-		return tests.TestDivisibleBy(state, val, args)
-	})
+			return tests.TestDivisibleBy(state, val, args)
+		}))
 
 	// Global FUNCTIONS can carry integers too, and `range` is the reachable one:
 	// `range(...)|last` was the round-5 P1.3 escape, where an out-of-range
@@ -1008,6 +1045,25 @@ const powExponentLimit uint64 = 1 << 32
 // rather than on the syntax that produced it.
 func guardIntegerResult(name string, builtin mj.FilterFunc) mj.FilterFunc {
 	return func(state filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs map[string]mjvalue.Value) (mjvalue.Value, error) {
+		// INPUT half (round 13). A filter may read its subject or an argument
+		// through AsInt — `|abs`, `|int`, `|format("%d")`, `|batch(n)` and
+		// `|round(n)` all do — and AsInt's float arm is int64(d), which diverges
+		// from stock's saturating i128 conversion outside the proven range. The
+		// check is on the VALUE rather than on the filter's identity, so a builtin
+		// nobody enumerated is covered on the same terms.
+		if containsAsIntHazard(val, 0) {
+			return mjvalue.Undefined(), asIntHazardError(name)
+		}
+		for _, a := range args {
+			if containsAsIntHazard(a, 0) {
+				return mjvalue.Undefined(), asIntHazardError(name)
+			}
+		}
+		for _, a := range kwargs {
+			if containsAsIntHazard(a, 0) {
+				return mjvalue.Undefined(), asIntHazardError(name)
+			}
+		}
 		out, err := builtin(state, val, args, kwargs)
 		if err != nil {
 			return out, err
@@ -1019,6 +1075,36 @@ func guardIntegerResult(name string, builtin mj.FilterFunc) mj.FilterFunc {
 		}
 		return out, nil
 	}
+}
+
+// guardTestInput is the same INPUT check for a TEST. Tests return a bool rather
+// than a value, so [guardIntegerResult]'s output half has nothing to inspect —
+// the divergence is entirely in what they read. `even` and `odd` are the
+// reachable ones (both `val.AsInt()`), `divisibleby` AsInts its argument too,
+// and `integer`/`int` AsInt before consulting IsActualInt; the guard is applied
+// to EVERY registered test regardless, so the safety does not depend on that
+// enumeration staying right.
+func guardTestInput(name string, builtin mj.TestFunc) mj.TestFunc {
+	return func(state filters.State, val mjvalue.Value, args []mjvalue.Value) (bool, error) {
+		if containsAsIntHazard(val, 0) {
+			return false, asIntHazardError("is " + name)
+		}
+		for _, a := range args {
+			if containsAsIntHazard(a, 0) {
+				return false, asIntHazardError("is " + name)
+			}
+		}
+		return builtin(state, val, args)
+	}
+}
+
+func asIntHazardError(name string) error {
+	return unsupportedConstraint(
+		"`%s` was handed a number outside the range where the two engines convert alike: "+
+			"minijinja-Go reads a value through AsInt, whose float arm is int64(d), while stock's "+
+			"minijinja fork converts F64 to i128 only when `(val as i64 as f64) == val` and Rust "+
+			"SATURATES instead of wrapping. Below 2^53 both produce the same integer; at or past it "+
+			"this profile refuses rather than guess at the boundary", name)
 }
 
 // containsInexactInteger reports whether a value is, or contains, an integer
@@ -1057,12 +1143,73 @@ func absInt64(n int64) uint64 {
 	return uint64(n)
 }
 
-// maxAbsInt is the largest integer magnitude anywhere in a constraint value.
-// Floats are skipped: they are f64 on both sides already.
+// floatIntConversionMagnitude bounds what a float would become if a builtin read
+// it through AsInt, saturating at the point the profile stops proving. See
+// [maxAbsInt] for why floats are not exempt.
+func floatIntConversionMagnitude(f float64) uint64 {
+	abs := math.Abs(f)
+	if math.IsNaN(f) || abs >= float64(maxExactInt) {
+		return maxExactInt
+	}
+	return uint64(abs)
+}
+
+// containsAsIntHazard reports whether a value is, or contains, a number that a
+// builtin reading it through AsInt could convert differently in the two
+// engines. It is the INPUT counterpart of [containsInexactInteger], which
+// guards what a filter RETURNS.
+//
+// Both halves matter, and they are not the same check: an integer at or past
+// 2^53 is indistinguishable from its neighbour once minijinja-Go compares it as
+// float64, while a FLOAT at that magnitude is the AsInt hazard from round 13.
+func containsAsIntHazard(v mjvalue.Value, depth int) bool {
+	if depth > 32 {
+		return true // unknown shape: refuse rather than guess
+	}
+	switch v.Kind() {
+	case mjvalue.KindNumber:
+		if v.IsActualInt() {
+			n, ok := v.AsInt()
+			return !ok || absInt64(n) >= maxExactInt
+		}
+		f, ok := v.AsFloat()
+		return !ok || math.IsNaN(f) || math.Abs(f) >= float64(maxExactInt)
+	case mjvalue.KindSeq, mjvalue.KindIterable:
+		for _, item := range v.Iter() {
+			if containsAsIntHazard(item, depth+1) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// maxAbsInt is the largest magnitude anywhere in a constraint value that could
+// reach an int64 conversion in either engine.
+//
+// FLOATS COUNT. They were skipped until round 13, on the reasoning that an f64
+// is an f64 on both sides — true of arithmetic, false of the builtins that read
+// a value through AsInt. `this is even` over FloatValue(2^63) has no source
+// token to bound and no arithmetic to inspect, so nothing else in the profile
+// looked at it: minijinja-Go's TestEven calls AsInt, whose float arm is
+// int64(d) after d == math.Trunc(d), and int64(float64(2^63)) is MinInt64 on
+// linux/amd64 — even, so native said TRUE. Stock's boundaryml/minijinja fork
+// converts F64 to i128 when `(val as i64 as f64) == val`, and Rust SATURATES
+// 2^63 to i64::MAX, which is odd — so stock said FALSE. Opposite booleans, no
+// sentinel.
+//
+// A float therefore contributes its own magnitude, saturated: below 2^53 an
+// integral float converts to the same int64 in both engines and a non-integral
+// one is rejected by both, so those are proven; at or past 2^53 this profile
+// does not try to prove the int64/i128/saturation boundary and refuses.
+// Non-finite is refused too, because math.Trunc(Inf) == Inf makes AsInt accept
+// it.
 func maxAbsInt(v ConstraintValue) uint64 {
 	switch v.kind {
 	case ConstraintKindInt:
 		return absInt64(v.i)
+	case ConstraintKindFloat:
+		return floatIntConversionMagnitude(v.f)
 	case ConstraintKindList:
 		var m uint64
 		for _, item := range v.list {

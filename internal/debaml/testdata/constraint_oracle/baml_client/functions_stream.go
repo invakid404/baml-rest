@@ -560,6 +560,228 @@ func (*stream) Batch_f25Fn(ctx context.Context, topic string, opts ...CallOption
 	return channel, nil
 }
 
+// / Streaming version of Batch_fbigFn
+func (*stream) Batch_fbigFn(ctx context.Context, topic string, opts ...CallOptionFunc) (<-chan StreamValue[stream_types.Batch_fbig, types.Batch_fbig], error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Batch_fbigFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	internal_channel, err := bamlRuntime.CallFunctionStream(ctx, "Batch_fbigFn", encoded, callOpts.onTick)
+	if err != nil {
+		return nil, err
+	}
+
+	channel := make(chan StreamValue[stream_types.Batch_fbig, types.Batch_fbig])
+	go func() {
+		for result := range internal_channel {
+			if result.Error != nil {
+				channel <- StreamValue[stream_types.Batch_fbig, types.Batch_fbig]{
+					IsError: true,
+					Error:   result.Error,
+				}
+				close(channel)
+				return
+			}
+			if result.HasData {
+				data := (result.Data).(types.Batch_fbig)
+				channel <- StreamValue[stream_types.Batch_fbig, types.Batch_fbig]{
+					IsFinal:  true,
+					as_final: &data,
+				}
+			} else {
+				data := (result.StreamData).(stream_types.Batch_fbig)
+				channel <- StreamValue[stream_types.Batch_fbig, types.Batch_fbig]{
+					IsFinal:   false,
+					as_stream: &data,
+				}
+			}
+		}
+
+		// when internal_channel is closed, close the output too
+		close(channel)
+	}()
+	return channel, nil
+}
+
+// / Streaming version of Batch_flistbigFn
+func (*stream) Batch_flistbigFn(ctx context.Context, topic string, opts ...CallOptionFunc) (<-chan StreamValue[stream_types.Batch_flistbig, types.Batch_flistbig], error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Batch_flistbigFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	internal_channel, err := bamlRuntime.CallFunctionStream(ctx, "Batch_flistbigFn", encoded, callOpts.onTick)
+	if err != nil {
+		return nil, err
+	}
+
+	channel := make(chan StreamValue[stream_types.Batch_flistbig, types.Batch_flistbig])
+	go func() {
+		for result := range internal_channel {
+			if result.Error != nil {
+				channel <- StreamValue[stream_types.Batch_flistbig, types.Batch_flistbig]{
+					IsError: true,
+					Error:   result.Error,
+				}
+				close(channel)
+				return
+			}
+			if result.HasData {
+				data := (result.Data).(types.Batch_flistbig)
+				channel <- StreamValue[stream_types.Batch_flistbig, types.Batch_flistbig]{
+					IsFinal:  true,
+					as_final: &data,
+				}
+			} else {
+				data := (result.StreamData).(stream_types.Batch_flistbig)
+				channel <- StreamValue[stream_types.Batch_flistbig, types.Batch_flistbig]{
+					IsFinal:   false,
+					as_stream: &data,
+				}
+			}
+		}
+
+		// when internal_channel is closed, close the output too
+		close(channel)
+	}()
+	return channel, nil
+}
+
+// / Streaming version of Batch_flistsmFn
+func (*stream) Batch_flistsmFn(ctx context.Context, topic string, opts ...CallOptionFunc) (<-chan StreamValue[stream_types.Batch_flistsm, types.Batch_flistsm], error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Batch_flistsmFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	internal_channel, err := bamlRuntime.CallFunctionStream(ctx, "Batch_flistsmFn", encoded, callOpts.onTick)
+	if err != nil {
+		return nil, err
+	}
+
+	channel := make(chan StreamValue[stream_types.Batch_flistsm, types.Batch_flistsm])
+	go func() {
+		for result := range internal_channel {
+			if result.Error != nil {
+				channel <- StreamValue[stream_types.Batch_flistsm, types.Batch_flistsm]{
+					IsError: true,
+					Error:   result.Error,
+				}
+				close(channel)
+				return
+			}
+			if result.HasData {
+				data := (result.Data).(types.Batch_flistsm)
+				channel <- StreamValue[stream_types.Batch_flistsm, types.Batch_flistsm]{
+					IsFinal:  true,
+					as_final: &data,
+				}
+			} else {
+				data := (result.StreamData).(stream_types.Batch_flistsm)
+				channel <- StreamValue[stream_types.Batch_flistsm, types.Batch_flistsm]{
+					IsFinal:   false,
+					as_stream: &data,
+				}
+			}
+		}
+
+		// when internal_channel is closed, close the output too
+		close(channel)
+	}()
+	return channel, nil
+}
+
 // / Streaming version of Batch_int0Fn
 func (*stream) Batch_int0Fn(ctx context.Context, topic string, opts ...CallOptionFunc) (<-chan StreamValue[stream_types.Batch_int0, types.Batch_int0], error) {
 

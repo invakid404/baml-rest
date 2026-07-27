@@ -27,7 +27,7 @@
 //
 // # How it works
 //
-//   - corpus_test.go enumerates 460 (expression, `this`) cases. The expression
+//   - corpus_test.go enumerates 481 (expression, `this`) cases. The expression
 //     surface is enumerated from the minijinja-go/v2 v2.16.0 API — every
 //     registered filter, test, global function and operator — NOT inferred from
 //     what the prompt renderer happens to use, plus the operator/value cases the
@@ -500,8 +500,8 @@ func TestConstraintExpressionDifferential(t *testing.T) {
 // There is deliberately no third bucket. A case where native answers something
 // stock did not is a defect, and TestConstraintProfileIsFailClosed fails on it.
 const (
-	wantAgree       = 273
-	wantUnsupported = 187
+	wantAgree       = 282
+	wantUnsupported = 199
 )
 
 // TestConstraintProfileIsFailClosed is the load-bearing assertion of this

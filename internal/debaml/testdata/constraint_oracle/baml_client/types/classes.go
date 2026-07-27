@@ -314,6 +314,132 @@ func (c Batch_f25) BamlTypeName() string {
 	return "Batch_f25"
 }
 
+type Batch_fbig struct {
+	V Checked[float64] `json:"v"`
+}
+
+func (c *Batch_fbig) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Batch_fbig" {
+		panic(fmt.Sprintf("expected Batch_fbig, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[float64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Batch_fbig", key))
+
+		}
+	}
+
+}
+
+func (c Batch_fbig) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Batch_fbig", fields, nil)
+}
+
+func (c Batch_fbig) BamlTypeName() string {
+	return "Batch_fbig"
+}
+
+type Batch_flistbig struct {
+	V Checked[[]float64] `json:"v"`
+}
+
+func (c *Batch_flistbig) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Batch_flistbig" {
+		panic(fmt.Sprintf("expected Batch_flistbig, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[[]float64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Batch_flistbig", key))
+
+		}
+	}
+
+}
+
+func (c Batch_flistbig) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Batch_flistbig", fields, nil)
+}
+
+func (c Batch_flistbig) BamlTypeName() string {
+	return "Batch_flistbig"
+}
+
+type Batch_flistsm struct {
+	V Checked[[]float64] `json:"v"`
+}
+
+func (c *Batch_flistsm) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Batch_flistsm" {
+		panic(fmt.Sprintf("expected Batch_flistsm, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[[]float64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Batch_flistsm", key))
+
+		}
+	}
+
+}
+
+func (c Batch_flistsm) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Batch_flistsm", fields, nil)
+}
+
+func (c Batch_flistsm) BamlTypeName() string {
+	return "Batch_flistsm"
+}
+
 type Batch_int0 struct {
 	V Checked[int64] `json:"v"`
 }

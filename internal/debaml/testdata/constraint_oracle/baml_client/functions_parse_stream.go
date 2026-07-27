@@ -354,6 +354,147 @@ func (*parse_stream) Batch_f25Fn(text string, opts ...CallOptionFunc) (stream_ty
 	return casted, nil
 }
 
+// / Parse version of Batch_fbigFn (Takes in string and returns stream_types.Batch_fbig)
+func (*parse_stream) Batch_fbigFn(text string, opts ...CallOptionFunc) (stream_types.Batch_fbig, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Batch_fbigFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Batch_fbigFn", encoded)
+	if err != nil {
+		return stream_types.Batch_fbig{}, err
+	}
+
+	casted := (result).(stream_types.Batch_fbig)
+
+	return casted, nil
+}
+
+// / Parse version of Batch_flistbigFn (Takes in string and returns stream_types.Batch_flistbig)
+func (*parse_stream) Batch_flistbigFn(text string, opts ...CallOptionFunc) (stream_types.Batch_flistbig, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Batch_flistbigFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Batch_flistbigFn", encoded)
+	if err != nil {
+		return stream_types.Batch_flistbig{}, err
+	}
+
+	casted := (result).(stream_types.Batch_flistbig)
+
+	return casted, nil
+}
+
+// / Parse version of Batch_flistsmFn (Takes in string and returns stream_types.Batch_flistsm)
+func (*parse_stream) Batch_flistsmFn(text string, opts ...CallOptionFunc) (stream_types.Batch_flistsm, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Batch_flistsmFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Batch_flistsmFn", encoded)
+	if err != nil {
+		return stream_types.Batch_flistsm{}, err
+	}
+
+	casted := (result).(stream_types.Batch_flistsm)
+
+	return casted, nil
+}
+
 // / Parse version of Batch_int0Fn (Takes in string and returns stream_types.Batch_int0)
 func (*parse_stream) Batch_int0Fn(text string, opts ...CallOptionFunc) (stream_types.Batch_int0, error) {
 

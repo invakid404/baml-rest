@@ -341,6 +341,7 @@ class Batch_const {
     @check(payload_round_direct_mul, {{ 562949953421312.000000000000001 * 16384 > 0.0 }})
     @check(payload_round_small_pow, {{ (2.000000000000000 ** 3) == 8.0 }})
     @check(payload_round_in_range, {{ (562949953421312.000000000000001 ** 1) * 4 > 0.0 }})
+    @check(asint_ctl_literal_even, {{ 4 is even }})
 }
 
 function Batch_constFn(topic: string) -> Batch_const {
@@ -395,6 +396,7 @@ class Batch_f25 {
     @check(this_f25_int, {{ this|int == 2 }})
     @check(this_f25_string, {{ this|string == "2.5" }})
     @check(this_f25_isfloat, {{ this is float }})
+    @check(asint_ctl_nonintegral_even, {{ this is even }})
 }
 
 function Batch_f25Fn(topic: string) -> Batch_f25 {
@@ -408,6 +410,10 @@ class Batch_f20 {
     @check(this_f20_string, {{ this|string == "2.0" }})
     @check(this_f20_isint, {{ this is integer }})
     @check(this_f20_sum, {{ [this]|sum == 2 }})
+    @check(asint_ctl_small_even, {{ this is even }})
+    @check(asint_ctl_small_odd, {{ this is odd }})
+    @check(asint_ctl_small_divisibleby, {{ this is divisibleby(2) }})
+    @check(asint_ctl_small_abs, {{ this|abs == 2 }})
 }
 
 function Batch_f20Fn(topic: string) -> Batch_f20 {
@@ -676,6 +682,48 @@ class Batch_listbig {
 }
 
 function Batch_listbigFn(topic: string) -> Batch_listbig {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Batch_fbig {
+  v float
+    @check(asint_float_even, {{ this is even }})
+    @check(asint_float_odd, {{ this is odd }})
+    @check(asint_float_divisibleby, {{ this is divisibleby(2) }})
+    @check(asint_float_integer, {{ this is integer }})
+    @check(asint_float_abs, {{ this|abs > 0 }})
+    @check(asint_float_int, {{ this|int > 0 }})
+    @check(asint_float_compare, {{ this > 0 }})
+    @check(asint_float_string, {{ this|string != "" }})
+}
+
+function Batch_fbigFn(topic: string) -> Batch_fbig {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Batch_flistbig {
+  v float[]
+    @check(asint_select_even, {{ this|select("even")|list|length == 2 }})
+    @check(asint_reject_odd, {{ this|reject("odd")|list|length == 2 }})
+    @check(asint_list_elem_even, {{ this[2] is even }})
+    @check(asint_list_sum, {{ this|sum > 0 }})
+}
+
+function Batch_flistbigFn(topic: string) -> Batch_flistbig {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Batch_flistsm {
+  v float[]
+    @check(asint_ctl_select_even, {{ this|select("even")|list|length == 3 }})
+    @check(asint_ctl_reject_odd, {{ this|reject("odd")|list|length == 3 }})
+    @check(asint_ctl_list_elem_even, {{ this[2] is even }})
+}
+
+function Batch_flistsmFn(topic: string) -> Batch_flistsm {
   client ConstraintOracleClient
   prompt #"{{ topic }} {{ ctx.output_format }}"#
 }

@@ -539,6 +539,228 @@ func Batch_f25Fn(ctx context.Context, topic string, opts ...CallOptionFunc) (typ
 	}
 }
 
+func Batch_fbigFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Batch_fbig, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Batch_fbigFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Batch_fbig{}, err
+		}
+
+		if result.Error != nil {
+			return types.Batch_fbig{}, result.Error
+		}
+
+		casted := (result.Data).(types.Batch_fbig)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Batch_fbigFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Batch_fbig{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Batch_fbig{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Batch_fbig), nil
+			}
+		}
+
+		return types.Batch_fbig{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func Batch_flistbigFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Batch_flistbig, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Batch_flistbigFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Batch_flistbig{}, err
+		}
+
+		if result.Error != nil {
+			return types.Batch_flistbig{}, result.Error
+		}
+
+		casted := (result.Data).(types.Batch_flistbig)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Batch_flistbigFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Batch_flistbig{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Batch_flistbig{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Batch_flistbig), nil
+			}
+		}
+
+		return types.Batch_flistbig{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func Batch_flistsmFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Batch_flistsm, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Batch_flistsmFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Batch_flistsm{}, err
+		}
+
+		if result.Error != nil {
+			return types.Batch_flistsm{}, result.Error
+		}
+
+		casted := (result.Data).(types.Batch_flistsm)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Batch_flistsmFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Batch_flistsm{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Batch_flistsm{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Batch_flistsm), nil
+			}
+		}
+
+		return types.Batch_flistsm{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
 func Batch_int0Fn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Batch_int0, error) {
 
 	var callOpts callOption

@@ -346,6 +346,144 @@ func (*build_request_stream) Batch_f25Fn(topic string, opts ...CallOptionFunc) (
 	return bamlRuntime.BuildRequest(context.Background(), "Batch_f25Fn", encoded)
 }
 
+// Build streaming HTTP request for Batch_fbigFn (returns baml.HTTPRequest)
+func (*build_request_stream) Batch_fbigFn(topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Batch_fbigFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	return bamlRuntime.BuildRequest(context.Background(), "Batch_fbigFn", encoded)
+}
+
+// Build streaming HTTP request for Batch_flistbigFn (returns baml.HTTPRequest)
+func (*build_request_stream) Batch_flistbigFn(topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Batch_flistbigFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	return bamlRuntime.BuildRequest(context.Background(), "Batch_flistbigFn", encoded)
+}
+
+// Build streaming HTTP request for Batch_flistsmFn (returns baml.HTTPRequest)
+func (*build_request_stream) Batch_flistsmFn(topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Batch_flistsmFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	return bamlRuntime.BuildRequest(context.Background(), "Batch_flistsmFn", encoded)
+}
+
 // Build streaming HTTP request for Batch_int0Fn (returns baml.HTTPRequest)
 func (*build_request_stream) Batch_int0Fn(topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
 
