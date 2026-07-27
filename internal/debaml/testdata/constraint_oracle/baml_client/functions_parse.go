@@ -2046,6 +2046,100 @@ func (*parse) Iso_op_str_add_numFn(text string, opts ...CallOptionFunc) (types.I
 	return casted, nil
 }
 
+// / Parse version of Iso_pow_computed_neg_exp2Fn (Takes in string and returns types.Iso_pow_computed_neg_exp2)
+func (*parse) Iso_pow_computed_neg_exp2Fn(text string, opts ...CallOptionFunc) (types.Iso_pow_computed_neg_exp2, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_pow_computed_neg_exp2Fn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_pow_computed_neg_exp2Fn", encoded)
+	if err != nil {
+		return types.Iso_pow_computed_neg_exp2{}, err
+	}
+
+	casted := (result).(types.Iso_pow_computed_neg_exp2)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_pow_computed_neg_expFn (Takes in string and returns types.Iso_pow_computed_neg_exp)
+func (*parse) Iso_pow_computed_neg_expFn(text string, opts ...CallOptionFunc) (types.Iso_pow_computed_neg_exp, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_pow_computed_neg_expFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_pow_computed_neg_expFn", encoded)
+	if err != nil {
+		return types.Iso_pow_computed_neg_exp{}, err
+	}
+
+	casted := (result).(types.Iso_pow_computed_neg_exp)
+
+	return casted, nil
+}
+
 // / Parse version of Iso_pow_negative_expFn (Takes in string and returns types.Iso_pow_negative_exp)
 func (*parse) Iso_pow_negative_expFn(text string, opts ...CallOptionFunc) (types.Iso_pow_negative_exp, error) {
 
@@ -2089,6 +2183,53 @@ func (*parse) Iso_pow_negative_expFn(text string, opts ...CallOptionFunc) (types
 	}
 
 	casted := (result).(types.Iso_pow_negative_exp)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_pow_paren_neg_expFn (Takes in string and returns types.Iso_pow_paren_neg_exp)
+func (*parse) Iso_pow_paren_neg_expFn(text string, opts ...CallOptionFunc) (types.Iso_pow_paren_neg_exp, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_pow_paren_neg_expFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_pow_paren_neg_expFn", encoded)
+	if err != nil {
+		return types.Iso_pow_paren_neg_exp{}, err
+	}
+
+	casted := (result).(types.Iso_pow_paren_neg_exp)
 
 	return casted, nil
 }

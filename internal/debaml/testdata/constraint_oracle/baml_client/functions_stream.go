@@ -3224,6 +3224,154 @@ func (*stream) Iso_op_str_add_numFn(ctx context.Context, topic string, opts ...C
 	return channel, nil
 }
 
+// / Streaming version of Iso_pow_computed_neg_exp2Fn
+func (*stream) Iso_pow_computed_neg_exp2Fn(ctx context.Context, topic string, opts ...CallOptionFunc) (<-chan StreamValue[stream_types.Iso_pow_computed_neg_exp2, types.Iso_pow_computed_neg_exp2], error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_pow_computed_neg_exp2Fn: %w", err)
+		panic(wrapped_err)
+	}
+
+	internal_channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_pow_computed_neg_exp2Fn", encoded, callOpts.onTick)
+	if err != nil {
+		return nil, err
+	}
+
+	channel := make(chan StreamValue[stream_types.Iso_pow_computed_neg_exp2, types.Iso_pow_computed_neg_exp2])
+	go func() {
+		for result := range internal_channel {
+			if result.Error != nil {
+				channel <- StreamValue[stream_types.Iso_pow_computed_neg_exp2, types.Iso_pow_computed_neg_exp2]{
+					IsError: true,
+					Error:   result.Error,
+				}
+				close(channel)
+				return
+			}
+			if result.HasData {
+				data := (result.Data).(types.Iso_pow_computed_neg_exp2)
+				channel <- StreamValue[stream_types.Iso_pow_computed_neg_exp2, types.Iso_pow_computed_neg_exp2]{
+					IsFinal:  true,
+					as_final: &data,
+				}
+			} else {
+				data := (result.StreamData).(stream_types.Iso_pow_computed_neg_exp2)
+				channel <- StreamValue[stream_types.Iso_pow_computed_neg_exp2, types.Iso_pow_computed_neg_exp2]{
+					IsFinal:   false,
+					as_stream: &data,
+				}
+			}
+		}
+
+		// when internal_channel is closed, close the output too
+		close(channel)
+	}()
+	return channel, nil
+}
+
+// / Streaming version of Iso_pow_computed_neg_expFn
+func (*stream) Iso_pow_computed_neg_expFn(ctx context.Context, topic string, opts ...CallOptionFunc) (<-chan StreamValue[stream_types.Iso_pow_computed_neg_exp, types.Iso_pow_computed_neg_exp], error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_pow_computed_neg_expFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	internal_channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_pow_computed_neg_expFn", encoded, callOpts.onTick)
+	if err != nil {
+		return nil, err
+	}
+
+	channel := make(chan StreamValue[stream_types.Iso_pow_computed_neg_exp, types.Iso_pow_computed_neg_exp])
+	go func() {
+		for result := range internal_channel {
+			if result.Error != nil {
+				channel <- StreamValue[stream_types.Iso_pow_computed_neg_exp, types.Iso_pow_computed_neg_exp]{
+					IsError: true,
+					Error:   result.Error,
+				}
+				close(channel)
+				return
+			}
+			if result.HasData {
+				data := (result.Data).(types.Iso_pow_computed_neg_exp)
+				channel <- StreamValue[stream_types.Iso_pow_computed_neg_exp, types.Iso_pow_computed_neg_exp]{
+					IsFinal:  true,
+					as_final: &data,
+				}
+			} else {
+				data := (result.StreamData).(stream_types.Iso_pow_computed_neg_exp)
+				channel <- StreamValue[stream_types.Iso_pow_computed_neg_exp, types.Iso_pow_computed_neg_exp]{
+					IsFinal:   false,
+					as_stream: &data,
+				}
+			}
+		}
+
+		// when internal_channel is closed, close the output too
+		close(channel)
+	}()
+	return channel, nil
+}
+
 // / Streaming version of Iso_pow_negative_expFn
 func (*stream) Iso_pow_negative_expFn(ctx context.Context, topic string, opts ...CallOptionFunc) (<-chan StreamValue[stream_types.Iso_pow_negative_exp, types.Iso_pow_negative_exp], error) {
 
@@ -3286,6 +3434,80 @@ func (*stream) Iso_pow_negative_expFn(ctx context.Context, topic string, opts ..
 			} else {
 				data := (result.StreamData).(stream_types.Iso_pow_negative_exp)
 				channel <- StreamValue[stream_types.Iso_pow_negative_exp, types.Iso_pow_negative_exp]{
+					IsFinal:   false,
+					as_stream: &data,
+				}
+			}
+		}
+
+		// when internal_channel is closed, close the output too
+		close(channel)
+	}()
+	return channel, nil
+}
+
+// / Streaming version of Iso_pow_paren_neg_expFn
+func (*stream) Iso_pow_paren_neg_expFn(ctx context.Context, topic string, opts ...CallOptionFunc) (<-chan StreamValue[stream_types.Iso_pow_paren_neg_exp, types.Iso_pow_paren_neg_exp], error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_pow_paren_neg_expFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	internal_channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_pow_paren_neg_expFn", encoded, callOpts.onTick)
+	if err != nil {
+		return nil, err
+	}
+
+	channel := make(chan StreamValue[stream_types.Iso_pow_paren_neg_exp, types.Iso_pow_paren_neg_exp])
+	go func() {
+		for result := range internal_channel {
+			if result.Error != nil {
+				channel <- StreamValue[stream_types.Iso_pow_paren_neg_exp, types.Iso_pow_paren_neg_exp]{
+					IsError: true,
+					Error:   result.Error,
+				}
+				close(channel)
+				return
+			}
+			if result.HasData {
+				data := (result.Data).(types.Iso_pow_paren_neg_exp)
+				channel <- StreamValue[stream_types.Iso_pow_paren_neg_exp, types.Iso_pow_paren_neg_exp]{
+					IsFinal:  true,
+					as_final: &data,
+				}
+			} else {
+				data := (result.StreamData).(stream_types.Iso_pow_paren_neg_exp)
+				channel <- StreamValue[stream_types.Iso_pow_paren_neg_exp, types.Iso_pow_paren_neg_exp]{
 					IsFinal:   false,
 					as_stream: &data,
 				}

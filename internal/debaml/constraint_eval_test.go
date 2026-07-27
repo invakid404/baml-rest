@@ -949,3 +949,68 @@ func TestNumericProfileIsAWhitelist(t *testing.T) {
 		}
 	}
 }
+
+// TestProvenParityWhitelistForSignedOps pins the round-7 class: two operators
+// whose minijinja-Go and stock v0.223 semantics differ for reasons that have
+// nothing to do with 2^53, and which the closed sublanguage previously admitted.
+//
+//	minijinja-Go Value.Rem      = Go's truncated `%`   (-1 % 2 == -1)
+//	stock v2.16                 = checked_rem_euclid   (-1 % 2 ==  1)
+//	minijinja-Go Value.FloorDiv = math.Floor(a/b)      ( 1 // -2 == -1)
+//	stock v2.16                 = checked_div_euclid   ( 1 // -2 ==  0)
+//	minijinja-Go Value.Pow      = math.Pow             ( 2 ** -1 == 0.5)
+//	stock v2.16                 = u32 integer pow      ( 2 ** -1 ERRORS)
+//
+// So the sublanguage moved to a proven-parity posture: `//` and `%` require
+// non-negative literal operands, and `**` requires a non-negative integer
+// LITERAL exponent. Tracking a sign flag through unary syntax was not enough —
+// `2 ** (0 - 1)` computes -1 with no unary minus anywhere — and proving the sign
+// of a computed operand is deliberately not attempted.
+func TestProvenParityWhitelistForSignedOps(t *testing.T) {
+	for _, expr := range []string{
+		// Exponents that are computed, parenthesised-negative, or non-literal.
+		"2 ** (0 - 1) == 0.5", "2 ** (1 - 3) == 0.25", "2 ** (-1) == 0.5",
+		"2 ** -1 == 0.5", "2 ** (1 + 1) == 4", "2 ** (4 // 2) == 4",
+		"2 ** (5 % 3) == 4", "2 ** 3 ** 2 == 512", "2 ** 0.5 > 1",
+		// Signed `//` and `%`, whether written or computed.
+		"-1 % 2 == 1", "7 % -3 == 1", "(0 - 1) % 2 == 1", "-7 % 3 == 2",
+		"1 // -2 == 0", "-7 // 2 == -4", "1 // (0 - 2) == 0", "(1 - 2) // 3 == -1",
+		// Chained: the left operand is a computed value, not a literal.
+		"7 // 2 // 1 == 3", "7 % 3 % 2 == 1",
+	} {
+		if got, err := EvaluateConstraint(NullValue(), expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%q answered %v (err=%v); the engines can differ on this form and it must refuse",
+				expr, got, err)
+		}
+	}
+
+	// The proven forms — non-negative literal operands, parenthesised or not —
+	// must still decide, so the whitelist narrows the sign space and nothing else.
+	for expr, want := range map[string]bool{
+		"7 % 3 == 1":              true,
+		"(7) % (3) == 1":          true,
+		"7 // 2 == 3":             true,
+		"(7) // (2) == 3":         true,
+		"2 ** 10 == 1024":         true,
+		"2 ** (10) == 1024":       true,
+		"((2)) ** ((10)) == 1024": true,
+		"2 ** 0 == 1":             true,
+		// True division is f64 on both sides, so sign is immaterial there.
+		"7 / 2 == 3.5":   true,
+		"-7 / 2 == -3.5": true,
+		// `+`, `-`, `*` are exact below 2^53 on both sides at any sign.
+		"-1 + 2 == 1":      true,
+		"1 - 3 == -2":      true,
+		"(1 + 2) * 3 == 9": true,
+		"1 \r\n + 1 == 2":  true,
+	} {
+		got, err := EvaluateConstraint(NullValue(), expr)
+		if err != nil {
+			t.Errorf("%q was refused (%v); it is proven identical to stock", expr, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%q = %v, want %v", expr, got, want)
+		}
+	}
+}

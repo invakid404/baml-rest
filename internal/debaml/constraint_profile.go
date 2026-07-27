@@ -473,11 +473,17 @@ func isProvablySmallNumber(run string) bool {
 // agree between the engines), an integer whose magnitude is tracked with
 // saturating arithmetic, or a comparison result.
 type numeric struct {
-	isFloat   bool
-	isBool    bool
-	neg       bool
-	mag       uint64
-	saturated bool
+	isFloat bool
+	isBool  bool
+	neg     bool
+	mag     uint64
+	// nonNegLiteral marks a node that IS a non-negative integer literal — a bare
+	// digit run, possibly wrapped in parentheses. Any operator, and unary minus,
+	// clear it. It is the only provenance the operators below will accept,
+	// because a computed operand's SIGN cannot be established here and the
+	// engines disagree on exactly the signed cases (see [parseMul]/[parsePow]).
+	nonNegLiteral bool
+	saturated     bool
 }
 
 // parseNumeric parses and evaluates:
@@ -609,12 +615,28 @@ func (p *numericParser) parseMul() (numeric, bool) {
 				return numeric{}, false
 			}
 			left = combineNumeric(left, right, satMul)
-		case p.accept("//"), p.accept("/"), p.accept("%"):
+		case p.accept("//"), p.accept("%"):
+			// SIGNED `//` and `%` DIVERGE. minijinja-Go's Value.Rem is Go's
+			// truncated `%` (sign follows the dividend) and its Value.FloorDiv is
+			// math.Floor(a/b); stock v2.16 uses checked_rem_euclid and
+			// checked_div_euclid, which are EUCLIDEAN. So `-1 % 2` is -1 here and
+			// 1 there, and `1 // -2` is -1 here and 0 there. Only non-negative
+			// literal operands are proven identical, and a computed operand's sign
+			// is not something this parser will try to establish.
 			right, ok := p.parsePow()
 			if !ok {
 				return numeric{}, false
 			}
-			// Division and modulo cannot grow magnitude beyond the dividend.
+			if !left.nonNegLiteral || !right.nonNegLiteral {
+				return numeric{}, false
+			}
+			left = combineNumeric(left, right, func(a, _ uint64) uint64 { return a })
+		case p.accept("/"):
+			// True division is f64 on both sides, so sign is immaterial.
+			right, ok := p.parsePow()
+			if !ok {
+				return numeric{}, false
+			}
 			left = combineNumeric(left, right, func(a, _ uint64) uint64 { return a })
 		default:
 			return left, true
@@ -651,9 +673,16 @@ func (p *numericParser) parsePow() (numeric, bool) {
 		return numeric{}, false
 	}
 	// Stock converts an integer exponent to u32 and ERRORS if it does not fit,
-	// so a negative, oversized or non-integer exponent is refused rather than
-	// evaluated: minijinja-Go would call math.Pow and answer where stock rejects.
-	if exp.isFloat || exp.neg || exp.saturated || exp.mag >= powExponentLimit {
+	// so a negative, oversized or non-integer exponent must be refused rather
+	// than evaluated: minijinja-Go calls math.Pow and ANSWERS where stock
+	// rejects — `2 ** -1` yields 0.5 here and an error there.
+	//
+	// The exponent must therefore be a non-negative integer LITERAL. Tracking a
+	// `neg` flag through unary syntax is not enough: `2 ** (0 - 1)` computes -1
+	// with no unary minus anywhere, and no magnitude bound can reveal its sign.
+	// Rather than try to prove the sign of a computed operand, the profile only
+	// accepts an exponent whose non-negativity is manifest.
+	if !exp.nonNegLiteral || exp.mag >= powExponentLimit {
 		return numeric{}, false
 	}
 	if base.isFloat {
@@ -670,6 +699,7 @@ func (p *numericParser) parseUnary() (numeric, bool) {
 			return numeric{}, false
 		}
 		n.neg = !n.neg
+		n.nonNegLiteral = false // negated: no longer a non-negative literal
 		return n, true
 	}
 	if p.accept("+") {
@@ -684,6 +714,8 @@ func (p *numericParser) parsePrimary() (numeric, bool) {
 		if !ok || !p.accept(")") {
 			return numeric{}, false
 		}
+		// Parentheses are transparent: `(10)` is still a literal for the
+		// operators that insist on one.
 		return n, true
 	}
 	p.skipSpace()
@@ -706,7 +738,7 @@ func (p *numericParser) parsePrimary() (numeric, bool) {
 		mag = satMul(mag, 10)
 		mag = satAdd(mag, uint64(run[i]-'0'))
 	}
-	return numeric{mag: mag, saturated: mag >= maxExactInt}, true
+	return numeric{mag: mag, nonNegLiteral: true, saturated: mag >= maxExactInt}, true
 }
 
 // combineNumeric applies an integer magnitude rule, propagating float-ness
@@ -720,6 +752,8 @@ func combineNumeric(a, b numeric, mag func(x, y uint64) uint64) numeric {
 		return numeric{isFloat: true}
 	}
 	m := mag(a.mag, b.mag)
+	// A computed value is never a literal, so it can never satisfy the
+	// operators that require one. This is what closes `2 ** (0 - 1)`.
 	return numeric{mag: m, saturated: a.saturated || b.saturated || m >= maxExactInt}
 }
 

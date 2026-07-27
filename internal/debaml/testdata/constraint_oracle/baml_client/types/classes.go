@@ -1826,6 +1826,90 @@ func (c Iso_op_str_add_num) BamlTypeName() string {
 	return "Iso_op_str_add_num"
 }
 
+type Iso_pow_computed_neg_exp struct {
+	V Checked[int64] `json:"v"`
+}
+
+func (c *Iso_pow_computed_neg_exp) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_pow_computed_neg_exp" {
+		panic(fmt.Sprintf("expected Iso_pow_computed_neg_exp, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_pow_computed_neg_exp", key))
+
+		}
+	}
+
+}
+
+func (c Iso_pow_computed_neg_exp) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_pow_computed_neg_exp", fields, nil)
+}
+
+func (c Iso_pow_computed_neg_exp) BamlTypeName() string {
+	return "Iso_pow_computed_neg_exp"
+}
+
+type Iso_pow_computed_neg_exp2 struct {
+	V Checked[int64] `json:"v"`
+}
+
+func (c *Iso_pow_computed_neg_exp2) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_pow_computed_neg_exp2" {
+		panic(fmt.Sprintf("expected Iso_pow_computed_neg_exp2, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_pow_computed_neg_exp2", key))
+
+		}
+	}
+
+}
+
+func (c Iso_pow_computed_neg_exp2) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_pow_computed_neg_exp2", fields, nil)
+}
+
+func (c Iso_pow_computed_neg_exp2) BamlTypeName() string {
+	return "Iso_pow_computed_neg_exp2"
+}
+
 type Iso_pow_negative_exp struct {
 	V Checked[int64] `json:"v"`
 }
@@ -1866,6 +1950,48 @@ func (c Iso_pow_negative_exp) Encode() (*cffi.HostValue, error) {
 
 func (c Iso_pow_negative_exp) BamlTypeName() string {
 	return "Iso_pow_negative_exp"
+}
+
+type Iso_pow_paren_neg_exp struct {
+	V Checked[int64] `json:"v"`
+}
+
+func (c *Iso_pow_paren_neg_exp) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_pow_paren_neg_exp" {
+		panic(fmt.Sprintf("expected Iso_pow_paren_neg_exp, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_pow_paren_neg_exp", key))
+
+		}
+	}
+
+}
+
+func (c Iso_pow_paren_neg_exp) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_pow_paren_neg_exp", fields, nil)
+}
+
+func (c Iso_pow_paren_neg_exp) BamlTypeName() string {
+	return "Iso_pow_paren_neg_exp"
 }
 
 type Iso_py_num_method struct {

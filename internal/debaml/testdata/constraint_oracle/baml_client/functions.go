@@ -3203,6 +3203,154 @@ func Iso_op_str_add_numFn(ctx context.Context, topic string, opts ...CallOptionF
 	}
 }
 
+func Iso_pow_computed_neg_exp2Fn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_pow_computed_neg_exp2, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Iso_pow_computed_neg_exp2Fn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_pow_computed_neg_exp2{}, err
+		}
+
+		if result.Error != nil {
+			return types.Iso_pow_computed_neg_exp2{}, result.Error
+		}
+
+		casted := (result.Data).(types.Iso_pow_computed_neg_exp2)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_pow_computed_neg_exp2Fn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_pow_computed_neg_exp2{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Iso_pow_computed_neg_exp2{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Iso_pow_computed_neg_exp2), nil
+			}
+		}
+
+		return types.Iso_pow_computed_neg_exp2{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func Iso_pow_computed_neg_expFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_pow_computed_neg_exp, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Iso_pow_computed_neg_expFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_pow_computed_neg_exp{}, err
+		}
+
+		if result.Error != nil {
+			return types.Iso_pow_computed_neg_exp{}, result.Error
+		}
+
+		casted := (result.Data).(types.Iso_pow_computed_neg_exp)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_pow_computed_neg_expFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_pow_computed_neg_exp{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Iso_pow_computed_neg_exp{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Iso_pow_computed_neg_exp), nil
+			}
+		}
+
+		return types.Iso_pow_computed_neg_exp{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
 func Iso_pow_negative_expFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_pow_negative_exp, error) {
 
 	var callOpts callOption
@@ -3274,6 +3422,80 @@ func Iso_pow_negative_expFn(ctx context.Context, topic string, opts ...CallOptio
 		}
 
 		return types.Iso_pow_negative_exp{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func Iso_pow_paren_neg_expFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_pow_paren_neg_exp, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Iso_pow_paren_neg_expFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_pow_paren_neg_exp{}, err
+		}
+
+		if result.Error != nil {
+			return types.Iso_pow_paren_neg_exp{}, result.Error
+		}
+
+		casted := (result.Data).(types.Iso_pow_paren_neg_exp)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_pow_paren_neg_expFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_pow_paren_neg_exp{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Iso_pow_paren_neg_exp{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Iso_pow_paren_neg_exp), nil
+			}
+		}
+
+		return types.Iso_pow_paren_neg_exp{}, fmt.Errorf("No data returned from stream")
 	}
 }
 

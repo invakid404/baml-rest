@@ -249,6 +249,25 @@ class Batch_const {
     @check(pow_parenthesised, {{ 2 ** (10) == 1024 }})
     @check(pow_double_paren, {{ ((2)) ** ((10)) == 1024 }})
     @check(arith_paren_group, {{ (1 + 2) * 3 == 9 }})
+    @check(pow_computed_exp, {{ 2 ** (1 + 1) == 4 }})
+    @check(pow_floordiv_exp, {{ 2 ** (4 // 2) == 4 }})
+    @check(pow_nested, {{ 2 ** 3 ** 2 == 512 }})
+    @check(pow_zero_exp, {{ 2 ** 0 == 1 }})
+    @check(rem_negative_lhs, {{ -1 % 2 == 1 }})
+    @check(rem_negative_rhs, {{ 7 % -3 == 1 }})
+    @check(rem_computed_neg, {{ (0 - 1) % 2 == 1 }})
+    @check(floordiv_negative_rhs, {{ 1 // -2 == 0 }})
+    @check(floordiv_negative_lhs, {{ -7 // 2 == -4 }})
+    @check(floordiv_computed_neg, {{ 1 // (0 - 2) == 0 }})
+    @check(rem_paren_literals, {{ (7) % (3) == 1 }})
+    @check(floordiv_paren_literals, {{ (7) // (2) == 3 }})
+    @check(div_negative, {{ -7 / 2 == -3.5 }})
+    @check(ws_crlf_static, {{ 9007199254740991 
+ + 1 
+ + 1 == 9007199254740991 
+ + 1 }})
+    @check(ws_crlf_small, {{ 1 
+ + 1 == 2 }})
 }
 
 function Batch_constFn(topic: string) -> Batch_const {
@@ -554,6 +573,10 @@ class Batch_strexact {
  + 1 
  + 1 == this|int 
  + 1 }})
+    @check(this_strexact_crlf, {{ this|int 
+ + 1 
+ + 1 == this|int 
+ + 1 }})
 }
 
 function Batch_strexactFn(topic: string) -> Batch_strexact {
@@ -852,6 +875,33 @@ class Iso_pow_negative_exp {
 }
 
 function Iso_pow_negative_expFn(topic: string) -> Iso_pow_negative_exp {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_pow_computed_neg_exp {
+  v int @check(pow_computed_neg_exp, {{ 2 ** (0 - 1) == 0.5 }})
+}
+
+function Iso_pow_computed_neg_expFn(topic: string) -> Iso_pow_computed_neg_exp {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_pow_computed_neg_exp2 {
+  v int @check(pow_computed_neg_exp2, {{ 2 ** (1 - 3) == 0.25 }})
+}
+
+function Iso_pow_computed_neg_exp2Fn(topic: string) -> Iso_pow_computed_neg_exp2 {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_pow_paren_neg_exp {
+  v int @check(pow_paren_neg_exp, {{ 2 ** (-1) == 0.5 }})
+}
+
+function Iso_pow_paren_neg_expFn(topic: string) -> Iso_pow_paren_neg_exp {
   client ConstraintOracleClient
   prompt #"{{ topic }} {{ ctx.output_format }}"#
 }

@@ -2002,6 +2002,98 @@ func (*build_request) Iso_op_str_add_numFn(topic string, opts ...CallOptionFunc)
 	return bamlRuntime.BuildRequest(context.Background(), "Iso_op_str_add_numFn", encoded)
 }
 
+// Build HTTP request for Iso_pow_computed_neg_exp2Fn (returns baml.HTTPRequest)
+func (*build_request) Iso_pow_computed_neg_exp2Fn(topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_pow_computed_neg_exp2Fn: %w", err)
+		panic(wrapped_err)
+	}
+
+	return bamlRuntime.BuildRequest(context.Background(), "Iso_pow_computed_neg_exp2Fn", encoded)
+}
+
+// Build HTTP request for Iso_pow_computed_neg_expFn (returns baml.HTTPRequest)
+func (*build_request) Iso_pow_computed_neg_expFn(topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_pow_computed_neg_expFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	return bamlRuntime.BuildRequest(context.Background(), "Iso_pow_computed_neg_expFn", encoded)
+}
+
 // Build HTTP request for Iso_pow_negative_expFn (returns baml.HTTPRequest)
 func (*build_request) Iso_pow_negative_expFn(topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
 
@@ -2046,6 +2138,52 @@ func (*build_request) Iso_pow_negative_expFn(topic string, opts ...CallOptionFun
 	}
 
 	return bamlRuntime.BuildRequest(context.Background(), "Iso_pow_negative_expFn", encoded)
+}
+
+// Build HTTP request for Iso_pow_paren_neg_expFn (returns baml.HTTPRequest)
+func (*build_request) Iso_pow_paren_neg_expFn(topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_pow_paren_neg_expFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	return bamlRuntime.BuildRequest(context.Background(), "Iso_pow_paren_neg_expFn", encoded)
 }
 
 // Build HTTP request for Iso_py_num_methodFn (returns baml.HTTPRequest)

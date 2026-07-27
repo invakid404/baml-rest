@@ -177,9 +177,12 @@ func renderConstraint(this ConstraintValue, expression string) (string, error) {
 	}
 	if exceedsExactIntegerRange(this, expression) {
 		return "", unsupportedConstraint(
-			"integer arithmetic whose operands are not statically bounded below 2^53 (the closure rule); " +
-				"minijinja-Go computes and compares integers as float64, so a value that crosses 2^53 in " +
-				"any operator is wrong and, past 2^63, architecture-dependent")
+			"outside the proven numeric profile: an expression is admitted only when it carries no " +
+				"arithmetic at all, or when the WHOLE of it parses as the closed numeric sublanguage " +
+				"whose every form has been proven identical to stock v0.223 across the sign and range " +
+				"space. Unrecognised literal forms, arithmetic mixed with any other syntax, integers at " +
+				"or past 2^53, signed floor-division or modulo, and any exponent that is not a " +
+				"non-negative literal are all refused rather than guessed at")
 	}
 
 	primary, primaryErr := renderOnce(this, expression, mappingOrdered)
