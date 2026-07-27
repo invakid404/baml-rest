@@ -4482,6 +4482,524 @@ func (*stream) Iso_py_num_methodFn(ctx context.Context, topic string, opts ...Ca
 	return channel, nil
 }
 
+// / Streaming version of Iso_sig_defined_extra_argFn
+func (*stream) Iso_sig_defined_extra_argFn(ctx context.Context, topic string, opts ...CallOptionFunc) (<-chan StreamValue[stream_types.Iso_sig_defined_extra_arg, types.Iso_sig_defined_extra_arg], error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_sig_defined_extra_argFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	internal_channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_sig_defined_extra_argFn", encoded, callOpts.onTick)
+	if err != nil {
+		return nil, err
+	}
+
+	channel := make(chan StreamValue[stream_types.Iso_sig_defined_extra_arg, types.Iso_sig_defined_extra_arg])
+	go func() {
+		for result := range internal_channel {
+			if result.Error != nil {
+				channel <- StreamValue[stream_types.Iso_sig_defined_extra_arg, types.Iso_sig_defined_extra_arg]{
+					IsError: true,
+					Error:   result.Error,
+				}
+				close(channel)
+				return
+			}
+			if result.HasData {
+				data := (result.Data).(types.Iso_sig_defined_extra_arg)
+				channel <- StreamValue[stream_types.Iso_sig_defined_extra_arg, types.Iso_sig_defined_extra_arg]{
+					IsFinal:  true,
+					as_final: &data,
+				}
+			} else {
+				data := (result.StreamData).(stream_types.Iso_sig_defined_extra_arg)
+				channel <- StreamValue[stream_types.Iso_sig_defined_extra_arg, types.Iso_sig_defined_extra_arg]{
+					IsFinal:   false,
+					as_stream: &data,
+				}
+			}
+		}
+
+		// when internal_channel is closed, close the output too
+		close(channel)
+	}()
+	return channel, nil
+}
+
+// / Streaming version of Iso_sig_even_extra_argFn
+func (*stream) Iso_sig_even_extra_argFn(ctx context.Context, topic string, opts ...CallOptionFunc) (<-chan StreamValue[stream_types.Iso_sig_even_extra_arg, types.Iso_sig_even_extra_arg], error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_sig_even_extra_argFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	internal_channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_sig_even_extra_argFn", encoded, callOpts.onTick)
+	if err != nil {
+		return nil, err
+	}
+
+	channel := make(chan StreamValue[stream_types.Iso_sig_even_extra_arg, types.Iso_sig_even_extra_arg])
+	go func() {
+		for result := range internal_channel {
+			if result.Error != nil {
+				channel <- StreamValue[stream_types.Iso_sig_even_extra_arg, types.Iso_sig_even_extra_arg]{
+					IsError: true,
+					Error:   result.Error,
+				}
+				close(channel)
+				return
+			}
+			if result.HasData {
+				data := (result.Data).(types.Iso_sig_even_extra_arg)
+				channel <- StreamValue[stream_types.Iso_sig_even_extra_arg, types.Iso_sig_even_extra_arg]{
+					IsFinal:  true,
+					as_final: &data,
+				}
+			} else {
+				data := (result.StreamData).(stream_types.Iso_sig_even_extra_arg)
+				channel <- StreamValue[stream_types.Iso_sig_even_extra_arg, types.Iso_sig_even_extra_arg]{
+					IsFinal:   false,
+					as_stream: &data,
+				}
+			}
+		}
+
+		// when internal_channel is closed, close the output too
+		close(channel)
+	}()
+	return channel, nil
+}
+
+// / Streaming version of Iso_sig_length_extra_argFn
+func (*stream) Iso_sig_length_extra_argFn(ctx context.Context, topic string, opts ...CallOptionFunc) (<-chan StreamValue[stream_types.Iso_sig_length_extra_arg, types.Iso_sig_length_extra_arg], error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_sig_length_extra_argFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	internal_channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_sig_length_extra_argFn", encoded, callOpts.onTick)
+	if err != nil {
+		return nil, err
+	}
+
+	channel := make(chan StreamValue[stream_types.Iso_sig_length_extra_arg, types.Iso_sig_length_extra_arg])
+	go func() {
+		for result := range internal_channel {
+			if result.Error != nil {
+				channel <- StreamValue[stream_types.Iso_sig_length_extra_arg, types.Iso_sig_length_extra_arg]{
+					IsError: true,
+					Error:   result.Error,
+				}
+				close(channel)
+				return
+			}
+			if result.HasData {
+				data := (result.Data).(types.Iso_sig_length_extra_arg)
+				channel <- StreamValue[stream_types.Iso_sig_length_extra_arg, types.Iso_sig_length_extra_arg]{
+					IsFinal:  true,
+					as_final: &data,
+				}
+			} else {
+				data := (result.StreamData).(stream_types.Iso_sig_length_extra_arg)
+				channel <- StreamValue[stream_types.Iso_sig_length_extra_arg, types.Iso_sig_length_extra_arg]{
+					IsFinal:   false,
+					as_stream: &data,
+				}
+			}
+		}
+
+		// when internal_channel is closed, close the output too
+		close(channel)
+	}()
+	return channel, nil
+}
+
+// / Streaming version of Iso_sig_none_extra_argFn
+func (*stream) Iso_sig_none_extra_argFn(ctx context.Context, topic string, opts ...CallOptionFunc) (<-chan StreamValue[stream_types.Iso_sig_none_extra_arg, types.Iso_sig_none_extra_arg], error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_sig_none_extra_argFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	internal_channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_sig_none_extra_argFn", encoded, callOpts.onTick)
+	if err != nil {
+		return nil, err
+	}
+
+	channel := make(chan StreamValue[stream_types.Iso_sig_none_extra_arg, types.Iso_sig_none_extra_arg])
+	go func() {
+		for result := range internal_channel {
+			if result.Error != nil {
+				channel <- StreamValue[stream_types.Iso_sig_none_extra_arg, types.Iso_sig_none_extra_arg]{
+					IsError: true,
+					Error:   result.Error,
+				}
+				close(channel)
+				return
+			}
+			if result.HasData {
+				data := (result.Data).(types.Iso_sig_none_extra_arg)
+				channel <- StreamValue[stream_types.Iso_sig_none_extra_arg, types.Iso_sig_none_extra_arg]{
+					IsFinal:  true,
+					as_final: &data,
+				}
+			} else {
+				data := (result.StreamData).(stream_types.Iso_sig_none_extra_arg)
+				channel <- StreamValue[stream_types.Iso_sig_none_extra_arg, types.Iso_sig_none_extra_arg]{
+					IsFinal:   false,
+					as_stream: &data,
+				}
+			}
+		}
+
+		// when internal_channel is closed, close the output too
+		close(channel)
+	}()
+	return channel, nil
+}
+
+// / Streaming version of Iso_sig_replace_missing_argFn
+func (*stream) Iso_sig_replace_missing_argFn(ctx context.Context, topic string, opts ...CallOptionFunc) (<-chan StreamValue[stream_types.Iso_sig_replace_missing_arg, types.Iso_sig_replace_missing_arg], error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_sig_replace_missing_argFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	internal_channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_sig_replace_missing_argFn", encoded, callOpts.onTick)
+	if err != nil {
+		return nil, err
+	}
+
+	channel := make(chan StreamValue[stream_types.Iso_sig_replace_missing_arg, types.Iso_sig_replace_missing_arg])
+	go func() {
+		for result := range internal_channel {
+			if result.Error != nil {
+				channel <- StreamValue[stream_types.Iso_sig_replace_missing_arg, types.Iso_sig_replace_missing_arg]{
+					IsError: true,
+					Error:   result.Error,
+				}
+				close(channel)
+				return
+			}
+			if result.HasData {
+				data := (result.Data).(types.Iso_sig_replace_missing_arg)
+				channel <- StreamValue[stream_types.Iso_sig_replace_missing_arg, types.Iso_sig_replace_missing_arg]{
+					IsFinal:  true,
+					as_final: &data,
+				}
+			} else {
+				data := (result.StreamData).(stream_types.Iso_sig_replace_missing_arg)
+				channel <- StreamValue[stream_types.Iso_sig_replace_missing_arg, types.Iso_sig_replace_missing_arg]{
+					IsFinal:   false,
+					as_stream: &data,
+				}
+			}
+		}
+
+		// when internal_channel is closed, close the output too
+		close(channel)
+	}()
+	return channel, nil
+}
+
+// / Streaming version of Iso_sig_slice_boolFn
+func (*stream) Iso_sig_slice_boolFn(ctx context.Context, topic string, opts ...CallOptionFunc) (<-chan StreamValue[stream_types.Iso_sig_slice_bool, types.Iso_sig_slice_bool], error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_sig_slice_boolFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	internal_channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_sig_slice_boolFn", encoded, callOpts.onTick)
+	if err != nil {
+		return nil, err
+	}
+
+	channel := make(chan StreamValue[stream_types.Iso_sig_slice_bool, types.Iso_sig_slice_bool])
+	go func() {
+		for result := range internal_channel {
+			if result.Error != nil {
+				channel <- StreamValue[stream_types.Iso_sig_slice_bool, types.Iso_sig_slice_bool]{
+					IsError: true,
+					Error:   result.Error,
+				}
+				close(channel)
+				return
+			}
+			if result.HasData {
+				data := (result.Data).(types.Iso_sig_slice_bool)
+				channel <- StreamValue[stream_types.Iso_sig_slice_bool, types.Iso_sig_slice_bool]{
+					IsFinal:  true,
+					as_final: &data,
+				}
+			} else {
+				data := (result.StreamData).(stream_types.Iso_sig_slice_bool)
+				channel <- StreamValue[stream_types.Iso_sig_slice_bool, types.Iso_sig_slice_bool]{
+					IsFinal:   false,
+					as_stream: &data,
+				}
+			}
+		}
+
+		// when internal_channel is closed, close the output too
+		close(channel)
+	}()
+	return channel, nil
+}
+
+// / Streaming version of Iso_sig_upper_extra_argFn
+func (*stream) Iso_sig_upper_extra_argFn(ctx context.Context, topic string, opts ...CallOptionFunc) (<-chan StreamValue[stream_types.Iso_sig_upper_extra_arg, types.Iso_sig_upper_extra_arg], error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_sig_upper_extra_argFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	internal_channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_sig_upper_extra_argFn", encoded, callOpts.onTick)
+	if err != nil {
+		return nil, err
+	}
+
+	channel := make(chan StreamValue[stream_types.Iso_sig_upper_extra_arg, types.Iso_sig_upper_extra_arg])
+	go func() {
+		for result := range internal_channel {
+			if result.Error != nil {
+				channel <- StreamValue[stream_types.Iso_sig_upper_extra_arg, types.Iso_sig_upper_extra_arg]{
+					IsError: true,
+					Error:   result.Error,
+				}
+				close(channel)
+				return
+			}
+			if result.HasData {
+				data := (result.Data).(types.Iso_sig_upper_extra_arg)
+				channel <- StreamValue[stream_types.Iso_sig_upper_extra_arg, types.Iso_sig_upper_extra_arg]{
+					IsFinal:  true,
+					as_final: &data,
+				}
+			} else {
+				data := (result.StreamData).(stream_types.Iso_sig_upper_extra_arg)
+				channel <- StreamValue[stream_types.Iso_sig_upper_extra_arg, types.Iso_sig_upper_extra_arg]{
+					IsFinal:   false,
+					as_stream: &data,
+				}
+			}
+		}
+
+		// when internal_channel is closed, close the output too
+		close(channel)
+	}()
+	return channel, nil
+}
+
 // / Streaming version of Iso_slice_start_fractionalFn
 func (*stream) Iso_slice_start_fractionalFn(ctx context.Context, topic string, opts ...CallOptionFunc) (<-chan StreamValue[stream_types.Iso_slice_start_fractional, types.Iso_slice_start_fractional], error) {
 

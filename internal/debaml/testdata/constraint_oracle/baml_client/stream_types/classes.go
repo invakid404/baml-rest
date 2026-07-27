@@ -2542,6 +2542,300 @@ func (c Iso_py_num_method) BamlTypeName() string {
 	return "Iso_py_num_method"
 }
 
+type Iso_sig_defined_extra_arg struct {
+	V *types.Checked[int64] `json:"v"`
+}
+
+func (c *Iso_sig_defined_extra_arg) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_sig_defined_extra_arg" {
+		panic(fmt.Sprintf("expected Iso_sig_defined_extra_arg, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(*types.Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_sig_defined_extra_arg", key))
+
+		}
+	}
+
+}
+
+func (c Iso_sig_defined_extra_arg) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_sig_defined_extra_arg", fields, nil)
+}
+
+func (c Iso_sig_defined_extra_arg) BamlTypeName() string {
+	return "Iso_sig_defined_extra_arg"
+}
+
+type Iso_sig_even_extra_arg struct {
+	V *types.Checked[int64] `json:"v"`
+}
+
+func (c *Iso_sig_even_extra_arg) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_sig_even_extra_arg" {
+		panic(fmt.Sprintf("expected Iso_sig_even_extra_arg, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(*types.Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_sig_even_extra_arg", key))
+
+		}
+	}
+
+}
+
+func (c Iso_sig_even_extra_arg) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_sig_even_extra_arg", fields, nil)
+}
+
+func (c Iso_sig_even_extra_arg) BamlTypeName() string {
+	return "Iso_sig_even_extra_arg"
+}
+
+type Iso_sig_length_extra_arg struct {
+	V types.Checked[[]int64] `json:"v"`
+}
+
+func (c *Iso_sig_length_extra_arg) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_sig_length_extra_arg" {
+		panic(fmt.Sprintf("expected Iso_sig_length_extra_arg, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(types.Checked[[]int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_sig_length_extra_arg", key))
+
+		}
+	}
+
+}
+
+func (c Iso_sig_length_extra_arg) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_sig_length_extra_arg", fields, nil)
+}
+
+func (c Iso_sig_length_extra_arg) BamlTypeName() string {
+	return "Iso_sig_length_extra_arg"
+}
+
+type Iso_sig_none_extra_arg struct {
+	V *types.Checked[int64] `json:"v"`
+}
+
+func (c *Iso_sig_none_extra_arg) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_sig_none_extra_arg" {
+		panic(fmt.Sprintf("expected Iso_sig_none_extra_arg, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(*types.Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_sig_none_extra_arg", key))
+
+		}
+	}
+
+}
+
+func (c Iso_sig_none_extra_arg) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_sig_none_extra_arg", fields, nil)
+}
+
+func (c Iso_sig_none_extra_arg) BamlTypeName() string {
+	return "Iso_sig_none_extra_arg"
+}
+
+type Iso_sig_replace_missing_arg struct {
+	V *types.Checked[int64] `json:"v"`
+}
+
+func (c *Iso_sig_replace_missing_arg) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_sig_replace_missing_arg" {
+		panic(fmt.Sprintf("expected Iso_sig_replace_missing_arg, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(*types.Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_sig_replace_missing_arg", key))
+
+		}
+	}
+
+}
+
+func (c Iso_sig_replace_missing_arg) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_sig_replace_missing_arg", fields, nil)
+}
+
+func (c Iso_sig_replace_missing_arg) BamlTypeName() string {
+	return "Iso_sig_replace_missing_arg"
+}
+
+type Iso_sig_slice_bool struct {
+	V *types.Checked[int64] `json:"v"`
+}
+
+func (c *Iso_sig_slice_bool) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_sig_slice_bool" {
+		panic(fmt.Sprintf("expected Iso_sig_slice_bool, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(*types.Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_sig_slice_bool", key))
+
+		}
+	}
+
+}
+
+func (c Iso_sig_slice_bool) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_sig_slice_bool", fields, nil)
+}
+
+func (c Iso_sig_slice_bool) BamlTypeName() string {
+	return "Iso_sig_slice_bool"
+}
+
+type Iso_sig_upper_extra_arg struct {
+	V *types.Checked[string] `json:"v"`
+}
+
+func (c *Iso_sig_upper_extra_arg) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_sig_upper_extra_arg" {
+		panic(fmt.Sprintf("expected Iso_sig_upper_extra_arg, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(*types.Checked[string])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_sig_upper_extra_arg", key))
+
+		}
+	}
+
+}
+
+func (c Iso_sig_upper_extra_arg) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_sig_upper_extra_arg", fields, nil)
+}
+
+func (c Iso_sig_upper_extra_arg) BamlTypeName() string {
+	return "Iso_sig_upper_extra_arg"
+}
+
 type Iso_slice_start_fractional struct {
 	V *types.Checked[int64] `json:"v"`
 }

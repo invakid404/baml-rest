@@ -898,8 +898,29 @@ func TestEveryRegisteredTestIsGuarded(t *testing.T) {
 		"startingwith": `this is startingwith("4")`, "endingwith": `this is endingwith("4")`,
 	}
 
+	// These four are string-typed in the signature table, so a NUMERIC subject is
+	// refused outright — a stronger guarantee than the guard sweep, but it means
+	// leg 1 below cannot use a float for them.
+	stringSubject := map[string]bool{
+		"startingwith": true, "endingwith": true, "lower": true, "upper": true,
+	}
+
 	var exercised int
 	for name, expr := range exprs {
+		if stringSubject[name] {
+			// Only leg 2 applies: the signature table already refuses a numeric
+			// subject for these, hazardous or not.
+			if got, err := EvaluateConstraint(hazardFloat(), expr); !errors.Is(err, ErrConstraintUnsupported) {
+				t.Errorf("test %q is NOT guarded: %q answered (%v, %v) over a 2^63 float", name, expr, got, err)
+				continue
+			}
+			if _, err := EvaluateConstraint(StringValue("4"), expr); err != nil {
+				t.Errorf("%s: %q did not decide over a string subject (%v)", name, expr, err)
+				continue
+			}
+			exercised++
+			continue
+		}
 		// Leg 1: the expression is well-formed and decides over an in-range value.
 		if _, err := EvaluateConstraint(FloatValue(4), expr); err != nil {
 			t.Errorf("%s: %q did not decide over an in-range float (%v); the sweep would be vacuous for it",
@@ -1147,6 +1168,136 @@ func TestNegativeBracketBoundsAreNotArithmetic(t *testing.T) {
 	} {
 		if _, err := EvaluateConstraint(list, expr); !errors.Is(err, ErrConstraintUnsupported) {
 			t.Errorf("%q must stay gated; got err=%v", expr, err)
+		}
+	}
+}
+
+// TestSignatureTableIsDefaultDecline pins the round-17 posture: a call is
+// admitted only when its EXACT shape matches an entry in provenSignatures, and
+// everything else declines.
+//
+// Round 16 checked a maximum positional count and looked only at numeric
+// arguments. Three shapes slipped through, none of them about magnitude:
+//
+//	[1,2,3]|slice(false)|length == 1   native true; Go's AsInt rejects a bool so
+//	                                   the count silently stays 1, while stock
+//	                                   reads false as usize 0 and ERRORS
+//	"aaa"|replace(1, "b")              native converts a non-string `from` to ""
+//	                                   and replaces everywhere; stock stringifies
+//	                                   it to "1" and the subject is unchanged
+//	1 is defined(0)                    native ignores the extra argument; stock's
+//	                                   is_defined takes none and errors
+//
+// The table answers the SHAPE of the question rather than the three instances:
+// arity has a minimum as well as a maximum, every argument position carries the
+// kinds proven identical there, the subject does too, and a builtin absent from
+// the table is declined outright.
+func TestSignatureTableIsDefaultDecline(t *testing.T) {
+	str := StringValue("Hello World")
+	list := ListValue([]ConstraintValue{IntValue(1), IntValue(2), IntValue(3)})
+
+	for name, tc := range map[string]struct {
+		this ConstraintValue
+		expr string
+	}{
+		// Argument KIND, which the round-16 rule never examined.
+		"slice(bool)":       {NullValue(), `[1,2,3]|slice(false)|length == 1`},
+		"batch(bool)":       {NullValue(), `[1,2,3]|batch(true)|length == 1`},
+		"replace(int, str)": {NullValue(), `"aaa"|replace(1,"b") == "bababab"`},
+		"replace(str, int)": {NullValue(), `"aaa"|replace("a",1) == "111"`},
+		"join(int)":         {NullValue(), `[1,2]|join(1) != ""`},
+		// MINIMUM arity, which the round-16 rule had no notion of.
+		"replace with one arg": {NullValue(), `"aaa"|replace("a") == "aaa"`},
+		"split with none":      {str, `this|split() != ""`},
+		// A zero-arity test or filter given an argument.
+		"defined(0)": {NullValue(), `1 is defined(0)`},
+		"none(0)":    {NullValue(), `1 is none(0)`},
+		"even(1)":    {NullValue(), `4 is even(1)`},
+		"upper(x)":   {str, `this|upper("x") != ""`},
+		"length(1)":  {list, `this|length(1) == 3`},
+		// SUBJECT kind.
+		"upper over a number": {IntValue(4), `this|upper != ""`},
+		"abs over a string":   {str, `this|abs != ""`},
+	} {
+		if got, err := EvaluateConstraint(tc.this, tc.expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%s: %q answered (%v, %v); this call shape is not proven identical to stock",
+				name, tc.expr, got, err)
+		}
+	}
+
+	// The proven shapes must still decide — the table is a whitelist, not a ban
+	// on arguments.
+	for name, tc := range map[string]struct {
+		this ConstraintValue
+		expr string
+		want bool
+	}{
+		"replace, two strings": {str, `this|replace("H","J")|length == 11`, true},
+		"slice(2)":             {NullValue(), `[1,2,3]|slice(2)|length == 2`, true},
+		"batch(2)":             {NullValue(), `[1,2,3]|batch(2)|length == 2`, true},
+		"defined":              {str, `this is defined`, true},
+		"even":                 {NullValue(), `4 is even`, true},
+		"join, a string":       {NullValue(), `["a","b"]|join(",") == "a,b"`, true},
+		"upper":                {str, `this|upper == "HELLO WORLD"`, true},
+		"startingwith":         {str, `this is startingwith("He")`, true},
+		"regex_match":          {str, `this|regex_match("Hello")`, true},
+		"divisibleby":          {NullValue(), `9 is divisibleby(3)`, true},
+		"length":               {list, `this|length == 3`, true},
+	} {
+		got, err := EvaluateConstraint(tc.this, tc.expr)
+		if err != nil {
+			t.Errorf("%s: %q was refused (%v); the signature table is over-broad", name, tc.expr, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s: %q = %v, want %v", name, tc.expr, got, tc.want)
+		}
+	}
+}
+
+// TestListLiteralElementsAreParsedAsLiterals pins the round-17 P1.1 regression.
+//
+// The bracket rule blanks a validated region before the arithmetic gate runs, so
+// that a negative BOUND is not mistaken for arithmetic. Round 16 validated a
+// list region byte by byte and allowed every `-`, which meant binary subtraction
+// inside a list was erased too — and the 2^53 guarantee with it. Elements are
+// now PARSED: one literal each, at most a unary sign, nothing else.
+func TestListLiteralElementsAreParsedAsLiterals(t *testing.T) {
+	const term = " - -900719925474099"
+	chain := "[900719925474099" + strings.Repeat(term, 9)
+	reported := chain + " - -3][0] == " + chain + " - -2][0]"
+
+	for name, expr := range map[string]string{
+		"the reported chain":  reported,
+		"a small mixed chain": `[1 - -2][0] == 3`,
+		"plain subtraction":   `[1 - 2][0] == -1`,
+		"addition":            `[1 + 2][0] == 3`,
+		"multiplication":      `[2 * 3][0] == 6`,
+		"an element filter":   `[1|abs][0] == 1`,
+		"an identifier":       `[this][0] == 1`,
+	} {
+		if got, err := EvaluateConstraint(IntValue(1), expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%s: answered (%v, %v); a list element must be a literal, and arithmetic inside "+
+				"one must not be blanked away from the numeric gate", name, got, err)
+		}
+	}
+
+	// Genuine literal lists still decide, including negative elements.
+	for expr, want := range map[string]bool{
+		`[1, 2, 3][2] == 3`:      true,
+		`["a", "b"][0] == "a"`:   true,
+		`[1, 2.5, 3][1] == 2.5`:  true,
+		`[1,2,3]|length == 3`:    true,
+		`[1,2.5]|sum == 3.5`:     true,
+		`[1,2,3][-1:]|length==1`: true,
+	} {
+		got, err := EvaluateConstraint(NullValue(), expr)
+		if err != nil {
+			t.Errorf("%q was refused (%v); it is a literal list", expr, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%q = %v, want %v", expr, got, want)
 		}
 	}
 }

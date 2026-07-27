@@ -1935,6 +1935,230 @@ func (t *Iso_py_num_methodClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 
+type Iso_sig_defined_extra_argClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_sig_defined_extra_argClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_sig_defined_extra_argClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_sig_defined_extra_arg() (*Iso_sig_defined_extra_argClassView, error) {
+	bld, err := t.inner.Class("Iso_sig_defined_extra_arg")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_sig_defined_extra_argClassView{inner: bld}, nil
+}
+
+func (t *Iso_sig_defined_extra_argClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_sig_even_extra_argClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_sig_even_extra_argClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_sig_even_extra_argClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_sig_even_extra_arg() (*Iso_sig_even_extra_argClassView, error) {
+	bld, err := t.inner.Class("Iso_sig_even_extra_arg")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_sig_even_extra_argClassView{inner: bld}, nil
+}
+
+func (t *Iso_sig_even_extra_argClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_sig_length_extra_argClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_sig_length_extra_argClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_sig_length_extra_argClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_sig_length_extra_arg() (*Iso_sig_length_extra_argClassView, error) {
+	bld, err := t.inner.Class("Iso_sig_length_extra_arg")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_sig_length_extra_argClassView{inner: bld}, nil
+}
+
+func (t *Iso_sig_length_extra_argClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_sig_none_extra_argClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_sig_none_extra_argClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_sig_none_extra_argClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_sig_none_extra_arg() (*Iso_sig_none_extra_argClassView, error) {
+	bld, err := t.inner.Class("Iso_sig_none_extra_arg")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_sig_none_extra_argClassView{inner: bld}, nil
+}
+
+func (t *Iso_sig_none_extra_argClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_sig_replace_missing_argClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_sig_replace_missing_argClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_sig_replace_missing_argClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_sig_replace_missing_arg() (*Iso_sig_replace_missing_argClassView, error) {
+	bld, err := t.inner.Class("Iso_sig_replace_missing_arg")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_sig_replace_missing_argClassView{inner: bld}, nil
+}
+
+func (t *Iso_sig_replace_missing_argClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_sig_slice_boolClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_sig_slice_boolClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_sig_slice_boolClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_sig_slice_bool() (*Iso_sig_slice_boolClassView, error) {
+	bld, err := t.inner.Class("Iso_sig_slice_bool")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_sig_slice_boolClassView{inner: bld}, nil
+}
+
+func (t *Iso_sig_slice_boolClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_sig_upper_extra_argClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_sig_upper_extra_argClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_sig_upper_extra_argClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_sig_upper_extra_arg() (*Iso_sig_upper_extra_argClassView, error) {
+	bld, err := t.inner.Class("Iso_sig_upper_extra_arg")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_sig_upper_extra_argClassView{inner: bld}, nil
+}
+
+func (t *Iso_sig_upper_extra_argClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
 type Iso_slice_start_fractionalClassView struct {
 	inner baml.ClassBuilder
 }

@@ -594,22 +594,86 @@ func bracketIsListLiteral(expr string, open int) bool {
 	return false // ')' ']' '.' a quote, or anything unrecognised
 }
 
-// listLiteralRegionIsSafe admits the literal elements of a list: numbers, which
-// everyNumericTokenIsProvablySmall has already capped at 15 integer digits,
-// strings, and commas. A `:` is refused — a colon here means the region was
-// really a slice that [bracketIsListLiteral] misread, and refusing is the
-// fail-closed side of that mistake.
+// listLiteralRegionIsSafe admits a list literal whose elements are ACTUAL
+// LITERALS, parsed as such — not merely a region built from characters that
+// literals happen to use.
+//
+// Round 16 checked the region byte by byte and allowed every `-`, then blanked
+// the whole region before the arithmetic gate ran. That erased BINARY
+// subtraction, and with it the 2^53 guarantee:
+//
+//	[900719925474099 - -900719925474099 - … - -3][0] ==
+//	[900719925474099 - -900719925474099 - … - -2][0]
+//
+// Ten 15-digit terms a side. Every token passes the numeric gate, both regions
+// passed the old byte check, and with them blanked the expression had no
+// arithmetic byte left — so native evaluated `2^53 + 1` and `2^53` through
+// float64, found them equal and answered TRUE, where stock's i128 answers FALSE.
+//
+// An element is therefore parsed: an optional single unary sign, then ONE
+// literal — a numeric run or a string — and nothing else. A second operator, a
+// filter, an identifier or any leftover text ends it. A region that does not
+// parse is declined rather than blanked, so the arithmetic gate still sees
+// whatever the region really contained.
 func listLiteralRegionIsSafe(region string) bool {
+	if strings.TrimSpace(region) == "" {
+		return true // the empty list
+	}
+	for _, element := range splitTopLevelCommas(region) {
+		if !isLiteralElement(element) {
+			return false
+		}
+	}
+	return true
+}
+
+// splitTopLevelCommas splits on commas that are not inside a string literal.
+// The region has already been proved free of nested brackets by
+// [matchingBracket].
+func splitTopLevelCommas(region string) []string {
+	var out []string
+	start := 0
 	for i := 0; i < len(region); i++ {
-		c := region[i]
-		switch {
-		case c == '"' || c == '\'':
-			j, ok := skipStringLiteral(region, i)
-			if !ok {
-				return false
+		switch region[i] {
+		case '"', '\'':
+			if j, ok := skipStringLiteral(region, i); ok {
+				i = j
+			} else {
+				return []string{region} // unreadable: let isLiteralElement refuse it
 			}
-			i = j
-		case c >= '0' && c <= '9', c == '.', c == ',', c == '-', isSpaceByte(c):
+		case ',':
+			out = append(out, region[start:i])
+			start = i + 1
+		}
+	}
+	return append(out, region[start:])
+}
+
+// isLiteralElement reports whether a list element is exactly one literal, with
+// at most a unary sign in front of a number.
+func isLiteralElement(element string) bool {
+	t := strings.TrimSpace(element)
+	if t == "" {
+		return false
+	}
+	if t[0] == '"' || t[0] == '\'' {
+		j, ok := skipStringLiteral(t, 0)
+		return ok && j == len(t)-1
+	}
+	if t[0] == '-' || t[0] == '+' {
+		t = strings.TrimSpace(t[1:])
+	}
+	if t == "" {
+		return false
+	}
+	// One numeric run: digits, optionally one dot. Anything else — a second
+	// sign, an operator, a letter — is not a literal element.
+	dot := false
+	for i := 0; i < len(t); i++ {
+		switch {
+		case t[i] >= '0' && t[i] <= '9':
+		case t[i] == '.' && !dot:
+			dot = true
 		default:
 			return false
 		}
@@ -1354,7 +1418,7 @@ func guardIntegerResult(name string, builtin mj.FilterFunc) mj.FilterFunc {
 				return mjvalue.Undefined(), asIntHazardError(name)
 			}
 		}
-		if err := checkArgumentParity(name, args, kwargs); err != nil {
+		if err := checkCallParity(name, val, args, kwargs); err != nil {
 			return mjvalue.Undefined(), err
 		}
 		out, err := builtin(state, val, args, kwargs)
@@ -1387,33 +1451,175 @@ func guardTestInput(name string, builtin mj.TestFunc) mj.TestFunc {
 				return false, asIntHazardError("is " + name)
 			}
 		}
-		if err := checkArgumentParity("is "+name, args, nil); err != nil {
+		if err := checkCallParity("is "+name, val, args, nil); err != nil {
 			return false, err
 		}
 		return builtin(state, val, args)
 	}
 }
 
-// maxProvenArity is how many positional arguments each retained builtin is
-// PROVEN to accept identically. minijinja-Go is more permissive than stock in
-// several places, and a tolerated extra argument is not a small difference: it
-// is native answering where stock raises TooManyArguments.
+// ---------------------------------------------------------------------------
+// The signature table: default-decline, admit only a proven shape.
+// ---------------------------------------------------------------------------
+
+// kindSet is a set of minijinja-Go value kinds.
+type kindSet uint16
+
+const (
+	kUndefined kindSet = 1 << iota
+	kNone
+	kBool
+	kNumber
+	kString
+	kBytes
+	kSeq
+	kMap
+	kIterable
+)
+
+const (
+	kAny      = kUndefined | kNone | kBool | kNumber | kString | kBytes | kSeq | kMap | kIterable
+	kSequence = kSeq | kIterable
+)
+
+func kindOf(v mjvalue.Value) kindSet {
+	switch v.Kind() {
+	case mjvalue.KindUndefined:
+		return kUndefined
+	case mjvalue.KindNone:
+		return kNone
+	case mjvalue.KindBool:
+		return kBool
+	case mjvalue.KindNumber:
+		return kNumber
+	case mjvalue.KindString:
+		return kString
+	case mjvalue.KindBytes:
+		return kBytes
+	case mjvalue.KindSeq:
+		return kSeq
+	case mjvalue.KindMap:
+		return kMap
+	case mjvalue.KindIterable:
+		return kIterable
+	}
+	return 0 // an unrecognised kind matches no entry, so it declines
+}
+
+// builtinSignature is ONE PROVEN CALL SHAPE. A call is admitted only when it
+// matches: the right number of arguments, each of a listed kind, over a subject
+// of a listed kind, with no keyword arguments.
+type builtinSignature struct {
+	minArgs int
+	maxArgs int
+	// args[i] is the set of kinds proven identical at position i. A position
+	// beyond the slice admits nothing, so the slice must cover maxArgs.
+	args    []kindSet
+	subject kindSet
+}
+
+// provenSignatures is the whole admission surface, and it is DEFAULT-DECLINE:
+// a builtin absent from this table, an arity outside its entry, an argument of
+// a kind the entry does not list, or a subject the entry does not cover, is
+// ErrConstraintUnsupported. Nothing is admitted by omission.
 //
-//	"aaa"|replace("a", "b", 1)   native "baa", stock TooManyArguments
+// Round 16 checked a MAXIMUM positional count and only looked at numeric
+// arguments, and the review found three shapes that slipped through it:
 //
-// minijinja-Go's FilterReplace takes an optional third count; the pinned stock
-// `replace` is (value, from, to). Anything above its entry here is declined, and
-// anything NOT listed is capped at one argument, so a builtin nobody enumerated
-// is declined on the same terms rather than admitted by omission.
-var maxProvenArity = map[string]int{
-	"replace": 2, "selectattr": 2, "rejectattr": 2, "slice": 1, "batch": 1,
-	"round": 1, "indent": 1, "truncate": 1, "join": 1, "split": 1, "default": 1,
-	"d": 1, "format": 1, "attr": 1, "groupby": 1, "zip": 1, "chain": 1,
-	"map": 1, "select": 1, "reject": 1, "regex_match": 1, "sum": 0, "tojson": 0,
-	"length": 0, "count": 0, "abs": 0, "int": 0, "float": 0, "first": 0,
-	"last": 0, "reverse": 0, "list": 0, "unique": 0, "items": 0, "dictsort": 0,
-	"lines": 0, "pprint": 0, "string": 0, "bool": 0, "safe": 0, "escape": 0,
-	"e": 0, "upper": 0, "lower": 0, "capitalize": 0, "title": 0, "trim": 0,
+//	[1,2,3]|slice(false)|length == 1   native true; Go's AsInt rejects a bool so
+//	                                   the count silently stays 1, while stock's
+//	                                   usize conversion reads false as 0 and
+//	                                   slice ERRORS on a zero count
+//	"aaa"|replace(1, "b")              native converts a non-string `from` to ""
+//	                                   and replaces everywhere; stock stringifies
+//	                                   it to "1", so the subject is unchanged
+//	1 is defined(0)                    native ignores the extra argument; stock's
+//	                                   is_defined takes none and errors
+//
+// None of those is about magnitude, and none was reachable by tightening a
+// maximum. The table is the answer to the shape of the question rather than to
+// the three instances: every position of every retained builtin is enumerated,
+// and anything not enumerated declines.
+//
+// Entries were checked against the pinned minijinja-Go registrations and the
+// stock BAML v0.223 signatures. Where the two could not be shown identical for
+// a kind, that kind is simply absent — decline is always available and always
+// safe, which is why nothing here is reimplemented.
+var provenSignatures = map[string]builtinSignature{
+	// --- filters: no arguments ---
+	"upper": {0, 0, nil, kString}, "lower": {0, 0, nil, kString},
+	"capitalize": {0, 0, nil, kString}, "title": {0, 0, nil, kString},
+	"trim": {0, 0, nil, kString}, "lines": {0, 0, nil, kString},
+	"escape": {0, 0, nil, kString}, "e": {0, 0, nil, kString},
+	"safe": {0, 0, nil, kAny}, "string": {0, 0, nil, kAny},
+	"bool": {0, 0, nil, kAny}, "length": {0, 0, nil, kAny},
+	"count": {0, 0, nil, kAny}, "first": {0, 0, nil, kAny},
+	"last": {0, 0, nil, kAny}, "reverse": {0, 0, nil, kAny},
+	"list": {0, 0, nil, kAny}, "unique": {0, 0, nil, kAny},
+	"items": {0, 0, nil, kAny}, "dictsort": {0, 0, nil, kAny},
+	"abs": {0, 0, nil, kNumber}, "int": {0, 0, nil, kAny},
+	"float": {0, 0, nil, kAny}, "sum": {0, 0, nil, kAny},
+	"tojson": {0, 0, nil, kAny}, "pprint": {0, 0, nil, kAny},
+	"sort": {0, 0, nil, kAny}, "min": {0, 0, nil, kAny}, "max": {0, 0, nil, kAny},
+
+	// --- filters: one argument ---
+	"round":   {0, 1, []kindSet{kNumber}, kNumber},
+	"default": {0, 1, []kindSet{kAny}, kAny},
+	"d":       {0, 1, []kindSet{kAny}, kAny},
+	"join":    {0, 1, []kindSet{kString}, kAny},
+	"split":   {1, 1, []kindSet{kString}, kString},
+	"format":  {1, 1, []kindSet{kString}, kAny},
+	"indent":  {1, 1, []kindSet{kNumber}, kString},
+	"batch":   {1, 1, []kindSet{kNumber}, kAny},
+	"slice":   {1, 1, []kindSet{kNumber}, kAny},
+	"map":     {1, 1, []kindSet{kString}, kAny},
+	"select":  {1, 1, []kindSet{kString}, kAny},
+	"reject":  {1, 1, []kindSet{kString}, kAny},
+	"groupby": {1, 1, []kindSet{kString}, kAny},
+	"attr":    {1, 1, []kindSet{kString}, kAny},
+	"chain":   {1, 1, []kindSet{kSequence}, kAny},
+	"zip":     {1, 1, []kindSet{kSequence}, kAny},
+	// regex_match is BAML's OWN filter (jinja_helpers.rs), reimplemented here
+	// rather than inherited from the port, and it stringifies its subject —
+	// `1|regex_match("1")` is live in the corpus. So the subject is open.
+	"regex_match": {1, 1, []kindSet{kString}, kAny},
+
+	// --- filters: two arguments ---
+	"replace":    {2, 2, []kindSet{kString, kString}, kString},
+	"selectattr": {1, 2, []kindSet{kString, kString}, kAny},
+	"rejectattr": {1, 2, []kindSet{kString, kString}, kAny},
+
+	// --- tests: no arguments ---
+	// A zero-arity test given an argument is exactly the `1 is defined(0)` case:
+	// minijinja-Go ignores its args slice, stock's adapter errors.
+	"is defined": {0, 0, nil, kAny}, "is undefined": {0, 0, nil, kAny},
+	"is none": {0, 0, nil, kAny}, "is true": {0, 0, nil, kAny},
+	"is false": {0, 0, nil, kAny}, "is odd": {0, 0, nil, kAny},
+	"is even": {0, 0, nil, kAny}, "is string": {0, 0, nil, kAny},
+	"is number": {0, 0, nil, kAny}, "is integer": {0, 0, nil, kAny},
+	"is int": {0, 0, nil, kAny}, "is float": {0, 0, nil, kAny},
+	"is boolean": {0, 0, nil, kAny}, "is sequence": {0, 0, nil, kAny},
+	"is mapping": {0, 0, nil, kAny}, "is iterable": {0, 0, nil, kAny},
+	"is safe": {0, 0, nil, kAny}, "is escaped": {0, 0, nil, kAny},
+	"is lower": {0, 0, nil, kString}, "is upper": {0, 0, nil, kString},
+
+	// --- tests: one argument ---
+	"is divisibleby":  {1, 1, []kindSet{kNumber}, kNumber},
+	"is eq":           {1, 1, []kindSet{kAny}, kAny},
+	"is equalto":      {1, 1, []kindSet{kAny}, kAny},
+	"is ne":           {1, 1, []kindSet{kAny}, kAny},
+	"is lt":           {1, 1, []kindSet{kAny}, kAny},
+	"is lessthan":     {1, 1, []kindSet{kAny}, kAny},
+	"is le":           {1, 1, []kindSet{kAny}, kAny},
+	"is gt":           {1, 1, []kindSet{kAny}, kAny},
+	"is greaterthan":  {1, 1, []kindSet{kAny}, kAny},
+	"is ge":           {1, 1, []kindSet{kAny}, kAny},
+	"is in":           {1, 1, []kindSet{kAny}, kAny},
+	"is sameas":       {1, 1, []kindSet{kAny}, kAny},
+	"is startingwith": {1, 1, []kindSet{kString}, kString},
+	"is endingwith":   {1, 1, []kindSet{kString}, kString},
+	"is filter":       {1, 1, []kindSet{kString}, kAny},
+	"is test":         {1, 1, []kindSet{kString}, kAny},
 }
 
 // countDefaultingFilters silently substitute a default when minijinja-Go's
@@ -1432,50 +1638,46 @@ var countDefaultingFilters = map[string]bool{
 // coercingNumericArg lists the builtins whose numeric argument is an operand
 // rather than a typed count. Stock coerces those, so requiring an integer TYPE
 // would be an over-decline; the builtin's own guard bounds them instead.
-var coercingNumericArg = map[string]bool{"divisibleby": true}
+var coercingNumericArg = map[string]bool{"is divisibleby": true}
 
-// checkArgumentParity is the ARGUMENT half of the proven-parity posture the
-// numerics already use. Round 13's guard bounded a value's MAGNITUDE; this one
-// bounds its SHAPE, because the two engines also disagree about arity, about
-// coercion, and about what happens at an edge value like 0 or 1.5 — all at
+// checkCallParity admits a call only when it matches its entry in
+// [provenSignatures], and declines everything else.
+//
+// It is the SHAPE half of the proven-parity posture the numerics have used
+// since round 7. Round 13's guard bounded a value's MAGNITUDE; this one bounds
+// the call, because the two engines also disagree about arity, about the KIND
+// an argument may be, and about what happens at an edge value like 0 — all at
 // perfectly ordinary magnitudes.
-//
-// Three rules, each declining rather than reimplementing:
-//
-//  1. ARITY. More positional arguments than [maxProvenArity] allows, or any
-//     unlisted builtin given more than one, is declined.
-//  2. KEYWORD arguments are declined outright. minijinja-Go's kwargs handling is
-//     port surface; stock's argument adapters differ per filter, and
-//     `tojson(indent=1.5)` is the reachable example.
-//  3. NUMERIC arguments must be actual INTEGERS — never a float, however small —
-//     and must be positive for the count-defaulting filters. A fractional
-//     argument is where stock's typed conversion errors and minijinja-Go
-//     silently defaults.
-func checkArgumentParity(name string, args []mjvalue.Value, kwargs map[string]mjvalue.Value) error {
-	base := strings.TrimPrefix(name, "is ")
-	maxArgs, listed := maxProvenArity[base]
+func checkCallParity(name string, subject mjvalue.Value, args []mjvalue.Value, kwargs map[string]mjvalue.Value) error {
+	sig, listed := provenSignatures[name]
 	if !listed {
-		maxArgs = 1
-	}
-	if len(args) > maxArgs {
 		return unsupportedConstraint(
-			"`%s` was given %d arguments; only %d is proven identical to stock, which raises "+
-				"TooManyArguments where minijinja-Go accepts an extra one", name, len(args), maxArgs)
+			"`%s` has no proven-identical signature; the profile admits only call shapes verified "+
+				"against stock BAML v0.223 and declines everything else", name)
 	}
 	if len(kwargs) > 0 {
 		return unsupportedConstraint(
 			"`%s` was given keyword arguments; minijinja-Go's kwargs handling is port surface and "+
 				"stock's argument adapters differ per filter", name)
 	}
-	for _, a := range args {
-		if a.Kind() != mjvalue.KindNumber {
-			continue
+	if len(args) < sig.minArgs || len(args) > sig.maxArgs {
+		return unsupportedConstraint(
+			"`%s` was given %d arguments; stock accepts %d..%d and raises an argument error "+
+				"outside that, where minijinja-Go silently ignores or defaults",
+			name, len(args), sig.minArgs, sig.maxArgs)
+	}
+	if kindOf(subject)&sig.subject == 0 {
+		return unsupportedConstraint(
+			"`%s` was applied to a %s subject, which is not a proven-identical conversion for it",
+			name, subject.Kind())
+	}
+	for i, a := range args {
+		if i >= len(sig.args) || kindOf(a)&sig.args[i] == 0 {
+			return unsupportedConstraint(
+				"`%s` was given a %s at argument %d; stock's adapter converts that differently from "+
+					"minijinja-Go, so the shape is not proven identical", name, a.Kind(), i+1)
 		}
-		if coercingNumericArg[base] {
-			// This builtin's numeric argument is a VALUE, not a typed count, and
-			// stock coerces it rather than requiring an integer type. Its own
-			// registration checks integrality on the terms that actually matter
-			// (see the `divisibleby` guard in installProfileGuards).
+		if a.Kind() != mjvalue.KindNumber || coercingNumericArg[name] {
 			continue
 		}
 		if !a.IsActualInt() {
@@ -1487,7 +1689,7 @@ func checkArgumentParity(name string, args []mjvalue.Value, kwargs map[string]mj
 		if !ok {
 			return unsupportedConstraint("`%s` was given an unreadable numeric argument", name)
 		}
-		if countDefaultingFilters[base] && n < 1 {
+		if countDefaultingFilters[name] && n < 1 {
 			return unsupportedConstraint(
 				"`%s` was given a count of %d; minijinja-Go silently substitutes 1 for a non-positive "+
 					"count where stock's usize parameter errors", name, n)

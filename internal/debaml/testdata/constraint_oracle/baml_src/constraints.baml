@@ -373,6 +373,19 @@ class Batch_const {
     @check(neg_ctl_slice_stop, {{ [1,2,3][:-1]|length == 2 }})
     @check(neg_ctl_index, {{ [1,2,3][-1] == 3 }})
     @check(neg_ctl_step_reverse, {{ [1,2,3][::-1]|length == 3 }})
+    @check(listarith_binary_sub_chain, {{ [900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -3][0] == [900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -2][0] }})
+    @check(listarith_binary_sub_small, {{ [1 - -2][0] == 3 }})
+    @check(listarith_binary_plain, {{ [1 - 2][0] == -1 }})
+    @check(listarith_ctl_unary_elems, {{ [-1, 2][0] == -1 }})
+    @check(listarith_ctl_plain_list, {{ [1, 2, 3][2] == 3 }})
+    @check(listarith_ctl_string_list, {{ ["a", "b"][0] == "a" }})
+    @check(sig_batch_bool, {{ [1,2,3]|batch(true)|length == 1 }})
+    @check(sig_replace_int_from, {{ "aaa"|replace(1,"b") == "bababab" }})
+    @check(sig_replace_int_to, {{ "aaa"|replace("a",1) == "111" }})
+    @check(sig_join_number_arg, {{ [1,2]|join(1) != "" }})
+    @check(sig_ctl_slice_two, {{ [1,2,3]|slice(2)|length == 2 }})
+    @check(sig_ctl_even, {{ 4 is even }})
+    @check(sig_ctl_join_string, {{ ["a","b"]|join(",") == "a,b" }})
 }
 
 function Batch_constFn(topic: string) -> Batch_const {
@@ -463,6 +476,10 @@ class Batch_str {
     @check(slice_this_bigfloat, {{ this[(("9223372036854" ~ "775808")|float):] == "H" }})
     @check(index_ctl_string, {{ this[0] == "H" }})
     @check(slice_ctl_string, {{ this[1:3] == "el" }})
+    @check(sig_ctl_replace_two, {{ this|replace("H","J")|length == 11 }})
+    @check(sig_ctl_defined, {{ this is defined }})
+    @check(sig_ctl_upper, {{ this|upper != "" }})
+    @check(sig_ctl_startingwith, {{ this is startingwith("H") }})
 }
 
 function Batch_strFn(topic: string) -> Batch_str {
@@ -1200,6 +1217,69 @@ class Iso_arity_format_extra_arg {
 }
 
 function Iso_arity_format_extra_argFn(topic: string) -> Iso_arity_format_extra_arg {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_sig_slice_bool {
+  v int @check(sig_slice_bool, {{ [1,2,3]|slice(false)|length == 1 }})
+}
+
+function Iso_sig_slice_boolFn(topic: string) -> Iso_sig_slice_bool {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_sig_replace_missing_arg {
+  v int @check(sig_replace_missing_arg, {{ "aaa"|replace("a") == "aaa" }})
+}
+
+function Iso_sig_replace_missing_argFn(topic: string) -> Iso_sig_replace_missing_arg {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_sig_defined_extra_arg {
+  v int @check(sig_defined_extra_arg, {{ 1 is defined(0) }})
+}
+
+function Iso_sig_defined_extra_argFn(topic: string) -> Iso_sig_defined_extra_arg {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_sig_none_extra_arg {
+  v int @check(sig_none_extra_arg, {{ 1 is none(0) }})
+}
+
+function Iso_sig_none_extra_argFn(topic: string) -> Iso_sig_none_extra_arg {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_sig_even_extra_arg {
+  v int @check(sig_even_extra_arg, {{ 4 is even(1) }})
+}
+
+function Iso_sig_even_extra_argFn(topic: string) -> Iso_sig_even_extra_arg {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_sig_upper_extra_arg {
+  v string @check(sig_upper_extra_arg, {{ this|upper("x") != "" }})
+}
+
+function Iso_sig_upper_extra_argFn(topic: string) -> Iso_sig_upper_extra_arg {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_sig_length_extra_arg {
+  v int[] @check(sig_length_extra_arg, {{ this|length(1) == 3 }})
+}
+
+function Iso_sig_length_extra_argFn(topic: string) -> Iso_sig_length_extra_arg {
   client ConstraintOracleClient
   prompt #"{{ topic }} {{ ctx.output_format }}"#
 }

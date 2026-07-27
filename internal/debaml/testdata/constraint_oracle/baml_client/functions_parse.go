@@ -2845,6 +2845,335 @@ func (*parse) Iso_py_num_methodFn(text string, opts ...CallOptionFunc) (types.Is
 	return casted, nil
 }
 
+// / Parse version of Iso_sig_defined_extra_argFn (Takes in string and returns types.Iso_sig_defined_extra_arg)
+func (*parse) Iso_sig_defined_extra_argFn(text string, opts ...CallOptionFunc) (types.Iso_sig_defined_extra_arg, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_sig_defined_extra_argFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_sig_defined_extra_argFn", encoded)
+	if err != nil {
+		return types.Iso_sig_defined_extra_arg{}, err
+	}
+
+	casted := (result).(types.Iso_sig_defined_extra_arg)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_sig_even_extra_argFn (Takes in string and returns types.Iso_sig_even_extra_arg)
+func (*parse) Iso_sig_even_extra_argFn(text string, opts ...CallOptionFunc) (types.Iso_sig_even_extra_arg, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_sig_even_extra_argFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_sig_even_extra_argFn", encoded)
+	if err != nil {
+		return types.Iso_sig_even_extra_arg{}, err
+	}
+
+	casted := (result).(types.Iso_sig_even_extra_arg)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_sig_length_extra_argFn (Takes in string and returns types.Iso_sig_length_extra_arg)
+func (*parse) Iso_sig_length_extra_argFn(text string, opts ...CallOptionFunc) (types.Iso_sig_length_extra_arg, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_sig_length_extra_argFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_sig_length_extra_argFn", encoded)
+	if err != nil {
+		return types.Iso_sig_length_extra_arg{}, err
+	}
+
+	casted := (result).(types.Iso_sig_length_extra_arg)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_sig_none_extra_argFn (Takes in string and returns types.Iso_sig_none_extra_arg)
+func (*parse) Iso_sig_none_extra_argFn(text string, opts ...CallOptionFunc) (types.Iso_sig_none_extra_arg, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_sig_none_extra_argFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_sig_none_extra_argFn", encoded)
+	if err != nil {
+		return types.Iso_sig_none_extra_arg{}, err
+	}
+
+	casted := (result).(types.Iso_sig_none_extra_arg)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_sig_replace_missing_argFn (Takes in string and returns types.Iso_sig_replace_missing_arg)
+func (*parse) Iso_sig_replace_missing_argFn(text string, opts ...CallOptionFunc) (types.Iso_sig_replace_missing_arg, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_sig_replace_missing_argFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_sig_replace_missing_argFn", encoded)
+	if err != nil {
+		return types.Iso_sig_replace_missing_arg{}, err
+	}
+
+	casted := (result).(types.Iso_sig_replace_missing_arg)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_sig_slice_boolFn (Takes in string and returns types.Iso_sig_slice_bool)
+func (*parse) Iso_sig_slice_boolFn(text string, opts ...CallOptionFunc) (types.Iso_sig_slice_bool, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_sig_slice_boolFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_sig_slice_boolFn", encoded)
+	if err != nil {
+		return types.Iso_sig_slice_bool{}, err
+	}
+
+	casted := (result).(types.Iso_sig_slice_bool)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_sig_upper_extra_argFn (Takes in string and returns types.Iso_sig_upper_extra_arg)
+func (*parse) Iso_sig_upper_extra_argFn(text string, opts ...CallOptionFunc) (types.Iso_sig_upper_extra_arg, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_sig_upper_extra_argFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_sig_upper_extra_argFn", encoded)
+	if err != nil {
+		return types.Iso_sig_upper_extra_arg{}, err
+	}
+
+	casted := (result).(types.Iso_sig_upper_extra_arg)
+
+	return casted, nil
+}
+
 // / Parse version of Iso_slice_start_fractionalFn (Takes in string and returns types.Iso_slice_start_fractional)
 func (*parse) Iso_slice_start_fractionalFn(text string, opts ...CallOptionFunc) (types.Iso_slice_start_fractional, error) {
 
