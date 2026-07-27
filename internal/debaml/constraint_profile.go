@@ -3,6 +3,7 @@ package debaml
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	mj "github.com/mitsuhiko/minijinja/minijinja-go/v2"
 	"github.com/mitsuhiko/minijinja/minijinja-go/v2/filters"
@@ -94,63 +95,108 @@ const (
 // Every entry below is a MEASURED divergence, each pinned by a case in the
 // stock differential; none is speculative.
 func installProfileGuards(env *mj.Environment) {
-	// `length` / `count`: minijinja raises "cannot calculate length of value of
-	// type none"; minijinja-Go's FilterLength returns 0 for anything with no
-	// length (filters.go), so `none|length == 0` is true here and an error
-	// there. Refuse exactly the inputs that have no length.
-	guardLength := func(state filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs map[string]mjvalue.Value) (mjvalue.Value, error) {
-		if _, ok := val.Len(); !ok {
-			return mjvalue.Undefined(), unsupportedConstraint("length of a value with no length (kind %s); minijinja rejects it", val.Kind())
-		}
-		return filters.FilterLength(state, val, args, kwargs)
+	// EVERY filter minijinja-Go registers, so the integer-result guard below is
+	// TOTAL rather than a hand-picked subset. Round 5 shipped a subset and `last`
+	// was missing from it, which let `range(...)|last` carry an out-of-range
+	// integer into an exact comparison. A list that must be complete is safer
+	// written out than inferred.
+	builtins := map[string]mj.FilterFunc{
+		"upper": filters.FilterUpper, "lower": filters.FilterLower,
+		"capitalize": filters.FilterCapitalize, "title": filters.FilterTitle,
+		"trim": filters.FilterTrim, "replace": filters.FilterReplace,
+		"format": filters.FilterFormat, "default": filters.FilterDefault,
+		"d": filters.FilterDefault, "safe": filters.FilterSafe,
+		"escape": filters.FilterEscape, "e": filters.FilterEscape,
+		"string": filters.FilterString, "bool": filters.FilterBool,
+		"split": filters.FilterSplit, "lines": filters.FilterLines,
+		"length": filters.FilterLength, "count": filters.FilterLength,
+		"first": filters.FilterFirst, "last": filters.FilterLast,
+		"reverse": filters.FilterReverse, "sort": filters.FilterSort,
+		"join": filters.FilterJoin, "list": filters.FilterList,
+		"unique": filters.FilterUnique, "min": filters.FilterMin,
+		"max": filters.FilterMax, "batch": filters.FilterBatch,
+		"slice": filters.FilterSlice, "map": filters.FilterMap,
+		"select": filters.FilterSelect, "reject": filters.FilterReject,
+		"selectattr": filters.FilterSelectAttr, "rejectattr": filters.FilterRejectAttr,
+		"groupby": filters.FilterGroupBy, "chain": filters.FilterChain,
+		"zip": filters.FilterZip, "abs": filters.FilterAbs,
+		"int": filters.FilterInt, "float": filters.FilterFloat,
+		"round": filters.FilterRound, "items": filters.FilterItems,
+		"dictsort": filters.FilterDictSort, "attr": filters.FilterAttr,
+		"indent": filters.FilterIndent, "pprint": filters.FilterPprint,
+		"tojson": filters.FilterTojson,
+		// BAML's own, replacing minijinja-Go's built-in `sum`.
+		"sum":         filterSum,
+		"regex_match": filterRegexMatch,
 	}
-	env.AddFilter("length", guardLength)
-	env.AddFilter("count", guardLength)
 
-	// `split`: minijinja returns a LAZY ITERATOR with no length, so
-	// `|split(",")|length` raises "cannot calculate length of value of type
-	// iterator"; minijinja-Go returns a materialised list, so it answers. The
-	// difference leaks into length, indexing and equality on the result, so the
-	// filter itself is outside the profile rather than any one consumer of it.
-	env.AddFilter("split", func(filters.State, mjvalue.Value, []mjvalue.Value, map[string]mjvalue.Value) (mjvalue.Value, error) {
+	// Filters whose minijinja-Go behaviour differs from Rust's for a
+	// recognisable input get a specific guard first; the integer-result guard is
+	// then layered over everything uniformly.
+	lengthGuard := func(name string, builtin mj.FilterFunc) mj.FilterFunc {
+		return func(state filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs map[string]mjvalue.Value) (mjvalue.Value, error) {
+			if _, ok := val.Len(); !ok {
+				return mjvalue.Undefined(), unsupportedConstraint("length of a value with no length (kind %s); minijinja rejects it", val.Kind())
+			}
+			return builtin(state, val, args, kwargs)
+		}
+	}
+	builtins["length"] = lengthGuard("length", builtins["length"])
+	builtins["count"] = lengthGuard("count", builtins["count"])
+
+	// `split`: minijinja returns a LAZY ITERATOR with no length, minijinja-Go a
+	// materialised list, and the difference leaks into length, indexing and
+	// equality on the result.
+	builtins["split"] = func(filters.State, mjvalue.Value, []mjvalue.Value, map[string]mjvalue.Value) (mjvalue.Value, error) {
 		return mjvalue.Undefined(), unsupportedConstraint("`split` returns a lazy iterator in minijinja and a list in minijinja-Go")
-	})
+	}
 
-	// `last`: minijinja rejects a mapping; minijinja-Go iterates the object and
-	// returns its final key.
-	env.AddFilter("last", func(state filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs map[string]mjvalue.Value) (mjvalue.Value, error) {
+	// `last`: minijinja rejects a mapping; minijinja-Go returns its final key.
+	lastBuiltin := builtins["last"]
+	builtins["last"] = func(state filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs map[string]mjvalue.Value) (mjvalue.Value, error) {
 		if val.Kind() == mjvalue.KindMap {
 			return mjvalue.Undefined(), unsupportedConstraint("`last` over a mapping; minijinja rejects it")
 		}
-		return filters.FilterLast(state, val, args, kwargs)
-	})
+		return lastBuiltin(state, val, args, kwargs)
+	}
 
-	// `items`: minijinja-Go's FilterItems reaches the mapping through
-	// value.AsMap — an unordered Go map — and then SORTS, so BAML's insertion
-	// order is lost even for the ordered projection. Unrecoverable for a mapping
-	// literal built inside the expression, so no mapping input is admitted.
-	env.AddFilter("items", func(state filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs map[string]mjvalue.Value) (mjvalue.Value, error) {
+	// `items`/`tojson`: BAML's insertion order is lost through minijinja-Go's
+	// unordered AsMap seam, and is unrecoverable for a mapping literal.
+	itemsBuiltin := builtins["items"]
+	builtins["items"] = func(state filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs map[string]mjvalue.Value) (mjvalue.Value, error) {
 		if val.Kind() == mjvalue.KindMap {
 			return mjvalue.Undefined(), unsupportedConstraint("`items` over a mapping; minijinja-Go sorts the keys, minijinja preserves insertion order")
 		}
-		return filters.FilterItems(state, val, args, kwargs)
-	})
-
-	// `tojson`: same sorted-vs-insertion-order loss, at any depth, because the
-	// rendered document embeds the order.
-	env.AddFilter("tojson", func(state filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs map[string]mjvalue.Value) (mjvalue.Value, error) {
+		return itemsBuiltin(state, val, args, kwargs)
+	}
+	tojsonBuiltin := builtins["tojson"]
+	builtins["tojson"] = func(state filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs map[string]mjvalue.Value) (mjvalue.Value, error) {
 		if containsMapping(val, 0) {
 			return mjvalue.Undefined(), unsupportedConstraint("`tojson` over a value containing a mapping; key order differs")
 		}
-		return filters.FilterTojson(state, val, args, kwargs)
-	})
+		return tojsonBuiltin(state, val, args, kwargs)
+	}
 
-	// `divisibleby(0)`: minijinja-Go answers false; stock BAML v0.223 PANICS THE
-	// PROCESS ("attempt to calculate the remainder with a divisor of zero", a
-	// Rust panic on the CFFI callback thread that a Go caller cannot recover
-	// from). Answering where the oracle cannot even be observed is exactly what
-	// the profile forbids — and refusing it also keeps the guard honest about a
-	// stock defect. Proven by TestStockDivisibleByZeroIsProcessFatal.
+	// Foreign mappings — a `{...}` literal or `dict(...)` built INSIDE the
+	// expression — are minijinja-Go's native mapping, enumerated sorted where
+	// BAML preserves insertion order, and the representation-agreement check
+	// cannot see them (they are identical in both runs).
+	for _, name := range []string{
+		"list", "join", "first", "map", "select", "reject", "selectattr",
+		"rejectattr", "groupby", "chain", "zip", "unique", "batch", "slice",
+		"reverse", "pprint", "string", "indent",
+	} {
+		builtins[name] = guardForeignMapping(name, builtins[name])
+	}
+
+	// The integer-result guard, applied to EVERY filter without exception.
+	for name, builtin := range builtins {
+		env.AddFilter(name, guardIntegerResult(name, builtin))
+	}
+
+	// `divisibleby(0)`: minijinja-Go answers false; stock BAML v0.223 takes the
+	// process down (a Rust panic on the CFFI callback thread that a Go caller
+	// cannot recover from). Proven by TestStockDivisibleByZeroIsUnobservable.
 	env.AddTest("divisibleby", func(state filters.State, val mjvalue.Value, args []mjvalue.Value) (bool, error) {
 		if len(args) == 1 {
 			if d, ok := args[0].AsInt(); ok && d == 0 {
@@ -160,61 +206,20 @@ func installProfileGuards(env *mj.Environment) {
 		return tests.TestDivisibleBy(state, val, args)
 	})
 
-	// Every filter that can MANUFACTURE or CARRY an integer runs through the
-	// integer-result guard, so no out-of-range integer can enter the expression
-	// from a filter — see [guardIntegerResult] for the reachable `int` case that
-	// made this necessary. `float` is absent deliberately: it produces a float,
-	// and float semantics already agree between the engines.
-	for name, builtin := range map[string]mj.FilterFunc{
-		"int":   filters.FilterInt,
-		"abs":   filters.FilterAbs,
-		"round": filters.FilterRound,
-		"min":   filters.FilterMin,
-		"max":   filters.FilterMax,
-		"attr":  filters.FilterAttr,
-	} {
-		env.AddFilter(name, guardIntegerResult(name, builtin))
-	}
-	// `sum` is BAML's own (filterSum), not a builtin, so it is wrapped in place.
-	env.AddFilter("sum", guardIntegerResult("sum", filterSum))
-
-	// Foreign mappings — a `{...}` literal or `dict(...)` built INSIDE the
-	// expression — are minijinja-Go's native mapping, which enumerates sorted
-	// where BAML preserves insertion order. The representation-agreement check
-	// in [renderConstraint] cannot see them (they are identical in both runs),
-	// so every filter whose output depends on the input's iteration order
-	// refuses them explicitly.
-	//
-	// Filters absent from this list are order-insensitive over a mapping
-	// (`sort`, `dictsort`, `min`, `max` all order their own output; `attr`,
-	// `default`, `bool` ignore order; `sum` already rejects a mapping as "not
-	// iterable" in both engines).
-	// The builtins are referenced from the filters package rather than read back
-	// out of the environment: minijinja-Go has no Environment filter getter, and
-	// the getter reachable from inside a filter (filters.State.GetFilter) would
-	// return the wrapper and recurse.
-	for name, builtin := range map[string]mj.FilterFunc{
-		"list":       filters.FilterList,
-		"join":       filters.FilterJoin,
-		"first":      filters.FilterFirst,
-		"map":        filters.FilterMap,
-		"select":     filters.FilterSelect,
-		"reject":     filters.FilterReject,
-		"selectattr": filters.FilterSelectAttr,
-		"rejectattr": filters.FilterRejectAttr,
-		"groupby":    filters.FilterGroupBy,
-		"chain":      filters.FilterChain,
-		"zip":        filters.FilterZip,
-		"unique":     filters.FilterUnique,
-		"batch":      filters.FilterBatch,
-		"slice":      filters.FilterSlice,
-		"reverse":    filters.FilterReverse,
-		"pprint":     filters.FilterPprint,
-		"string":     filters.FilterString,
-		"indent":     filters.FilterIndent,
-	} {
-		env.AddFilter(name, guardIntegerResult(name, guardForeignMapping(name, builtin)))
-	}
+	// Global FUNCTIONS can carry integers too, and `range` is the reachable one:
+	// `range(...)|last` was the round-5 P1.3 escape, where an out-of-range
+	// integer reached an exact comparison. minijinja-Go exports no accessor for
+	// its registered globals, so `range` cannot be WRAPPED the way the filters
+	// are — and re-implementing it would be the look-alike this slice refuses to
+	// build. It is therefore withdrawn from the profile outright, which also
+	// removes the unbounded-allocation vector a large range argument would open.
+	// `dict` and `namespace` need no guard: every integer they carry comes from a
+	// source literal, and those are bounded by everyNumericTokenIsProvablySmall.
+	env.AddFunction("range", func(*mj.State, []mjvalue.Value, map[string]mjvalue.Value) (mjvalue.Value, error) {
+		return mjvalue.Undefined(), unsupportedConstraint(
+			"`range` is outside the profile: minijinja-Go exports no handle on it to guard, so an " +
+				"out-of-range integer it produces could reach an exact comparison unchecked")
+	})
 }
 
 // guardForeignMapping refuses a mapping that the value model did not build.
@@ -335,445 +340,392 @@ const maxExactInt uint64 = 1 << 53
 // Neither is reachable by guarding a filter: `-` and `==` are operators. So the
 // boundary is enforced BEFORE evaluation, over the whole expression, by bounding
 // the magnitude any integer in it could reach.
-
-// exceedsExactIntegerRange reports whether integer arithmetic in this
-// expression could leave the exactly-representable range, and must therefore be
-// refused.
+// exceedsExactIntegerRange reports whether this expression's numeric behaviour
+// is outside the proven profile and must be refused.
 //
-// WHY THIS IS A CLOSURE RULE AND NOT A MAGNITUDE ESTIMATE. Four review rounds
-// established that a static magnitude estimate cannot close this class: whatever
-// it bounds, a value can be produced at RUNTIME just inside the range and then
-// pushed past it by a later operator, and there is no post-operator hook to
-// catch that. The reachable demonstration is
+// WHY THIS IS A WHITELIST AND NOT A SCANNER. Rounds 2-5 each tried to bound the
+// numerics by SCANNING the expression, and each scanner failed OPEN on a form it
+// did not model — hexadecimal and underscored literals, newlines, parenthesised
+// operands, negative exponents. A scanner that allows what it does not
+// understand cannot be repaired by adding cases to it; the defect is the
+// direction of its default.
 //
-//	this|int + 1 + 1 == this|int + 1     with this = "9007199254740991"
+// The faithful alternative — deriving the bound from minijinja-Go's own
+// tokenizer and AST — is not available. Its lexer and parser live under
+// `github.com/mitsuhiko/minijinja/minijinja-go/v2/internal/...`, and Go's
+// visibility rule forbids this package from importing them ("use of internal
+// package ... not allowed"); the module exports no AST accessor either. Writing
+// a Jinja lexer by hand is precisely what produced the previous holes.
 //
-// where `int` legitimately yields 2^53-1, the source contains only the literal
-// 1s, and minijinja-Go's float64 `Add` then collapses 2^53+1 onto 2^53 — native
-// true, BAML false. Guarding the producer does not help, because the producer's
-// output was in range; guarding the operator is impossible, because operators
-// are not extension points.
+// So the profile inverts the default and narrows the claim. Numerics are
+// admitted in exactly two shapes, and everything else is refused:
 //
-// So the profile stops trying to predict magnitudes through runtime values and
-// instead states a property it can decide:
+//  1. NO ARITHMETIC. With no arithmetic byte anywhere, no operator can
+//     manufacture an out-of-range integer. Every integer in play is then a
+//     literal (checked below), a value-model integer (checked below), or a
+//     producer result — and [guardIntegerResult] wraps EVERY filter and global
+//     function, so a producer result is always in range. Comparisons between
+//     values all below 2^53 are exact in float64.
 //
-//	Integer arithmetic is permitted ONLY when every integer that can reach a
-//	magnitude-growing operator is STATICALLY BOUNDED, and the closure of that
-//	arithmetic stays below 2^53.
+//  2. ARITHMETIC OVER A CLOSED NUMERIC SUBLANGUAGE. If arithmetic is present,
+//     the WHOLE expression must parse as pure numeric arithmetic — literals,
+//     operators, parentheses, comparisons, nothing else — via [parseNumeric], a
+//     TOTAL parser for that sublanguage. It is not a Jinja lexer: it accepts a
+//     closed grammar and rejects every byte outside it, so an identifier,
+//     filter, call, string or comment ends the parse and refuses. What it does
+//     accept it evaluates on the real operands, so `2 ** (10) == 1024` is
+//     admitted while `2 ** -1` is refused for the reason stock refuses it.
 //
-// Statically bounded means a literal in the source or an integer in the bound
-// value — both of which this function can measure exactly. A value that came out
-// of a FILTER or a METHOD CALL is not statically bounded, so an expression that
-// contains both a growing operator and a filter/call is refused outright,
-// whatever the magnitudes happen to be at runtime. That is the entire class,
-// closed by construction rather than by enumeration.
-//
-// Comparisons are deliberately NOT restricted. [guardIntegerResult] keeps every
-// runtime-produced integer below 2^53 and the checks here keep every literal and
-// value-model integer below it, so a comparison between two such values is
-// exact in float64. Only arithmetic can manufacture a value the comparison can
-// no longer distinguish, which is why arithmetic is the thing that narrows.
-//
-// Only `**`, `*`, `+` and `-` grow magnitude: `/` produces a float (identical
-// f64 semantics in both engines) and `//` and `%` shrink. Floats are exempt
-// throughout.
+// Every unrecognised token form maps to a refusal, never to an allowance.
 func exceedsExactIntegerRange(this ConstraintValue, expr string) bool {
-	src := scanIntegerSource(expr)
-
-	m := maxAbsInt(this)
-	if src.maxLiteral > m {
-		m = src.maxLiteral
-	}
-	if m >= maxExactInt {
+	// A value-model integer outside the range is unusable whatever the syntax.
+	if maxAbsInt(this) >= maxExactInt {
 		return true
 	}
-
-	if src.growOps() == 0 {
-		// No arithmetic: every integer in play is already below 2^53, so every
-		// comparison over them is exact.
+	// Every numeric token must have a certain magnitude. A run beginning with a
+	// digit that is not a plain small decimal or decimal fraction — 0x…, 0b…,
+	// 0o…, 1_000, 1e5, or simply too long — is refused rather than guessed at.
+	if !everyNumericTokenIsProvablySmall(expr) {
+		return true
+	}
+	if !containsArithmeticByte(expr) {
 		return false
 	}
+	n, ok := parseNumeric(expr)
+	return !ok || n.saturated
+}
 
-	// Arithmetic is present. If anything in the expression can introduce an
-	// integer this function cannot bound — a filter result or a method call —
-	// the closure is not computable and the expression is outside the profile.
-	if src.hasRuntimeSource {
+// containsArithmeticByte reports whether any byte could be an arithmetic
+// operator. It deliberately does not skip strings or comments: over-detecting
+// costs coverage, under-detecting would cost the guarantee.
+func containsArithmeticByte(expr string) bool {
+	return strings.ContainsAny(expr, "+-*/%")
+}
+
+// maxSmallDigits is 15 because 10^15 - 1 < 2^53, so any accepted integer — and
+// any modest combination of them — is exactly representable as a float64.
+const maxSmallDigits = 15
+
+// everyNumericTokenIsProvablySmall checks each maximal run of literal-ish
+// characters. A run starting with a letter or `_` is an identifier and ignored;
+// a run starting with a DIGIT must be `d{1,15}` or `d{1,15}.d{1,15}`.
+func everyNumericTokenIsProvablySmall(expr string) bool {
+	for i := 0; i < len(expr); {
+		if !isNumericTokenByte(expr[i]) {
+			i++
+			continue
+		}
+		start := i
+		for i < len(expr) && isNumericTokenByte(expr[i]) {
+			i++
+		}
+		run := expr[start:i]
+		if run[0] < '0' || run[0] > '9' {
+			continue
+		}
+		if !isProvablySmallNumber(run) {
+			return false
+		}
+	}
+	return true
+}
+
+func isNumericTokenByte(b byte) bool {
+	return b == '_' || b == '.' ||
+		(b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+func isProvablySmallNumber(run string) bool {
+	digits, fracDigits := 0, 0
+	dot := false
+	for i := 0; i < len(run); i++ {
+		c := run[i]
+		switch {
+		case c >= '0' && c <= '9':
+			if dot {
+				fracDigits++
+				if fracDigits > maxSmallDigits {
+					return false
+				}
+			} else {
+				digits++
+				if digits > maxSmallDigits {
+					return false
+				}
+			}
+		case c == '.':
+			if dot || digits == 0 || i == len(run)-1 {
+				return false
+			}
+			dot = true
+		default:
+			return false // a base prefix, digit separator, or exponent
+		}
+	}
+	return digits > 0 && (!dot || fracDigits > 0)
+}
+
+// ---------------------------------------------------------------------------
+// The closed numeric sublanguage.
+// ---------------------------------------------------------------------------
+
+// numeric is a value in the sublanguage: a float (exempt, because f64 semantics
+// agree between the engines), an integer whose magnitude is tracked with
+// saturating arithmetic, or a comparison result.
+type numeric struct {
+	isFloat   bool
+	isBool    bool
+	neg       bool
+	mag       uint64
+	saturated bool
+}
+
+// parseNumeric parses and evaluates:
+//
+//	expr    := cmp
+//	cmp     := add (('=='|'!='|'<='|'>='|'<'|'>') add)*
+//	add     := mul (('+'|'-') mul)*
+//	mul     := pow (('*'|'//'|'/'|'%') pow)*
+//	pow     := unary ('**' pow)?
+//	unary   := ('-'|'+') unary | primary
+//	primary := NUMBER | '(' expr ')'
+//
+// It is TOTAL: every byte must be consumed, so any identifier, filter, call,
+// string, bracket or comment ends the parse with ok=false. All ASCII whitespace
+// separates tokens, so a newline or carriage return cannot change how an
+// operator is read — the round-5 P1.2 failure mode.
+func parseNumeric(expr string) (numeric, bool) {
+	p := &numericParser{src: expr}
+	n, ok := p.parseCmp()
+	if !ok {
+		return numeric{}, false
+	}
+	p.skipSpace()
+	if p.pos != len(p.src) {
+		return numeric{}, false
+	}
+	return n, true
+}
+
+type numericParser struct {
+	src string
+	pos int
+}
+
+func (p *numericParser) skipSpace() {
+	for p.pos < len(p.src) {
+		switch p.src[p.pos] {
+		case ' ', '\t', '\n', '\r', '\f', '\v':
+			p.pos++
+		default:
+			return
+		}
+	}
+}
+
+func (p *numericParser) accept(tok string) bool {
+	p.skipSpace()
+	if strings.HasPrefix(p.src[p.pos:], tok) {
+		p.pos += len(tok)
 		return true
 	}
+	return false
+}
 
-	// An exponent large enough that stock rejects it outright (minijinja
-	// converts the exponent to u32) is refused rather than evaluated: minijinja-Go
-	// would compute math.Pow and answer.
-	if src.oversizedExponent {
+func (p *numericParser) parseCmp() (numeric, bool) {
+	left, ok := p.parseAdd()
+	if !ok {
+		return numeric{}, false
+	}
+	for {
+		matched := false
+		for _, op := range []string{"==", "!=", "<=", ">=", "<", ">"} {
+			if p.accept(op) {
+				right, ok := p.parseAdd()
+				if !ok {
+					return numeric{}, false
+				}
+				left = numeric{isBool: true, saturated: left.saturated || right.saturated}
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return left, true
+		}
+	}
+}
+
+func (p *numericParser) parseAdd() (numeric, bool) {
+	left, ok := p.parseMul()
+	if !ok {
+		return numeric{}, false
+	}
+	for {
+		switch {
+		case p.acceptSingle('+'):
+			right, ok := p.parseMul()
+			if !ok {
+				return numeric{}, false
+			}
+			left = combineNumeric(left, right, satAdd)
+		case p.acceptSingle('-'):
+			right, ok := p.parseMul()
+			if !ok {
+				return numeric{}, false
+			}
+			// |a - b| <= max(|a|, |b|).
+			left = combineNumeric(left, right, func(a, b uint64) uint64 {
+				if b > a {
+					return b
+				}
+				return a
+			})
+		default:
+			return left, true
+		}
+	}
+}
+
+func (p *numericParser) acceptSingle(op byte) bool {
+	p.skipSpace()
+	if p.pos < len(p.src) && p.src[p.pos] == op {
+		p.pos++
 		return true
 	}
-
-	// Operand-aware: one growing operator over two integer literals cannot
-	// produce more than its own exact result. The single-operator condition is
-	// what makes this sound — in a chain an operand is another operation's
-	// result rather than the literal beside it (`2 ** 10 ** 3` is 2^1000, not
-	// 1024), so the exact reading would bound nothing.
-	if src.growOps() == 1 && src.soleOpExact {
-		bound := src.soleOpResult
-		if m > bound {
-			bound = m
-		}
-		return bound >= maxExactInt
-	}
-
-	// Otherwise the pessimistic closure: with k multiplications over leaves of
-	// magnitude <= M the true maximum is M^(k+1), which is what repeated
-	// `bound * M` yields; likewise (k+1)*M for additions.
-	bound := m
-	for i := 0; i < src.pow && bound < maxExactInt; i++ {
-		bound = satPow(bound, m)
-	}
-	for i := 0; i < src.mul && bound < maxExactInt; i++ {
-		bound = satMul(bound, m)
-	}
-	for i := 0; i < src.addSub && bound < maxExactInt; i++ {
-		bound = satAdd(bound, m)
-	}
-	return bound >= maxExactInt
+	return false
 }
 
-// maxAbsInt is the largest integer magnitude anywhere in a constraint value.
-// Floats are skipped: they are f64 on both sides already.
-func maxAbsInt(v ConstraintValue) uint64 {
-	switch v.kind {
-	case ConstraintKindInt:
-		if v.i < 0 {
-			// -(-1<<63) overflows int64; convert through uint64 instead.
-			return uint64(-(v.i + 1)) + 1
-		}
-		return uint64(v.i)
-	case ConstraintKindList:
-		var m uint64
-		for _, item := range v.list {
-			if n := maxAbsInt(item); n > m {
-				m = n
+func (p *numericParser) parseMul() (numeric, bool) {
+	left, ok := p.parsePow()
+	if !ok {
+		return numeric{}, false
+	}
+	for {
+		switch {
+		case p.acceptMul():
+			right, ok := p.parsePow()
+			if !ok {
+				return numeric{}, false
 			}
-		}
-		return m
-	case ConstraintKindMap, ConstraintKindClass:
-		var m uint64
-		for _, e := range v.entries {
-			if n := maxAbsInt(e.Value); n > m {
-				m = n
+			left = combineNumeric(left, right, satMul)
+		case p.accept("//"), p.accept("/"), p.accept("%"):
+			right, ok := p.parsePow()
+			if !ok {
+				return numeric{}, false
 			}
+			// Division and modulo cannot grow magnitude beyond the dividend.
+			left = combineNumeric(left, right, func(a, _ uint64) uint64 { return a })
+		default:
+			return left, true
 		}
-		return m
 	}
-	return 0
 }
 
-// sourceScan is what a lexical pass over the expression can establish.
-type sourceScan struct {
-	maxLiteral       uint64
-	pow, mul, addSub int
-	// hasRuntimeSource: the expression applies a filter or calls a method, so it
-	// can introduce an integer whose magnitude is not knowable before evaluation.
-	hasRuntimeSource bool
-	// oversizedExponent: a `**` whose exponent literal is beyond what stock's
-	// u32 conversion accepts.
-	oversizedExponent bool
-	soleOpExact       bool   // the one growing operator had two integer-literal operands
-	soleOpResult      uint64 // its exact (saturating) result
+// acceptMul accepts a single `*` only when it does not begin `**`.
+func (p *numericParser) acceptMul() bool {
+	p.skipSpace()
+	if strings.HasPrefix(p.src[p.pos:], "**") {
+		return false
+	}
+	if p.pos < len(p.src) && p.src[p.pos] == '*' {
+		p.pos++
+		return true
+	}
+	return false
 }
 
-func (s sourceScan) growOps() int { return s.pow + s.mul + s.addSub }
+func (p *numericParser) parsePow() (numeric, bool) {
+	base, ok := p.parseUnary()
+	if !ok {
+		return numeric{}, false
+	}
+	if !p.accept("**") {
+		return base, true
+	}
+	exp, ok := p.parsePow() // right-associative
+	if !ok {
+		return numeric{}, false
+	}
+	if base.isBool || exp.isBool {
+		return numeric{}, false
+	}
+	// Stock converts an integer exponent to u32 and ERRORS if it does not fit,
+	// so a negative, oversized or non-integer exponent is refused rather than
+	// evaluated: minijinja-Go would call math.Pow and answer where stock rejects.
+	if exp.isFloat || exp.neg || exp.saturated || exp.mag >= powExponentLimit {
+		return numeric{}, false
+	}
+	if base.isFloat {
+		return numeric{isFloat: true}, true
+	}
+	m := satPow(base.mag, exp.mag)
+	return numeric{mag: m, saturated: base.saturated || m >= maxExactInt}, true
+}
+
+func (p *numericParser) parseUnary() (numeric, bool) {
+	if p.accept("-") {
+		n, ok := p.parseUnary()
+		if !ok {
+			return numeric{}, false
+		}
+		n.neg = !n.neg
+		return n, true
+	}
+	if p.accept("+") {
+		return p.parseUnary()
+	}
+	return p.parsePrimary()
+}
+
+func (p *numericParser) parsePrimary() (numeric, bool) {
+	if p.accept("(") {
+		n, ok := p.parseCmp()
+		if !ok || !p.accept(")") {
+			return numeric{}, false
+		}
+		return n, true
+	}
+	p.skipSpace()
+	start := p.pos
+	for p.pos < len(p.src) && isNumericTokenByte(p.src[p.pos]) {
+		p.pos++
+	}
+	if p.pos == start {
+		return numeric{}, false
+	}
+	run := p.src[start:p.pos]
+	if !isProvablySmallNumber(run) {
+		return numeric{}, false
+	}
+	if strings.ContainsRune(run, '.') {
+		return numeric{isFloat: true}, true
+	}
+	var mag uint64
+	for i := 0; i < len(run); i++ {
+		mag = satMul(mag, 10)
+		mag = satAdd(mag, uint64(run[i]-'0'))
+	}
+	return numeric{mag: mag, saturated: mag >= maxExactInt}, true
+}
+
+// combineNumeric applies an integer magnitude rule, propagating float-ness
+// (mixed int/float arithmetic yields a float in both engines) and saturation. A
+// comparison result reaching arithmetic is refused.
+func combineNumeric(a, b numeric, mag func(x, y uint64) uint64) numeric {
+	if a.isBool || b.isBool {
+		return numeric{saturated: true}
+	}
+	if a.isFloat || b.isFloat {
+		return numeric{isFloat: true}
+	}
+	m := mag(a.mag, b.mag)
+	return numeric{mag: m, saturated: a.saturated || b.saturated || m >= maxExactInt}
+}
 
 // powExponentLimit is where stock stops: minijinja converts a `**` exponent to
-// u32 and errors if it does not fit. minijinja-Go instead calls math.Pow and
-// answers, so anything at or beyond this is refused rather than evaluated.
+// u32 and errors if it does not fit.
 const powExponentLimit uint64 = 1 << 32
-
-// scanIntegerSource establishes, lexically, everything the closure rule needs:
-// the largest integer literal, the magnitude-growing operators, whether the
-// expression can introduce a runtime integer at all, and — when there is exactly
-// one growing operator — its literal operands.
-//
-// This is a scan, not a parse: minijinja-Go's parser is under internal/ and
-// cannot be imported. Every inaccuracy is deliberately biased towards refusing —
-// an over-counted operator, an over-estimated literal, or a `(` mistaken for a
-// call all push the same way. The one reading that could bias the other way,
-// the sole-operator operand pair, is used only when it is provably the whole
-// arithmetic of the expression.
-func scanIntegerSource(expr string) sourceScan {
-	var out sourceScan
-	type opSite struct {
-		kind  byte // '^' pow, '*', '+', '-'
-		index int
-		width int
-	}
-	var sites []opSite
-	prevSignificant := byte(0) // last non-space byte, for unary/binary disambiguation
-
-	for i := 0; i < len(expr); {
-		c := expr[i]
-		switch {
-		case c == '"' || c == '\'':
-			i = skipStringLiteral(expr, i)
-			prevSignificant = '"'
-		case c >= '0' && c <= '9' && !isIdentByte(prevByte(expr, i)):
-			var n uint64
-			n, i = scanNumericLiteral(expr, i)
-			if n > out.maxLiteral {
-				out.maxLiteral = n
-			}
-			prevSignificant = '0'
-		case c == '|':
-			// A filter application. `|` is never bitwise-or in jinja.
-			out.hasRuntimeSource = true
-			prevSignificant = c
-			i++
-		case c == '(' && isIdentByte(prevSignificant):
-			// A call — `range(3)`, `this.keys()`, `dict(a=1)`. A `(` after an
-			// operator or a space is ordinary grouping and is left alone.
-			out.hasRuntimeSource = true
-			prevSignificant = c
-			i++
-		case c == '*':
-			if i+1 < len(expr) && expr[i+1] == '*' {
-				out.pow++
-				sites = append(sites, opSite{'^', i, 2})
-				i += 2
-			} else {
-				out.mul++
-				sites = append(sites, opSite{'*', i, 1})
-				i++
-			}
-			prevSignificant = '*'
-		case c == '+' || c == '-':
-			// A leading `-` is unary negation, not arithmetic between two
-			// operands: `-1|abs` introduces no magnitude growth. It is binary
-			// only when something value-like precedes it.
-			if isBinaryPosition(prevSignificant) {
-				out.addSub++
-				sites = append(sites, opSite{c, i, 1})
-			}
-			prevSignificant = c
-			i++
-		case c == ' ' || c == '\t':
-			i++
-		default:
-			prevSignificant = c
-			i++
-		}
-	}
-
-	if len(sites) == 1 {
-		if a, b, ok := literalOperands(expr, sites[0].index, sites[0].width); ok {
-			out.soleOpExact = true
-			switch sites[0].kind {
-			case '^':
-				if b >= powExponentLimit {
-					out.oversizedExponent = true
-				}
-				out.soleOpResult = satPow(a, b)
-			case '*':
-				out.soleOpResult = satMul(a, b)
-			case '+':
-				out.soleOpResult = satAdd(a, b)
-			case '-':
-				// The magnitude of a difference is bounded by the larger operand.
-				out.soleOpResult = a
-				if b > a {
-					out.soleOpResult = b
-				}
-			}
-		}
-	}
-	return out
-}
-
-// isBinaryPosition reports whether a `+`/`-` at this point separates two
-// operands, given the previous significant byte. After a value — a digit, an
-// identifier, a string, or a closing bracket — it is binary; after an operator,
-// an opening bracket, a comma, a pipe, or nothing at all, it is unary.
-func isBinaryPosition(prev byte) bool {
-	switch {
-	case prev == 0:
-		return false
-	case prev == ')' || prev == ']' || prev == '}' || prev == '"':
-		return true
-	case isIdentByte(prev):
-		return true
-	default:
-		return false
-	}
-}
-
-// literalOperands reads the integer literals immediately either side of an
-// operator, skipping only whitespace. Anything else — a parenthesis, an
-// identifier, a float, a string — means the operand is not a literal and the
-// exact reading does not apply.
-func literalOperands(expr string, opIndex, opWidth int) (left, right uint64, ok bool) {
-	i := opIndex - 1
-	for i >= 0 && (expr[i] == ' ' || expr[i] == '\t') {
-		i--
-	}
-	end := i + 1
-	for i >= 0 && expr[i] >= '0' && expr[i] <= '9' {
-		i--
-	}
-	if end == i+1 || isIdentByte(prevByte(expr, i+1)) {
-		return 0, 0, false
-	}
-	left, consumed := scanNumericLiteral(expr, i+1)
-	if consumed != end {
-		// A float, or a literal that did not end where the operator begins.
-		return 0, 0, false
-	}
-
-	j := opIndex + opWidth
-	for j < len(expr) && (expr[j] == ' ' || expr[j] == '\t') {
-		j++
-	}
-	if j >= len(expr) || expr[j] < '0' || expr[j] > '9' {
-		return 0, 0, false
-	}
-	right, after := scanNumericLiteral(expr, j)
-	if after == j {
-		return 0, 0, false
-	}
-	// A float operand scans as 0; treat that as unreadable rather than as zero.
-	if right == 0 && expr[j] != '0' {
-		return 0, 0, false
-	}
-	return left, right, true
-}
-
-// skipStringLiteral returns the index just past the literal starting at i,
-// honouring backslash escapes. An unterminated literal consumes the rest (the
-// expression will fail to compile anyway).
-func skipStringLiteral(s string, i int) int {
-	quote := s[i]
-	for i++; i < len(s); i++ {
-		switch s[i] {
-		case '\\':
-			i++
-		case quote:
-			return i + 1
-		}
-	}
-	return len(s)
-}
-
-// scanNumericLiteral consumes one numeric literal. A literal with a fractional
-// part or an exponent is a FLOAT and contributes 0, since float arithmetic
-// agrees between the engines. An integer too large for uint64 saturates, which
-// refuses.
-func scanNumericLiteral(s string, i int) (uint64, int) {
-	start := i
-	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
-		i++
-	}
-	isFloat := false
-	if i < len(s) && s[i] == '.' && i+1 < len(s) && s[i+1] >= '0' && s[i+1] <= '9' {
-		isFloat = true
-		for i++; i < len(s) && s[i] >= '0' && s[i] <= '9'; i++ {
-		}
-	}
-	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
-		isFloat = true
-		i++
-		if i < len(s) && (s[i] == '+' || s[i] == '-') {
-			i++
-		}
-		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
-			i++
-		}
-	}
-	if isFloat {
-		return 0, i
-	}
-	var n uint64
-	for _, d := range []byte(s[start:i]) {
-		n = satMul(n, 10)
-		n = satAdd(n, uint64(d-'0'))
-		if n >= maxExactInt {
-			return maxExactInt, i
-		}
-	}
-	return n, i
-}
-
-func prevByte(s string, i int) byte {
-	if i == 0 {
-		return 0
-	}
-	return s[i-1]
-}
-
-// isIdentByte reports whether b can be part of an identifier or an attribute
-// path, so digits inside `f_sum_1` or `this.c0` are not read as literals.
-func isIdentByte(b byte) bool {
-	return b == '_' || b == '.' ||
-		(b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
-}
-
-// Saturating helpers. Everything saturates at maxExactInt, which is the point
-// at which the answer is refused anyway.
-func satAdd(a, b uint64) uint64 {
-	if a > maxExactInt-b {
-		return maxExactInt
-	}
-	return a + b
-}
-
-func satMul(a, b uint64) uint64 {
-	if a == 0 || b == 0 {
-		return 0
-	}
-	if a > maxExactInt/b {
-		return maxExactInt
-	}
-	return a * b
-}
-
-// satPow is exponentiation by squaring, saturating at maxExactInt.
-//
-// The linear version it replaces could not terminate in reasonable time: for
-// `1 ** 9007199254740991` — a perfectly ordinary expression — it looped roughly
-// nine quadrillion times BEFORE the template was even compiled, because
-// multiplying by 1 never reaches the saturation threshold. Bases 0 and 1 are
-// therefore answered directly, and for any base >= 2 an exponent of 64 already
-// exceeds 2^53, so the loop is bounded by ~6 iterations. There is no input for
-// which this does not return promptly.
-func satPow(base, exp uint64) uint64 {
-	switch base {
-	case 0:
-		if exp == 0 {
-			return 1
-		}
-		return 0
-	case 1:
-		return 1
-	}
-	if exp >= 64 {
-		// base >= 2, so the result is at least 2^64.
-		return maxExactInt
-	}
-	result := uint64(1)
-	for exp > 0 {
-		if exp&1 == 1 {
-			result = satMul(result, base)
-			if result >= maxExactInt {
-				return maxExactInt
-			}
-		}
-		exp >>= 1
-		if exp == 0 {
-			break
-		}
-		base = satMul(base, base)
-		if base >= maxExactInt {
-			return maxExactInt
-		}
-	}
-	return result
-}
 
 // ---------------------------------------------------------------------------
 // Runtime integer producers.
@@ -850,4 +802,89 @@ func absInt64(n int64) uint64 {
 		return uint64(-(n + 1)) + 1
 	}
 	return uint64(n)
+}
+
+// maxAbsInt is the largest integer magnitude anywhere in a constraint value.
+// Floats are skipped: they are f64 on both sides already.
+func maxAbsInt(v ConstraintValue) uint64 {
+	switch v.kind {
+	case ConstraintKindInt:
+		return absInt64(v.i)
+	case ConstraintKindList:
+		var m uint64
+		for _, item := range v.list {
+			if n := maxAbsInt(item); n > m {
+				m = n
+			}
+		}
+		return m
+	case ConstraintKindMap, ConstraintKindClass:
+		var m uint64
+		for _, e := range v.entries {
+			if n := maxAbsInt(e.Value); n > m {
+				m = n
+			}
+		}
+		return m
+	}
+	return 0
+}
+
+// Saturating helpers. Everything saturates at maxExactInt, which is the point
+// at which the answer is refused anyway.
+func satAdd(a, b uint64) uint64 {
+	if a > maxExactInt-b {
+		return maxExactInt
+	}
+	return a + b
+}
+
+func satMul(a, b uint64) uint64 {
+	if a == 0 || b == 0 {
+		return 0
+	}
+	if a > maxExactInt/b {
+		return maxExactInt
+	}
+	return a * b
+}
+
+// satPow is exponentiation by squaring, saturating at maxExactInt.
+//
+// The linear version it replaces could not terminate in reasonable time: for
+// `1 ** 9007199254740991` it looped roughly nine quadrillion times BEFORE the
+// template was compiled, because multiplying by 1 never saturates. Bases 0 and 1
+// are answered directly, and for any base >= 2 an exponent of 64 already exceeds
+// 2^53, so the loop is bounded by ~6 iterations.
+func satPow(base, exp uint64) uint64 {
+	switch base {
+	case 0:
+		if exp == 0 {
+			return 1
+		}
+		return 0
+	case 1:
+		return 1
+	}
+	if exp >= 64 {
+		return maxExactInt // base >= 2, so the result is at least 2^64
+	}
+	result := uint64(1)
+	for exp > 0 {
+		if exp&1 == 1 {
+			result = satMul(result, base)
+			if result >= maxExactInt {
+				return maxExactInt
+			}
+		}
+		exp >>= 1
+		if exp == 0 {
+			break
+		}
+		base = satMul(base, base)
+		if base >= maxExactInt {
+			return maxExactInt
+		}
+	}
+	return result
 }

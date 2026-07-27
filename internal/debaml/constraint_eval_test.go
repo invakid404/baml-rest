@@ -43,7 +43,6 @@ func TestJinjaHelpersPinnedRenders(t *testing.T) {
 		{"arithmetic", list, "1 + 1", "2"},
 		{"length_gt", list, "this|length > 2", "true"},
 		{"regex_substring", phone, `this|regex_match("123")`, "true"},
-		{"regex_phone", phone, `this|regex_match("\\(?\\d{3}\\)?[-.\\s]?\\d{3}[-.\\s]?\\d{4}")`, "true"},
 		{"sum_ints", list, "[1,2]|sum", "3"},
 		{"sum_mixed", list, "[1,2.5]|sum", "3.5"},
 	}
@@ -57,6 +56,17 @@ func TestJinjaHelpersPinnedRenders(t *testing.T) {
 				t.Fatalf("render %q = %q, want %q", tc.expr, got, tc.want)
 			}
 		})
+	}
+
+	// ACCEPTED COST. jinja_helpers.rs's own phone-number case carries a `-`
+	// inside a character class, and the arithmetic gate does not skip string
+	// literals — skipping them would need string lexing that could itself fail
+	// open, which is the mistake round 6 exists to undo. So a regex containing an
+	// arithmetic byte is refused rather than parsed. Pinned so the cost is
+	// visible rather than discovered.
+	phoneRe := `this|regex_match("\\(?\\d{3}\\)?[-.\\s]?\\d{3}[-.\\s]?\\d{4}")`
+	if _, err := RenderConstraintExpression(phone, phoneRe); !errors.Is(err, ErrConstraintUnsupported) {
+		t.Errorf("a regex containing an arithmetic byte is expected to be refused; got err=%v", err)
 	}
 }
 
@@ -300,6 +310,7 @@ func TestConstraintRegexMatchFilter(t *testing.T) {
 // where BAML rejects the value.
 func TestWithdrawnBuiltinsError(t *testing.T) {
 	for _, expr := range []string{
+		"range(3)|length == 3", // withdrawn in round 6: no handle to guard it
 		`"a b"|urlencode == "a%20b"`,
 		`"abc" is containing("b")`,
 		`cycler("a","b").next() == "a"`,
@@ -314,7 +325,7 @@ func TestWithdrawnBuiltinsError(t *testing.T) {
 	// Control: the builtins BAML DOES have must still work, so the withdrawal is
 	// specific rather than a blanket break.
 	for _, expr := range []string{
-		`"abc"|length == 3`, `range(3)|length == 3`, `dict(a=1)|length == 1`,
+		`"abc"|length == 3`, `dict(a=1)|length == 1`,
 		`namespace(a=1).a == 1`, `[1,2]|tojson == "[1,2]"`, `"abc" is startingwith("a")`,
 	} {
 		ok, err := EvaluateConstraint(NullValue(), expr)
@@ -507,7 +518,6 @@ func TestConstraintProfileStillAnswersInsideIt(t *testing.T) {
 		{mapping, `(this|dictsort|first|first) == "a"`, true},
 		{mapping, "this.q is undefined", true},
 		{class, `this.a == "x"`, true},
-		{class, "this.b + 1 == 2", true},
 		{class, "this|length == 2", true},
 		// Everything not involving a mapping is untouched by the profile.
 		{IntValue(7), "this > 0", true},
@@ -611,6 +621,15 @@ func TestNumericBoundaryIsRefusedOnEveryArchitecture(t *testing.T) {
 		{"9007199254740993 == 9007199254740992", "float64 conflates neighbours past 2^53"},
 		{"9007199254740992 == 9007199254740992", "exactly at the boundary"},
 		{"9007199254740991 + 1 == 9007199254740992", "the sum reaches the boundary"},
+		// Round-6: literal forms the previous hand scanner never modelled, each
+		// of which produced a wrong boolean live against stock.
+		{"0x20000000000001 == 0x20000000000000", "hexadecimal literals past 2^53"},
+		{"9_007_199_254_740_993 == 9_007_199_254_740_992", "underscore-separated literals"},
+		{"0b1 + 0b1 == 2", "binary literals are outside the recognised forms"},
+		{"1e5 + 1 == 100001", "exponent notation is outside the recognised forms"},
+		{"9007199254740991 \n + 1 \n + 1 == 9007199254740991 \n + 1", "newlines must not hide binary operators"},
+		{"2 ** -1 == 0.5", "stock converts the exponent to u32 and errors"},
+		{"2 ** 0.5 > 1", "a non-integer exponent is not the integer pow stock models"},
 		// ARCHITECTURE-DEPENDENT: i64::MAX rounds up to 2^63 as a float64, so
 		// int64(f) is out of range — arm64 saturates, amd64 does not.
 		{"9223372036854775807 - 1 == 9223372036854775806", "the i64::MAX case that split arm64 from amd64"},
@@ -643,16 +662,13 @@ func TestNumericBoundaryIsRefusedOnEveryArchitecture(t *testing.T) {
 	// 10^10 a global-maximum estimate would guess, so it stays decidable — and
 	// stays in live agreement with stock, which is what the corpus checks.
 	decided := map[string]bool{
-		"9007199254740991 == 9007199254740991":     true, // 2^53 - 1, exactly representable
-		"1000 * 1000 == 1000000":                   true,
-		"3000000 * 3000000 == 9000000000000":       true,
-		"2 ** 3 == 8":                              true,
-		"2 ** 10 == 1024":                          true, // operand-aware: 2^10, not 10^10
-		"9007199254740990 + 1 == 9007199254740991": true, // the sum is still exact
-		"1 + 1 == 2":                               true,
-		"7 // 2 == 3":                              true,
-		"1.0e300 > 1.0e299":                        true, // floats are f64 on both sides
-		"0.1 + 0.2 == 0.3":                         false,
+		"1000 * 1000 == 1000000":             true,
+		"3000000 * 3000000 == 9000000000000": true,
+		"2 ** 3 == 8":                        true,
+		"2 ** 10 == 1024":                    true, // operand-aware: 2^10, not 10^10
+		"1 + 1 == 2":                         true,
+		"7 // 2 == 3":                        true,
+		"0.1 + 0.2 == 0.3":                   false,
 	}
 	for expr, want := range decided {
 		got, err := EvaluateConstraint(IntValue(7), expr)
@@ -710,12 +726,8 @@ func TestRuntimeIntegerProducersAreRefused(t *testing.T) {
 		{NullValue(), `"42"|int == 42`, true},
 		{StringValue("42"), "this|int == 42", true},
 		{NullValue(), `"2.9"|int == 2`, true},
-		{NullValue(), "-1|abs == 1", true}, // unary minus is not arithmetic
 		{NullValue(), "[1,2]|sum == 3", true},
 		{NullValue(), "[1,2]|max == 2", true},
-		// `float` is deliberately NOT guarded: it produces a float, and float
-		// semantics already agree between the engines, so both collapse alike.
-		{NullValue(), `"9007199254740993"|float == "9007199254740992"|float`, true},
 	}
 	for _, tc := range decided {
 		got, err := EvaluateConstraint(tc.this, tc.expr)
@@ -725,6 +737,27 @@ func TestRuntimeIntegerProducersAreRefused(t *testing.T) {
 		}
 		if got != tc.want {
 			t.Errorf("%q = %v, want %v", tc.expr, got, tc.want)
+		}
+	}
+
+	// ACCEPTED COST of the round-6 whitelist. These are safe in themselves, but
+	// they combine arithmetic with syntax the closed numeric grammar does not
+	// accept, or they mention a 16-digit token the literal recogniser will not
+	// vouch for. Refusing them is the price of never allowing an unmodelled
+	// form, and it is pinned so the cost stays visible.
+	for _, tc := range []struct {
+		this ConstraintValue
+		expr string
+	}{
+		{NullValue(), "-1|abs + 1 == 2"},
+		{NullValue(), `"9007199254740993"|float == "9007199254740992"|float`},
+		{ClassValue("P", []ConstraintEntry{{Key: "n", Value: IntValue(7)}}), "this.n + 1 == 8"},
+		{ListValue([]ConstraintValue{IntValue(1), IntValue(2)}), "this[0] + 1 == 2"},
+		{IntValue(7), "this + 1 == 8"},
+	} {
+		if _, err := EvaluateConstraint(tc.this, tc.expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%q is expected to be refused as an accepted cost of the whitelist; got err=%v",
+				tc.expr, err)
 		}
 	}
 }
@@ -793,19 +826,17 @@ func TestIntegerArithmeticClosureStillPermitsStaticArithmetic(t *testing.T) {
 		expr string
 	}{
 		{NullValue(), "2 ** 10 == 1024"},
+		{NullValue(), "2 ** (10) == 1024"}, // parenthesised operands, round-6 P2
+		{NullValue(), "((2)) ** ((10)) == 1024"},
+		{NullValue(), "(1 + 2) * 3 == 9"},
 		{NullValue(), "1000 * 1000 == 1000000"},
 		{NullValue(), "3000000 * 3000000 == 9000000000000"},
 		{NullValue(), "1 + 1 == 2"},
-		{NullValue(), "9007199254740990 + 1 == 9007199254740991"},
-		{IntValue(7), "this + 1 == 8"},
-		{ClassValue("P", []ConstraintEntry{{Key: "n", Value: IntValue(7)}}), "this.n + 1 == 8"},
-		{ListValue([]ConstraintValue{IntValue(1), IntValue(2)}), "this[0] + 1 == 2"},
+		{NullValue(), "1 \n + 1 == 2"}, // newlines are whitespace, round-6 P1.2
 		// Filters are fine on their own — it is only their composition with
 		// arithmetic that cannot be bounded.
-		{NullValue(), "-1|abs == 1"},
 		{NullValue(), "[1,2]|sum == 3"},
 		{NullValue(), `"2"|int == 2`},
-		{StringValue("9007199254740991"), "this|int == 9007199254740991"},
 		{IntValue(7), "this|abs == 7"},
 	} {
 		got, err := EvaluateConstraint(tc.this, tc.expr)
@@ -852,5 +883,69 @@ func TestPowerBoundTerminates(t *testing.T) {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the numeric bound did not terminate within 10s; satPow has regressed to a linear loop")
+	}
+}
+
+// TestNumericProfileIsAWhitelist pins the ROUND-6 inversion: the numeric bound
+// refuses everything it does not positively recognise.
+//
+// Rounds 2-5 bounded numerics with a hand scanner, and each scanner failed OPEN
+// on a form it did not model — hexadecimal and underscored literals, newlines,
+// parenthesised operands, negative exponents. Deriving the bound from
+// minijinja-Go's real tokenizer is not possible (its lexer and parser are under
+// `internal/`, which Go forbids this package from importing, and no AST is
+// exported), so the default was inverted instead: a closed numeric sublanguage
+// is recognised and evaluated exactly, and everything else is refused.
+//
+// This test is the statement of that property — unrecognised INPUT SHAPES, not
+// just unrecognised magnitudes, must refuse.
+func TestNumericProfileIsAWhitelist(t *testing.T) {
+	// Shapes the grammar does not accept. None involves a large value; they are
+	// refused for being unrecognised, which is the point.
+	for _, expr := range []string{
+		"0b1 + 0b1 == 2",                   // binary literal
+		"0o7 + 1 == 8",                     // octal literal
+		"0x1 + 1 == 2",                     // hex literal
+		"1_0 + 1 == 11",                    // digit separator
+		"1e2 + 1 == 101",                   // exponent notation
+		`"a" ~ "b" == "ab" and 1 + 1 == 2`, // arithmetic mixed with non-numeric syntax
+		"[1,2]|length + 1 == 3",            // arithmetic over a filter result
+		"1 {# comment #} + 1 == 2",         // a comment inside arithmetic
+	} {
+		if got, err := EvaluateConstraint(NullValue(), expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%q answered %v (err=%v); the grammar does not recognise it and it must refuse",
+				expr, got, err)
+		}
+	}
+
+	// `range` is withdrawn: minijinja-Go exports no handle on its globals, so it
+	// cannot be wrapped by the integer-result guard.
+	for _, expr := range []string{"range(3)|length == 3", "range(3)|last == 2"} {
+		if _, err := EvaluateConstraint(NullValue(), expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%q must refuse: `range` is outside the profile", expr)
+		}
+	}
+
+	// Shapes the grammar DOES accept must still be evaluated on their real
+	// operands, including through parentheses and across newlines.
+	for expr, want := range map[string]bool{
+		"2 ** (10) == 1024":       true,
+		"((2)) ** ((10)) == 1024": true,
+		"(1 + 2) * 3 == 9":        true,
+		"1 \n + 1 == 2":           true,
+		"1 \r\n + 1 == 2":         true,
+		"7 % 3 == 1":              true,
+		"7 // 2 == 3":             true,
+		"-1 + 2 == 1":             true,
+		"0.1 + 0.2 == 0.3":        false,
+	} {
+		got, err := EvaluateConstraint(NullValue(), expr)
+		if err != nil {
+			t.Errorf("%q was refused (%v); the grammar accepts it", expr, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%q = %v, want %v", expr, got, want)
+		}
 	}
 }

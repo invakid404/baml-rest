@@ -232,6 +232,23 @@ class Batch_const {
     @check(num_mul_inrange, {{ 3000000 * 3000000 == 9000000000000 }})
     @check(f_length_arith, {{ [1,2]|length + 1 == 3 }})
     @check(f_abs_arith, {{ -1|abs + 1 == 2 }})
+    @check(lit_hex, {{ 0x20000000000001 == 0x20000000000000 }})
+    @check(lit_underscore, {{ 9_007_199_254_740_993 == 9_007_199_254_740_992 }})
+    @check(lit_binary, {{ 0b1 + 0b1 == 2 }})
+    @check(lit_octal, {{ 0o7 + 1 == 8 }})
+    @check(lit_exponent, {{ 1e5 + 1 == 100001 }})
+    @check(ws_newline_static, {{ 9007199254740991 
+ + 1 
+ + 1 == 9007199254740991 
+ + 1 }})
+    @check(ws_newline_small, {{ 1 
+ + 1 == 2 }})
+    @check(fn_range_last_big, {{ range(9007199254740990.0, 9007199254740994.0, 2.0)|last == range(9007199254740992.0, 9007199254740994.0, 1.0)|last }})
+    @check(fn_range_last_small, {{ range(3)|last == 2 }})
+    @check(pow_float_exp, {{ 2 ** 0.5 > 1 }})
+    @check(pow_parenthesised, {{ 2 ** (10) == 1024 }})
+    @check(pow_double_paren, {{ ((2)) ** ((10)) == 1024 }})
+    @check(arith_paren_group, {{ (1 + 2) * 3 == 9 }})
 }
 
 function Batch_constFn(topic: string) -> Batch_const {
@@ -533,6 +550,10 @@ class Batch_strexact {
     @check(this_strexact_pow, {{ this|int ** 2 > 0 }})
     @check(this_strexact_int, {{ this|int == 9007199254740991 }})
     @check(this_strexact_length, {{ this|length == 16 }})
+    @check(this_strexact_newline, {{ this|int 
+ + 1 
+ + 1 == this|int 
+ + 1 }})
 }
 
 function Batch_strexactFn(topic: string) -> Batch_strexact {
@@ -822,6 +843,15 @@ class Iso_num_pow_oversized {
 }
 
 function Iso_num_pow_oversizedFn(topic: string) -> Iso_num_pow_oversized {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_pow_negative_exp {
+  v int @check(pow_negative_exp, {{ 2 ** -1 == 0.5 }})
+}
+
+function Iso_pow_negative_expFn(topic: string) -> Iso_pow_negative_exp {
   client ConstraintOracleClient
   prompt #"{{ topic }} {{ ctx.output_format }}"#
 }

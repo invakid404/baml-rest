@@ -27,7 +27,7 @@
 //
 // # How it works
 //
-//   - corpus_test.go enumerates 353 (expression, `this`) cases. The expression
+//   - corpus_test.go enumerates 368 (expression, `this`) cases. The expression
 //     surface is enumerated from the minijinja-go/v2 v2.16.0 API — every
 //     registered filter, test, global function and operator — NOT inferred from
 //     what the prompt renderer happens to use, plus the operator/value cases the
@@ -492,8 +492,8 @@ func TestConstraintExpressionDifferential(t *testing.T) {
 // There is deliberately no third bucket. A case where native answers something
 // stock did not is a defect, and TestConstraintProfileIsFailClosed fails on it.
 const (
-	wantAgree       = 248
-	wantUnsupported = 105
+	wantAgree       = 238
+	wantUnsupported = 130
 )
 
 // TestConstraintProfileIsFailClosed is the load-bearing assertion of this
@@ -593,7 +593,6 @@ func TestJinjaHelpersSourceTests(t *testing.T) {
 		{"length", list, "this|length > 2", "true"},
 		// jinja_helpers.rs:136-173 (regex_match).
 		{"regex_substring", phone, `this|regex_match("123")`, "true"},
-		{"regex_phone", phone, `this|regex_match("\\(?\\d{3}\\)?[-.\\s]?\\d{3}[-.\\s]?\\d{4}")`, "true"},
 		// jinja_helpers.rs:207-218 (the BAML sum filter).
 		{"sum_ints", list, "[1,2]|sum", "3"},
 		{"sum_mixed", list, "[1,2.5]|sum", "3.5"},
@@ -608,6 +607,16 @@ func TestJinjaHelpersSourceTests(t *testing.T) {
 				t.Fatalf("render %q = %q, want %q", tc.expr, got, tc.want)
 			}
 		})
+	}
+
+	// jinja_helpers.rs:136-173's phone-number regex is NOT reproducible either,
+	// for a different reason: it carries a `-` inside a character class, and the
+	// round-6 arithmetic gate does not skip string literals — skipping them would
+	// need string lexing that could itself fail open, which is the mistake the
+	// whitelist exists to undo. Assert the refusal so the cost stays visible.
+	if _, err := debaml.RenderConstraintExpression(phone,
+		`this|regex_match("\\(?\\d{3}\\)?[-.\\s]?\\d{3}[-.\\s]?\\d{4}")`); err == nil {
+		t.Error("the phone regex carries an arithmetic byte and is expected to be refused")
 	}
 
 	// jinja_helpers.rs:176-204 (Python-style str.format) is NOT reproducible:

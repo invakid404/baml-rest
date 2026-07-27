@@ -107,6 +107,8 @@ var typeMap = map[string]reflect.Type{
 	"STREAM_TYPES.Iso_op_rem_zero":        reflect.TypeOf(stream_types.Iso_op_rem_zero{}),
 	"TYPES.Iso_op_str_add_num":            reflect.TypeOf(types.Iso_op_str_add_num{}),
 	"STREAM_TYPES.Iso_op_str_add_num":     reflect.TypeOf(stream_types.Iso_op_str_add_num{}),
+	"TYPES.Iso_pow_negative_exp":          reflect.TypeOf(types.Iso_pow_negative_exp{}),
+	"STREAM_TYPES.Iso_pow_negative_exp":   reflect.TypeOf(stream_types.Iso_pow_negative_exp{}),
 	"TYPES.Iso_py_num_method":             reflect.TypeOf(types.Iso_py_num_method{}),
 	"STREAM_TYPES.Iso_py_num_method":      reflect.TypeOf(stream_types.Iso_py_num_method{}),
 	"TYPES.Iso_t_containing":              reflect.TypeOf(types.Iso_t_containing{}),

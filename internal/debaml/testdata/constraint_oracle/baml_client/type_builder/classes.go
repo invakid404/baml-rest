@@ -1391,6 +1391,38 @@ func (t *Iso_op_str_add_numClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 
+type Iso_pow_negative_expClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_pow_negative_expClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_pow_negative_expClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_pow_negative_exp() (*Iso_pow_negative_expClassView, error) {
+	bld, err := t.inner.Class("Iso_pow_negative_exp")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_pow_negative_expClassView{inner: bld}, nil
+}
+
+func (t *Iso_pow_negative_expClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
 type Iso_py_num_methodClassView struct {
 	inner baml.ClassBuilder
 }
