@@ -762,8 +762,8 @@ func TestRuntimeIntegerProducersAreRefused(t *testing.T) {
 	}
 }
 
-// TestIntegerArithmeticClosureIsRefused pins the round-5 P1 class, which four
-// rounds of narrower guards each failed to close.
+// TestArithmeticMixedWithOtherSyntaxIsRefused pins the reason the numeric
+// profile is a WHOLE-EXPRESSION whitelist rather than a per-operand rule.
 //
 // A runtime integer produced JUST INSIDE the exact range can cross 2^53 in a
 // LATER operator, and minijinja-Go offers no post-operator hook. The reachable
@@ -773,11 +773,12 @@ func TestRuntimeIntegerProducersAreRefused(t *testing.T) {
 //	this|int + 1 + 1 == this|int + 1     native (before) true, stock FALSE
 //
 // `int` legitimately yields 2^53-1, so guarding the producer does not help; the
-// source holds only literal 1s, so bounding magnitudes does not help either.
-// The profile therefore stops predicting magnitudes through runtime values and
-// requires instead that every integer reaching a growing operator be STATICALLY
-// bounded — which a filter or call result never is.
-func TestIntegerArithmeticClosureIsRefused(t *testing.T) {
+// source holds only literal 1s, so bounding their magnitudes does not either.
+// The profile therefore admits arithmetic ONLY when the whole expression parses
+// as the closed numeric sublanguage — literals, operators, parentheses,
+// comparisons and nothing else. A filter, call or identifier anywhere in the
+// expression ends that parse, so every case below is refused by construction.
+func TestArithmeticMixedWithOtherSyntaxIsRefused(t *testing.T) {
 	exact := StringValue("9007199254740991")
 	numStrings := ListValue([]ConstraintValue{StringValue("9007199254740991"), StringValue("1")})
 	bigInts := ListValue([]ConstraintValue{IntValue(4503599627370495), IntValue(4503599627370496)})
@@ -816,11 +817,17 @@ func TestIntegerArithmeticClosureIsRefused(t *testing.T) {
 	}
 }
 
-// TestIntegerArithmeticClosureStillPermitsStaticArithmetic is the other half:
-// the closure rule narrows ARITHMETIC over unbounded operands, and nothing else.
-// Arithmetic over literals and value-model integers, and filters WITHOUT
-// arithmetic, must all still decide.
-func TestIntegerArithmeticClosureStillPermitsStaticArithmetic(t *testing.T) {
+// TestPurelyNumericArithmeticStillDecides is the other half: the whitelist
+// narrows arithmetic to the closed numeric sublanguage, and leaves everything
+// outside arithmetic alone.
+//
+// NOTE ON SCOPE, corrected in round 8. An earlier version of this test claimed
+// arithmetic over VALUE-MODEL integers still decides — `this + 1 == 8`. It does
+// not, and has not since the whitelist landed: `this` is an identifier, so the
+// numeric grammar rejects the expression. The accepted-cost block below asserts
+// that refusal rather than the reverse. What survives is arithmetic over pure
+// literals, and filters used WITHOUT arithmetic.
+func TestPurelyNumericArithmeticStillDecides(t *testing.T) {
 	for _, tc := range []struct {
 		this ConstraintValue
 		expr string
@@ -1007,6 +1014,67 @@ func TestProvenParityWhitelistForSignedOps(t *testing.T) {
 		got, err := EvaluateConstraint(NullValue(), expr)
 		if err != nil {
 			t.Errorf("%q was refused (%v); it is proven identical to stock", expr, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%q = %v, want %v", expr, got, want)
+		}
+	}
+}
+
+// TestAdditiveBoundIsTheSumNotTheMax pins the round-8 P1.3 hole.
+//
+// The additive magnitude bound used to be max(|a|, |b|), which is only an upper
+// bound when the operands share a sign. Subtracting a NEGATIVE grows by their
+// sum — `a - (-k) == a + k` — so a long chain crossed 2^53 while the retained
+// bound stayed at k. Live against stock, with k = 999999999999999 and ten
+// repetitions, the two chains differ (9999999999999991 vs 9999999999999992) and
+// stock returns false; minijinja-Go's float64 Sub collapsed both onto the same
+// value and returned true.
+//
+// The bound is now |a| + |b| for BOTH `+` and `-`. The signs are tracked
+// syntactically but deliberately not relied on here: a chain's signs cannot be
+// established without evaluating it, so the bound stays conservative.
+func TestAdditiveBoundIsTheSumNotTheMax(t *testing.T) {
+	const k = "999999999999999"
+	chain := func(start string, n int) string {
+		return "(" + start + strings.Repeat(" - (-"+k+")", n) + ")"
+	}
+
+	for _, expr := range []string{
+		// The reviewer's exact case.
+		chain("1", 10) + " == " + chain("2", 10),
+		// The same growth reaching a comparison, and feeding a later operator.
+		chain("1", 10) + " > 0",
+		"(1 - (-" + k + ")) * 100 > 0",
+		"2 ** (1 - (-" + k + ")) > 0",
+		// A positive chain has always been bounded correctly; it is here so the
+		// two directions are pinned together.
+		"1 + " + k + " + " + k + " + " + k + " + " + k + " + " + k + " + " + k + " + " + k + " + " + k + " + " + k + " + " + k + " > 0",
+		// Two operands that are individually in range and jointly are not.
+		"4503599627370496 + 4503599627370496 == 9007199254740992",
+		"9007199254740991 - (-1) == 9007199254740992",
+	} {
+		if got, err := EvaluateConstraint(NullValue(), expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("answered %v (err=%v) for a chain that can pass 2^53: %.80s", got, err, expr)
+		}
+	}
+
+	// The sum bound must not swallow ordinary arithmetic: |a| + |b| stays tiny
+	// for small operands whatever their signs.
+	for expr, want := range map[string]bool{
+		"1 + 2 == 3":                   true,
+		"5 - 3 == 2":                   true,
+		"1 - 3 == -2":                  true,
+		"-1 + 2 == 1":                  true,
+		"1 - (-2) == 3":                true,
+		"7 - 2 - 1 == 4":               true,
+		"1000000 + 1000000 == 2000000": true,
+		"(1 + 2) * 3 == 9":             true,
+	} {
+		got, err := EvaluateConstraint(NullValue(), expr)
+		if err != nil {
+			t.Errorf("%q was refused (%v); the sum bound has become over-broad", expr, err)
 			continue
 		}
 		if got != want {

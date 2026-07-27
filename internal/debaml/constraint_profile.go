@@ -580,13 +580,19 @@ func (p *numericParser) parseAdd() (numeric, bool) {
 			if !ok {
 				return numeric{}, false
 			}
-			// |a - b| <= max(|a|, |b|).
-			left = combineNumeric(left, right, func(a, b uint64) uint64 {
-				if b > a {
-					return b
-				}
-				return a
-			})
+			// SUBTRACTION USES THE SUM BOUND, NOT max(|a|, |b|).
+			//
+			// max is only an upper bound when the operands share a sign.
+			// Subtracting a NEGATIVE grows the magnitude by the sum:
+			// a - (-k) == a + k. A chain of ten `- (-999999999999999)` keeps a
+			// max-bound at 999999999999999 while the true value passes 2^53,
+			// where minijinja-Go's float64 Sub collapses two distinct integers
+			// onto one and stock's i128 keeps them apart — a usable wrong
+			// boolean. The sign IS tracked syntactically, but a chain's signs
+			// cannot be established without evaluating it, so the bound stays
+			// conservative rather than clever: |a| + |b| holds whatever the
+			// signs are.
+			left = combineNumeric(left, right, satAdd)
 		default:
 			return left, true
 		}
