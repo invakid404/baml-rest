@@ -81,6 +81,18 @@ internal/nativeprompt/testdata/staticserve_fixture
 # make the root server binary ship a second BAML runtime dependency.
 internal/bamlprofile/profileoracle
 
+# de-BAML constraint-EVALUATOR differential oracle fixture: the .baml project
+# (baml_src) generated from internal/debaml/constraintoracle's corpus, plus its
+# UNTOUCHED stock BAML v0.223.0 generated Go client (baml_client). It is a
+# test-only oracle artifact consumed solely by the //go:build integration tests
+# in internal/debaml/constraintoracle, and its baml_client imports the stock
+# github.com/boundaryml/baml runtime — embedding it would make the root server
+# binary ship a SECOND generated BAML client. Excluded here (cmd/embed includes
+# testdata dirs by default) so the root embed manifest gains only the two new
+# production evaluator files, mirroring
+# internal/nativeprompt/testdata/static_oracle above.
+internal/debaml/testdata/constraint_oracle
+
 # de-BAML Phase 4b + 5.1 gated nanollm Prepare validation: a SEPARATE, test-only
 # Go module (github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare)
 # excluded from go.work so the PUBLIC github.com/viktordanov/nanollm-ffi/go
