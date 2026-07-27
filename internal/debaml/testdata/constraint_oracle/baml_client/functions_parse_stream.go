@@ -542,6 +542,53 @@ func (*parse_stream) Batch_listFn(text string, opts ...CallOptionFunc) (stream_t
 	return casted, nil
 }
 
+// / Parse version of Batch_listbigFn (Takes in string and returns stream_types.Batch_listbig)
+func (*parse_stream) Batch_listbigFn(text string, opts ...CallOptionFunc) (stream_types.Batch_listbig, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Batch_listbigFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Batch_listbigFn", encoded)
+	if err != nil {
+		return stream_types.Batch_listbig{}, err
+	}
+
+	casted := (result).(stream_types.Batch_listbig)
+
+	return casted, nil
+}
+
 // / Parse version of Batch_listeFn (Takes in string and returns stream_types.Batch_liste)
 func (*parse_stream) Batch_listeFn(text string, opts ...CallOptionFunc) (stream_types.Batch_liste, error) {
 
@@ -679,6 +726,53 @@ func (*parse_stream) Batch_listsFn(text string, opts ...CallOptionFunc) (stream_
 	}
 
 	casted := (result).(stream_types.Batch_lists)
+
+	return casted, nil
+}
+
+// / Parse version of Batch_liststr2Fn (Takes in string and returns stream_types.Batch_liststr2)
+func (*parse_stream) Batch_liststr2Fn(text string, opts ...CallOptionFunc) (stream_types.Batch_liststr2, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Batch_liststr2Fn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Batch_liststr2Fn", encoded)
+	if err != nil {
+		return stream_types.Batch_liststr2{}, err
+	}
+
+	casted := (result).(stream_types.Batch_liststr2)
 
 	return casted, nil
 }
@@ -867,6 +961,53 @@ func (*parse_stream) Batch_streFn(text string, opts ...CallOptionFunc) (stream_t
 	}
 
 	casted := (result).(stream_types.Batch_stre)
+
+	return casted, nil
+}
+
+// / Parse version of Batch_strexactFn (Takes in string and returns stream_types.Batch_strexact)
+func (*parse_stream) Batch_strexactFn(text string, opts ...CallOptionFunc) (stream_types.Batch_strexact, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Batch_strexactFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Batch_strexactFn", encoded)
+	if err != nil {
+		return stream_types.Batch_strexact{}, err
+	}
+
+	casted := (result).(stream_types.Batch_strexact)
 
 	return casted, nil
 }
@@ -1713,6 +1854,53 @@ func (*parse_stream) Iso_fn_unknownFn(text string, opts ...CallOptionFunc) (stre
 	}
 
 	casted := (result).(stream_types.Iso_fn_unknown)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_num_pow_oversizedFn (Takes in string and returns stream_types.Iso_num_pow_oversized)
+func (*parse_stream) Iso_num_pow_oversizedFn(text string, opts ...CallOptionFunc) (stream_types.Iso_num_pow_oversized, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_num_pow_oversizedFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_num_pow_oversizedFn", encoded)
+	if err != nil {
+		return stream_types.Iso_num_pow_oversized{}, err
+	}
+
+	casted := (result).(stream_types.Iso_num_pow_oversized)
 
 	return casted, nil
 }

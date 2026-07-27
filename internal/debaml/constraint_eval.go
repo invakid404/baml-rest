@@ -177,9 +177,9 @@ func renderConstraint(this ConstraintValue, expression string) (string, error) {
 	}
 	if exceedsExactIntegerRange(this, expression) {
 		return "", unsupportedConstraint(
-			"integer magnitude can reach the inexact float64 range (>= 2^53); minijinja-Go computes and " +
-				"compares integers as float64, so the answer would be wrong and, past 2^63, " +
-				"architecture-dependent")
+			"integer arithmetic whose operands are not statically bounded below 2^53 (the closure rule); " +
+				"minijinja-Go computes and compares integers as float64, so a value that crosses 2^53 in " +
+				"any operator is wrong and, past 2^63, architecture-dependent")
 	}
 
 	primary, primaryErr := renderOnce(this, expression, mappingOrdered)

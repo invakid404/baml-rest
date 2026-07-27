@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Unit-lane cover for the constraint evaluator. The AUTHORITATIVE proof is the
@@ -709,7 +710,7 @@ func TestRuntimeIntegerProducersAreRefused(t *testing.T) {
 		{NullValue(), `"42"|int == 42`, true},
 		{StringValue("42"), "this|int == 42", true},
 		{NullValue(), `"2.9"|int == 2`, true},
-		{NullValue(), "-1|abs == 1", true},
+		{NullValue(), "-1|abs == 1", true}, // unary minus is not arithmetic
 		{NullValue(), "[1,2]|sum == 3", true},
 		{NullValue(), "[1,2]|max == 2", true},
 		// `float` is deliberately NOT guarded: it produces a float, and float
@@ -725,5 +726,131 @@ func TestRuntimeIntegerProducersAreRefused(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("%q = %v, want %v", tc.expr, got, tc.want)
 		}
+	}
+}
+
+// TestIntegerArithmeticClosureIsRefused pins the round-5 P1 class, which four
+// rounds of narrower guards each failed to close.
+//
+// A runtime integer produced JUST INSIDE the exact range can cross 2^53 in a
+// LATER operator, and minijinja-Go offers no post-operator hook. The reachable
+// demonstration, live against stock:
+//
+//	this = "9007199254740991"   (2^53 - 1)
+//	this|int + 1 + 1 == this|int + 1     native (before) true, stock FALSE
+//
+// `int` legitimately yields 2^53-1, so guarding the producer does not help; the
+// source holds only literal 1s, so bounding magnitudes does not help either.
+// The profile therefore stops predicting magnitudes through runtime values and
+// requires instead that every integer reaching a growing operator be STATICALLY
+// bounded — which a filter or call result never is.
+func TestIntegerArithmeticClosureIsRefused(t *testing.T) {
+	exact := StringValue("9007199254740991")
+	numStrings := ListValue([]ConstraintValue{StringValue("9007199254740991"), StringValue("1")})
+	bigInts := ListValue([]ConstraintValue{IntValue(4503599627370495), IntValue(4503599627370496)})
+	cls := ClassValue("P", []ConstraintEntry{{Key: "n", Value: IntValue(7)}})
+
+	for _, tc := range []struct {
+		name string
+		this ConstraintValue
+		expr string
+	}{
+		{"reviewer_case", exact, "this|int + 1 + 1 == this|int + 1"},
+		{"multiply", exact, "this|int * 2 > 0"},
+		{"power", exact, "this|int ** 2 > 0"},
+		{"subtract", exact, "this|int - 1 + 2 == this|int + 1"},
+		{"sum", bigInts, "this|sum + 1 == this|sum"},
+		{"max", bigInts, "this|max + 1 + 1 == this|max + 1"},
+		{"min", bigInts, "this|min * 4 > 0"},
+		{"abs_chain", exact, "this|int|abs + 1 + 1 == this|int|abs + 1"},
+		{"map_sum", numStrings, `this|map("int")|sum + 1 + 1 == this|map("int")|sum + 1`},
+		{"map_first", numStrings, `this|map("int")|first + 1 + 1 == this|map("int")|first + 1`},
+		{"nested_chain", numStrings, `this|map("int")|max|abs + 1 + 1 == this|map("int")|max|abs + 1`},
+		{"attr_filter", cls, `this|attr("n") + 1 == 8`},
+		{"round_filter", FloatValue(2.5), "this|round + 1 == 4"},
+		{"call_result", NullValue(), "range(3)|length + 1 == 4"},
+		// Over-refusals the rule accepts: these happen to be small, but their
+		// operands are filter results, which the rule cannot bound.
+		{"length_small", NullValue(), "[1,2]|length + 1 == 3"},
+		{"abs_small", NullValue(), "-1|abs + 1 == 2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, err := EvaluateConstraint(tc.this, tc.expr); !errors.Is(err, ErrConstraintUnsupported) {
+				t.Fatalf("%q answered %v (err=%v); a runtime integer reaches an arithmetic operator here",
+					tc.expr, got, err)
+			}
+		})
+	}
+}
+
+// TestIntegerArithmeticClosureStillPermitsStaticArithmetic is the other half:
+// the closure rule narrows ARITHMETIC over unbounded operands, and nothing else.
+// Arithmetic over literals and value-model integers, and filters WITHOUT
+// arithmetic, must all still decide.
+func TestIntegerArithmeticClosureStillPermitsStaticArithmetic(t *testing.T) {
+	for _, tc := range []struct {
+		this ConstraintValue
+		expr string
+	}{
+		{NullValue(), "2 ** 10 == 1024"},
+		{NullValue(), "1000 * 1000 == 1000000"},
+		{NullValue(), "3000000 * 3000000 == 9000000000000"},
+		{NullValue(), "1 + 1 == 2"},
+		{NullValue(), "9007199254740990 + 1 == 9007199254740991"},
+		{IntValue(7), "this + 1 == 8"},
+		{ClassValue("P", []ConstraintEntry{{Key: "n", Value: IntValue(7)}}), "this.n + 1 == 8"},
+		{ListValue([]ConstraintValue{IntValue(1), IntValue(2)}), "this[0] + 1 == 2"},
+		// Filters are fine on their own — it is only their composition with
+		// arithmetic that cannot be bounded.
+		{NullValue(), "-1|abs == 1"},
+		{NullValue(), "[1,2]|sum == 3"},
+		{NullValue(), `"2"|int == 2`},
+		{StringValue("9007199254740991"), "this|int == 9007199254740991"},
+		{IntValue(7), "this|abs == 7"},
+	} {
+		got, err := EvaluateConstraint(tc.this, tc.expr)
+		if err != nil {
+			t.Errorf("%q over %s was refused (%v); the closure rule has become over-broad",
+				tc.expr, tc.this.Kind(), err)
+			continue
+		}
+		if !got {
+			t.Errorf("%q over %s = false, want true", tc.expr, tc.this.Kind())
+		}
+	}
+}
+
+// TestPowerBoundTerminates is a LIVENESS regression test.
+//
+// The round-4 operand-aware bound computed the exact power with a linear loop,
+// so `1 ** 9007199254740991` — a valid expression — spun roughly nine
+// quadrillion times BEFORE the template was compiled, because multiplying by 1
+// never saturates. satPow is now exponentiation by squaring with explicit 0/1
+// bases, and an exponent beyond what stock's u32 conversion accepts is refused
+// outright rather than evaluated (minijinja-Go would call math.Pow and answer
+// where stock errors).
+//
+// The deadline is what makes this a regression test rather than a description:
+// the previous implementation could not have finished inside it.
+func TestPowerBoundTerminates(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for _, expr := range []string{
+			"1 ** 9007199254740991 == 1",
+			"0 ** 9007199254740991 == 0",
+			"2 ** 9007199254740991 > 0",
+			"9007199254740991 ** 9007199254740991 > 0",
+			"1 ** 4294967296 == 1",
+		} {
+			if _, err := EvaluateConstraint(NullValue(), expr); !errors.Is(err, ErrConstraintUnsupported) {
+				t.Errorf("%q must be refused: stock rejects an exponent this large", expr)
+			}
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the numeric bound did not terminate within 10s; satPow has regressed to a linear loop")
 	}
 }

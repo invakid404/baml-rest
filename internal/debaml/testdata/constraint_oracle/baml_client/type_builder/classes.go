@@ -367,6 +367,38 @@ func (t *Batch_listClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 
+type Batch_listbigClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Batch_listbigClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Batch_listbigClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Batch_listbig() (*Batch_listbigClassView, error) {
+	bld, err := t.inner.Class("Batch_listbig")
+	if err != nil {
+		return nil, err
+	}
+	return &Batch_listbigClassView{inner: bld}, nil
+}
+
+func (t *Batch_listbigClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
 type Batch_listeClassView struct {
 	inner baml.ClassBuilder
 }
@@ -460,6 +492,38 @@ func (t *TypeBuilder) Batch_lists() (*Batch_listsClassView, error) {
 }
 
 func (t *Batch_listsClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Batch_liststr2ClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Batch_liststr2ClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Batch_liststr2ClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Batch_liststr2() (*Batch_liststr2ClassView, error) {
+	bld, err := t.inner.Class("Batch_liststr2")
+	if err != nil {
+		return nil, err
+	}
+	return &Batch_liststr2ClassView{inner: bld}, nil
+}
+
+func (t *Batch_liststr2ClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 
@@ -588,6 +652,38 @@ func (t *TypeBuilder) Batch_stre() (*Batch_streClassView, error) {
 }
 
 func (t *Batch_streClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Batch_strexactClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Batch_strexactClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Batch_strexactClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Batch_strexact() (*Batch_strexactClassView, error) {
+	bld, err := t.inner.Class("Batch_strexact")
+	if err != nil {
+		return nil, err
+	}
+	return &Batch_strexactClassView{inner: bld}, nil
+}
+
+func (t *Batch_strexactClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 
@@ -1164,6 +1260,38 @@ func (t *TypeBuilder) Iso_fn_unknown() (*Iso_fn_unknownClassView, error) {
 }
 
 func (t *Iso_fn_unknownClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_num_pow_oversizedClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_num_pow_oversizedClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_num_pow_oversizedClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_num_pow_oversized() (*Iso_num_pow_oversizedClassView, error) {
+	bld, err := t.inner.Class("Iso_num_pow_oversized")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_num_pow_oversizedClassView{inner: bld}, nil
+}
+
+func (t *Iso_num_pow_oversizedClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 

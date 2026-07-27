@@ -230,6 +230,8 @@ class Batch_const {
     @check(num_add_escape, {{ 9007199254740991 + 1 == 9007199254740992 }})
     @check(num_pow_escape, {{ 2 ** 62 > 0 }})
     @check(num_mul_inrange, {{ 3000000 * 3000000 == 9000000000000 }})
+    @check(f_length_arith, {{ [1,2]|length + 1 == 3 }})
+    @check(f_abs_arith, {{ -1|abs + 1 == 2 }})
 }
 
 function Batch_constFn(topic: string) -> Batch_const {
@@ -524,6 +526,43 @@ function Batch_strnumsmFn(topic: string) -> Batch_strnumsm {
   prompt #"{{ topic }} {{ ctx.output_format }}"#
 }
 
+class Batch_strexact {
+  v string
+    @check(this_strexact_compose, {{ this|int + 1 + 1 == this|int + 1 }})
+    @check(this_strexact_mul, {{ this|int * 2 > 0 }})
+    @check(this_strexact_pow, {{ this|int ** 2 > 0 }})
+    @check(this_strexact_int, {{ this|int == 9007199254740991 }})
+    @check(this_strexact_length, {{ this|length == 16 }})
+}
+
+function Batch_strexactFn(topic: string) -> Batch_strexact {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Batch_liststr2 {
+  v string[]
+    @check(this_liststr_mapsum_compose, {{ this|map("int")|sum + 1 + 1 == this|map("int")|sum + 1 }})
+    @check(this_liststr_mapsum, {{ this|map("int")|sum > 0 }})
+}
+
+function Batch_liststr2Fn(topic: string) -> Batch_liststr2 {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Batch_listbig {
+  v int[]
+    @check(this_listbig_sum_arith, {{ this|sum + 1 == this|sum }})
+    @check(this_listbig_sum, {{ this|sum > 0 }})
+    @check(this_listbig_max_arith, {{ this|max + 1 + 1 == this|max + 1 }})
+}
+
+function Batch_listbigFn(topic: string) -> Batch_listbig {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
 // Driven ONLY by TestStockDivisibleByZeroIsProcessFatal, from a subprocess:
 // stock BAML v0.223 aborts the process on this expression.
 class Iso_divzero {
@@ -774,6 +813,15 @@ class Iso_f_length_int {
 }
 
 function Iso_f_length_intFn(topic: string) -> Iso_f_length_int {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_num_pow_oversized {
+  v int @check(num_pow_oversized, {{ 1 ** 9007199254740991 == 1 }})
+}
+
+function Iso_num_pow_oversizedFn(topic: string) -> Iso_num_pow_oversized {
   client ConstraintOracleClient
   prompt #"{{ topic }} {{ ctx.output_format }}"#
 }

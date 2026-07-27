@@ -336,54 +336,83 @@ const maxExactInt uint64 = 1 << 53
 // boundary is enforced BEFORE evaluation, over the whole expression, by bounding
 // the magnitude any integer in it could reach.
 
-// exceedsExactIntegerRange reports whether the expression could involve an
-// integer outside the exactly-representable range, and must therefore be
+// exceedsExactIntegerRange reports whether integer arithmetic in this
+// expression could leave the exactly-representable range, and must therefore be
 // refused.
 //
-// The engine exposes no intermediates, so the bound is STATIC. It has two
-// modes, and the distinction matters because a crude bound is wrong in both
-// directions — it lets runtime-produced integers through and it refuses
-// arithmetic that is provably exact:
+// WHY THIS IS A CLOSURE RULE AND NOT A MAGNITUDE ESTIMATE. Four review rounds
+// established that a static magnitude estimate cannot close this class: whatever
+// it bounds, a value can be produced at RUNTIME just inside the range and then
+// pushed past it by a later operator, and there is no post-operator hook to
+// catch that. The reachable demonstration is
 //
-//   - OPERAND-AWARE. When the expression contains exactly ONE
-//     magnitude-growing operator and both of its operands are integer
-//     literals, the operation is evaluated exactly (saturating) and that IS the
-//     bound. `2 ** 10 == 1024` is 1024, not the 10^10 a global-maximum estimate
-//     would guess, so it is admitted and stays in live agreement with stock.
-//     The single-operator condition is what makes this sound: with a chain, an
-//     operand is another operation's result rather than the literal beside it
-//     (`2 ** 10 ** 3` is 2^1000, not 1024), so the exact reading no longer
-//     bounds anything.
+//	this|int + 1 + 1 == this|int + 1     with this = "9007199254740991"
 //
-//   - PESSIMISTIC otherwise. Start from the largest integer the expression can
-//     see and apply each growing operator to a running bound. With k
-//     multiplications over leaves of magnitude <= M the true maximum is
-//     M^(k+1), which is exactly what repeated `bound * M` yields; likewise
-//     (k+1)*M for additions. Sound, and deliberately loose.
+// where `int` legitimately yields 2^53-1, the source contains only the literal
+// 1s, and minijinja-Go's float64 `Add` then collapses 2^53+1 onto 2^53 — native
+// true, BAML false. Guarding the producer does not help, because the producer's
+// output was in range; guarding the operator is impossible, because operators
+// are not extension points.
+//
+// So the profile stops trying to predict magnitudes through runtime values and
+// instead states a property it can decide:
+//
+//	Integer arithmetic is permitted ONLY when every integer that can reach a
+//	magnitude-growing operator is STATICALLY BOUNDED, and the closure of that
+//	arithmetic stays below 2^53.
+//
+// Statically bounded means a literal in the source or an integer in the bound
+// value — both of which this function can measure exactly. A value that came out
+// of a FILTER or a METHOD CALL is not statically bounded, so an expression that
+// contains both a growing operator and a filter/call is refused outright,
+// whatever the magnitudes happen to be at runtime. That is the entire class,
+// closed by construction rather than by enumeration.
+//
+// Comparisons are deliberately NOT restricted. [guardIntegerResult] keeps every
+// runtime-produced integer below 2^53 and the checks here keep every literal and
+// value-model integer below it, so a comparison between two such values is
+// exact in float64. Only arithmetic can manufacture a value the comparison can
+// no longer distinguish, which is why arithmetic is the thing that narrows.
 //
 // Only `**`, `*`, `+` and `-` grow magnitude: `/` produces a float (identical
 // f64 semantics in both engines) and `//` and `%` shrink. Floats are exempt
 // throughout.
-//
-// This covers integers that are VISIBLE before evaluation. Integers
-// manufactured DURING evaluation — `"9007199254740993"|int` is the reachable
-// example — are invisible here by construction, and are caught at the point of
-// production instead by [guardIntegerResult].
 func exceedsExactIntegerRange(this ConstraintValue, expr string) bool {
-	m := maxAbsInt(this)
 	src := scanIntegerSource(expr)
+
+	m := maxAbsInt(this)
 	if src.maxLiteral > m {
 		m = src.maxLiteral
-	}
-	if m == 0 && src.growOps() == 0 {
-		return false
 	}
 	if m >= maxExactInt {
 		return true
 	}
 
-	// Operand-aware: one growing operator, both operands read as integer
-	// literals. The operation cannot produce more than its own exact result.
+	if src.growOps() == 0 {
+		// No arithmetic: every integer in play is already below 2^53, so every
+		// comparison over them is exact.
+		return false
+	}
+
+	// Arithmetic is present. If anything in the expression can introduce an
+	// integer this function cannot bound — a filter result or a method call —
+	// the closure is not computable and the expression is outside the profile.
+	if src.hasRuntimeSource {
+		return true
+	}
+
+	// An exponent large enough that stock rejects it outright (minijinja
+	// converts the exponent to u32) is refused rather than evaluated: minijinja-Go
+	// would compute math.Pow and answer.
+	if src.oversizedExponent {
+		return true
+	}
+
+	// Operand-aware: one growing operator over two integer literals cannot
+	// produce more than its own exact result. The single-operator condition is
+	// what makes this sound — in a chain an operand is another operation's
+	// result rather than the literal beside it (`2 ** 10 ** 3` is 2^1000, not
+	// 1024), so the exact reading would bound nothing.
 	if src.growOps() == 1 && src.soleOpExact {
 		bound := src.soleOpResult
 		if m > bound {
@@ -392,6 +421,9 @@ func exceedsExactIntegerRange(this ConstraintValue, expr string) bool {
 		return bound >= maxExactInt
 	}
 
+	// Otherwise the pessimistic closure: with k multiplications over leaves of
+	// magnitude <= M the true maximum is M^(k+1), which is what repeated
+	// `bound * M` yields; likewise (k+1)*M for additions.
 	bound := m
 	for i := 0; i < src.pow && bound < maxExactInt; i++ {
 		bound = satPow(bound, m)
@@ -439,41 +471,68 @@ func maxAbsInt(v ConstraintValue) uint64 {
 type sourceScan struct {
 	maxLiteral       uint64
 	pow, mul, addSub int
-	soleOpExact      bool   // the one growing operator had two integer-literal operands
-	soleOpResult     uint64 // its exact (saturating) result
+	// hasRuntimeSource: the expression applies a filter or calls a method, so it
+	// can introduce an integer whose magnitude is not knowable before evaluation.
+	hasRuntimeSource bool
+	// oversizedExponent: a `**` whose exponent literal is beyond what stock's
+	// u32 conversion accepts.
+	oversizedExponent bool
+	soleOpExact       bool   // the one growing operator had two integer-literal operands
+	soleOpResult      uint64 // its exact (saturating) result
 }
 
 func (s sourceScan) growOps() int { return s.pow + s.mul + s.addSub }
 
-// scanIntegerSource finds the largest INTEGER literal in the expression, counts
-// the magnitude-growing operators, and — when there is exactly one — reads its
-// operands so the bound can be exact rather than estimated.
+// powExponentLimit is where stock stops: minijinja converts a `**` exponent to
+// u32 and errors if it does not fit. minijinja-Go instead calls math.Pow and
+// answers, so anything at or beyond this is refused rather than evaluated.
+const powExponentLimit uint64 = 1 << 32
+
+// scanIntegerSource establishes, lexically, everything the closure rule needs:
+// the largest integer literal, the magnitude-growing operators, whether the
+// expression can introduce a runtime integer at all, and — when there is exactly
+// one growing operator — its literal operands.
 //
-// This is a lexical scan, not a parse: minijinja-Go's parser is under internal/
-// and cannot be imported. That is sound in this direction, because the scan can
-// only over-count operators and over-estimate literals, and both push towards
-// refusing. The operand reading is the one place that could push the other way,
-// which is why it is used ONLY when it is the sole operator.
+// This is a scan, not a parse: minijinja-Go's parser is under internal/ and
+// cannot be imported. Every inaccuracy is deliberately biased towards refusing —
+// an over-counted operator, an over-estimated literal, or a `(` mistaken for a
+// call all push the same way. The one reading that could bias the other way,
+// the sole-operator operand pair, is used only when it is provably the whole
+// arithmetic of the expression.
 func scanIntegerSource(expr string) sourceScan {
 	var out sourceScan
 	type opSite struct {
 		kind  byte // '^' pow, '*', '+', '-'
-		index int  // index of the operator
+		index int
 		width int
 	}
 	var sites []opSite
+	prevSignificant := byte(0) // last non-space byte, for unary/binary disambiguation
 
 	for i := 0; i < len(expr); {
 		c := expr[i]
 		switch {
 		case c == '"' || c == '\'':
 			i = skipStringLiteral(expr, i)
+			prevSignificant = '"'
 		case c >= '0' && c <= '9' && !isIdentByte(prevByte(expr, i)):
 			var n uint64
 			n, i = scanNumericLiteral(expr, i)
 			if n > out.maxLiteral {
 				out.maxLiteral = n
 			}
+			prevSignificant = '0'
+		case c == '|':
+			// A filter application. `|` is never bitwise-or in jinja.
+			out.hasRuntimeSource = true
+			prevSignificant = c
+			i++
+		case c == '(' && isIdentByte(prevSignificant):
+			// A call — `range(3)`, `this.keys()`, `dict(a=1)`. A `(` after an
+			// operator or a space is ordinary grouping and is left alone.
+			out.hasRuntimeSource = true
+			prevSignificant = c
+			i++
 		case c == '*':
 			if i+1 < len(expr) && expr[i+1] == '*' {
 				out.pow++
@@ -484,11 +543,21 @@ func scanIntegerSource(expr string) sourceScan {
 				sites = append(sites, opSite{'*', i, 1})
 				i++
 			}
+			prevSignificant = '*'
 		case c == '+' || c == '-':
-			out.addSub++
-			sites = append(sites, opSite{c, i, 1})
+			// A leading `-` is unary negation, not arithmetic between two
+			// operands: `-1|abs` introduces no magnitude growth. It is binary
+			// only when something value-like precedes it.
+			if isBinaryPosition(prevSignificant) {
+				out.addSub++
+				sites = append(sites, opSite{c, i, 1})
+			}
+			prevSignificant = c
+			i++
+		case c == ' ' || c == '\t':
 			i++
 		default:
+			prevSignificant = c
 			i++
 		}
 	}
@@ -498,13 +567,16 @@ func scanIntegerSource(expr string) sourceScan {
 			out.soleOpExact = true
 			switch sites[0].kind {
 			case '^':
+				if b >= powExponentLimit {
+					out.oversizedExponent = true
+				}
 				out.soleOpResult = satPow(a, b)
 			case '*':
 				out.soleOpResult = satMul(a, b)
 			case '+':
 				out.soleOpResult = satAdd(a, b)
 			case '-':
-				// Magnitude of a difference is bounded by the larger operand.
+				// The magnitude of a difference is bounded by the larger operand.
 				out.soleOpResult = a
 				if b > a {
 					out.soleOpResult = b
@@ -513,6 +585,23 @@ func scanIntegerSource(expr string) sourceScan {
 		}
 	}
 	return out
+}
+
+// isBinaryPosition reports whether a `+`/`-` at this point separates two
+// operands, given the previous significant byte. After a value — a digit, an
+// identifier, a string, or a closing bracket — it is binary; after an operator,
+// an opening bracket, a comma, a pipe, or nothing at all, it is unary.
+func isBinaryPosition(prev byte) bool {
+	switch {
+	case prev == 0:
+		return false
+	case prev == ')' || prev == ']' || prev == '}' || prev == '"':
+		return true
+	case isIdentByte(prev):
+		return true
+	default:
+		return false
+	}
 }
 
 // literalOperands reads the integer literals immediately either side of an
@@ -643,11 +732,43 @@ func satMul(a, b uint64) uint64 {
 	return a * b
 }
 
+// satPow is exponentiation by squaring, saturating at maxExactInt.
+//
+// The linear version it replaces could not terminate in reasonable time: for
+// `1 ** 9007199254740991` — a perfectly ordinary expression — it looped roughly
+// nine quadrillion times BEFORE the template was even compiled, because
+// multiplying by 1 never reaches the saturation threshold. Bases 0 and 1 are
+// therefore answered directly, and for any base >= 2 an exponent of 64 already
+// exceeds 2^53, so the loop is bounded by ~6 iterations. There is no input for
+// which this does not return promptly.
 func satPow(base, exp uint64) uint64 {
+	switch base {
+	case 0:
+		if exp == 0 {
+			return 1
+		}
+		return 0
+	case 1:
+		return 1
+	}
+	if exp >= 64 {
+		// base >= 2, so the result is at least 2^64.
+		return maxExactInt
+	}
 	result := uint64(1)
-	for i := uint64(0); i < exp; i++ {
-		result = satMul(result, base)
-		if result >= maxExactInt {
+	for exp > 0 {
+		if exp&1 == 1 {
+			result = satMul(result, base)
+			if result >= maxExactInt {
+				return maxExactInt
+			}
+		}
+		exp >>= 1
+		if exp == 0 {
+			break
+		}
+		base = satMul(base, base)
+		if base >= maxExactInt {
 			return maxExactInt
 		}
 	}

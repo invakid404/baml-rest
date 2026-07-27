@@ -484,6 +484,48 @@ func (c Batch_list) BamlTypeName() string {
 	return "Batch_list"
 }
 
+type Batch_listbig struct {
+	V types.Checked[[]int64] `json:"v"`
+}
+
+func (c *Batch_listbig) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Batch_listbig" {
+		panic(fmt.Sprintf("expected Batch_listbig, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(types.Checked[[]int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Batch_listbig", key))
+
+		}
+	}
+
+}
+
+func (c Batch_listbig) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Batch_listbig", fields, nil)
+}
+
+func (c Batch_listbig) BamlTypeName() string {
+	return "Batch_listbig"
+}
+
 type Batch_liste struct {
 	V types.Checked[[]int64] `json:"v"`
 }
@@ -608,6 +650,48 @@ func (c Batch_lists) Encode() (*cffi.HostValue, error) {
 
 func (c Batch_lists) BamlTypeName() string {
 	return "Batch_lists"
+}
+
+type Batch_liststr2 struct {
+	V types.Checked[[]string] `json:"v"`
+}
+
+func (c *Batch_liststr2) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Batch_liststr2" {
+		panic(fmt.Sprintf("expected Batch_liststr2, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(types.Checked[[]string])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Batch_liststr2", key))
+
+		}
+	}
+
+}
+
+func (c Batch_liststr2) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Batch_liststr2", fields, nil)
+}
+
+func (c Batch_liststr2) BamlTypeName() string {
+	return "Batch_liststr2"
 }
 
 type Batch_map struct {
@@ -776,6 +860,48 @@ func (c Batch_stre) Encode() (*cffi.HostValue, error) {
 
 func (c Batch_stre) BamlTypeName() string {
 	return "Batch_stre"
+}
+
+type Batch_strexact struct {
+	V *types.Checked[string] `json:"v"`
+}
+
+func (c *Batch_strexact) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Batch_strexact" {
+		panic(fmt.Sprintf("expected Batch_strexact, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(*types.Checked[string])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Batch_strexact", key))
+
+		}
+	}
+
+}
+
+func (c Batch_strexact) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Batch_strexact", fields, nil)
+}
+
+func (c Batch_strexact) BamlTypeName() string {
+	return "Batch_strexact"
 }
 
 type Batch_strnum struct {
@@ -1532,6 +1658,48 @@ func (c Iso_fn_unknown) Encode() (*cffi.HostValue, error) {
 
 func (c Iso_fn_unknown) BamlTypeName() string {
 	return "Iso_fn_unknown"
+}
+
+type Iso_num_pow_oversized struct {
+	V *types.Checked[int64] `json:"v"`
+}
+
+func (c *Iso_num_pow_oversized) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_num_pow_oversized" {
+		panic(fmt.Sprintf("expected Iso_num_pow_oversized, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(*types.Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_num_pow_oversized", key))
+
+		}
+	}
+
+}
+
+func (c Iso_num_pow_oversized) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_num_pow_oversized", fields, nil)
+}
+
+func (c Iso_num_pow_oversized) BamlTypeName() string {
+	return "Iso_num_pow_oversized"
 }
 
 type Iso_op_floordiv_zero struct {
