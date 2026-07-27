@@ -1647,6 +1647,198 @@ func (t *Iso_py_num_methodClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 
+type Iso_slice_start_fractionalClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_slice_start_fractionalClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_slice_start_fractionalClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_slice_start_fractional() (*Iso_slice_start_fractionalClassView, error) {
+	bld, err := t.inner.Class("Iso_slice_start_fractional")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_slice_start_fractionalClassView{inner: bld}, nil
+}
+
+func (t *Iso_slice_start_fractionalClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_slice_start_stringClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_slice_start_stringClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_slice_start_stringClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_slice_start_string() (*Iso_slice_start_stringClassView, error) {
+	bld, err := t.inner.Class("Iso_slice_start_string")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_slice_start_stringClassView{inner: bld}, nil
+}
+
+func (t *Iso_slice_start_stringClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_slice_step_fractionalClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_slice_step_fractionalClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_slice_step_fractionalClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_slice_step_fractional() (*Iso_slice_step_fractionalClassView, error) {
+	bld, err := t.inner.Class("Iso_slice_step_fractional")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_slice_step_fractionalClassView{inner: bld}, nil
+}
+
+func (t *Iso_slice_step_fractionalClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_slice_stop_fractionalClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_slice_stop_fractionalClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_slice_stop_fractionalClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_slice_stop_fractional() (*Iso_slice_stop_fractionalClassView, error) {
+	bld, err := t.inner.Class("Iso_slice_stop_fractional")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_slice_stop_fractionalClassView{inner: bld}, nil
+}
+
+func (t *Iso_slice_stop_fractionalClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_slice_stop_stringClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_slice_stop_stringClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_slice_stop_stringClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_slice_stop_string() (*Iso_slice_stop_stringClassView, error) {
+	bld, err := t.inner.Class("Iso_slice_stop_string")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_slice_stop_stringClassView{inner: bld}, nil
+}
+
+func (t *Iso_slice_stop_stringClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_slice_this_fractionalClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_slice_this_fractionalClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_slice_this_fractionalClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_slice_this_fractional() (*Iso_slice_this_fractionalClassView, error) {
+	bld, err := t.inner.Class("Iso_slice_this_fractional")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_slice_this_fractionalClassView{inner: bld}, nil
+}
+
+func (t *Iso_slice_this_fractionalClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
 type Iso_t_containingClassView struct {
 	inner baml.ClassBuilder
 }

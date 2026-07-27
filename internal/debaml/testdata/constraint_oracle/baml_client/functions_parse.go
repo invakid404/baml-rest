@@ -2422,6 +2422,288 @@ func (*parse) Iso_py_num_methodFn(text string, opts ...CallOptionFunc) (types.Is
 	return casted, nil
 }
 
+// / Parse version of Iso_slice_start_fractionalFn (Takes in string and returns types.Iso_slice_start_fractional)
+func (*parse) Iso_slice_start_fractionalFn(text string, opts ...CallOptionFunc) (types.Iso_slice_start_fractional, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_slice_start_fractionalFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_slice_start_fractionalFn", encoded)
+	if err != nil {
+		return types.Iso_slice_start_fractional{}, err
+	}
+
+	casted := (result).(types.Iso_slice_start_fractional)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_slice_start_stringFn (Takes in string and returns types.Iso_slice_start_string)
+func (*parse) Iso_slice_start_stringFn(text string, opts ...CallOptionFunc) (types.Iso_slice_start_string, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_slice_start_stringFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_slice_start_stringFn", encoded)
+	if err != nil {
+		return types.Iso_slice_start_string{}, err
+	}
+
+	casted := (result).(types.Iso_slice_start_string)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_slice_step_fractionalFn (Takes in string and returns types.Iso_slice_step_fractional)
+func (*parse) Iso_slice_step_fractionalFn(text string, opts ...CallOptionFunc) (types.Iso_slice_step_fractional, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_slice_step_fractionalFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_slice_step_fractionalFn", encoded)
+	if err != nil {
+		return types.Iso_slice_step_fractional{}, err
+	}
+
+	casted := (result).(types.Iso_slice_step_fractional)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_slice_stop_fractionalFn (Takes in string and returns types.Iso_slice_stop_fractional)
+func (*parse) Iso_slice_stop_fractionalFn(text string, opts ...CallOptionFunc) (types.Iso_slice_stop_fractional, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_slice_stop_fractionalFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_slice_stop_fractionalFn", encoded)
+	if err != nil {
+		return types.Iso_slice_stop_fractional{}, err
+	}
+
+	casted := (result).(types.Iso_slice_stop_fractional)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_slice_stop_stringFn (Takes in string and returns types.Iso_slice_stop_string)
+func (*parse) Iso_slice_stop_stringFn(text string, opts ...CallOptionFunc) (types.Iso_slice_stop_string, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_slice_stop_stringFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_slice_stop_stringFn", encoded)
+	if err != nil {
+		return types.Iso_slice_stop_string{}, err
+	}
+
+	casted := (result).(types.Iso_slice_stop_string)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_slice_this_fractionalFn (Takes in string and returns types.Iso_slice_this_fractional)
+func (*parse) Iso_slice_this_fractionalFn(text string, opts ...CallOptionFunc) (types.Iso_slice_this_fractional, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_slice_this_fractionalFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_slice_this_fractionalFn", encoded)
+	if err != nil {
+		return types.Iso_slice_this_fractional{}, err
+	}
+
+	casted := (result).(types.Iso_slice_this_fractional)
+
+	return casted, nil
+}
+
 // / Parse version of Iso_t_containingFn (Takes in string and returns types.Iso_t_containing)
 func (*parse) Iso_t_containingFn(text string, opts ...CallOptionFunc) (types.Iso_t_containing, error) {
 

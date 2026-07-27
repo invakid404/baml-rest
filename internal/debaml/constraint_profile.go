@@ -481,50 +481,204 @@ func containsArithmeticByte(expr string) bool {
 // Fail-closed on anything the scan cannot classify: an unbalanced bracket, a
 // nested bracket, a backslash inside a string, or an unterminated string.
 func bracketBoundsAreProvablySafe(expr string) bool {
-	depth := 0
 	for i := 0; i < len(expr); i++ {
-		c := expr[i]
-		switch {
-		case c == '"' || c == '\'':
-			// A string literal, inside brackets or out. Consume it here so a `[`
-			// in its body is never mistaken for a subscript.
-			quote := c
-			i++
-			for ; i < len(expr) && expr[i] != quote; i++ {
-				if expr[i] == '\\' {
-					return false // an escape: not something to guess at
-				}
-			}
-			if i >= len(expr) {
-				return false // unterminated
-			}
-		case c == '[':
-			depth++
-			if depth > 1 {
-				return false // a nested bracket region is not analysed
-			}
-		case c == ']':
-			depth--
-			if depth < 0 {
+		switch expr[i] {
+		case '"', '\'':
+			j, ok := skipStringLiteral(expr, i)
+			if !ok {
 				return false
 			}
-		case depth == 0:
-			// Outside brackets everything is somebody else's problem.
-		case c >= '0' && c <= '9', c == '.', c == ',', c == ':', c == '-',
-			c == ' ', c == '\t', c == '\n', c == '\r', c == '\f', c == '\v':
-			// Numeric literals, negation, and the separators. A LITERAL is safe at
-			// any of these positions — including a fractional one — because
-			// everyNumericTokenIsProvablySmall has already capped every source
-			// numeric token at 15 integer digits, well inside the range where both
-			// engines convert alike. `.` also lets an ordinary list literal such as
-			// `[1,2.5]` through, which is not a subscript at all. The hazard this
-			// guard exists for is a DERIVED bound, and every way of deriving one
-			// needs a letter, quote, pipe, paren or bracket — all refused below.
-		default:
-			return false // an identifier, filter, call, operator or attribute
+			i = j
+		case ']':
+			return false // a close with no open
+		case '[':
+			j, ok := matchingBracket(expr, i)
+			if !ok {
+				return false
+			}
+			region := expr[i+1 : j]
+			if bracketIsListLiteral(expr, i) {
+				if !listLiteralRegionIsSafe(region) {
+					return false
+				}
+			} else if !subscriptRegionIsSafe(region) {
+				return false
+			}
+			i = j
 		}
 	}
-	return depth == 0
+	return true
+}
+
+// bracketIsListLiteral classifies the `[` at open. It answers TRUE only where a
+// VALUE must follow — the start of the expression, an opener, a separator, an
+// operator, or one of Jinja's keywords — because a subscript can only bind to a
+// value that has already been produced. Every other position, and every
+// position it cannot read, is treated as a SUBSCRIPT, which is the strict rule.
+// That direction matters: misreading a list literal as a subscript costs
+// coverage, while misreading a subscript as a list literal would cost the
+// guarantee.
+func bracketIsListLiteral(expr string, open int) bool {
+	j := open - 1
+	for j >= 0 && isSpaceByte(expr[j]) {
+		j--
+	}
+	if j < 0 {
+		return true // start of expression
+	}
+	switch expr[j] {
+	case '(', ',', '[', ':', '=', '<', '>', '!', '~', '+', '-', '*', '/', '%', '|', '&':
+		return true
+	}
+	if isIdentByte(expr[j]) {
+		k := j
+		for k >= 0 && isIdentByte(expr[k]) {
+			k--
+		}
+		switch expr[k+1 : j+1] {
+		case "in", "is", "not", "and", "or", "if", "else":
+			return true // a keyword, so a value follows
+		}
+		return false // a variable: this is a subscript
+	}
+	return false // ')' ']' '.' a quote, or anything unrecognised
+}
+
+// listLiteralRegionIsSafe admits the literal elements of a list: numbers, which
+// everyNumericTokenIsProvablySmall has already capped at 15 integer digits,
+// strings, and commas. A `:` is refused — a colon here means the region was
+// really a slice that [bracketIsListLiteral] misread, and refusing is the
+// fail-closed side of that mistake.
+func listLiteralRegionIsSafe(region string) bool {
+	for i := 0; i < len(region); i++ {
+		c := region[i]
+		switch {
+		case c == '"' || c == '\'':
+			j, ok := skipStringLiteral(region, i)
+			if !ok {
+				return false
+			}
+			i = j
+		case c >= '0' && c <= '9', c == '.', c == ',', c == '-', isSpaceByte(c):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// subscriptRegionIsSafe is the rule for the two VM operators that read a bound
+// through Value.AsInt.
+//
+// A bound must be an INTEGER literal — `-?d+`, nothing else — or, in a slice,
+// omitted. Round 14 admitted any literal here, and that was not enough, because
+// the two engines disagree about an invalid bound rather than about a large one:
+//
+//	[1,2,3][1.5:]|length == 3      native TRUE, stock ERRORS
+//	[1,2,3][:1.5]|length == 3      native TRUE, stock ERRORS
+//	[1,2,3][::1.5]|length == 3     native TRUE, stock ERRORS
+//	[1,2,3]["x":]|length == 3      native TRUE, stock ERRORS
+//
+// State.evalSlice calls AsInt and, when it returns ok==false, silently leaves
+// that bound nil — indistinguishable from an OMITTED bound — so native slices
+// the whole list and answers. Stock's ops::slice calls i64::try_from, whose F64
+// arm accepts a value only when `(val as i64 as f64) == val`, so 1.5 and "x" are
+// evaluation errors there. Architecture-independent, and reachable with no
+// hazardous value at all.
+//
+// A string key is admitted for a DIRECT subscript only, where there is no
+// conversion to disagree about: GetItem's map arm reads AsString, and its
+// sequence arms simply find no item. A slice bound is integer-only.
+func subscriptRegionIsSafe(region string) bool {
+	if !strings.Contains(region, ":") {
+		return isIntegerLiteralTerm(region) || isStringLiteralTerm(region)
+	}
+	terms := strings.Split(region, ":")
+	if len(terms) > 3 { // start:stop:step and nothing further
+		return false
+	}
+	for _, t := range terms {
+		if strings.TrimSpace(t) == "" {
+			continue // an omitted bound is what both engines call omitted
+		}
+		if !isIntegerLiteralTerm(t) {
+			return false
+		}
+	}
+	return true
+}
+
+// isIntegerLiteralTerm reports whether a bound is `-?d+` with nothing else. The
+// digits are already capped at 15 by everyNumericTokenIsProvablySmall, so an
+// accepted bound cannot reach the int64 conversion boundary in either engine.
+func isIntegerLiteralTerm(term string) bool {
+	t := strings.TrimSpace(term)
+	t = strings.TrimPrefix(t, "-")
+	if t == "" {
+		return false
+	}
+	for i := 0; i < len(t); i++ {
+		if t[i] < '0' || t[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// isStringLiteralTerm reports whether a bound is exactly one plain string
+// literal — no escapes, nothing around it.
+func isStringLiteralTerm(term string) bool {
+	t := strings.TrimSpace(term)
+	if len(t) < 2 || (t[0] != '"' && t[0] != '\'') {
+		return false
+	}
+	j, ok := skipStringLiteral(t, 0)
+	return ok && j == len(t)-1
+}
+
+// matchingBracket returns the index of the `]` closing the `[` at open. A nested
+// `[` refuses, because a nested region is not analysed; so does a string that
+// cannot be read.
+func matchingBracket(expr string, open int) (int, bool) {
+	for i := open + 1; i < len(expr); i++ {
+		switch expr[i] {
+		case '"', '\'':
+			j, ok := skipStringLiteral(expr, i)
+			if !ok {
+				return 0, false
+			}
+			i = j
+		case '[':
+			return 0, false
+		case ']':
+			return i, true
+		}
+	}
+	return 0, false // unbalanced
+}
+
+// skipStringLiteral returns the index of the closing quote of the literal that
+// starts at i. A backslash refuses: an escape is not something to guess at, and
+// mis-reading where a string ends is how a hand scanner starts failing open.
+func skipStringLiteral(s string, i int) (int, bool) {
+	quote := s[i]
+	for j := i + 1; j < len(s); j++ {
+		switch s[j] {
+		case '\\':
+			return 0, false
+		case quote:
+			return j, true
+		}
+	}
+	return 0, false // unterminated
+}
+
+func isSpaceByte(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r' || b == '\f' || b == '\v'
+}
+
+func isIdentByte(b byte) bool {
+	return b == '_' || (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }
 
 // maxSmallDigits is 15 because 10^15 - 1 < 2^53, so any accepted integer — and

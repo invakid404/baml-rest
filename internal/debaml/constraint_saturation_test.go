@@ -981,6 +981,19 @@ func TestSubscriptAndSliceBoundsMustBeLiterals(t *testing.T) {
 		"string index":      {StringValue("abcdef"), `this[0] == "a"`, true},
 		"string slice":      {StringValue("abcdef"), `this[1:3] == "bc"`, true},
 		"mapping subscript": {MapValue([]ConstraintEntry{{Key: "k", Value: IntValue(7)}}), `this["k"] == 7`, true},
+
+		// ROUND 15 controls. A LIST LITERAL may still hold non-integer elements —
+		// only a SUBSCRIPT or SLICE bound is integer-only, because only those
+		// reach evalSlice/GetItem.
+		"list literal with a float": {NullValue(), `[1,2.5]|sum == 3.5`, true},
+		"list literal of floats":    {NullValue(), `[1.5,2.5]|sum == 4.0`, true},
+		// Omitted bounds are what both engines call omitted.
+		"open slice": {NullValue(), `[1,2,3][:]|length == 3`, true},
+		"unit step":  {NullValue(), `[1,2,3][::1]|length == 3`, true},
+		// A string KEY in a direct subscript has no conversion to disagree about:
+		// GetItem's map arm reads AsString and its sequence arms simply find no
+		// item. Measured live against stock on a sequence as well as a mapping.
+		"string key on a sequence": {NullValue(), `[1,2,3]["x"] == 1`, false},
 	} {
 		got, err := EvaluateConstraint(tc.this, tc.expr)
 		if err != nil {
@@ -1007,6 +1020,9 @@ func TestBracketScannerFailsClosed(t *testing.T) {
 		`[1|abs][0]`,           // a filter inside brackets
 		`[1,2,3][0|int]`,       // a filter as the index
 		`[1,2,3][ "a" ~ "b" ]`, // a concatenation as the index
+		`[1,2,3][1.5:]`,        // a fractional slice bound
+		`[1,2,3]["x":]`,        // a string slice bound
+		`[1,2,3][0:1:2:3]`,     // more terms than start:stop:step
 	} {
 		if got, err := EvaluateConstraint(NullValue(), expr); !errors.Is(err, ErrConstraintUnsupported) {
 			t.Errorf("%q answered (%v, %v); the bracket scan must fail closed on anything it cannot classify",

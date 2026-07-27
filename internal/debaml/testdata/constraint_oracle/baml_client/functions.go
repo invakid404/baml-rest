@@ -3795,6 +3795,450 @@ func Iso_py_num_methodFn(ctx context.Context, topic string, opts ...CallOptionFu
 	}
 }
 
+func Iso_slice_start_fractionalFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_slice_start_fractional, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Iso_slice_start_fractionalFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_slice_start_fractional{}, err
+		}
+
+		if result.Error != nil {
+			return types.Iso_slice_start_fractional{}, result.Error
+		}
+
+		casted := (result.Data).(types.Iso_slice_start_fractional)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_slice_start_fractionalFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_slice_start_fractional{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Iso_slice_start_fractional{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Iso_slice_start_fractional), nil
+			}
+		}
+
+		return types.Iso_slice_start_fractional{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func Iso_slice_start_stringFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_slice_start_string, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Iso_slice_start_stringFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_slice_start_string{}, err
+		}
+
+		if result.Error != nil {
+			return types.Iso_slice_start_string{}, result.Error
+		}
+
+		casted := (result.Data).(types.Iso_slice_start_string)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_slice_start_stringFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_slice_start_string{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Iso_slice_start_string{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Iso_slice_start_string), nil
+			}
+		}
+
+		return types.Iso_slice_start_string{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func Iso_slice_step_fractionalFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_slice_step_fractional, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Iso_slice_step_fractionalFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_slice_step_fractional{}, err
+		}
+
+		if result.Error != nil {
+			return types.Iso_slice_step_fractional{}, result.Error
+		}
+
+		casted := (result.Data).(types.Iso_slice_step_fractional)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_slice_step_fractionalFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_slice_step_fractional{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Iso_slice_step_fractional{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Iso_slice_step_fractional), nil
+			}
+		}
+
+		return types.Iso_slice_step_fractional{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func Iso_slice_stop_fractionalFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_slice_stop_fractional, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Iso_slice_stop_fractionalFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_slice_stop_fractional{}, err
+		}
+
+		if result.Error != nil {
+			return types.Iso_slice_stop_fractional{}, result.Error
+		}
+
+		casted := (result.Data).(types.Iso_slice_stop_fractional)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_slice_stop_fractionalFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_slice_stop_fractional{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Iso_slice_stop_fractional{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Iso_slice_stop_fractional), nil
+			}
+		}
+
+		return types.Iso_slice_stop_fractional{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func Iso_slice_stop_stringFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_slice_stop_string, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Iso_slice_stop_stringFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_slice_stop_string{}, err
+		}
+
+		if result.Error != nil {
+			return types.Iso_slice_stop_string{}, result.Error
+		}
+
+		casted := (result.Data).(types.Iso_slice_stop_string)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_slice_stop_stringFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_slice_stop_string{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Iso_slice_stop_string{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Iso_slice_stop_string), nil
+			}
+		}
+
+		return types.Iso_slice_stop_string{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func Iso_slice_this_fractionalFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_slice_this_fractional, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Iso_slice_this_fractionalFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_slice_this_fractional{}, err
+		}
+
+		if result.Error != nil {
+			return types.Iso_slice_this_fractional{}, result.Error
+		}
+
+		casted := (result.Data).(types.Iso_slice_this_fractional)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_slice_this_fractionalFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_slice_this_fractional{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Iso_slice_this_fractional{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Iso_slice_this_fractional), nil
+			}
+		}
+
+		return types.Iso_slice_this_fractional{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
 func Iso_t_containingFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_t_containing, error) {
 
 	var callOpts callOption

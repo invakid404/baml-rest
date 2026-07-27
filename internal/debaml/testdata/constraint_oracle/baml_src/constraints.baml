@@ -354,6 +354,13 @@ class Batch_const {
     @check(slice_ctl_step, {{ [1,2,3][::2]|length == 2 }})
     @check(slice_ctl_all_three, {{ [1,2,3][0:3:1]|length == 3 }})
     @check(index_ctl_list_literal, {{ "a" in ["a","b"] }})
+    @check(index_fractional_direct, {{ [1,2,3][1.5] == 2 }})
+    @check(slice_ctl_step_one, {{ [1,2,3][::1]|length == 3 }})
+    @check(slice_ctl_open_both, {{ [1,2,3][:]|length == 3 }})
+    @check(index_ctl_string_key_seq, {{ [1,2,3]["x"] == 1 }})
+    @check(slice_ctl_negative_start, {{ [1,2,3][-1:]|length == 1 }})
+    @check(index_ctl_negative, {{ [1,2,3][-1] == 3 }})
+    @check(list_ctl_fractional_elems, {{ [1.5,2.5]|sum == 4.0 }})
 }
 
 function Batch_constFn(topic: string) -> Batch_const {
@@ -1045,6 +1052,60 @@ class Iso_pow_paren_neg_exp {
 }
 
 function Iso_pow_paren_neg_expFn(topic: string) -> Iso_pow_paren_neg_exp {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_slice_start_fractional {
+  v int @check(slice_start_fractional, {{ [1,2,3][1.5:]|length == 3 }})
+}
+
+function Iso_slice_start_fractionalFn(topic: string) -> Iso_slice_start_fractional {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_slice_stop_fractional {
+  v int @check(slice_stop_fractional, {{ [1,2,3][:1.5]|length == 3 }})
+}
+
+function Iso_slice_stop_fractionalFn(topic: string) -> Iso_slice_stop_fractional {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_slice_step_fractional {
+  v int @check(slice_step_fractional, {{ [1,2,3][::1.5]|length == 3 }})
+}
+
+function Iso_slice_step_fractionalFn(topic: string) -> Iso_slice_step_fractional {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_slice_start_string {
+  v int @check(slice_start_string, {{ [1,2,3]["x":]|length == 3 }})
+}
+
+function Iso_slice_start_stringFn(topic: string) -> Iso_slice_start_string {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_slice_stop_string {
+  v int @check(slice_stop_string, {{ [1,2,3][:"x"]|length == 3 }})
+}
+
+function Iso_slice_stop_stringFn(topic: string) -> Iso_slice_stop_string {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_slice_this_fractional {
+  v string @check(slice_this_fractional, {{ this[1.5:] == "H" }})
+}
+
+function Iso_slice_this_fractionalFn(topic: string) -> Iso_slice_this_fractional {
   client ConstraintOracleClient
   prompt #"{{ topic }} {{ ctx.output_format }}"#
 }

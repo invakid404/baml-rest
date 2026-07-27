@@ -2162,6 +2162,258 @@ func (c Iso_py_num_method) BamlTypeName() string {
 	return "Iso_py_num_method"
 }
 
+type Iso_slice_start_fractional struct {
+	V Checked[int64] `json:"v"`
+}
+
+func (c *Iso_slice_start_fractional) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_slice_start_fractional" {
+		panic(fmt.Sprintf("expected Iso_slice_start_fractional, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_slice_start_fractional", key))
+
+		}
+	}
+
+}
+
+func (c Iso_slice_start_fractional) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_slice_start_fractional", fields, nil)
+}
+
+func (c Iso_slice_start_fractional) BamlTypeName() string {
+	return "Iso_slice_start_fractional"
+}
+
+type Iso_slice_start_string struct {
+	V Checked[int64] `json:"v"`
+}
+
+func (c *Iso_slice_start_string) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_slice_start_string" {
+		panic(fmt.Sprintf("expected Iso_slice_start_string, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_slice_start_string", key))
+
+		}
+	}
+
+}
+
+func (c Iso_slice_start_string) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_slice_start_string", fields, nil)
+}
+
+func (c Iso_slice_start_string) BamlTypeName() string {
+	return "Iso_slice_start_string"
+}
+
+type Iso_slice_step_fractional struct {
+	V Checked[int64] `json:"v"`
+}
+
+func (c *Iso_slice_step_fractional) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_slice_step_fractional" {
+		panic(fmt.Sprintf("expected Iso_slice_step_fractional, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_slice_step_fractional", key))
+
+		}
+	}
+
+}
+
+func (c Iso_slice_step_fractional) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_slice_step_fractional", fields, nil)
+}
+
+func (c Iso_slice_step_fractional) BamlTypeName() string {
+	return "Iso_slice_step_fractional"
+}
+
+type Iso_slice_stop_fractional struct {
+	V Checked[int64] `json:"v"`
+}
+
+func (c *Iso_slice_stop_fractional) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_slice_stop_fractional" {
+		panic(fmt.Sprintf("expected Iso_slice_stop_fractional, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_slice_stop_fractional", key))
+
+		}
+	}
+
+}
+
+func (c Iso_slice_stop_fractional) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_slice_stop_fractional", fields, nil)
+}
+
+func (c Iso_slice_stop_fractional) BamlTypeName() string {
+	return "Iso_slice_stop_fractional"
+}
+
+type Iso_slice_stop_string struct {
+	V Checked[int64] `json:"v"`
+}
+
+func (c *Iso_slice_stop_string) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_slice_stop_string" {
+		panic(fmt.Sprintf("expected Iso_slice_stop_string, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_slice_stop_string", key))
+
+		}
+	}
+
+}
+
+func (c Iso_slice_stop_string) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_slice_stop_string", fields, nil)
+}
+
+func (c Iso_slice_stop_string) BamlTypeName() string {
+	return "Iso_slice_stop_string"
+}
+
+type Iso_slice_this_fractional struct {
+	V Checked[string] `json:"v"`
+}
+
+func (c *Iso_slice_this_fractional) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_slice_this_fractional" {
+		panic(fmt.Sprintf("expected Iso_slice_this_fractional, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[string])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_slice_this_fractional", key))
+
+		}
+	}
+
+}
+
+func (c Iso_slice_this_fractional) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_slice_this_fractional", fields, nil)
+}
+
+func (c Iso_slice_this_fractional) BamlTypeName() string {
+	return "Iso_slice_this_fractional"
+}
+
 type Iso_t_containing struct {
 	V Checked[int64] `json:"v"`
 }
