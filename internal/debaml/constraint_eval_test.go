@@ -848,7 +848,8 @@ func TestPurelyNumericArithmeticStillDecides(t *testing.T) {
 	} {
 		got, err := EvaluateConstraint(tc.this, tc.expr)
 		if err != nil {
-			t.Errorf("%q over %s was refused (%v); the closure rule has become over-broad",
+			t.Errorf("%q over %s was refused (%v); the proven-parity whitelist has become over-broad — "+
+				"this is a form it is supposed to ADMIT",
 				tc.expr, tc.this.Kind(), err)
 			continue
 		}

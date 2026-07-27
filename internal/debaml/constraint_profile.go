@@ -483,7 +483,43 @@ type numeric struct {
 	// because a computed operand's SIGN cannot be established here and the
 	// engines disagree on exactly the signed cases (see [parseMul]/[parsePow]).
 	nonNegLiteral bool
-	saturated     bool
+	// saturated is STICKY, and that is the whole point of it.
+	//
+	// It records that SOME sub-expression already reached or passed 2^53 — where
+	// minijinja-Go's float64 integer arithmetic stops agreeing with stock's i128.
+	// Once set it must survive every subsequent production, including ones whose
+	// own result is a float, because a float operation does not undo the
+	// divergence that already happened in the integer prefix:
+	//
+	//	(1 + k*10 - 1 + 0.0) == (1 + k*10 + 0.0)     k = 999999999999999
+	//
+	// Stock keeps the prefix in i128 (…990 and …991), and those are still two
+	// DISTINCT f64 values at the float handoff, so it answers false. minijinja-Go
+	// did each Add through float64, rounding both prefixes to …992, so it answers
+	// true. Before round 9 the `+ 0.0` returned a fresh numeric{isFloat: true} and
+	// dropped the bit, and the whole expression was admitted.
+	//
+	// THE INVARIANT: every production that returns a numeric ORs IN the saturated
+	// bits of every operand it consumed. The census, one entry per construction
+	// site (there are no others — `numeric{}, false` sites are parse failures,
+	// which refuse):
+	//
+	//	parseCmp    comparison result   left.saturated || right.saturated
+	//	parseAdd    + and -             via combineNumeric
+	//	parseMul    *, /, //, %         via combineNumeric
+	//	parsePow    integer base        base.saturated || exp.saturated || overflow
+	//	parsePow    float base          base.saturated || exp.saturated
+	//	parseUnary  - and +             returns the operand struct, bit intact
+	//	parsePrimary  ( expr )          returns the inner struct, bit intact
+	//	parsePrimary  literal           leaf: set iff the literal itself is >= 2^53
+	//	combineNumeric  bool operand    unconditionally true (refuses)
+	//	combineNumeric  float result    a.saturated || b.saturated
+	//	combineNumeric  int result      a.saturated || b.saturated || overflow
+	//
+	// TestSaturationIsStickyUnderRandomArithmetic asserts the consequence rather
+	// than the census: over randomised expression trees, whenever the EXACT value
+	// of any integer sub-expression crosses 2^53, EvaluateConstraint refuses.
+	saturated bool
 }
 
 // parseNumeric parses and evaluates:
@@ -692,10 +728,12 @@ func (p *numericParser) parsePow() (numeric, bool) {
 		return numeric{}, false
 	}
 	if base.isFloat {
-		return numeric{isFloat: true}, true
+		// STICKY: a float BASE does not clear a base that already crossed 2^53.
+		// See [numeric.saturated].
+		return numeric{isFloat: true, saturated: base.saturated || exp.saturated}, true
 	}
 	m := satPow(base.mag, exp.mag)
-	return numeric{mag: m, saturated: base.saturated || m >= maxExactInt}, true
+	return numeric{mag: m, saturated: base.saturated || exp.saturated || m >= maxExactInt}, true
 }
 
 func (p *numericParser) parseUnary() (numeric, bool) {
@@ -755,7 +793,9 @@ func combineNumeric(a, b numeric, mag func(x, y uint64) uint64) numeric {
 		return numeric{saturated: true}
 	}
 	if a.isFloat || b.isFloat {
-		return numeric{isFloat: true}
+		// STICKY: a mixed int/float operation must NOT launder an operand that
+		// already crossed 2^53. See [numeric.saturated] for the case.
+		return numeric{isFloat: true, saturated: a.saturated || b.saturated}
 	}
 	m := mag(a.mag, b.mag)
 	// A computed value is never a literal, so it can never satisfy the
