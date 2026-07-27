@@ -3,6 +3,8 @@ package debaml
 import (
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 
 	mj "github.com/mitsuhiko/minijinja/minijinja-go/v2"
@@ -893,20 +895,48 @@ func (p *numericParser) parsePrimary() (numeric, bool) {
 	if !isProvablySmallNumber(run) {
 		return numeric{}, false
 	}
-	if dot := strings.IndexByte(run, '.'); dot >= 0 {
+	if strings.IndexByte(run, '.') >= 0 {
 		// A float LITERAL is a float64 payload in the engine, so it is not
-		// engineInt — but it carries a CEILING on its magnitude, because it stops
+		// engineInt — but it carries a bound on its magnitude, because it stops
 		// being exempt the moment a promoting op reads it (see [parsePow]).
-		// isProvablySmallNumber has already limited the integer part to 15 digits,
-		// so this cannot itself overflow.
-		var mag uint64
-		for i := 0; i < dot; i++ {
-			mag = satMul(mag, 10)
-			mag = satAdd(mag, uint64(run[i]-'0'))
+		//
+		// THE CLASSIFICATION IS THE PARSED f64, NOT THE SOURCE TEXT. Round 11
+		// asked whether the written fraction was all zeros, which is not the
+		// engine's question. minijinja-Go's lexer parses a float literal with
+		// strconv.ParseFloat(.., 64) and re-emits it as
+		// FormatFloat(v, 'f', -1, 64) — the shortest form that round-trips — which
+		// the parser re-parses, so the composition is the IDENTITY on the float64
+		// and the payload is exactly ParseFloat(run, 64). Value.AsInt then promotes
+		// on `d == math.Trunc(d)` alone, with no range test of its own.
+		//
+		// The gap that opens between those two questions is real and reachable:
+		//
+		//	(562949953421312.000000000000001 ** 1) * 16384 > 0.0
+		//
+		// 562949953421312 is 2^49, where an f64 ULP is 0.125, so the 15-digit tail
+		// rounds away and the payload is EXACTLY 2^49. Pow promotes it, `* 16384`
+		// takes Value.Mul's actual-int branch at 2^63 — MinInt64 on linux/amd64 —
+		// and native answered false where stock, holding a syntactic float in F64,
+		// answers true. Asking ParseFloat closes that by construction: whatever the
+		// engine will hold is what gets classified.
+		payload, err := strconv.ParseFloat(run, 64)
+		if err != nil || math.IsInf(payload, 0) || math.IsNaN(payload) {
+			return numeric{}, false
 		}
-		integral := strings.Trim(run[dot+1:], "0") == ""
-		if !integral {
-			mag = satAdd(mag, 1) // round the fraction up
+		integral := payload == math.Trunc(payload) // Value.AsInt's predicate, verbatim
+		abs := math.Abs(payload)
+		var mag uint64
+		switch {
+		case abs >= float64(maxExactInt):
+			// Past the exactness boundary before any operator runs. Saturate rather
+			// than compute a bound, so a promotion of it can only ever refuse.
+			// (isProvablySmallNumber caps the integer part at 15 digits, so this is
+			// unreachable today; it is here so the bound does not depend on that.)
+			mag = math.MaxUint64
+		case integral:
+			mag = uint64(abs)
+		default:
+			mag = uint64(math.Ceil(abs))
 		}
 		return numeric{nonNegFloatLiteral: true, integralFloatLiteral: integral, mag: mag}, true
 	}

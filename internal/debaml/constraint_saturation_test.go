@@ -114,7 +114,16 @@ var intLiterals = []string{"0", "1", "2", "3", "7", "10", "99999999", "123456789
 // ones can be promoted to integers by Rem and Pow, so a pool without them would
 // leave the round-10 hole unexercised — which is precisely how the round-9
 // version of this test missed it.
-var floatLiterals = []string{"0.0", "1.0", "1.5", "2.0", "4.0", "0.5", "10.0", "999999999999.5", "999999999999999.0"}
+//
+// The last three are the round-12 shape: a FRACTIONALLY SPELLED literal whose
+// PARSED f64 is integral. At 15 digits an f64 ULP is ~0.0156-0.125, so a
+// 15-digit tail rounds clean away and `562949953421312.000000000000001` is
+// exactly 2^49 to the engine. `562949953421312.5` is the neighbour that does
+// NOT round — 0.5 is exactly representable there — and must stay a float.
+var floatLiterals = []string{
+	"0.0", "1.0", "1.5", "2.0", "4.0", "0.5", "10.0", "999999999999.5", "999999999999999.0",
+	"562949953421312.000000000000001", "999999999999999.000000000000001", "562949953421312.5",
+}
 
 type exprGen struct {
 	rng *rand.Rand
@@ -138,7 +147,13 @@ func (g *exprGen) leaf() (string, exact) {
 		}
 		// A float LITERAL is stored as float64, so actualInt is false even for
 		// `2.0` — the engine only promotes it inside Rem and Pow.
-		return lit, exact{r: ratFromString(lit), f: f}
+		//
+		// The exact value is the PARSED f64, not the decimal text: minijinja-Go's
+		// lexer runs strconv.ParseFloat over the literal, so
+		// `562949953421312.000000000000001` IS 2^49 in the engine and the model
+		// must agree, or the property would be asserted against a number that
+		// never exists at runtime.
+		return lit, exact{r: new(big.Rat).SetFloat64(f), f: f}
 	}
 	lit := intLiterals[g.rng.Intn(len(intLiterals))]
 	r := ratFromString(lit)
@@ -527,6 +542,61 @@ func TestIntegralFloatsAreNotExemptFromTheIntegerBound(t *testing.T) {
 // and the expression must be admitted exactly while i+j < 53.
 func TestPromotedIntegralFloatCompositionsAreBounded(t *testing.T) {
 	const limit = 40 // i+j spans 0..80, so the sweep crosses 53 from both sides
+	// Both spellings of the SAME payload. `2.000000000000000` is 2.0 written with
+	// a 15-digit tail, which the engine's ParseFloat collapses to exactly 2.0 —
+	// so the sweep must produce identical verdicts for the two, or engineInt is
+	// still being decided by the source text (the round-12 finding).
+	for _, base := range []string{"2.0", "2.000000000000000"} {
+		for i := 0; i <= limit; i++ {
+			for j := 0; j <= limit; j++ {
+				expr := fmt.Sprintf("(%s ** %d) * (%s ** %d) > 0.0", base, i, base, j)
+				got, err := EvaluateConstraint(NullValue(), expr)
+				crosses := i+j >= 53
+				switch {
+				case crosses && !errors.Is(err, ErrConstraintUnsupported):
+					t.Fatalf("%s: product bound is 2^%d, at or past 2^53 — must refuse, answered (%v, %v)",
+						expr, i+j, got, err)
+				case !crosses && err != nil:
+					t.Fatalf("%s: product bound is 2^%d, well inside 2^53 — must decide, refused with %v",
+						expr, i+j, err)
+				case !crosses && !got:
+					t.Fatalf("%s = false, want true", expr)
+				}
+			}
+		}
+	}
+
+	// The same sweep anchored at 2^49, where an f64 ULP is 0.125 and a 15-digit
+	// fractional tail therefore rounds ENTIRELY away. `2^49 ** 1` is an integer of
+	// magnitude 2^49 to the engine however it was spelled, so multiplying by 2^k
+	// must refuse from k = 4 up.
+	for _, base := range []string{"562949953421312.0", "562949953421312.000000000000001"} {
+		for k := 0; k <= 20; k++ {
+			expr := fmt.Sprintf("(%s ** 1) * (2.0 ** %d) > 0.0", base, k)
+			got, err := EvaluateConstraint(NullValue(), expr)
+			crosses := 49+k >= 53
+			switch {
+			case crosses && !errors.Is(err, ErrConstraintUnsupported):
+				t.Fatalf("%s: bound is 2^%d — must refuse, answered (%v, %v)", expr, 49+k, got, err)
+			case !crosses && err != nil:
+				t.Fatalf("%s: bound is 2^%d — must decide, refused with %v", expr, 49+k, err)
+			case !crosses && !got:
+				t.Fatalf("%s = false, want true", expr)
+			}
+		}
+	}
+
+	// And the NON-integral neighbour at the same anchor: 0.5 is exactly
+	// representable at 2^49, so AsInt rejects it, no promotion happens, both
+	// engines stay in f64 — every k must be admitted.
+	for k := 0; k <= 20; k++ {
+		expr := fmt.Sprintf("(562949953421312.5 ** 1) * (2.0 ** %d) > 0.0", k)
+		if got, err := EvaluateConstraint(NullValue(), expr); err != nil || !got {
+			t.Fatalf("%s: a non-integral payload is never promoted, so it must decide; got (%v, %v)",
+				expr, got, err)
+		}
+	}
+
 	for i := 0; i <= limit; i++ {
 		for j := 0; j <= limit; j++ {
 			expr := fmt.Sprintf("(2.0 ** %d) * (2.0 ** %d) > 0.0", i, j)
@@ -614,6 +684,95 @@ func TestEngineIntegerTrackingFollowsThePayloadNotTheSpelling(t *testing.T) {
 		got, err := EvaluateConstraint(NullValue(), expr)
 		if err != nil {
 			t.Errorf("%q was refused (%v); the payload-type bound is over-broad", expr, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%q = %v, want %v", expr, got, want)
+		}
+	}
+}
+
+// TestFloatLiteralsAreClassifiedByTheParsedPayload pins the round-12 boundary:
+// engineInt is decided by the f64 the ENGINE will hold, not by how the literal
+// was written.
+//
+// minijinja-Go's lexer parses every float literal with
+// strconv.ParseFloat(.., 64), re-emits it as FormatFloat(v, 'f', -1, 64) — the
+// shortest form that round-trips — and the parser re-parses that, so the
+// composition is the identity on the float64. Value.AsInt then promotes on
+// `d == math.Trunc(d)` alone. Asking "is the written fraction all zeros?" is a
+// DIFFERENT question, and the gap between them is reachable: at 15 digits an
+// f64 ULP is between ~0.0156 and 0.125, so any 15-digit fractional tail on a
+// 15-digit integer part rounds clean away.
+func TestFloatLiteralsAreClassifiedByTheParsedPayload(t *testing.T) {
+	// Every literal the closed grammar admits: the profile's verdict on
+	// integrality must equal strconv.ParseFloat + math.Trunc, because that pair
+	// IS the engine.
+	for _, lit := range []string{
+		"0.0", "1.0", "2.0", "2.5", "0.5", "1.5", "10.0", "999999999999.5",
+		"999999999999999.0", "562949953421312.5", "562949953421312.25",
+		"562949953421312.000000000000001", "999999999999999.000000000000001",
+		"123456789012345.000000000000009", "100000000000000.999999999999999",
+		"2.000000000000001", "2.00000000000000", "0.000000000000001",
+	} {
+		payload, err := strconv.ParseFloat(lit, 64)
+		if err != nil {
+			t.Fatalf("test literal %q does not parse: %v", lit, err)
+		}
+		wantIntegral := payload == math.Trunc(payload)
+
+		n, ok := parseNumeric(lit)
+		if !ok {
+			// Refusal is always allowed; it just cannot be silently wrong.
+			continue
+		}
+		if n.integralFloatLiteral != wantIntegral {
+			t.Errorf("%q parses to %v (integral=%v) but the profile says integral=%v — "+
+				"the classifier is reading the source text, not the payload",
+				lit, payload, wantIntegral, n.integralFloatLiteral)
+		}
+		if wantIntegral && n.mag != uint64(math.Abs(math.Trunc(payload))) {
+			t.Errorf("%q has payload %v but magnitude %d", lit, payload, n.mag)
+		}
+	}
+
+	// The reviewer's case, and the same shape at other anchors. Each is a
+	// fractionally spelled literal whose payload is integral, promoted by `**`,
+	// then multiplied past 2^53 by an ordinary integer op.
+	for name, expr := range map[string]string{
+		"the reported case":     "(562949953421312.000000000000001 ** 1) * 16384 > 0.0",
+		"same, via a promotion": "(562949953421312.000000000000001 ** 1) * (2.0 ** 14) > 0.0",
+		"a nine-anchored value": "(999999999999999.000000000000001 ** 1) * 16 > 0.0",
+		// Crosses only at the ADDITIVE step: 2^49 * 8 is 2^52, still in range, and
+		// the sum with another 2^52 is exactly 2^53.
+		"additive":           "(562949953421312.000000000000001 ** 1) * 8 + (2.0 ** 52) > 0.0",
+		"canonical spelling": "(562949953421312.0 ** 1) * 16384 > 0.0",
+	} {
+		if got, err := EvaluateConstraint(NullValue(), expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%s: %q answered (%v, %v); the literal's PAYLOAD is integral, so the engine "+
+				"promotes it and the product crosses 2^53", name, expr, got, err)
+		}
+	}
+
+	// The non-integral NEIGHBOURS. 0.5 and 0.25 are exactly representable at
+	// 2^49, so these do NOT round to an integer, AsInt rejects them, both engines
+	// stay in f64 — and refusing them would be a pure loss.
+	for expr, want := range map[string]bool{
+		"(562949953421312.5 ** 1) * 16384 > 0.0":        true,
+		"(562949953421312.25 ** 1) * 16384 > 0.0":       true,
+		"(2.000000000000001 ** 52) * (2.0 ** 11) > 0.0": true,
+		"(2.5 ** 2) * (2.5 ** 2) == 39.0625":            true,
+		// Not a promoting op: Value.Mul gates on isActualInt, which is false for
+		// ANY float64 payload, integral or not. So this stays f64 in both engines
+		// even though the payload is exactly 2^49.
+		"562949953421312.000000000000001 * 16384 > 0.0": true,
+		// A rounded-to-integral literal must behave exactly like its canonical
+		// spelling, in both directions.
+		"(2.00000000000000 ** 3) == 8.0": true,
+	} {
+		got, err := EvaluateConstraint(NullValue(), expr)
+		if err != nil {
+			t.Errorf("%q was refused (%v); the payload classifier is over-broad", expr, err)
 			continue
 		}
 		if got != want {

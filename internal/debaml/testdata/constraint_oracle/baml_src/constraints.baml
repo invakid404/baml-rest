@@ -330,6 +330,17 @@ class Batch_const {
     @check(prom_ctl_float_operand, {{ (2.0 ** 52) * 2.0 > 0.0 }})
     @check(prom_ctl_float_add, {{ (2.0 ** 52) + 1.0 > 0.0 }})
     @check(prom_ctl_nonintegral, {{ (2.5 ** 2) * (2.5 ** 2) == 39.0625 }})
+    @check(payload_round_mul, {{ (562949953421312.000000000000001 ** 1) * 16384 > 0.0 }})
+    @check(payload_round_via_pow, {{ (562949953421312.000000000000001 ** 1) * (2.0 ** 14) > 0.0 }})
+    @check(payload_round_nines, {{ (999999999999999.000000000000001 ** 1) * 16 > 0.0 }})
+    @check(payload_round_additive, {{ (562949953421312.000000000000001 ** 1) * 8 + (2.0 ** 52) > 0.0 }})
+    @check(payload_canonical_spelling, {{ (562949953421312.0 ** 1) * 16384 > 0.0 }})
+    @check(payload_neighbour_half, {{ (562949953421312.5 ** 1) * 16384 > 0.0 }})
+    @check(payload_neighbour_quarter, {{ (562949953421312.25 ** 1) * 16384 > 0.0 }})
+    @check(payload_small_nonintegral, {{ (2.000000000000001 ** 52) * (2.0 ** 11) > 0.0 }})
+    @check(payload_round_direct_mul, {{ 562949953421312.000000000000001 * 16384 > 0.0 }})
+    @check(payload_round_small_pow, {{ (2.000000000000000 ** 3) == 8.0 }})
+    @check(payload_round_in_range, {{ (562949953421312.000000000000001 ** 1) * 4 > 0.0 }})
 }
 
 function Batch_constFn(topic: string) -> Batch_const {
