@@ -609,14 +609,14 @@ func TestNumericBoundaryIsRefusedOnEveryArchitecture(t *testing.T) {
 		// Wrong on every architecture: 2^53 and 2^53+1 are the same float64.
 		{"9007199254740993 == 9007199254740992", "float64 conflates neighbours past 2^53"},
 		{"9007199254740992 == 9007199254740992", "exactly at the boundary"},
-		{"9007199254740990 + 1 == 9007199254740991", "the sum reaches the boundary"},
+		{"9007199254740991 + 1 == 9007199254740992", "the sum reaches the boundary"},
 		// ARCHITECTURE-DEPENDENT: i64::MAX rounds up to 2^63 as a float64, so
 		// int64(f) is out of range — arm64 saturates, amd64 does not.
 		{"9223372036854775807 - 1 == 9223372036854775806", "the i64::MAX case that split arm64 from amd64"},
 		{"0 - 9223372036854775807 == -9223372036854775807", "same, negative"},
 		// The result escapes even though both operands are exact.
 		{"3037000500 * 3037000500 > 9007199254740992", "the product escapes the exact range"},
-		{"2 ** 10 == 1024", "exponentiation can escape from small operands"},
+		{"2 ** 62 > 0", "exponentiation can escape from small operands"},
 	}
 	for _, tc := range refused {
 		if got, err := EvaluateConstraint(NullValue(), tc.expr); !errors.Is(err, ErrConstraintUnsupported) {
@@ -636,14 +636,22 @@ func TestNumericBoundaryIsRefusedOnEveryArchitecture(t *testing.T) {
 	// Just inside the boundary, and arithmetic that provably cannot escape it,
 	// must still DECIDE — otherwise the guard has swallowed the surface the
 	// evaluator exists for.
+	// The bound is OPERAND-AWARE: with a single growing operator whose operands
+	// are integer literals, the operation is evaluated exactly rather than
+	// estimated from the largest literal in sight. `2 ** 10` is 1024, not the
+	// 10^10 a global-maximum estimate would guess, so it stays decidable — and
+	// stays in live agreement with stock, which is what the corpus checks.
 	decided := map[string]bool{
-		"9007199254740991 == 9007199254740991": true, // 2^53 - 1, exactly representable
-		"1000 * 1000 == 1000000":               true,
-		"2 ** 3 == 8":                          true,
-		"1 + 1 == 2":                           true,
-		"7 // 2 == 3":                          true,
-		"1.0e300 > 1.0e299":                    true, // floats are f64 on both sides
-		"0.1 + 0.2 == 0.3":                     false,
+		"9007199254740991 == 9007199254740991":     true, // 2^53 - 1, exactly representable
+		"1000 * 1000 == 1000000":                   true,
+		"3000000 * 3000000 == 9000000000000":       true,
+		"2 ** 3 == 8":                              true,
+		"2 ** 10 == 1024":                          true, // operand-aware: 2^10, not 10^10
+		"9007199254740990 + 1 == 9007199254740991": true, // the sum is still exact
+		"1 + 1 == 2":                               true,
+		"7 // 2 == 3":                              true,
+		"1.0e300 > 1.0e299":                        true, // floats are f64 on both sides
+		"0.1 + 0.2 == 0.3":                         false,
 	}
 	for expr, want := range decided {
 		got, err := EvaluateConstraint(IntValue(7), expr)
@@ -653,6 +661,69 @@ func TestNumericBoundaryIsRefusedOnEveryArchitecture(t *testing.T) {
 		}
 		if got != want {
 			t.Errorf("%q = %v, want %v", expr, got, want)
+		}
+	}
+}
+
+// TestRuntimeIntegerProducersAreRefused pins the round-4 P1 hole: an integer
+// manufactured DURING evaluation is invisible to the static magnitude bound.
+//
+// The reachable case is the `int` filter. minijinja-Go's FilterInt parses a
+// string with strconv.ParseInt(s, 10, 64), so `"9007199254740993"|int` is an
+// exact int64 — and then Value.Equal compares it through AsFloat, where it
+// collapses onto its neighbour. minijinja's `int` parses i128 and compares
+// exactly. Stock BAML v0.223 answers FALSE for the first case below; native
+// answered true before [guardIntegerResult] existed.
+//
+// Nothing here is about the `int` filter specifically: the guard is on the
+// VALUE a filter returns, so it closes the same hole for a string-valued
+// `this`, for elements reached through `map("int")`, and for producers nobody
+// has enumerated.
+func TestRuntimeIntegerProducersAreRefused(t *testing.T) {
+	refused := []struct {
+		this ConstraintValue
+		expr string
+	}{
+		{NullValue(), `"9007199254740993"|int == "9007199254740992"|int`},
+		{NullValue(), `["9007199254740993"]|map("int")|first > 0`},
+		{NullValue(), `"9007199254740993"|int|abs > 0`},
+		// The same integer arriving through the VALUE rather than a literal.
+		{StringValue("9007199254740993"), "this|int > 0"},
+		{ListValue([]ConstraintValue{StringValue("9007199254740993")}), `this|map("int")|first > 0`},
+	}
+	for _, tc := range refused {
+		if got, err := EvaluateConstraint(tc.this, tc.expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%q answered %v (err=%v); it manufactures an out-of-range integer and must be refused",
+				tc.expr, got, err)
+		}
+	}
+
+	// Controls. The guard is on the MAGNITUDE produced, not on the filter, so
+	// ordinary conversions must still decide — otherwise `int` would have been
+	// withdrawn rather than guarded.
+	decided := []struct {
+		this ConstraintValue
+		expr string
+		want bool
+	}{
+		{NullValue(), `"42"|int == 42`, true},
+		{StringValue("42"), "this|int == 42", true},
+		{NullValue(), `"2.9"|int == 2`, true},
+		{NullValue(), "-1|abs == 1", true},
+		{NullValue(), "[1,2]|sum == 3", true},
+		{NullValue(), "[1,2]|max == 2", true},
+		// `float` is deliberately NOT guarded: it produces a float, and float
+		// semantics already agree between the engines, so both collapse alike.
+		{NullValue(), `"9007199254740993"|float == "9007199254740992"|float`, true},
+	}
+	for _, tc := range decided {
+		got, err := EvaluateConstraint(tc.this, tc.expr)
+		if err != nil {
+			t.Errorf("%q was refused (%v); it is inside the profile", tc.expr, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%q = %v, want %v", tc.expr, got, tc.want)
 		}
 	}
 }

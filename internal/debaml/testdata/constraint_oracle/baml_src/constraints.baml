@@ -217,12 +217,19 @@ class Batch_const {
     @check(num_exact_max, {{ 9007199254740991 == 9007199254740991 }})
     @check(num_conflate, {{ 9007199254740993 == 9007199254740992 }})
     @check(num_at_boundary, {{ 9007199254740992 == 9007199254740992 }})
-    @check(num_add_escape, {{ 9007199254740990 + 1 == 9007199254740991 }})
+    @check(num_add_inrange, {{ 9007199254740990 + 1 == 9007199254740991 }})
     @check(num_i64_min, {{ 0 - 9223372036854775807 == -9223372036854775807 }})
     @check(num_mul_escape, {{ 3037000500 * 3037000500 > 9007199254740992 }})
     @check(num_small_mul, {{ 1000 * 1000 == 1000000 }})
     @check(num_pow_small, {{ 2 ** 3 == 8 }})
     @check(num_float_big, {{ 1.0e300 > 1.0e299 }})
+    @check(f_int_boundary, {{ "9007199254740993"|int == "9007199254740992"|int }})
+    @check(f_int_small, {{ "42"|int == 42 }})
+    @check(f_int_map_boundary, {{ ["9007199254740993"]|map("int")|first > 0 }})
+    @check(f_int_float_exempt, {{ "9007199254740993"|float == "9007199254740992"|float }})
+    @check(num_add_escape, {{ 9007199254740991 + 1 == 9007199254740992 }})
+    @check(num_pow_escape, {{ 2 ** 62 > 0 }})
+    @check(num_mul_inrange, {{ 3000000 * 3000000 == 9000000000000 }})
 }
 
 function Batch_constFn(topic: string) -> Batch_const {
@@ -492,6 +499,27 @@ class Batch_null {
 }
 
 function Batch_nullFn(topic: string) -> Batch_null {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Batch_strnum {
+  v string
+    @check(this_strnum_int, {{ this|int > 0 }})
+    @check(this_strnum_length, {{ this|length == 16 }})
+}
+
+function Batch_strnumFn(topic: string) -> Batch_strnum {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Batch_strnumsm {
+  v string
+    @check(this_strnumsm_int, {{ this|int == 42 }})
+}
+
+function Batch_strnumsmFn(topic: string) -> Batch_strnumsm {
   client ConstraintOracleClient
   prompt #"{{ topic }} {{ ctx.output_format }}"#
 }

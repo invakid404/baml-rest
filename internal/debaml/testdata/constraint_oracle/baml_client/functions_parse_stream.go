@@ -871,6 +871,100 @@ func (*parse_stream) Batch_streFn(text string, opts ...CallOptionFunc) (stream_t
 	return casted, nil
 }
 
+// / Parse version of Batch_strnumFn (Takes in string and returns stream_types.Batch_strnum)
+func (*parse_stream) Batch_strnumFn(text string, opts ...CallOptionFunc) (stream_types.Batch_strnum, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Batch_strnumFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Batch_strnumFn", encoded)
+	if err != nil {
+		return stream_types.Batch_strnum{}, err
+	}
+
+	casted := (result).(stream_types.Batch_strnum)
+
+	return casted, nil
+}
+
+// / Parse version of Batch_strnumsmFn (Takes in string and returns stream_types.Batch_strnumsm)
+func (*parse_stream) Batch_strnumsmFn(text string, opts ...CallOptionFunc) (stream_types.Batch_strnumsm, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Batch_strnumsmFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Batch_strnumsmFn", encoded)
+	if err != nil {
+		return stream_types.Batch_strnumsm{}, err
+	}
+
+	casted := (result).(stream_types.Batch_strnumsm)
+
+	return casted, nil
+}
+
 // / Parse version of Batch_struFn (Takes in string and returns stream_types.Batch_stru)
 func (*parse_stream) Batch_struFn(text string, opts ...CallOptionFunc) (stream_types.Batch_stru, error) {
 

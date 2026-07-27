@@ -160,6 +160,24 @@ func installProfileGuards(env *mj.Environment) {
 		return tests.TestDivisibleBy(state, val, args)
 	})
 
+	// Every filter that can MANUFACTURE or CARRY an integer runs through the
+	// integer-result guard, so no out-of-range integer can enter the expression
+	// from a filter — see [guardIntegerResult] for the reachable `int` case that
+	// made this necessary. `float` is absent deliberately: it produces a float,
+	// and float semantics already agree between the engines.
+	for name, builtin := range map[string]mj.FilterFunc{
+		"int":   filters.FilterInt,
+		"abs":   filters.FilterAbs,
+		"round": filters.FilterRound,
+		"min":   filters.FilterMin,
+		"max":   filters.FilterMax,
+		"attr":  filters.FilterAttr,
+	} {
+		env.AddFilter(name, guardIntegerResult(name, builtin))
+	}
+	// `sum` is BAML's own (filterSum), not a builtin, so it is wrapped in place.
+	env.AddFilter("sum", guardIntegerResult("sum", filterSum))
+
 	// Foreign mappings — a `{...}` literal or `dict(...)` built INSIDE the
 	// expression — are minijinja-Go's native mapping, which enumerates sorted
 	// where BAML preserves insertion order. The representation-agreement check
@@ -195,7 +213,7 @@ func installProfileGuards(env *mj.Environment) {
 		"string":     filters.FilterString,
 		"indent":     filters.FilterIndent,
 	} {
-		env.AddFilter(name, guardForeignMapping(name, builtin))
+		env.AddFilter(name, guardIntegerResult(name, guardForeignMapping(name, builtin)))
 	}
 }
 
@@ -322,39 +340,66 @@ const maxExactInt uint64 = 1 << 53
 // integer outside the exactly-representable range, and must therefore be
 // refused.
 //
-// The bound is deliberately CONSERVATIVE and computed statically, because the
-// engine does not expose intermediates: starting from the largest integer the
-// expression can see — in the bound value or as a literal in the source — each
-// magnitude-growing operator in the source is applied to the running bound,
-// saturating. If the bound reaches 2^53, the expression is refused even though a
-// particular evaluation might have stayed exact. Over-refusing costs coverage;
-// under-refusing would return a wrong boolean, which the contract forbids.
+// The engine exposes no intermediates, so the bound is STATIC. It has two
+// modes, and the distinction matters because a crude bound is wrong in both
+// directions — it lets runtime-produced integers through and it refuses
+// arithmetic that is provably exact:
 //
-// Only `**`, `*`, `+` and `-` grow magnitude. `/` produces a float (identical
-// f64 semantics in both engines), and `//` and `%` shrink. Floats are exempt
-// throughout: they are f64 on both sides, so their arithmetic already agrees.
+//   - OPERAND-AWARE. When the expression contains exactly ONE
+//     magnitude-growing operator and both of its operands are integer
+//     literals, the operation is evaluated exactly (saturating) and that IS the
+//     bound. `2 ** 10 == 1024` is 1024, not the 10^10 a global-maximum estimate
+//     would guess, so it is admitted and stays in live agreement with stock.
+//     The single-operator condition is what makes this sound: with a chain, an
+//     operand is another operation's result rather than the literal beside it
+//     (`2 ** 10 ** 3` is 2^1000, not 1024), so the exact reading no longer
+//     bounds anything.
+//
+//   - PESSIMISTIC otherwise. Start from the largest integer the expression can
+//     see and apply each growing operator to a running bound. With k
+//     multiplications over leaves of magnitude <= M the true maximum is
+//     M^(k+1), which is exactly what repeated `bound * M` yields; likewise
+//     (k+1)*M for additions. Sound, and deliberately loose.
+//
+// Only `**`, `*`, `+` and `-` grow magnitude: `/` produces a float (identical
+// f64 semantics in both engines) and `//` and `%` shrink. Floats are exempt
+// throughout.
+//
+// This covers integers that are VISIBLE before evaluation. Integers
+// manufactured DURING evaluation — `"9007199254740993"|int` is the reachable
+// example — are invisible here by construction, and are caught at the point of
+// production instead by [guardIntegerResult].
 func exceedsExactIntegerRange(this ConstraintValue, expr string) bool {
 	m := maxAbsInt(this)
-	lit, pow, mul, addSub := scanIntegerSource(expr)
-	if lit > m {
-		m = lit
+	src := scanIntegerSource(expr)
+	if src.maxLiteral > m {
+		m = src.maxLiteral
 	}
-	if m == 0 {
-		// No integer anywhere: nothing to lose precision.
+	if m == 0 && src.growOps() == 0 {
 		return false
 	}
 	if m >= maxExactInt {
 		return true
 	}
 
+	// Operand-aware: one growing operator, both operands read as integer
+	// literals. The operation cannot produce more than its own exact result.
+	if src.growOps() == 1 && src.soleOpExact {
+		bound := src.soleOpResult
+		if m > bound {
+			bound = m
+		}
+		return bound >= maxExactInt
+	}
+
 	bound := m
-	for i := 0; i < pow && bound < maxExactInt; i++ {
+	for i := 0; i < src.pow && bound < maxExactInt; i++ {
 		bound = satPow(bound, m)
 	}
-	for i := 0; i < mul && bound < maxExactInt; i++ {
+	for i := 0; i < src.mul && bound < maxExactInt; i++ {
 		bound = satMul(bound, m)
 	}
-	for i := 0; i < addSub && bound < maxExactInt; i++ {
+	for i := 0; i < src.addSub && bound < maxExactInt; i++ {
 		bound = satAdd(bound, m)
 	}
 	return bound >= maxExactInt
@@ -390,15 +435,34 @@ func maxAbsInt(v ConstraintValue) uint64 {
 	return 0
 }
 
-// scanIntegerSource finds the largest INTEGER literal in the expression and
-// counts the magnitude-growing operators, ignoring both string literals and
-// float literals.
+// sourceScan is what a lexical pass over the expression can establish.
+type sourceScan struct {
+	maxLiteral       uint64
+	pow, mul, addSub int
+	soleOpExact      bool   // the one growing operator had two integer-literal operands
+	soleOpResult     uint64 // its exact (saturating) result
+}
+
+func (s sourceScan) growOps() int { return s.pow + s.mul + s.addSub }
+
+// scanIntegerSource finds the largest INTEGER literal in the expression, counts
+// the magnitude-growing operators, and — when there is exactly one — reads its
+// operands so the bound can be exact rather than estimated.
 //
-// This is a lexical scan, not a parse — minijinja-Go's parser is under
-// internal/ and cannot be imported. That is sound in this direction: the scan
-// can only over-count operators and over-estimate literals, and both push
-// towards refusing.
-func scanIntegerSource(expr string) (maxLit uint64, pow, mul, addSub int) {
+// This is a lexical scan, not a parse: minijinja-Go's parser is under internal/
+// and cannot be imported. That is sound in this direction, because the scan can
+// only over-count operators and over-estimate literals, and both push towards
+// refusing. The operand reading is the one place that could push the other way,
+// which is why it is used ONLY when it is the sole operator.
+func scanIntegerSource(expr string) sourceScan {
+	var out sourceScan
+	type opSite struct {
+		kind  byte // '^' pow, '*', '+', '-'
+		index int  // index of the operator
+		width int
+	}
+	var sites []opSite
+
 	for i := 0; i < len(expr); {
 		c := expr[i]
 		switch {
@@ -407,25 +471,88 @@ func scanIntegerSource(expr string) (maxLit uint64, pow, mul, addSub int) {
 		case c >= '0' && c <= '9' && !isIdentByte(prevByte(expr, i)):
 			var n uint64
 			n, i = scanNumericLiteral(expr, i)
-			if n > maxLit {
-				maxLit = n
+			if n > out.maxLiteral {
+				out.maxLiteral = n
 			}
 		case c == '*':
 			if i+1 < len(expr) && expr[i+1] == '*' {
-				pow++
+				out.pow++
+				sites = append(sites, opSite{'^', i, 2})
 				i += 2
 			} else {
-				mul++
+				out.mul++
+				sites = append(sites, opSite{'*', i, 1})
 				i++
 			}
 		case c == '+' || c == '-':
-			addSub++
+			out.addSub++
+			sites = append(sites, opSite{c, i, 1})
 			i++
 		default:
 			i++
 		}
 	}
-	return maxLit, pow, mul, addSub
+
+	if len(sites) == 1 {
+		if a, b, ok := literalOperands(expr, sites[0].index, sites[0].width); ok {
+			out.soleOpExact = true
+			switch sites[0].kind {
+			case '^':
+				out.soleOpResult = satPow(a, b)
+			case '*':
+				out.soleOpResult = satMul(a, b)
+			case '+':
+				out.soleOpResult = satAdd(a, b)
+			case '-':
+				// Magnitude of a difference is bounded by the larger operand.
+				out.soleOpResult = a
+				if b > a {
+					out.soleOpResult = b
+				}
+			}
+		}
+	}
+	return out
+}
+
+// literalOperands reads the integer literals immediately either side of an
+// operator, skipping only whitespace. Anything else — a parenthesis, an
+// identifier, a float, a string — means the operand is not a literal and the
+// exact reading does not apply.
+func literalOperands(expr string, opIndex, opWidth int) (left, right uint64, ok bool) {
+	i := opIndex - 1
+	for i >= 0 && (expr[i] == ' ' || expr[i] == '\t') {
+		i--
+	}
+	end := i + 1
+	for i >= 0 && expr[i] >= '0' && expr[i] <= '9' {
+		i--
+	}
+	if end == i+1 || isIdentByte(prevByte(expr, i+1)) {
+		return 0, 0, false
+	}
+	left, consumed := scanNumericLiteral(expr, i+1)
+	if consumed != end {
+		// A float, or a literal that did not end where the operator begins.
+		return 0, 0, false
+	}
+
+	j := opIndex + opWidth
+	for j < len(expr) && (expr[j] == ' ' || expr[j] == '\t') {
+		j++
+	}
+	if j >= len(expr) || expr[j] < '0' || expr[j] > '9' {
+		return 0, 0, false
+	}
+	right, after := scanNumericLiteral(expr, j)
+	if after == j {
+		return 0, 0, false
+	}
+	// A float operand scans as 0; treat that as unreadable rather than as zero.
+	if right == 0 && expr[j] != '0' {
+		return 0, 0, false
+	}
+	return left, right, true
 }
 
 // skipStringLiteral returns the index just past the literal starting at i,
@@ -525,4 +652,81 @@ func satPow(base, exp uint64) uint64 {
 		}
 	}
 	return result
+}
+
+// ---------------------------------------------------------------------------
+// Runtime integer producers.
+// ---------------------------------------------------------------------------
+
+// guardIntegerResult wraps a filter so it can never hand back an integer
+// outside the exactly-representable range.
+//
+// [exceedsExactIntegerRange] bounds the integers VISIBLE before evaluation —
+// value-model integers and source literals. It cannot see one that is
+// MANUFACTURED during evaluation, and there is a reachable way to do that:
+//
+//	"9007199254740993"|int == "9007199254740992"|int
+//
+// minijinja-Go's FilterInt parses each string with strconv.ParseInt(s, 10, 64),
+// producing two distinct int64s, and Value.Equal then compares them through
+// AsFloat, where both collapse to the same float64 — native true. minijinja's
+// `int` parses as i128 and compares exactly — stock false. No literal and no
+// value-model integer is large here, so the static bound sees nothing.
+//
+// The fix is to check at the point of production rather than to predict it:
+// every filter that can manufacture or carry an integer runs through this
+// wrapper, and a result containing an out-of-range integer becomes
+// ErrConstraintUnsupported instead of a value. That closes the same hole for a
+// string-valued `this` (`this|int`), for elements reached through `map("int")`,
+// and for any other producer, because the check is on the VALUE that comes back
+// rather than on the syntax that produced it.
+func guardIntegerResult(name string, builtin mj.FilterFunc) mj.FilterFunc {
+	return func(state filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs map[string]mjvalue.Value) (mjvalue.Value, error) {
+		out, err := builtin(state, val, args, kwargs)
+		if err != nil {
+			return out, err
+		}
+		if containsInexactInteger(out, 0) {
+			return mjvalue.Undefined(), unsupportedConstraint(
+				"`%s` produced an integer at or past 2^53; minijinja-Go compares integers as float64, "+
+					"so the result would be indistinguishable from its neighbour", name)
+		}
+		return out, nil
+	}
+}
+
+// containsInexactInteger reports whether a value is, or contains, an integer
+// whose magnitude has left the exactly-representable range. The recursion
+// covers sequences, so a filter that returns a LIST of manufactured integers is
+// caught as readily as one that returns a scalar.
+func containsInexactInteger(v mjvalue.Value, depth int) bool {
+	if depth > 32 {
+		return true // unknown shape: refuse rather than guess
+	}
+	switch v.Kind() {
+	case mjvalue.KindNumber:
+		if !v.IsActualInt() {
+			return false // floats are f64 on both sides
+		}
+		n, ok := v.AsInt()
+		if !ok {
+			return true
+		}
+		return absInt64(n) >= maxExactInt
+	case mjvalue.KindSeq, mjvalue.KindIterable:
+		for _, item := range v.Iter() {
+			if containsInexactInteger(item, depth+1) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func absInt64(n int64) uint64 {
+	if n < 0 {
+		// -(-1<<63) overflows int64; convert through uint64 instead.
+		return uint64(-(n + 1)) + 1
+	}
+	return uint64(n)
 }

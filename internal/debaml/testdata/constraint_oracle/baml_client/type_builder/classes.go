@@ -591,6 +591,70 @@ func (t *Batch_streClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 
+type Batch_strnumClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Batch_strnumClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Batch_strnumClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Batch_strnum() (*Batch_strnumClassView, error) {
+	bld, err := t.inner.Class("Batch_strnum")
+	if err != nil {
+		return nil, err
+	}
+	return &Batch_strnumClassView{inner: bld}, nil
+}
+
+func (t *Batch_strnumClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Batch_strnumsmClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Batch_strnumsmClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Batch_strnumsmClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Batch_strnumsm() (*Batch_strnumsmClassView, error) {
+	bld, err := t.inner.Class("Batch_strnumsm")
+	if err != nil {
+		return nil, err
+	}
+	return &Batch_strnumsmClassView{inner: bld}, nil
+}
+
+func (t *Batch_strnumsmClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
 type Batch_struClassView struct {
 	inner baml.ClassBuilder
 }

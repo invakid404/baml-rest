@@ -1353,6 +1353,154 @@ func Batch_streFn(ctx context.Context, topic string, opts ...CallOptionFunc) (ty
 	}
 }
 
+func Batch_strnumFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Batch_strnum, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Batch_strnumFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Batch_strnum{}, err
+		}
+
+		if result.Error != nil {
+			return types.Batch_strnum{}, result.Error
+		}
+
+		casted := (result.Data).(types.Batch_strnum)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Batch_strnumFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Batch_strnum{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Batch_strnum{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Batch_strnum), nil
+			}
+		}
+
+		return types.Batch_strnum{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func Batch_strnumsmFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Batch_strnumsm, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Batch_strnumsmFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Batch_strnumsm{}, err
+		}
+
+		if result.Error != nil {
+			return types.Batch_strnumsm{}, result.Error
+		}
+
+		casted := (result.Data).(types.Batch_strnumsm)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Batch_strnumsmFn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Batch_strnumsm{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Batch_strnumsm{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Batch_strnumsm), nil
+			}
+		}
+
+		return types.Batch_strnumsm{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
 func Batch_struFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Batch_stru, error) {
 
 	var callOpts callOption

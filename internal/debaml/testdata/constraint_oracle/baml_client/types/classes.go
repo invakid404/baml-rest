@@ -776,6 +776,90 @@ func (c Batch_stre) BamlTypeName() string {
 	return "Batch_stre"
 }
 
+type Batch_strnum struct {
+	V Checked[string] `json:"v"`
+}
+
+func (c *Batch_strnum) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Batch_strnum" {
+		panic(fmt.Sprintf("expected Batch_strnum, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[string])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Batch_strnum", key))
+
+		}
+	}
+
+}
+
+func (c Batch_strnum) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Batch_strnum", fields, nil)
+}
+
+func (c Batch_strnum) BamlTypeName() string {
+	return "Batch_strnum"
+}
+
+type Batch_strnumsm struct {
+	V Checked[string] `json:"v"`
+}
+
+func (c *Batch_strnumsm) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Batch_strnumsm" {
+		panic(fmt.Sprintf("expected Batch_strnumsm, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[string])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Batch_strnumsm", key))
+
+		}
+	}
+
+}
+
+func (c Batch_strnumsm) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Batch_strnumsm", fields, nil)
+}
+
+func (c Batch_strnumsm) BamlTypeName() string {
+	return "Batch_strnumsm"
+}
+
 type Batch_stru struct {
 	V Checked[string] `json:"v"`
 }
