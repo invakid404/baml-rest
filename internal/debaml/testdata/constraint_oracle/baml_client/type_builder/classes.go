@@ -1167,6 +1167,102 @@ func (t *Iso_arity_truncate_zeroClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 
+type Iso_content_format_pctClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_content_format_pctClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_content_format_pctClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_content_format_pct() (*Iso_content_format_pctClassView, error) {
+	bld, err := t.inner.Class("Iso_content_format_pct")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_content_format_pctClassView{inner: bld}, nil
+}
+
+func (t *Iso_content_format_pctClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_content_int_spacesClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_content_int_spacesClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_content_int_spacesClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_content_int_spaces() (*Iso_content_int_spacesClassView, error) {
+	bld, err := t.inner.Class("Iso_content_int_spaces")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_content_int_spacesClassView{inner: bld}, nil
+}
+
+func (t *Iso_content_int_spacesClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_content_truncateClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_content_truncateClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_content_truncateClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_content_truncate() (*Iso_content_truncateClassView, error) {
+	bld, err := t.inner.Class("Iso_content_truncate")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_content_truncateClassView{inner: bld}, nil
+}
+
+func (t *Iso_content_truncateClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
 type Iso_divzeroClassView struct {
 	inner baml.ClassBuilder
 }

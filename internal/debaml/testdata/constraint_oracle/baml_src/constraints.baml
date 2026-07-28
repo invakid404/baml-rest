@@ -406,6 +406,22 @@ class Batch_const {
     @check(kind_ctl_in_operator, {{ "a" in ["a","b"] }})
     @check(kind_ctl_odd, {{ 3 is odd }})
     @check(kind_ctl_tojson_seq, {{ [1,2]|tojson == "[1,2]" }})
+    @check(content_title_punct, {{ "a!b"|title == "A!B" }})
+    @check(content_trim_nbsp, {{ " a "|trim == "a" }})
+    @check(content_title_ascii, {{ "a b"|title == "A B" }})
+    @check(content_upper_sharp_s, {{ "straße"|upper == "STRASSE" }})
+    @check(content_lower_turkish, {{ "İ"|lower|length == 1 }})
+    @check(content_capitalize_unicode, {{ "été"|capitalize|length == 3 }})
+    @check(content_replace_empty, {{ "ab"|replace("","-")|length == 2 }})
+    @check(content_join_numbers, {{ [1,2]|join(",") == "1,2" }})
+    @check(content_tojson_escape, {{ "<a>"|tojson|length == 5 }})
+    @check(content_string_float, {{ 2.5|string == "2.5" }})
+    @check(content_sort_strings, {{ ["b","A"]|sort|first == "A" }})
+    @check(content_unique_strings, {{ ["a","a"]|unique|length == 1 }})
+    @check(content_min_strings, {{ ["b","A"]|min == "A" }})
+    @check(content_indent_tabs, {{ "a
+b"|indent(2)|length > 3 }})
+    @check(struct_ctl_odd, {{ 3 is odd }})
 }
 
 function Batch_constFn(topic: string) -> Batch_const {
@@ -436,6 +452,7 @@ class Batch_intneg {
     @check(this_intneg_abs, {{ this|abs == 3 }})
     @check(this_intneg_lt, {{ this < 0 }})
     @check(subj_ctl_abs, {{ this|abs == 3 }})
+    @check(struct_ctl_abs, {{ this|abs == 3 }})
 }
 
 function Batch_intnegFn(topic: string) -> Batch_intneg {
@@ -511,6 +528,10 @@ class Batch_str {
     @check(kind_ctl_is_string, {{ this is string }})
     @check(kind_ctl_upper, {{ this|upper != "" }})
     @check(kind_ctl_startingwith, {{ this is startingwith("H") }})
+    @check(content_is_lower, {{ this is lower }})
+    @check(content_is_upper, {{ this is upper }})
+    @check(struct_ctl_length_string, {{ this|length == 11 }})
+    @check(struct_ctl_endingwith, {{ this is endingwith("d") }})
 }
 
 function Batch_strFn(topic: string) -> Batch_str {
@@ -538,6 +559,9 @@ class Batch_stru {
     @check(this_stru_in, {{ "✓" in this }})
     @check(this_stru_index, {{ this[1] == "é" }})
     @check(this_stru_isascii, {{ this|length > 0 }})
+    @check(struct_ctl_length_unicode, {{ this|length == 13 }})
+    @check(struct_ctl_startingwith_unicode, {{ this is startingwith("h") }})
+    @check(struct_ctl_eq_unicode, {{ this == "héllo ✓ 日本" }})
 }
 
 function Batch_struFn(topic: string) -> Batch_stru {
@@ -600,6 +624,13 @@ class Batch_list {
     @check(cmp_eq_this_list, {{ this is eq(this) }})
     @check(kind_ctl_is_seq, {{ this is sequence }})
     @check(kind_ctl_first, {{ this|first == 1 }})
+    @check(struct_ctl_length_list, {{ this|length == 3 }})
+    @check(struct_ctl_first, {{ this|first == 1 }})
+    @check(struct_ctl_last, {{ this|last == 3 }})
+    @check(struct_ctl_list, {{ this|list|length == 3 }})
+    @check(struct_ctl_reverse, {{ this|reverse|first == 3 }})
+    @check(struct_ctl_sum, {{ this|sum == 6 }})
+    @check(struct_ctl_is_seq, {{ this is sequence }})
 }
 
 function Batch_listFn(topic: string) -> Batch_list {
@@ -668,6 +699,7 @@ class Batch_map {
     @check(index_ctl_mapping, {{ this["z"] == 1 }})
     @check(subj_ctl_length_map, {{ this|length == 3 }})
     @check(kind_ctl_is_map, {{ this is mapping }})
+    @check(struct_ctl_length_map, {{ this|length == 3 }})
 }
 
 function Batch_mapFn(topic: string) -> Batch_map {
@@ -1444,6 +1476,33 @@ class Iso_wd_filter_number_subject {
 }
 
 function Iso_wd_filter_number_subjectFn(topic: string) -> Iso_wd_filter_number_subject {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_content_int_spaces {
+  v int @check(content_int_spaces, {{ " 12"|int == 12 }})
+}
+
+function Iso_content_int_spacesFn(topic: string) -> Iso_content_int_spaces {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_content_format_pct {
+  v int @check(content_format_pct, {{ 1|format("%d") == "1" }})
+}
+
+function Iso_content_format_pctFn(topic: string) -> Iso_content_format_pct {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_content_truncate {
+  v string @check(content_truncate, {{ this|truncate(3)|length <= 5 }})
+}
+
+function Iso_content_truncateFn(topic: string) -> Iso_content_truncate {
   client ConstraintOracleClient
   prompt #"{{ topic }} {{ ctx.output_format }}"#
 }

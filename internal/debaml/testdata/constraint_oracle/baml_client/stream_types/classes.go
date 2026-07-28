@@ -1534,6 +1534,132 @@ func (c Iso_arity_truncate_zero) BamlTypeName() string {
 	return "Iso_arity_truncate_zero"
 }
 
+type Iso_content_format_pct struct {
+	V *types.Checked[int64] `json:"v"`
+}
+
+func (c *Iso_content_format_pct) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_content_format_pct" {
+		panic(fmt.Sprintf("expected Iso_content_format_pct, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(*types.Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_content_format_pct", key))
+
+		}
+	}
+
+}
+
+func (c Iso_content_format_pct) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_content_format_pct", fields, nil)
+}
+
+func (c Iso_content_format_pct) BamlTypeName() string {
+	return "Iso_content_format_pct"
+}
+
+type Iso_content_int_spaces struct {
+	V *types.Checked[int64] `json:"v"`
+}
+
+func (c *Iso_content_int_spaces) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_content_int_spaces" {
+		panic(fmt.Sprintf("expected Iso_content_int_spaces, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(*types.Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_content_int_spaces", key))
+
+		}
+	}
+
+}
+
+func (c Iso_content_int_spaces) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_content_int_spaces", fields, nil)
+}
+
+func (c Iso_content_int_spaces) BamlTypeName() string {
+	return "Iso_content_int_spaces"
+}
+
+type Iso_content_truncate struct {
+	V *types.Checked[string] `json:"v"`
+}
+
+func (c *Iso_content_truncate) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_content_truncate" {
+		panic(fmt.Sprintf("expected Iso_content_truncate, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(*types.Checked[string])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_content_truncate", key))
+
+		}
+	}
+
+}
+
+func (c Iso_content_truncate) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_content_truncate", fields, nil)
+}
+
+func (c Iso_content_truncate) BamlTypeName() string {
+	return "Iso_content_truncate"
+}
+
 type Iso_divzero struct {
 	V *types.Checked[int64] `json:"v"`
 }

@@ -1545,30 +1545,68 @@ type builtinSignature struct {
 }
 
 // withdrawnBuiltins are retained by minijinja-Go but NOT admitted in any shape.
-// Each is here because its cross-kind behaviour differs from stock in a way that
-// is intricate rather than bounded, and the standing preference is withdrawal
-// over cleverness — a coverage loss is acceptable, a wrong boolean is not.
-//
-//	is iterable  Go's TestIterable is `val.Iter() != nil`, and Value.Iter has no
-//	             none/undefined case; stock's try_iter maps None|Undefined to an
-//	             EMPTY iterator. `none is iterable` is false here and true there.
-//	is filter    Stock takes (State, &str): the SUBJECT is the sole string and
-//	is test      there are no explicit arguments. Go inspects the subject with
-//	             AsString and DISCARDS its args slice, so `"upper" is filter("x")`
-//	             is true here and TooManyArguments there — and `1 is filter(…)`
-//	             is false here where stock errors converting the subject.
-//	is sameas    Rust's is_same_as is an identity comparison; the port compares
-//	             values. Not a bounded difference.
-//	is in        Go's TestIn calls container.Contains, whose string arm accepts
-//	             only a string query; stock's contains STRINGIFIES a non-string
-//	             query, so `1 is in "1"` is false here and true there. Its
-//	             non-iterable container arm errors in stock and answers false
-//	             here. Every combination would have to be proven separately.
-//
 // A withdrawn builtin declines wherever it is used.
+//
+// ROUND 20 — THE CONTENT-PARITY CLOSE. Rounds 17-19 bounded a call's SHAPE:
+// arity, keyword arguments, and the KIND of the subject and each argument. That
+// is everything about a call except the one thing that decides most results —
+// the VALUE'S CONTENT. Two string filters showed the gap at ordinary inputs:
+//
+//	"a!b"|title == "A!B"   native FALSE. Go's FilterTitle starts a word only at
+//	                       whitespace and `- _ : , .`, so it yields "A!b"; stock's
+//	                       title treats EVERY ASCII punctuation as a separator and
+//	                       yields "A!B".
+//	" a "|trim == "a"      with U+00A0 around the `a`: native FALSE. Go's default
+//	                       cutset is " \t\n\r"; stock calls Rust str::trim, which
+//	                       strips Unicode whitespace including NBSP.
+//
+// Neither is reachable by any kind rule, because both subjects ARE strings. The
+// content space of a string filter is not something this profile can enumerate,
+// and Go's strings/unicode packages and Rust's str are simply different
+// libraries — different case mapping (Rust's to_uppercase is FULL, Go's ToUpper
+// is simple), different whitespace, different punctuation classes, different
+// escaping and number formatting.
+//
+// So the posture is the one the owner directed: assume divergence and withdraw
+// unless identity is POSITIVELY provable. What survives is the structural
+// surface — counting, element access, and numeric magnitude — where the result
+// does not depend on the bytes at all:
+//
+//	length count   Value.Len counts RUNES for a string and elements otherwise,
+//	               which is what Rust's chars().count() and len() do.
+//	first last     element access; no content is inspected.
+//	list           materialisation of a sequence; identity on elements.
+//	reverse        SEQUENCE only. A string reverse would be content-shaped.
+//	sum            BAML's OWN filter, reimplemented here from jinja_helpers.rs
+//	               and pinned by BAML's own unit tests.
+//	abs            numeric, and the magnitude guard already bounds it.
+//
+// Everything else is here. The cost is large and it is measured, case by case,
+// in the live corpus — which is the trade the standing rule has always made: a
+// coverage loss is acceptable, a wrong boolean is not.
 var withdrawnBuiltins = map[string]bool{
+	// --- string TRANSFORMS: Go's strings/unicode is not Rust's str ---
+	"upper": true, "lower": true, "capitalize": true, "title": true,
+	"trim": true, "lines": true, "escape": true, "e": true, "safe": true,
+	"replace": true, "indent": true, "truncate": true, "split": true,
+	// --- RENDERING: number formatting, JSON escaping, printf ---
+	"string": true, "bool": true, "tojson": true, "pprint": true,
+	"format": true, "join": true,
+	// --- PARSING: strconv is not Rust's parse ---
+	"int": true, "float": true, "round": true,
+	// --- REGEX: RE2 is not the Rust regex crate on Unicode classes ---
+	"regex_match": true,
+	// --- ORDERING and COMPARISON over elements ---
+	"sort": true, "unique": true, "min": true, "max": true, "groupby": true,
+	// --- container reshaping whose element handling is not proven ---
+	"batch": true, "slice": true, "map": true, "select": true, "reject": true,
+	"selectattr": true, "rejectattr": true, "chain": true, "zip": true,
+	"attr": true, "items": true, "dictsort": true, "default": true, "d": true,
+	// --- tests withdrawn in round 19 for cross-kind behaviour ---
 	"is iterable": true, "is filter": true, "is test": true,
 	"is sameas": true, "is in": true,
+	// --- content-sensitive tests: Unicode case classes ---
+	"is lower": true, "is upper": true,
 }
 
 // provenSignatures is the whole admission surface, and it is DEFAULT-DECLINE:
@@ -1576,71 +1614,17 @@ var withdrawnBuiltins = map[string]bool{
 // a kind the entry does not list, or a subject the entry does not cover, is
 // ErrConstraintUnsupported. Nothing is admitted by omission.
 //
-// Every set below is an explicit enumeration derived from BOTH implementations —
-// the pinned minijinja-Go v2.16.0 and stock BAML v0.223's boundaryml/minijinja —
-// and a kind is present only where the two produce the same result. Where that
-// could not be shown cheaply, the kind is absent, and where the whole builtin
-// resisted it, the builtin is in [withdrawnBuiltins] instead.
+// After round 20 every entry here is STRUCTURAL: its result is determined by the
+// shape of the value — how many elements, which element, what kind — and never
+// by the bytes inside a string. See [withdrawnBuiltins] for why that is the
+// dividing line, and for the list of what fell on the other side of it.
 var provenSignatures = map[string]builtinSignature{
-	// --- string filters: a string subject, no arguments ---
-	"upper": {0, 0, nil, kString}, "lower": {0, 0, nil, kString},
-	"capitalize": {0, 0, nil, kString}, "title": {0, 0, nil, kString},
-	"trim": {0, 0, nil, kString}, "lines": {0, 0, nil, kString},
-	"escape": {0, 0, nil, kString}, "e": {0, 0, nil, kString},
-	"safe": {0, 0, nil, kString},
-
-	// --- sequence filters: a real iterable only ---
-	"first": {0, 0, nil, kSequence}, "last": {0, 0, nil, kSequence},
-	"reverse": {0, 0, nil, kSequence}, "list": {0, 0, nil, kSequence},
-	"unique": {0, 0, nil, kSequence}, "sort": {0, 0, nil, kSequence},
-	"min": {0, 0, nil, kSequence}, "max": {0, 0, nil, kSequence},
-	"sum": {0, 0, nil, kSequence},
-
-	// --- mapping filters ---
-	"items": {0, 0, nil, kMap}, "dictsort": {0, 0, nil, kMap},
-
-	// --- scalar filters ---
-	"string": {0, 0, nil, kScalar}, "bool": {0, 0, nil, kScalar},
-	"pprint": {0, 0, nil, kScalar},
-	// tojson also renders a SEQUENCE identically — `[1,2]|tojson` is live. A
-	// MAPPING is excluded here and refused by the tojson guard besides, because
-	// its key order is the thing the two engines disagree about.
-	"tojson": {0, 0, nil, kScalar | kSeq},
-	"abs":    {0, 0, nil, kNumber},
-	"int":    {0, 0, nil, kNumber | kString},
-	"float":  {0, 0, nil, kNumber | kString},
-
-	// --- sized ---
+	// --- structural filters ---
 	"length": {0, 0, nil, kSized}, "count": {0, 0, nil, kSized},
-
-	// --- one argument ---
-	"round":   {0, 1, []kindSet{kNumber}, kNumber},
-	"default": {0, 1, []kindSet{kConcrete}, kPresence},
-	"d":       {0, 1, []kindSet{kConcrete}, kPresence},
-	"join":    {0, 1, []kindSet{kString}, kSequence},
-	"split":   {1, 1, []kindSet{kString}, kString},
-	"format":  {1, 1, []kindSet{kString}, kScalar},
-	"indent":  {1, 1, []kindSet{kNumber}, kString},
-
-	"truncate": {1, 1, []kindSet{kNumber}, kString},
-	"batch":    {1, 1, []kindSet{kNumber}, kSequence},
-	"slice":    {1, 1, []kindSet{kNumber}, kSequence},
-	"map":      {1, 1, []kindSet{kString}, kSequence},
-	"select":   {1, 1, []kindSet{kString}, kSequence},
-	"reject":   {1, 1, []kindSet{kString}, kSequence},
-	"groupby":  {1, 1, []kindSet{kString}, kSequence},
-	"chain":    {1, 1, []kindSet{kSequence}, kSequence},
-	"zip":      {1, 1, []kindSet{kSequence}, kSequence},
-	"attr":     {1, 1, []kindSet{kString}, kMap},
-	// regex_match is BAML's OWN filter (jinja_helpers.rs), reimplemented here
-	// rather than inherited from the port, and it stringifies its subject —
-	// `1|regex_match("1")` is live in the corpus.
-	"regex_match": {1, 1, []kindSet{kString}, kScalar},
-
-	// --- two arguments ---
-	"replace":    {2, 2, []kindSet{kString, kString}, kString},
-	"selectattr": {1, 2, []kindSet{kString, kString}, kSequence},
-	"rejectattr": {1, 2, []kindSet{kString, kString}, kSequence},
+	"first": {0, 0, nil, kSequence}, "last": {0, 0, nil, kSequence},
+	"list": {0, 0, nil, kSequence}, "reverse": {0, 0, nil, kSequence},
+	"sum": {0, 0, nil, kSequence},
+	"abs": {0, 0, nil, kNumber},
 
 	// --- PRESENCE predicates: the only rows that admit UNDEFINED, because
 	// detecting it is the question and both engines answer it the same way. ---
@@ -1648,7 +1632,7 @@ var provenSignatures = map[string]builtinSignature{
 	"is none": {0, 0, nil, kPresence},
 
 	// --- TYPE predicates: a kind test in both engines, over the kinds the value
-	// model produces. Undefined is excluded; `is iterable` is withdrawn. ---
+	// model produces. They read no content. ---
 	"is string": {0, 0, nil, kConcrete}, "is number": {0, 0, nil, kConcrete},
 	"is integer": {0, 0, nil, kConcrete}, "is int": {0, 0, nil, kConcrete},
 	"is float": {0, 0, nil, kConcrete}, "is boolean": {0, 0, nil, kConcrete},
@@ -1661,14 +1645,15 @@ var provenSignatures = map[string]builtinSignature{
 	"is odd": {0, 0, nil, kNumber}, "is even": {0, 0, nil, kNumber},
 	"is divisibleby": {1, 1, []kindSet{kNumber}, kNumber},
 
-	// --- string tests ---
-	"is lower": {0, 0, nil, kString}, "is upper": {0, 0, nil, kString},
+	// --- prefix/suffix tests: a BYTEWISE comparison in both engines, so the
+	// content space is not a hazard here — identical bytes give identical
+	// answers, and no case, class or width mapping is consulted. ---
 	"is startingwith": {1, 1, []kindSet{kString}, kString},
 	"is endingwith":   {1, 1, []kindSet{kString}, kString},
 
-	// --- comparison tests. Narrowed to SCALARS on both sides: a cross-kind
-	// comparison and a container comparison each go through conversions that
-	// have not been shown identical, and `is sameas` is withdrawn outright. ---
+	// --- comparison tests, scalars on both sides. Equality and ordering are
+	// bytewise on strings in both engines and numeric otherwise; a cross-kind or
+	// container comparison is not admitted. ---
 	"is eq": {1, 1, []kindSet{kScalar}, kScalar}, "is equalto": {1, 1, []kindSet{kScalar}, kScalar},
 	"is ne": {1, 1, []kindSet{kScalar}, kScalar},
 	"is lt": {1, 1, []kindSet{kScalar}, kScalar}, "is lessthan": {1, 1, []kindSet{kScalar}, kScalar},

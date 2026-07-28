@@ -42,7 +42,6 @@ func TestJinjaHelpersPinnedRenders(t *testing.T) {
 		{"literal", list, "1", "1"},
 		{"arithmetic", list, "1 + 1", "2"},
 		{"length_gt", list, "this|length > 2", "true"},
-		{"regex_substring", phone, `this|regex_match("123")`, "true"},
 		{"sum_ints", list, "[1,2]|sum", "3"},
 		{"sum_mixed", list, "[1,2.5]|sum", "3.5"},
 	}
@@ -56,6 +55,14 @@ func TestJinjaHelpersPinnedRenders(t *testing.T) {
 				t.Fatalf("render %q = %q, want %q", tc.expr, got, tc.want)
 			}
 		})
+	}
+
+	// ACCEPTED COST, round 20. `regex_match` is withdrawn along with every other
+	// content-sensitive builtin: Go's RE2 and Rust's regex crate are different
+	// engines whose Unicode classes are not proven identical. BAML's own pinned
+	// case is kept here as a REFUSAL so the loss stays visible.
+	if _, err := RenderConstraintExpression(phone, `this|regex_match("123")`); !errors.Is(err, ErrConstraintUnsupported) {
+		t.Errorf("regex_match is withdrawn; expected a refusal, got %v", err)
 	}
 
 	// ACCEPTED COST. jinja_helpers.rs's own phone-number case carries a `-`
@@ -294,22 +301,18 @@ func TestConstraintSumFilter(t *testing.T) {
 // both parameters are minijinja `String` args, which Display any value rather
 // than requiring a string.
 func TestConstraintRegexMatchFilter(t *testing.T) {
-	for expr, want := range map[string]string{
-		`"abc"|regex_match("^a")`: "true",
-		`"abc"|regex_match("^b")`: "false",
-		`"abc"|regex_match("[")`:  "false", // invalid pattern -> false, NOT an error
-		`1|regex_match("1")`:      "true",  // non-string subject is Displayed
+	// ROUND 20: `regex_match` is WITHDRAWN. It is BAML's own filter, but the two
+	// implementations are two different regex engines — Go's RE2 and Rust's regex
+	// crate — and their Unicode character classes are not proven identical across
+	// the content space. Under the content-parity close, that is enough to
+	// withdraw it. Every shape must now decline.
+	for _, expr := range []string{
+		`"abc"|regex_match("b")`, `"abc"|regex_match("^a")`, `"abc"|regex_match("[")`,
+		`1|regex_match("1")`, `"abc"|regex_match(1)`,
 	} {
-		got, err := RenderConstraintExpression(NullValue(), expr)
-		if err != nil {
-			t.Fatalf("render %q: %v", expr, err)
+		if _, err := RenderConstraintExpression(StringValue("abc"), expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%q: regex_match is withdrawn; expected a refusal, got %v", expr, err)
 		}
-		if got != want {
-			t.Errorf("render %q = %q, want %q", expr, got, want)
-		}
-	}
-	if _, err := RenderConstraintExpression(NullValue(), `"a"|regex_match`); err == nil {
-		t.Error("regex_match without a pattern should have errored")
 	}
 }
 
@@ -350,8 +353,7 @@ func TestWithdrawnBuiltinsError(t *testing.T) {
 	// Control: the builtins BAML DOES have must still work, so the withdrawal is
 	// specific rather than a blanket break.
 	for _, expr := range []string{
-		`"abc"|length == 3`,
-		`[1,2]|tojson == "[1,2]"`, `"abc" is startingwith("a")`,
+		`"abc"|length == 3`, `"abc" is startingwith("a")`,
 	} {
 		ok, err := EvaluateConstraint(NullValue(), expr)
 		if err != nil || !ok {
@@ -540,7 +542,6 @@ func TestConstraintProfileStillAnswersInsideIt(t *testing.T) {
 		{mapping, "this.a == 2", true},
 		{mapping, "this is mapping", true},
 		{mapping, `this == {"z":1,"a":2}`, true},
-		{mapping, `(this|dictsort|first|first) == "a"`, true},
 		{mapping, "this.q is undefined", true},
 		{class, `this.a == "x"`, true},
 		{class, "this|length == 2", true},
@@ -550,12 +551,10 @@ func TestConstraintProfileStillAnswersInsideIt(t *testing.T) {
 		{StringValue("Hello"), `"ell" in this`, true},
 		{ListValue([]ConstraintValue{IntValue(1), IntValue(2)}), "this|sum == 3", true},
 		{ListValue([]ConstraintValue{IntValue(1), IntValue(2)}), "1 in this", true},
-		{ListValue([]ConstraintValue{IntValue(1), IntValue(2)}), `this|join(",") == "1,2"`, true},
 		{EnumValue("Hue", "RED"), `this == "RED"`, true},
 		{NullValue(), "this == none", true},
 		{NullValue(), "4 is divisibleby(2)", true},
 		{NullValue(), `"abc"|length == 3`, true},
-		{NullValue(), `[1,2]|tojson == "[1,2]"`, true},
 	}
 	for _, tc := range cases {
 		got, err := EvaluateConstraint(tc.this, tc.expr)
@@ -740,19 +739,19 @@ func TestRuntimeIntegerProducersAreRefused(t *testing.T) {
 		}
 	}
 
-	// Controls. The guard is on the MAGNITUDE produced, not on the filter, so
-	// ordinary conversions must still decide — otherwise `int` would have been
-	// withdrawn rather than guarded.
+	// Controls. The guard is on the MAGNITUDE produced, not on the filter.
+	//
+	// ROUND 20 shrank this list: `int` (string parsing) and `max` (element
+	// ordering) are content-sensitive and are now withdrawn outright, so their
+	// rows moved to the refusal list above. `sum` survives because it is BAML's
+	// OWN filter, reimplemented here from jinja_helpers.rs and pinned by BAML's
+	// own unit tests rather than inherited from the port.
 	decided := []struct {
 		this ConstraintValue
 		expr string
 		want bool
 	}{
-		{NullValue(), `"42"|int == 42`, true},
-		{StringValue("42"), "this|int == 42", true},
-		{NullValue(), `"2.9"|int == 2`, true},
 		{NullValue(), "[1,2]|sum == 3", true},
-		{NullValue(), "[1,2]|max == 2", true},
 	}
 	for _, tc := range decided {
 		got, err := EvaluateConstraint(tc.this, tc.expr)
@@ -866,9 +865,9 @@ func TestPurelyNumericArithmeticStillDecides(t *testing.T) {
 		{NullValue(), "1 + 1 == 2"},
 		{NullValue(), "1 \n + 1 == 2"}, // newlines are whitespace, round-6 P1.2
 		// Filters are fine on their own — it is only their composition with
-		// arithmetic that cannot be bounded.
+		// arithmetic that cannot be bounded. (`int` left this list in round 20:
+		// string parsing is content-sensitive and the filter is withdrawn.)
 		{NullValue(), "[1,2]|sum == 3"},
-		{NullValue(), `"2"|int == 2`},
 		{IntValue(7), "this|abs == 7"},
 	} {
 		got, err := EvaluateConstraint(tc.this, tc.expr)

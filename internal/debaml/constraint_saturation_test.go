@@ -816,6 +816,8 @@ func TestAsIntHazardIsRefusedWhereverAValueCanReachABuiltin(t *testing.T) {
 		"comparison": {big, "this > 0"},
 		// Reached through select/reject dispatch, which is how a list element
 		// gets into `even` without ever being the subject.
+		// ROUND 20 withdrew select/reject outright (element handling is not
+		// proven), so these refuse for that reason now as well as this one.
 		"select":  {list, `this|select("even")|list|length == 2`},
 		"reject":  {list, `this|reject("odd")|list|length == 2`},
 		"sum":     {list, "this|sum > 0"},
@@ -836,7 +838,6 @@ func TestAsIntHazardIsRefusedWhereverAValueCanReachABuiltin(t *testing.T) {
 	// proven and must still decide — the guard is a boundary, not a ban on
 	// floats.
 	small := FloatValue(4)
-	smallList := ListValue([]ConstraintValue{IntValue(2), IntValue(3), IntValue(4)})
 	for name, tc := range map[string]struct {
 		this ConstraintValue
 		expr string
@@ -850,8 +851,6 @@ func TestAsIntHazardIsRefusedWhereverAValueCanReachABuiltin(t *testing.T) {
 		"non-integral float":    {FloatValue(2.5), "this is even", false},
 		"integer this":          {IntValue(4), "this is even", true},
 		"literal":               {NullValue(), "4 is even", true},
-		"int list select":       {smallList, `this|select("even")|list|length == 2`, true},
-		"int list reject":       {smallList, `this|reject("odd")|list|length == 2`, true},
 	} {
 		got, err := EvaluateConstraint(tc.this, tc.expr)
 		if err != nil {
@@ -902,13 +901,15 @@ func TestEveryRegisteredTestIsGuarded(t *testing.T) {
 	// refused outright — a stronger guarantee than the guard sweep, but it means
 	// leg 1 below cannot use a float for them.
 	stringSubject := map[string]bool{
-		"startingwith": true, "endingwith": true, "lower": true, "upper": true,
+		"startingwith": true, "endingwith": true,
 	}
 	// WITHDRAWN in round 19: these five decline in EVERY shape, which is the
 	// strongest guarantee of all, so neither leg applies. They are asserted
 	// separately by TestWithdrawnTestsDeclineInEveryShape.
 	withdrawn := map[string]bool{
 		"iterable": true, "filter": true, "test": true, "sameas": true, "in": true,
+		// ROUND 20: Unicode case classes are content-sensitive.
+		"lower": true, "upper": true,
 	}
 
 	var exercised int
@@ -1123,11 +1124,6 @@ func TestBuiltinArgumentParity(t *testing.T) {
 		// those agree exactly. Only the non-integral branch is unrepresented.
 		"divisibleby, integral float subject": {NullValue(), `4.0 is divisibleby(2)`, true},
 		"divisibleby, integral float divisor": {NullValue(), `4 is divisibleby(2.0)`, true},
-		"slice(2)":                            {NullValue(), `[1,2,3]|slice(2)|length == 2`, true},
-		"batch(2)":                            {NullValue(), `[1,2,3]|batch(2)|length == 2`, true},
-		"replace, two args":                   {NullValue(), `"aaa"|replace("a","b") == "bbb"`, true},
-		"join":                                {NullValue(), `["a","b"]|join(",") == "a,b"`, true},
-		"upper":                               {StringValue("hi"), `this|upper == "HI"`, true},
 	} {
 		got, err := EvaluateConstraint(tc.this, tc.expr)
 		if err != nil {
@@ -1246,17 +1242,11 @@ func TestSignatureTableIsDefaultDecline(t *testing.T) {
 		expr string
 		want bool
 	}{
-		"replace, two strings": {str, `this|replace("H","J")|length == 11`, true},
-		"slice(2)":             {NullValue(), `[1,2,3]|slice(2)|length == 2`, true},
-		"batch(2)":             {NullValue(), `[1,2,3]|batch(2)|length == 2`, true},
-		"defined":              {str, `this is defined`, true},
-		"even":                 {NullValue(), `4 is even`, true},
-		"join, a string":       {NullValue(), `["a","b"]|join(",") == "a,b"`, true},
-		"upper":                {str, `this|upper == "HELLO WORLD"`, true},
-		"startingwith":         {str, `this is startingwith("He")`, true},
-		"regex_match":          {str, `this|regex_match("Hello")`, true},
-		"divisibleby":          {NullValue(), `9 is divisibleby(3)`, true},
-		"length":               {list, `this|length == 3`, true},
+		"defined":      {str, `this is defined`, true},
+		"even":         {NullValue(), `4 is even`, true},
+		"startingwith": {str, `this is startingwith("He")`, true},
+		"divisibleby":  {NullValue(), `9 is divisibleby(3)`, true},
+		"length":       {list, `this|length == 3`, true},
 	} {
 		got, err := EvaluateConstraint(tc.this, tc.expr)
 		if err != nil {
@@ -1401,17 +1391,12 @@ func TestSubjectKindsAreProvenNotAssumed(t *testing.T) {
 		"divisibleby":    {NullValue(), `9 is divisibleby(3)`, true},
 		"seq first":      {list, `this|first == 1`, true},
 		"seq last":       {list, `this|last == 3`, true},
-		"seq min":        {list, `this|min == 1`, true},
-		"seq max":        {list, `this|max == 3`, true},
 		"seq list":       {list, `this|list|length == 3`, true},
 		"seq reverse":    {list, `this|reverse|first == 3`, true},
-		"seq join":       {list, `this|join(",") == "1,2,3"`, true},
 		"seq sum":        {list, `this|sum == 6`, true},
-		"string upper":   {str, `this|upper == "HELLO WORLD"`, true},
 		"number abs":     {IntValue(-3), `this|abs == 3`, true},
 		"string length":  {str, `this|length == 11`, true},
 		"map length":     {mapv, `this|length == 1`, true},
-		"seq tojson":     {NullValue(), `[1,2]|tojson == "[1,2]"`, true},
 		"is defined":     {str, `this is defined`, true},
 		"is string":      {str, `this is string`, true},
 	} {

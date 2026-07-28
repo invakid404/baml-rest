@@ -1717,6 +1717,147 @@ func (*parse_stream) Iso_arity_truncate_zeroFn(text string, opts ...CallOptionFu
 	return casted, nil
 }
 
+// / Parse version of Iso_content_format_pctFn (Takes in string and returns stream_types.Iso_content_format_pct)
+func (*parse_stream) Iso_content_format_pctFn(text string, opts ...CallOptionFunc) (stream_types.Iso_content_format_pct, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_content_format_pctFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_content_format_pctFn", encoded)
+	if err != nil {
+		return stream_types.Iso_content_format_pct{}, err
+	}
+
+	casted := (result).(stream_types.Iso_content_format_pct)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_content_int_spacesFn (Takes in string and returns stream_types.Iso_content_int_spaces)
+func (*parse_stream) Iso_content_int_spacesFn(text string, opts ...CallOptionFunc) (stream_types.Iso_content_int_spaces, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_content_int_spacesFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_content_int_spacesFn", encoded)
+	if err != nil {
+		return stream_types.Iso_content_int_spaces{}, err
+	}
+
+	casted := (result).(stream_types.Iso_content_int_spaces)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_content_truncateFn (Takes in string and returns stream_types.Iso_content_truncate)
+func (*parse_stream) Iso_content_truncateFn(text string, opts ...CallOptionFunc) (stream_types.Iso_content_truncate, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_content_truncateFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_content_truncateFn", encoded)
+	if err != nil {
+		return stream_types.Iso_content_truncate{}, err
+	}
+
+	casted := (result).(stream_types.Iso_content_truncate)
+
+	return casted, nil
+}
+
 // / Parse version of Iso_divzeroFn (Takes in string and returns stream_types.Iso_divzero)
 func (*parse_stream) Iso_divzeroFn(text string, opts ...CallOptionFunc) (stream_types.Iso_divzero, error) {
 
