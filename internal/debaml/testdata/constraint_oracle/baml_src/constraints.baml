@@ -422,6 +422,22 @@ class Batch_const {
     @check(content_indent_tabs, {{ "a
 b"|indent(2)|length > 3 }})
     @check(struct_ctl_odd, {{ 3 is odd }})
+    @check(op_in_string_needle_r21, {{ 1 in "1" }})
+    @check(op_not_in_string_needle_r21, {{ 1 not in "1" }})
+    @check(op_in_list_literal_r21, {{ "a" in ["a","b"] }})
+    @check(op_cmp_int_string_r21, {{ 1 == "1" }})
+    @check(op_cmp_int_lt_string_r21, {{ 1 < "a" }})
+    @check(op_cmp_none_false_r21, {{ none == false }})
+    @check(op_cmp_true_one_r21, {{ true == 1 }})
+    @check(op_concat_number_r21, {{ 1 ~ "a" == "1a" }})
+    @check(op_and_r21, {{ true and false }})
+    @check(op_or_r21, {{ true or false }})
+    @check(op_not_r21, {{ not true }})
+    @check(op_ternary_r21, {{ 1 == 1 if true else 2 == 2 }})
+    @check(op_ctl_int_eq_r21, {{ 1 == 1 }})
+    @check(op_ctl_string_eq_r21, {{ "a" == "a" }})
+    @check(op_ctl_bool_eq_r21, {{ true == true }})
+    @check(op_ctl_arith_r21, {{ 1 + 2 == 3 }})
 }
 
 function Batch_constFn(topic: string) -> Batch_const {
@@ -440,6 +456,8 @@ class Batch_int7 {
     @check(this_int_in, {{ this in [7] }})
     @check(this_int_big_cmp, {{ this * 1000000000 < 9007199254740992 }})
     @check(kind_ctl_is_number, {{ this is number }})
+    @check(op_ctl_this_int_r21, {{ this == 7 }})
+    @check(op_ctl_this_gt_r21, {{ this > 0 }})
 }
 
 function Batch_int7Fn(topic: string) -> Batch_int7 {
@@ -532,6 +550,10 @@ class Batch_str {
     @check(content_is_upper, {{ this is upper }})
     @check(struct_ctl_length_string, {{ this|length == 11 }})
     @check(struct_ctl_endingwith, {{ this is endingwith("d") }})
+    @check(op_cmp_this_mixed_r21, {{ this == 1 }})
+    @check(op_ctl_this_string_r21, {{ this == "Hello World" }})
+    @check(op_ctl_is_test_r21, {{ this is defined }})
+    @check(op_ctl_is_not_r21, {{ this is not none }})
 }
 
 function Batch_strFn(topic: string) -> Batch_str {
@@ -631,6 +653,11 @@ class Batch_list {
     @check(struct_ctl_reverse, {{ this|reverse|first == 3 }})
     @check(struct_ctl_sum, {{ this|sum == 6 }})
     @check(struct_ctl_is_seq, {{ this is sequence }})
+    @check(op_in_this_list_r21, {{ 1 in this }})
+    @check(op_cmp_list_literal_r21, {{ this == [1,2,3] }})
+    @check(op_ctl_length_cmp_r21, {{ this|length == 3 }})
+    @check(op_ctl_length_gt_r21, {{ this|length > 2 }})
+    @check(op_ctl_sum_r21, {{ this|sum == 6 }})
 }
 
 function Batch_listFn(topic: string) -> Batch_list {
@@ -643,6 +670,7 @@ class Batch_liste {
     @check(this_liste_length, {{ this|length == 0 }})
     @check(this_liste_sum, {{ this|sum == 0 }})
     @check(this_liste_first, {{ this|first is undefined }})
+    @check(op_truthy_empty_list_r21, {{ this or true }})
 }
 
 function Batch_listeFn(topic: string) -> Batch_liste {
@@ -721,6 +749,7 @@ class Batch_cls {
     @check(this_cls_string_len, {{ (this|string)|length == 33 }})
     @check(this_cls_nested_index, {{ this.c[0] == 1 }})
     @check(this_cls_concat, {{ (this ~ "")|length == 33 }})
+    @check(op_ctl_field_r21, {{ this.b == 1 }})
 }
 
 function Batch_clsFn(topic: string) -> Batch_cls {
@@ -1503,6 +1532,24 @@ class Iso_content_truncate {
 }
 
 function Iso_content_truncateFn(topic: string) -> Iso_content_truncate {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_op_in_noniterable_r21 {
+  v int @check(op_in_noniterable_r21, {{ 1 in 2 }})
+}
+
+function Iso_op_in_noniterable_r21Fn(topic: string) -> Iso_op_in_noniterable_r21 {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_op_truthy_none_r21 {
+  v int? @check(op_truthy_none_r21, {{ this and true }})
+}
+
+function Iso_op_truthy_none_r21Fn(topic: string) -> Iso_op_truthy_none_r21 {
   client ConstraintOracleClient
   prompt #"{{ topic }} {{ ctx.output_format }}"#
 }

@@ -1839,6 +1839,38 @@ func (t *Iso_op_floordiv_zeroClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 
+type Iso_op_in_noniterable_r21ClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_op_in_noniterable_r21ClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_op_in_noniterable_r21ClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_op_in_noniterable_r21() (*Iso_op_in_noniterable_r21ClassView, error) {
+	bld, err := t.inner.Class("Iso_op_in_noniterable_r21")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_op_in_noniterable_r21ClassView{inner: bld}, nil
+}
+
+func (t *Iso_op_in_noniterable_r21ClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
 type Iso_op_rem_zeroClassView struct {
 	inner baml.ClassBuilder
 }
@@ -1900,6 +1932,38 @@ func (t *TypeBuilder) Iso_op_str_add_num() (*Iso_op_str_add_numClassView, error)
 }
 
 func (t *Iso_op_str_add_numClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_op_truthy_none_r21ClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_op_truthy_none_r21ClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_op_truthy_none_r21ClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_op_truthy_none_r21() (*Iso_op_truthy_none_r21ClassView, error) {
+	bld, err := t.inner.Class("Iso_op_truthy_none_r21")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_op_truthy_none_r21ClassView{inner: bld}, nil
+}
+
+func (t *Iso_op_truthy_none_r21ClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 

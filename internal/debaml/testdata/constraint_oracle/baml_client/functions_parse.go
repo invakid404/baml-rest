@@ -2704,6 +2704,53 @@ func (*parse) Iso_op_floordiv_zeroFn(text string, opts ...CallOptionFunc) (types
 	return casted, nil
 }
 
+// / Parse version of Iso_op_in_noniterable_r21Fn (Takes in string and returns types.Iso_op_in_noniterable_r21)
+func (*parse) Iso_op_in_noniterable_r21Fn(text string, opts ...CallOptionFunc) (types.Iso_op_in_noniterable_r21, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_op_in_noniterable_r21Fn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_op_in_noniterable_r21Fn", encoded)
+	if err != nil {
+		return types.Iso_op_in_noniterable_r21{}, err
+	}
+
+	casted := (result).(types.Iso_op_in_noniterable_r21)
+
+	return casted, nil
+}
+
 // / Parse version of Iso_op_rem_zeroFn (Takes in string and returns types.Iso_op_rem_zero)
 func (*parse) Iso_op_rem_zeroFn(text string, opts ...CallOptionFunc) (types.Iso_op_rem_zero, error) {
 
@@ -2794,6 +2841,53 @@ func (*parse) Iso_op_str_add_numFn(text string, opts ...CallOptionFunc) (types.I
 	}
 
 	casted := (result).(types.Iso_op_str_add_num)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_op_truthy_none_r21Fn (Takes in string and returns types.Iso_op_truthy_none_r21)
+func (*parse) Iso_op_truthy_none_r21Fn(text string, opts ...CallOptionFunc) (types.Iso_op_truthy_none_r21, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_op_truthy_none_r21Fn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_op_truthy_none_r21Fn", encoded)
+	if err != nil {
+		return types.Iso_op_truthy_none_r21{}, err
+	}
+
+	casted := (result).(types.Iso_op_truthy_none_r21)
 
 	return casted, nil
 }

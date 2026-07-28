@@ -4239,6 +4239,80 @@ func Iso_op_floordiv_zeroFn(ctx context.Context, topic string, opts ...CallOptio
 	}
 }
 
+func Iso_op_in_noniterable_r21Fn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_op_in_noniterable_r21, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Iso_op_in_noniterable_r21Fn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_op_in_noniterable_r21{}, err
+		}
+
+		if result.Error != nil {
+			return types.Iso_op_in_noniterable_r21{}, result.Error
+		}
+
+		casted := (result.Data).(types.Iso_op_in_noniterable_r21)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_op_in_noniterable_r21Fn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_op_in_noniterable_r21{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Iso_op_in_noniterable_r21{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Iso_op_in_noniterable_r21), nil
+			}
+		}
+
+		return types.Iso_op_in_noniterable_r21{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
 func Iso_op_rem_zeroFn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_op_rem_zero, error) {
 
 	var callOpts callOption
@@ -4384,6 +4458,80 @@ func Iso_op_str_add_numFn(ctx context.Context, topic string, opts ...CallOptionF
 		}
 
 		return types.Iso_op_str_add_num{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func Iso_op_truthy_none_r21Fn(ctx context.Context, topic string, opts ...CallOptionFunc) (types.Iso_op_truthy_none_r21, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "Iso_op_truthy_none_r21Fn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_op_truthy_none_r21{}, err
+		}
+
+		if result.Error != nil {
+			return types.Iso_op_truthy_none_r21{}, result.Error
+		}
+
+		casted := (result.Data).(types.Iso_op_truthy_none_r21)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_op_truthy_none_r21Fn", encoded, callOpts.onTick)
+		if err != nil {
+			return types.Iso_op_truthy_none_r21{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.Iso_op_truthy_none_r21{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.Iso_op_truthy_none_r21), nil
+			}
+		}
+
+		return types.Iso_op_truthy_none_r21{}, fmt.Errorf("No data returned from stream")
 	}
 }
 

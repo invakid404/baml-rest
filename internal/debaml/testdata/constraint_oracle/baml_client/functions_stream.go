@@ -4260,6 +4260,80 @@ func (*stream) Iso_op_floordiv_zeroFn(ctx context.Context, topic string, opts ..
 	return channel, nil
 }
 
+// / Streaming version of Iso_op_in_noniterable_r21Fn
+func (*stream) Iso_op_in_noniterable_r21Fn(ctx context.Context, topic string, opts ...CallOptionFunc) (<-chan StreamValue[stream_types.Iso_op_in_noniterable_r21, types.Iso_op_in_noniterable_r21], error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_op_in_noniterable_r21Fn: %w", err)
+		panic(wrapped_err)
+	}
+
+	internal_channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_op_in_noniterable_r21Fn", encoded, callOpts.onTick)
+	if err != nil {
+		return nil, err
+	}
+
+	channel := make(chan StreamValue[stream_types.Iso_op_in_noniterable_r21, types.Iso_op_in_noniterable_r21])
+	go func() {
+		for result := range internal_channel {
+			if result.Error != nil {
+				channel <- StreamValue[stream_types.Iso_op_in_noniterable_r21, types.Iso_op_in_noniterable_r21]{
+					IsError: true,
+					Error:   result.Error,
+				}
+				close(channel)
+				return
+			}
+			if result.HasData {
+				data := (result.Data).(types.Iso_op_in_noniterable_r21)
+				channel <- StreamValue[stream_types.Iso_op_in_noniterable_r21, types.Iso_op_in_noniterable_r21]{
+					IsFinal:  true,
+					as_final: &data,
+				}
+			} else {
+				data := (result.StreamData).(stream_types.Iso_op_in_noniterable_r21)
+				channel <- StreamValue[stream_types.Iso_op_in_noniterable_r21, types.Iso_op_in_noniterable_r21]{
+					IsFinal:   false,
+					as_stream: &data,
+				}
+			}
+		}
+
+		// when internal_channel is closed, close the output too
+		close(channel)
+	}()
+	return channel, nil
+}
+
 // / Streaming version of Iso_op_rem_zeroFn
 func (*stream) Iso_op_rem_zeroFn(ctx context.Context, topic string, opts ...CallOptionFunc) (<-chan StreamValue[stream_types.Iso_op_rem_zero, types.Iso_op_rem_zero], error) {
 
@@ -4396,6 +4470,80 @@ func (*stream) Iso_op_str_add_numFn(ctx context.Context, topic string, opts ...C
 			} else {
 				data := (result.StreamData).(stream_types.Iso_op_str_add_num)
 				channel <- StreamValue[stream_types.Iso_op_str_add_num, types.Iso_op_str_add_num]{
+					IsFinal:   false,
+					as_stream: &data,
+				}
+			}
+		}
+
+		// when internal_channel is closed, close the output too
+		close(channel)
+	}()
+	return channel, nil
+}
+
+// / Streaming version of Iso_op_truthy_none_r21Fn
+func (*stream) Iso_op_truthy_none_r21Fn(ctx context.Context, topic string, opts ...CallOptionFunc) (<-chan StreamValue[stream_types.Iso_op_truthy_none_r21, types.Iso_op_truthy_none_r21], error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_op_truthy_none_r21Fn: %w", err)
+		panic(wrapped_err)
+	}
+
+	internal_channel, err := bamlRuntime.CallFunctionStream(ctx, "Iso_op_truthy_none_r21Fn", encoded, callOpts.onTick)
+	if err != nil {
+		return nil, err
+	}
+
+	channel := make(chan StreamValue[stream_types.Iso_op_truthy_none_r21, types.Iso_op_truthy_none_r21])
+	go func() {
+		for result := range internal_channel {
+			if result.Error != nil {
+				channel <- StreamValue[stream_types.Iso_op_truthy_none_r21, types.Iso_op_truthy_none_r21]{
+					IsError: true,
+					Error:   result.Error,
+				}
+				close(channel)
+				return
+			}
+			if result.HasData {
+				data := (result.Data).(types.Iso_op_truthy_none_r21)
+				channel <- StreamValue[stream_types.Iso_op_truthy_none_r21, types.Iso_op_truthy_none_r21]{
+					IsFinal:  true,
+					as_final: &data,
+				}
+			} else {
+				data := (result.StreamData).(stream_types.Iso_op_truthy_none_r21)
+				channel <- StreamValue[stream_types.Iso_op_truthy_none_r21, types.Iso_op_truthy_none_r21]{
 					IsFinal:   false,
 					as_stream: &data,
 				}

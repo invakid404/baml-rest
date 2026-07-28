@@ -185,6 +185,19 @@ func renderConstraint(this ConstraintValue, expression string) (string, error) {
 				"non-negative literal are all refused rather than guessed at")
 	}
 
+	// The OPERATOR gate. Filters, tests and globals go through the admission
+	// table; an operator is a VM operation and reaches none of it, so the whole
+	// expression must parse as the closed predicate grammar and every comparison
+	// in it must have same-kind operands. See constraint_operator.go.
+	if !operatorShapeIsProven(this, expression) {
+		return "", unsupportedConstraint(
+			"outside the proven operator profile: an expression is admitted only when the WHOLE of it " +
+				"parses as the closed predicate grammar — a comparison of two same-kind operands, or a " +
+				"test — over literals, `this`, its fields and the admitted filters. `in`/`not in`, `~`, " +
+				"`and`/`or`/`not`, the ternary and any mixed-kind comparison are refused, because each " +
+				"reaches its answer through a coercion the two engines do not share")
+	}
+
 	primary, primaryErr := renderOnce(this, expression, mappingOrdered)
 	if !hasMapping(this) {
 		return primary, primaryErr

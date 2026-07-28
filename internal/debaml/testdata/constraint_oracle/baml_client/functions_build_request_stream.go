@@ -2646,6 +2646,52 @@ func (*build_request_stream) Iso_op_floordiv_zeroFn(topic string, opts ...CallOp
 	return bamlRuntime.BuildRequest(context.Background(), "Iso_op_floordiv_zeroFn", encoded)
 }
 
+// Build streaming HTTP request for Iso_op_in_noniterable_r21Fn (returns baml.HTTPRequest)
+func (*build_request_stream) Iso_op_in_noniterable_r21Fn(topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_op_in_noniterable_r21Fn: %w", err)
+		panic(wrapped_err)
+	}
+
+	return bamlRuntime.BuildRequest(context.Background(), "Iso_op_in_noniterable_r21Fn", encoded)
+}
+
 // Build streaming HTTP request for Iso_op_rem_zeroFn (returns baml.HTTPRequest)
 func (*build_request_stream) Iso_op_rem_zeroFn(topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
 
@@ -2736,6 +2782,52 @@ func (*build_request_stream) Iso_op_str_add_numFn(topic string, opts ...CallOpti
 	}
 
 	return bamlRuntime.BuildRequest(context.Background(), "Iso_op_str_add_numFn", encoded)
+}
+
+// Build streaming HTTP request for Iso_op_truthy_none_r21Fn (returns baml.HTTPRequest)
+func (*build_request_stream) Iso_op_truthy_none_r21Fn(topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_op_truthy_none_r21Fn: %w", err)
+		panic(wrapped_err)
+	}
+
+	return bamlRuntime.BuildRequest(context.Background(), "Iso_op_truthy_none_r21Fn", encoded)
 }
 
 // Build streaming HTTP request for Iso_pow_computed_neg_exp2Fn (returns baml.HTTPRequest)

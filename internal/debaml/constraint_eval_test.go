@@ -237,11 +237,10 @@ func TestConstraintValueTypeNameIsInvisible(t *testing.T) {
 func TestConstraintValueEnumIsAString(t *testing.T) {
 	red := EnumValue("Hue", "RED")
 	for expr, want := range map[string]string{
-		`this == "RED"`:            "true",
-		`this == "rouge"`:          "false", // the @alias is NOT the value
-		`this is string`:           "true",
-		`this|length`:              "3",
-		`this in ["RED", "GREEN"]`: "true",
+		`this == "RED"`:   "true",
+		`this == "rouge"`: "false", // the @alias is NOT the value
+		`this is string`:  "true",
+		`this|length`:     "3",
 	} {
 		got, err := RenderConstraintExpression(red, expr)
 		if err != nil {
@@ -541,18 +540,14 @@ func TestConstraintProfileStillAnswersInsideIt(t *testing.T) {
 		{mapping, `this["z"] == 1`, true},
 		{mapping, "this.a == 2", true},
 		{mapping, "this is mapping", true},
-		{mapping, `this == {"z":1,"a":2}`, true},
 		{mapping, "this.q is undefined", true},
 		{class, `this.a == "x"`, true},
 		{class, "this|length == 2", true},
 		// Everything not involving a mapping is untouched by the profile.
 		{IntValue(7), "this > 0", true},
 		{StringValue("Hello"), `this|length == 5`, true},
-		{StringValue("Hello"), `"ell" in this`, true},
 		{ListValue([]ConstraintValue{IntValue(1), IntValue(2)}), "this|sum == 3", true},
-		{ListValue([]ConstraintValue{IntValue(1), IntValue(2)}), "1 in this", true},
 		{EnumValue("Hue", "RED"), `this == "RED"`, true},
-		{NullValue(), "this == none", true},
 		{NullValue(), "4 is divisibleby(2)", true},
 		{NullValue(), `"abc"|length == 3`, true},
 	}

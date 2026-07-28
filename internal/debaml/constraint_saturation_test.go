@@ -1011,7 +1011,6 @@ func TestSubscriptAndSliceBoundsMustBeLiterals(t *testing.T) {
 		"slice step":        {NullValue(), `[1,2,3][::2]|length == 2`, true},
 		"all three bounds":  {NullValue(), `[1,2,3][0:3:1]|length == 3`, true},
 		"list literal":      {NullValue(), `[1,2,3]|length == 3`, true},
-		"string list":       {NullValue(), `"a" in ["a","b"]`, true},
 		"index over this":   {ListValue([]ConstraintValue{IntValue(1), IntValue(2), IntValue(3)}), `this[0] == 1`, true},
 		"slice over this":   {ListValue([]ConstraintValue{IntValue(1), IntValue(2), IntValue(3)}), `this[1:]|length == 2`, true},
 		"string index":      {StringValue("abcdef"), `this[0] == "a"`, true},
@@ -1029,7 +1028,6 @@ func TestSubscriptAndSliceBoundsMustBeLiterals(t *testing.T) {
 		// A string KEY in a direct subscript has no conversion to disagree about:
 		// GetItem's map arm reads AsString and its sequence arms simply find no
 		// item. Measured live against stock on a sequence as well as a mapping.
-		"string key on a sequence": {NullValue(), `[1,2,3]["x"] == 1`, false},
 	} {
 		got, err := EvaluateConstraint(tc.this, tc.expr)
 		if err != nil {
@@ -1454,11 +1452,13 @@ func TestWithdrawnTestsDeclineInEveryShape(t *testing.T) {
 		}
 	}
 
-	// The `in` OPERATOR is a different thing from the `is in` TEST and stays
-	// admitted — it goes through Value.Contains under the representation
-	// agreement check, and it is live in the corpus.
-	if got, err := EvaluateConstraint(NullValue(), `"a" in ["a","b"]`); err != nil || !got {
-		t.Errorf(`the "in" operator = (%v, %v), want (true, nil); only the "is in" TEST is withdrawn`, got, err)
+	// ROUND 21 withdrew the `in` OPERATOR too: it is a VM operation that reaches
+	// no wrapper, and stock's contains STRINGIFIES a non-string needle for a
+	// string haystack where the port does not.
+	for _, expr := range []string{`"a" in ["a","b"]`, `1 in "1"`, `1 not in "1"`, `1 in 2`} {
+		if got, err := EvaluateConstraint(NullValue(), expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%q answered (%v, %v); the `in` operator is withdrawn", expr, got, err)
+		}
 	}
 
 	// Comparison tests narrowed to scalars: a CONTAINER on either side is no
