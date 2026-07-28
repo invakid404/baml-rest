@@ -333,11 +333,25 @@ func TestWithdrawnBuiltinsError(t *testing.T) {
 		}
 	}
 
+	// ACCEPTED COST, round 18. `dict` and `namespace` are withdrawn too, though
+	// BAML's build HAS them: the signature table is enforced by the filter and
+	// test wrappers, and a global callable goes through neither, so nothing
+	// governed their argument conversion. `dict(1)` returned an empty map where
+	// stock raises InvalidOperation. Admitting them would also mean proving the
+	// whole mapping surface for a mapping the value model never built — one the
+	// representation-agreement check cannot see, since it is identical under both
+	// projections. Recorded per case in the live corpus.
+	for _, expr := range []string{`dict(a=1)|length == 1`, `namespace(a=1).a == 1`} {
+		if _, err := EvaluateConstraint(NullValue(), expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%q: expected the withdrawn-callable refusal, got %v", expr, err)
+		}
+	}
+
 	// Control: the builtins BAML DOES have must still work, so the withdrawal is
 	// specific rather than a blanket break.
 	for _, expr := range []string{
-		`"abc"|length == 3`, `dict(a=1)|length == 1`,
-		`namespace(a=1).a == 1`, `[1,2]|tojson == "[1,2]"`, `"abc" is startingwith("a")`,
+		`"abc"|length == 3`,
+		`[1,2]|tojson == "[1,2]"`, `"abc" is startingwith("a")`,
 	} {
 		ok, err := EvaluateConstraint(NullValue(), expr)
 		if err != nil || !ok {

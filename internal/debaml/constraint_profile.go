@@ -277,13 +277,44 @@ func installProfileGuards(env *mj.Environment) {
 	// are — and re-implementing it would be the look-alike this slice refuses to
 	// build. It is therefore withdrawn from the profile outright, which also
 	// removes the unbounded-allocation vector a large range argument would open.
-	// `dict` and `namespace` need no guard: every integer they carry comes from a
-	// source literal, and those are bounded by everyNumericTokenIsProvablySmall.
 	env.AddFunction("range", func(*mj.State, []mjvalue.Value, map[string]mjvalue.Value) (mjvalue.Value, error) {
 		return mjvalue.Undefined(), unsupportedConstraint(
 			"`range` is outside the profile: minijinja-Go exports no handle on it to guard, so an " +
 				"out-of-range integer it produces could reach an exact comparison unchecked")
 	})
+
+	// EVERY OTHER GLOBAL CALLABLE IS WITHDRAWN TOO.
+	//
+	// The signature table is enforced by the filter and test wrappers, and a
+	// global function goes through neither — so `dict` and `namespace` were the
+	// one part of the callable surface with no admission rule at all. Round 17's
+	// comment claimed they needed none because the integers they carry come from
+	// source literals; that bounded their MAGNITUDE and said nothing about their
+	// argument conversion:
+	//
+	//	dict(1)|length == 0     native TRUE — fnDict takes a first positional
+	//	                        value, silently ignores a non-map number and
+	//	                        returns an empty map — where stock's
+	//	                        functions::dict raises InvalidOperation
+	//
+	// The review offered withdrawal or a proven entry, and withdrawal is the
+	// honest one here. A mapping MANUFACTURED inside the expression is exactly
+	// the shape the representation-agreement check cannot see (it is identical
+	// under both projections), so admitting `dict` would mean proving the whole
+	// mapping surface for a value the model never produced. `namespace` and
+	// `debug` are withdrawn on the same terms: neither is reachable from a BAML
+	// constraint that this profile can prove, and an unguarded callable is the
+	// one thing the round-17 table was supposed to eliminate.
+	//
+	// The cost is measured: `dict(a=1)` was a live agreeing row and is now a
+	// refusal, recorded per case in the corpus.
+	for _, name := range []string{"dict", "namespace", "debug"} {
+		env.AddFunction(name, func(*mj.State, []mjvalue.Value, map[string]mjvalue.Value) (mjvalue.Value, error) {
+			return mjvalue.Undefined(), unsupportedConstraint(
+				"`%s` is outside the profile: a global callable is reached by neither the filter nor "+
+					"the test wrapper, so no proven-identical signature governs it", name)
+		})
+	}
 }
 
 // guardForeignMapping refuses a mapping that the value model did not build.
@@ -1477,10 +1508,156 @@ const (
 	kIterable
 )
 
+// kValue is every kind a BAML constraint value can be. It is NOT "anything":
+// bytes and the iterator kind are absent, because neither is reachable from the
+// value model and neither has been proven identical.
+const kValue = kUndefined | kNone | kBool | kNumber | kString | kSeq | kMap
+
 const (
-	kAny      = kUndefined | kNone | kBool | kNumber | kString | kBytes | kSeq | kMap | kIterable
 	kSequence = kSeq | kIterable
+	// kScalar is what both engines render and compare identically without
+	// touching a container: no mapping, whose representation is the subject of
+	// the agreement check, and no sequence, whose iteration order is.
+	kScalar = kBool | kNumber | kString
+	// kSized is what `length` accepts in BOTH engines. The lengthGuard already
+	// refuses a value with no length; this makes the same statement before the
+	// call rather than inside it.
+	kSized = kString | kSeq | kIterable | kMap
 )
+
+// builtinSignature is ONE PROVEN CALL SHAPE. A call is admitted only when it
+// matches: the right number of arguments, each of a listed kind, over a subject
+// of a listed kind, with no keyword arguments.
+type builtinSignature struct {
+	minArgs int
+	maxArgs int
+	// args[i] is the set of kinds proven identical at position i. A position
+	// beyond the slice admits nothing, so the slice must cover maxArgs.
+	args    []kindSet
+	subject kindSet
+}
+
+// provenSignatures is the whole admission surface, and it is DEFAULT-DECLINE:
+// a builtin absent from this table, an arity outside its entry, an argument of
+// a kind the entry does not list, or a subject the entry does not cover, is
+// ErrConstraintUnsupported. Nothing is admitted by omission.
+//
+// ROUND 18 removed the `kAny` subject sets. "Any kind" was never a proof, and
+// two ordinary cases showed it failing open in different directions:
+//
+//	true is odd            native FALSE — Go's TestOdd calls AsInt, which has no
+//	                       boolean arm — where stock's i128::try_from maps
+//	                       Bool(true) to 1 and answers TRUE
+//	(1|first) is undefined native TRUE — Go's FilterFirst finds no iterable items
+//	                       in a number and returns undefined — where stock's
+//	                       filters::first raises InvalidOperation for a non-
+//	                       iterable and supplies no boolean at all
+//
+// So every entry now names the kinds its subject and arguments may be, and
+// anything else declines. The sets were narrowed deliberately: the numeric tests
+// take numbers, the string filters take strings, the sequence filters take
+// sequences, the mapping filters take mappings. Where a broader set is used it
+// is [kValue] — a type PREDICATE such as `is defined` answers the same question
+// in both engines whatever it is handed, because neither converts anything to
+// answer it.
+//
+// Entries were checked against the pinned minijinja-Go registrations and the
+// stock BAML v0.223 behaviour. Where the two could not be shown identical for a
+// kind, that kind is simply absent — decline is always available and always
+// safe, which is why nothing here is reimplemented.
+var provenSignatures = map[string]builtinSignature{
+	// --- string filters: a string subject, no arguments ---
+	"upper": {0, 0, nil, kString}, "lower": {0, 0, nil, kString},
+	"capitalize": {0, 0, nil, kString}, "title": {0, 0, nil, kString},
+	"trim": {0, 0, nil, kString}, "lines": {0, 0, nil, kString},
+	"escape": {0, 0, nil, kString}, "e": {0, 0, nil, kString},
+	"safe": {0, 0, nil, kString},
+
+	// --- sequence filters: a sequence subject. A NON-ITERABLE subject is the
+	// round-18 divergence: Go hands back undefined where stock raises
+	// InvalidOperation. ---
+	"first": {0, 0, nil, kSequence}, "last": {0, 0, nil, kSequence},
+	"reverse": {0, 0, nil, kSequence}, "list": {0, 0, nil, kSequence},
+	"unique": {0, 0, nil, kSequence}, "sort": {0, 0, nil, kSequence},
+	"min": {0, 0, nil, kSequence}, "max": {0, 0, nil, kSequence},
+	"sum": {0, 0, nil, kSequence},
+
+	// --- mapping filters ---
+	"items": {0, 0, nil, kMap}, "dictsort": {0, 0, nil, kMap},
+
+	// --- scalar filters ---
+	"string": {0, 0, nil, kScalar}, "bool": {0, 0, nil, kScalar},
+	// tojson and pprint also render a SEQUENCE identically — `[1,2]|tojson` is
+	// live in the corpus. A MAPPING subject is excluded here and refused by the
+	// tojson guard besides, because its key order is the thing the two engines
+	// disagree about.
+	"pprint": {0, 0, nil, kScalar | kSeq}, "tojson": {0, 0, nil, kScalar | kSeq},
+	"abs":   {0, 0, nil, kNumber},
+	"int":   {0, 0, nil, kNumber | kString},
+	"float": {0, 0, nil, kNumber | kString},
+
+	// --- sized ---
+	"length": {0, 0, nil, kSized}, "count": {0, 0, nil, kSized},
+
+	// --- one argument ---
+	"round":    {0, 1, []kindSet{kNumber}, kNumber},
+	"default":  {0, 1, []kindSet{kValue}, kValue},
+	"d":        {0, 1, []kindSet{kValue}, kValue},
+	"join":     {0, 1, []kindSet{kString}, kSequence},
+	"split":    {1, 1, []kindSet{kString}, kString},
+	"format":   {1, 1, []kindSet{kString}, kScalar},
+	"indent":   {1, 1, []kindSet{kNumber}, kString},
+	"truncate": {1, 1, []kindSet{kNumber}, kString},
+	"batch":    {1, 1, []kindSet{kNumber}, kSequence},
+	"slice":    {1, 1, []kindSet{kNumber}, kSequence},
+	"map":      {1, 1, []kindSet{kString}, kSequence},
+	"select":   {1, 1, []kindSet{kString}, kSequence},
+	"reject":   {1, 1, []kindSet{kString}, kSequence},
+	"groupby":  {1, 1, []kindSet{kString}, kSequence},
+	"chain":    {1, 1, []kindSet{kSequence}, kSequence},
+	"zip":      {1, 1, []kindSet{kSequence}, kSequence},
+	"attr":     {1, 1, []kindSet{kString}, kMap},
+	// regex_match is BAML's OWN filter (jinja_helpers.rs), reimplemented here
+	// rather than inherited from the port, and it stringifies its subject —
+	// `1|regex_match("1")` is live in the corpus.
+	"regex_match": {1, 1, []kindSet{kString}, kScalar},
+
+	// --- two arguments ---
+	"replace":    {2, 2, []kindSet{kString, kString}, kString},
+	"selectattr": {1, 2, []kindSet{kString, kString}, kSequence},
+	"rejectattr": {1, 2, []kindSet{kString, kString}, kSequence},
+
+	// --- type PREDICATES: no conversion happens, so the subject is open ---
+	"is defined": {0, 0, nil, kValue}, "is undefined": {0, 0, nil, kValue},
+	"is none": {0, 0, nil, kValue}, "is string": {0, 0, nil, kValue},
+	"is number": {0, 0, nil, kValue}, "is integer": {0, 0, nil, kValue},
+	"is int": {0, 0, nil, kValue}, "is float": {0, 0, nil, kValue},
+	"is boolean": {0, 0, nil, kValue}, "is sequence": {0, 0, nil, kValue},
+	"is mapping": {0, 0, nil, kValue}, "is iterable": {0, 0, nil, kValue},
+	"is safe": {0, 0, nil, kValue}, "is escaped": {0, 0, nil, kValue},
+	"is true": {0, 0, nil, kValue}, "is false": {0, 0, nil, kValue},
+
+	// --- NUMERIC tests. A BOOL subject is the round-18 divergence: Go's AsInt
+	// has no boolean arm, stock's i128::try_from maps Bool(true) to 1. ---
+	"is odd": {0, 0, nil, kNumber}, "is even": {0, 0, nil, kNumber},
+	"is divisibleby": {1, 1, []kindSet{kNumber}, kNumber},
+
+	// --- string tests ---
+	"is lower": {0, 0, nil, kString}, "is upper": {0, 0, nil, kString},
+	"is startingwith": {1, 1, []kindSet{kString}, kString},
+	"is endingwith":   {1, 1, []kindSet{kString}, kString},
+	"is filter":       {1, 1, []kindSet{kString}, kValue},
+	"is test":         {1, 1, []kindSet{kString}, kValue},
+
+	// --- comparison tests: both engines compare through the same value ops ---
+	"is eq": {1, 1, []kindSet{kValue}, kValue}, "is equalto": {1, 1, []kindSet{kValue}, kValue},
+	"is ne": {1, 1, []kindSet{kValue}, kValue},
+	"is lt": {1, 1, []kindSet{kValue}, kValue}, "is lessthan": {1, 1, []kindSet{kValue}, kValue},
+	"is le": {1, 1, []kindSet{kValue}, kValue},
+	"is gt": {1, 1, []kindSet{kValue}, kValue}, "is greaterthan": {1, 1, []kindSet{kValue}, kValue},
+	"is ge": {1, 1, []kindSet{kValue}, kValue},
+	"is in": {1, 1, []kindSet{kValue}, kValue}, "is sameas": {1, 1, []kindSet{kValue}, kValue},
+}
 
 func kindOf(v mjvalue.Value) kindSet {
 	switch v.Kind() {
@@ -1504,122 +1681,6 @@ func kindOf(v mjvalue.Value) kindSet {
 		return kIterable
 	}
 	return 0 // an unrecognised kind matches no entry, so it declines
-}
-
-// builtinSignature is ONE PROVEN CALL SHAPE. A call is admitted only when it
-// matches: the right number of arguments, each of a listed kind, over a subject
-// of a listed kind, with no keyword arguments.
-type builtinSignature struct {
-	minArgs int
-	maxArgs int
-	// args[i] is the set of kinds proven identical at position i. A position
-	// beyond the slice admits nothing, so the slice must cover maxArgs.
-	args    []kindSet
-	subject kindSet
-}
-
-// provenSignatures is the whole admission surface, and it is DEFAULT-DECLINE:
-// a builtin absent from this table, an arity outside its entry, an argument of
-// a kind the entry does not list, or a subject the entry does not cover, is
-// ErrConstraintUnsupported. Nothing is admitted by omission.
-//
-// Round 16 checked a MAXIMUM positional count and only looked at numeric
-// arguments, and the review found three shapes that slipped through it:
-//
-//	[1,2,3]|slice(false)|length == 1   native true; Go's AsInt rejects a bool so
-//	                                   the count silently stays 1, while stock's
-//	                                   usize conversion reads false as 0 and
-//	                                   slice ERRORS on a zero count
-//	"aaa"|replace(1, "b")              native converts a non-string `from` to ""
-//	                                   and replaces everywhere; stock stringifies
-//	                                   it to "1", so the subject is unchanged
-//	1 is defined(0)                    native ignores the extra argument; stock's
-//	                                   is_defined takes none and errors
-//
-// None of those is about magnitude, and none was reachable by tightening a
-// maximum. The table is the answer to the shape of the question rather than to
-// the three instances: every position of every retained builtin is enumerated,
-// and anything not enumerated declines.
-//
-// Entries were checked against the pinned minijinja-Go registrations and the
-// stock BAML v0.223 signatures. Where the two could not be shown identical for
-// a kind, that kind is simply absent — decline is always available and always
-// safe, which is why nothing here is reimplemented.
-var provenSignatures = map[string]builtinSignature{
-	// --- filters: no arguments ---
-	"upper": {0, 0, nil, kString}, "lower": {0, 0, nil, kString},
-	"capitalize": {0, 0, nil, kString}, "title": {0, 0, nil, kString},
-	"trim": {0, 0, nil, kString}, "lines": {0, 0, nil, kString},
-	"escape": {0, 0, nil, kString}, "e": {0, 0, nil, kString},
-	"safe": {0, 0, nil, kAny}, "string": {0, 0, nil, kAny},
-	"bool": {0, 0, nil, kAny}, "length": {0, 0, nil, kAny},
-	"count": {0, 0, nil, kAny}, "first": {0, 0, nil, kAny},
-	"last": {0, 0, nil, kAny}, "reverse": {0, 0, nil, kAny},
-	"list": {0, 0, nil, kAny}, "unique": {0, 0, nil, kAny},
-	"items": {0, 0, nil, kAny}, "dictsort": {0, 0, nil, kAny},
-	"abs": {0, 0, nil, kNumber}, "int": {0, 0, nil, kAny},
-	"float": {0, 0, nil, kAny}, "sum": {0, 0, nil, kAny},
-	"tojson": {0, 0, nil, kAny}, "pprint": {0, 0, nil, kAny},
-	"sort": {0, 0, nil, kAny}, "min": {0, 0, nil, kAny}, "max": {0, 0, nil, kAny},
-
-	// --- filters: one argument ---
-	"round":   {0, 1, []kindSet{kNumber}, kNumber},
-	"default": {0, 1, []kindSet{kAny}, kAny},
-	"d":       {0, 1, []kindSet{kAny}, kAny},
-	"join":    {0, 1, []kindSet{kString}, kAny},
-	"split":   {1, 1, []kindSet{kString}, kString},
-	"format":  {1, 1, []kindSet{kString}, kAny},
-	"indent":  {1, 1, []kindSet{kNumber}, kString},
-	"batch":   {1, 1, []kindSet{kNumber}, kAny},
-	"slice":   {1, 1, []kindSet{kNumber}, kAny},
-	"map":     {1, 1, []kindSet{kString}, kAny},
-	"select":  {1, 1, []kindSet{kString}, kAny},
-	"reject":  {1, 1, []kindSet{kString}, kAny},
-	"groupby": {1, 1, []kindSet{kString}, kAny},
-	"attr":    {1, 1, []kindSet{kString}, kAny},
-	"chain":   {1, 1, []kindSet{kSequence}, kAny},
-	"zip":     {1, 1, []kindSet{kSequence}, kAny},
-	// regex_match is BAML's OWN filter (jinja_helpers.rs), reimplemented here
-	// rather than inherited from the port, and it stringifies its subject —
-	// `1|regex_match("1")` is live in the corpus. So the subject is open.
-	"regex_match": {1, 1, []kindSet{kString}, kAny},
-
-	// --- filters: two arguments ---
-	"replace":    {2, 2, []kindSet{kString, kString}, kString},
-	"selectattr": {1, 2, []kindSet{kString, kString}, kAny},
-	"rejectattr": {1, 2, []kindSet{kString, kString}, kAny},
-
-	// --- tests: no arguments ---
-	// A zero-arity test given an argument is exactly the `1 is defined(0)` case:
-	// minijinja-Go ignores its args slice, stock's adapter errors.
-	"is defined": {0, 0, nil, kAny}, "is undefined": {0, 0, nil, kAny},
-	"is none": {0, 0, nil, kAny}, "is true": {0, 0, nil, kAny},
-	"is false": {0, 0, nil, kAny}, "is odd": {0, 0, nil, kAny},
-	"is even": {0, 0, nil, kAny}, "is string": {0, 0, nil, kAny},
-	"is number": {0, 0, nil, kAny}, "is integer": {0, 0, nil, kAny},
-	"is int": {0, 0, nil, kAny}, "is float": {0, 0, nil, kAny},
-	"is boolean": {0, 0, nil, kAny}, "is sequence": {0, 0, nil, kAny},
-	"is mapping": {0, 0, nil, kAny}, "is iterable": {0, 0, nil, kAny},
-	"is safe": {0, 0, nil, kAny}, "is escaped": {0, 0, nil, kAny},
-	"is lower": {0, 0, nil, kString}, "is upper": {0, 0, nil, kString},
-
-	// --- tests: one argument ---
-	"is divisibleby":  {1, 1, []kindSet{kNumber}, kNumber},
-	"is eq":           {1, 1, []kindSet{kAny}, kAny},
-	"is equalto":      {1, 1, []kindSet{kAny}, kAny},
-	"is ne":           {1, 1, []kindSet{kAny}, kAny},
-	"is lt":           {1, 1, []kindSet{kAny}, kAny},
-	"is lessthan":     {1, 1, []kindSet{kAny}, kAny},
-	"is le":           {1, 1, []kindSet{kAny}, kAny},
-	"is gt":           {1, 1, []kindSet{kAny}, kAny},
-	"is greaterthan":  {1, 1, []kindSet{kAny}, kAny},
-	"is ge":           {1, 1, []kindSet{kAny}, kAny},
-	"is in":           {1, 1, []kindSet{kAny}, kAny},
-	"is sameas":       {1, 1, []kindSet{kAny}, kAny},
-	"is startingwith": {1, 1, []kindSet{kString}, kString},
-	"is endingwith":   {1, 1, []kindSet{kString}, kString},
-	"is filter":       {1, 1, []kindSet{kString}, kAny},
-	"is test":         {1, 1, []kindSet{kString}, kAny},
 }
 
 // countDefaultingFilters silently substitute a default when minijinja-Go's

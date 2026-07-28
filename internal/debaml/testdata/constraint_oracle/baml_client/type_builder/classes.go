@@ -1551,6 +1551,38 @@ func (t *Iso_fn_cyclerClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 
+type Iso_fn_dict_number_argClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_fn_dict_number_argClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_fn_dict_number_argClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_fn_dict_number_arg() (*Iso_fn_dict_number_argClassView, error) {
+	bld, err := t.inner.Class("Iso_fn_dict_number_arg")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_fn_dict_number_argClassView{inner: bld}, nil
+}
+
+func (t *Iso_fn_dict_number_argClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
 type Iso_fn_joinerClassView struct {
 	inner baml.ClassBuilder
 }
@@ -2348,6 +2380,294 @@ func (t *TypeBuilder) Iso_slice_this_fractional() (*Iso_slice_this_fractionalCla
 }
 
 func (t *Iso_slice_this_fractionalClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_subj_bool_listClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_subj_bool_listClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_subj_bool_listClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_subj_bool_list() (*Iso_subj_bool_listClassView, error) {
+	bld, err := t.inner.Class("Iso_subj_bool_list")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_subj_bool_listClassView{inner: bld}, nil
+}
+
+func (t *Iso_subj_bool_listClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_subj_number_firstClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_subj_number_firstClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_subj_number_firstClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_subj_number_first() (*Iso_subj_number_firstClassView, error) {
+	bld, err := t.inner.Class("Iso_subj_number_first")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_subj_number_firstClassView{inner: bld}, nil
+}
+
+func (t *Iso_subj_number_firstClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_subj_number_joinClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_subj_number_joinClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_subj_number_joinClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_subj_number_join() (*Iso_subj_number_joinClassView, error) {
+	bld, err := t.inner.Class("Iso_subj_number_join")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_subj_number_joinClassView{inner: bld}, nil
+}
+
+func (t *Iso_subj_number_joinClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_subj_number_lastClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_subj_number_lastClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_subj_number_lastClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_subj_number_last() (*Iso_subj_number_lastClassView, error) {
+	bld, err := t.inner.Class("Iso_subj_number_last")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_subj_number_lastClassView{inner: bld}, nil
+}
+
+func (t *Iso_subj_number_lastClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_subj_number_maxClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_subj_number_maxClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_subj_number_maxClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_subj_number_max() (*Iso_subj_number_maxClassView, error) {
+	bld, err := t.inner.Class("Iso_subj_number_max")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_subj_number_maxClassView{inner: bld}, nil
+}
+
+func (t *Iso_subj_number_maxClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_subj_number_minClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_subj_number_minClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_subj_number_minClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_subj_number_min() (*Iso_subj_number_minClassView, error) {
+	bld, err := t.inner.Class("Iso_subj_number_min")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_subj_number_minClassView{inner: bld}, nil
+}
+
+func (t *Iso_subj_number_minClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_subj_number_reverseClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_subj_number_reverseClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_subj_number_reverseClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_subj_number_reverse() (*Iso_subj_number_reverseClassView, error) {
+	bld, err := t.inner.Class("Iso_subj_number_reverse")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_subj_number_reverseClassView{inner: bld}, nil
+}
+
+func (t *Iso_subj_number_reverseClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_subj_number_sumClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_subj_number_sumClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_subj_number_sumClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_subj_number_sum() (*Iso_subj_number_sumClassView, error) {
+	bld, err := t.inner.Class("Iso_subj_number_sum")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_subj_number_sumClassView{inner: bld}, nil
+}
+
+func (t *Iso_subj_number_sumClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_subj_string_absClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_subj_string_absClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_subj_string_absClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_subj_string_abs() (*Iso_subj_string_absClassView, error) {
+	bld, err := t.inner.Class("Iso_subj_string_abs")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_subj_string_absClassView{inner: bld}, nil
+}
+
+func (t *Iso_subj_string_absClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 

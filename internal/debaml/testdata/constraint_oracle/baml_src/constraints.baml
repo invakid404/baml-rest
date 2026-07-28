@@ -386,6 +386,14 @@ class Batch_const {
     @check(sig_ctl_slice_two, {{ [1,2,3]|slice(2)|length == 2 }})
     @check(sig_ctl_even, {{ 4 is even }})
     @check(sig_ctl_join_string, {{ ["a","b"]|join(",") == "a,b" }})
+    @check(fn_dict_kwargs, {{ dict(a=1)|length == 1 }})
+    @check(fn_namespace_call, {{ namespace(a=1) is defined }})
+    @check(subj_bool_odd, {{ true is odd }})
+    @check(subj_bool_even, {{ false is even }})
+    @check(subj_string_odd, {{ "3" is odd }})
+    @check(subj_number_upper, {{ 1|upper != "" }})
+    @check(subj_ctl_odd, {{ 3 is odd }})
+    @check(subj_ctl_even, {{ 4 is even }})
 }
 
 function Batch_constFn(topic: string) -> Batch_const {
@@ -414,6 +422,7 @@ class Batch_intneg {
   v int
     @check(this_intneg_abs, {{ this|abs == 3 }})
     @check(this_intneg_lt, {{ this < 0 }})
+    @check(subj_ctl_abs, {{ this|abs == 3 }})
 }
 
 function Batch_intnegFn(topic: string) -> Batch_intneg {
@@ -480,6 +489,9 @@ class Batch_str {
     @check(sig_ctl_defined, {{ this is defined }})
     @check(sig_ctl_upper, {{ this|upper != "" }})
     @check(sig_ctl_startingwith, {{ this is startingwith("H") }})
+    @check(subj_ctl_upper, {{ this|upper != "" }})
+    @check(subj_ctl_length_string, {{ this|length == 11 }})
+    @check(subj_ctl_defined, {{ this is defined }})
 }
 
 function Batch_strFn(topic: string) -> Batch_str {
@@ -557,6 +569,14 @@ class Batch_list {
     @check(index_ctl_this, {{ this[0] == 1 }})
     @check(slice_ctl_this, {{ this[1:]|length == 2 }})
     @check(neg_ctl_this_slice, {{ this[-1:]|length == 1 }})
+    @check(subj_ctl_first, {{ this|first == 1 }})
+    @check(subj_ctl_last, {{ this|last == 3 }})
+    @check(subj_ctl_min, {{ this|min == 1 }})
+    @check(subj_ctl_max, {{ this|max == 3 }})
+    @check(subj_ctl_list, {{ this|list|length == 3 }})
+    @check(subj_ctl_reverse, {{ this|reverse|first == 3 }})
+    @check(subj_ctl_join, {{ this|join(",") == "1,2,3" }})
+    @check(subj_ctl_sum, {{ this|sum == 6 }})
 }
 
 function Batch_listFn(topic: string) -> Batch_list {
@@ -623,6 +643,7 @@ class Batch_map {
     @check(this_map_values_join, {{ this.values()|join(",") == "1,2,3" }})
     @check(this_map_concat, {{ (this ~ "")|length == 24 }})
     @check(index_ctl_mapping, {{ this["z"] == 1 }})
+    @check(subj_ctl_length_map, {{ this|length == 3 }})
 }
 
 function Batch_mapFn(topic: string) -> Batch_map {
@@ -1280,6 +1301,96 @@ class Iso_sig_length_extra_arg {
 }
 
 function Iso_sig_length_extra_argFn(topic: string) -> Iso_sig_length_extra_arg {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_fn_dict_number_arg {
+  v int @check(fn_dict_number_arg, {{ dict(1)|length == 0 }})
+}
+
+function Iso_fn_dict_number_argFn(topic: string) -> Iso_fn_dict_number_arg {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_subj_number_first {
+  v int @check(subj_number_first, {{ (1|first) is undefined }})
+}
+
+function Iso_subj_number_firstFn(topic: string) -> Iso_subj_number_first {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_subj_number_last {
+  v int @check(subj_number_last, {{ (1|last) is undefined }})
+}
+
+function Iso_subj_number_lastFn(topic: string) -> Iso_subj_number_last {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_subj_bool_list {
+  v int @check(subj_bool_list, {{ (true|list) is undefined }})
+}
+
+function Iso_subj_bool_listFn(topic: string) -> Iso_subj_bool_list {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_subj_number_min {
+  v int @check(subj_number_min, {{ (1|min) is undefined }})
+}
+
+function Iso_subj_number_minFn(topic: string) -> Iso_subj_number_min {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_subj_number_max {
+  v int @check(subj_number_max, {{ (1|max) is undefined }})
+}
+
+function Iso_subj_number_maxFn(topic: string) -> Iso_subj_number_max {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_subj_number_reverse {
+  v int @check(subj_number_reverse, {{ (1|reverse) is undefined }})
+}
+
+function Iso_subj_number_reverseFn(topic: string) -> Iso_subj_number_reverse {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_subj_number_join {
+  v int @check(subj_number_join, {{ 1|join(",") == "" }})
+}
+
+function Iso_subj_number_joinFn(topic: string) -> Iso_subj_number_join {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_subj_number_sum {
+  v int @check(subj_number_sum, {{ 1|sum == 0 }})
+}
+
+function Iso_subj_number_sumFn(topic: string) -> Iso_subj_number_sum {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_subj_string_abs {
+  v string @check(subj_string_abs, {{ this|abs != "" }})
+}
+
+function Iso_subj_string_absFn(topic: string) -> Iso_subj_string_abs {
   client ConstraintOracleClient
   prompt #"{{ topic }} {{ ctx.output_format }}"#
 }

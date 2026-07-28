@@ -2281,6 +2281,53 @@ func (*parse_stream) Iso_fn_cyclerFn(text string, opts ...CallOptionFunc) (strea
 	return casted, nil
 }
 
+// / Parse version of Iso_fn_dict_number_argFn (Takes in string and returns stream_types.Iso_fn_dict_number_arg)
+func (*parse_stream) Iso_fn_dict_number_argFn(text string, opts ...CallOptionFunc) (stream_types.Iso_fn_dict_number_arg, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_fn_dict_number_argFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_fn_dict_number_argFn", encoded)
+	if err != nil {
+		return stream_types.Iso_fn_dict_number_arg{}, err
+	}
+
+	casted := (result).(stream_types.Iso_fn_dict_number_arg)
+
+	return casted, nil
+}
+
 // / Parse version of Iso_fn_joinerFn (Takes in string and returns stream_types.Iso_fn_joiner)
 func (*parse_stream) Iso_fn_joinerFn(text string, opts ...CallOptionFunc) (stream_types.Iso_fn_joiner, error) {
 
@@ -3452,6 +3499,429 @@ func (*parse_stream) Iso_slice_this_fractionalFn(text string, opts ...CallOption
 	}
 
 	casted := (result).(stream_types.Iso_slice_this_fractional)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_subj_bool_listFn (Takes in string and returns stream_types.Iso_subj_bool_list)
+func (*parse_stream) Iso_subj_bool_listFn(text string, opts ...CallOptionFunc) (stream_types.Iso_subj_bool_list, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_subj_bool_listFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_subj_bool_listFn", encoded)
+	if err != nil {
+		return stream_types.Iso_subj_bool_list{}, err
+	}
+
+	casted := (result).(stream_types.Iso_subj_bool_list)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_subj_number_firstFn (Takes in string and returns stream_types.Iso_subj_number_first)
+func (*parse_stream) Iso_subj_number_firstFn(text string, opts ...CallOptionFunc) (stream_types.Iso_subj_number_first, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_subj_number_firstFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_subj_number_firstFn", encoded)
+	if err != nil {
+		return stream_types.Iso_subj_number_first{}, err
+	}
+
+	casted := (result).(stream_types.Iso_subj_number_first)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_subj_number_joinFn (Takes in string and returns stream_types.Iso_subj_number_join)
+func (*parse_stream) Iso_subj_number_joinFn(text string, opts ...CallOptionFunc) (stream_types.Iso_subj_number_join, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_subj_number_joinFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_subj_number_joinFn", encoded)
+	if err != nil {
+		return stream_types.Iso_subj_number_join{}, err
+	}
+
+	casted := (result).(stream_types.Iso_subj_number_join)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_subj_number_lastFn (Takes in string and returns stream_types.Iso_subj_number_last)
+func (*parse_stream) Iso_subj_number_lastFn(text string, opts ...CallOptionFunc) (stream_types.Iso_subj_number_last, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_subj_number_lastFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_subj_number_lastFn", encoded)
+	if err != nil {
+		return stream_types.Iso_subj_number_last{}, err
+	}
+
+	casted := (result).(stream_types.Iso_subj_number_last)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_subj_number_maxFn (Takes in string and returns stream_types.Iso_subj_number_max)
+func (*parse_stream) Iso_subj_number_maxFn(text string, opts ...CallOptionFunc) (stream_types.Iso_subj_number_max, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_subj_number_maxFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_subj_number_maxFn", encoded)
+	if err != nil {
+		return stream_types.Iso_subj_number_max{}, err
+	}
+
+	casted := (result).(stream_types.Iso_subj_number_max)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_subj_number_minFn (Takes in string and returns stream_types.Iso_subj_number_min)
+func (*parse_stream) Iso_subj_number_minFn(text string, opts ...CallOptionFunc) (stream_types.Iso_subj_number_min, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_subj_number_minFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_subj_number_minFn", encoded)
+	if err != nil {
+		return stream_types.Iso_subj_number_min{}, err
+	}
+
+	casted := (result).(stream_types.Iso_subj_number_min)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_subj_number_reverseFn (Takes in string and returns stream_types.Iso_subj_number_reverse)
+func (*parse_stream) Iso_subj_number_reverseFn(text string, opts ...CallOptionFunc) (stream_types.Iso_subj_number_reverse, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_subj_number_reverseFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_subj_number_reverseFn", encoded)
+	if err != nil {
+		return stream_types.Iso_subj_number_reverse{}, err
+	}
+
+	casted := (result).(stream_types.Iso_subj_number_reverse)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_subj_number_sumFn (Takes in string and returns stream_types.Iso_subj_number_sum)
+func (*parse_stream) Iso_subj_number_sumFn(text string, opts ...CallOptionFunc) (stream_types.Iso_subj_number_sum, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_subj_number_sumFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_subj_number_sumFn", encoded)
+	if err != nil {
+		return stream_types.Iso_subj_number_sum{}, err
+	}
+
+	casted := (result).(stream_types.Iso_subj_number_sum)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_subj_string_absFn (Takes in string and returns stream_types.Iso_subj_string_abs)
+func (*parse_stream) Iso_subj_string_absFn(text string, opts ...CallOptionFunc) (stream_types.Iso_subj_string_abs, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_subj_string_absFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_subj_string_absFn", encoded)
+	if err != nil {
+		return stream_types.Iso_subj_string_abs{}, err
+	}
+
+	casted := (result).(stream_types.Iso_subj_string_abs)
 
 	return casted, nil
 }

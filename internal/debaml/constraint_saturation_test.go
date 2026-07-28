@@ -1301,3 +1301,113 @@ func TestListLiteralElementsAreParsedAsLiterals(t *testing.T) {
 		}
 	}
 }
+
+// TestGlobalCallablesAreWithdrawn pins the round-18 P1.1: the signature table is
+// enforced by the filter and test wrappers, and a GLOBAL FUNCTION goes through
+// neither, so `dict` and `namespace` had no admission rule at all.
+//
+//	dict(1)|length == 0   native TRUE — fnDict takes a first positional value,
+//	                      silently ignores a non-map number and returns an empty
+//	                      map — where stock's functions::dict raises
+//	                      InvalidOperation and supplies no boolean
+//
+// Withdrawal rather than an entry: a mapping MANUFACTURED inside the expression
+// is exactly what the representation-agreement check cannot see, because it is
+// identical under both projections.
+func TestGlobalCallablesAreWithdrawn(t *testing.T) {
+	for _, expr := range []string{
+		`dict(1)|length == 0`, `dict(a=1)|length == 1`, `dict()|length == 0`,
+		`namespace(a=1).a == 1`, `namespace() is defined`,
+		`range(3)|length == 3`, `debug() is defined`,
+		`cycler("a","b").next() == "a"`, `joiner(",")() == ""`, `lipsum(1)|length > 0`,
+	} {
+		if got, err := EvaluateConstraint(NullValue(), expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%q answered (%v, %v); no global callable may be unguarded", expr, got, err)
+		}
+	}
+}
+
+// TestSubjectKindsAreProvenNotAssumed pins the round-18 P1.2: `kAny` is gone.
+//
+//	true is odd             native FALSE — Go's TestOdd calls AsInt, which has no
+//	                        boolean arm — where stock's i128::try_from maps
+//	                        Bool(true) to 1 and answers TRUE
+//	(1|first) is undefined  native TRUE — Go's FilterFirst finds no items in a
+//	                        number and returns undefined — where stock's
+//	                        filters::first raises InvalidOperation
+//
+// Every entry now names the kinds its subject may be. When the two engines could
+// not be shown identical for a kind, the kind is absent and the call declines.
+func TestSubjectKindsAreProvenNotAssumed(t *testing.T) {
+	str := StringValue("Hello World")
+	for name, tc := range map[string]struct {
+		this ConstraintValue
+		expr string
+	}{
+		// A BOOL subject to a numeric test.
+		"bool is odd":         {NullValue(), `true is odd`},
+		"bool is even":        {NullValue(), `false is even`},
+		"bool is divisibleby": {NullValue(), `true is divisibleby(1)`},
+		"string is odd":       {NullValue(), `"3" is odd`},
+		// A NON-ITERABLE subject to a sequence filter.
+		"number first":   {NullValue(), `(1|first) is undefined`},
+		"number last":    {NullValue(), `(1|last) is undefined`},
+		"bool list":      {NullValue(), `(true|list) is undefined`},
+		"number min":     {NullValue(), `(1|min) is undefined`},
+		"number max":     {NullValue(), `(1|max) is undefined`},
+		"number reverse": {NullValue(), `(1|reverse) is undefined`},
+		"number join":    {NullValue(), `1|join(",") == ""`},
+		"number sum":     {NullValue(), `1|sum == 0`},
+		"number unique":  {NullValue(), `(1|unique) is undefined`},
+		// A subject of the wrong kind for a scalar or string filter.
+		"string abs":   {str, `this|abs != ""`},
+		"number upper": {NullValue(), `1|upper != ""`},
+		"number trim":  {NullValue(), `1|trim != ""`},
+		"number split": {NullValue(), `1|split(",")|length == 1`},
+		"string round": {str, `this|round != ""`},
+		"number items": {NullValue(), `(1|items) is undefined`},
+	} {
+		if got, err := EvaluateConstraint(tc.this, tc.expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%s: %q answered (%v, %v); this subject kind is not proven identical",
+				name, tc.expr, got, err)
+		}
+	}
+
+	// One proven control per builtin family, so the narrowing is a boundary
+	// rather than a ban.
+	list := ListValue([]ConstraintValue{IntValue(1), IntValue(2), IntValue(3)})
+	mapv := MapValue([]ConstraintEntry{{Key: "z", Value: IntValue(1)}})
+	for name, tc := range map[string]struct {
+		this ConstraintValue
+		expr string
+		want bool
+	}{
+		"number is odd":  {NullValue(), `3 is odd`, true},
+		"number is even": {NullValue(), `4 is even`, true},
+		"divisibleby":    {NullValue(), `9 is divisibleby(3)`, true},
+		"seq first":      {list, `this|first == 1`, true},
+		"seq last":       {list, `this|last == 3`, true},
+		"seq min":        {list, `this|min == 1`, true},
+		"seq max":        {list, `this|max == 3`, true},
+		"seq list":       {list, `this|list|length == 3`, true},
+		"seq reverse":    {list, `this|reverse|first == 3`, true},
+		"seq join":       {list, `this|join(",") == "1,2,3"`, true},
+		"seq sum":        {list, `this|sum == 6`, true},
+		"string upper":   {str, `this|upper == "HELLO WORLD"`, true},
+		"number abs":     {IntValue(-3), `this|abs == 3`, true},
+		"string length":  {str, `this|length == 11`, true},
+		"map length":     {mapv, `this|length == 1`, true},
+		"seq tojson":     {NullValue(), `[1,2]|tojson == "[1,2]"`, true},
+		"is defined":     {str, `this is defined`, true},
+		"is string":      {str, `this is string`, true},
+	} {
+		got, err := EvaluateConstraint(tc.this, tc.expr)
+		if err != nil {
+			t.Errorf("%s: %q was refused (%v); the kind sets are over-narrow", name, tc.expr, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s: %q = %v, want %v", name, tc.expr, got, tc.want)
+		}
+	}
+}
