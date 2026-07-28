@@ -904,9 +904,23 @@ func TestEveryRegisteredTestIsGuarded(t *testing.T) {
 	stringSubject := map[string]bool{
 		"startingwith": true, "endingwith": true, "lower": true, "upper": true,
 	}
+	// WITHDRAWN in round 19: these five decline in EVERY shape, which is the
+	// strongest guarantee of all, so neither leg applies. They are asserted
+	// separately by TestWithdrawnTestsDeclineInEveryShape.
+	withdrawn := map[string]bool{
+		"iterable": true, "filter": true, "test": true, "sameas": true, "in": true,
+	}
 
 	var exercised int
 	for name, expr := range exprs {
+		if withdrawn[name] {
+			if got, err := EvaluateConstraint(FloatValue(4), expr); !errors.Is(err, ErrConstraintUnsupported) {
+				t.Errorf("withdrawn test %q answered (%v, %v)", name, got, err)
+				continue
+			}
+			exercised++
+			continue
+		}
 		if stringSubject[name] {
 			// Only leg 2 applies: the signature table already refuses a numeric
 			// subject for these, hazardous or not.
@@ -1408,6 +1422,78 @@ func TestSubjectKindsAreProvenNotAssumed(t *testing.T) {
 		}
 		if got != tc.want {
 			t.Errorf("%s: %q = %v, want %v", name, tc.expr, got, tc.want)
+		}
+	}
+}
+
+// TestWithdrawnTestsDeclineInEveryShape pins the round-19 withdrawals. Each is
+// withdrawn because its cross-kind behaviour differs from stock in a way that is
+// intricate rather than bounded, and the standing preference is withdrawal over
+// cleverness — a coverage loss is acceptable, a wrong boolean is not.
+//
+//	is iterable  Go's TestIterable is `val.Iter() != nil`, and Value.Iter has no
+//	             none/undefined case; stock's try_iter maps None|Undefined to an
+//	             EMPTY iterator. `none is iterable` is false here, true there.
+//	is filter    Stock takes (State, &str): the SUBJECT is the sole string, with
+//	is test      NO explicit arguments. Go inspects the subject with AsString and
+//	             DISCARDS its args, so `"upper" is filter("x")` is true here and
+//	             TooManyArguments there.
+//	is sameas    Rust's is_same_as is an identity comparison; the port compares
+//	             values.
+//	is in        Go's Contains string arm accepts only a string query; stock's
+//	             contains STRINGIFIES a non-string one, so `1 is in "1"` is false
+//	             here and true there.
+func TestWithdrawnTestsDeclineInEveryShape(t *testing.T) {
+	str := StringValue("Hello")
+	list := ListValue([]ConstraintValue{IntValue(1), IntValue(2), IntValue(3)})
+	for name, tc := range map[string]struct {
+		this ConstraintValue
+		expr string
+	}{
+		"iterable over none":      {NullValue(), `this is iterable`},
+		"iterable over a list":    {list, `this is iterable`},
+		"iterable over a literal": {NullValue(), `[1,2] is iterable`},
+		"filter with an argument": {NullValue(), `"upper" is filter("x")`},
+		"test with an argument":   {NullValue(), `"odd" is test("x")`},
+		"filter over a number":    {NullValue(), `1 is filter("upper")`},
+		"filter bare":             {str, `this is filter`},
+		"test bare":               {str, `this is test`},
+		"in a string":             {NullValue(), `1 is in "1"`},
+		"in a number":             {NullValue(), `1 is in 2`},
+		"in a list":               {NullValue(), `1 is in [1,2]`},
+		"sameas":                  {NullValue(), `1 is sameas 1`},
+	} {
+		if got, err := EvaluateConstraint(tc.this, tc.expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%s: %q answered (%v, %v); a withdrawn test must decline in every shape",
+				name, tc.expr, got, err)
+		}
+	}
+
+	// The `in` OPERATOR is a different thing from the `is in` TEST and stays
+	// admitted — it goes through Value.Contains under the representation
+	// agreement check, and it is live in the corpus.
+	if got, err := EvaluateConstraint(NullValue(), `"a" in ["a","b"]`); err != nil || !got {
+		t.Errorf(`the "in" operator = (%v, %v), want (true, nil); only the "is in" TEST is withdrawn`, got, err)
+	}
+
+	// Comparison tests narrowed to scalars: a CONTAINER on either side is no
+	// longer admitted, while the scalar forms still decide.
+	for _, expr := range []string{`[1,2] is eq([1,2])`, `[1,2] is ne([1,3])`} {
+		if got, err := EvaluateConstraint(NullValue(), expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%q answered (%v, %v); a container comparison is not proven identical", expr, got, err)
+		}
+	}
+	for expr, want := range map[string]bool{
+		`1 is eq(1)`: true, `1 is lt(2)`: true, `"a" is eq("a")`: true,
+		`true is eq(true)`: true, `2 is ge(2)`: true,
+	} {
+		got, err := EvaluateConstraint(NullValue(), expr)
+		if err != nil {
+			t.Errorf("%q was refused (%v); a scalar comparison is proven", expr, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%q = %v, want %v", expr, got, want)
 		}
 	}
 }

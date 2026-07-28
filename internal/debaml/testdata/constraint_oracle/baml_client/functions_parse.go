@@ -4348,3 +4348,144 @@ func (*parse) Iso_this_stre_bareFn(text string, opts ...CallOptionFunc) (types.I
 
 	return casted, nil
 }
+
+// / Parse version of Iso_wd_filter_extra_argFn (Takes in string and returns types.Iso_wd_filter_extra_arg)
+func (*parse) Iso_wd_filter_extra_argFn(text string, opts ...CallOptionFunc) (types.Iso_wd_filter_extra_arg, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_wd_filter_extra_argFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_wd_filter_extra_argFn", encoded)
+	if err != nil {
+		return types.Iso_wd_filter_extra_arg{}, err
+	}
+
+	casted := (result).(types.Iso_wd_filter_extra_arg)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_wd_filter_number_subjectFn (Takes in string and returns types.Iso_wd_filter_number_subject)
+func (*parse) Iso_wd_filter_number_subjectFn(text string, opts ...CallOptionFunc) (types.Iso_wd_filter_number_subject, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_wd_filter_number_subjectFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_wd_filter_number_subjectFn", encoded)
+	if err != nil {
+		return types.Iso_wd_filter_number_subject{}, err
+	}
+
+	casted := (result).(types.Iso_wd_filter_number_subject)
+
+	return casted, nil
+}
+
+// / Parse version of Iso_wd_test_extra_argFn (Takes in string and returns types.Iso_wd_test_extra_arg)
+func (*parse) Iso_wd_test_extra_argFn(text string, opts ...CallOptionFunc) (types.Iso_wd_test_extra_arg, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: Iso_wd_test_extra_argFn: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(context.Background(), "Iso_wd_test_extra_argFn", encoded)
+	if err != nil {
+		return types.Iso_wd_test_extra_arg{}, err
+	}
+
+	casted := (result).(types.Iso_wd_test_extra_arg)
+
+	return casted, nil
+}

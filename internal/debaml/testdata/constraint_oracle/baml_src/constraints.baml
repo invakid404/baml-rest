@@ -394,6 +394,18 @@ class Batch_const {
     @check(subj_number_upper, {{ 1|upper != "" }})
     @check(subj_ctl_odd, {{ 3 is odd }})
     @check(subj_ctl_even, {{ 4 is even }})
+    @check(wd_iterable_literal, {{ [1,2] is iterable }})
+    @check(wd_in_string_container, {{ 1 is in "1" }})
+    @check(wd_in_number_container, {{ 1 is in 2 }})
+    @check(wd_in_list_container, {{ 1 is in [1,2] }})
+    @check(wd_sameas, {{ 1 is sameas 1 }})
+    @check(cmp_eq_list, {{ [1,2] is eq([1,2]) }})
+    @check(kind_ctl_eq_int, {{ 1 is eq(1) }})
+    @check(kind_ctl_eq_str, {{ "a" is eq("a") }})
+    @check(kind_ctl_lt, {{ 1 is lt(2) }})
+    @check(kind_ctl_in_operator, {{ "a" in ["a","b"] }})
+    @check(kind_ctl_odd, {{ 3 is odd }})
+    @check(kind_ctl_tojson_seq, {{ [1,2]|tojson == "[1,2]" }})
 }
 
 function Batch_constFn(topic: string) -> Batch_const {
@@ -411,6 +423,7 @@ class Batch_int7 {
     @check(this_int_string, {{ this|string == "7" }})
     @check(this_int_in, {{ this in [7] }})
     @check(this_int_big_cmp, {{ this * 1000000000 < 9007199254740992 }})
+    @check(kind_ctl_is_number, {{ this is number }})
 }
 
 function Batch_int7Fn(topic: string) -> Batch_int7 {
@@ -492,6 +505,12 @@ class Batch_str {
     @check(subj_ctl_upper, {{ this|upper != "" }})
     @check(subj_ctl_length_string, {{ this|length == 11 }})
     @check(subj_ctl_defined, {{ this is defined }})
+    @check(wd_filter_bare, {{ this is filter }})
+    @check(wd_test_bare, {{ this is test }})
+    @check(kind_ctl_defined, {{ this is defined }})
+    @check(kind_ctl_is_string, {{ this is string }})
+    @check(kind_ctl_upper, {{ this|upper != "" }})
+    @check(kind_ctl_startingwith, {{ this is startingwith("H") }})
 }
 
 function Batch_strFn(topic: string) -> Batch_str {
@@ -577,6 +596,10 @@ class Batch_list {
     @check(subj_ctl_reverse, {{ this|reverse|first == 3 }})
     @check(subj_ctl_join, {{ this|join(",") == "1,2,3" }})
     @check(subj_ctl_sum, {{ this|sum == 6 }})
+    @check(wd_iterable_list, {{ this is iterable }})
+    @check(cmp_eq_this_list, {{ this is eq(this) }})
+    @check(kind_ctl_is_seq, {{ this is sequence }})
+    @check(kind_ctl_first, {{ this|first == 1 }})
 }
 
 function Batch_listFn(topic: string) -> Batch_list {
@@ -644,6 +667,7 @@ class Batch_map {
     @check(this_map_concat, {{ (this ~ "")|length == 24 }})
     @check(index_ctl_mapping, {{ this["z"] == 1 }})
     @check(subj_ctl_length_map, {{ this|length == 3 }})
+    @check(kind_ctl_is_map, {{ this is mapping }})
 }
 
 function Batch_mapFn(topic: string) -> Batch_map {
@@ -693,6 +717,8 @@ class Batch_null {
     @check(this_null_defined, {{ this is defined }})
     @check(this_null_string, {{ this|string == "none" }})
     @check(this_null_default, {{ this|default(1) == 1 }})
+    @check(wd_iterable_none, {{ this is iterable }})
+    @check(kind_ctl_none, {{ this is none }})
 }
 
 function Batch_nullFn(topic: string) -> Batch_null {
@@ -1391,6 +1417,33 @@ class Iso_subj_string_abs {
 }
 
 function Iso_subj_string_absFn(topic: string) -> Iso_subj_string_abs {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_wd_filter_extra_arg {
+  v int @check(wd_filter_extra_arg, {{ "upper" is filter("x") }})
+}
+
+function Iso_wd_filter_extra_argFn(topic: string) -> Iso_wd_filter_extra_arg {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_wd_test_extra_arg {
+  v int @check(wd_test_extra_arg, {{ "odd" is test("x") }})
+}
+
+function Iso_wd_test_extra_argFn(topic: string) -> Iso_wd_test_extra_arg {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Iso_wd_filter_number_subject {
+  v int @check(wd_filter_number_subject, {{ 1 is filter("upper") }})
+}
+
+function Iso_wd_filter_number_subjectFn(topic: string) -> Iso_wd_filter_number_subject {
   client ConstraintOracleClient
   prompt #"{{ topic }} {{ ctx.output_format }}"#
 }

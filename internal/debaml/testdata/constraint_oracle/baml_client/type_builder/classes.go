@@ -2959,6 +2959,102 @@ func (t *Iso_this_stre_bareClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 
+type Iso_wd_filter_extra_argClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_wd_filter_extra_argClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_wd_filter_extra_argClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_wd_filter_extra_arg() (*Iso_wd_filter_extra_argClassView, error) {
+	bld, err := t.inner.Class("Iso_wd_filter_extra_arg")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_wd_filter_extra_argClassView{inner: bld}, nil
+}
+
+func (t *Iso_wd_filter_extra_argClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_wd_filter_number_subjectClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_wd_filter_number_subjectClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_wd_filter_number_subjectClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_wd_filter_number_subject() (*Iso_wd_filter_number_subjectClassView, error) {
+	bld, err := t.inner.Class("Iso_wd_filter_number_subject")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_wd_filter_number_subjectClassView{inner: bld}, nil
+}
+
+func (t *Iso_wd_filter_number_subjectClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type Iso_wd_test_extra_argClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Iso_wd_test_extra_argClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Iso_wd_test_extra_argClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Iso_wd_test_extra_arg() (*Iso_wd_test_extra_argClassView, error) {
+	bld, err := t.inner.Class("Iso_wd_test_extra_arg")
+	if err != nil {
+		return nil, err
+	}
+	return &Iso_wd_test_extra_argClassView{inner: bld}, nil
+}
+
+func (t *Iso_wd_test_extra_argClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
 type ProbeClassView struct {
 	inner baml.ClassBuilder
 }

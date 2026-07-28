@@ -1508,20 +1508,27 @@ const (
 	kIterable
 )
 
-// kValue is every kind a BAML constraint value can be. It is NOT "anything":
-// bytes and the iterator kind are absent, because neither is reachable from the
-// value model and neither has been proven identical.
-const kValue = kUndefined | kNone | kBool | kNumber | kString | kSeq | kMap
-
+// The kind sets. Each is an explicit enumeration — there is no "any" set, and
+// no entry below is allowed to lean on one. Round 18 used a broad kValue for the
+// type predicates and comparisons, and the review found three rows where that
+// was not a proof but an assumption.
 const (
-	kSequence = kSeq | kIterable
+	// kPresence is what `defined`/`undefined`/`none` may be asked about. These
+	// three are the only entries that admit UNDEFINED, because detecting it is
+	// the whole question and both engines answer it by the same test.
+	kPresence = kUndefined | kNone | kBool | kNumber | kString | kSeq | kMap
+	// kConcrete is every kind the value model actually produces. Undefined is
+	// absent: it arises only from an expression, and no entry outside kPresence
+	// has been shown to treat it alike.
+	kConcrete = kNone | kBool | kNumber | kString | kSeq | kMap
 	// kScalar is what both engines render and compare identically without
 	// touching a container: no mapping, whose representation is the subject of
 	// the agreement check, and no sequence, whose iteration order is.
 	kScalar = kBool | kNumber | kString
-	// kSized is what `length` accepts in BOTH engines. The lengthGuard already
-	// refuses a value with no length; this makes the same statement before the
-	// call rather than inside it.
+	// kSequence is a real iterable. A number, bool or none is NOT one: Go hands
+	// back undefined where stock raises InvalidOperation.
+	kSequence = kSeq | kIterable
+	// kSized is what `length` accepts in BOTH engines.
 	kSized = kString | kSeq | kIterable | kMap
 )
 
@@ -1537,34 +1544,43 @@ type builtinSignature struct {
 	subject kindSet
 }
 
+// withdrawnBuiltins are retained by minijinja-Go but NOT admitted in any shape.
+// Each is here because its cross-kind behaviour differs from stock in a way that
+// is intricate rather than bounded, and the standing preference is withdrawal
+// over cleverness — a coverage loss is acceptable, a wrong boolean is not.
+//
+//	is iterable  Go's TestIterable is `val.Iter() != nil`, and Value.Iter has no
+//	             none/undefined case; stock's try_iter maps None|Undefined to an
+//	             EMPTY iterator. `none is iterable` is false here and true there.
+//	is filter    Stock takes (State, &str): the SUBJECT is the sole string and
+//	is test      there are no explicit arguments. Go inspects the subject with
+//	             AsString and DISCARDS its args slice, so `"upper" is filter("x")`
+//	             is true here and TooManyArguments there — and `1 is filter(…)`
+//	             is false here where stock errors converting the subject.
+//	is sameas    Rust's is_same_as is an identity comparison; the port compares
+//	             values. Not a bounded difference.
+//	is in        Go's TestIn calls container.Contains, whose string arm accepts
+//	             only a string query; stock's contains STRINGIFIES a non-string
+//	             query, so `1 is in "1"` is false here and true there. Its
+//	             non-iterable container arm errors in stock and answers false
+//	             here. Every combination would have to be proven separately.
+//
+// A withdrawn builtin declines wherever it is used.
+var withdrawnBuiltins = map[string]bool{
+	"is iterable": true, "is filter": true, "is test": true,
+	"is sameas": true, "is in": true,
+}
+
 // provenSignatures is the whole admission surface, and it is DEFAULT-DECLINE:
 // a builtin absent from this table, an arity outside its entry, an argument of
 // a kind the entry does not list, or a subject the entry does not cover, is
 // ErrConstraintUnsupported. Nothing is admitted by omission.
 //
-// ROUND 18 removed the `kAny` subject sets. "Any kind" was never a proof, and
-// two ordinary cases showed it failing open in different directions:
-//
-//	true is odd            native FALSE — Go's TestOdd calls AsInt, which has no
-//	                       boolean arm — where stock's i128::try_from maps
-//	                       Bool(true) to 1 and answers TRUE
-//	(1|first) is undefined native TRUE — Go's FilterFirst finds no iterable items
-//	                       in a number and returns undefined — where stock's
-//	                       filters::first raises InvalidOperation for a non-
-//	                       iterable and supplies no boolean at all
-//
-// So every entry now names the kinds its subject and arguments may be, and
-// anything else declines. The sets were narrowed deliberately: the numeric tests
-// take numbers, the string filters take strings, the sequence filters take
-// sequences, the mapping filters take mappings. Where a broader set is used it
-// is [kValue] — a type PREDICATE such as `is defined` answers the same question
-// in both engines whatever it is handed, because neither converts anything to
-// answer it.
-//
-// Entries were checked against the pinned minijinja-Go registrations and the
-// stock BAML v0.223 behaviour. Where the two could not be shown identical for a
-// kind, that kind is simply absent — decline is always available and always
-// safe, which is why nothing here is reimplemented.
+// Every set below is an explicit enumeration derived from BOTH implementations —
+// the pinned minijinja-Go v2.16.0 and stock BAML v0.223's boundaryml/minijinja —
+// and a kind is present only where the two produce the same result. Where that
+// could not be shown cheaply, the kind is absent, and where the whole builtin
+// resisted it, the builtin is in [withdrawnBuiltins] instead.
 var provenSignatures = map[string]builtinSignature{
 	// --- string filters: a string subject, no arguments ---
 	"upper": {0, 0, nil, kString}, "lower": {0, 0, nil, kString},
@@ -1573,9 +1589,7 @@ var provenSignatures = map[string]builtinSignature{
 	"escape": {0, 0, nil, kString}, "e": {0, 0, nil, kString},
 	"safe": {0, 0, nil, kString},
 
-	// --- sequence filters: a sequence subject. A NON-ITERABLE subject is the
-	// round-18 divergence: Go hands back undefined where stock raises
-	// InvalidOperation. ---
+	// --- sequence filters: a real iterable only ---
 	"first": {0, 0, nil, kSequence}, "last": {0, 0, nil, kSequence},
 	"reverse": {0, 0, nil, kSequence}, "list": {0, 0, nil, kSequence},
 	"unique": {0, 0, nil, kSequence}, "sort": {0, 0, nil, kSequence},
@@ -1587,26 +1601,27 @@ var provenSignatures = map[string]builtinSignature{
 
 	// --- scalar filters ---
 	"string": {0, 0, nil, kScalar}, "bool": {0, 0, nil, kScalar},
-	// tojson and pprint also render a SEQUENCE identically — `[1,2]|tojson` is
-	// live in the corpus. A MAPPING subject is excluded here and refused by the
-	// tojson guard besides, because its key order is the thing the two engines
-	// disagree about.
-	"pprint": {0, 0, nil, kScalar | kSeq}, "tojson": {0, 0, nil, kScalar | kSeq},
-	"abs":   {0, 0, nil, kNumber},
-	"int":   {0, 0, nil, kNumber | kString},
-	"float": {0, 0, nil, kNumber | kString},
+	"pprint": {0, 0, nil, kScalar},
+	// tojson also renders a SEQUENCE identically — `[1,2]|tojson` is live. A
+	// MAPPING is excluded here and refused by the tojson guard besides, because
+	// its key order is the thing the two engines disagree about.
+	"tojson": {0, 0, nil, kScalar | kSeq},
+	"abs":    {0, 0, nil, kNumber},
+	"int":    {0, 0, nil, kNumber | kString},
+	"float":  {0, 0, nil, kNumber | kString},
 
 	// --- sized ---
 	"length": {0, 0, nil, kSized}, "count": {0, 0, nil, kSized},
 
 	// --- one argument ---
-	"round":    {0, 1, []kindSet{kNumber}, kNumber},
-	"default":  {0, 1, []kindSet{kValue}, kValue},
-	"d":        {0, 1, []kindSet{kValue}, kValue},
-	"join":     {0, 1, []kindSet{kString}, kSequence},
-	"split":    {1, 1, []kindSet{kString}, kString},
-	"format":   {1, 1, []kindSet{kString}, kScalar},
-	"indent":   {1, 1, []kindSet{kNumber}, kString},
+	"round":   {0, 1, []kindSet{kNumber}, kNumber},
+	"default": {0, 1, []kindSet{kConcrete}, kPresence},
+	"d":       {0, 1, []kindSet{kConcrete}, kPresence},
+	"join":    {0, 1, []kindSet{kString}, kSequence},
+	"split":   {1, 1, []kindSet{kString}, kString},
+	"format":  {1, 1, []kindSet{kString}, kScalar},
+	"indent":  {1, 1, []kindSet{kNumber}, kString},
+
 	"truncate": {1, 1, []kindSet{kNumber}, kString},
 	"batch":    {1, 1, []kindSet{kNumber}, kSequence},
 	"slice":    {1, 1, []kindSet{kNumber}, kSequence},
@@ -1627,18 +1642,22 @@ var provenSignatures = map[string]builtinSignature{
 	"selectattr": {1, 2, []kindSet{kString, kString}, kSequence},
 	"rejectattr": {1, 2, []kindSet{kString, kString}, kSequence},
 
-	// --- type PREDICATES: no conversion happens, so the subject is open ---
-	"is defined": {0, 0, nil, kValue}, "is undefined": {0, 0, nil, kValue},
-	"is none": {0, 0, nil, kValue}, "is string": {0, 0, nil, kValue},
-	"is number": {0, 0, nil, kValue}, "is integer": {0, 0, nil, kValue},
-	"is int": {0, 0, nil, kValue}, "is float": {0, 0, nil, kValue},
-	"is boolean": {0, 0, nil, kValue}, "is sequence": {0, 0, nil, kValue},
-	"is mapping": {0, 0, nil, kValue}, "is iterable": {0, 0, nil, kValue},
-	"is safe": {0, 0, nil, kValue}, "is escaped": {0, 0, nil, kValue},
-	"is true": {0, 0, nil, kValue}, "is false": {0, 0, nil, kValue},
+	// --- PRESENCE predicates: the only rows that admit UNDEFINED, because
+	// detecting it is the question and both engines answer it the same way. ---
+	"is defined": {0, 0, nil, kPresence}, "is undefined": {0, 0, nil, kPresence},
+	"is none": {0, 0, nil, kPresence},
 
-	// --- NUMERIC tests. A BOOL subject is the round-18 divergence: Go's AsInt
-	// has no boolean arm, stock's i128::try_from maps Bool(true) to 1. ---
+	// --- TYPE predicates: a kind test in both engines, over the kinds the value
+	// model produces. Undefined is excluded; `is iterable` is withdrawn. ---
+	"is string": {0, 0, nil, kConcrete}, "is number": {0, 0, nil, kConcrete},
+	"is integer": {0, 0, nil, kConcrete}, "is int": {0, 0, nil, kConcrete},
+	"is float": {0, 0, nil, kConcrete}, "is boolean": {0, 0, nil, kConcrete},
+	"is sequence": {0, 0, nil, kConcrete}, "is mapping": {0, 0, nil, kConcrete},
+	"is safe": {0, 0, nil, kConcrete}, "is escaped": {0, 0, nil, kConcrete},
+	"is true": {0, 0, nil, kConcrete}, "is false": {0, 0, nil, kConcrete},
+
+	// --- NUMERIC tests. A BOOL subject is a divergence: Go's AsInt has no
+	// boolean arm, stock's i128::try_from maps Bool(true) to 1. ---
 	"is odd": {0, 0, nil, kNumber}, "is even": {0, 0, nil, kNumber},
 	"is divisibleby": {1, 1, []kindSet{kNumber}, kNumber},
 
@@ -1646,17 +1665,16 @@ var provenSignatures = map[string]builtinSignature{
 	"is lower": {0, 0, nil, kString}, "is upper": {0, 0, nil, kString},
 	"is startingwith": {1, 1, []kindSet{kString}, kString},
 	"is endingwith":   {1, 1, []kindSet{kString}, kString},
-	"is filter":       {1, 1, []kindSet{kString}, kValue},
-	"is test":         {1, 1, []kindSet{kString}, kValue},
 
-	// --- comparison tests: both engines compare through the same value ops ---
-	"is eq": {1, 1, []kindSet{kValue}, kValue}, "is equalto": {1, 1, []kindSet{kValue}, kValue},
-	"is ne": {1, 1, []kindSet{kValue}, kValue},
-	"is lt": {1, 1, []kindSet{kValue}, kValue}, "is lessthan": {1, 1, []kindSet{kValue}, kValue},
-	"is le": {1, 1, []kindSet{kValue}, kValue},
-	"is gt": {1, 1, []kindSet{kValue}, kValue}, "is greaterthan": {1, 1, []kindSet{kValue}, kValue},
-	"is ge": {1, 1, []kindSet{kValue}, kValue},
-	"is in": {1, 1, []kindSet{kValue}, kValue}, "is sameas": {1, 1, []kindSet{kValue}, kValue},
+	// --- comparison tests. Narrowed to SCALARS on both sides: a cross-kind
+	// comparison and a container comparison each go through conversions that
+	// have not been shown identical, and `is sameas` is withdrawn outright. ---
+	"is eq": {1, 1, []kindSet{kScalar}, kScalar}, "is equalto": {1, 1, []kindSet{kScalar}, kScalar},
+	"is ne": {1, 1, []kindSet{kScalar}, kScalar},
+	"is lt": {1, 1, []kindSet{kScalar}, kScalar}, "is lessthan": {1, 1, []kindSet{kScalar}, kScalar},
+	"is le": {1, 1, []kindSet{kScalar}, kScalar},
+	"is gt": {1, 1, []kindSet{kScalar}, kScalar}, "is greaterthan": {1, 1, []kindSet{kScalar}, kScalar},
+	"is ge": {1, 1, []kindSet{kScalar}, kScalar},
 }
 
 func kindOf(v mjvalue.Value) kindSet {
@@ -1710,6 +1728,11 @@ var coercingNumericArg = map[string]bool{"is divisibleby": true}
 // an argument may be, and about what happens at an edge value like 0 — all at
 // perfectly ordinary magnitudes.
 func checkCallParity(name string, subject mjvalue.Value, args []mjvalue.Value, kwargs map[string]mjvalue.Value) error {
+	if withdrawnBuiltins[name] {
+		return unsupportedConstraint(
+			"`%s` is withdrawn from the profile: its behaviour differs from stock across the kinds it "+
+				"accepts, in ways that would have to be proven combination by combination", name)
+	}
 	sig, listed := provenSignatures[name]
 	if !listed {
 		return unsupportedConstraint(

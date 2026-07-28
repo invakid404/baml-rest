@@ -3884,6 +3884,132 @@ func (c Iso_this_stre_bare) BamlTypeName() string {
 	return "Iso_this_stre_bare"
 }
 
+type Iso_wd_filter_extra_arg struct {
+	V Checked[int64] `json:"v"`
+}
+
+func (c *Iso_wd_filter_extra_arg) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_wd_filter_extra_arg" {
+		panic(fmt.Sprintf("expected Iso_wd_filter_extra_arg, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_wd_filter_extra_arg", key))
+
+		}
+	}
+
+}
+
+func (c Iso_wd_filter_extra_arg) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_wd_filter_extra_arg", fields, nil)
+}
+
+func (c Iso_wd_filter_extra_arg) BamlTypeName() string {
+	return "Iso_wd_filter_extra_arg"
+}
+
+type Iso_wd_filter_number_subject struct {
+	V Checked[int64] `json:"v"`
+}
+
+func (c *Iso_wd_filter_number_subject) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_wd_filter_number_subject" {
+		panic(fmt.Sprintf("expected Iso_wd_filter_number_subject, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_wd_filter_number_subject", key))
+
+		}
+	}
+
+}
+
+func (c Iso_wd_filter_number_subject) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_wd_filter_number_subject", fields, nil)
+}
+
+func (c Iso_wd_filter_number_subject) BamlTypeName() string {
+	return "Iso_wd_filter_number_subject"
+}
+
+type Iso_wd_test_extra_arg struct {
+	V Checked[int64] `json:"v"`
+}
+
+func (c *Iso_wd_test_extra_arg) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Iso_wd_test_extra_arg" {
+		panic(fmt.Sprintf("expected Iso_wd_test_extra_arg, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[int64])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Iso_wd_test_extra_arg", key))
+
+		}
+	}
+
+}
+
+func (c Iso_wd_test_extra_arg) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Iso_wd_test_extra_arg", fields, nil)
+}
+
+func (c Iso_wd_test_extra_arg) BamlTypeName() string {
+	return "Iso_wd_test_extra_arg"
+}
+
 type Probe struct {
 	B int64   `json:"b"`
 	A string  `json:"a"`

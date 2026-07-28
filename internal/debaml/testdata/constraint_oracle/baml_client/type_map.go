@@ -205,6 +205,12 @@ var typeMap = map[string]reflect.Type{
 	"STREAM_TYPES.Iso_this_str_split":           reflect.TypeOf(stream_types.Iso_this_str_split{}),
 	"TYPES.Iso_this_stre_bare":                  reflect.TypeOf(types.Iso_this_stre_bare{}),
 	"STREAM_TYPES.Iso_this_stre_bare":           reflect.TypeOf(stream_types.Iso_this_stre_bare{}),
+	"TYPES.Iso_wd_filter_extra_arg":             reflect.TypeOf(types.Iso_wd_filter_extra_arg{}),
+	"STREAM_TYPES.Iso_wd_filter_extra_arg":      reflect.TypeOf(stream_types.Iso_wd_filter_extra_arg{}),
+	"TYPES.Iso_wd_filter_number_subject":        reflect.TypeOf(types.Iso_wd_filter_number_subject{}),
+	"STREAM_TYPES.Iso_wd_filter_number_subject": reflect.TypeOf(stream_types.Iso_wd_filter_number_subject{}),
+	"TYPES.Iso_wd_test_extra_arg":               reflect.TypeOf(types.Iso_wd_test_extra_arg{}),
+	"STREAM_TYPES.Iso_wd_test_extra_arg":        reflect.TypeOf(stream_types.Iso_wd_test_extra_arg{}),
 	"TYPES.Probe":                               reflect.TypeOf(types.Probe{}),
 	"STREAM_TYPES.Probe":                        reflect.TypeOf(stream_types.Probe{}),
 
