@@ -64,6 +64,18 @@ internal/nativeprompt/testdata/static_oracle
 # default) so the root embed manifest stays unchanged.
 internal/nativeprompt/testdata/staticserve_fixture
 
+# de-BAML Slice 2 BAML PROFILE (internal/bamlprofile): the leaf get_env profile
+# over the pinned pure-Go minijinja fork, plus its stock-BAML-v0.223 differential
+# oracle (profileoracle) and its guard fixture. Slice 2 is a new leaf package NOT
+# wired to serving — nothing on any admission/serve path imports it yet — so it
+# must NOT enter the customer/container source bundle or change the root embed
+# manifest. profileoracle is a test-only differential oracle whose //go:build
+# integration test links the stock github.com/boundaryml/baml runtime, mirroring
+# internal/nativeprompt/testdata/static_oracle above. The later prompt-integration
+# slice that wires this profile into internal/nativeprompt will narrow this entry
+# to exclude only internal/bamlprofile/profileoracle.
+internal/bamlprofile
+
 # de-BAML Phase 4b + 5.1 gated nanollm Prepare validation: a SEPARATE, test-only
 # Go module (github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare)
 # excluded from go.work so the PUBLIC github.com/viktordanov/nanollm-ffi/go
