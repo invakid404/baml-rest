@@ -1,0 +1,7 @@
+{
+  "baml_runtime_version": "0.223.0",
+  "baml_module_version": "v0.223.0",
+  "baml_source_sha256": "0038fba361a033df3eff240948a0d94441989525baf1dec82e73a36857d09723",
+  "row_count": 66,
+  "note": "stock BAML v0.223.0 get_env differential for internal/bamlprofile (Slice 2 PR-1)"
+}
