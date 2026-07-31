@@ -27,7 +27,11 @@ import (
 // render), or nil.
 func probeErr(t *testing.T, src string) error {
 	t.Helper()
-	tmpl, cerr := New(Config{}).TemplateFromNamedString("registry_probe", src)
+	env, err := New(Config{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	tmpl, cerr := env.TemplateFromNamedString("registry_probe", src)
 	if cerr != nil {
 		return cerr
 	}

@@ -23,12 +23,14 @@ package profileoracle
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"unicode"
 
 	"github.com/invakid404/baml-rest/internal/bamlprofile"
+	"github.com/invakid404/minijinja-go/v2/value"
 )
 
 // BAML role-marker literals (engine/baml-lib/jinja-runtime/src/lib.rs), copied
@@ -83,6 +85,61 @@ type Row struct {
 	// Chat is true when the template uses _.role/_.chat: the rendered output is a
 	// message list, compared message-by-message rather than as one completion.
 	Chat bool
+	// Fault, when non-empty, declares that stock BAML v0.223 does NOT render this
+	// row successfully, and WHICH failure class it produces. A fault row is
+	// compared by classified OUTCOME instead of by rendered bytes: it is green only
+	// when the profile fails in the same class, never because the profile rendered
+	// a conservative value where BAML faulted (the de-BAML parity-decline rule).
+	// The declaration is asserted against the live stock leg, so it cannot rot.
+	//
+	// It also selects HOW the stock leg is run: an OutcomeError row renders
+	// in-process, while an OutcomePanic row MUST go through the subprocess leg —
+	// see the Outcome docs.
+	Fault OutcomeKind
+}
+
+// OutcomeKind classifies how a render attempt ended. It is the comparison unit
+// for a fault row; a successful row still compares its bytes.
+type OutcomeKind string
+
+const (
+	// OutcomeRendered: the engine produced output. Text carries the bytes.
+	OutcomeRendered OutcomeKind = "rendered"
+	// OutcomeError: the engine raised a normal, recoverable template error (for
+	// example "map is not iterable"). The render failed; the process is healthy.
+	OutcomeError OutcomeKind = "error"
+	// OutcomePanic: the engine hit an INTERNAL invariant failure — stock BAML's
+	// `unreachable!()` (minijinja value/mod.rs:660) or, on the profile leg, the
+	// fork's value.UnorderableMaps. This is not a recoverable template error.
+	//
+	// On the stock CFFI leg it cannot be contained in-process at all: the Rust
+	// panic kills the tokio worker that owns the request, so BuildRequest never
+	// returns and blocks FOREVER (observed: a 600s test timeout, with the panic on
+	// stderr). That is why an OutcomePanic row runs stock BAML in a SUBPROCESS —
+	// the panic is read off the child's stderr and the child is killed. There is
+	// no in-process recover() that could turn it into a value, and the harness
+	// must never present it as one.
+	OutcomePanic OutcomeKind = "panic"
+)
+
+// Outcome is a classified render result from one leg.
+//
+// Only Kind (and, for OutcomeRendered, Text) is COMPARED. Detail is diagnostic
+// only: the stock Rust panic text and the fork's Go panic text are different
+// strings for the same invariant failure, and requiring them to match would pin
+// a message rather than a behavior.
+type Outcome struct {
+	Kind   OutcomeKind
+	Text   string // rendered bytes; set only when Kind is OutcomeRendered
+	Detail string // error/panic text; DIAGNOSTIC ONLY, never compared
+}
+
+// String renders an Outcome for a test failure message.
+func (o Outcome) String() string {
+	if o.Kind == OutcomeRendered {
+		return fmt.Sprintf("%s(%q)", o.Kind, o.Text)
+	}
+	return fmt.Sprintf("%s(%s)", o.Kind, o.Detail)
 }
 
 // FuncName is the BAML function name generated for a row.
@@ -155,18 +212,114 @@ func dedentAndTrim(s string) string {
 // rendered bytes, after reproducing BAML's template preprocessing. ctx.output_
 // format is empty for every corpus function (all return string, which has no
 // schema), so Config carries an empty OutputFormat — the same value BAML's ctx
-// exposes for these functions.
+// exposes for these functions. Config.Enums installs the shared enum namespace
+// globals, matching the globals BAML injects for every enum declared in
+// types.baml.
+//
+// A host-shaped argument (enum/class/list) is lowered to the same profile host
+// value BAML builds for that typed argument (types.go hostValue); a plain scalar
+// is passed through as-is. The fork's render context passes an existing
+// value.Value through unchanged (value.FromAny), so a host value.Value placed in
+// the ctx map reaches the template as that host object.
 func RenderProfile(r Row) (string, error) {
 	src := dedentAndTrim(r.blockContent())
-	tmpl, err := bamlprofile.New(bamlprofile.Config{}).TemplateFromNamedString("profile_oracle", src)
+	// Setup and lowering failures are wrapped as *harnessError so the fault-leg
+	// classifier can tell them apart from a genuine engine render error. Building
+	// the environment, compiling the template and lowering a host argument are the
+	// HARNESS's job; only tmpl.Render below is the ENGINE.
+	env, err := bamlprofile.New(bamlprofile.Config{Enums: profileEnums()})
 	if err != nil {
-		return "", err
+		return "", &harnessError{fmt.Errorf("bamlprofile.New: %w", err)}
 	}
-	ctx := map[string]any{}
+	tmpl, err := env.TemplateFromNamedString("profile_oracle", src)
+	if err != nil {
+		return "", &harnessError{fmt.Errorf("template compile: %w", err)}
+	}
+	ctx, err := profileContext(r)
+	if err != nil {
+		return "", &harnessError{err}
+	}
+	return tmpl.Render(ctx)
+}
+
+// harnessError marks a failure of the profile HARNESS itself — building the
+// environment, compiling the corpus template, or lowering a host argument — as
+// distinct from the ENGINE raising a recoverable template error while rendering.
+//
+// Only a genuine engine render error is an [OutcomeError]. Classifying a harness
+// failure as one would let a fault row that declares OutcomeError PASS because
+// the harness broke (e.g. it failed to lower an argument) rather than because the
+// engine faulted — a silent hole in the fault-outcome proof. [RenderProfileOutcome]
+// therefore re-raises a *harnessError loudly instead of classifying it.
+type harnessError struct{ err error }
+
+func (e *harnessError) Error() string { return e.err.Error() }
+func (e *harnessError) Unwrap() error { return e.err }
+
+// profileContext builds a row's render context: every Arg verbatim, with each
+// host-shaped DECLARED parameter replaced by its lowered host value.
+//
+// The host lowering walks r.Params in DECLARED order, not the r.Args map, so a
+// conversion failure always names the same parameter for the same row — a Go map
+// range would report a random one when several are malformed. A failure is
+// wrapped with the row ID, the parameter name, and its BAML type, because
+// hostValue's own message ("expects a []any arg, got string") is unattributable
+// once it surfaces from a 150-row suite. Diagnostic only: a successful render is
+// byte-identical either way.
+func profileContext(r Row) (map[string]any, error) {
+	ctx := make(map[string]any, len(r.Args))
 	for k, v := range r.Args {
 		ctx[k] = v
 	}
-	return tmpl.Render(ctx)
+	for _, p := range r.Params {
+		if !needsHostValue(p.BamlType) {
+			continue
+		}
+		arg, ok := r.Args[p.Name]
+		if !ok {
+			return nil, fmt.Errorf("profileoracle: row %q param %q (%s): declared but absent from Args", r.ID, p.Name, p.BamlType)
+		}
+		hv, err := hostValue(p.BamlType, arg)
+		if err != nil {
+			return nil, fmt.Errorf("profileoracle: row %q param %q (%s): %w", r.ID, p.Name, p.BamlType, err)
+		}
+		ctx[p.Name] = hv
+	}
+	return ctx, nil
+}
+
+// RenderProfileOutcome renders a row through the profile leg and CLASSIFIES the
+// result, so a fault row can be compared against stock BAML by outcome class.
+//
+// It recovers exactly one panic type: value.UnorderableMaps, the fork's
+// recoverable spelling of stock MiniJinja's `unreachable!()` when ordering two
+// mappings that cannot be enumerated (v2.16.0-baml.4, PATCHES #103). Any other
+// panic is re-raised — it would be a genuine defect in this package, and
+// swallowing it would turn a crash into a quietly-classified "fault" that a
+// stock panic row would then happily match.
+func RenderProfileOutcome(r Row) (o Outcome) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			u, ok := rec.(value.UnorderableMaps)
+			if !ok {
+				panic(rec)
+			}
+			o = Outcome{Kind: OutcomePanic, Detail: u.Error()}
+		}
+	}()
+	out, err := RenderProfile(r)
+	if err != nil {
+		// A harness setup/lowering failure is NOT an engine outcome. Failing
+		// loudly here is the whole point: silently classifying it as OutcomeError
+		// would let a fault row match on a broken harness instead of a real engine
+		// fault. Only an error that came out of the engine's render classifies.
+		var he *harnessError
+		if errors.As(err, &he) {
+			panic(fmt.Sprintf("profileoracle: row %q: profile harness failed before the engine rendered (not an engine outcome): %v", r.ID, err))
+		}
+		return Outcome{Kind: OutcomeError, Detail: err.Error()}
+	}
+	return Outcome{Kind: OutcomeRendered, Text: out}
 }
 
 // Message is a role + concatenated text, the canonical shape both legs reduce to
@@ -225,6 +378,7 @@ func GenerateBAMLSource(rows []Row) map[string]string {
 
 	return map[string]string{
 		"clients.baml":   clientSource(),
+		"types.baml":     typesBAMLSource(),
 		"functions.baml": fns.String(),
 	}
 }

@@ -1,5 +1,5 @@
 // Package bamlprofile is baml-rest's leaf BAML profile over the pinned pure-Go
-// minijinja fork github.com/invakid404/minijinja-go/v2@v2.16.0-baml.3.
+// minijinja fork github.com/invakid404/minijinja-go/v2@v2.16.0-baml.6.
 //
 // The fork is a generic, BAML-exact minijinja ENGINE. It deliberately does not
 // carry BAML's environment configuration: a consumer still owns BAML's
@@ -21,9 +21,9 @@
 // test-only differential oracle behind the `integration` build tag
 // (see ./profileoracle), mirroring internal/nativeprompt/staticoracle.
 //
-// # What this slice (Slice 2 PR-1) builds
+// # What this slice builds
 //
-// The get_env engine configuration, sans the host value model:
+// PR-1 — the get_env engine configuration:
 //   - trim_blocks + lstrip_blocks, autoescape off, set_debug(true);
 //   - the none -> "null" top-level formatter;
 //   - the fork's BAML-exact builtin filter/test/function registry PLUS BAML's
@@ -35,15 +35,46 @@
 // Authority: jinja_helpers.rs get_env() in BAML v0.223
 // (engine/baml-lib/baml-core/src/ir/jinja_helpers.rs:7-36).
 //
-// # What is DEFERRED to later PRs (explicitly NOT built here)
+// PR-2 — the enum & class host value model (enum.go, class.go, list.go):
+//   - per-enum namespace globals installed from Config.Enums (Environment.
+//     AddGlobal), keyed by canonical variant name, non-enumerable;
+//   - enum-member objects with separate canonical / alias / enum-name fields:
+//     display is alias-or-canonical, `.value` is canonical only, and
+//     ObjectWithValueCmp is BAML's exact enum comparator — closing the #597
+//     enum-`==` fence at the profile level (both operand orders + membership);
+//   - class objects (canonical attribute/iteration/index access, alias only in
+//     display), host list objects, and a hand-written Rust debug renderer for
+//     direct class/list rendering (nested none -> null, aliased keys, four-space
+//     nesting, trailing commas), in both the alternate `{:#?}` and the
+//     non-alternate spelling BAML's two Display impls select.
 //
-//   - The host value model: enum/class/map/media host value objects, enum
-//     globals, the enum ValueCmp that closes the #597 enum-`==` fence, and the
-//     object-aware formatter dispatch (ObjectWithString) those need.
-//   - The prompt lowerer and the constraint lowerer / predicate façade.
+// The host objects render through value.ObjectWithString and signal their
+// non-enumerability by being ObjectReprMap objects that implement no
+// value.MapObject/MapGetter. Both are GENERIC fork seams (v2.16.0-baml.4
+// PATCHES #102-#105, extended in -baml.6 PATCHES #106-#108 to pycompat
+// str.join/keys/values/items/get, dictsort, and the pprint/debug renderers):
+// the fork's Value.String/Value.Repr and the alternate-debug renderers dispatch
+// ObjectWithString, its equality/ordering/iteration/join branch on the ok
+// boolean of Value.MapKeys, and its map API reaches a host map through
+// MapKeys/GetItem rather than AsMap. So this package adds no per-filter,
+// per-container, or per-operator special case, and no comparator answer BAML's
+// own comparator would not give.
 //
-// New leaves a clear boundary for these (see env.go): the returned
-// *minijinja.Environment is the get_env engine config; the host value model is
-// layered on top by later slices (enum globals via AddGlobal; host values
-// produced by the lowerers and passed as render context), never faked here.
+// Authority: baml_value_to_jinja_value.rs and lib.rs in BAML v0.223 (cited at
+// each type). Byte-exactness is proven by the stock-CFFI differential in
+// ./profileoracle.
+//
+// # What is DEFERRED / DECLINED (explicitly NOT built here)
+//
+//   - Media host values (Image/Audio/Pdf/Video, URL/Base64/File): BAML's serde
+//     marker must be parsed by prompt lowering into a provider media body, which
+//     this unwired leaf has no path for. There is no media constructor, so a
+//     media value cannot enter a render context at all. Tracked on #602.
+//   - BAML's render-layer format(type=json|yaml|toon) host-serialization
+//     override: the get_env-level `format` is the fork's printf filter, so a
+//     class|format(type=...) ERRORS rather than silently emitting a
+//     serialization (proven in host_test.go). Tracked on #602.
+//   - The prompt lowerer and the constraint lowerer / predicate façade, and the
+//     descriptor/parser layer that would supply resolved enum/class aliases and
+//     ordered fields in production (PR-2 consumes them as explicit typed inputs).
 package bamlprofile

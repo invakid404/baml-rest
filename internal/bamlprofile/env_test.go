@@ -18,7 +18,11 @@ import (
 
 func render(t *testing.T, cfg Config, src string) string {
 	t.Helper()
-	tmpl, err := New(cfg).TemplateFromNamedString("smoke.txt", src)
+	env, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New(%+v): %v", cfg, err)
+	}
+	tmpl, err := env.TemplateFromNamedString("smoke.txt", src)
 	if err != nil {
 		t.Fatalf("compile %q: %v", src, err)
 	}
@@ -90,7 +94,11 @@ func TestSmokeRoleErrorKinds(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			tmpl, err := New(Config{}).TemplateFromNamedString("smoke.txt", tc.src)
+			env, err := New(Config{})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			tmpl, err := env.TemplateFromNamedString("smoke.txt", tc.src)
 			if err != nil {
 				t.Fatalf("compile %q: %v", tc.src, err)
 			}
