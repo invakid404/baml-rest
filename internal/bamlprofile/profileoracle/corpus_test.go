@@ -129,8 +129,15 @@ func TestFunctionSourcePanicsOnUnrepresentableBody(t *testing.T) {
 	_ = functionSource(Row{ID: "overflow", Template: `x"#####y`})
 }
 
+// TestProfileLegRendersEveryRow covers every row that does NOT declare a Fault.
+// A fault row is expected to fail on both legs, so requiring it to render here
+// would contradict its own declaration; TestProfileFaultRowsFaultOnProfileLeg
+// asserts the other half.
 func TestProfileLegRendersEveryRow(t *testing.T) {
 	for _, r := range Corpus() {
+		if r.Fault != "" {
+			continue
+		}
 		t.Run(r.ID, func(t *testing.T) {
 			out, err := RenderProfile(r)
 			if err != nil {
@@ -143,4 +150,85 @@ func TestProfileLegRendersEveryRow(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestProfileFaultRowsFaultOnProfileLeg is the CGO-free half of the fault
+// contract: a row that declares stock BAML faults must ALSO fault on the profile
+// leg, in the declared class. Rendering a value where BAML faults is the
+// parity-decline rule's out-do, and this catches it without CFFI.
+//
+// The stock half — that BAML really produces the declared class — needs the live
+// runtime and lives in TestProfileFaultDifferential (integration tag).
+func TestProfileFaultRowsFaultOnProfileLeg(t *testing.T) {
+	seen := 0
+	for _, r := range Corpus() {
+		if r.Fault == "" {
+			continue
+		}
+		seen++
+		t.Run(r.ID, func(t *testing.T) {
+			switch r.Fault {
+			case OutcomeError, OutcomePanic:
+			default:
+				t.Fatalf("Fault=%q is not a failure class", r.Fault)
+			}
+			if o := RenderProfileOutcome(r); o.Kind != r.Fault {
+				t.Errorf("profile outcome = %s, want class %s", o, r.Fault)
+			}
+		})
+	}
+	if seen == 0 {
+		t.Fatal("no fault rows in the corpus; the fault contract must not silently cover nothing")
+	}
+}
+
+// TestProfileFaultDeclarationsAreFailureClasses guards the one way a row could
+// silently escape the differential entirely.
+//
+// Row.Fault routes a row: empty sends it to the byte-exact
+// TestProfileDifferential, non-empty sends it to the outcome-class
+// TestProfileFaultDifferential. So `Fault: OutcomeRendered` would be accepted by
+// the compiler, removed from the byte comparison as a "fault row", and then
+// trivially satisfied by a successful render — a row that looks covered twice
+// and is actually proved by nothing. Only a FAILURE class may appear here.
+func TestProfileFaultDeclarationsAreFailureClasses(t *testing.T) {
+	byteCompared, outcomeCompared := 0, 0
+	for _, r := range Corpus() {
+		switch r.Fault {
+		case "":
+			byteCompared++
+		case OutcomeError, OutcomePanic:
+			outcomeCompared++
+		default:
+			t.Errorf("row %q declares Fault=%q, which is not a failure class; "+
+				"only %q and %q route a row to the outcome differential",
+				r.ID, r.Fault, OutcomeError, OutcomePanic)
+		}
+	}
+	t.Logf("corpus: %d rows — %d byte-compared, %d outcome-compared",
+		len(Corpus()), byteCompared, outcomeCompared)
+}
+
+// TestRenderProfileOutcomeFailsLoudOnHarnessError proves the fault-outcome proof
+// cannot be satisfied by a broken HARNESS. A row whose declared host parameter is
+// missing from Args fails during arg lowering — a *harnessError — not during the
+// engine's render. Classifying that as OutcomeError would let a fault row that
+// declares OutcomeError pass because the harness failed to set the row up rather
+// than because the engine faulted. RenderProfileOutcome re-raises it instead, so
+// the row cannot masquerade as an engine outcome.
+func TestRenderProfileOutcomeFailsLoudOnHarnessError(t *testing.T) {
+	r := Row{
+		ID:       "harness_failure_probe",
+		Fault:    OutcomeError,
+		Params:   []Param{{Name: "c", BamlType: "C"}},
+		Args:     map[string]any{}, // the declared host arg is absent -> lowering fails
+		Template: `{{ c }}`,
+	}
+	defer func() {
+		if rec := recover(); rec == nil {
+			t.Fatal("RenderProfileOutcome classified a harness setup failure as an outcome instead of failing loudly")
+		}
+	}()
+	o := RenderProfileOutcome(r)
+	t.Fatalf("RenderProfileOutcome returned %v instead of re-raising the harness failure", o)
 }

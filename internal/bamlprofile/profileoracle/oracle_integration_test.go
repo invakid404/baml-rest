@@ -95,7 +95,7 @@ func TestProfileOracleFixture(t *testing.T) {
 		BAMLModuleVersion:  observedModule,
 		SourceSHA256:       sourceSHA256(files),
 		RowCount:           len(Corpus()),
-		Note:               "stock BAML v0.223.0 get_env differential for internal/bamlprofile (Slice 2 PR-1)",
+		Note:               "stock BAML v0.223.0 get_env + enum/class host-value-model differential for internal/bamlprofile (Slice 2 PR-1 + PR-2)",
 	}
 
 	if os.Getenv("WRITE_PROFILE_ORACLE_FIXTURE") == "1" {
@@ -172,16 +172,31 @@ func assertBAMLAuthority(t *testing.T) {
 
 // TestProfileDifferential is the byte-exact proof: every corpus row rendered
 // through stock BAML v0.223 equals the profile leg.
+//
+// It covers the rows that RENDER. Rows that declare a Fault are excluded here
+// and proved by outcome class in TestProfileFaultDifferential instead — asking
+// stock BAML to render one of them in this process would either raise (making
+// the byte comparison meaningless) or, for the panic class, hang the suite
+// forever. Between the two tests every corpus row is covered exactly once, and
+// TestProfileFaultDeclarationsAreFailureClasses guards that split.
 func TestProfileDifferential(t *testing.T) {
 	assertBAMLAuthority(t)
 
-	rows := Corpus()
-	files := GenerateBAMLSource(rows)
+	// The runtime is still built from the WHOLE corpus (fault rows included), so
+	// both legs compile the same project and the source-map guard keeps matching.
+	files := GenerateBAMLSource(Corpus())
 	env := envVars()
 
 	rt, err := baml.CreateRuntime("./baml_src", files, env)
 	if err != nil {
 		t.Fatalf("CreateRuntime from in-memory corpus source: %v", err)
+	}
+
+	var rows []Row
+	for _, r := range Corpus() {
+		if r.Fault == "" {
+			rows = append(rows, r)
+		}
 	}
 
 	for _, r := range rows {
