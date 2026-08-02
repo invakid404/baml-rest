@@ -31,7 +31,10 @@ require (
 	golang.org/x/mod v0.37.0
 )
 
-require github.com/stoewer/go-strcase v1.3.1 // indirect
+require (
+	github.com/invakid404/minijinja-go/v2 v2.16.0-baml.6 // indirect
+	github.com/stoewer/go-strcase v1.3.1 // indirect
+)
 
 require (
 	github.com/BurntSushi/toml v1.6.0 // indirect
@@ -81,7 +84,6 @@ require (
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect
-	github.com/mitsuhiko/minijinja/minijinja-go/v2 v2.16.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/oklog/run v1.1.0 // indirect
 	github.com/prometheus/common v0.69.0 // indirect

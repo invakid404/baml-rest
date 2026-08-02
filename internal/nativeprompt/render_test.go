@@ -223,7 +223,9 @@ func TestCompletionVsChat(t *testing.T) {
 		t.Errorf("completion = %+v", comp)
 	}
 
-	chat, err := lower(emitRoleMarker("user", false, nil) + "hi")
+	// The role marker comes from the PRODUCTION `_` global (the profile's), not a
+	// test-local copy of the emit rule.
+	chat, err := lower(roleMarkerViaSeam(t, "user") + "hi")
 	if err != nil {
 		t.Fatalf("lower chat: %v", err)
 	}
