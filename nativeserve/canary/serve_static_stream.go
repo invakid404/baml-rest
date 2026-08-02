@@ -203,6 +203,7 @@ func toStaticStreamAdmissionInput(inv bamlutils.NativeStaticStreamInvocation) ad
 		Descriptor:              inv.Descriptor,
 		Args:                    inv.Args,
 		ArgOrder:                inv.ArgOrder,
+		Values:                  inv.Values,
 		Mode:                    inv.Mode,
 		NeedsRaw:                inv.NeedsRaw,
 		SingleLeaf:              inv.SingleLeaf,

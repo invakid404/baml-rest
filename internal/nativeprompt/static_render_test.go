@@ -11,12 +11,145 @@ import (
 
 // --- shared test builders (used by static_render_test and static_support_test) --
 
-// primArg builds a declared primitive argument of the given BAML primitive.
+// primArg builds a declared primitive argument of the given BAML primitive,
+// carrying BOTH the legacy retained TypeExpr and the V3 resolved value type a
+// Version-3 descriptor requires.
 func primArg(name, prim string) promptdescriptor.Argument {
-	return promptdescriptor.Argument{
-		Name: name,
-		Type: &bamlparser.TypeExpr{Kind: bamlparser.KindPrimitive, Primitive: prim},
+	var kind promptdescriptor.ValueKind
+	switch prim {
+	case "string":
+		kind = promptdescriptor.ValueString
+	case "int":
+		kind = promptdescriptor.ValueInt
+	case "float":
+		kind = promptdescriptor.ValueFloat
+	case "bool":
+		kind = promptdescriptor.ValueBool
+	case "null":
+		kind = promptdescriptor.ValueNull
+	default:
+		kind = promptdescriptor.ValueKind(prim)
 	}
+	return promptdescriptor.Argument{
+		Name:      name,
+		Type:      &bamlparser.TypeExpr{Kind: bamlparser.KindPrimitive, Primitive: prim},
+		ValueType: &promptdescriptor.ResolvedValueType{Kind: kind},
+	}
+}
+
+// v3Arg builds a declared argument carrying ONLY a V3 resolved value type (the
+// legacy TypeExpr is diagnostic and never a binder input, so tests that exercise
+// the V3 path deliberately leave it nil).
+func v3Arg(name string, vt promptdescriptor.ResolvedValueType) promptdescriptor.Argument {
+	return promptdescriptor.Argument{Name: name, ValueType: &vt}
+}
+
+// --- projected-value constructors -------------------------------------------
+//
+// These build the neutral vector a GENERATED projector produces. Tests state it
+// explicitly (rather than deriving it from a raw map) because the vector IS the
+// contract: its order, its names, and its per-value kinds are exactly what the
+// binder validates against the descriptor.
+
+func argV(name string, v promptdescriptor.StaticValue) promptdescriptor.ArgumentValue {
+	return promptdescriptor.ArgumentValue{Name: name, Value: v}
+}
+
+func vals(vs ...promptdescriptor.ArgumentValue) []promptdescriptor.ArgumentValue { return vs }
+
+func noVals() []promptdescriptor.ArgumentValue { return nil }
+
+func strV(s string) promptdescriptor.StaticValue {
+	return promptdescriptor.StaticValue{Kind: promptdescriptor.StaticString, String: s}
+}
+
+func intV(i int64) promptdescriptor.StaticValue {
+	return promptdescriptor.StaticValue{Kind: promptdescriptor.StaticInt, Int: i}
+}
+
+func floatV(f float64) promptdescriptor.StaticValue {
+	return promptdescriptor.StaticValue{Kind: promptdescriptor.StaticFloat, Float: f}
+}
+
+func boolV(b bool) promptdescriptor.StaticValue {
+	return promptdescriptor.StaticValue{Kind: promptdescriptor.StaticBool, Bool: b}
+}
+
+func nullV() promptdescriptor.StaticValue {
+	return promptdescriptor.StaticValue{Kind: promptdescriptor.StaticNull}
+}
+
+func enumV(enumName, canonical string) promptdescriptor.StaticValue {
+	return promptdescriptor.StaticValue{
+		Kind: promptdescriptor.StaticEnum, TypeName: enumName, Canonical: canonical,
+	}
+}
+
+func fieldV(canonical string, v promptdescriptor.StaticValue) promptdescriptor.StaticFieldValue {
+	return promptdescriptor.StaticFieldValue{Canonical: canonical, Value: v}
+}
+
+func classV(className string, fields ...promptdescriptor.StaticFieldValue) promptdescriptor.StaticValue {
+	return promptdescriptor.StaticValue{
+		Kind: promptdescriptor.StaticClass, TypeName: className, Fields: fields,
+	}
+}
+
+func listV(items ...promptdescriptor.StaticValue) promptdescriptor.StaticValue {
+	return promptdescriptor.StaticValue{Kind: promptdescriptor.StaticList, Items: items}
+}
+
+// testTypeGate builds the analyzer's V3 type view directly, for the unit suites
+// that drive classifyExpr / matchAllowlist without going through prepareStatic.
+// args maps a declared argument name to its resolved value type; enums is the
+// project enum set the expression gate resolves `Color.RED` against.
+func testTypeGate(args map[string]promptdescriptor.ResolvedValueType, enums []promptdescriptor.ResolvedEnum) *typeGate {
+	u, err := validateUniverse(promptdescriptor.InputValueUniverse{ProjectEnums: enums})
+	if err != nil {
+		panic("testTypeGate: malformed enum universe: " + err.Error())
+	}
+	bindings := make([]argBinding, 0, len(args))
+	for name := range args {
+		vt := args[name]
+		bindings = append(bindings, argBinding{name: name, vtype: &vt})
+	}
+	return newTypeGate(bindings, u)
+}
+
+// projectScalars is the test stand-in for a generated projector over a
+// SCALAR-only signature: it walks fn.Args in declared order and projects each
+// raw Go value by its EXACT dynamic type, exactly as generated code asserts it.
+// An unrecognized Go type fails the test loudly rather than being coerced —
+// generated code would return ok=false there, and silently coercing would hide
+// the very no-coercion property the binder is supposed to enforce.
+func projectScalars(t *testing.T, fn promptdescriptor.Function, raw map[string]any) []promptdescriptor.ArgumentValue {
+	t.Helper()
+	out := make([]promptdescriptor.ArgumentValue, 0, len(fn.Args))
+	for _, a := range fn.Args {
+		v, ok := raw[a.Name]
+		if !ok {
+			t.Fatalf("projectScalars: no value supplied for declared argument %q", a.Name)
+		}
+		switch x := v.(type) {
+		case string:
+			out = append(out, argV(a.Name, strV(x)))
+		case int64:
+			out = append(out, argV(a.Name, intV(x)))
+		case float64:
+			out = append(out, argV(a.Name, floatV(x)))
+		case bool:
+			out = append(out, argV(a.Name, boolV(x)))
+		case promptdescriptor.StaticValue:
+			out = append(out, argV(a.Name, x))
+		default:
+			t.Fatalf("projectScalars: argument %q has unsupported Go type %T "+
+				"(a generated projector would return ok=false; state the projected value explicitly instead)", a.Name, v)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // staticReturnBundle is the retained return descriptor used by the valid test
@@ -81,13 +214,72 @@ func staticFn(prompt string, args ...promptdescriptor.Argument) promptdescriptor
 	}
 }
 
-// mustRenderStatic renders and fails on any error.
+// testColorEnum is the shared V3 enum fixture: three canonical members, two of
+// them carrying a DELIBERATELY non-canonical display alias so a test that ever
+// confused display with identity fails loudly.
+func testColorEnum() promptdescriptor.ResolvedEnum {
+	rouge, vert := "rouge", "vert"
+	return promptdescriptor.ResolvedEnum{
+		Name: "Color",
+		Members: []promptdescriptor.ResolvedEnumMember{
+			{Canonical: "RED", Alias: &rouge},
+			{Canonical: "GREEN", Alias: &vert},
+			{Canonical: "BLUE"},
+		},
+	}
+}
+
+// testSwatchClass is the shared V3 class fixture: an enum field and a scalar
+// field, the scalar aliased, in source declaration order.
+func testSwatchClass() promptdescriptor.ResolvedClass {
+	etiquette := "etiquette"
+	return promptdescriptor.ResolvedClass{
+		Name: "Swatch",
+		Fields: []promptdescriptor.ResolvedClassField{
+			{Canonical: "color", Type: promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueEnum, EnumName: "Color"}},
+			{Canonical: "label", Alias: &etiquette, Type: promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString}},
+		},
+	}
+}
+
+// colorFn is staticFn with the Color enum installed in the V3 universe, so the
+// project enum namespace global exists exactly as stock BAML installs it.
+func colorFn(prompt string, args ...promptdescriptor.Argument) promptdescriptor.Function {
+	fn := staticFn(prompt, args...)
+	fn.InputValues = promptdescriptor.InputValueUniverse{
+		ProjectEnums: []promptdescriptor.ResolvedEnum{testColorEnum()},
+	}
+	return fn
+}
+
+// swatchFn is colorFn plus the Swatch class and one declared `s Swatch`
+// argument.
+func swatchFn(prompt string) promptdescriptor.Function {
+	fn := staticFn(prompt, v3Arg("s", promptdescriptor.ResolvedValueType{
+		Kind: promptdescriptor.ValueClass, ClassName: "Swatch",
+	}))
+	fn.InputValues = promptdescriptor.InputValueUniverse{
+		ProjectEnums: []promptdescriptor.ResolvedEnum{testColorEnum()},
+		Classes:      []promptdescriptor.ResolvedClass{testSwatchClass()},
+	}
+	return fn
+}
+
+// mustRenderStatic projects the raw scalar map through the test projector and
+// renders, failing on any error.
 func mustRenderStatic(t *testing.T, fn promptdescriptor.Function, args map[string]any) *RenderedPrompt {
 	t.Helper()
-	if err := SupportsStatic(fn, args); err != nil {
+	return mustRenderStaticValues(t, fn, projectScalars(t, fn, args))
+}
+
+// mustRenderStaticValues renders an EXPLICIT projected vector and fails on any
+// error. Tests that bind an enum/class/list use this directly.
+func mustRenderStaticValues(t *testing.T, fn promptdescriptor.Function, values []promptdescriptor.ArgumentValue) *RenderedPrompt {
+	t.Helper()
+	if err := SupportsStatic(fn, values); err != nil {
 		t.Fatalf("SupportsStatic: %v", err)
 	}
-	rp, err := RenderStatic(fn, args)
+	rp, err := RenderStatic(fn, values)
 	if err != nil {
 		t.Fatalf("RenderStatic: %v", err)
 	}

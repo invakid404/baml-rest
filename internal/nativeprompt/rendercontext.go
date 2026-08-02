@@ -39,15 +39,19 @@ import (
 // object below, the post-render marker lowering ([lower]), and every serving
 // decision. bamlprofile must never import nativeprompt.
 //
-// # Host values on the Slice 7.1a admitted surface
+// # Host values on the admitted surface (Slice 7.1b)
 //
 // bamlprofile exposes EnumMember / ClassValue / ListValue for BAML's typed host
-// values. The surface admitted in 7.1a reaches NONE of them, and that is a
-// property of the admission gates, not an omission here:
+// values. Which of them PRODUCTION reaches is a property of the admission gates,
+// not of this adapter:
 //
-//   - static ([SupportsStatic]) binds attribute-free primitives only; a named
-//     class/enum argument declines FeatureEnumClassValue and a comparison
-//     declines FeatureEnumComparison, both unchanged in this slice;
+//   - static ([SupportsStatic]) binds the V3 value graph: scalars, enum members,
+//     class values and lists, all built by the V3 binder (static_bind.go) from
+//     the descriptor's source-resolved universe and the generated projector's
+//     vector. RENDERING a bound class directly is still declined — stock BAML
+//     v0.223's Go client encodes a class through a Go map, so its printed field
+//     order is not reproducible (see static_typegate.go) — but the class is
+//     bound, so a function that merely declares one is not poisoned;
 //   - the dynamic message tree is bound as fork-native maps/slices (see
 //     input.go). It carries [mediaObject], nativeprompt's own media marker, and
 //     bamlprofile deliberately has NO media host value: ClassValue/ListValue
@@ -55,12 +59,11 @@ import (
 //     the message tree into host classes is therefore blocked on the media value
 //     model, not merely unimplemented.
 //
-// Config is forwarded verbatim so the enum-namespace path is a real, typed input
-// of this adapter rather than a future edit: renderContextFrom takes whatever
-// bamlprofile.Config the caller resolved. Production resolves an empty enum set
-// today because no admitted template references an enum global; the #597 fence
-// test drives the same adapter with a populated one. Wiring resolved enum/class
-// definitions into production is Slice 7.1b's descriptor work.
+// The enum-namespace set is a real, typed input of this adapter: the STATIC
+// constructor forwards the descriptor's WHOLE project enum set (reproducing
+// v0.223's render_prompt, which installs one namespace global per IR enum), and
+// the dynamic lane passes none because its one admitted template references no
+// enum and there is no descriptor to resolve a set from.
 
 // renderContext is one prepared MiniJinja render: the profile environment plus
 // the named values bound into it. It is single-use — bamlprofile.New builds a
@@ -70,11 +73,18 @@ type renderContext struct {
 	vars map[string]any
 }
 
-// newRenderContext builds a render context whose only environment input is the
-// pre-rendered ctx.output_format block. It is the production constructor: every
-// admitted 7.1a template needs `_`, `ctx`, and no enum namespace.
-func newRenderContext(outputFormat string) (*renderContext, error) {
-	return renderContextFrom(bamlprofile.Config{OutputFormat: outputFormat})
+// newRenderContext builds a render context from the pre-rendered
+// ctx.output_format block and the descriptor's RESOLVED PROJECT ENUM SET. It is
+// the production static constructor.
+//
+// enums is the WHOLE project enum set the V3 descriptor carries, forwarded
+// verbatim, because that is stock v0.223's model: render_prompt walks the IR
+// enums and installs one namespace global per enum, so `Color.RED` resolves in a
+// function that never takes a Color argument. Passing a subset would build a
+// render context BAML never has. A caller with no enums (the dynamic lane)
+// passes nil, which installs none.
+func newRenderContext(outputFormat string, enums []bamlprofile.EnumDef) (*renderContext, error) {
+	return renderContextFrom(bamlprofile.Config{OutputFormat: outputFormat, Enums: enums})
 }
 
 // renderContextFrom builds a render context from a resolved profile config. It

@@ -850,20 +850,33 @@ func (me *methodEmitter) emitBuildRequest() {
 						Qual(g.pkgs.IntrospectedPkg, "StaticPromptDescriptor").Call(jen.Lit(me.methodName)),
 					jen.Id("__staticStreamOK"),
 				).Block(
-					jen.Id("installNativeStaticStream").Call(
-						jen.Id("streamConfig"),
-						jen.Id("__staticStreamServe"),
-						jen.Id("adapter"),
-						jen.Id("__staticStreamDescriptor"),
-						me.staticArgBinderMap(),
-						me.staticArgOrderSlice(),
-						jen.Len(jen.Id("fallbackChain")).Op("==").Lit(0),
-						jen.Len(jen.Id("fallbackChain")).Op(">").Lit(0),
-						jen.Id("plannedMetadata").Op("!=").Nil().Op("&&").
-							Id("plannedMetadata").Dot("RoundRobin").Op("!=").Nil(),
-						jen.Id("retryPolicy").Op("!=").Nil(),
-						decodeStreamPartialClosure,
-						decodeStreamFinalClosure,
+					// De-BAML Slice 7.1b: project the ALREADY-TYPED arguments into the
+					// neutral ordered value vector. A method with no generated projector
+					// (its build-time AST audit failed) yields ok=false and the native
+					// stream seam is NOT installed at all — a pre-render decline with zero
+					// native activity, never a reflection or raw-map fallback.
+					jen.If(
+						jen.List(jen.Id("__staticStreamValues"), jen.Id("__staticStreamValuesOK")).Op(":=").
+							Qual(g.pkgs.IntrospectedPkg, "StaticPromptArgumentValues").
+							Call(jen.Lit(me.methodName), me.staticArgAnySlice()),
+						jen.Id("__staticStreamValuesOK"),
+					).Block(
+						jen.Id("installNativeStaticStream").Call(
+							jen.Id("streamConfig"),
+							jen.Id("__staticStreamServe"),
+							jen.Id("adapter"),
+							jen.Id("__staticStreamDescriptor"),
+							me.staticArgBinderMap(),
+							me.staticArgOrderSlice(),
+							jen.Id("__staticStreamValues"),
+							jen.Len(jen.Id("fallbackChain")).Op("==").Lit(0),
+							jen.Len(jen.Id("fallbackChain")).Op(">").Lit(0),
+							jen.Id("plannedMetadata").Op("!=").Nil().Op("&&").
+								Id("plannedMetadata").Dot("RoundRobin").Op("!=").Nil(),
+							jen.Id("retryPolicy").Op("!=").Nil(),
+							decodeStreamPartialClosure,
+							decodeStreamFinalClosure,
+						),
 					),
 				),
 			),
@@ -1250,6 +1263,7 @@ func (me *methodEmitter) emitBuildCallRequest() {
 				jen.Id("__staticDescriptor"),
 				me.staticArgBinderMap(),
 				me.staticArgOrderSlice(),
+				jen.Id("__staticValues"),
 				// Selected-route facts derived from THIS attempt's plan, exactly like the
 				// dynamic native seam + the observe seam.
 				jen.Len(jen.Id("fallbackChain")).Op("==").Lit(0),
@@ -1275,11 +1289,22 @@ func (me *methodEmitter) emitBuildCallRequest() {
 						Qual(g.pkgs.IntrospectedPkg, "StaticPromptDescriptor").Call(jen.Lit(me.methodName)),
 					jen.Id("__staticOK"),
 				).Block(
-					// Serve SUPERSEDES shadow.
-					jen.If(jen.Id("__staticServe").Op("!=").Nil()).Block(
-						installStatic("installNativeStaticCall", "__staticServe"),
-					).Else().Block(
-						installStatic("installNativeStaticShadow", "__staticShadow"),
+					// De-BAML Slice 7.1b: project the ALREADY-TYPED arguments into the
+					// neutral ordered value vector. ok=false (no generated projector for
+					// this method) installs NOTHING — a pre-render decline with zero
+					// native activity, never a reflection or raw-map fallback.
+					jen.If(
+						jen.List(jen.Id("__staticValues"), jen.Id("__staticValuesOK")).Op(":=").
+							Qual(g.pkgs.IntrospectedPkg, "StaticPromptArgumentValues").
+							Call(jen.Lit(me.methodName), me.staticArgAnySlice()),
+						jen.Id("__staticValuesOK"),
+					).Block(
+						// Serve SUPERSEDES shadow.
+						jen.If(jen.Id("__staticServe").Op("!=").Nil()).Block(
+							installStatic("installNativeStaticCall", "__staticServe"),
+						).Else().Block(
+							installStatic("installNativeStaticShadow", "__staticShadow"),
+						),
 					),
 				),
 			),
@@ -1304,37 +1329,49 @@ func (me *methodEmitter) emitBuildCallRequest() {
 						Qual(g.pkgs.IntrospectedPkg, "StaticPromptDescriptor").Call(jen.Lit(me.methodName)),
 					jen.Id("__staticOK"),
 				).Block(
-					jen.Id("maybeObserveDeBAMLStaticFinal").Call(
-						jen.Id("__staticObserve"),
-						jen.Id("adapter"),
-						jen.Id("__staticDescriptor"),
-						me.staticArgBinderMap(),
-						me.staticArgOrderSlice(),
-						// Actual selected-route facts, derived from THIS attempt's plan
-						// exactly like the dynamic native seam (maybeInstallNativeCall):
-						// resolved leaf provider, selected client override, single-leaf
-						// iff no fallback chain, the fallback-chain / round-robin shape,
-						// and the call-with-raw flag. A non-default route / raw call makes
-						// the observer decline TRUTHFULLY rather than record a false
-						// would-admit.
-						jen.Id("provider"),
-						jen.Id("clientOverride"),
-						jen.Len(jen.Id("fallbackChain")).Op("==").Lit(0),
-						jen.Len(jen.Id("fallbackChain")).Op(">").Lit(0),
-						jen.Id("plannedMetadata").Op("!=").Nil().Op("&&").
-							Id("plannedMetadata").Dot("RoundRobin").Op("!=").Nil(),
-						// hasRetry = the EFFECTIVE resolved retry policy is non-nil (the
-						// SAME retryPolicy that flows into CallConfig.RetryPolicy), so a
-						// static-introspected OR registry retry policy declines, not only
-						// the per-request __baml_options__.retry override.
-						jen.Id("retryPolicy").Op("!=").Nil(),
-						jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
-						// BAML's Request.<Method> no-send plan for the SELECTED child (the
-						// same clientOverride BAML would send through), not the default.
-						jen.Func().Params(jen.Id("ctx").Qual("context", "Context")).Params(
-							jen.Op("*").Qual(g.pkgs.LLMHTTPPkg, "Request"), jen.Error(),
-						).Block(
-							jen.Return(jen.Id("buildRequestFn").Call(jen.Id("ctx"), jen.Id("clientOverride"))),
+					// De-BAML Slice 7.1b: project the ALREADY-TYPED arguments into the
+					// neutral ordered value vector. ok=false (no generated projector for
+					// this method) observes NOTHING — a pre-render decline with zero
+					// native activity, never a reflection or raw-map fallback.
+					jen.If(
+						jen.List(jen.Id("__staticValues"), jen.Id("__staticValuesOK")).Op(":=").
+							Qual(g.pkgs.IntrospectedPkg, "StaticPromptArgumentValues").
+							Call(jen.Lit(me.methodName), me.staticArgAnySlice()),
+						jen.Id("__staticValuesOK"),
+					).Block(
+						jen.Id("maybeObserveDeBAMLStaticFinal").Call(
+							jen.Id("__staticObserve"),
+							jen.Id("adapter"),
+							jen.Id("__staticDescriptor"),
+							me.staticArgBinderMap(),
+							me.staticArgOrderSlice(),
+							jen.Id("__staticValues"),
+							// Actual selected-route facts, derived from THIS attempt's plan
+							// exactly like the dynamic native seam (maybeInstallNativeCall):
+							// resolved leaf provider, selected client override, single-leaf
+							// iff no fallback chain, the fallback-chain / round-robin shape,
+							// and the call-with-raw flag. A non-default route / raw call makes
+							// the observer decline TRUTHFULLY rather than record a false
+							// would-admit.
+							jen.Id("provider"),
+							jen.Id("clientOverride"),
+							jen.Len(jen.Id("fallbackChain")).Op("==").Lit(0),
+							jen.Len(jen.Id("fallbackChain")).Op(">").Lit(0),
+							jen.Id("plannedMetadata").Op("!=").Nil().Op("&&").
+								Id("plannedMetadata").Dot("RoundRobin").Op("!=").Nil(),
+							// hasRetry = the EFFECTIVE resolved retry policy is non-nil (the
+							// SAME retryPolicy that flows into CallConfig.RetryPolicy), so a
+							// static-introspected OR registry retry policy declines, not only
+							// the per-request __baml_options__.retry override.
+							jen.Id("retryPolicy").Op("!=").Nil(),
+							jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
+							// BAML's Request.<Method> no-send plan for the SELECTED child (the
+							// same clientOverride BAML would send through), not the default.
+							jen.Func().Params(jen.Id("ctx").Qual("context", "Context")).Params(
+								jen.Op("*").Qual(g.pkgs.LLMHTTPPkg, "Request"), jen.Error(),
+							).Block(
+								jen.Return(jen.Id("buildRequestFn").Call(jen.Id("ctx"), jen.Id("clientOverride"))),
+							),
 						),
 					),
 				),

@@ -2,13 +2,8 @@ package nativeprompt
 
 import (
 	"fmt"
-	"math"
 	"strings"
-	"unicode/utf8"
 
-	"github.com/invakid404/minijinja-go/v2/value"
-
-	"github.com/invakid404/baml-rest/bamlutils/bamlparser"
 	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
 	"github.com/invakid404/baml-rest/bamlutils/schemadescriptor"
 	"github.com/invakid404/baml-rest/internal/schema"
@@ -16,14 +11,20 @@ import (
 )
 
 // RenderStatic renders a function's static prompt from its retained
-// [promptdescriptor.Function] and a map of primitive argument values, producing
-// the native [RenderedPrompt].
+// [promptdescriptor.Function] and the ORDERED, already-typed argument vector a
+// generated projector produced, producing the native [RenderedPrompt].
 //
-// It is the test-only narrow static candidate of the de-BAML front-end arc: no
-// serving path calls it. It claims only the deliberately small surface proven
-// (in slice 2) byte-exact against BAML v0.223 — literal text with direct
-// primitive interpolation, fixed text-only role blocks, and bare
-// ctx.output_format — and fails closed on everything else.
+// It claims only the deliberately small surface proven byte-exact against BAML
+// v0.223 — literal text with direct scalar/enum/list interpolation, the
+// exact canonical enum equality and one-element membership forms, fixed
+// text-only role blocks, and bare ctx.output_format — and fails closed on
+// everything else.
+//
+// values is the neutral [promptdescriptor.ArgumentValue] vector, in declared
+// argument order. There is deliberately NO map-based overload (de-BAML Slice
+// 7.1b): a raw `map[string]any` cannot state nested order, canonical field
+// names, or enum identity, so a call site holding only that is ineligible by
+// construction rather than by discipline.
 //
 // RenderStatic and [SupportsStatic] share the exact same internal preparer
 // ([prepareStatic]), so RenderStatic never interprets a shape SupportsStatic
@@ -31,8 +32,8 @@ import (
 // prompt. After the preparer returns nil, a compile/render/lower failure is an
 // invariant/parity failure (surfaced as a plain error), not a new decline
 // category.
-func RenderStatic(fn promptdescriptor.Function, args map[string]any) (*RenderedPrompt, error) {
-	plan, err := prepareStatic(fn, args)
+func RenderStatic(fn promptdescriptor.Function, values []promptdescriptor.ArgumentValue) (*RenderedPrompt, error) {
+	plan, err := prepareStatic(fn, values)
 	if err != nil {
 		return nil, err
 	}
@@ -47,8 +48,8 @@ func RenderStatic(fn promptdescriptor.Function, args map[string]any) (*RenderedP
 // *Decline (unwrapping to [ErrUnsupported]) otherwise. It shares the whole
 // preparer with RenderStatic, so a nil result guarantees RenderStatic would not
 // decline.
-func SupportsStatic(fn promptdescriptor.Function, args map[string]any) error {
-	_, err := prepareStatic(fn, args)
+func SupportsStatic(fn promptdescriptor.Function, values []promptdescriptor.ArgumentValue) error {
+	_, err := prepareStatic(fn, values)
 	return err
 }
 
@@ -61,19 +62,30 @@ type staticPlan struct {
 }
 
 // prepareStatic is the shared analyzer/preparer behind both SupportsStatic and
-// RenderStatic. It runs the load-bearing preparation order from the Phase 3
-// scope and returns either a ready plan or the first decline encountered:
+// RenderStatic. It runs the load-bearing preparation order and returns either a
+// ready plan or the first decline encountered:
 //
 //  1. descriptor envelope (version/method/return + structurally valid bundle);
 //  2. macro gate (any project macro declines FeatureTemplateString);
-//  3. argument-declaration gate (attribute-free primitive args only);
-//  4. argument-value gate + explicit primitive binding (exact Go scalar types);
-//  5. template feature analysis (the closed-allowlist segment scanner);
-//  6. dedent+trim of the raw prompt;
-//  7. output-format render for bare ctx.output_format only;
-//  8. value-aware chat-layout validation;
-//  9. RENDER the exact bytes (dedentTrim -> profile renderContext -> render)
+//  3. V3 universe validation (unique enum/class names, unique canonical members
+//     and fields, every named edge resolvable, no malformed list/scalar edge);
+//  4. argument-declaration gate (a unique, non-shadowing name and a well-formed,
+//     acyclic V3 value type per argument);
+//  5. V3 value binding: the ORDERED projected vector is matched against the
+//     declaration by count/order/name and bound into bamlprofile host values;
+//  6. template feature analysis (the closed-allowlist segment scanner, now with
+//     the V3 type gate for enum expressions);
+//  7. dedent+trim of the raw prompt;
+//  8. output-format render for bare ctx.output_format only;
+//  9. value-aware chat-layout validation;
+//  10. RENDER the exact bytes (dedentTrim -> profile renderContext -> render)
 //     that lower will consume, then validate their reserved-marker structure.
+//
+// Order is load-bearing in two places. The universe and the values are validated
+// BEFORE any template is considered, so a malformed descriptor can never become
+// a support claim; and binding happens BEFORE analysis, so "a directly declared
+// V3 class with an acyclic, fully bindable closure" is a fact the analyzer reads
+// rather than a property it re-derives.
 //
 // Rendering + reserved-marker validation happen HERE, in the shared preparer, so
 // SupportsStatic really does compile/render (then discards the bytes) and
@@ -81,7 +93,7 @@ type staticPlan struct {
 // This is load-bearing: the reserved-marker fence is byte-faithful because it
 // inspects the real rendered output, and a nil SupportsStatic therefore
 // guarantees RenderStatic lowers cleanly.
-func prepareStatic(fn promptdescriptor.Function, args map[string]any) (*staticPlan, error) {
+func prepareStatic(fn promptdescriptor.Function, values []promptdescriptor.ArgumentValue) (*staticPlan, error) {
 	// (1) Descriptor envelope. A mismatch is never normalized; it declines.
 	bundle, err := checkStaticEnvelope(fn)
 	if err != nil {
@@ -90,38 +102,44 @@ func prepareStatic(fn promptdescriptor.Function, args map[string]any) (*staticPl
 
 	// (2) Macro gate. BAML injects every project template string into every
 	// function, so a non-empty macro set makes every function in that project a
-	// Phase 3 decline. Do not concatenate/dedent bodies or inspect call sites.
+	// decline. Do not concatenate/dedent bodies or inspect call sites.
 	if len(fn.Macros) != 0 {
 		return nil, decline(FeatureTemplateString,
 			fmt.Sprintf("function carries %d project template_string macro(s); BAML injects them into every function", len(fn.Macros)))
 	}
 
-	// (3) Argument-declaration gate.
-	decls, err := checkArgDeclarations(fn.Args)
+	// (3) V3 universe validation, before a template or a value is considered.
+	universe, err := validateUniverse(fn.InputValues)
 	if err != nil {
 		return nil, err
 	}
 
-	// (4) Argument-value gate + explicit primitive binding. argNonWS records,
-	// per argument, whether its bound value renders a non-whitespace string —
-	// used by the value-aware chat-layout check below.
-	bound, argNonWS, err := bindArgs(decls, args)
+	// (4) Argument-declaration gate.
+	decls, err := checkV3ArgDeclarations(fn.Args, universe)
 	if err != nil {
 		return nil, err
 	}
 
-	// (5) Template feature analysis (closed allowlist). It defines support; a
+	// (5) V3 value binding. Each binding records whether its value renders a
+	// non-whitespace string, which the value-aware chat-layout check consumes.
+	bindings, err := bindV3Args(decls, values, universe)
+	if err != nil {
+		return nil, err
+	}
+	gate := newTypeGate(bindings, universe)
+
+	// (6) Template feature analysis (closed allowlist). It defines support; a
 	// successful MiniJinja compile does not. Chat layout is validated after
-	// output-format rendering (step 8) because emptiness is value-dependent.
-	plan, err := analyzeTemplate(fn.Prompt, decls)
+	// output-format rendering (step 9) because emptiness is value-dependent.
+	plan, err := analyzeTemplate(fn.Prompt, gate)
 	if err != nil {
 		return nil, err
 	}
 
-	// (6) Preprocess: BAML's dedent-by-minimum-leading-whitespace + trim.
+	// (7) Preprocess: BAML's dedent-by-minimum-leading-whitespace + trim.
 	template := dedentTrim(fn.Prompt)
 
-	// (7) Output format for bare ctx.output_format only. The bundle is always
+	// (8) Output format for bare ctx.output_format only. The bundle is always
 	// lowered (step 1); it is rendered only when the prompt reaches the global.
 	outputFormat := ""
 	outputFormatNonWS := false
@@ -135,10 +153,15 @@ func prepareStatic(fn promptdescriptor.Function, args map[string]any) (*staticPl
 		outputFormatNonWS = strings.TrimSpace(block) != ""
 	}
 
-	// (8) Value-aware chat-layout validation. A content event contributes only
+	// (9) Value-aware chat-layout validation. A content event contributes only
 	// when it renders a non-whitespace string, so an interpolated "" / "  \n\t"
-	// argument or an empty output-format block cannot masquerade as message
-	// content (which the lowerer would then drop, producing an empty message).
+	// argument, an enum whose display alias is whitespace, or an empty
+	// output-format block cannot masquerade as message content (which the lowerer
+	// would then drop, producing an empty message).
+	argNonWS := make(map[string]bool, len(bindings))
+	for i := range bindings {
+		argNonWS[bindings[i].name] = bindings[i].nonWS
+	}
 	contentful := func(ev event) bool {
 		switch ev.kind {
 		case evText:
@@ -147,6 +170,9 @@ func prepareStatic(fn promptdescriptor.Function, args map[string]any) (*staticPl
 			return argNonWS[ev.arg]
 		case evOutputFormat:
 			return outputFormatNonWS
+		case evEnumPredicate:
+			// A predicate renders MiniJinja's "true"/"false" — always content.
+			return true
 		default:
 			return false
 		}
@@ -155,7 +181,7 @@ func prepareStatic(fn promptdescriptor.Function, args map[string]any) (*staticPl
 		return nil, err
 	}
 
-	// (9) Render the exact bytes lower will consume, then (10) fence reserved
+	// (10) Render the exact bytes lower will consume, then (11) fence reserved
 	// markers on THAT output. Rendering in the shared preparer (not just
 	// RenderStatic) is what makes the reserved-marker check byte-faithful: it sees
 	// the real post-dedent/post-render/post-whitespace-control text, so it cannot
@@ -163,12 +189,16 @@ func prepareStatic(fn promptdescriptor.Function, args map[string]any) (*staticPl
 	// indentation) or a {{- -}} join, and cannot invent one from ordinary literal
 	// whitespace that MiniJinja preserves. A render error for an analyzed-allowed
 	// shape is an invariant failure surfaced loudly (not a decline category).
-	rc, err := newRenderContext(outputFormat)
+	//
+	// The render context installs the descriptor's WHOLE project enum set as
+	// namespace globals, reproducing stock v0.223's render_prompt: `Color.RED`
+	// resolves even in a function that takes no Color argument.
+	rc, err := newRenderContext(outputFormat, universe.defs)
 	if err != nil {
 		return nil, err
 	}
-	for name, v := range bound {
-		rc.bind(name, v)
+	for i := range bindings {
+		rc.bind(bindings[i].name, bindings[i].value)
 	}
 	rendered, err := rc.renderToString(template, "static")
 	if err != nil {
@@ -211,199 +241,12 @@ func checkStaticEnvelope(fn promptdescriptor.Function) (*schema.Bundle, error) {
 	return bundle, nil
 }
 
-// argDecl is one validated primitive argument declaration: its name and the
-// exact BAML primitive ("string"/"int"/"float"/"bool") it must bind.
-type argDecl struct {
-	name string
-	prim string
-}
-
-// reservedGlobalNames are the MiniJinja globals the environment installs. An
-// argument may not shadow them; such a declaration declines rather than risk
-// silently masking ctx.output_format or the role helper at render time.
+// reservedGlobalNames are the MiniJinja globals the profile environment
+// installs unconditionally. An argument may not shadow them; such a declaration
+// declines rather than risk silently masking ctx.output_format or the role
+// helper at render time. (A project ENUM namespace is the other shadowing
+// hazard; checkV3ArgDeclarations fences that against the descriptor's universe.)
 var reservedGlobalNames = map[string]bool{"ctx": true, "_": true}
-
-// checkArgDeclarations runs the argument-declaration gate (step 3): each
-// argument must have a unique, non-empty, non-reserved name and an
-// attribute-free primitive TypeExpr in {string,int,float,bool}. Every other
-// shape (bare/untyped, null, optional, literal, container, named type, media)
-// declines with the matching feature key.
-func checkArgDeclarations(args []promptdescriptor.Argument) ([]argDecl, error) {
-	decls := make([]argDecl, 0, len(args))
-	seen := make(map[string]bool, len(args))
-	for _, a := range args {
-		if a.Name == "" {
-			return nil, decline(FeatureStaticArgType, "argument has an empty name")
-		}
-		if reservedGlobalNames[a.Name] {
-			return nil, decline(FeatureStaticArgType,
-				fmt.Sprintf("argument %q shadows a reserved global", a.Name))
-		}
-		if seen[a.Name] {
-			return nil, decline(FeatureStaticArgValue,
-				fmt.Sprintf("duplicate argument declaration %q", a.Name))
-		}
-		seen[a.Name] = true
-
-		prim, err := primitiveOfDecl(a)
-		if err != nil {
-			return nil, err
-		}
-		decls = append(decls, argDecl{name: a.Name, prim: prim})
-	}
-	return decls, nil
-}
-
-// primitiveOfDecl classifies one argument's retained type, returning its
-// primitive name on success or the matching decline.
-func primitiveOfDecl(a promptdescriptor.Argument) (string, error) {
-	t := a.Type
-	if t == nil {
-		return "", decline(FeatureStaticArgType,
-			fmt.Sprintf("argument %q is bare/untyped", a.Name))
-	}
-	if len(t.Attributes) != 0 {
-		return "", decline(FeatureStaticArgType,
-			fmt.Sprintf("argument %q carries attributes; only attribute-free primitives are supported", a.Name))
-	}
-	switch t.Kind {
-	case bamlparser.KindPrimitive:
-		switch t.Primitive {
-		case "string", "int", "float", "bool":
-			return t.Primitive, nil
-		case "null":
-			return "", decline(FeatureStaticArgType,
-				fmt.Sprintf("argument %q is null; only non-null string/int/float/bool are supported", a.Name))
-		default:
-			return "", decline(FeatureStaticArgType,
-				fmt.Sprintf("argument %q has unsupported primitive %q", a.Name, t.Primitive))
-		}
-	case bamlparser.KindMedia:
-		return "", decline(FeatureUnsupportedMediaKind,
-			fmt.Sprintf("argument %q is media (%q); static media is not supported, including image URL", a.Name, t.Media))
-	case bamlparser.KindNameRef:
-		return "", decline(FeatureEnumClassValue,
-			fmt.Sprintf("argument %q references a named class/enum/alias %q", a.Name, t.Name))
-	default:
-		return "", decline(FeatureStaticArgType,
-			fmt.Sprintf("argument %q has an unsupported type (optional/literal/list/map/tuple/union/group)", a.Name))
-	}
-}
-
-// bindArgs runs the argument-value gate (step 4) and the explicit primitive
-// binder (step 8's value construction). It requires an EXACT key set — every
-// declared argument present and no extra input key — and binds each value to
-// its declared primitive with the exact Go scalar type (string/int64/float64/
-// bool). No coercion: int, json.Number, integral-float-for-int, pointers, and
-// aliases all decline. Invalid UTF-8 strings, non-finite floats, and reserved
-// marker strings decline too.
-//
-// It returns two maps keyed by argument name: bound holds the explicitly
-// constructed value.Values, and nonWS records whether each argument renders to a
-// non-whitespace string (numbers and bools always do; a string does iff it is
-// not whitespace-only), which the value-aware chat-layout check consumes.
-//
-// Every declared argument is a BAML primitive on this slice's admitted surface
-// (checkArgDeclarations declines named class/enum types with
-// FeatureEnumClassValue), so no value here is a bamlprofile enum/class/list host
-// value. Admitting those — with the resolved type metadata a faithful host value
-// needs — is Slice 7.1b.
-func bindArgs(decls []argDecl, args map[string]any) (bound map[string]value.Value, nonWS map[string]bool, err error) {
-	declared := make(map[string]bool, len(decls))
-	for _, d := range decls {
-		declared[d.name] = true
-	}
-	for k := range args {
-		if !declared[k] {
-			return nil, nil, decline(FeatureStaticArgValue,
-				fmt.Sprintf("unexpected argument %q not in the function signature", k))
-		}
-	}
-
-	bound = make(map[string]value.Value, len(decls))
-	nonWS = make(map[string]bool, len(decls))
-	for _, d := range decls {
-		raw, ok := args[d.name]
-		if !ok {
-			return nil, nil, decline(FeatureStaticArgValue,
-				fmt.Sprintf("missing value for declared argument %q", d.name))
-		}
-		v, err := bindPrimitive(d.name, d.prim, raw)
-		if err != nil {
-			return nil, nil, err
-		}
-		bound[d.name] = v
-		nonWS[d.name] = renderedNonWhitespace(d.prim, raw)
-	}
-	return bound, nonWS, nil
-}
-
-// renderedNonWhitespace reports whether the bound primitive renders to a string
-// with at least one non-whitespace rune. int/float/bool always do (digits or
-// letters); a string does iff it is not whitespace-only. The type assertions
-// mirror bindPrimitive, which has already validated them.
-func renderedNonWhitespace(prim string, raw any) bool {
-	if prim == "string" {
-		s, _ := raw.(string)
-		return strings.TrimSpace(s) != ""
-	}
-	return true
-}
-
-// bindPrimitive constructs a MiniJinja value for one primitive argument using
-// the explicit value.From* constructors only — never value.FromAny, reflection,
-// JSON, or fmt coercion. The Go type must match the declared primitive exactly.
-func bindPrimitive(name, prim string, raw any) (value.Value, error) {
-	switch prim {
-	case "string":
-		s, ok := raw.(string)
-		if !ok {
-			return value.Value{}, argTypeMismatch(name, "string", raw)
-		}
-		if !utf8.ValidString(s) {
-			return value.Value{}, decline(FeatureStaticArgValue,
-				fmt.Sprintf("argument %q string is not valid UTF-8", name))
-		}
-		// A reserved marker inside a value (whole or synthesized with neighbours)
-		// is fenced byte-faithfully by validateRenderedMarkers on the rendered
-		// output, not per-piece here — so a value with a marker-shaped substring
-		// that renders into a harmless completion is not falsely declined.
-		return value.FromString(s), nil
-	case "int":
-		i, ok := raw.(int64)
-		if !ok {
-			return value.Value{}, argTypeMismatch(name, "int64", raw)
-		}
-		return value.FromInt(i), nil
-	case "float":
-		f, ok := raw.(float64)
-		if !ok {
-			return value.Value{}, argTypeMismatch(name, "float64", raw)
-		}
-		if math.IsNaN(f) || math.IsInf(f, 0) {
-			return value.Value{}, decline(FeatureStaticArgValue,
-				fmt.Sprintf("argument %q float is non-finite (NaN/Inf)", name))
-		}
-		return value.FromFloat(f), nil
-	case "bool":
-		b, ok := raw.(bool)
-		if !ok {
-			return value.Value{}, argTypeMismatch(name, "bool", raw)
-		}
-		return value.FromBool(b), nil
-	default:
-		// Unreachable: checkArgDeclarations restricts prim to the four above.
-		return value.Value{}, decline(FeatureStaticArgType,
-			fmt.Sprintf("argument %q has unsupported primitive %q", name, prim))
-	}
-}
-
-// argTypeMismatch builds the value-gate decline for a wrong Go scalar type,
-// naming both the expected Go type and what was actually supplied.
-func argTypeMismatch(name, wantGo string, raw any) error {
-	return decline(FeatureStaticArgValue,
-		fmt.Sprintf("argument %q requires Go %s, got %T (no coercion)", name, wantGo, raw))
-}
 
 // roleSequence returns the ordered roles of the intentional _.role/_.chat
 // markers the scanner accepted — the exact role markers the rendered output

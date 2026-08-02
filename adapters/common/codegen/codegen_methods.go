@@ -601,6 +601,22 @@ func (me *methodEmitter) staticArgOrderSlice() jen.Code {
 	return jen.Index().String().Values(lits...)
 }
 
+// staticArgAnySlice builds the ORDERED `[]any{...}` the de-BAML Slice 7.1b
+// generated argument PROJECTOR consumes: the same exact typed call-site
+// expressions the BAML Request.<Method> call uses, in declared signature order.
+//
+// It is deliberately a SLICE, not the `map[string]any` binder above. The map
+// remains the BAML request fact (it proves which values the generated call
+// bound); the slice is the value-semantics input, and only an ordered vector can
+// state which value is which without relying on Go map iteration.
+func (me *methodEmitter) staticArgAnySlice() jen.Code {
+	vals := make([]jen.Code, 0, len(me.args))
+	for _, arg := range me.args {
+		vals = append(vals, me.argCallParam(arg))
+	}
+	return jen.Index().Any().Values(vals...)
+}
+
 // makePreambleWithArgs builds the shared body prefix for every
 // generated dispatch site: resolve the options helper, type-assert
 // rawInput into the per-method input struct, and convert any media-

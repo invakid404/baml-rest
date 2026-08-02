@@ -61,7 +61,10 @@ type StaticStreamInput struct {
 	Descriptor promptdescriptor.Function
 	Args       map[string]any
 	ArgOrder   []string
-	Alias      string
+	// Values is the de-BAML Slice 7.1b PROJECTED argument vector — identical in
+	// role to StaticInput.Values.
+	Values []promptdescriptor.ArgumentValue
+	Alias  string
 	// Mode is the streaming public mode (stream / stream_with_raw). The mode gate
 	// admits exactly those two; a unary/unknown mode declines.
 	Mode bamlutils.NativeStreamMode
@@ -294,10 +297,10 @@ func admitStaticStreamPrepare(ctx context.Context, in StaticStreamInput, fn prom
 	}
 
 	// --- Layer 4: static prompt render support ------------------------------
-	if serr := nativeprompt.SupportsStatic(fn, in.Args); serr != nil {
+	if serr := nativeprompt.SupportsStatic(fn, in.Values); serr != nil {
 		return decline(bamlutils.NativeStaticFamilyPrompt, StagePrompt, reasonStaticPromptUnsupported)
 	}
-	rendered, rerr := nativeprompt.RenderStatic(fn, in.Args)
+	rendered, rerr := nativeprompt.RenderStatic(fn, in.Values)
 	if rerr != nil {
 		return decline(bamlutils.NativeStaticFamilyPrompt, StagePrompt, reasonStaticRenderFailed)
 	}

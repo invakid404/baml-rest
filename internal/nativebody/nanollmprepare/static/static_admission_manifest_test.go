@@ -81,6 +81,41 @@ func bamlPlanClosure(build func() (baml.HTTPRequest, error)) func(context.Contex
 
 // argOrderOf returns the descriptor's declared argument names in signature order —
 // the order AdmitStatic checks the generated binder against.
+// staticValuesFor is the test stand-in for a GENERATED argument projector over
+// this corpus's SCALAR-only signatures (de-BAML Slice 7.1b): it walks the
+// descriptor's declared arguments in order and projects each raw Go value by its
+// EXACT dynamic type, exactly as generated code asserts it. An unrecognized Go
+// type fails loudly — generated code would return ok=false there, and coercing
+// would hide the no-coercion property the binder enforces.
+func staticValuesFor(t *testing.T, fn promptdescriptor.Function, args map[string]any) []promptdescriptor.ArgumentValue {
+	t.Helper()
+	out := make([]promptdescriptor.ArgumentValue, 0, len(fn.Args))
+	for _, a := range fn.Args {
+		raw, ok := args[a.Name]
+		if !ok {
+			t.Fatalf("staticValuesFor: no value for declared argument %q", a.Name)
+		}
+		var v promptdescriptor.StaticValue
+		switch x := raw.(type) {
+		case string:
+			v = promptdescriptor.StaticValue{Kind: promptdescriptor.StaticString, String: x}
+		case int64:
+			v = promptdescriptor.StaticValue{Kind: promptdescriptor.StaticInt, Int: x}
+		case float64:
+			v = promptdescriptor.StaticValue{Kind: promptdescriptor.StaticFloat, Float: x}
+		case bool:
+			v = promptdescriptor.StaticValue{Kind: promptdescriptor.StaticBool, Bool: x}
+		default:
+			t.Fatalf("staticValuesFor: argument %q has unsupported Go type %T", a.Name, raw)
+		}
+		out = append(out, promptdescriptor.ArgumentValue{Name: a.Name, Value: v})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func argOrderOf(fn promptdescriptor.Function) []string {
 	out := make([]string, len(fn.Args))
 	for i, a := range fn.Args {
@@ -92,7 +127,7 @@ func argOrderOf(fn promptdescriptor.Function) []string {
 // staticInputFor builds the neutral StaticInput for one admitted corpus row: the
 // hardcoded layer-1 facts a native worker supplies, the fresh descriptor, the exact
 // generated args + declared order, and the BAML Request.<Method> no-send plan closure.
-func staticInputFor(fn promptdescriptor.Function, c staticCase) admission.StaticInput {
+func staticInputFor(t *testing.T, fn promptdescriptor.Function, c staticCase) admission.StaticInput {
 	return admission.StaticInput{
 		WorkerCapable:       true,
 		RequestAPIPresent:   true,
@@ -103,6 +138,7 @@ func staticInputFor(fn promptdescriptor.Function, c staticCase) admission.Static
 		Descriptor:          fn,
 		Args:                c.args,
 		ArgOrder:            argOrderOf(fn),
+		Values:              staticValuesFor(t, fn, c.args),
 		Mode:                bamlutils.NativeStaticModeFinal,
 		SingleLeaf:          true,
 		Provider:            fn.Provider,
@@ -131,7 +167,7 @@ func TestStaticAdmissionManifest(t *testing.T) {
 		if !ok {
 			t.Fatalf("fixture has no descriptor for %q", c.fn)
 		}
-		obs := admission.AdmitStatic(ctx, staticInputFor(fn, c))
+		obs := admission.AdmitStatic(ctx, staticInputFor(t, fn, c))
 		total++
 		if obs.Observation != bamlutils.NativeStaticObserveWouldAdmit {
 			t.Errorf("clean row %s: observation=%q family=%q stage=%q reason=%q, want would_admit",
@@ -151,7 +187,7 @@ func TestStaticAdmissionManifest(t *testing.T) {
 	{
 		fn := baseFn // value copy; Return.Version is a scalar
 		fn.Return.Version = 999
-		obs := admission.AdmitStatic(ctx, staticInputFor(fn, base))
+		obs := admission.AdmitStatic(ctx, staticInputFor(t, fn, base))
 		total++
 		if obs.Observation == bamlutils.NativeStaticObserveDecline &&
 			obs.Family == bamlutils.NativeStaticFamilyDescriptorEnvelope {
@@ -166,7 +202,7 @@ func TestStaticAdmissionManifest(t *testing.T) {
 	{
 		c := base
 		c.args = map[string]any{"topic": []int{1, 2, 3}}
-		obs := admission.AdmitStatic(ctx, staticInputFor(baseFn, c))
+		obs := admission.AdmitStatic(ctx, staticInputFor(t, baseFn, c))
 		total++
 		if obs.Observation == bamlutils.NativeStaticObserveDecline &&
 			obs.Family == bamlutils.NativeStaticFamilyPrompt {
@@ -181,7 +217,7 @@ func TestStaticAdmissionManifest(t *testing.T) {
 	{
 		fn := baseFn
 		fn.Provider = "anthropic"
-		obs := admission.AdmitStatic(ctx, staticInputFor(fn, base))
+		obs := admission.AdmitStatic(ctx, staticInputFor(t, fn, base))
 		total++
 		if obs.Observation == bamlutils.NativeStaticObserveDecline &&
 			obs.Family == bamlutils.NativeStaticFamilyClient {
@@ -195,7 +231,7 @@ func TestStaticAdmissionManifest(t *testing.T) {
 	// --- Mutation 4: plan mismatch (mutate BAML's plan body post-build). -----
 	// Every gate + Prepare passes; only the strict plan compare fails.
 	{
-		si := staticInputFor(baseFn, base)
+		si := staticInputFor(t, baseFn, base)
 		real := si.BuildBAMLRequest
 		si.BuildBAMLRequest = func(ctx context.Context) (*llmhttp.Request, error) {
 			r, err := real(ctx)

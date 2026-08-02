@@ -569,13 +569,15 @@ func staticCompletionBuildRequest(adapter bamlutils.Adapter, rawInput any, out c
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
 	if __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticCompletion"); __staticStreamOK {
-			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-				return __dv, __de
-			}, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-				return __dv, __de
-			})
+			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticCompletion", []any{input.Topic}); __staticStreamValuesOK {
+				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+					return __dv, __de
+				}, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+					return __dv, __de
+				})
+			}
 		}
 	}
 	go func() {
@@ -746,28 +748,30 @@ func staticCompletionBuildCallRequest(adapter bamlutils.Adapter, rawInput any, o
 	__staticShadow := deBAMLStaticShadow(adapter)
 	if __staticServe != nil || __staticShadow != nil {
 		if __staticDescriptor, __staticOK := introspected.StaticPromptDescriptor("StaticCompletion"); __staticOK {
-			if __staticServe != nil {
-				installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticCompletion(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
-			} else {
-				installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticCompletion(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
+			if __staticValues, __staticValuesOK := introspected.StaticPromptArgumentValues("StaticCompletion", []any{input.Topic}); __staticValuesOK {
+				if __staticServe != nil {
+					installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticCompletion(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticCompletion(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -1458,13 +1462,15 @@ func staticCompletionOutputFormatBuildRequest(adapter bamlutils.Adapter, rawInpu
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
 	if __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticCompletionOutputFormat"); __staticStreamOK {
-			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticAnswer](__cj)
-				return __dv, __de
-			}, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAnswer](__cj)
-				return __dv, __de
-			})
+			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticCompletionOutputFormat", []any{input.Topic}); __staticStreamValuesOK {
+				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticAnswer](__cj)
+					return __dv, __de
+				}, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAnswer](__cj)
+					return __dv, __de
+				})
+			}
 		}
 	}
 	go func() {
@@ -1635,28 +1641,30 @@ func staticCompletionOutputFormatBuildCallRequest(adapter bamlutils.Adapter, raw
 	__staticShadow := deBAMLStaticShadow(adapter)
 	if __staticServe != nil || __staticShadow != nil {
 		if __staticDescriptor, __staticOK := introspected.StaticPromptDescriptor("StaticCompletionOutputFormat"); __staticOK {
-			if __staticServe != nil {
-				installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticCompletionOutputFormat(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAnswer](__cj)
-					return __dv, __de
-				})
-			} else {
-				installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticCompletionOutputFormat(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAnswer](__cj)
-					return __dv, __de
-				})
+			if __staticValues, __staticValuesOK := introspected.StaticPromptArgumentValues("StaticCompletionOutputFormat", []any{input.Topic}); __staticValuesOK {
+				if __staticServe != nil {
+					installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticCompletionOutputFormat(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAnswer](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticCompletionOutputFormat(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAnswer](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -2347,13 +2355,15 @@ func staticOutputFormatBuildRequest(adapter bamlutils.Adapter, rawInput any, out
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
 	if __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticOutputFormat"); __staticStreamOK {
-			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticAnswer](__cj)
-				return __dv, __de
-			}, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAnswer](__cj)
-				return __dv, __de
-			})
+			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticOutputFormat", []any{input.Topic}); __staticStreamValuesOK {
+				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticAnswer](__cj)
+					return __dv, __de
+				}, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAnswer](__cj)
+					return __dv, __de
+				})
+			}
 		}
 	}
 	go func() {
@@ -2524,28 +2534,30 @@ func staticOutputFormatBuildCallRequest(adapter bamlutils.Adapter, rawInput any,
 	__staticShadow := deBAMLStaticShadow(adapter)
 	if __staticServe != nil || __staticShadow != nil {
 		if __staticDescriptor, __staticOK := introspected.StaticPromptDescriptor("StaticOutputFormat"); __staticOK {
-			if __staticServe != nil {
-				installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticOutputFormat(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAnswer](__cj)
-					return __dv, __de
-				})
-			} else {
-				installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticOutputFormat(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAnswer](__cj)
-					return __dv, __de
-				})
+			if __staticValues, __staticValuesOK := introspected.StaticPromptArgumentValues("StaticOutputFormat", []any{input.Topic}); __staticValuesOK {
+				if __staticServe != nil {
+					installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticOutputFormat(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAnswer](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticOutputFormat(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAnswer](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -3239,18 +3251,20 @@ func staticPrimitiveArgsBuildRequest(adapter bamlutils.Adapter, rawInput any, ou
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
 	if __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticPrimitiveArgs"); __staticStreamOK {
-			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{
-				"count": input.Count,
-				"flag":  input.Flag,
-				"ratio": input.Ratio,
-				"text":  input.Text,
-			}, []string{"text", "count", "ratio", "flag"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-				return __dv, __de
-			}, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-				return __dv, __de
-			})
+			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticPrimitiveArgs", []any{input.Text, input.Count, input.Ratio, input.Flag}); __staticStreamValuesOK {
+				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{
+					"count": input.Count,
+					"flag":  input.Flag,
+					"ratio": input.Ratio,
+					"text":  input.Text,
+				}, []string{"text", "count", "ratio", "flag"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+					return __dv, __de
+				}, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+					return __dv, __de
+				})
+			}
 		}
 	}
 	go func() {
@@ -3421,38 +3435,40 @@ func staticPrimitiveArgsBuildCallRequest(adapter bamlutils.Adapter, rawInput any
 	__staticShadow := deBAMLStaticShadow(adapter)
 	if __staticServe != nil || __staticShadow != nil {
 		if __staticDescriptor, __staticOK := introspected.StaticPromptDescriptor("StaticPrimitiveArgs"); __staticOK {
-			if __staticServe != nil {
-				installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{
-					"count": input.Count,
-					"flag":  input.Flag,
-					"ratio": input.Ratio,
-					"text":  input.Text,
-				}, []string{"text", "count", "ratio", "flag"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticPrimitiveArgs(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
-			} else {
-				installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{
-					"count": input.Count,
-					"flag":  input.Flag,
-					"ratio": input.Ratio,
-					"text":  input.Text,
-				}, []string{"text", "count", "ratio", "flag"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticPrimitiveArgs(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
+			if __staticValues, __staticValuesOK := introspected.StaticPromptArgumentValues("StaticPrimitiveArgs", []any{input.Text, input.Count, input.Ratio, input.Flag}); __staticValuesOK {
+				if __staticServe != nil {
+					installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{
+						"count": input.Count,
+						"flag":  input.Flag,
+						"ratio": input.Ratio,
+						"text":  input.Text,
+					}, []string{"text", "count", "ratio", "flag"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticPrimitiveArgs(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{
+						"count": input.Count,
+						"flag":  input.Flag,
+						"ratio": input.Ratio,
+						"text":  input.Text,
+					}, []string{"text", "count", "ratio", "flag"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticPrimitiveArgs(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -4143,13 +4159,15 @@ func staticRecursiveABuildRequest(adapter bamlutils.Adapter, rawInput any, out c
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
 	if __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRecursiveA"); __staticStreamOK {
-			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.A](__cj)
-				return __dv, __de
-			}, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticFinal[types.A](__cj)
-				return __dv, __de
-			})
+			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticRecursiveA", []any{input.Topic}); __staticStreamValuesOK {
+				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.A](__cj)
+					return __dv, __de
+				}, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[types.A](__cj)
+					return __dv, __de
+				})
+			}
 		}
 	}
 	go func() {
@@ -4320,28 +4338,30 @@ func staticRecursiveABuildCallRequest(adapter bamlutils.Adapter, rawInput any, o
 	__staticShadow := deBAMLStaticShadow(adapter)
 	if __staticServe != nil || __staticShadow != nil {
 		if __staticDescriptor, __staticOK := introspected.StaticPromptDescriptor("StaticRecursiveA"); __staticOK {
-			if __staticServe != nil {
-				installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticRecursiveA(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.A](__cj)
-					return __dv, __de
-				})
-			} else {
-				installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticRecursiveA(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.A](__cj)
-					return __dv, __de
-				})
+			if __staticValues, __staticValuesOK := introspected.StaticPromptArgumentValues("StaticRecursiveA", []any{input.Topic}); __staticValuesOK {
+				if __staticServe != nil {
+					installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticRecursiveA(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.A](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticRecursiveA(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.A](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -5032,13 +5052,15 @@ func staticRecursiveAliasJsonBuildRequest(adapter bamlutils.Adapter, rawInput an
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
 	if __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRecursiveAliasJSON"); __staticStreamOK {
-			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticAliasStream[*streamtypes.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
-				return __dv, __de
-			}, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticAliasFinal[types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
-				return __dv, __de
-			})
+			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticRecursiveAliasJSON", []any{input.Topic}); __staticStreamValuesOK {
+				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticAliasStream[*streamtypes.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
+					return __dv, __de
+				}, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticAliasFinal[types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
+					return __dv, __de
+				})
+			}
 		}
 	}
 	go func() {
@@ -5209,28 +5231,30 @@ func staticRecursiveAliasJsonBuildCallRequest(adapter bamlutils.Adapter, rawInpu
 	__staticShadow := deBAMLStaticShadow(adapter)
 	if __staticServe != nil || __staticShadow != nil {
 		if __staticDescriptor, __staticOK := introspected.StaticPromptDescriptor("StaticRecursiveAliasJSON"); __staticOK {
-			if __staticServe != nil {
-				installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticRecursiveAliasJSON(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticAliasFinal[types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
-					return __dv, __de
-				})
-			} else {
-				installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticRecursiveAliasJSON(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticAliasFinal[types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
-					return __dv, __de
-				})
+			if __staticValues, __staticValuesOK := introspected.StaticPromptArgumentValues("StaticRecursiveAliasJSON", []any{input.Topic}); __staticValuesOK {
+				if __staticServe != nil {
+					installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticRecursiveAliasJSON(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticAliasFinal[types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticRecursiveAliasJSON(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticAliasFinal[types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -5921,13 +5945,15 @@ func staticRecursiveAliasJsonValueBuildRequest(adapter bamlutils.Adapter, rawInp
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
 	if __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRecursiveAliasJsonValue"); __staticStreamOK {
-			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticFinal[*streamtypes.Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString](__cj)
-				return __dv, __de
-			}, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticAliasFinal[*types.Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString](__cj)
-				return __dv, __de
-			})
+			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticRecursiveAliasJsonValue", []any{input.Topic}); __staticStreamValuesOK {
+				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[*streamtypes.Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString](__cj)
+					return __dv, __de
+				}, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticAliasFinal[*types.Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString](__cj)
+					return __dv, __de
+				})
+			}
 		}
 	}
 	go func() {
@@ -6098,28 +6124,30 @@ func staticRecursiveAliasJsonValueBuildCallRequest(adapter bamlutils.Adapter, ra
 	__staticShadow := deBAMLStaticShadow(adapter)
 	if __staticServe != nil || __staticShadow != nil {
 		if __staticDescriptor, __staticOK := introspected.StaticPromptDescriptor("StaticRecursiveAliasJsonValue"); __staticOK {
-			if __staticServe != nil {
-				installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticRecursiveAliasJsonValue(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticAliasFinal[*types.Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString](__cj)
-					return __dv, __de
-				})
-			} else {
-				installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticRecursiveAliasJsonValue(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticAliasFinal[*types.Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString](__cj)
-					return __dv, __de
-				})
+			if __staticValues, __staticValuesOK := introspected.StaticPromptArgumentValues("StaticRecursiveAliasJsonValue", []any{input.Topic}); __staticValuesOK {
+				if __staticServe != nil {
+					installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticRecursiveAliasJsonValue(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticAliasFinal[*types.Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticRecursiveAliasJsonValue(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticAliasFinal[*types.Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -6810,13 +6838,15 @@ func staticRecursiveAliasJsonValueReorderedBuildRequest(adapter bamlutils.Adapte
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
 	if __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRecursiveAliasJsonValueReordered"); __staticStreamOK {
-			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticFinal[*streamtypes.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString](__cj)
-				return __dv, __de
-			}, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticAliasFinal[*types.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString](__cj)
-				return __dv, __de
-			})
+			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticRecursiveAliasJsonValueReordered", []any{input.Topic}); __staticStreamValuesOK {
+				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[*streamtypes.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString](__cj)
+					return __dv, __de
+				}, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticAliasFinal[*types.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString](__cj)
+					return __dv, __de
+				})
+			}
 		}
 	}
 	go func() {
@@ -6987,28 +7017,30 @@ func staticRecursiveAliasJsonValueReorderedBuildCallRequest(adapter bamlutils.Ad
 	__staticShadow := deBAMLStaticShadow(adapter)
 	if __staticServe != nil || __staticShadow != nil {
 		if __staticDescriptor, __staticOK := introspected.StaticPromptDescriptor("StaticRecursiveAliasJsonValueReordered"); __staticOK {
-			if __staticServe != nil {
-				installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticRecursiveAliasJsonValueReordered(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticAliasFinal[*types.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString](__cj)
-					return __dv, __de
-				})
-			} else {
-				installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticRecursiveAliasJsonValueReordered(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticAliasFinal[*types.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString](__cj)
-					return __dv, __de
-				})
+			if __staticValues, __staticValuesOK := introspected.StaticPromptArgumentValues("StaticRecursiveAliasJsonValueReordered", []any{input.Topic}); __staticValuesOK {
+				if __staticServe != nil {
+					installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticRecursiveAliasJsonValueReordered(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticAliasFinal[*types.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticRecursiveAliasJsonValueReordered(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticAliasFinal[*types.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -7699,13 +7731,15 @@ func staticRecursiveBBuildRequest(adapter bamlutils.Adapter, rawInput any, out c
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
 	if __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRecursiveB"); __staticStreamOK {
-			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.B](__cj)
-				return __dv, __de
-			}, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticFinal[types.B](__cj)
-				return __dv, __de
-			})
+			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticRecursiveB", []any{input.Topic}); __staticStreamValuesOK {
+				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.B](__cj)
+					return __dv, __de
+				}, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[types.B](__cj)
+					return __dv, __de
+				})
+			}
 		}
 	}
 	go func() {
@@ -7876,28 +7910,30 @@ func staticRecursiveBBuildCallRequest(adapter bamlutils.Adapter, rawInput any, o
 	__staticShadow := deBAMLStaticShadow(adapter)
 	if __staticServe != nil || __staticShadow != nil {
 		if __staticDescriptor, __staticOK := introspected.StaticPromptDescriptor("StaticRecursiveB"); __staticOK {
-			if __staticServe != nil {
-				installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticRecursiveB(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.B](__cj)
-					return __dv, __de
-				})
-			} else {
-				installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticRecursiveB(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.B](__cj)
-					return __dv, __de
-				})
+			if __staticValues, __staticValuesOK := introspected.StaticPromptArgumentValues("StaticRecursiveB", []any{input.Topic}); __staticValuesOK {
+				if __staticServe != nil {
+					installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticRecursiveB(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.B](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticRecursiveB(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.B](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -8588,13 +8624,15 @@ func staticRecursiveLoopBuildRequest(adapter bamlutils.Adapter, rawInput any, ou
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
 	if __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRecursiveLoop"); __staticStreamOK {
-			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.Loop](__cj)
-				return __dv, __de
-			}, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticFinal[types.Loop](__cj)
-				return __dv, __de
-			})
+			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticRecursiveLoop", []any{input.Topic}); __staticStreamValuesOK {
+				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.Loop](__cj)
+					return __dv, __de
+				}, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[types.Loop](__cj)
+					return __dv, __de
+				})
+			}
 		}
 	}
 	go func() {
@@ -8765,28 +8803,30 @@ func staticRecursiveLoopBuildCallRequest(adapter bamlutils.Adapter, rawInput any
 	__staticShadow := deBAMLStaticShadow(adapter)
 	if __staticServe != nil || __staticShadow != nil {
 		if __staticDescriptor, __staticOK := introspected.StaticPromptDescriptor("StaticRecursiveLoop"); __staticOK {
-			if __staticServe != nil {
-				installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticRecursiveLoop(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.Loop](__cj)
-					return __dv, __de
-				})
-			} else {
-				installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticRecursiveLoop(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.Loop](__cj)
-					return __dv, __de
-				})
+			if __staticValues, __staticValuesOK := introspected.StaticPromptArgumentValues("StaticRecursiveLoop", []any{input.Topic}); __staticValuesOK {
+				if __staticServe != nil {
+					installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticRecursiveLoop(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.Loop](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticRecursiveLoop(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.Loop](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -9477,13 +9517,15 @@ func staticRecursiveNodeBuildRequest(adapter bamlutils.Adapter, rawInput any, ou
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
 	if __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRecursiveNode"); __staticStreamOK {
-			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.Node](__cj)
-				return __dv, __de
-			}, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticFinal[types.Node](__cj)
-				return __dv, __de
-			})
+			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticRecursiveNode", []any{input.Topic}); __staticStreamValuesOK {
+				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.Node](__cj)
+					return __dv, __de
+				}, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[types.Node](__cj)
+					return __dv, __de
+				})
+			}
 		}
 	}
 	go func() {
@@ -9654,28 +9696,30 @@ func staticRecursiveNodeBuildCallRequest(adapter bamlutils.Adapter, rawInput any
 	__staticShadow := deBAMLStaticShadow(adapter)
 	if __staticServe != nil || __staticShadow != nil {
 		if __staticDescriptor, __staticOK := introspected.StaticPromptDescriptor("StaticRecursiveNode"); __staticOK {
-			if __staticServe != nil {
-				installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticRecursiveNode(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.Node](__cj)
-					return __dv, __de
-				})
-			} else {
-				installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticRecursiveNode(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.Node](__cj)
-					return __dv, __de
-				})
+			if __staticValues, __staticValuesOK := introspected.StaticPromptArgumentValues("StaticRecursiveNode", []any{input.Topic}); __staticValuesOK {
+				if __staticServe != nil {
+					installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticRecursiveNode(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.Node](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticRecursiveNode(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.Node](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -10366,13 +10410,15 @@ func staticRecursiveNodeAnnBuildRequest(adapter bamlutils.Adapter, rawInput any,
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
 	if __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRecursiveNodeAnn"); __staticStreamOK {
-			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.NodeAnn](__cj)
-				return __dv, __de
-			}, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticFinal[types.NodeAnn](__cj)
-				return __dv, __de
-			})
+			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticRecursiveNodeAnn", []any{input.Topic}); __staticStreamValuesOK {
+				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.NodeAnn](__cj)
+					return __dv, __de
+				}, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[types.NodeAnn](__cj)
+					return __dv, __de
+				})
+			}
 		}
 	}
 	go func() {
@@ -10543,28 +10589,30 @@ func staticRecursiveNodeAnnBuildCallRequest(adapter bamlutils.Adapter, rawInput 
 	__staticShadow := deBAMLStaticShadow(adapter)
 	if __staticServe != nil || __staticShadow != nil {
 		if __staticDescriptor, __staticOK := introspected.StaticPromptDescriptor("StaticRecursiveNodeAnn"); __staticOK {
-			if __staticServe != nil {
-				installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticRecursiveNodeAnn(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.NodeAnn](__cj)
-					return __dv, __de
-				})
-			} else {
-				installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticRecursiveNodeAnn(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.NodeAnn](__cj)
-					return __dv, __de
-				})
+			if __staticValues, __staticValuesOK := introspected.StaticPromptArgumentValues("StaticRecursiveNodeAnn", []any{input.Topic}); __staticValuesOK {
+				if __staticServe != nil {
+					installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticRecursiveNodeAnn(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.NodeAnn](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticRecursiveNodeAnn(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.NodeAnn](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -11256,16 +11304,18 @@ func staticRoleChatBuildRequest(adapter bamlutils.Adapter, rawInput any, out cha
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
 	if __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRoleChat"); __staticStreamOK {
-			installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{
-				"count": input.Count,
-				"topic": input.Topic,
-			}, []string{"topic", "count"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-				return __dv, __de
-			}, func(__cj []byte) (any, error) {
-				__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-				return __dv, __de
-			})
+			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticRoleChat", []any{input.Topic, input.Count}); __staticStreamValuesOK {
+				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{
+					"count": input.Count,
+					"topic": input.Topic,
+				}, []string{"topic", "count"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+					return __dv, __de
+				}, func(__cj []byte) (any, error) {
+					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+					return __dv, __de
+				})
+			}
 		}
 	}
 	go func() {
@@ -11436,34 +11486,36 @@ func staticRoleChatBuildCallRequest(adapter bamlutils.Adapter, rawInput any, out
 	__staticShadow := deBAMLStaticShadow(adapter)
 	if __staticServe != nil || __staticShadow != nil {
 		if __staticDescriptor, __staticOK := introspected.StaticPromptDescriptor("StaticRoleChat"); __staticOK {
-			if __staticServe != nil {
-				installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{
-					"count": input.Count,
-					"topic": input.Topic,
-				}, []string{"topic", "count"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticRoleChat(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
-			} else {
-				installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{
-					"count": input.Count,
-					"topic": input.Topic,
-				}, []string{"topic", "count"}, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
-					__pr, __pe := bamlclient.Parse.StaticRoleChat(__pctx, __raw, options...)
-					if __pe != nil {
-						return nil, __pe
-					}
-					return json.Marshal(__pr)
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
+			if __staticValues, __staticValuesOK := introspected.StaticPromptArgumentValues("StaticRoleChat", []any{input.Topic, input.Count}); __staticValuesOK {
+				if __staticServe != nil {
+					installNativeStaticCall(callConfig, __staticServe, adapter, __staticDescriptor, map[string]any{
+						"count": input.Count,
+						"topic": input.Topic,
+					}, []string{"topic", "count"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticRoleChat(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticShadow(callConfig, __staticShadow, adapter, __staticDescriptor, map[string]any{
+						"count": input.Count,
+						"topic": input.Topic,
+					}, []string{"topic", "count"}, __staticValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, adapter.StreamMode().NeedsRaw(), func(__pctx context.Context, __raw string) ([]byte, error) {
+						__pr, __pe := bamlclient.Parse.StaticRoleChat(__pctx, __raw, options...)
+						if __pe != nil {
+							return nil, __pe
+						}
+						return json.Marshal(__pr)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}

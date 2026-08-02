@@ -202,10 +202,11 @@ func captureAndPrepare(t *testing.T, descriptors map[string]promptdescriptor.Fun
 	}
 
 	// --- Native leg: render + normalize client + build canonical body. ---
-	if err := nativeprompt.SupportsStatic(fn, c.args); err != nil {
+	values := staticValuesFor(t, fn, c.args)
+	if err := nativeprompt.SupportsStatic(fn, values); err != nil {
 		t.Fatalf("SupportsStatic declined a claimed case: %v", err)
 	}
-	rendered, err := nativeprompt.RenderStatic(fn, c.args)
+	rendered, err := nativeprompt.RenderStatic(fn, values)
 	if err != nil {
 		t.Fatalf("RenderStatic failed after SupportsStatic accepted: %v", err)
 	}

@@ -31,14 +31,26 @@
 //   - the prompt dedent-by-minimum-leading-whitespace + trim preprocessing;
 //   - the RenderedPrompt Completion-vs-Chat decision.
 //
-// The static candidate ([RenderStatic]/[SupportsStatic]) consumes a retained
-// promptdescriptor.Function plus primitive arguments and renders a deliberately
-// narrow static surface — literal text with direct primitive interpolation,
-// fixed text-only _.role/_.chat blocks, and bare ctx.output_format — through the
-// SAME environment, dedent/trim, and lowering as the dynamic path.
-// [SupportsStatic] is a CLOSED allowlist: it accepts only the exact expression
-// forms it proves and declines everything else through the shared
-// ErrUnsupported/Decline contract.
+// The static lane ([RenderStatic]/[SupportsStatic]) consumes a retained
+// Version-3 promptdescriptor.Function plus the ORDERED, already-typed argument
+// vector a generated projector produced, and renders a deliberately narrow
+// static surface through the SAME environment, dedent/trim, and lowering as the
+// dynamic path:
+//
+//   - literal text with direct interpolation of a bound scalar, enum member, or
+//     list of those (de-BAML Slice 7.1b);
+//   - the exact canonical-identity enum equality forms and the two stock-proven
+//     one-element membership forms;
+//   - fixed text-only _.role/_.chat blocks and bare ctx.output_format.
+//
+// Values are bound by the V3 binder (static_bind.go) from the descriptor's
+// source-resolved universe — never from Go reflection, JSON, or a raw argument
+// map. [SupportsStatic] is a CLOSED allowlist over token shapes PLUS a V3 type
+// gate: it accepts only the exact expression forms it proves, with operands it
+// resolved, and declines everything else through the shared
+// ErrUnsupported/Decline contract. Notable deliberate declines: a display alias
+// is never an identity, and a direct CLASS render is refused because stock
+// BAML's Go client does not print a reproducible field order for one.
 //
 // # Gating
 //

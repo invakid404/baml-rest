@@ -101,11 +101,19 @@ func TestRenderContextIsTheProfileEnvironment(t *testing.T) {
 
 	t.Run("enum_namespace_globals", func(t *testing.T) {
 		// The adapter forwards a resolved enum set to bamlprofile.New, which
-		// installs one namespace global per enum. Production resolves an empty set
-		// today (no admitted template references an enum global — see
-		// rendercontext.go), so this drives the seam the way Slice 7.1b will.
+		// installs one namespace global per enum. As of Slice 7.1b the STATIC
+		// production constructor forwards the descriptor's WHOLE project enum set
+		// here (rendercontext.go); this drives the same seam directly.
 		// Display is the alias; `.value` is the canonical name.
-		got := mustRenderThroughSeam(t, colorConfig(""), `{{ Color.RED }}|{{ Color.RED.value }}|{{ Color.GREEN }}`)
+		cfg := bamlprofile.Config{Enums: []bamlprofile.EnumDef{{
+			Name: "Color",
+			Values: []bamlprofile.EnumValue{
+				{Canonical: "RED", Alias: aliasOf("rouge")},
+				{Canonical: "GREEN", Alias: aliasOf("vert")},
+				{Canonical: "BLUE", Alias: aliasOf("bleu")},
+			},
+		}}}
+		got := mustRenderThroughSeam(t, cfg, `{{ Color.RED }}|{{ Color.RED.value }}|{{ Color.GREEN }}`)
 		if want := "rouge|RED|vert"; got != want {
 			t.Errorf("enum globals = %q, want %q", got, want)
 		}
