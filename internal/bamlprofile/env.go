@@ -37,8 +37,12 @@ type Config struct {
 	Enums []EnumDef
 }
 
-// New constructs a fork *minijinja.Environment configured exactly like BAML
-// v0.223's get_env(), for the parts that do not need the host value model yet.
+// New constructs the fork *minijinja.Environment BAML v0.223 renders a PROMPT
+// with: get_env()'s engine configuration (newGetEnvBase) plus the globals BAML's
+// prompt renderer supplies — `_`, `ctx`, and one namespace per declared enum.
+//
+// The engine-configuration half is shared with newConstraintEnvironment; the
+// globals below are exactly what a constraint must NOT see.
 //
 // Authority (byte-for-byte): BAML v0.223
 // engine/baml-lib/baml-core/src/ir/jinja_helpers.rs:7-36
@@ -56,8 +60,8 @@ type Config struct {
 //	env.set_unknown_method_callback(minijinja_contrib::pycompat::unknown_method_callback);
 //
 // minijinja::Environment::new() (fork NewEnvironment) already installs the
-// BAML-exact builtin filter/test/function registry, so New only layers get_env's
-// deltas on top of it.
+// BAML-exact builtin filter/test/function registry, so newGetEnvBase only layers
+// get_env's deltas on top of it.
 //
 // get_env() does NOT set an auto-escape mode: BAML renders prompts through
 // render_str, whose template name has no html/xml extension, so the engine
@@ -77,54 +81,17 @@ type Config struct {
 // is a resolved-metadata contract violation, so it fails loud here rather than
 // installing a global that renders or compares wrong.
 func New(cfg Config) (*minijinja.Environment, error) {
-	env := minijinja.NewEnvironment()
-
-	// BAML's custom formatter: a top-level none renders as the literal "null"
-	// (not minijinja's default empty string); everything else renders through the
-	// engine's escaping path. Under AutoEscapeNone the escape func is the
-	// identity, so this is none -> "null", else the value's display string.
-	//
-	// Nested none inside a host class/list is handled by the host debug walker
-	// (debugValue in class.go); this top-level rule is the none -> "null" that
-	// BAML's jinja_helpers formatter applies before rendering.
-	//
-	// Object rendering is NOT this formatter's business. The fork's Value.String
-	// dispatches value.ObjectWithString itself (v2.16.0-baml.4, PATCHES #104),
-	// which is BAML's escape_formatter reaching an object's own render/Display —
-	// and, being at the fork's primitive, it composes through native containers,
-	// |join, filter coercions and `~` as well, which a formatter-only branch here
-	// never could. The top-level none -> "null" rule is the only get_env delta.
-	env.SetFormatter(func(_ *minijinja.State, val value.Value, escape func(string) string) string {
-		if val.IsNone() {
-			return escape("null")
-		}
-		return escape(val.String())
-	})
-
-	// env.set_debug(true).
-	env.SetDebug(true)
-
-	// env.set_trim_blocks(true); env.set_lstrip_blocks(true). Start from the
-	// engine defaults so no unrelated whitespace knob is disturbed, then set the
-	// two BAML sets, exactly as the fork's own oracle harness does.
-	ws := syntax.DefaultWhitespace()
-	ws.TrimBlocks = true
-	ws.LstripBlocks = true
-	env.SetWhitespace(ws)
-
-	// See the doc comment: BAML relies on the engine default (none) for its
-	// html-less prompt templates; we make it explicit.
-	env.SetAutoEscapeFunc(func(string) minijinja.AutoEscape { return minijinja.AutoEscapeNone })
-
-	// get_env additions/overrides.
-	env.AddFilter("regex_match", regexMatchFilter)
-	env.AddFilter("sum", sumFilter) // overrides the engine builtin sum
-	env.SetUnknownMethodCallback(pycompat.UnknownMethodCallback)
+	env := newGetEnvBase()
 
 	// The get_env simple globals, matching internal/nativeprompt/env.go. Declared
 	// ONCE so the reserved-name preflight below derives its set from this same
 	// list: a future third get_env global is then automatically protected against
 	// an enum-name collision, with no second place to keep in sync.
+	//
+	// These are PROMPT-ONLY. BAML injects them as render context when it renders a
+	// prompt; its CONSTRAINT evaluator creates a bare get_env() and binds `this`
+	// alone (jinja_helpers.rs:67-93), so newConstraintEnvironment deliberately
+	// stops at newGetEnvBase and never reaches this block.
 	simpleGlobals := []struct {
 		name  string
 		value value.Value
@@ -180,4 +147,73 @@ func New(cfg Config) (*minijinja.Environment, error) {
 	}
 
 	return env, nil
+}
+
+// newGetEnvBase builds the part of BAML v0.223's get_env() that is pure ENGINE
+// CONFIGURATION: the formatter, debug/whitespace flags, autoescape, the
+// regex_match/sum filter deltas, and the pycompat unknown-method callback
+// (jinja_helpers.rs:7-36). It installs NO globals.
+//
+// This is the shared base of the leaf's two environment factories, and the split
+// is load-bearing rather than cosmetic. get_env() itself adds no globals at all;
+// `_` and `ctx` are things BAML's PROMPT renderer supplies as render context, and
+// the per-enum namespaces are things its prompt renderer injects (lib.rs:316-327).
+// BAML's CONSTRAINT evaluator calls the same get_env() and then binds exactly one
+// name, `this` (jinja_helpers.rs:83-89) — so in a predicate, `_`, `ctx` and
+// `Color` are undefined. Reproducing that means the two factories must diverge
+// exactly here: [New] continues on to install the prompt globals,
+// [newConstraintEnvironment] stops.
+//
+// Every call returns a FRESH environment. [New] needs that because its ctx global
+// carries a per-render OutputFormat (as nativeprompt.buildEnv does); the
+// constraint factory does not, but sharing one would make the two factories'
+// lifetimes entangled for no gain.
+func newGetEnvBase() *minijinja.Environment {
+	env := minijinja.NewEnvironment()
+
+	// BAML's custom formatter: a top-level none renders as the literal "null"
+	// (not minijinja's default empty string); everything else renders through the
+	// engine's escaping path. Under AutoEscapeNone the escape func is the
+	// identity, so this is none -> "null", else the value's display string.
+	//
+	// Nested none inside a host class/list is handled by the host debug walker
+	// (debugValue in class.go); this top-level rule is the none -> "null" that
+	// BAML's jinja_helpers formatter applies before rendering.
+	//
+	// Object rendering is NOT this formatter's business. The fork's Value.String
+	// dispatches value.ObjectWithString itself (v2.16.0-baml.4, PATCHES #104),
+	// which is BAML's escape_formatter reaching an object's own render/Display —
+	// and, being at the fork's primitive, it composes through native containers,
+	// |join, filter coercions and `~` as well, which a formatter-only branch here
+	// never could. The top-level none -> "null" rule is the only get_env delta.
+	env.SetFormatter(func(_ *minijinja.State, val value.Value, escape func(string) string) string {
+		if val.IsNone() {
+			return escape("null")
+		}
+		return escape(val.String())
+	})
+
+	// env.set_debug(true).
+	env.SetDebug(true)
+
+	// env.set_trim_blocks(true); env.set_lstrip_blocks(true). Start from the
+	// engine defaults so no unrelated whitespace knob is disturbed, then set the
+	// two BAML sets, exactly as the fork's own oracle harness does.
+	ws := syntax.DefaultWhitespace()
+	ws.TrimBlocks = true
+	ws.LstripBlocks = true
+	env.SetWhitespace(ws)
+
+	// See New's doc comment: BAML relies on the engine default (none) for its
+	// html-less prompt templates, and its constraint evaluator renders a template
+	// named "<string>" for the same reason; we make it explicit so neither
+	// factory's behavior depends on a template name.
+	env.SetAutoEscapeFunc(func(string) minijinja.AutoEscape { return minijinja.AutoEscapeNone })
+
+	// get_env additions/overrides.
+	env.AddFilter("regex_match", regexMatchFilter)
+	env.AddFilter("sum", sumFilter) // overrides the engine builtin sum
+	env.SetUnknownMethodCallback(pycompat.UnknownMethodCallback)
+
+	return env
 }

@@ -1,0 +1,7 @@
+{
+  "baml_runtime_version": "0.223.0",
+  "baml_module_version": "v0.223.0",
+  "baml_source_sha256": "d4a2745e78926ea4b97f4138556a666ac1301580b9d981278b061819a42dbcd0",
+  "row_count": 79,
+  "note": "stock BAML v0.223.0 CallFunctionParse constraint differential for internal/bamlprofile (Slice 2 PR-3)"
+}

@@ -64,6 +64,44 @@
 // each type). Byte-exactness is proven by the stock-CFFI differential in
 // ./profileoracle.
 //
+// PR-3 — the constraint lowerer & typed façade (constraints.go, project.go):
+//   - EvaluateConstraints over resolved Constraint/ConstraintRequest values,
+//     reproducing run_user_checks + evaluate_predicate: a bare get_env()
+//     environment, the stored expression wrapped verbatim as `{{ <expr> }}`,
+//     exactly one bound name (`this`), and the rendered-TEXT "true"/"false"
+//     classifier — a non-boolean rendering is an ERROR, never a failed predicate;
+//   - the batch aborting on the first evaluator error with NO partial report,
+//     mirroring `collect::<Result<Vec<_>>>()`, and a false ASSERT surfacing as
+//     ConstraintReport.AssertFailed while a false CHECK is retained as a result;
+//   - the CONSTRAINT-side serde projection of `this` (project.go), which is a
+//     different lowering from PR-2's prompt host model: an enum is its CANONICAL
+//     string (no alias), a class is an ordered map of CANONICAL keys (no alias
+//     key, no `{map:#?}` render), a list is a plain sequence, and every
+//     unsupported shape fails closed;
+//   - the environment split: newGetEnvBase carries get_env's engine
+//     configuration, New adds the prompt globals, newConstraintEnvironment does
+//     not — so `_`, `ctx` and the enum namespaces are undefined in a predicate,
+//     as they are in stock BAML. No fork change was needed for any of it.
+//
+// Authority: jinja_helpers.rs:67-93, jsonish coercer mod.rs:322-338 and
+// field_type.rs:180-294, baml_value.rs:41-57 (cited at each declaration). Parity
+// is proven by the stock-CFFI CallFunctionParse differential in ./profileoracle,
+// which runs BAML's real coercer rather than merely rendering a prompt.
+//
+// Two stock behaviors PR-3 MEASURED and did not reproduce, both owned by the
+// serving slice and ledgered on #583:
+//
+//   - stock BAML evaluates NO constraints on a bare `string` return type —
+//     jsonish::from_str short-circuits before coercion (jsonish/src/lib.rs:
+//     233-237). EvaluateConstraints has no return type and evaluates whatever it
+//     is given, so Slice 7.2 must reproduce the skip; evaluating there would
+//     REJECT responses stock accepts. Pinned by
+//     TestStockSkipsConstraintsOnBareStringReturn.
+//   - duplicate check LABELS collapse in the response representation (last
+//     wins), while PR-3 returns both results in declared order. The stable
+//     policy is 7.2's; the collapse is measured by
+//     TestConstraintDuplicateLabelCollapse.
+//
 // # What is DEFERRED / DECLINED (explicitly NOT built here)
 //
 //   - Media host values (Image/Audio/Pdf/Video, URL/Base64/File): BAML's serde
@@ -74,7 +112,19 @@
 //     override: the get_env-level `format` is the fork's printf filter, so a
 //     class|format(type=...) ERRORS rather than silently emitting a
 //     serialization (proven in host_test.go). Tracked on #602.
-//   - The prompt lowerer and the constraint lowerer / predicate façade, and the
-//     descriptor/parser layer that would supply resolved enum/class aliases and
-//     ordered fields in production (PR-2 consumes them as explicit typed inputs).
+//   - The prompt lowerer, and the descriptor/parser layer that would supply
+//     resolved enum/class aliases, ordered fields and BARE constraint
+//     expressions in production (PR-2 and PR-3 consume them as explicit typed
+//     inputs). In particular this leaf does NOT parse BAML source, strip
+//     `{{ ... }}` from a constraint expression, typecheck a Jinja expression, or
+//     import BAML IR/descriptors — a bracket-wrapped expression is REJECTED, not
+//     normalized.
+//   - Constraint ingress for media values and BamlValue::Map: PR-2 provides no
+//     host constructor for either, so projectConstraintThis declines them rather
+//     than guessing a projection. Tracked on #602/#572.
+//   - The serving side of constraints: translating descriptors into resolved
+//     Constraints, running them during native response parsing, the public
+//     `Checked<T>`/JSON envelope and its stable ordering, assert-rejection
+//     message wording and first-five presentation, duplicate-label policy,
+//     streaming/partial semantics, and fallback routing. All Slice 7.2.
 package bamlprofile
