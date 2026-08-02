@@ -45,6 +45,17 @@ package nativeschema
 //	    every template string into every function's prompt, such a macro poisons
 //	    the descriptor for EVERY function (a global decline), rather than being
 //	    silently ignored.
+//	(g) "input value graph cannot be resolved faithfully" — de-BAML Slice 7.1b.
+//	    A Version-3 descriptor REQUIRES the source-resolved input value universe
+//	    (promptdescriptor.InputValueUniverse + a ValueType per argument), so a
+//	    function is declined whenever any argument's type graph reaches a shape
+//	    V3 does not claim: a map/tuple/union/literal/media node, a
+//	    multi-dimensional list, an attributed type node, a bare/untyped argument,
+//	    an ambiguous/unresolved name, an unsupported class/enum body, or a
+//	    RECURSIVE input class graph. An unresolvable PROJECT enum (a dynamic /
+//	    multi-valued @alias, a duplicate member, an enum-level block attribute)
+//	    poisons every function, because BAML installs the enum namespace globals
+//	    as a complete set. See inputvalues.go.
 //
 // Deliberately NOT declines (retained verbatim; Phase 3's renderer support
 // predicate decides them later): Jinja syntax, macro calls, _.role/_.chat, media
@@ -97,6 +108,11 @@ func BuildPromptDescriptors(
 	// buildMacros returns a non-empty reason that poisons every function.
 	macros, macroDecline := buildMacros(files, idx, rec)
 
+	// (g) Build the V3 project enum universe once. BAML installs one namespace
+	// global per PROJECT enum, so the set is resolved whole and an unresolvable
+	// enum is a GLOBAL decline — see inputvalues.go.
+	projectEnums, enumDecline := resolveProjectEnums(files, idx)
+
 	pb := &promptBuilder{
 		schemas:        schemas,
 		schemaDeclines: schemaDeclines,
@@ -106,6 +122,8 @@ func BuildPromptDescriptors(
 		rec:            rec,
 		macros:         macros,
 		macroDecline:   macroDecline,
+		projectEnums:   projectEnums,
+		enumDecline:    enumDecline,
 	}
 
 	descriptors := make(map[string]promptdescriptor.Function)
@@ -150,6 +168,12 @@ type promptBuilder struct {
 	rec            *recursionInfo
 	macros         []promptdescriptor.TemplateString
 	macroDecline   string
+	// projectEnums is the V3 project-wide resolved enum set (every declared
+	// enum, in source order); enumDecline is the global reason it could not be
+	// resolved, which poisons V3 — and therefore the descriptor — for every
+	// function. See inputvalues.go.
+	projectEnums []promptdescriptor.ResolvedEnum
+	enumDecline  string
 }
 
 // buildFunction evaluates one function against the full decline contract and
@@ -230,6 +254,18 @@ func (pb *promptBuilder) buildFunction(fn *bamlparser.FunctionBlock) (promptdesc
 		return promptdescriptor.Function{}, err
 	}
 
+	// (g) Slice 7.1b V3 input value graph. A descriptor is Version 3, and V3
+	// REQUIRES the resolved universe, so a function whose argument graph reaches
+	// a shape V3 cannot describe exactly gets no descriptor at all. The project
+	// enum decline is checked first because it poisons every function.
+	if pb.enumDecline != "" {
+		return promptdescriptor.Function{}, fmt.Errorf("%s", pb.enumDecline)
+	}
+	args, universe, err := pb.buildInputValues(fn)
+	if err != nil {
+		return promptdescriptor.Function{}, err
+	}
+
 	// (Phase 4a) Stamp the passive client/options config. A missing entry (a
 	// shorthand/enriched-only client with no declared block) yields the zero
 	// ClientConfig (Present==false). Name/Provider are set to the resolved values
@@ -242,7 +278,7 @@ func (pb *promptBuilder) buildFunction(fn *bamlparser.FunctionBlock) (promptdesc
 		Version:  promptdescriptor.Version,
 		Method:   fn.Name,
 		Prompt:   *fn.PromptRaw,
-		Args:     toArguments(fn.Params),
+		Args:     args,
 		Client:   clientName,
 		Provider: provider,
 		Return:   bundle,
@@ -251,6 +287,55 @@ func (pb *promptBuilder) buildFunction(fn *bamlparser.FunctionBlock) (promptdesc
 		// is shared read-only; the descriptor is passive and never mutates it.
 		Macros:       pb.macros,
 		ClientConfig: clientConfig,
+		InputValues:  universe,
+	}, nil
+}
+
+// buildInputValues resolves one function's V3 arguments and input value
+// universe (Slice 7.1b). It returns the descriptor arguments WITH their
+// ValueType populated plus the universe (the project enum set + the transitive
+// input-class closure in source declaration order), or the first decline.
+//
+// Every argument must resolve: a bare/untyped argument, a duplicate name, or any
+// type outside the claimed value graph declines the whole function. There is no
+// partial V3 — a descriptor either describes every argument exactly or does not
+// exist.
+func (pb *promptBuilder) buildInputValues(fn *bamlparser.FunctionBlock) ([]promptdescriptor.Argument, promptdescriptor.InputValueUniverse, error) {
+	r := newInputValueResolver(pb.idx)
+
+	args := make([]promptdescriptor.Argument, 0, len(fn.Params))
+	seen := make(map[string]bool, len(fn.Params))
+	for _, p := range fn.Params {
+		if p.Name == "" {
+			return nil, promptdescriptor.InputValueUniverse{}, fmt.Errorf(
+				"input value graph cannot be resolved faithfully: function %q has an argument with an empty name", fn.Name)
+		}
+		if seen[p.Name] {
+			return nil, promptdescriptor.InputValueUniverse{}, argValueDecline(p.Name, fmt.Errorf("declared more than once"))
+		}
+		seen[p.Name] = true
+		if p.Type == nil {
+			return nil, promptdescriptor.InputValueUniverse{}, argValueDecline(p.Name, fmt.Errorf("is bare/untyped"))
+		}
+		vt, err := r.resolveType(p.Type)
+		if err != nil {
+			return nil, promptdescriptor.InputValueUniverse{}, argValueDecline(p.Name, err)
+		}
+		args = append(args, promptdescriptor.Argument{Name: p.Name, Type: p.Type, ValueType: &vt})
+	}
+	if len(args) == 0 {
+		args = nil
+	}
+
+	classes, err := r.closureInDeclarationOrder()
+	if err != nil {
+		return nil, promptdescriptor.InputValueUniverse{}, fmt.Errorf(
+			"input value graph cannot be resolved faithfully: %w", err)
+	}
+
+	return args, promptdescriptor.InputValueUniverse{
+		ProjectEnums: pb.projectEnums,
+		Classes:      classes,
 	}, nil
 }
 
@@ -613,8 +698,13 @@ func macroArgDecline(macro, arg string, res scanResult) string {
 }
 
 // toArguments projects a parsed parameter list onto the passive descriptor
-// argument list, retaining each parsed type (nil for a bare argument) for a
-// later value-conversion phase.
+// argument list, retaining each parsed type (nil for a bare argument).
+//
+// It is the MACRO-argument projection only. A macro argument deliberately
+// carries NO V3 ValueType: BAML injects every project template_string into every
+// function, so a project that declares one declines at the macro gate and no
+// macro argument is ever bound. Function arguments go through
+// [promptBuilder.buildInputValues] instead, which resolves a ValueType for each.
 func toArguments(params []*bamlparser.Param) []promptdescriptor.Argument {
 	if len(params) == 0 {
 		return nil

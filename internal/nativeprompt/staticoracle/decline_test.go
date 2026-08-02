@@ -92,14 +92,6 @@ function F(topic: string) -> string { client C prompt #"{{ Greet(topic) }}"# }`,
 			args:    map[string]any{"topic": "x"},
 			feature: nativeprompt.FeatureTemplateString,
 		},
-		// Media argument (image, incl. URL at value time): declined as media.
-		{
-			name: "media_image_arg",
-			src: `client<llm> C { provider openai options { model "m" } }
-function F(img: image) -> string { client C prompt #"see {{ img }}"# }`,
-			args:    map[string]any{"img": "https://x/y.png"},
-			feature: nativeprompt.FeatureUnsupportedMediaKind,
-		},
 		// Named enum argument: declined as enum/class value.
 		{
 			name: "enum_arg",
@@ -241,6 +233,43 @@ function F(x: In) -> string { client C prompt #"{{ x }}"# }`,
 client<llm> C { provider openai options { model "m" } }
 function F(topic: string) -> Out { client C prompt #"{{ ctx.output_format }} {{ topic }}"# }`,
 			reasonSubstr: "return bundle unavailable",
+		},
+		// De-BAML Slice 7.1b: a MEDIA argument moved DOWN a tier. Media is not a
+		// V3 input value node, so the descriptor is no longer built at all and the
+		// static gate is never reached — the media decline is now structural
+		// (build-time) rather than a render-time feature key.
+		{
+			name: "media_image_arg",
+			src: `client<llm> C { provider openai options { model "m" } }
+function F(img: image) -> string { client C prompt #"see {{ img }}"# }`,
+			reasonSubstr: "media types are not supported",
+		},
+		// A MAP argument: V3 has no map node, so it too declines pre-descriptor.
+		{
+			name: "map_arg",
+			src: `client<llm> C { provider openai options { model "m" } }
+function F(m: map<string, string>) -> string { client C prompt #"{{ m }}"# }`,
+			reasonSubstr: "map types are not supported",
+		},
+		// A RECURSIVE input class graph: representable as a name reference, but
+		// unproven for rendering, so it is a build-time decline (the binder
+		// declines a recursive universe independently).
+		{
+			name: "recursive_input_class",
+			src: `class NodeIn { value string next NodeIn? }
+client<llm> C { provider openai options { model "m" } }
+function F(n: NodeIn) -> string { client C prompt #"{{ n }}"# }`,
+			reasonSubstr: "recursive input class graph",
+		},
+		// An unresolvable PROJECT enum alias poisons V3 for every function, even
+		// one that never mentions the enum: BAML installs the namespace globals as
+		// a complete set, so a partial environment would be a lie.
+		{
+			name: "project_enum_dynamic_alias",
+			src: `enum Color { RED @alias(x) GREEN }
+client<llm> C { provider openai options { model "m" } }
+function F(topic: string) -> string { client C prompt #"About {{ topic }}"# }`,
+			reasonSubstr: "project enum \"Color\"",
 		},
 	}
 

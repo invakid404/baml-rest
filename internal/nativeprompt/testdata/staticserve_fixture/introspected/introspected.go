@@ -170,6 +170,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 613,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
 		}},
 		Client: "StaticOracleClient",
 		ClientConfig: promptdescriptor.ClientConfig{
@@ -194,9 +195,10 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				},
 			}},
 		},
-		Method:   "StaticCompletion",
-		Prompt:   "\n    Write a short, plain note about {{ topic }}.\n  ",
-		Provider: "openai",
+		InputValues: promptdescriptor.InputValueUniverse{},
+		Method:      "StaticCompletion",
+		Prompt:      "\n    Write a short, plain note about {{ topic }}.\n  ",
+		Provider:    "openai",
 		Return: schemadescriptor.Bundle{
 			Method: "StaticCompletion",
 			Target: schemadescriptor.Type{
@@ -205,7 +207,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 			},
 			Version: 1,
 		},
-		Version: 2,
+		Version: 3,
 	}
 }, "StaticCompletionOutputFormat": func() promptdescriptor.Function {
 	return promptdescriptor.Function{
@@ -221,6 +223,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 2379,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
 		}},
 		Client: "StaticOracleClient",
 		ClientConfig: promptdescriptor.ClientConfig{
@@ -245,9 +248,10 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				},
 			}},
 		},
-		Method:   "StaticCompletionOutputFormat",
-		Prompt:   "\n    Summarize {{ topic }}.\n    {{ ctx.output_format }}\n  ",
-		Provider: "openai",
+		InputValues: promptdescriptor.InputValueUniverse{},
+		Method:      "StaticCompletionOutputFormat",
+		Prompt:      "\n    Summarize {{ topic }}.\n    {{ ctx.output_format }}\n  ",
+		Provider:    "openai",
 		Return: schemadescriptor.Bundle{
 			Classes: []schemadescriptor.ClassDef{schemadescriptor.ClassDef{
 				Fields: []schemadescriptor.ClassField{schemadescriptor.ClassField{
@@ -274,7 +278,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 			},
 			Version: 1,
 		},
-		Version: 2,
+		Version: 3,
 	}
 }, "StaticOutputFormat": func() promptdescriptor.Function {
 	return promptdescriptor.Function{
@@ -290,6 +294,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 2023,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
 		}},
 		Client: "StaticOracleClient",
 		ClientConfig: promptdescriptor.ClientConfig{
@@ -314,9 +319,10 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				},
 			}},
 		},
-		Method:   "StaticOutputFormat",
-		Prompt:   "\n    {{ _.role(\"user\") }}\n    Summarize {{ topic }} for me.\n    {{ ctx.output_format }}\n  ",
-		Provider: "openai",
+		InputValues: promptdescriptor.InputValueUniverse{},
+		Method:      "StaticOutputFormat",
+		Prompt:      "\n    {{ _.role(\"user\") }}\n    Summarize {{ topic }} for me.\n    {{ ctx.output_format }}\n  ",
+		Provider:    "openai",
 		Return: schemadescriptor.Bundle{
 			Classes: []schemadescriptor.ClassDef{schemadescriptor.ClassDef{
 				Fields: []schemadescriptor.ClassField{schemadescriptor.ClassField{
@@ -343,7 +349,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 			},
 			Version: 1,
 		},
-		Version: 2,
+		Version: 3,
 	}
 }, "StaticPrimitiveArgs": func() promptdescriptor.Function {
 	return promptdescriptor.Function{
@@ -359,6 +365,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 1073,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
 		}, promptdescriptor.Argument{
 			Name: "count",
 			Type: &bamlparser.TypeExpr{
@@ -371,6 +378,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 1088,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueInt},
 		}, promptdescriptor.Argument{
 			Name: "ratio",
 			Type: &bamlparser.TypeExpr{
@@ -383,6 +391,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 1100,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueFloat},
 		}, promptdescriptor.Argument{
 			Name: "flag",
 			Type: &bamlparser.TypeExpr{
@@ -395,6 +404,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 1113,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueBool},
 		}},
 		Client: "StaticOracleClient",
 		ClientConfig: promptdescriptor.ClientConfig{
@@ -419,9 +429,10 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				},
 			}},
 		},
-		Method:   "StaticPrimitiveArgs",
-		Prompt:   "\n    text={{ text }}\n    count={{ count }}\n    ratio={{ ratio }}\n    flag={{ flag }}\n  ",
-		Provider: "openai",
+		InputValues: promptdescriptor.InputValueUniverse{},
+		Method:      "StaticPrimitiveArgs",
+		Prompt:      "\n    text={{ text }}\n    count={{ count }}\n    ratio={{ ratio }}\n    flag={{ flag }}\n  ",
+		Provider:    "openai",
 		Return: schemadescriptor.Bundle{
 			Method: "StaticPrimitiveArgs",
 			Target: schemadescriptor.Type{
@@ -430,7 +441,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 			},
 			Version: 1,
 		},
-		Version: 2,
+		Version: 3,
 	}
 }, "StaticRecursiveA": func() promptdescriptor.Function {
 	return promptdescriptor.Function{
@@ -446,6 +457,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 3349,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
 		}},
 		Client: "StaticOracleClient",
 		ClientConfig: promptdescriptor.ClientConfig{
@@ -470,9 +482,10 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				},
 			}},
 		},
-		Method:   "StaticRecursiveA",
-		Prompt:   "\n    Summarize {{ topic }} as an alternating A/B chain.\n    {{ ctx.output_format }}\n  ",
-		Provider: "openai",
+		InputValues: promptdescriptor.InputValueUniverse{},
+		Method:      "StaticRecursiveA",
+		Prompt:      "\n    Summarize {{ topic }} as an alternating A/B chain.\n    {{ ctx.output_format }}\n  ",
+		Provider:    "openai",
 		Return: schemadescriptor.Bundle{
 			Classes: []schemadescriptor.ClassDef{schemadescriptor.ClassDef{
 				Fields: []schemadescriptor.ClassField{schemadescriptor.ClassField{
@@ -530,7 +543,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 			},
 			Version: 1,
 		},
-		Version: 2,
+		Version: 3,
 	}
 }, "StaticRecursiveAliasJSON": func() promptdescriptor.Function {
 	return promptdescriptor.Function{
@@ -546,6 +559,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 5506,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
 		}},
 		Client: "StaticOracleClient",
 		ClientConfig: promptdescriptor.ClientConfig{
@@ -570,9 +584,10 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				},
 			}},
 		},
-		Method:   "StaticRecursiveAliasJSON",
-		Prompt:   "\n    Summarize {{ topic }} as arbitrary JSON.\n    {{ ctx.output_format }}\n  ",
-		Provider: "openai",
+		InputValues: promptdescriptor.InputValueUniverse{},
+		Method:      "StaticRecursiveAliasJSON",
+		Prompt:      "\n    Summarize {{ topic }} as arbitrary JSON.\n    {{ ctx.output_format }}\n  ",
+		Provider:    "openai",
 		Return: schemadescriptor.Bundle{
 			Method: "StaticRecursiveAliasJSON",
 			StructuralRecursiveAliases: []schemadescriptor.RecursiveAliasDef{schemadescriptor.RecursiveAliasDef{
@@ -616,7 +631,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 			},
 			Version: 1,
 		},
-		Version: 2,
+		Version: 3,
 	}
 }, "StaticRecursiveAliasJsonValue": func() promptdescriptor.Function {
 	return promptdescriptor.Function{
@@ -632,6 +647,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 6636,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
 		}},
 		Client: "StaticOracleClient",
 		ClientConfig: promptdescriptor.ClientConfig{
@@ -656,9 +672,10 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				},
 			}},
 		},
-		Method:   "StaticRecursiveAliasJsonValue",
-		Prompt:   "\n    Summarize {{ topic }} as arbitrary JSON (wide).\n    {{ ctx.output_format }}\n  ",
-		Provider: "openai",
+		InputValues: promptdescriptor.InputValueUniverse{},
+		Method:      "StaticRecursiveAliasJsonValue",
+		Prompt:      "\n    Summarize {{ topic }} as arbitrary JSON (wide).\n    {{ ctx.output_format }}\n  ",
+		Provider:    "openai",
 		Return: schemadescriptor.Bundle{
 			Method: "StaticRecursiveAliasJsonValue",
 			StructuralRecursiveAliases: []schemadescriptor.RecursiveAliasDef{schemadescriptor.RecursiveAliasDef{
@@ -708,7 +725,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 			},
 			Version: 1,
 		},
-		Version: 2,
+		Version: 3,
 	}
 }, "StaticRecursiveAliasJsonValueReordered": func() promptdescriptor.Function {
 	return promptdescriptor.Function{
@@ -724,6 +741,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 7220,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
 		}},
 		Client: "StaticOracleClient",
 		ClientConfig: promptdescriptor.ClientConfig{
@@ -748,9 +766,10 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				},
 			}},
 		},
-		Method:   "StaticRecursiveAliasJsonValueReordered",
-		Prompt:   "\n    Summarize {{ topic }} as arbitrary JSON (reordered arms).\n    {{ ctx.output_format }}\n  ",
-		Provider: "openai",
+		InputValues: promptdescriptor.InputValueUniverse{},
+		Method:      "StaticRecursiveAliasJsonValueReordered",
+		Prompt:      "\n    Summarize {{ topic }} as arbitrary JSON (reordered arms).\n    {{ ctx.output_format }}\n  ",
+		Provider:    "openai",
 		Return: schemadescriptor.Bundle{
 			Method: "StaticRecursiveAliasJsonValueReordered",
 			StructuralRecursiveAliases: []schemadescriptor.RecursiveAliasDef{schemadescriptor.RecursiveAliasDef{
@@ -800,7 +819,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 			},
 			Version: 1,
 		},
-		Version: 2,
+		Version: 3,
 	}
 }, "StaticRecursiveB": func() promptdescriptor.Function {
 	return promptdescriptor.Function{
@@ -816,6 +835,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 3794,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
 		}},
 		Client: "StaticOracleClient",
 		ClientConfig: promptdescriptor.ClientConfig{
@@ -840,9 +860,10 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				},
 			}},
 		},
-		Method:   "StaticRecursiveB",
-		Prompt:   "\n    Summarize {{ topic }} as an alternating B/A chain.\n    {{ ctx.output_format }}\n  ",
-		Provider: "openai",
+		InputValues: promptdescriptor.InputValueUniverse{},
+		Method:      "StaticRecursiveB",
+		Prompt:      "\n    Summarize {{ topic }} as an alternating B/A chain.\n    {{ ctx.output_format }}\n  ",
+		Provider:    "openai",
 		Return: schemadescriptor.Bundle{
 			Classes: []schemadescriptor.ClassDef{schemadescriptor.ClassDef{
 				Fields: []schemadescriptor.ClassField{schemadescriptor.ClassField{
@@ -900,7 +921,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 			},
 			Version: 1,
 		},
-		Version: 2,
+		Version: 3,
 	}
 }, "StaticRecursiveLoop": func() promptdescriptor.Function {
 	return promptdescriptor.Function{
@@ -916,6 +937,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 4311,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
 		}},
 		Client: "StaticOracleClient",
 		ClientConfig: promptdescriptor.ClientConfig{
@@ -940,9 +962,10 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				},
 			}},
 		},
-		Method:   "StaticRecursiveLoop",
-		Prompt:   "\n    Summarize {{ topic }} as a self-referential loop.\n    {{ ctx.output_format }}\n  ",
-		Provider: "openai",
+		InputValues: promptdescriptor.InputValueUniverse{},
+		Method:      "StaticRecursiveLoop",
+		Prompt:      "\n    Summarize {{ topic }} as a self-referential loop.\n    {{ ctx.output_format }}\n  ",
+		Provider:    "openai",
 		Return: schemadescriptor.Bundle{
 			Classes: []schemadescriptor.ClassDef{schemadescriptor.ClassDef{
 				Fields: []schemadescriptor.ClassField{schemadescriptor.ClassField{
@@ -971,7 +994,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 			},
 			Version: 1,
 		},
-		Version: 2,
+		Version: 3,
 	}
 }, "StaticRecursiveNode": func() promptdescriptor.Function {
 	return promptdescriptor.Function{
@@ -987,6 +1010,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 2936,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
 		}},
 		Client: "StaticOracleClient",
 		ClientConfig: promptdescriptor.ClientConfig{
@@ -1011,9 +1035,10 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				},
 			}},
 		},
-		Method:   "StaticRecursiveNode",
-		Prompt:   "\n    Summarize {{ topic }} as a linked list of notes.\n    {{ ctx.output_format }}\n  ",
-		Provider: "openai",
+		InputValues: promptdescriptor.InputValueUniverse{},
+		Method:      "StaticRecursiveNode",
+		Prompt:      "\n    Summarize {{ topic }} as a linked list of notes.\n    {{ ctx.output_format }}\n  ",
+		Provider:    "openai",
 		Return: schemadescriptor.Bundle{
 			Classes: []schemadescriptor.ClassDef{schemadescriptor.ClassDef{
 				Fields: []schemadescriptor.ClassField{schemadescriptor.ClassField{
@@ -1048,7 +1073,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 			},
 			Version: 1,
 		},
-		Version: 2,
+		Version: 3,
 	}
 }, "StaticRecursiveNodeAnn": func() promptdescriptor.Function {
 	return promptdescriptor.Function{
@@ -1064,6 +1089,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 4907,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
 		}},
 		Client: "StaticOracleClient",
 		ClientConfig: promptdescriptor.ClientConfig{
@@ -1088,9 +1114,10 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				},
 			}},
 		},
-		Method:   "StaticRecursiveNodeAnn",
-		Prompt:   "\n    Summarize {{ topic }} as an annotated linked list.\n    {{ ctx.output_format }}\n  ",
-		Provider: "openai",
+		InputValues: promptdescriptor.InputValueUniverse{},
+		Method:      "StaticRecursiveNodeAnn",
+		Prompt:      "\n    Summarize {{ topic }} as an annotated linked list.\n    {{ ctx.output_format }}\n  ",
+		Provider:    "openai",
 		Return: schemadescriptor.Bundle{
 			Classes: []schemadescriptor.ClassDef{schemadescriptor.ClassDef{
 				Fields: []schemadescriptor.ClassField{schemadescriptor.ClassField{
@@ -1126,7 +1153,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 			},
 			Version: 1,
 		},
-		Version: 2,
+		Version: 3,
 	}
 }, "StaticRoleChat": func() promptdescriptor.Function {
 	return promptdescriptor.Function{
@@ -1142,6 +1169,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 1521,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
 		}, promptdescriptor.Argument{
 			Name: "count",
 			Type: &bamlparser.TypeExpr{
@@ -1154,6 +1182,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 1536,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueInt},
 		}},
 		Client: "StaticOracleClient",
 		ClientConfig: promptdescriptor.ClientConfig{
@@ -1178,9 +1207,10 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				},
 			}},
 		},
-		Method:   "StaticRoleChat",
-		Prompt:   "\n    {{ _.role(\"system\") }}\n    You are a concise assistant.\n    {{ _.role(\"user\") }}\n    Tell me about {{ topic }}.\n    {{ _.chat(role=\"assistant\") }}\n    Here are {{ count }} facts.\n  ",
-		Provider: "openai",
+		InputValues: promptdescriptor.InputValueUniverse{},
+		Method:      "StaticRoleChat",
+		Prompt:      "\n    {{ _.role(\"system\") }}\n    You are a concise assistant.\n    {{ _.role(\"user\") }}\n    Tell me about {{ topic }}.\n    {{ _.chat(role=\"assistant\") }}\n    Here are {{ count }} facts.\n  ",
+		Provider:    "openai",
 		Return: schemadescriptor.Bundle{
 			Method: "StaticRoleChat",
 			Target: schemadescriptor.Type{
@@ -1189,7 +1219,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 			},
 			Version: 1,
 		},
-		Version: 2,
+		Version: 3,
 	}
 }}
 
@@ -1208,6 +1238,249 @@ func StaticPromptDescriptor(method string) (promptdescriptor.Function, bool) {
 		return promptdescriptor.Function{}, false
 	}
 	return factory(), true
+}
+
+// staticPromptValue* are the de-BAML Slice 7.1b generated value projectors: pure,
+// reflection-free functions from a generated client Go carrier to the neutral
+// promptdescriptor.StaticValue tree. Every canonical BAML enum member / class field
+// name they write is a LITERAL taken from the V3 source graph, and every Go field
+// selector was proven by a build-time AST audit of the generated types package.
+// SENSITIVE: they carry real request arguments; never log or format their input.
+func staticPromptValueBool(v bool) promptdescriptor.StaticValue {
+	return promptdescriptor.StaticValue{
+		Bool: v,
+		Kind: promptdescriptor.StaticBool,
+	}
+}
+func staticPromptValueFloat(v float64) promptdescriptor.StaticValue {
+	return promptdescriptor.StaticValue{
+		Float: v,
+		Kind:  promptdescriptor.StaticFloat,
+	}
+}
+func staticPromptValueInt(v int64) promptdescriptor.StaticValue {
+	return promptdescriptor.StaticValue{
+		Int:  v,
+		Kind: promptdescriptor.StaticInt,
+	}
+}
+func staticPromptValueString(v string) promptdescriptor.StaticValue {
+	return promptdescriptor.StaticValue{
+		Kind:   promptdescriptor.StaticString,
+		String: v,
+	}
+}
+
+// StaticPromptArgumentProjectors maps a BAML method name to its generated argument
+// projector: an exact-type-assertion, direct-field-selector function from the ordered
+// []any the generated adapter emits to the neutral ordered promptdescriptor.ArgumentValue
+// vector the native static binder consumes (de-BAML Slice 7.1b). It performs NO runtime
+// reflection, JSON marshalling, Encode() call, struct-tag read, or map iteration, and it
+// returns ok=false — never a partial vector — on any arity or type mismatch.
+var StaticPromptArgumentProjectors = map[string]func([]any) ([]promptdescriptor.ArgumentValue, bool){"StaticCompletion": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticCompletionOutputFormat": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticOutputFormat": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticPrimitiveArgs": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 4 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	a1, ok1 := args[1].(int64)
+	if !ok1 {
+		return nil, false
+	}
+	a2, ok2 := args[2].(float64)
+	if !ok2 {
+		return nil, false
+	}
+	a3, ok3 := args[3].(bool)
+	if !ok3 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "text",
+		Value: staticPromptValueString(a0),
+	}, promptdescriptor.ArgumentValue{
+		Name:  "count",
+		Value: staticPromptValueInt(a1),
+	}, promptdescriptor.ArgumentValue{
+		Name:  "ratio",
+		Value: staticPromptValueFloat(a2),
+	}, promptdescriptor.ArgumentValue{
+		Name:  "flag",
+		Value: staticPromptValueBool(a3),
+	}}, true
+}, "StaticRecursiveA": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticRecursiveAliasJSON": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticRecursiveAliasJsonValue": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticRecursiveAliasJsonValueReordered": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticRecursiveB": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticRecursiveLoop": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticRecursiveNode": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticRecursiveNodeAnn": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticRoleChat": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 2 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	a1, ok1 := args[1].(int64)
+	if !ok1 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}, promptdescriptor.ArgumentValue{
+		Name:  "count",
+		Value: staticPromptValueInt(a1),
+	}}, true
+}}
+
+// StaticPromptProjectorDeclines maps a BAML method name that HAS a V3 descriptor to the
+// stable build-time reason no argument projector could be generated for it (a missing,
+// ambiguous, or mismatched generated Go selector, or a value shape this slice does not
+// project). Such a method has no native static claim: the seam declines pre-render and
+// BAML serves it. Every entry is a #583 teardown blocker, not an accepted fallback.
+var StaticPromptProjectorDeclines = map[string]string{}
+
+// StaticPromptArgumentValues projects one call's ordered, already-typed arguments into
+// the neutral ArgumentValue vector for method, returning ok=false when the method has no
+// generated projector or the supplied arguments do not match its exact Go types. A false
+// result means "no native static value binding; stay on the BAML path" — it NEVER falls
+// back to reflection or to the raw argument map.
+func StaticPromptArgumentValues(method string, args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	project, ok := StaticPromptArgumentProjectors[method]
+	if !ok {
+		return nil, false
+	}
+	return project(args)
 }
 
 // MediaParams maps function name -> param name -> media kind for parameters that are BAML media types.

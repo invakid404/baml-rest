@@ -173,6 +173,34 @@ func StaticPromptDescriptor(method string) (promptdescriptor.Function, bool) {
 	return factory(), true
 }
 
+// StaticPromptArgumentProjectors maps a BAML method name to its generated argument
+// projector: an exact-type-assertion, direct-field-selector function from the ordered
+// []any the generated adapter emits to the neutral ordered promptdescriptor.ArgumentValue
+// vector the native static binder consumes (de-BAML Slice 7.1b). It performs NO runtime
+// reflection, JSON marshalling, Encode() call, struct-tag read, or map iteration, and it
+// returns ok=false — never a partial vector — on any arity or type mismatch.
+var StaticPromptArgumentProjectors = map[string]func([]any) ([]promptdescriptor.ArgumentValue, bool){}
+
+// StaticPromptProjectorDeclines maps a BAML method name that HAS a V3 descriptor to the
+// stable build-time reason no argument projector could be generated for it (a missing,
+// ambiguous, or mismatched generated Go selector, or a value shape this slice does not
+// project). Such a method has no native static claim: the seam declines pre-render and
+// BAML serves it. Every entry is a #583 teardown blocker, not an accepted fallback.
+var StaticPromptProjectorDeclines = map[string]string{}
+
+// StaticPromptArgumentValues projects one call's ordered, already-typed arguments into
+// the neutral ArgumentValue vector for method, returning ok=false when the method has no
+// generated projector or the supplied arguments do not match its exact Go types. A false
+// result means "no native static value binding; stay on the BAML path" — it NEVER falls
+// back to reflection or to the raw argument map.
+func StaticPromptArgumentValues(method string, args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	project, ok := StaticPromptArgumentProjectors[method]
+	if !ok {
+		return nil, false
+	}
+	return project(args)
+}
+
 // MediaParams maps function name -> param name -> media kind for parameters that are BAML media types.
 var MediaParams = map[string]map[string]bamlutils.MediaKind{}
 

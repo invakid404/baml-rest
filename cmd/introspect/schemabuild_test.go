@@ -4,8 +4,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
+
+	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
 )
 
 // TestBuildStaticSchemasIntegrationCorpus runs the full production
@@ -91,30 +94,169 @@ func TestBuildPromptDescriptorsIntegrationCorpus(t *testing.T) {
 		}
 	}
 
-	// Per-descriptor invariants: the Return bundle is the EXACT static bundle,
-	// the method name matches its key, and Client/Provider are resolved.
-	for name, d := range cfg.staticPromptDescriptors {
+	// De-BAML Slice 7.1b: this corpus declares `enum DynamicCategory { ... @@dynamic }`.
+	// BAML installs one Jinja namespace global per PROJECT enum, and it builds
+	// that IR with the request's type_builder overlay applied — so a @@dynamic
+	// enum's member set is NOT a build-time fact. A V3 descriptor may not describe
+	// a PARTIAL enum environment (that would be a render context BAML never has),
+	// so the whole project declines V3 and therefore has NO prompt descriptor at
+	// all. Every function here is a #583 ledger entry, not an accepted permanent
+	// fallback: removing @@dynamic from the corpus (or proving dynamic enums)
+	// restores descriptors.
+	//
+	// This asserts the GLOBAL shape deliberately — a regression that silently
+	// re-admitted a partial enum universe would otherwise pass unnoticed.
+	if len(cfg.staticPromptDescriptors) != 0 {
+		t.Errorf("expected zero prompt descriptors while the corpus declares a @@dynamic enum, got %d", len(cfg.staticPromptDescriptors))
+	}
+	for _, name := range []string{"GetGreeting", "GetSimple", "GetCategory"} {
+		reason, ok := cfg.staticPromptDeclines[name]
+		if !ok {
+			t.Errorf("%s expected a V3 input-value decline, got none", name)
+			continue
+		}
+		if !strings.Contains(reason, "input value graph cannot be resolved faithfully") ||
+			!strings.Contains(reason, "DynamicCategory") {
+			t.Errorf("%s decline reason %q should name the unresolvable @@dynamic project enum", name, reason)
+		}
+	}
+
+	// The @@dynamic-OUTPUT function is declined for the same global reason now;
+	// its own return-bundle decline (a) is proven independently by the static
+	// schema half above and by internal/nativeschema/prompt_test.go.
+	if _, ok := cfg.staticPromptDescriptors["GetDynamic"]; ok {
+		t.Errorf("GetDynamic (@@dynamic output) should be declined, not a descriptor")
+	}
+}
+
+// TestBuildPromptDescriptorsPositiveInvariants exercises the PER-DESCRIPTOR
+// invariants through the same production parseBamlSourceDir pipeline.
+//
+// It exists because the integration corpus above declares a @@dynamic enum and
+// therefore correctly yields ZERO descriptors — which makes every per-descriptor
+// loop vacuous there. Those invariants (key == Method, resolved Client/Provider,
+// Return == the exact static bundle, and the descriptor/decline partition) are
+// real contracts, so they are asserted here against a small NON-dynamic project
+// that genuinely produces descriptors. Both halves are needed: the corpus test
+// pins the global decline, this one pins the positive shape.
+func TestBuildPromptDescriptorsPositiveInvariants(t *testing.T) {
+	dir := t.TempDir()
+	// A deliberately ordinary project: a named client, an aliased enum, a nested
+	// input class, and one function per admitted argument shape — plus ONE
+	// function the builder must decline (a map argument), so the partition and
+	// the decline ledger are both non-empty.
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	write("clients.baml", `client<llm> PositiveClient {
+  provider openai
+  options { model "m" api_key "k" }
+}
+`)
+	write("types.baml", `enum Hue {
+  RED @alias("rouge")
+  BLUE
+}
+
+class Swatch {
+  hue Hue
+  label string @alias("etiquette")
+}
+`)
+	write("functions.baml", `function PlainText(topic: string) -> string {
+  client PositiveClient
+  prompt #"About {{ topic }}"#
+}
+
+function EnumArg(hue: Hue) -> string {
+  client PositiveClient
+  prompt #"{{ hue }}"#
+}
+
+function ClassArg(s: Swatch) -> string {
+  client PositiveClient
+  prompt #"{{ s }}"#
+}
+
+function MapArg(m: map<string, string>) -> string {
+  client PositiveClient
+  prompt #"{{ m }}"#
+}
+`)
+
+	cfg := parseBamlSourceDir(dir)
+
+	wantDescriptors := []string{"PlainText", "EnumArg", "ClassArg"}
+	if len(cfg.staticPromptDescriptors) != len(wantDescriptors) {
+		t.Fatalf("built %d descriptors (%v), want exactly %v",
+			len(cfg.staticPromptDescriptors), descriptorNames(cfg), wantDescriptors)
+	}
+
+	for _, name := range wantDescriptors {
+		d, ok := cfg.staticPromptDescriptors[name]
+		if !ok {
+			t.Errorf("%s has no descriptor (decline: %q)", name, cfg.staticPromptDeclines[name])
+			continue
+		}
 		if d.Method != name {
 			t.Errorf("descriptor keyed %q has Method %q", name, d.Method)
 		}
-		if d.Client == "" || d.Provider == "" {
-			t.Errorf("descriptor %q has empty Client %q / Provider %q", name, d.Client, d.Provider)
+		if d.Version != promptdescriptor.Version {
+			t.Errorf("descriptor %q version = %d, want %d", name, d.Version, promptdescriptor.Version)
+		}
+		if d.Client != "PositiveClient" || d.Provider != "openai" {
+			t.Errorf("descriptor %q Client/Provider = %q/%q, want PositiveClient/openai", name, d.Client, d.Provider)
 		}
 		if !reflect.DeepEqual(d.Return, cfg.staticSchemas[name]) {
 			t.Errorf("descriptor %q Return does not equal the static bundle", name)
 		}
+		// V3: the project enum set is installed WHOLE on every function, and every
+		// argument carries a resolved value type.
+		if len(d.InputValues.ProjectEnums) != 1 || d.InputValues.ProjectEnums[0].Name != "Hue" {
+			t.Errorf("descriptor %q project enums = %+v, want exactly the source's Hue", name, d.InputValues.ProjectEnums)
+		}
+		for _, a := range d.Args {
+			if a.ValueType == nil {
+				t.Errorf("descriptor %q argument %q has no V3 ValueType", name, a.Name)
+			}
+		}
+		if _, both := cfg.staticPromptDeclines[name]; both {
+			t.Errorf("%s appears in BOTH descriptors and declines", name)
+		}
 	}
 
-	// A known-eligible function (string output, named client) builds; a known
-	// @@dynamic-output function inherits the static return-bundle decline (a).
-	if _, ok := cfg.staticPromptDescriptors["GetGreeting"]; !ok {
-		t.Errorf("GetGreeting expected an eligible prompt descriptor, decline=%q",
-			cfg.staticPromptDeclines["GetGreeting"])
+	// The class closure really is resolved from source (aliases + field order),
+	// so the positive assertions above are about real content.
+	class := cfg.staticPromptDescriptors["ClassArg"].InputValues.Classes
+	if len(class) != 1 || class[0].Name != "Swatch" || len(class[0].Fields) != 2 ||
+		class[0].Fields[0].Canonical != "hue" || class[0].Fields[1].Canonical != "label" ||
+		class[0].Fields[1].Alias == nil || *class[0].Fields[1].Alias != "etiquette" {
+		t.Errorf("ClassArg class closure = %+v, want the source-resolved Swatch", class)
 	}
-	if _, ok := cfg.staticPromptDescriptors["GetDynamic"]; ok {
-		t.Errorf("GetDynamic (@@dynamic output) should be declined, not a descriptor")
+
+	// The partition is non-vacuous in BOTH directions: the map argument declines.
+	reason, ok := cfg.staticPromptDeclines["MapArg"]
+	if !ok {
+		t.Fatal("MapArg expected a decline (map is not a V3 value node), got none")
 	}
-	if reason := cfg.staticPromptDeclines["GetDynamic"]; !strings.Contains(reason, "return bundle unavailable") {
-		t.Errorf("GetDynamic decline reason %q should mention the unavailable return bundle", reason)
+	if !strings.Contains(reason, "map types are not supported") {
+		t.Errorf("MapArg decline reason %q should name the unsupported map", reason)
 	}
+	if _, ok := cfg.staticPromptDescriptors["MapArg"]; ok {
+		t.Error("MapArg must not have a descriptor")
+	}
+}
+
+// descriptorNames returns the built descriptor method names, sorted, for
+// diagnostics only.
+func descriptorNames(cfg *bamlConfig) []string {
+	out := make([]string, 0, len(cfg.staticPromptDescriptors))
+	for k := range cfg.staticPromptDescriptors {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

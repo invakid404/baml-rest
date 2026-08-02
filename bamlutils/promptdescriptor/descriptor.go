@@ -55,17 +55,139 @@ import (
 //     request bytes. Existing fields keep their meaning, so a producer/consumer
 //     that only reads the Version-1 fields is source-compatible; the version
 //     fence exists so a stale consumer rejects rather than under-reads.
-const Version = 2
+//   - 3 (de-BAML Slice 7.1b): adds the SOURCE-RESOLVED input value graph —
+//     [Function.InputValues] and a per-argument [Argument.ValueType]. It is the
+//     ONLY authority for enum namespaces, canonical enum identity, display
+//     aliases, class field order/aliases, and list element types. The bump is a
+//     real contract change, not a nullable side-map: a V1/V2 descriptor carries
+//     no resolved universe at all, so a native binder MUST reject it rather than
+//     treat the absent universe as "no enums/classes declared" and render a
+//     value BAML would have rendered differently. [Argument.Type] survives for
+//     compatibility and diagnostics but is NEVER a value-semantics input.
+const Version = 3
+
+// ValueKind tags one node of the V3 source-resolved input value graph. It is
+// deliberately SMALLER than BAML's type system: only the shapes a native static
+// render has a stock differential for. Maps, tuples, unions, literal types,
+// media, and every other BAML type node have no ValueKind — a function whose
+// argument graph reaches one gets NO V3 descriptor at all (a build-time
+// decline), rather than a lossy approximation.
+type ValueKind string
+
+const (
+	// ValueString / ValueInt / ValueFloat / ValueBool are BAML's scalar
+	// primitives, bound with the explicit scalar constructors.
+	ValueString ValueKind = "string"
+	ValueInt    ValueKind = "int"
+	ValueFloat  ValueKind = "float"
+	ValueBool   ValueKind = "bool"
+	// ValueNull is BAML's `null` primitive in a type position.
+	ValueNull ValueKind = "null"
+	// ValueEnum names a [ResolvedEnum] in [InputValueUniverse.ProjectEnums] by
+	// its exact source name (EnumName).
+	ValueEnum ValueKind = "enum"
+	// ValueClass names a [ResolvedClass] in [InputValueUniverse.Classes] by its
+	// exact source name (ClassName).
+	ValueClass ValueKind = "class"
+	// ValueList is a BAML list; Elem is its recursively resolved element type.
+	ValueList ValueKind = "list"
+)
+
+// ResolvedValueType is one node of the V3 input value graph. It is a named
+// graph EDGE, never a copied definition: an enum/class node refers to
+// [InputValueUniverse] by exact source name, so a definition has exactly one
+// authority and a recursive graph stays representable without duplication.
+//
+// Exactly one shape field is meaningful per Kind: EnumName for [ValueEnum],
+// ClassName for [ValueClass], Elem for [ValueList], and none for the scalars.
+// Nullable records BAML's optionality (`Color?`) explicitly, so the descriptor
+// never lies about the source graph — but recording a nullable edge is NOT a
+// claim that a nil value renders correctly. Slice 7.1b's binder admits a nil
+// only where a source fixture and stock differential prove that rendering
+// shape; every other nil declines.
+type ResolvedValueType struct {
+	Kind      ValueKind
+	Nullable  bool
+	EnumName  string             // ValueEnum only
+	ClassName string             // ValueClass only
+	Elem      *ResolvedValueType // ValueList only
+}
+
+// ResolvedEnumMember is one enum variant in canonical declaration order.
+// Canonical is the variant's source name — the comparison identity BAML uses.
+// Alias is the RESOLVED display string of an `@alias("...")`, or nil when the
+// variant is unaliased (nil means "display the canonical name"; a non-nil empty
+// string is the distinct `@alias("")` case and is preserved).
+type ResolvedEnumMember struct {
+	Canonical string
+	Alias     *string
+}
+
+// ResolvedEnum is one project enum: its source name and its members in
+// canonical declaration order.
+type ResolvedEnum struct {
+	Name    string
+	Members []ResolvedEnumMember
+}
+
+// ResolvedClassField is one class field in canonical source declaration order.
+// Canonical is the field's source name (the attribute/iteration key), Alias the
+// resolved `@alias("...")` display key or nil, and Type its recursively
+// resolved value type.
+type ResolvedClassField struct {
+	Canonical string
+	Alias     *string
+	Type      ResolvedValueType
+}
+
+// ResolvedClass is one input class: its source name and its fields in canonical
+// source declaration order.
+type ResolvedClass struct {
+	Name   string
+	Fields []ResolvedClassField
+}
+
+// InputValueUniverse is the V3 source-resolved definition set a function's
+// arguments are interpreted against. Both members are ORDERED SLICES, never
+// maps: Go map iteration must never determine a rendered order or an identity.
+//
+//   - ProjectEnums is EVERY enum declared in the project, in deterministic BAML
+//     source order (parsed file order, then within-file declaration order). It
+//     is deliberately broader than argument reachability because that is stock
+//     v0.223's model: render_prompt installs one namespace global per IR enum,
+//     so `Color.RED` must resolve even in a no-argument function that only
+//     mentions Color in a literal comparison.
+//   - Classes is the TRANSITIVE input-class closure reachable from the
+//     function's arguments, in deterministic source declaration order. Each
+//     field recursively describes its own value type.
+//
+// Type ALIASES are expanded to their resolved underlying value type: a BAML
+// type alias has no distinct Jinja host identity, so carrying it as a node
+// would invent a distinction the renderer does not have.
+type InputValueUniverse struct {
+	ProjectEnums []ResolvedEnum
+	Classes      []ResolvedClass
+}
 
 // Argument is one named argument of a function signature or a template-string
-// macro. Type is the argument's retained parsed type expression; it is nil for
-// a bare argument written without a `: type` annotation (BAML permits this in a
-// named-argument list), exactly like [bamlparser.Param]. The type is retained
-// (not lowered) so a later value-conversion phase can bind incoming static
-// arguments to the BAML-value/Jinja model.
+// macro.
+//
+// Type is the argument's retained parsed type expression; it is nil for a bare
+// argument written without a `: type` annotation (BAML permits this in a named-
+// argument list), exactly like [bamlparser.Param]. It is LEGACY source spelling
+// kept for compatibility and diagnostics: a V3 consumer must never read it for
+// value semantics, because a name reference records only a spelling ("Color")
+// and not the resolved declaration.
+//
+// ValueType is the V3 source-resolved value type and is REQUIRED on every
+// argument of a Version-3 [Function]; it refers to [Function.InputValues] by
+// exact source name. A macro argument ([TemplateString.Args]) carries no
+// ValueType — the macro gate declines every function in a project that declares
+// one, so no macro argument is ever bound.
 type Argument struct {
-	Name string
-	Type *bamlparser.TypeExpr
+	Name      string
+	Type      *bamlparser.TypeExpr
+	ValueType *ResolvedValueType
 }
 
 // TemplateString is a retained BAML `template_string` (macro) declaration.
@@ -115,6 +237,10 @@ type TemplateString struct {
 //     client), in which case only Client/Provider are known. Passive: no serving
 //     path consumes it — a later native body phase reads it to reproduce BAML's
 //     exact request bytes.
+//   - InputValues is the source-resolved input value graph (descriptor
+//     Version 3+): every project enum plus the transitive class closure the
+//     arguments reach. It is REQUIRED for Version 3 and is the ONLY authority a
+//     native binder consults for enum/class/list semantics.
 type Function struct {
 	Version      int
 	Method       string
@@ -125,6 +251,7 @@ type Function struct {
 	Return       schemadescriptor.Bundle
 	Macros       []TemplateString
 	ClientConfig ClientConfig
+	InputValues  InputValueUniverse
 }
 
 // ModelProvenance classifies how a client's target model string was resolved

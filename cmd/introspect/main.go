@@ -77,6 +77,12 @@ func (c *config) promptDescriptorPkg() string { return c.InterfacesPkg + "/promp
 func (c *config) bamlParserPkg() string       { return c.InterfacesPkg + "/bamlparser" }
 func (c *config) schemaDescriptorPkg() string { return c.InterfacesPkg + "/schemadescriptor" }
 
+// typesPkg returns the generated client's `types` subpackage import path — the
+// package that holds BAML classes as Go structs and BAML enums as `type X
+// string`. The de-BAML Slice 7.1b argument projector both AUDITS it (via the
+// AST) and NAMES it (in the emitted type assertions / helper signatures).
+func (c *config) typesPkg() string { return c.streamPkg() + "/types" }
+
 // outputFile returns the path of the introspected.go file to emit.
 func (c *config) outputFile() string {
 	return filepath.Join(c.OutputDir, "introspected.go")
@@ -171,8 +177,10 @@ func generateStub(cfg *config) {
 	// SupportsWithClient defaults to false in stub mode.
 	generateBuildRequestVars(out, nil, nil, "", false, cfg.retryPkg())
 
-	// .baml config stubs (empty maps)
-	generateBamlConfigVars(out, cfg)
+	// .baml config stubs (empty maps). The stub has no generated client, so
+	// the Slice 7.1b projector audit has no `types` package to read: it emits
+	// an empty projector registry (every method stays on the BAML path).
+	generateBamlConfigVars(out, cfg, nil)
 
 	// TypeBuilder stubs
 	generateTypeBuilderTypes(out, true)
@@ -205,6 +213,16 @@ func generateFull(cfg *config) {
 		// so the codegen.Generate(selfPkg) wrapper can pick the right
 		// Options without a hardcoded compile-time decision.
 		supportsWithClient bool
+
+		// typesIdx is the de-BAML Slice 7.1b AST audit of the generated
+		// client's `types` subpackage (BAML classes as Go structs with
+		// json-tagged fields, BAML enums as `type X string`). It is the
+		// build-time proof that a generated field selector really carries
+		// a given canonical BAML field, so the emitted argument projector
+		// needs no runtime reflection. It stays nil when the client has no
+		// types subpackage, which simply limits projectors to scalar
+		// arguments. See projector.go.
+		typesIdx = newTypesIndex(cfg.typesPkg())
 	)
 
 	err := filepath.WalkDir(cfg.InputDir, func(path string, dirEntry os.DirEntry, err error) error {
@@ -296,6 +314,15 @@ func generateFull(cfg *config) {
 		// Collect type_builder files
 		if strings.Contains(path, "type_builder") && strings.HasSuffix(path, ".go") {
 			typeBuilderFiles = append(typeBuilderFiles, &parsedFile{file: file, path: path})
+		}
+
+		// Collect the `types` subpackage for the Slice 7.1b projector audit.
+		// The directory match is exact (the immediate parent must be "types"
+		// under the walk root) so `stream_types` — a DIFFERENT package whose
+		// partial carriers are not the final value carriers — can never be
+		// mistaken for it.
+		if filepath.Clean(filepath.Dir(path)) == filepath.Clean(filepath.Join(cfg.InputDir, "types")) {
+			typesIdx.addFile(file)
 		}
 
 		if inRootDir {
@@ -438,7 +465,7 @@ func generateFull(cfg *config) {
 	generateBuildRequestVars(out, requestFile, streamRequestFile, streamPkg, supportsWithClient, cfg.retryPkg())
 
 	// --- .baml introspection data for provider detection and retry ---
-	generateBamlConfigVars(out, cfg)
+	generateBamlConfigVars(out, cfg, typesIdx)
 
 	// MediaParams
 	generateMediaParams(out, mediaParams, cfg.InterfacesPkg)
@@ -933,10 +960,29 @@ func generateMediaParams(out *jen.File, mediaParams map[string][]mediaParamInfo,
 		return
 	}
 
-	var outerEntries []jen.Code
-	for funcName, params := range mediaParams {
+	// DETERMINISM: the function-name keys are SORTED before emission. jennifer
+	// renders a map literal's `Values(...)` in the order it is given (unlike a
+	// struct-literal Dict, which it sorts), so ranging the Go map directly would
+	// make the emitted order depend on Go's randomized map iteration — the same
+	// bytes in a different order on every process. That is invisible while a
+	// project has at most one media function and becomes an intermittent
+	// fixture-drift/CI failure the moment it has two.
+	//
+	// Every other keyed map this file emits already sorts its keys the same way;
+	// internal/nativeprompt/staticservefixture's repeated separate-process
+	// codegen guard is the regression fence for the whole class.
+	funcNames := make([]string, 0, len(mediaParams))
+	for funcName := range mediaParams {
+		funcNames = append(funcNames, funcName)
+	}
+	sort.Strings(funcNames)
+
+	outerEntries := make([]jen.Code, 0, len(funcNames))
+	for _, funcName := range funcNames {
+		// The per-function param list keeps its SOURCE (AST walk) order; only the
+		// outer map needed sorting.
 		var innerEntries []jen.Code
-		for _, p := range params {
+		for _, p := range mediaParams[funcName] {
 			innerEntries = append(innerEntries,
 				jen.Lit(p.paramName).Op(":").Qual(interfacesPkg, p.kindConst),
 			)
@@ -2088,7 +2134,7 @@ func emitFallbackRoundRobinDeferredWarnings(cfg *bamlConfig, logf func(string, .
 	}
 }
 
-func generateBamlConfigVars(out *jen.File, cliCfg *config) {
+func generateBamlConfigVars(out *jen.File, cliCfg *config, typesIdx *typesIndex) {
 	retryPkg := cliCfg.retryPkg()
 
 	// Parse .baml source files from the configured source directory.
@@ -2383,6 +2429,13 @@ func generateBamlConfigVars(out *jen.File, cliCfg *config) {
 	// would be a drift source (scope R4). A response-side static-parse slice may
 	// add its own schema-only accessor later if it needs prompt-less functions.
 	emitStaticPromptDescriptors(out, cliCfg, cfg.staticPromptDescriptors, cfg.staticPromptDeclines)
+
+	// Generated ARGUMENT PROJECTOR emission (de-BAML Slice 7.1b). The V3
+	// descriptor above says what a value MEANS; this emits the code that reads
+	// the generated call's concrete typed arguments and produces the neutral
+	// ordered ArgumentValue vector, gated on a build-time AST audit of the
+	// generated `types` package. See projector.go.
+	emitStaticPromptArgumentProjectors(out, cliCfg, cfg.staticPromptDescriptors, typesIdx)
 }
 
 // bedrockOptionValueLit renders a bedrockOptionValue as the
@@ -2634,7 +2687,149 @@ func (e *promptEmitter) function(fn promptdescriptor.Function) jen.Code {
 		d[jen.Id("Macros")] = e.templateStrings(fn.Macros)
 	}
 	d[jen.Id("ClientConfig")] = e.clientConfig(fn.ClientConfig)
+	// InputValues is structurally required by descriptor Version 3 (de-BAML
+	// Slice 7.1b): a native binder MUST see the source-resolved universe, never
+	// an absent one it could mistake for "this project declares no enums".
+	d[jen.Id("InputValues")] = e.inputValueUniverse(fn.InputValues)
 	return jen.Qual(e.pd, "Function").Values(d)
+}
+
+// --- de-BAML Slice 7.1b: the V3 source-resolved input value universe ---
+//
+// Every slice below keeps its SOURCE order verbatim and every *string is
+// materialized fresh per factory call (strPtr), so two factory calls share no
+// mutable state and a nil-vs-present alias survives the round trip exactly.
+
+func (e *promptEmitter) inputValueUniverse(u promptdescriptor.InputValueUniverse) jen.Code {
+	d := jen.Dict{}
+	if u.ProjectEnums != nil {
+		d[jen.Id("ProjectEnums")] = e.resolvedEnums(u.ProjectEnums)
+	}
+	if u.Classes != nil {
+		d[jen.Id("Classes")] = e.resolvedClasses(u.Classes)
+	}
+	return jen.Qual(e.pd, "InputValueUniverse").Values(d)
+}
+
+func (e *promptEmitter) resolvedEnums(xs []promptdescriptor.ResolvedEnum) jen.Code {
+	elems := make([]jen.Code, len(xs))
+	for i, x := range xs {
+		d := jen.Dict{}
+		if x.Name != "" {
+			d[jen.Id("Name")] = jen.Lit(x.Name)
+		}
+		if x.Members != nil {
+			d[jen.Id("Members")] = e.resolvedEnumMembers(x.Members)
+		}
+		elems[i] = jen.Qual(e.pd, "ResolvedEnum").Values(d)
+	}
+	return jen.Index().Qual(e.pd, "ResolvedEnum").Values(elems...)
+}
+
+func (e *promptEmitter) resolvedEnumMembers(xs []promptdescriptor.ResolvedEnumMember) jen.Code {
+	elems := make([]jen.Code, len(xs))
+	for i, x := range xs {
+		d := jen.Dict{}
+		if x.Canonical != "" {
+			d[jen.Id("Canonical")] = jen.Lit(x.Canonical)
+		}
+		if x.Alias != nil {
+			d[jen.Id("Alias")] = e.strPtr(*x.Alias)
+		}
+		elems[i] = jen.Qual(e.pd, "ResolvedEnumMember").Values(d)
+	}
+	return jen.Index().Qual(e.pd, "ResolvedEnumMember").Values(elems...)
+}
+
+func (e *promptEmitter) resolvedClasses(xs []promptdescriptor.ResolvedClass) jen.Code {
+	elems := make([]jen.Code, len(xs))
+	for i, x := range xs {
+		d := jen.Dict{}
+		if x.Name != "" {
+			d[jen.Id("Name")] = jen.Lit(x.Name)
+		}
+		if x.Fields != nil {
+			d[jen.Id("Fields")] = e.resolvedClassFields(x.Fields)
+		}
+		elems[i] = jen.Qual(e.pd, "ResolvedClass").Values(d)
+	}
+	return jen.Index().Qual(e.pd, "ResolvedClass").Values(elems...)
+}
+
+func (e *promptEmitter) resolvedClassFields(xs []promptdescriptor.ResolvedClassField) jen.Code {
+	elems := make([]jen.Code, len(xs))
+	for i, x := range xs {
+		d := jen.Dict{}
+		if x.Canonical != "" {
+			d[jen.Id("Canonical")] = jen.Lit(x.Canonical)
+		}
+		if x.Alias != nil {
+			d[jen.Id("Alias")] = e.strPtr(*x.Alias)
+		}
+		// Type is the field's discriminating value node — always emitted.
+		d[jen.Id("Type")] = e.resolvedValueType(x.Type)
+		elems[i] = jen.Qual(e.pd, "ResolvedClassField").Values(d)
+	}
+	return jen.Index().Qual(e.pd, "ResolvedClassField").Values(elems...)
+}
+
+func (e *promptEmitter) resolvedValueType(t promptdescriptor.ResolvedValueType) jen.Code {
+	return jen.Qual(e.pd, "ResolvedValueType").Values(e.resolvedValueTypeDict(t))
+}
+
+func (e *promptEmitter) resolvedValueTypePtr(t *promptdescriptor.ResolvedValueType) jen.Code {
+	if t == nil {
+		return jen.Nil()
+	}
+	return jen.Op("&").Qual(e.pd, "ResolvedValueType").Values(e.resolvedValueTypeDict(*t))
+}
+
+func (e *promptEmitter) resolvedValueTypeDict(t promptdescriptor.ResolvedValueType) jen.Dict {
+	d := jen.Dict{}
+	// Kind is the union discriminator — always emitted.
+	d[jen.Id("Kind")] = e.valueKind(t.Kind)
+	if t.Nullable {
+		d[jen.Id("Nullable")] = jen.Lit(true)
+	}
+	if t.EnumName != "" {
+		d[jen.Id("EnumName")] = jen.Lit(t.EnumName)
+	}
+	if t.ClassName != "" {
+		d[jen.Id("ClassName")] = jen.Lit(t.ClassName)
+	}
+	if t.Elem != nil {
+		d[jen.Id("Elem")] = e.resolvedValueTypePtr(t.Elem)
+	}
+	return d
+}
+
+// valueKind emits the NAMED promptdescriptor constant for a known kind (so the
+// generated fixture reads like the contract) and falls back to a conversion of
+// the raw string for an unknown one, which keeps a future kind lossless rather
+// than silently emitting a zero value.
+func (e *promptEmitter) valueKind(k promptdescriptor.ValueKind) jen.Code {
+	var name string
+	switch k {
+	case promptdescriptor.ValueString:
+		name = "ValueString"
+	case promptdescriptor.ValueInt:
+		name = "ValueInt"
+	case promptdescriptor.ValueFloat:
+		name = "ValueFloat"
+	case promptdescriptor.ValueBool:
+		name = "ValueBool"
+	case promptdescriptor.ValueNull:
+		name = "ValueNull"
+	case promptdescriptor.ValueEnum:
+		name = "ValueEnum"
+	case promptdescriptor.ValueClass:
+		name = "ValueClass"
+	case promptdescriptor.ValueList:
+		name = "ValueList"
+	default:
+		return jen.Qual(e.pd, "ValueKind").Call(jen.Lit(string(k)))
+	}
+	return jen.Qual(e.pd, name)
 }
 
 func (e *promptEmitter) arguments(args []promptdescriptor.Argument) jen.Code {
@@ -2652,6 +2847,12 @@ func (e *promptEmitter) argument(a promptdescriptor.Argument) jen.Code {
 	}
 	if a.Type != nil {
 		d[jen.Id("Type")] = e.typeExprPtr(a.Type)
+	}
+	// ValueType is present on every FUNCTION argument of a Version-3 descriptor
+	// and deliberately nil on a MACRO argument (a project that declares a
+	// template_string declines at the macro gate, so no macro argument binds).
+	if a.ValueType != nil {
+		d[jen.Id("ValueType")] = e.resolvedValueTypePtr(a.ValueType)
 	}
 	return jen.Qual(e.pd, "Argument").Values(d)
 }
