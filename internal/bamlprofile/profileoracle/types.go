@@ -122,6 +122,22 @@ func classDecls() []classDecl {
 		{"Ew", []classFieldDecl{{"raw", al("escaped"), "string"}}},
 		// Ecw: a single enum field, rendered as the BARE alias inside the map.
 		{"Ecw", []classFieldDecl{{"color", al("colour"), "Color"}}},
+		// Ow is the ORDER-DISCRIMINATING class: its declared order (zeta, alpha) is
+		// the REVERSE of its sorted order, and of its alias order (z, a). Every other
+		// multi-field class here happens to be declared in sorted order, so a probe
+		// over one of them cannot tell BAML's insertion-ordered BamlMap apart from a
+		// Go map's sorted iteration — the constraint corpus's class_order_* rows need
+		// a class where the two genuinely disagree.
+		//
+		// It is used ORDER-INDEPENDENTLY on the prompt leg (attribute access only, as
+		// classDecls' doc requires, since a class ARGUMENT's field order comes from
+		// the Go client's random map iteration) and ORDER-SENSITIVELY on the
+		// constraint leg, where the value comes from PARSING and stock yields declared
+		// order regardless of wire order.
+		{"Ow", []classFieldDecl{
+			{"zeta", al("z"), "int"},
+			{"alpha", al("a"), "string"},
+		}},
 		// Empty: a FIELDLESS class. It is a KNOWN-empty map — falsey, length 0,
 		// rendering as `{}` — which is exactly what a non-enumerable enum object is
 		// NOT, so it is the live-CFFI control for the opaque-map rows.

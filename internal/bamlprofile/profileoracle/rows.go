@@ -312,6 +312,15 @@ func Corpus() []Row {
 		{ID: "class_int_compare", Surface: "class",
 			Params: []Param{{Name: "c", BamlType: "WithColor"}}, Args: map[string]any{"c": map[string]any{"color": "GREEN", "n": int64(4)}},
 			Template: `{% if c.n < 40 %}true{% else %}false{% endif %}`}, // true (mirrors render_number_comparison_with_alias)
+		// Ow exists for the CONSTRAINT corpus's order probes (its declared order is
+		// the reverse of its sorted order); this row keeps it referenced on the
+		// prompt leg too, so the generated project has no dead type. It is
+		// deliberately ORDER-INDEPENDENT — attribute access only — because a class
+		// argument's field order comes from the Go client's random map iteration
+		// (see classDecls) and could not be byte-pinned here.
+		{ID: "class_ow_access", Surface: "class",
+			Params: []Param{{Name: "c", BamlType: "Ow"}}, Args: map[string]any{"c": map[string]any{"zeta": int64(1), "alpha": "v"}},
+			Template: `{{ c.zeta }}/{{ c.alpha }}/{{ c.z is undefined }}/{{ c|length }}`}, // 1/v/true/2
 
 		// --- class: direct pretty/debug rendering ({map:#?} bytes) ---
 		// Aliased keys, four-space nesting, trailing commas, nested class/list,

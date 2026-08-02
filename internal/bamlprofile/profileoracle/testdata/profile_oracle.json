@@ -1,7 +1,7 @@
 {
   "baml_runtime_version": "0.223.0",
   "baml_module_version": "v0.223.0",
-  "baml_source_sha256": "2554332d6cd0aaeede522da7dde5c648a0cf51b55a246968c4c14da86daed51b",
-  "row_count": 150,
+  "baml_source_sha256": "354ae942c3333731eec2f317156e5da341bba6765fa212a2877c357933bfe463",
+  "row_count": 151,
   "note": "stock BAML v0.223.0 get_env + enum/class host-value-model differential for internal/bamlprofile (Slice 2 PR-1 + PR-2)"
 }
