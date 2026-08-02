@@ -375,7 +375,17 @@ func TestRegexNeverOutdo(t *testing.T) {
 		rx("uni_s_space", "a b", `\\s`),
 		rx("uni_w_word", "abc_1", `^\\w+$`),
 		rx("uni_w_nonascii", "\u00e9", `^\\w+$`),
+		// `\b` rows. uni_b_word is NON-discriminating on purpose (both sides of the
+		// boundary are word characters, so stock BAML answers false too) and is kept
+		// as the byte-exact control. The two rows after it are the DISCRIMINATING
+		// ones \u2014 a word/non-word transition, where stock BAML's Rust `\b` matches and
+		// the profile's declined `\b` returns false \u2014 so the `\b` under-match this
+		// corpus claims is measured here rather than argued. They are also the stock
+		// authority behind the #651 ledger row in
+		// internal/nativeprompt/filter_reachability_test.go.
 		rx("uni_b_word", "\u00e9a", `^\u00e9\\ba$`),
+		rx("uni_b_boundary_ascii", "a!", `a\\b`),
+		rx("uni_b_boundary_nonascii", "\u00e9!", `\u00e9\\b`),
 		// --- retained accept families, discriminating subjects (expect byte-exact) ---
 		rx("ok_hex_braced", "\u007f", `^\\x{7f}$`), // subject IS byte 0x7f (DEL) so the braced-hex accept genuinely matches
 		// Escaped `/` is a literal in BOTH Rust `regex` and Go (escaping ASCII

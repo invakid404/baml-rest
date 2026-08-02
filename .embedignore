@@ -64,17 +64,22 @@ internal/nativeprompt/testdata/static_oracle
 # default) so the root embed manifest stays unchanged.
 internal/nativeprompt/testdata/staticserve_fixture
 
-# de-BAML Slice 2 BAML PROFILE (internal/bamlprofile): the leaf get_env profile
-# over the pinned pure-Go minijinja fork, plus its stock-BAML-v0.223 differential
-# oracle (profileoracle) and its guard fixture. Slice 2 is a new leaf package NOT
-# wired to serving — nothing on any admission/serve path imports it yet — so it
-# must NOT enter the customer/container source bundle or change the root embed
-# manifest. profileoracle is a test-only differential oracle whose //go:build
-# integration test links the stock github.com/boundaryml/baml runtime, mirroring
-# internal/nativeprompt/testdata/static_oracle above. The later prompt-integration
-# slice that wires this profile into internal/nativeprompt will narrow this entry
-# to exclude only internal/bamlprofile/profileoracle.
-internal/bamlprofile
+# de-BAML Slice 7.1a BAML PROFILE ORACLE (internal/bamlprofile/profileoracle):
+# the leaf profile's stock-BAML-v0.223 differential oracle and its guard fixture.
+#
+# The PRODUCTION profile (internal/bamlprofile/*.go — the get_env environment over
+# the pinned pure-Go minijinja fork plus the enum/class/list host value model) is
+# now EMBEDDED: Slice 7.1a wired it into internal/nativeprompt's render seam, so
+# the host serving path is
+#   nativeserve/admission -> nativeprompt -> bamlprofile -> invakid404 minijinja
+# and the customer/container source bundle needs those files. They are pure Go and
+# CGO-free, and add zero nanollm reachability (scripts/check-host-zero-nanollm.sh).
+#
+# Only profileoracle stays out: it is a test-only differential oracle whose
+# //go:build integration test links the stock github.com/boundaryml/baml runtime,
+# mirroring internal/nativeprompt/testdata/static_oracle above. Embedding it would
+# make the root server binary ship a second BAML runtime dependency.
+internal/bamlprofile/profileoracle
 
 # de-BAML Phase 4b + 5.1 gated nanollm Prepare validation: a SEPARATE, test-only
 # Go module (github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare)

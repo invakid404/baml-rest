@@ -1,7 +1,16 @@
-// Package nativeprompt is a de-BAML spike: a native Go dynamic parity
-// implementation of BAML's prompt template renderer plus a test-only narrow
-// static candidate, both built on the first-party minijinja-Go port
-// (github.com/mitsuhiko/minijinja/minijinja-go/v2).
+// Package nativeprompt is baml-rest's native Go implementation of BAML's prompt
+// template renderer: a dynamic parity renderer for the generated
+// Baml_Rest_Dynamic prompt plus a deliberately narrow static candidate, both
+// rendered through internal/bamlprofile — the leaf BAML profile over the pinned
+// BAML-exact minijinja fork github.com/invakid404/minijinja-go/v2.
+//
+// The environment seam is rendercontext.go. nativeprompt owns the prompt
+// language it recognizes, the marker protocol, lowering and every serving
+// decision; bamlprofile owns BAML's get_env() configuration, the `_` / `ctx`
+// globals, the per-enum namespaces and the enum/class/list host value model.
+// Before Slice 7.1a this package built its own environment over the pre-fork
+// external engine github.com/mitsuhiko/minijinja/minijinja-go/v2 and duplicated
+// the `_` / `ctx` globals locally; both are gone.
 //
 // The dynamic renderer ([Render]/[Supports]) renders exactly one template — the
 // generated dynamic function Baml_Rest_Dynamic (cmd/build/dynamic.baml) —
@@ -29,22 +38,35 @@
 // SAME environment, dedent/trim, and lowering as the dynamic path.
 // [SupportsStatic] is a CLOSED allowlist: it accepts only the exact expression
 // forms it proves and declines everything else through the shared
-// ErrUnsupported/Decline contract. It makes no parity-complete claim on its own
-// and is not wired anywhere; slice 2 adds the BAML v0.223 differential proof.
+// ErrUnsupported/Decline contract.
 //
-// This package is TEST-ONLY plumbing for the front-end de-BAML arc. It is NOT
-// wired into production request building — the served request path stays BAML.
-// A companion build-only differential harness (see the //go:build integration
-// oracle test) proves the dynamic renderer byte-exact against BAML's real
-// runtime across a seeded corpus; a fail-closed [Supports] predicate declines
-// any prompt shape or media kind the spike does not prove.
+// # Gating
 //
-// Version pinning: minijinja-Go is pinned to v2.16.0, the exact minijinja
-// version BAML v0.223 depends on (BoundaryML's fork is one commit — "add
-// value_cmp on top of custom_cmp" — over vanilla minijinja 2.16.0). That is
-// the tightest achievable version alignment and the reason parity is expected
-// to hold. The one place the BoundaryML fork bites — enum value_cmp, where
-// BAML's fork routes the == operator through custom comparison and minijinja-Go
-// does not — is documented and proven with a fixture in valuecmp_test.go; it
-// does not affect the dynamic template, which performs no enum comparison.
+// Both lanes are reached from nativeserve admission under the single
+// BAML_REST_USE_DEBAML umbrella flag. With the flag off no native callback is
+// installed and the request stays on the complete BAML path; there is no
+// engine-specific flag and no runtime fallback to a second renderer. An
+// unsupported template or value DECLINES before render, and the caller routes to
+// BAML.
+//
+// # Proof
+//
+// Build-only differential harnesses prove the admitted surface byte-exact
+// against stock BAML v0.223: the dynamic corpus through the in-process dynclient
+// (see the //go:build integration oracle test here), the static corpus through a
+// generated stock client (./staticoracle), and the profile leaf's host-value
+// semantics through stock CFFI (internal/bamlprofile/profileoracle). The
+// stock runtime is never a production dependency — the shipped path is pure Go
+// and CGO-free.
+//
+// # Version pinning
+//
+// The engine is github.com/invakid404/minijinja-go/v2 v2.16.0-baml.6: minijinja
+// 2.16.0 (the exact version BAML v0.223 depends on) plus BAML's value_cmp fork
+// commit and the host-object seams the profile needs. Because value_cmp is
+// present, `enum == "NAME"` now answers as BAML does — the #597 divergence the
+// pre-fork engine could not express is closed at the ENGINE level (see
+// valuecmp_test.go). It is not thereby ADMITTED: SupportsStatic still declines
+// comparison/containment as FeatureEnumComparison, because admitting it needs
+// the resolved static host-type seam that Slice 7.1b builds.
 package nativeprompt

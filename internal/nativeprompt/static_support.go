@@ -247,12 +247,41 @@ type event struct {
 func classifyExpr(inner string, argNames map[string]bool) (event, error) {
 	toks, ok := mjTokenize(inner)
 	if ok {
+		// PRE-ALLOWLIST FILTER FENCE. Order is load-bearing: the fence runs BEFORE
+		// matchAllowlist, so no accepted form — present OR future — can carry a
+		// filter application. Fencing only in classifyExprDecline (where this check
+		// used to live, and still lives for key selection) would make the guarantee
+		// depend on every future allowlist form happening to be pipe-free, which no
+		// test over today's forms can establish. See filterFence.
+		if d := filterFence(inner, toks); d != nil {
+			return event{}, d
+		}
 		if ev, matched := matchAllowlist(toks, argNames); matched {
 			return ev, nil
 		}
 	}
 	// Not an accepted form (or not even lexable): pick the specific decline key.
 	return event{}, classifyExprDecline(inner, toks, ok)
+}
+
+// filterFence declines any expression that applies a filter, keyed
+// FeatureUnknownFilter. It is the single spelling of the "no filters in static
+// prompts" rule, called from BOTH classifyExpr (before the allowlist, where it is
+// the load-bearing guarantee) and classifyExprDecline (where it selects the key),
+// so the two can never drift.
+//
+// The rule is unconditional rather than a denylist of filter NAMES. That is what
+// makes internal/bamlprofile's get_env filters — regex_match in particular, whose
+// pure-Go under-match is the OPEN #651 divergence — mechanically unreachable from
+// every admitted static prompt, at any expression length, without this gate
+// needing to know what the profile registers now or later. See
+// filter_reachability_test.go.
+func filterFence(inner string, toks []token) error {
+	if hasOpTok(toks, "|") {
+		return decline(FeatureUnknownFilter,
+			fmt.Sprintf("filters are not supported in static prompts: %q", inner))
+	}
+	return nil
 }
 
 // matchAllowlist returns the event for a token stream that is EXACTLY one of the
@@ -316,10 +345,12 @@ func classifyExprDecline(inner string, toks []token, lexOK bool) error {
 		return decline(FeatureUnrecognizedPrompt, "empty {{ }} expression")
 	}
 
-	// Filters: any pipe, including replace/format/regex_match/sum.
-	if hasOpTok(toks, "|") {
-		return decline(FeatureUnknownFilter,
-			fmt.Sprintf("filters are not supported in static prompts: %q", inner))
+	// Filters: any pipe, including replace/format/regex_match/sum. classifyExpr
+	// already applied this same fence before consulting the allowlist, so this arm
+	// is normally unreachable from there; it stays so this key chooser remains
+	// correct standing alone, and shares filterFence so the two cannot drift.
+	if d := filterFence(inner, toks); d != nil {
+		return d
 	}
 	// Comparisons/containment: fences the known MiniJinja-Go value_cmp divergence.
 	if hasComparisonToken(toks) {

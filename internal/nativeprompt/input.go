@@ -1,7 +1,7 @@
 package nativeprompt
 
 import (
-	"github.com/mitsuhiko/minijinja/minijinja-go/v2/value"
+	"github.com/invakid404/minijinja-go/v2/value"
 )
 
 // MediaKind is the kind of a media content part. Only image is proven parity in
@@ -64,6 +64,15 @@ type Message struct {
 // template iterates over. The shape mirrors the generated internal message
 // (role / content / parts / metadata.cache_control.cache_type) so the template
 // expressions resolve exactly as they do under BAML.
+//
+// The tree is built from fork-NATIVE containers (value.FromMap / value.FromSlice)
+// rather than bamlprofile.ClassValue / ListValue. That is forced, not incidental:
+// a content part may hold [mediaObject], and the profile's host containers reject
+// any object that is not one of their own so they can never render unlike BAML
+// (see rendercontext.go and #602). The admitted template only ever does attribute
+// access, truth tests and iteration over this tree — never a direct {{ m }} /
+// {{ m.parts }} render, the one place a host class/list differs from a native
+// container — and the stock-BAML differential covers every admitted row.
 func messagesToValue(msgs []Message) value.Value {
 	out := make([]value.Value, 0, len(msgs))
 	for i := range msgs {

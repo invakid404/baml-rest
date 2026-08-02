@@ -3,148 +3,155 @@ package nativeprompt
 import (
 	"testing"
 
-	mj "github.com/mitsuhiko/minijinja/minijinja-go/v2"
-	"github.com/mitsuhiko/minijinja/minijinja-go/v2/value"
+	"github.com/invakid404/baml-rest/internal/bamlprofile"
 )
 
-// enumMember models a BAML enum value the way baml_value_to_jinja_value.rs does:
-// it DISPLAYS its alias (if any) but its identity is the value NAME. BAML's
-// value-cmp fork routes comparison through the value name, not the alias.
+// This file is the #597 enum-comparison fence, rewritten for Slice 7.1a.
 //
-// In minijinja-Go the two comparison surfaces behave differently:
-//   - ObjectWithCmp (ObjectCmp) IS consulted by ordering operators (<, >, sort,
-//     min, max), so compare-by-name is reproducible there;
-//   - it is NOT consulted by equality (==, !=, in), which go through
-//     value.Value.Equal — and that has no object branch, so an enum object never
-//     equals a string (or another object). BAML's fork DOES make == compare by
-//     name. This is the one documented divergence; the dynamic template performs
-//     no enum comparison, so it does not affect the parity proof, and Supports
-//     fail-closes on enum globals anyway.
-type enumMember struct {
-	name  string
-	alias string
-}
+// Before the cutover it stood up a PRIVATE enum object on the pre-fork external
+// engine and pinned that engine's divergence from BAML: `Color.RED == 'RED'`
+// rendered false because the old engine's equality path never consulted an
+// object comparator. Nothing in that fixture was production code.
+//
+// After the cutover there is no second engine to diverge. The production render
+// seam is bamlprofile (PR #652 closed the comparator at the leaf: ValueCmp is
+// reached from BOTH operand positions), so the ENGINE now answers exactly as
+// stock BAML v0.223 does. The two halves below pin that, and pin that Slice 7.1a
+// still does not ADMIT enum comparison:
+//
+//  1. through the production render-context adapter, the five historical #597
+//     rows — plus their reverse operand orders — now match stock BAML;
+//  2. through the production admission gate, an enum comparison or an enum
+//     attribute access in a static prompt STILL declines.
+//
+// (2) is the deliberate scope line: closing #597 end to end needs the resolved
+// static host-type seam (descriptor -> binder -> RenderStatic) that Slice 7.1b
+// builds. Until then baml-rest declines to BAML rather than admitting a shape it
+// has no stock-fixture proof for, even though the engine underneath could now
+// render it.
 
-func (e enumMember) GetAttr(name string) value.Value {
-	switch name {
-	case "name":
-		return value.FromString(e.name)
-	case "alias":
-		return value.FromString(e.alias)
-	}
-	return value.Undefined()
-}
-
-func (e enumMember) ObjectString() string {
-	if e.alias != "" {
-		return e.alias
-	}
-	return e.name
-}
-
-func (e enumMember) ObjectCmp(other value.Object) (int, bool) {
-	o, ok := other.(enumMember)
-	if !ok {
-		return 0, false
-	}
-	switch {
-	case e.name < o.name:
-		return -1, true
-	case e.name > o.name:
-		return 1, true
-	default:
-		return 0, true
+// colorConfig is the resolved Color enum of the historical #597 fixture: three
+// variants, each with a display alias, in canonical declaration order. It is a
+// bamlprofile.Config — the real typed input of the production adapter — not a
+// private test object.
+func colorConfig(outputFormat string) bamlprofile.Config {
+	alias := func(s string) *string { return &s }
+	return bamlprofile.Config{
+		OutputFormat: outputFormat,
+		Enums: []bamlprofile.EnumDef{{
+			Name: "Color",
+			Values: []bamlprofile.EnumValue{
+				{Canonical: "RED", Alias: alias("rouge")},
+				{Canonical: "GREEN", Alias: alias("vert")},
+				{Canonical: "BLUE", Alias: alias("bleu")},
+			},
+		}},
 	}
 }
 
-// enumGlobal is a BAML enum installed as a global (e.g. Color), resolving
-// Color.RED to its member.
-type enumGlobal struct{ members map[string]enumMember }
+// TestEnumComparisonMatchesBAMLThroughProfileSeam is the former
+// TestValueCmpEqualityDivergesFromBAML, inverted. Every row is the stock BAML
+// v0.223 result; the old-engine column no longer exists because the old engine
+// is no longer wired.
+//
+// This proves the ENGINE half of #597 through nativeprompt's production adapter.
+// It does NOT claim #597 is closed end to end: no admitted 7.1a template can
+// reach these expressions (see TestStaticAdmissionStillFencesEnumComparison).
+func TestEnumComparisonMatchesBAMLThroughProfileSeam(t *testing.T) {
+	cases := []struct {
+		expr string
+		want string
+	}{
+		// The five historical rows, with BAML's answers.
+		{`{{ Color.RED == 'RED' }}`, "true"},
+		{`{{ Color.RED == 'rouge' }}`, "false"}, // an alias is display only, never identity
+		{`{{ Color.RED == Color.RED }}`, "true"},
+		{`{{ 'RED' in [Color.RED] }}`, "true"},
+		{`{{ Color.RED == Color.BLUE }}`, "false"},
 
-func (g enumGlobal) GetAttr(name string) value.Value {
-	if m, ok := g.members[name]; ok {
-		return value.FromObject(m)
+		// Reverse operand order: the fork reaches ValueCmp from both sides.
+		{`{{ 'RED' == Color.RED }}`, "true"},
+		{`{{ 'rouge' == Color.RED }}`, "false"},
+		{`{{ Color.RED != 'RED' }}`, "false"},
+		{`{{ 'RED' != Color.RED }}`, "false"},
+
+		// Canonical name, not alias, is the comparison identity in both
+		// directions; `.value` exposes it.
+		{`{{ Color.RED.value == 'RED' }}`, "true"},
 	}
-	return value.Undefined()
-}
-
-func valueCmpEnvWithColor() *mj.Environment {
-	env := mj.NewEnvironment()
-	env.SetAutoEscapeFunc(func(string) mj.AutoEscape { return mj.AutoEscapeNone })
-	env.SetFormatter(func(_ *mj.State, val value.Value, escape func(string) string) string {
-		if obj, ok := val.AsObject(); ok {
-			if s, ok := obj.(value.ObjectWithString); ok {
-				return escape(s.ObjectString())
-			}
+	for _, tc := range cases {
+		if got := mustRenderThroughSeam(t, colorConfig(""), tc.expr); got != tc.want {
+			t.Errorf("%s => %q, want %q (stock BAML v0.223)", tc.expr, got, tc.want)
 		}
-		return escape(val.String())
-	})
-	env.AddGlobal("Color", value.FromObject(enumGlobal{members: map[string]enumMember{
-		"RED":   {name: "RED", alias: "rouge"},
-		"GREEN": {name: "GREEN", alias: "vert"},
-		"BLUE":  {name: "BLUE", alias: "bleu"},
-	}}))
-	return env
-}
-
-func renderExpr(t *testing.T, src string) string {
-	t.Helper()
-	env := valueCmpEnvWithColor()
-	tmpl, err := env.TemplateFromString(src)
-	if err != nil {
-		t.Fatalf("compile %q: %v", src, err)
-	}
-	out, err := tmpl.Render(nil)
-	if err != nil {
-		t.Fatalf("render %q: %v", src, err)
-	}
-	return out
-}
-
-// TestValueCmpOrderingReproducesBAML proves the reproducible half: minijinja-Go
-// routes ORDERING through ObjectWithCmp, so a BAML enum sorts and compares by
-// value NAME (not alias), matching BAML's value-cmp semantics.
-func TestValueCmpOrderingReproducesBAML(t *testing.T) {
-	// Display is the alias.
-	if got := renderExpr(t, "{{ Color.RED }}"); got != "rouge" {
-		t.Errorf("display: got %q, want alias %q", got, "rouge")
-	}
-
-	// Ordering is by NAME: BLUE < GREEN < RED (alphabetical by name), even
-	// though the aliases (bleu, vert, rouge) sort differently.
-	if got := renderExpr(t, "{{ Color.BLUE < Color.RED }}"); got != "true" {
-		t.Errorf("BLUE<RED by name: got %q, want true", got)
-	}
-	if got := renderExpr(t, "{{ Color.RED < Color.BLUE }}"); got != "false" {
-		t.Errorf("RED<BLUE by name: got %q, want false", got)
-	}
-
-	// sort orders by name: BLUE, GREEN, RED -> aliases bleu, vert, rouge.
-	got := renderExpr(t, "{% for c in [Color.RED, Color.GREEN, Color.BLUE]|sort %}{{ c }},{% endfor %}")
-	if got != "bleu,vert,rouge," {
-		t.Errorf("sort by name: got %q, want %q", got, "bleu,vert,rouge,")
 	}
 }
 
-// TestValueCmpEqualityDivergesFromBAML pins the one documented divergence:
-// minijinja-Go's == does NOT route through ObjectWithCmp, so an enum member
-// compares equal to neither its value name, its alias, nor another member. BAML
-// v0.223's value-cmp fork makes `enum == "NAME"` true. This test asserts the
-// minijinja-Go behaviour so a future minijinja-Go change that closes the gap is
-// noticed. The dynamic template performs no enum comparison, so this does not
-// affect the byte-parity claim.
-func TestValueCmpEqualityDivergesFromBAML(t *testing.T) {
-	cases := map[string]string{
-		// (expr) -> minijinja-Go result. BAML value-cmp would make the first "true".
-		"{{ Color.RED == 'RED' }}":      "false", // BAML: true  <-- divergence
-		"{{ Color.RED == 'rouge' }}":    "false", // BAML: false (alias never matches)
-		"{{ Color.RED == Color.RED }}":  "false", // BAML: true  <-- divergence
-		"{{ 'RED' in [Color.RED] }}":    "false", // BAML: true  <-- divergence
-		"{{ Color.RED == Color.BLUE }}": "false", // BAML: false
+// TestEnumOrderingThroughProfileSeam keeps the half the old engine already got
+// right — display is the alias, ordering is by canonical name — now asserted
+// against the production seam rather than a private object.
+func TestEnumOrderingThroughProfileSeam(t *testing.T) {
+	cases := []struct {
+		expr string
+		want string
+	}{
+		{`{{ Color.RED }}`, "rouge"}, // display is the alias
+		{`{{ Color.BLUE < Color.RED }}`, "true"},
+		{`{{ Color.RED < Color.BLUE }}`, "false"},
+		// sort orders by canonical name (BLUE, GREEN, RED), which displays as
+		// bleu, vert, rouge — an order the aliases alone would not produce.
+		{`{% for c in [Color.RED, Color.GREEN, Color.BLUE]|sort %}{{ c }},{% endfor %}`, "bleu,vert,rouge,"},
+		{`{{ [Color.RED, Color.GREEN, Color.BLUE]|min }}`, "bleu"},
+		{`{{ [Color.RED, Color.GREEN, Color.BLUE]|max }}`, "rouge"},
 	}
-	for expr, want := range cases {
-		if got := renderExpr(t, expr); got != want {
-			t.Errorf("%s => %q, want %q (minijinja-Go equality behaviour)", expr, got, want)
+	for _, tc := range cases {
+		if got := mustRenderThroughSeam(t, colorConfig(""), tc.expr); got != tc.want {
+			t.Errorf("%s => %q, want %q", tc.expr, got, tc.want)
 		}
+	}
+}
+
+// TestStaticAdmissionStillFencesEnumComparison is the Slice 7.1a scope line: the
+// engine can now answer #597, but SupportsStatic must NOT admit it. Every row
+// below is a shape whose decline key is unchanged by the cutover.
+//
+// Without this test the cutover could silently widen the served surface — the
+// exact failure mode the "wire the engine, do not broaden admission" split
+// exists to prevent.
+func TestStaticAdmissionStillFencesEnumComparison(t *testing.T) {
+	cases := []struct {
+		name   string
+		prompt string
+		want   string
+	}{
+		{"equality", `{{ _.role("user") }}{{ Color.RED == 'RED' }}`, FeatureEnumComparison},
+		{"reverse_equality", `{{ _.role("user") }}{{ 'RED' == Color.RED }}`, FeatureEnumComparison},
+		{"inequality", `{{ _.role("user") }}{{ Color.RED != Color.BLUE }}`, FeatureEnumComparison},
+		{"containment", `{{ _.role("user") }}{{ 'RED' in [Color.RED] }}`, FeatureEnumComparison},
+		{"ordering", `{{ _.role("user") }}{{ Color.BLUE < Color.RED }}`, FeatureEnumComparison},
+		{"member_render", `{{ _.role("user") }}{{ Color.RED }}`, FeatureEnumClassValue},
+		{"member_value", `{{ _.role("user") }}{{ Color.RED.value }}`, FeatureEnumClassValue},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertStaticDecline(t, staticFn(tc.prompt), map[string]any{}, tc.want)
+		})
+	}
+}
+
+// TestDynamicAdmissionCannotReachEnumGlobals pins the other half of the fence:
+// the dynamic lane admits exactly one template (the generated Baml_Rest_Dynamic
+// prompt), which references no enum, and production builds its render context
+// with an EMPTY enum set — so no enum namespace global exists on the dynamic
+// path at all, whatever a template tried to say.
+func TestDynamicAdmissionCannotReachEnumGlobals(t *testing.T) {
+	if err := Supports(`{{ _.role("user") }}{{ Color.RED == 'RED' }}`, nil); err == nil {
+		t.Fatal("an enum-comparison template must not be admitted by Supports")
+	}
+	assertUnsupported(t, Supports(`{{ Color.RED }}`, nil))
+
+	// The production constructor installs no enum namespace, so `Color` is
+	// undefined rather than a member namespace.
+	if got := mustRenderThroughSeam(t, bamlprofile.Config{}, `{{ Color is undefined }}`); got != "true" {
+		t.Errorf("production render context defines Color = %q, want it undefined", got)
 	}
 }

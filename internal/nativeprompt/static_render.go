@@ -6,8 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	mj "github.com/mitsuhiko/minijinja/minijinja-go/v2"
-	"github.com/mitsuhiko/minijinja/minijinja-go/v2/value"
+	"github.com/invakid404/minijinja-go/v2/value"
 
 	"github.com/invakid404/baml-rest/bamlutils/bamlparser"
 	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
@@ -73,8 +72,8 @@ type staticPlan struct {
 //  6. dedent+trim of the raw prompt;
 //  7. output-format render for bare ctx.output_format only;
 //  8. value-aware chat-layout validation;
-//  9. RENDER the exact bytes (dedentTrim -> buildEnv -> renderToString) that
-//     lower will consume, then validate their reserved-marker structure.
+//  9. RENDER the exact bytes (dedentTrim -> profile renderContext -> render)
+//     that lower will consume, then validate their reserved-marker structure.
 //
 // Rendering + reserved-marker validation happen HERE, in the shared preparer, so
 // SupportsStatic really does compile/render (then discards the bytes) and
@@ -106,7 +105,7 @@ func prepareStatic(fn promptdescriptor.Function, args map[string]any) (*staticPl
 	// (4) Argument-value gate + explicit primitive binding. argNonWS records,
 	// per argument, whether its bound value renders a non-whitespace string —
 	// used by the value-aware chat-layout check below.
-	ctx, argNonWS, err := bindArgs(decls, args)
+	bound, argNonWS, err := bindArgs(decls, args)
 	if err != nil {
 		return nil, err
 	}
@@ -164,8 +163,14 @@ func prepareStatic(fn promptdescriptor.Function, args map[string]any) (*staticPl
 	// indentation) or a {{- -}} join, and cannot invent one from ordinary literal
 	// whitespace that MiniJinja preserves. A render error for an analyzed-allowed
 	// shape is an invariant failure surfaced loudly (not a decline category).
-	env := buildEnv(outputFormat)
-	rendered, err := renderToString(env, template, "static", ctx)
+	rc, err := newRenderContext(outputFormat)
+	if err != nil {
+		return nil, err
+	}
+	for name, v := range bound {
+		rc.bind(name, v)
+	}
+	rendered, err := rc.renderToString(template, "static")
 	if err != nil {
 		return nil, err
 	}
@@ -293,11 +298,17 @@ func primitiveOfDecl(a promptdescriptor.Argument) (string, error) {
 // aliases all decline. Invalid UTF-8 strings, non-finite floats, and reserved
 // marker strings decline too.
 //
-// It returns two maps keyed by argument name: ctx holds the explicitly
+// It returns two maps keyed by argument name: bound holds the explicitly
 // constructed value.Values, and nonWS records whether each argument renders to a
 // non-whitespace string (numbers and bools always do; a string does iff it is
 // not whitespace-only), which the value-aware chat-layout check consumes.
-func bindArgs(decls []argDecl, args map[string]any) (ctx map[string]any, nonWS map[string]bool, err error) {
+//
+// Every declared argument is a BAML primitive on this slice's admitted surface
+// (checkArgDeclarations declines named class/enum types with
+// FeatureEnumClassValue), so no value here is a bamlprofile enum/class/list host
+// value. Admitting those — with the resolved type metadata a faithful host value
+// needs — is Slice 7.1b.
+func bindArgs(decls []argDecl, args map[string]any) (bound map[string]value.Value, nonWS map[string]bool, err error) {
 	declared := make(map[string]bool, len(decls))
 	for _, d := range decls {
 		declared[d.name] = true
@@ -309,7 +320,7 @@ func bindArgs(decls []argDecl, args map[string]any) (ctx map[string]any, nonWS m
 		}
 	}
 
-	ctx = make(map[string]any, len(decls))
+	bound = make(map[string]value.Value, len(decls))
 	nonWS = make(map[string]bool, len(decls))
 	for _, d := range decls {
 		raw, ok := args[d.name]
@@ -321,10 +332,10 @@ func bindArgs(decls []argDecl, args map[string]any) (ctx map[string]any, nonWS m
 		if err != nil {
 			return nil, nil, err
 		}
-		ctx[d.name] = v
+		bound[d.name] = v
 		nonWS[d.name] = renderedNonWhitespace(d.prim, raw)
 	}
-	return ctx, nonWS, nil
+	return bound, nonWS, nil
 }
 
 // renderedNonWhitespace reports whether the bound primitive renders to a string
@@ -483,30 +494,4 @@ func validateRenderedMarkers(rendered string, expectedRoles []string) error {
 		}
 	}
 	return nil
-}
-
-// renderToString compiles src in env and renders it with ctx, returning the raw
-// rendered string (the exact bytes lower will consume). what names the template
-// in error messages ("dynamic"/"static").
-func renderToString(env *mj.Environment, src, what string, ctx map[string]any) (string, error) {
-	tmpl, err := env.TemplateFromString(src)
-	if err != nil {
-		return "", fmt.Errorf("nativeprompt: compile %s template: %w", what, err)
-	}
-	rendered, err := tmpl.Render(ctx)
-	if err != nil {
-		return "", fmt.Errorf("nativeprompt: render %s template: %w", what, err)
-	}
-	return rendered, nil
-}
-
-// renderTemplate compiles src in env, renders it with ctx, and lowers the
-// result. It is the single MiniJinja boundary the dynamic Render path uses;
-// behavior and error strings are unchanged.
-func renderTemplate(env *mj.Environment, src, what string, ctx map[string]any) (*RenderedPrompt, error) {
-	rendered, err := renderToString(env, src, what, ctx)
-	if err != nil {
-		return nil, err
-	}
-	return lower(rendered)
 }
