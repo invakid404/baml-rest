@@ -76,8 +76,10 @@ func renderOnlyMessage(t *testing.T, fn promptdescriptor.Function, values []prom
 // membership form of the Slice 7.1b grammar through descriptor -> binder ->
 // renderer and pins stock BAML v0.223's answer.
 //
-// The five historical #597 rows that this slice claims are here, plus the
-// reverse operand orders and the enum-ARGUMENT forms. Each is admitted only
+// The four historical #597 rows that this slice claims are here (the fifth,
+// `Color.RED == 'rouge'`, is deliberately declined — see
+// TestDeliberateEnumDeclines), plus the reverse operand orders and the
+// enum-ARGUMENT forms. Each is admitted only
 // after the V3 type gate resolved every operand, so a row passing here means
 // the SERVED path produces it.
 func TestAdmittedEnumPredicatesMatchBAML(t *testing.T) {
@@ -166,17 +168,23 @@ func TestAdmittedHostValueRenders(t *testing.T) {
 		}
 	})
 
-	t.Run("class_argument_renders_alias_keys_in_source_order", func(t *testing.T) {
-		fn := swatchFn(`{{ _.role("user") }}` + "\n" + `{{ s }}`)
-		got := renderOnlyMessage(t, fn, vals(argV("s", classV("Swatch",
+	t.Run("class_argument_binds_but_is_not_directly_rendered", func(t *testing.T) {
+		// A class argument BINDS (so a function that merely declares one is not
+		// poisoned) but rendering it DIRECTLY is declined: stock BAML v0.223's Go
+		// client encodes a class through a Go map, so its rendered field order is
+		// not reproducible. See directlyRenderable and the stock evidence in
+		// internal/nativeprompt/staticoracle.
+		bound := swatchFn(`{{ _.role("user") }}` + "\n" + `bare text`)
+		if err := SupportsStatic(bound, vals(argV("s", classV("Swatch",
 			fieldV("color", enumV("Color", "GREEN")),
-			fieldV("label", strV("hi"))))))
-		// Rust's alternate debug-map: the DISPLAY keys (alias where present) in
-		// SOURCE field order, the enum as its alias, the string Debug-quoted.
-		want := "{\n    \"color\": vert,\n    \"etiquette\": \"hi\",\n}"
-		if got != want {
-			t.Errorf("bound Swatch rendered\n%q\nwant\n%q", got, want)
+			fieldV("label", strV("hi")))))); err != nil {
+			t.Fatalf("a declared-but-unrendered class argument must still bind: %v", err)
 		}
+
+		rendered := swatchFn(`{{ _.role("user") }}` + "\n" + `{{ s }}`)
+		assertStaticDecline(t, rendered, vals(argV("s", classV("Swatch",
+			fieldV("color", enumV("Color", "GREEN")),
+			fieldV("label", strV("hi"))))), FeatureEnumClassValue)
 	})
 }
 
@@ -304,19 +312,39 @@ func declineArgValue(a promptdescriptor.Argument) promptdescriptor.StaticValue {
 }
 
 // TestClassAndListNeighbourDeclines pins the class/list rows of the admission
-// table: the BARE render is admitted, every traversal of it is not.
+// table.
+//
+// A bound LIST of scalars/enums renders; a bound CLASS does NOT, and neither
+// does a list that reaches one. That is a deliberate narrowing of the 7.1b scope
+// (section 4 lists bare class rendering as admitted): stock BAML v0.223's Go
+// client encodes a class argument through a Go map, so the field order it prints
+// is not reproducible — see nativeprompt.directlyRenderable and the measurement
+// in internal/nativeprompt/staticoracle. Every TRAVERSAL of either shape is
+// declined regardless.
 func TestClassAndListNeighbourDeclines(t *testing.T) {
 	listArg := v3Arg("colors", promptdescriptor.ResolvedValueType{
 		Kind: promptdescriptor.ValueList,
 		Elem: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueEnum, EnumName: "Color"},
 	})
 
-	t.Run("bare_class_render_is_admitted", func(t *testing.T) {
+	t.Run("bare_class_render_declines", func(t *testing.T) {
 		fn := swatchFn(`{{ _.role("user") }}` + "\n" + `{{ s }}`)
-		if err := SupportsStatic(fn, vals(argV("s", classV("Swatch",
-			fieldV("color", enumV("Color", "RED")), fieldV("label", strV("l")))))); err != nil {
-			t.Fatalf("a bare bound class render must be admitted: %v", err)
+		assertStaticDecline(t, fn, vals(argV("s", classV("Swatch",
+			fieldV("color", enumV("Color", "RED")), fieldV("label", strV("l"))))), FeatureEnumClassValue)
+	})
+	t.Run("list_of_classes_render_declines", func(t *testing.T) {
+		// The class non-reproducibility propagates through a list: an element that
+		// cannot be rendered makes the list unrenderable too.
+		fn := staticFn(`{{ _.role("user") }}`+"\n"+`{{ swatches }}`, v3Arg("swatches", promptdescriptor.ResolvedValueType{
+			Kind: promptdescriptor.ValueList,
+			Elem: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueClass, ClassName: "Swatch"},
+		}))
+		fn.InputValues = promptdescriptor.InputValueUniverse{
+			ProjectEnums: []promptdescriptor.ResolvedEnum{testColorEnum()},
+			Classes:      []promptdescriptor.ResolvedClass{testSwatchClass()},
 		}
+		assertStaticDecline(t, fn, vals(argV("swatches", listV(classV("Swatch",
+			fieldV("color", enumV("Color", "RED")), fieldV("label", strV("l")))))), FeatureEnumClassValue)
 	})
 	t.Run("class_attribute_declines", func(t *testing.T) {
 		fn := swatchFn(`{{ _.role("user") }}` + "\n" + `{{ s.color }}`)
@@ -471,10 +499,10 @@ func TestDeclineDetailsCarryNoValues(t *testing.T) {
 		}
 	}
 
-	// paletteClass is a two-field class whose SECOND field is a string, so a row
+	// Swatch is a two-field class whose SECOND field is a string, so a row
 	// can put the canary in a well-typed payload position and still decline for a
 	// different reason further along the walk.
-	paletteFn := func(prompt string) promptdescriptor.Function {
+	swatchClassFn := func(prompt string) promptdescriptor.Function {
 		f := staticFn(prompt, v3Arg("s", promptdescriptor.ResolvedValueType{
 			Kind: promptdescriptor.ValueClass, ClassName: "Swatch",
 		}))
@@ -485,37 +513,48 @@ func TestDeclineDetailsCarryNoValues(t *testing.T) {
 		return f
 	}
 
+	// wantTokens is the POSITIVE half of the contract this test documents: the
+	// decline must NAME the failing path and the kinds (or, for a name mismatch,
+	// the two names) involved. Without it a decline degraded to a bare
+	// "unsupported prompt shape" would still satisfy every canary-absence check
+	// below — it leaks nothing precisely because it says nothing.
 	rows := []struct {
-		name   string
-		fn     promptdescriptor.Function
-		values []promptdescriptor.ArgumentValue
+		name       string
+		fn         promptdescriptor.Function
+		values     []promptdescriptor.ArgumentValue
+		wantTokens []string
 	}{
 		{
 			// EARLY: a top-level kind mismatch. The binder may reject this before
 			// formatting anything, which is exactly why it cannot stand alone.
-			name:   "early_top_level_kind_mismatch",
-			fn:     staticFn("{{ v }}", primArg("v", "int")),
-			values: vals(argV("v", strV(leakCanary))),
+			name:       "early_top_level_kind_mismatch",
+			fn:         staticFn("{{ v }}", primArg("v", "int")),
+			values:     vals(argV("v", strV(leakCanary))),
+			wantTokens: []string{"v", "int", "string"},
 		},
 		{
 			// LATE: the argument's kind MATCHES (a class), so binding walks in. The
 			// canary sits in a correctly-typed string field while a DIFFERENT field
 			// is misnamed, so the decline is formatted after the payload was seen.
 			name: "late_class_field_name_mismatch",
-			fn:   paletteFn("{{ _.role(\"user\") }}\ntext"),
+			fn:   swatchClassFn("{{ _.role(\"user\") }}\ntext"),
 			values: vals(argV("s", classV("Swatch",
 				fieldV("colour", enumV("Color", "RED")), // misnamed: 'color' is declared
 				fieldV("label", strV(leakCanary))))),
+			// A NAME mismatch, so the pair named is the two field names, not kinds.
+			wantTokens: []string{"s", "Swatch", "colour", "color"},
 		},
 		{
 			// LATE: the argument's kind MATCHES (a class) and every field name is
 			// right; the canary rides in the string field while the OTHER field's
 			// kind is wrong, so the decline happens one level down.
 			name: "late_nested_field_kind_mismatch",
-			fn:   paletteFn("{{ _.role(\"user\") }}\ntext"),
+			fn:   swatchClassFn("{{ _.role(\"user\") }}\ntext"),
 			values: vals(argV("s", classV("Swatch",
 				fieldV("color", strV("not-an-enum")),
 				fieldV("label", strV(leakCanary))))),
+			// The path is DOTTED to the failing field, not just the argument.
+			wantTokens: []string{"s.color", "enum", "string"},
 		},
 		{
 			// LATE: the argument's kind MATCHES (a list) and the first element binds
@@ -526,6 +565,8 @@ func TestDeclineDetailsCarryNoValues(t *testing.T) {
 				Elem: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueEnum, EnumName: "Color"},
 			})),
 			values: vals(argV("colors", listV(enumV("Color", "RED"), strV(leakCanary)))),
+			// The path INDEXES the failing element, so the second element is named.
+			wantTokens: []string{"colors[1]", "enum", "string"},
 		},
 	}
 
@@ -538,6 +579,13 @@ func TestDeclineDetailsCarryNoValues(t *testing.T) {
 			}
 			if strings.Contains(serr.Error(), leakCanary) {
 				t.Errorf("decline detail leaked an argument value: %v", serr)
+			}
+			// The positive half: a decline that named nothing would pass the
+			// canary check above while being useless as a bounded log token.
+			for _, want := range r.wantTokens {
+				if !strings.Contains(serr.Error(), want) {
+					t.Errorf("decline %q should name %q (the path/kinds are the bounded metadata the contract promises)", serr, want)
+				}
 			}
 		})
 	}

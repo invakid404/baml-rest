@@ -178,6 +178,7 @@ func NewStaticObserve(reg prometheus.Registerer) (bamlutils.NativeStaticObserveF
 			Descriptor:              inv.Descriptor,
 			Args:                    inv.Args,
 			ArgOrder:                inv.ArgOrder,
+			Values:                  inv.Values,
 			Mode:                    inv.Mode,
 			SingleLeaf:              inv.SingleLeaf,
 			HasFallbackChain:        inv.HasFallbackChain,

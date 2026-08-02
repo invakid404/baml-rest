@@ -1,6 +1,7 @@
 package nativeprompt
 
 import (
+	"fmt"
 	"math"
 	"testing"
 
@@ -28,7 +29,10 @@ func primArg(name, prim string) promptdescriptor.Argument {
 	case "null":
 		kind = promptdescriptor.ValueNull
 	default:
-		kind = promptdescriptor.ValueKind(prim)
+		// Fail loudly rather than minting an unsupported ValueKind: a typo'd
+		// prim would otherwise build a fixture that fails downstream for the
+		// wrong reason.
+		panic(fmt.Sprintf("primArg: unsupported prim %q", prim))
 	}
 	return promptdescriptor.Argument{
 		Name:      name,

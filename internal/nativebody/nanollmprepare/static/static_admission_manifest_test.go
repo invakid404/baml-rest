@@ -198,11 +198,26 @@ func TestStaticAdmissionManifest(t *testing.T) {
 		}
 	}
 
-	// --- Mutation 2: prompt decline (a non-primitive argument value). --------
+	// --- Mutation 2: prompt decline (a projected value whose KIND disagrees with
+	// the descriptor's V3 argument type). De-BAML Slice 7.1b moved the "wrong Go
+	// type" case UP a layer — the generated projector asserts the exact Go type
+	// and returns ok=false, so the seam is never installed for it. What the
+	// admission predicate still owns is a vector that disagrees with the
+	// descriptor, which is what this mutation supplies.
 	{
-		c := base
-		c.args = map[string]any{"topic": []int{1, 2, 3}}
-		obs := admission.AdmitStatic(ctx, staticInputFor(t, baseFn, c))
+		// Bind the vector's name to the descriptor so this stays a pure KIND
+		// disagreement: a hardcoded name would silently decay into a NAME
+		// mismatch (still a prompt decline, so still green) if the base row
+		// ever declared a differently named argument.
+		if len(baseFn.Args) != 1 {
+			t.Fatalf("prompt mutation: base row %q declares %d args, want exactly 1", base.fn, len(baseFn.Args))
+		}
+		si := staticInputFor(t, baseFn, base)
+		si.Values = []promptdescriptor.ArgumentValue{{
+			Name:  baseFn.Args[0].Name,
+			Value: promptdescriptor.StaticValue{Kind: promptdescriptor.StaticInt, Int: 42},
+		}}
+		obs := admission.AdmitStatic(ctx, si)
 		total++
 		if obs.Observation == bamlutils.NativeStaticObserveDecline &&
 			obs.Family == bamlutils.NativeStaticFamilyPrompt {

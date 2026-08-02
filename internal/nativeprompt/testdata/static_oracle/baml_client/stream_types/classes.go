@@ -18,6 +18,8 @@ import (
 
 	baml "github.com/boundaryml/baml/engine/language_client_go/pkg"
 	"github.com/boundaryml/baml/engine/language_client_go/pkg/cffi"
+
+	"github.com/invakid404/baml-rest/internal/nativeprompt/testdata/static_oracle/baml_client/types"
 )
 
 type A struct {
@@ -206,6 +208,66 @@ func (c Node) BamlTypeName() string {
 	return "Node"
 }
 
+type Palette struct {
+	Primary *types.Color  `json:"primary"`
+	Shades  []types.Color `json:"shades"`
+	Swatch  *Swatch       `json:"swatch"`
+	Name    *string       `json:"name"`
+}
+
+func (c *Palette) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Palette" {
+		panic(fmt.Sprintf("expected Palette, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "primary":
+			c.Primary = baml.Decode(valueHolder).Interface().(*types.Color)
+
+		case "shades":
+			c.Shades = baml.Decode(valueHolder).Interface().([]types.Color)
+
+		case "swatch":
+			c.Swatch = baml.Decode(valueHolder).Interface().(*Swatch)
+
+		case "name":
+			c.Name = baml.Decode(valueHolder).Interface().(*string)
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Palette", key))
+
+		}
+	}
+
+}
+
+func (c Palette) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["primary"] = c.Primary
+
+	fields["shades"] = c.Shades
+
+	fields["swatch"] = c.Swatch
+
+	fields["name"] = c.Name
+
+	return baml.EncodeClass("Palette", fields, nil)
+}
+
+func (c Palette) BamlTypeName() string {
+	return "Palette"
+}
+
 type StaticAnswer struct {
 	Answer     *string `json:"answer"`
 	Confidence *int64  `json:"confidence"`
@@ -252,4 +314,52 @@ func (c StaticAnswer) Encode() (*cffi.HostValue, error) {
 
 func (c StaticAnswer) BamlTypeName() string {
 	return "StaticAnswer"
+}
+
+type Swatch struct {
+	Color *types.Color `json:"color"`
+	Label *string      `json:"label"`
+}
+
+func (c *Swatch) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Swatch" {
+		panic(fmt.Sprintf("expected Swatch, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "color":
+			c.Color = baml.Decode(valueHolder).Interface().(*types.Color)
+
+		case "label":
+			c.Label = baml.Decode(valueHolder).Interface().(*string)
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Swatch", key))
+
+		}
+	}
+
+}
+
+func (c Swatch) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["color"] = c.Color
+
+	fields["label"] = c.Label
+
+	return baml.EncodeClass("Swatch", fields, nil)
+}
+
+func (c Swatch) BamlTypeName() string {
+	return "Swatch"
 }

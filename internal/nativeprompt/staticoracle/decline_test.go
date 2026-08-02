@@ -89,7 +89,7 @@ func listArgs(name string, items ...string) []promptdescriptor.ArgumentValue {
 // TestRealDescriptorAdmitsBoundHostValues is the POSITIVE half of the same
 // pipeline: real .baml source whose enum/class/list argument the V3 resolver
 // describes exactly, bound through the production binder and RENDERED. It is
-// what makes the decline rows above meaningful — without it they could all be
+// what makes the decline rows below meaningful — without it they could all be
 // passing because the pipeline declines everything.
 //
 // The byte-exact answers are owned by the stock differential oracle; this proves
@@ -124,14 +124,6 @@ client<llm> C { provider openai options { model "m" } }
 function F() -> string { client C prompt #"{{ Color.RED == 'RED' }}"# }`,
 			values: nil,
 			want:   "true",
-		},
-		{
-			name: "class_argument_renders_alias_keys_in_source_order",
-			src: `class Item { name string @alias("nom") }
-client<llm> C { provider openai options { model "m" } }
-function F(it: Item) -> string { client C prompt #"{{ it }}"# }`,
-			values: classArgs("it", "Item", "name", "n"),
-			want:   "{\n    \"nom\": \"n\",\n}",
 		},
 		{
 			name: "list_argument_renders_in_input_order",
@@ -242,6 +234,18 @@ function F(it: Item) -> string { client C prompt #"item {{ it.name }}"# }`,
 			values:  classArgs("it", "Item", "name", "n"),
 			feature: nativeprompt.FeatureEnumClassValue,
 		},
+		// A DIRECT class render is declined too — not for lack of resolved field
+		// order (V3 has it), but because stock BAML v0.223's Go client encodes a
+		// class through a Go map, so the order it prints is not reproducible. See
+		// TestStockClassRenderOrderIsNonDeterministic for the measurement.
+		{
+			name: "class_arg_direct_render",
+			src: `class Item { name string @alias("nom") }
+client<llm> C { provider openai options { model "m" } }
+function F(it: Item) -> string { client C prompt #"{{ it }}"# }`,
+			values:  classArgs("it", "Item", "name", "n"),
+			feature: nativeprompt.FeatureEnumClassValue,
+		},
 		{
 			name: "enum_arg_display_alias_equality",
 			src: `enum Color { RED @alias("rouge") GREEN }
@@ -258,7 +262,8 @@ function F(topic: string?) -> string { client C prompt #"About {{ topic }}"# }`,
 			values:  strArgs("topic", "x"),
 			feature: nativeprompt.FeatureStaticArgType,
 		},
-		// A list argument renders bare (admitted below); INDEXING it does not.
+		// A list argument renders bare (admitted in
+		// TestRealDescriptorAdmitsBoundHostValues); INDEXING it does not.
 		{
 			name: "list_arg_index",
 			src: `client<llm> C { provider openai options { model "m" } }

@@ -258,12 +258,20 @@ func TestStaticServingCutover_AliasFlagOff(t *testing.T) {
 	}
 }
 
-// TestStaticServingCutover_AliasPartition is the alias anti-omission + the FULL
-// partition-completeness: the alias served corpus is EXACTLY the two proven families
-// {StaticRecursiveAliasJSON, StaticRecursiveAliasJsonValue}, and legacy ∪
-// recursive-served ∪ recursive-declined ∪ alias-served ∪ alias-declined == the fixture's
-// full emitted SyncMethods.
-func TestStaticServingCutover_AliasPartition(t *testing.T) {
+// TestStaticServingCutover_CompletePartition is the alias anti-omission PLUS the
+// COMPLETE static-serving partition-completeness check.
+//
+// Two claims, and the name reflects the wider one because that is what it now
+// enforces: the alias served corpus is EXACTLY the two proven families
+// {StaticRecursiveAliasJSON, StaticRecursiveAliasJsonValue}, AND every method the
+// fixture emits is accounted for by exactly one static-serving partition —
+//
+//	legacy ∪ recursive-served ∪ recursive-declined ∪ alias-served ∪
+//	alias-declined ∪ valuebind-served ∪ valuebind-declined ∪ media-declined
+//	  == introspected.SyncMethods
+//
+// so a newly generated route cannot slip through unclassified.
+func TestStaticServingCutover_CompletePartition(t *testing.T) {
 	wantAlias := []string{"StaticRecursiveAliasJSON", "StaticRecursiveAliasJsonValue"}
 	gotAlias := make([]string, 0, len(staticServingCorpusAlias))
 	for _, r := range staticServingCorpusAlias {
@@ -291,12 +299,45 @@ func TestStaticServingCutover_AliasPartition(t *testing.T) {
 	for _, r := range staticServingCorpusAliasDeclined {
 		partition[r.name] = true
 	}
-	if len(partition) != len(introspected.SyncMethods) {
-		t.Fatalf("partition covers %d methods but SyncMethods has %d", len(partition), len(introspected.SyncMethods))
+	// De-BAML Slice 7.1b resolved-static-value routes (served + declined).
+	for _, r := range staticServingCorpusValueBind {
+		partition[r.name] = true
 	}
+	for _, r := range staticServingCorpusValueBindDeclined {
+		partition[r.name] = true
+	}
+	// De-BAML Slice 7.1b MEDIA unreachability witnesses: emitted routes with NO V3
+	// descriptor, so the static seam can never install a native attempt.
+	for _, r := range staticServingCorpusMediaDeclined {
+		partition[r.name] = true
+	}
+	// Errorf, not Fatalf: a count mismatch IS the "a newly generated route was
+	// never classified" failure, and the per-method loops below are what name the
+	// offender. Aborting here would report the count and hide the name.
+	if len(partition) != len(introspected.SyncMethods) {
+		t.Errorf("the complete static-serving partition (legacy + recursive-served + recursive-declined + "+
+			"alias-served + alias-declined + valuebind-served + valuebind-declined + media-declined) covers "+
+			"%d methods but the fixture emits %d SyncMethods", len(partition), len(introspected.SyncMethods))
+	}
+	// FORWARD: a method the fixture emits that no corpus claims.
 	for m := range introspected.SyncMethods {
 		if !partition[m] {
-			t.Errorf("emitted method %q is not covered by any partition (legacy/recursive/alias/declined)", m)
+			t.Errorf("emitted method %q is not covered by any static-serving partition "+
+				"(legacy/recursive/alias/valuebind/media, served or declined)", m)
+		}
+	}
+	// REVERSE: a corpus entry the fixture no longer emits. Without this the count
+	// check alone reports two numbers and names nothing — and the two directions
+	// can even cancel out (one route renamed = one missing + one stale, equal
+	// counts), leaving the whole partition silently green.
+	emitted := make(map[string]bool, len(introspected.SyncMethods))
+	for m := range introspected.SyncMethods {
+		emitted[m] = true
+	}
+	for m := range partition {
+		if !emitted[m] {
+			t.Errorf("corpus claims %q but the fixture emits no such SyncMethod "+
+				"(stale corpus entry, e.g. a renamed route)", m)
 		}
 	}
 }

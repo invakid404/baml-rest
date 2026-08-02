@@ -27,11 +27,13 @@
 // nanollmprepare module. The root module carries no release TAG (only the
 // submodules bamlutils/worker are tagged, and their tagged versions predate the
 // packages the root's internal/* imports here), so the three first-party requires
-// are pinned to the PROXY-RESOLVABLE pseudo-version of the master commit this
-// module targets (f08d06c95b1c, the Phase 7D merge) — one consistent snapshot that
-// resolves cleanly off a fresh checkout with zero local replacements. The replace
-// directives below are for local development only; Go ignores a dependency module's
-// replaces, so an external consumer resolves those pseudo-versions from the proxy.
+// are pinned to the ORIGIN-RESOLVABLE pseudo-version of the single commit this
+// module targets (cff53b244ffa, de-BAML Slice 7.1b commit 2) — one consistent
+// snapshot that resolves cleanly off a fresh checkout with zero local replacements.
+// The replace directives below are for local development only; Go ignores a
+// dependency module's replaces, so an external consumer resolves those
+// pseudo-versions itself, DIRECT from the origin repo under GOPRIVATE (see the
+// branch-pin exception below).
 // When the root module is eventually tagged for a release that includes these
 // packages, the three requires can be bumped to that tag.
 //
@@ -42,23 +44,47 @@
 // and nativeserve/canary + nativeserve.NewStream now return the neutral
 // bamlutils.NativeStreamServeFunc (Phase 7D — guarded production wiring of the native
 // stream lane, the new bamlutils/native_stream.go serve seam) — symbols that first
-// appear at the 7A, 7B, 7C, and 7D merges respectively. The three first-party requires
-// are therefore pinned to the 7D master merge commit (f08d06c95b1c) rather than an
-// earlier snapshot: it is the earliest master commit whose root + bamlutils carry every
-// one of those symbols, so both the external-consumer lane (nativeserve-goget) and the
-// native-worker PACKAGING build (nanollmprepare builder E2E, -mod=readonly) resolve them
-// cleanly off the public origin. Any future bump must likewise land on a master commit
-// that carries every symbol nativeserve links, and must NOT pin to a pre-merge branch
-// commit — a non-sumdb pseudo-version breaks the -mod=readonly packaging build.
+// appear at the 7A, 7B, 7C, and 7D merges respectively. The 7D merge (f08d06c95b1c)
+// is therefore the FLOOR for the three first-party requires: any pin at or after it
+// carries every one of those symbols.
+//
+// NOTE (de-BAML Slice 7.1b): nativeserve/admission + canary now carry the PROJECTED
+// argument vector. admission.StaticInput.Values / StaticStreamInput.Values are
+// []promptdescriptor.ArgumentValue (a NEW bamlutils type), they are copied from the
+// equally new bamlutils.NativeStaticInvocation.Values / NativeStreamInvocation.Values,
+// and they are what the root's internal/nativeprompt.SupportsStatic + RenderStatic now
+// take in place of the raw Args map. Those symbols first appear at Slice 7.1b commit 2
+// (cff53b244ffa), which is why the three requires moved off the 2026-07-27 master
+// snapshot (e7480ef6f2ef): against it, an external consumer failed to build with
+// `undefined: promptdescriptor.ArgumentValue`.
+//
+// BUMP RULE — and the 7.1b exception. A bump must land on a commit whose root +
+// bamlutils carry every symbol nativeserve links, and a MASTER commit is strongly
+// preferred: it survives branch deletion and is what a released consumer resolves.
+// cff53b244ffa is a PRE-MERGE BRANCH commit, which is unavoidable here — the symbols
+// were introduced by this very change, so no master commit carries them yet, and a
+// module can never pin to its own not-yet-created SHA. Both gates that resolve these
+// pins were verified against it:
+//   - nativeserve-goget (external consumer) sets GOPRIVATE=github.com/invakid404/baml-rest,
+//     so a branch pseudo-version resolves DIRECT off the origin with no checksum-db
+//     lookup — the sumdb gap that makes branch pins risky elsewhere does not apply.
+//   - the native-worker PACKAGING build (nanollmprepare builder E2E, -mod=readonly)
+//     never fetches these at all: nanollmprepare directory-replaces root / bamlutils /
+//     worker / nativeserve, so only the version STRINGS reach MVS. That is also why a
+//     bump here must move internal/nativebody/nanollmprepare/go.mod's recorded
+//     bamlutils + worker selections in LOCKSTEP — raising the selected version without
+//     recording it there fails -mod=readonly with "updates to go.mod needed".
+// FOLLOW-UP: once this change squash-merges, re-pin all three requires to the resulting
+// MASTER commit; the branch SHA stays reachable only via refs/pull/<n>/head.
 module github.com/invakid404/baml-rest/nativeserve
 
 go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260727075859-e7480ef6f2ef
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260727075859-e7480ef6f2ef
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260727075859-e7480ef6f2ef
+	github.com/invakid404/baml-rest v0.0.0-20260802233421-cff53b244ffa
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260802233421-cff53b244ffa
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260802233421-cff53b244ffa
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/viktordanov/nanollm-ffi/go v0.4.3

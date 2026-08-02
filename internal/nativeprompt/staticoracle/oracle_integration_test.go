@@ -56,6 +56,7 @@ package staticoracle
 
 import (
 	stdjson "encoding/json"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -65,6 +66,7 @@ import (
 	"runtime/debug"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 
 	baml_go "github.com/boundaryml/baml/engine/language_client_go/baml_go"
@@ -79,6 +81,7 @@ import (
 	// every differential below consumes its emitted StaticPromptDescriptors
 	// factory instead of rebuilding the descriptor from .baml, so this suite
 	// proves the EMITTED representation renders byte-identically to stock BAML.
+	"github.com/invakid404/baml-rest/internal/nativeprompt/testdata/static_oracle/baml_client/types"
 	introspected "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/static_oracle/introspected"
 	"github.com/invakid404/baml-rest/internal/nativeschema"
 )
@@ -192,7 +195,7 @@ func bamlPinFromGoMod(t *testing.T, path string) (version string, replaced, foun
 
 func goModFields(line string) []string {
 	// Strip a trailing `// ...` comment, then split on whitespace.
-	if idx := indexOf(line, "//"); idx >= 0 {
+	if idx := strings.Index(line, "//"); idx >= 0 {
 		line = line[:idx]
 	}
 	var fields []string
@@ -222,15 +225,6 @@ func containsField(fields []string, want string) bool {
 		}
 	}
 	return false
-}
-
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
 }
 
 // ---------------------------------------------------------------------------
@@ -402,16 +396,45 @@ func TestDescriptorSetMatchesSource(t *testing.T) {
 // The claimed corpus + main byte-exact parity proof (scope section 6/7).
 // ---------------------------------------------------------------------------
 
-// oracleCase is one claimed-corpus row: a native args map keyed by descriptor
-// argument name and a typed closure that drives the generated Request.<fn>
-// method with the SAME Go values. wantKind pins the native RenderedPrompt kind
-// so a native completion/chat regression is caught independently of BAML.
+// oracleCase is one claimed-corpus row.
+//
+// argv is the ORDERED, already-typed Go argument vector the generated adapter
+// would hand the EMITTED projector — the same values the `build` closure passes
+// to the generated Request.<fn>. Both legs therefore start from one set of Go
+// values, and the native leg reaches its neutral value tree through the real
+// generated projector (introspected.StaticPromptArgumentValues), not a
+// hand-written translation.
+//
+// declineFeature is non-empty for a PARITY-DECLINE row: the stock request is
+// still built (BAML is the semantic authority for it), but the native leg must
+// DECLINE with that exact feature key rather than render. The display-alias
+// equality row is the required one.
+//
+// wantKind pins the native RenderedPrompt kind so a native completion/chat
+// regression is caught independently of BAML.
 type oracleCase struct {
-	name     string
-	fn       string
-	args     map[string]any
-	wantKind nativeprompt.Kind
-	build    func() (baml.HTTPRequest, error)
+	name           string
+	fn             string
+	argv           []any
+	wantKind       nativeprompt.Kind
+	build          func() (baml.HTTPRequest, error)
+	declineFeature string
+	// wantBAMLText, when non-empty, is the EXACT text stock BAML renders for a
+	// parity-decline row. It pins what native is declining to reproduce — most
+	// importantly that `Color.RED == 'rouge'` really does answer `false` in stock
+	// — so the decline is a documented parity choice rather than a shrug. It is
+	// left empty for a row whose stock bytes are not a function of the input (the
+	// class renders; see TestStockClassRenderOrderIsNonDeterministic).
+	wantBAMLText string
+}
+
+// nativeValues projects a row's Go arguments through the EMITTED per-method
+// projector. A missing projector is a hard failure, not a skip: the fixture is
+// supposed to have one for every claimed method, and silently skipping would
+// make the whole differential vacuous.
+func (c oracleCase) nativeValues(t *testing.T) []promptdescriptor.ArgumentValue {
+	t.Helper()
+	return mustProject(t, c.fn, c.argv)
 }
 
 // oracleCases is the claimed corpus. It uses the same Go values on both legs
@@ -421,60 +444,60 @@ func oracleCases() []oracleCase {
 	return []oracleCase{
 		// StaticCompletion: literal text + direct string interpolation, KindCompletion.
 		completionCase("StaticCompletion/ascii", "StaticCompletion",
-			map[string]any{"topic": "cats and dogs"},
+			[]any{"cats and dogs"},
 			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticCompletion("cats and dogs") }),
 		completionCase("StaticCompletion/unicode_quotes_backslash", "StaticCompletion",
-			map[string]any{"topic": "café ☕ \"q\" \\b"},
+			[]any{"café ☕ \"q\" \\b"},
 			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticCompletion("café ☕ \"q\" \\b") }),
 		completionCase("StaticCompletion/embedded_newline", "StaticCompletion",
-			map[string]any{"topic": "line1\nline2"},
+			[]any{"line1\nline2"},
 			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticCompletion("line1\nline2") }),
 		completionCase("StaticCompletion/inner_spaces", "StaticCompletion",
-			map[string]any{"topic": "  padded  "},
+			[]any{"  padded  "},
 			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticCompletion("  padded  ") }),
 
 		// StaticPrimitiveArgs: exact string/int/float/bool binding + scalar display.
 		completionCase("StaticPrimitiveArgs/zeros", "StaticPrimitiveArgs",
-			map[string]any{"text": "hi", "count": int64(0), "ratio": float64(0), "flag": false},
+			[]any{"hi", int64(0), float64(0), false},
 			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticPrimitiveArgs("hi", 0, 0, false) }),
 		completionCase("StaticPrimitiveArgs/neg_frac_true", "StaticPrimitiveArgs",
-			map[string]any{"text": "héllo", "count": int64(-1), "ratio": float64(3.14), "flag": true},
+			[]any{"héllo", int64(-1), float64(3.14), true},
 			func() (baml.HTTPRequest, error) {
 				return bamlclient.Request.StaticPrimitiveArgs("héllo", -1, 3.14, true)
 			}),
 		completionCase("StaticPrimitiveArgs/int_max_exp", "StaticPrimitiveArgs",
-			map[string]any{"text": "x", "count": int64(9223372036854775807), "ratio": float64(1e10), "flag": true},
+			[]any{"x", int64(9223372036854775807), float64(1e10), true},
 			func() (baml.HTTPRequest, error) {
 				return bamlclient.Request.StaticPrimitiveArgs("x", 9223372036854775807, 1e10, true)
 			}),
 		completionCase("StaticPrimitiveArgs/int_min_negfrac", "StaticPrimitiveArgs",
-			map[string]any{"text": "y", "count": int64(-9223372036854775808), "ratio": float64(-2.5), "flag": false},
+			[]any{"y", int64(-9223372036854775808), float64(-2.5), false},
 			func() (baml.HTTPRequest, error) {
 				return bamlclient.Request.StaticPrimitiveArgs("y", -9223372036854775808, -2.5, false)
 			}),
 
 		// StaticRoleChat: ordered text-only system -> user -> assistant chat.
 		chatCase("StaticRoleChat/basic", "StaticRoleChat",
-			map[string]any{"topic": "weather", "count": int64(3)},
+			[]any{"weather", int64(3)},
 			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticRoleChat("weather", 3) }),
 		chatCase("StaticRoleChat/unicode_zero", "StaticRoleChat",
-			map[string]any{"topic": "the ☀️", "count": int64(0)},
+			[]any{"the ☀️", int64(0)},
 			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticRoleChat("the ☀️", 0) }),
 
 		// StaticOutputFormat: bare ctx.output_format in a chat message + primitive.
 		chatCase("StaticOutputFormat/weather", "StaticOutputFormat",
-			map[string]any{"topic": "weather"},
+			[]any{"weather"},
 			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticOutputFormat("weather") }),
 		chatCase("StaticOutputFormat/unicode", "StaticOutputFormat",
-			map[string]any{"topic": "café"},
+			[]any{"café"},
 			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticOutputFormat("café") }),
 
 		// StaticCompletionOutputFormat: bare ctx.output_format in a Completion.
 		completionCase("StaticCompletionOutputFormat/weather", "StaticCompletionOutputFormat",
-			map[string]any{"topic": "weather"},
+			[]any{"weather"},
 			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticCompletionOutputFormat("weather") }),
 		completionCase("StaticCompletionOutputFormat/trees", "StaticCompletionOutputFormat",
-			map[string]any{"topic": "trees"},
+			[]any{"trees"},
 			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticCompletionOutputFormat("trees") }),
 
 		// De-BAML Phase 2 (recursive classes): bare ctx.output_format Completions whose
@@ -483,18 +506,18 @@ func oracleCases() []oracleCase {
 		// roots of a mutual SCC (A, B). The recursive PARSE differential (depths/terminals)
 		// lives in the separate static-recursion manifest, not this render oracle.
 		completionCase("StaticRecursiveNode/self", "StaticRecursiveNode",
-			map[string]any{"topic": "a short list"},
+			[]any{"a short list"},
 			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticRecursiveNode("a short list") }),
 		completionCase("StaticRecursiveA/mutual_a", "StaticRecursiveA",
-			map[string]any{"topic": "an a/b chain"},
+			[]any{"an a/b chain"},
 			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticRecursiveA("an a/b chain") }),
 		completionCase("StaticRecursiveB/mutual_b", "StaticRecursiveB",
-			map[string]any{"topic": "a b/a chain"},
+			[]any{"a b/a chain"},
 			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticRecursiveB("a b/a chain") }),
 		// The one-field Loop pair-guard witness renders like any recursive class (the
 		// served fingerprint declines it at PARSE admission, not render).
 		completionCase("StaticRecursiveLoop/one_field", "StaticRecursiveLoop",
-			map[string]any{"topic": "a loop"},
+			[]any{"a loop"},
 			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticRecursiveLoop("a loop") }),
 		// De-BAML Phase 3a (recursive aliases): the served direct five-arm JSON alias and
 		// the second served family JsonValue, and the Phase-3c reordered decline witness,
@@ -502,25 +525,232 @@ func oracleCases() []oracleCase {
 		// fingerprint / decline distinction is a PARSE concern, tested in the separate
 		// recursive-alias differentials, not this render oracle).
 		completionCase("StaticRecursiveAliasJSON/json", "StaticRecursiveAliasJSON",
-			map[string]any{"topic": "arbitrary json"},
+			[]any{"arbitrary json"},
 			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticRecursiveAliasJSON("arbitrary json") }),
 		completionCase("StaticRecursiveAliasJsonValue/jsonvalue", "StaticRecursiveAliasJsonValue",
-			map[string]any{"topic": "wide json"},
+			[]any{"wide json"},
 			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticRecursiveAliasJsonValue("wide json") }),
 		completionCase("StaticRecursiveAliasJsonValueReordered/reordered", "StaticRecursiveAliasJsonValueReordered",
-			map[string]any{"topic": "arbitrary json (reordered arms)"},
+			[]any{"arbitrary json (reordered arms)"},
 			func() (baml.HTTPRequest, error) {
 				return bamlclient.Request.StaticRecursiveAliasJsonValueReordered("arbitrary json (reordered arms)")
+			}),
+
+		// -------------------------------------------------------------------
+		// De-BAML Slice 7.1b — resolved static VALUES and the #597 enum fence.
+		//
+		// The enum expression rows close #597 end to end: each is admitted only
+		// after the V3 type gate resolves its operands, and its rendered bytes are
+		// compared against stock BAML's. The host-value rows are the ones that
+		// prove BINDING — their bytes exist only because the descriptor carried
+		// resolved aliases / field order and the binder built real bamlprofile
+		// host values from generated `types.Color` / `types.Palette` values.
+		// -------------------------------------------------------------------
+
+		// Four of the five historical #597 rows this slice CLAIMS; the fifth
+		// (StaticEnumDisplayAliasEq) is the decline control declared just below.
+		completionCase("StaticEnumCanonicalEq/true", "StaticEnumCanonicalEq", nil,
+			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticEnumCanonicalEq() }),
+		completionCase("StaticEnumSameMemberEq/true", "StaticEnumSameMemberEq", nil,
+			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticEnumSameMemberEq() }),
+		completionCase("StaticEnumCanonicalInMemberList/true", "StaticEnumCanonicalInMemberList", nil,
+			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticEnumCanonicalInMemberList() }),
+		completionCase("StaticEnumDifferentMemberEq/false", "StaticEnumDifferentMemberEq", nil,
+			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticEnumDifferentMemberEq() }),
+
+		// The PARITY-DECLINE control. Stock BAML answers `false`; native declines
+		// because a DISPLAY ALIAS is not an identity in this slice. BAML renders
+		// this row in production, so its exact bytes stay owned by the stock leg.
+		// Stock answers `false` (an alias is display, never identity). Pinning that
+		// text is the whole point of the row: native declines a shape stock CAN
+		// render, and this proves what it is declining.
+		declineCase("StaticEnumDisplayAliasEq/declined", "StaticEnumDisplayAliasEq", nil,
+			nativeprompt.FeatureEnumComparison, "false",
+			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticEnumDisplayAliasEq() }),
+
+		// Reverse-form witnesses.
+		completionCase("StaticEnumReverseCanonicalEq/true", "StaticEnumReverseCanonicalEq", nil,
+			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticEnumReverseCanonicalEq() }),
+		completionCase("StaticEnumMemberInCanonicalList/true", "StaticEnumMemberInCanonicalList", nil,
+			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticEnumMemberInCanonicalList() }),
+
+		// Enum ARGUMENT comparisons, both operand orders and both answers.
+		completionCase("StaticEnumArgMemberEq/true", "StaticEnumArgMemberEq", []any{types.ColorRED},
+			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticEnumArgMemberEq(types.ColorRED) }),
+		completionCase("StaticEnumArgMemberEq/false", "StaticEnumArgMemberEq", []any{types.ColorBLUE},
+			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticEnumArgMemberEq(types.ColorBLUE) }),
+		completionCase("StaticEnumMemberArgEq/true", "StaticEnumMemberArgEq", []any{types.ColorRED},
+			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticEnumMemberArgEq(types.ColorRED) }),
+		completionCase("StaticEnumArgCanonicalEq/true", "StaticEnumArgCanonicalEq", []any{types.ColorRED},
+			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticEnumArgCanonicalEq(types.ColorRED) }),
+		completionCase("StaticEnumArgCanonicalEq/false", "StaticEnumArgCanonicalEq", []any{types.ColorGREEN},
+			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticEnumArgCanonicalEq(types.ColorGREEN) }),
+		completionCase("StaticEnumCanonicalArgEq/true", "StaticEnumCanonicalArgEq", []any{types.ColorRED},
+			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticEnumCanonicalArgEq(types.ColorRED) }),
+
+		// Direct host-value renders. An ALIASED member and an UNALIASED one both
+		// run, so the alias-or-canonical display rule is exercised in both
+		// directions.
+		completionCase("StaticRenderEnum/aliased", "StaticRenderEnum", []any{types.ColorRED},
+			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticRenderEnum(types.ColorRED) }),
+		completionCase("StaticRenderEnum/unaliased", "StaticRenderEnum", []any{types.ColorBLUE},
+			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticRenderEnum(types.ColorBLUE) }),
+
+		// Lists: input order (deliberately NOT canonical or sorted order), a
+		// repeat, and the empty case.
+		completionCase("StaticRenderList/ordered", "StaticRenderList",
+			[]any{[]types.Color{types.ColorBLUE, types.ColorRED, types.ColorBLUE}},
+			func() (baml.HTTPRequest, error) {
+				return bamlclient.Request.StaticRenderList([]types.Color{types.ColorBLUE, types.ColorRED, types.ColorBLUE})
+			}),
+		completionCase("StaticRenderList/empty", "StaticRenderList", []any{[]types.Color{}},
+			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticRenderList([]types.Color{}) }),
+		completionCase("StaticRenderStrings/scalars", "StaticRenderStrings",
+			[]any{[]string{"b", "a", "café ☕"}},
+			func() (baml.HTTPRequest, error) {
+				return bamlclient.Request.StaticRenderStrings([]string{"b", "a", "café ☕"})
+			}),
+
+		// Nested class + nested list of classes: PARITY DECLINES, and the reason is
+		// measured rather than assumed. Stock BAML v0.223's Go client encodes a
+		// class argument as `map[string]any` and hands that map to EncodeClass, so
+		// the field order the direct debug-map render prints follows GO MAP
+		// ITERATION and differs between runs of the SAME call —
+		// TestStockClassRenderOrderIsNonDeterministic measures exactly that against
+		// this fixture. There is therefore no byte-exact answer to reproduce, and
+		// admitting the row would make the native serve path's plan byte-compare
+		// fail RANDOMLY. The source functions stay in the fixture so the decline
+		// keeps its evidence; closing it is #583 work gated on BAML's Go client
+		// gaining an order-preserving class encoding.
+		// No wantBAMLText: stock's class field order is NOT a function of the
+		// input (see TestStockClassRenderOrderIsNonDeterministic), so only the
+		// "stock builds and serves this" half is assertable here.
+		declineCase("StaticRenderPalette/nested_declined", "StaticRenderPalette", []any{oraclePalette()},
+			nativeprompt.FeatureEnumClassValue, "",
+			func() (baml.HTTPRequest, error) { return bamlclient.Request.StaticRenderPalette(oraclePalette()) }),
+		declineCase("StaticRenderPalettes/list_of_classes_declined", "StaticRenderPalettes",
+			[]any{[]types.Palette{oraclePalette(), oracleEmptyPalette()}},
+			nativeprompt.FeatureEnumClassValue, "",
+			func() (baml.HTTPRequest, error) {
+				return bamlclient.Request.StaticRenderPalettes([]types.Palette{oraclePalette(), oracleEmptyPalette()})
 			}),
 	}
 }
 
-func completionCase(name, fn string, args map[string]any, build func() (baml.HTTPRequest, error)) oracleCase {
-	return oracleCase{name: name, fn: fn, args: args, wantKind: nativeprompt.KindCompletion, build: build}
+// oraclePalette is the nested class value both legs use: an ALIASED enum field,
+// a multi-item enum list in a deliberately non-canonical order, a nested class
+// with its own aliased field, and a plain scalar.
+func oraclePalette() types.Palette {
+	return types.Palette{
+		Primary: types.ColorGREEN,
+		Shades:  []types.Color{types.ColorBLUE, types.ColorRED},
+		Swatch:  types.Swatch{Color: types.ColorRED, Label: "spring \"tone\""},
+		Name:    "café ☕",
+	}
 }
 
-func chatCase(name, fn string, args map[string]any, build func() (baml.HTTPRequest, error)) oracleCase {
-	return oracleCase{name: name, fn: fn, args: args, wantKind: nativeprompt.KindChat, build: build}
+// oracleEmptyPalette exercises the empty-list and empty-string edges inside a
+// class (BAML renders an empty host list as `[]`, not as nothing).
+func oracleEmptyPalette() types.Palette {
+	return types.Palette{
+		Primary: types.ColorBLUE,
+		Shades:  []types.Color{},
+		Swatch:  types.Swatch{Color: types.ColorGREEN, Label: ""},
+		Name:    "",
+	}
+}
+
+// mustProject projects one ordered Go argument vector through the EMITTED
+// per-method projector, failing loudly when the fixture has none. It is the
+// single projector seam for this suite — oracleCase.nativeValues delegates here
+// — so the failure message (which names the recorded projector-decline reason)
+// cannot drift between the two call shapes.
+func mustProject(t *testing.T, method string, argv []any) []promptdescriptor.ArgumentValue {
+	t.Helper()
+	values, ok := introspected.StaticPromptArgumentValues(method, argv)
+	if !ok {
+		t.Fatalf("fixture emitted no argument projector for %q (decline: %q)",
+			method, introspected.StaticPromptProjectorDeclines[method])
+	}
+	return values
+}
+
+// assertOracleDecline pins a parity-decline row: SupportsStatic returns the
+// EXACT feature key and RenderStatic yields no prompt.
+func assertOracleDecline(t *testing.T, fn promptdescriptor.Function, values []promptdescriptor.ArgumentValue, wantFeature string) {
+	t.Helper()
+	err := nativeprompt.SupportsStatic(fn, values)
+	if err == nil {
+		t.Fatalf("a parity-decline row was ADMITTED; it must stay on BAML")
+	}
+	if !errors.Is(err, nativeprompt.ErrUnsupported) {
+		t.Fatalf("decline %v does not unwrap to ErrUnsupported", err)
+	}
+	var d *nativeprompt.Decline
+	if !errors.As(err, &d) || d.Feature != wantFeature {
+		t.Fatalf("decline = %v, want feature %q", err, wantFeature)
+	}
+	rp, rerr := nativeprompt.RenderStatic(fn, values)
+	if rp != nil {
+		t.Fatalf("RenderStatic produced a prompt for a declined row: %+v", rp)
+	}
+	if !errors.Is(rerr, nativeprompt.ErrUnsupported) {
+		t.Fatalf("RenderStatic error %v does not unwrap to ErrUnsupported", rerr)
+	}
+}
+
+func completionCase(name, fn string, argv []any, build func() (baml.HTTPRequest, error)) oracleCase {
+	return oracleCase{name: name, fn: fn, argv: argv, wantKind: nativeprompt.KindCompletion, build: build}
+}
+
+func chatCase(name, fn string, argv []any, build func() (baml.HTTPRequest, error)) oracleCase {
+	return oracleCase{name: name, fn: fn, argv: argv, wantKind: nativeprompt.KindChat, build: build}
+}
+
+// declineCase is a PARITY-DECLINE row: BAML renders it (and the stock body is
+// still built, so the fixture stays honest about what BAML does), while the
+// native leg must decline with feature.
+func declineCase(name, fn string, argv []any, feature, wantBAMLText string, build func() (baml.HTTPRequest, error)) oracleCase {
+	return oracleCase{
+		name: name, fn: fn, argv: argv, wantKind: nativeprompt.KindCompletion,
+		build: build, declineFeature: feature, wantBAMLText: wantBAMLText,
+	}
+}
+
+// buildOracleBody drives the row's generated stock Request.<Function>, asserts
+// the endpoint, and strictly decodes the provider body. It is the proof that the
+// fixture function is a REAL, servable stock route — which is what makes a
+// native decline on the same row meaningful.
+func buildOracleBody(t *testing.T, c oracleCase) *nativeprompt.RenderedPrompt {
+	t.Helper()
+	req, err := c.build()
+	if err != nil {
+		t.Fatalf("BAML Request.%s: %v", c.fn, err)
+	}
+	assertChatCompletionsEndpoint(t, req)
+	text, err := bodyText(req)
+	if err != nil {
+		t.Fatalf("BAML body: %v", err)
+	}
+	if text == "" {
+		t.Fatalf("%s: BAML body is empty — the stock request build failed before producing a body", c.fn)
+	}
+	oracle, err := decodeOpenAIChat([]byte(text))
+	if err != nil {
+		t.Fatalf("decode BAML provider body for %s: %v\nbody: %s", c.fn, err, text)
+	}
+	return oracle
+}
+
+// assertSingleMessageText pins the exact text of a single-message provider body.
+func assertSingleMessageText(t *testing.T, label string, rp *nativeprompt.RenderedPrompt, want string) {
+	t.Helper()
+	if len(rp.Messages) != 1 || len(rp.Messages[0].Parts) != 1 || rp.Messages[0].Parts[0].Text == nil {
+		t.Fatalf("%s: want a single text-part message from stock BAML, got %+v", label, rp.Messages)
+	}
+	if got := *rp.Messages[0].Parts[0].Text; got != want {
+		t.Errorf("%s: stock BAML rendered %q, want %q", label, got, want)
+	}
 }
 
 // TestStaticOracleParity is the core proof: for every claimed-corpus row, the
@@ -537,13 +767,37 @@ func TestStaticOracleParity(t *testing.T) {
 				t.Fatalf("no built descriptor for %q", c.fn)
 			}
 
+			values := c.nativeValues(t)
+
+			// A PARITY-DECLINE row. Two halves, both required:
+			//
+			//  1. BAML STILL SERVES IT. The stock request is built through the SAME
+			//     generated Request.<Function> path every admitted row uses, and its
+			//     body is decoded strictly. Skipping this would leave the decline
+			//     unanchored — a row could "decline" because the fixture function is
+			//     broken rather than because native deliberately steps aside. The
+			//     `rouge` under-approximation in particular is only meaningful if
+			//     stock demonstrably renders it (and renders `false`).
+			//  2. NATIVE DECLINES with the EXACT feature key and renders nothing.
+			//
+			// Asserting the key — not merely "some error" — is what keeps the
+			// decline deliberate rather than accidental.
+			if c.declineFeature != "" {
+				oracle := buildOracleBody(t, c)
+				if c.wantBAMLText != "" {
+					assertSingleMessageText(t, c.name, oracle, c.wantBAMLText)
+				}
+				assertOracleDecline(t, fn, values, c.declineFeature)
+				return
+			}
+
 			// Native leg: SupportsStatic must accept, RenderStatic must succeed
 			// with the pinned kind. After SupportsStatic returns nil, a render
 			// failure is an invariant/parity failure, surfaced loudly.
-			if err := nativeprompt.SupportsStatic(fn, c.args); err != nil {
+			if err := nativeprompt.SupportsStatic(fn, values); err != nil {
 				t.Fatalf("SupportsStatic declined a claimed case: %v", err)
 			}
-			native, err := nativeprompt.RenderStatic(fn, c.args)
+			native, err := nativeprompt.RenderStatic(fn, values)
 			if err != nil {
 				t.Fatalf("RenderStatic failed after SupportsStatic accepted: %v", err)
 			}
@@ -607,7 +861,7 @@ func TestMismatchSensitivity(t *testing.T) {
 		t.Fatalf("no built descriptor for %q", "StaticCompletion")
 	}
 
-	native, err := nativeprompt.RenderStatic(fn, map[string]any{"topic": "cats and dogs"})
+	native, err := nativeprompt.RenderStatic(fn, mustProject(t, "StaticCompletion", []any{"cats and dogs"}))
 	if err != nil {
 		t.Fatalf("RenderStatic: %v", err)
 	}
@@ -1023,4 +1277,119 @@ func leadingIdent(s string) string {
 		break
 	}
 	return s[:n]
+}
+
+// ---------------------------------------------------------------------------
+// The measurement behind the class-render parity decline.
+// ---------------------------------------------------------------------------
+
+// TestStockClassRenderOrderIsNonDeterministic is the EVIDENCE for
+// nativeprompt.directlyRenderable refusing a direct class render.
+//
+// It calls the SAME stock Request.StaticRenderPalette with the SAME typed
+// types.Palette repeatedly and records the rendered field order. BAML v0.223's
+// generated Encode() builds `fields := map[string]any{...}` and hands that map
+// to EncodeClass, so the BamlValue::Class field order — which the direct
+// debug-map render prints — is Go map iteration order and varies run to run.
+//
+// This is not a native bug and not a BAML bug this repo may fix; it is a
+// property of the deployed client. It means:
+//
+//   - no renderer can be byte-exact for this shape, because the target is not a
+//     function of the input;
+//   - a native claim would make the serve path's plan byte-compare fail
+//     RANDOMLY rather than deterministically.
+//
+// Declining is therefore the only outcome consistent with "never out-do BAML".
+// If this test ever observes a STABLE order across many calls, the premise has
+// changed and the decline should be revisited (#583) — so it fails loudly in
+// that direction too rather than silently entrenching the restriction.
+func TestStockClassRenderOrderIsNonDeterministic(t *testing.T) {
+	const attempts = 64
+	seen := map[string]int{}
+	for i := 0; i < attempts; i++ {
+		req, err := bamlclient.Request.StaticRenderPalette(oraclePalette())
+		if err != nil {
+			t.Fatalf("BAML Request.StaticRenderPalette: %v", err)
+		}
+		text, err := bodyText(req)
+		if err != nil {
+			t.Fatalf("BAML body: %v", err)
+		}
+		// Key on the rendered class FIELD ORDER, not on the whole body. Keying on
+		// the body would let ANY body variation satisfy the >=2 assertion, so if
+		// stock ever stabilized class order while something else varied, this test
+		// would keep passing and the premise behind directlyRenderable would
+		// silently stop being measured. The key is exactly the property named.
+		seen[paletteFieldOrder(t, text)]++
+	}
+	if len(seen) < 2 {
+		t.Fatalf("stock BAML rendered ONE stable class field order (%v) across %d identical calls; "+
+			"the premise behind the class-render decline (nativeprompt.directlyRenderable) "+
+			"may no longer hold — re-evaluate #583 before relaxing or keeping it",
+			sortedSeenKeys(seen), attempts)
+	}
+	t.Logf("stock BAML produced %d distinct class field orders across %d identical calls: %v",
+		len(seen), attempts, sortedSeenKeys(seen))
+}
+
+// paletteRenderedFieldNames are the DISPLAY keys stock BAML prints for a
+// types.Palette debug-map render: the @alias where the source declares one, else
+// the canonical field name. They come from the fixture's Palette declaration.
+var paletteRenderedFieldNames = []string{"principale", "shades", "swatch", "name"}
+
+// paletteFieldOrder extracts the ORDER in which Palette's rendered field keys
+// appear in a provider body, as a single comparable string.
+//
+// It decodes the body through the same strict decoder the parity rows use, takes
+// the single message text, and records each Palette key at its first occurrence.
+// Nested keys (Swatch's own fields) are deliberately NOT included: the property
+// under measurement is the ORDER of one class's fields, and mixing levels would
+// widen the signal again.
+//
+// A body that does not contain every Palette key is a harness failure, not a
+// "different order" — otherwise a decode/rendering change could masquerade as
+// the nondeterminism this test is trying to observe.
+func paletteFieldOrder(t *testing.T, body string) string {
+	t.Helper()
+	rp, err := decodeOpenAIChat([]byte(body))
+	if err != nil {
+		t.Fatalf("decode BAML provider body: %v\nbody: %s", err, body)
+	}
+	if len(rp.Messages) != 1 || len(rp.Messages[0].Parts) != 1 || rp.Messages[0].Parts[0].Text == nil {
+		t.Fatalf("want a single text-part message from stock BAML, got %+v", rp.Messages)
+	}
+	text := *rp.Messages[0].Parts[0].Text
+
+	type pos struct {
+		name  string
+		index int
+	}
+	found := make([]pos, 0, len(paletteRenderedFieldNames))
+	for _, name := range paletteRenderedFieldNames {
+		idx := strings.Index(text, `"`+name+`"`)
+		if idx < 0 {
+			t.Fatalf("rendered Palette is missing the field key %q; this measurement assumes the "+
+				"fixture's Palette declaration (%v). Body text: %s", name, paletteRenderedFieldNames, text)
+		}
+		found = append(found, pos{name: name, index: idx})
+	}
+	sort.Slice(found, func(i, j int) bool { return found[i].index < found[j].index })
+
+	order := make([]string, 0, len(found))
+	for _, f := range found {
+		order = append(order, f.name)
+	}
+	return strings.Join(order, ",")
+}
+
+// sortedSeenKeys returns the observed field orders, sorted, for a stable
+// diagnostic.
+func sortedSeenKeys(seen map[string]int) []string {
+	out := make([]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

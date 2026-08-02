@@ -17,8 +17,11 @@ import (
 // so a shape can never be admitted because it "looks like" an enum comparison,
 // and a real enum can never be admitted in a spelling the stock fixture does not
 // prove. Every gate here runs AFTER the V3 binder has already bound the
-// arguments, so "a directly declared V3 class with an acyclic, fully bindable
-// closure" is a fact, not a re-derivation.
+// arguments, so "a fully bindable, acyclic closure" is a fact it reads rather
+// than a property it re-derives.
+//
+// A direct CLASS render is the one table row this slice ended up NOT claiming;
+// see directlyRenderable for the stock evidence that forced it.
 //
 // # The admitted expressions (and why the neighbours are not)
 //
@@ -27,7 +30,7 @@ import (
 // let S be a quoted string literal equal to one of that enum's CANONICAL member
 // names.
 //
-//	{{ arg }}            direct render of a bound scalar / enum / class / list
+//	{{ arg }}            direct render of a bound scalar / enum / list-of-those
 //	{{ E == S }}         canonical-name equality, either operand order
 //	{{ S == E }}
 //	{{ E == M }}         same-namespace member equality, either operand order
@@ -79,13 +82,60 @@ func newTypeGate(bindings []argBinding, u *v3Universe) *typeGate {
 	return g
 }
 
-// isRenderableArg reports whether name is a declared, bound argument. Binding
-// already refused every value type this slice does not render directly (null,
-// nullable, a recursive class closure, an unknown enum member), so a bound
-// argument is renderable by construction.
+// isRenderableArg reports whether name is a declared, bound argument whose value
+// type can be rendered DIRECTLY. Binding already refused the shapes this slice
+// does not bind at all (null, nullable, a recursive class closure, an unknown
+// enum member); this is the further question of whether `{{ arg }}` is
+// byte-reproducible against stock BAML.
 func (g *typeGate) isRenderableArg(name string) bool {
+	vt, ok := g.args[name]
+	return ok && directlyRenderable(vt)
+}
+
+// isBoundArg reports whether name is a declared, bound argument regardless of
+// whether it can be rendered directly. It exists so the decline classifier can
+// tell "not an argument at all" from "a bound argument whose direct render this
+// slice does not claim", which are different parity facts.
+func (g *typeGate) isBoundArg(name string) bool {
 	_, ok := g.args[name]
 	return ok
+}
+
+// directlyRenderable reports whether `{{ arg }}` on this value type is
+// byte-reproducible against stock BAML v0.223.
+//
+// It is FALSE for anything whose closure reaches a CLASS, and that is a
+// measured fact, not caution. BAML v0.223's generated Go client encodes a class
+// argument as `fields := map[string]any{...}` and hands that map to
+// EncodeClass, so the BamlValue::Class field order — which the direct
+// debug-map render prints — follows GO MAP ITERATION and differs between runs
+// of the SAME call. internal/nativeprompt/staticoracle's
+// TestStockClassRenderOrderIsNonDeterministic pins that observation against the
+// stock client.
+//
+// Two consequences make declining the only honest option:
+//
+//   - there is no byte-exact differential to be had: the "correct" answer is not
+//     a function of the input, so no renderer can reproduce it;
+//   - the native serve path byte-compares its prepared plan against BAML's
+//     no-send plan before claiming a socket, so admitting a class render would
+//     produce a RANDOMLY mismatching plan — a flaky decline rather than a
+//     deterministic one.
+//
+// Scalars, enums, and lists of them are unaffected: a list's order is the input
+// slice's order on both legs. Binding a class argument is still allowed (a
+// declared-but-never-rendered class must not poison a function); only rendering
+// one is refused. This is a #583 parity-debt item: it reopens if BAML's Go
+// client gains an order-preserving class encoding.
+func directlyRenderable(t *promptdescriptor.ResolvedValueType) bool {
+	switch t.Kind {
+	case promptdescriptor.ValueClass:
+		return false
+	case promptdescriptor.ValueList:
+		return t.Elem != nil && directlyRenderable(t.Elem)
+	default:
+		return true
+	}
 }
 
 // enumOperand is one resolved side of an admitted enum expression.

@@ -12,3 +12,78 @@
 //  $ go install github.com/boundaryml/baml/baml-cli
 
 package types
+
+import (
+	"encoding/json"
+	"fmt"
+
+	baml "github.com/boundaryml/baml/engine/language_client_go/pkg"
+	"github.com/boundaryml/baml/engine/language_client_go/pkg/cffi"
+)
+
+type Color string
+
+const (
+	ColorRED   Color = "RED"
+	ColorGREEN Color = "GREEN"
+	ColorBLUE  Color = "BLUE"
+)
+
+// Values returns all allowed values for the Color type.
+func (Color) Values() []Color {
+	return []Color{
+		ColorRED,
+		ColorGREEN,
+		ColorBLUE,
+	}
+}
+
+// IsValid checks whether the given Color value is valid.
+func (e Color) IsValid() bool {
+
+	for _, v := range e.Values() {
+		if e == v {
+			return true
+		}
+	}
+	return false
+
+}
+
+// MarshalJSON customizes JSON marshaling for Color.
+func (e Color) MarshalJSON() ([]byte, error) {
+	if !e.IsValid() {
+		return nil, fmt.Errorf("invalid Color: %q", e)
+	}
+	return json.Marshal(string(e))
+}
+
+// UnmarshalJSON customizes JSON unmarshaling for Color.
+func (e *Color) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	*e = Color(s)
+	if !e.IsValid() {
+		return fmt.Errorf("invalid Color: %q", s)
+	}
+	return nil
+}
+
+func (e *Color) Decode(holder *cffi.CFFIValueEnum, typeMap baml.TypeMap) {
+	name := holder.Name
+	if name.Name != "Color" && name.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected types.Color, got %s.%s", string(name.Namespace.String()), string(name.Name)))
+	}
+	value := holder.Value
+	*e = Color(value)
+}
+
+func (e Color) Encode() (*cffi.HostValue, error) {
+	return baml.EncodeEnum("Color", string(e), false)
+}
+
+func (e Color) BamlTypeName() string {
+	return "Color"
+}

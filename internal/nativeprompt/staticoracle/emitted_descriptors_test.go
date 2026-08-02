@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
+	introspected "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/static_oracle/introspected"
 )
 
 // TestEmittedDescriptorsMatchSource requires the emitted fixture descriptor set
@@ -54,6 +55,80 @@ func TestEmittedDescriptorsMatchSource(t *testing.T) {
 	for method := range emitted {
 		if _, ok := source[method]; !ok {
 			t.Errorf("emitted descriptor %q is not a source-built descriptor", method)
+		}
+	}
+}
+
+// TestEmittedV3UniverseIsNonVacuous makes the DeepEqual above non-vacuous for
+// the Slice 7.1b half: it asserts the emitted fixture actually carries a
+// populated V3 universe and a ValueType on every argument. Without this, a
+// regression that emitted an EMPTY InputValues on both legs would still pass
+// TestEmittedDescriptorsMatchSource.
+func TestEmittedV3UniverseIsNonVacuous(t *testing.T) {
+	emitted := buildDescriptors(t)
+
+	for _, method := range sortedDescriptorKeys(emitted) {
+		fn := emitted[method]
+		if fn.Version != promptdescriptor.Version {
+			t.Errorf("%s: descriptor version %d, want %d", method, fn.Version, promptdescriptor.Version)
+		}
+		// BAML installs one namespace global per PROJECT enum, so EVERY function
+		// in this fixture — including the no-enum ones — must carry the whole set.
+		if len(fn.InputValues.ProjectEnums) == 0 {
+			t.Errorf("%s: emitted V3 universe carries no project enums, but the fixture declares Color", method)
+		}
+		for _, a := range fn.Args {
+			if a.ValueType == nil {
+				t.Errorf("%s: argument %q has no V3 ValueType", method, a.Name)
+			}
+		}
+	}
+
+	// The resolved Color enum must carry canonical members in DECLARATION order
+	// with their exact aliases — the facts the differential depends on.
+	// Indexing without the ok-check would make a MISSING descriptor look like a
+	// missing enum below, so two distinct regressions would report identically.
+	fn, ok := emitted["StaticRenderEnum"]
+	if !ok {
+		t.Fatalf("fixture emitted no descriptor for StaticRenderEnum (declines: %v)", introspected.StaticPromptDeclines)
+	}
+	var color *promptdescriptor.ResolvedEnum
+	for i := range fn.InputValues.ProjectEnums {
+		if fn.InputValues.ProjectEnums[i].Name == "Color" {
+			color = &fn.InputValues.ProjectEnums[i]
+		}
+	}
+	if color == nil {
+		t.Fatal("emitted universe has no Color enum")
+	}
+	wantCanonical := []string{"RED", "GREEN", "BLUE"}
+	if len(color.Members) != len(wantCanonical) {
+		t.Fatalf("Color has %d members, want %d", len(color.Members), len(wantCanonical))
+	}
+	for i, want := range wantCanonical {
+		if color.Members[i].Canonical != want {
+			t.Errorf("Color member %d = %q, want %q (source declaration order)", i, color.Members[i].Canonical, want)
+		}
+	}
+	if color.Members[0].Alias == nil || *color.Members[0].Alias != "rouge" {
+		t.Errorf("Color.RED alias = %v, want \"rouge\"", color.Members[0].Alias)
+	}
+	if color.Members[2].Alias != nil {
+		t.Errorf("Color.BLUE alias = %q, want nil (unaliased)", *color.Members[2].Alias)
+	}
+}
+
+// TestEmittedProjectorCoverage requires a generated argument projector for EVERY
+// emitted descriptor and an empty projector-decline ledger. A missing projector
+// silently removes a method from the native path, so the fixture asserts the
+// partition rather than tolerating it.
+func TestEmittedProjectorCoverage(t *testing.T) {
+	if len(introspected.StaticPromptProjectorDeclines) != 0 {
+		t.Errorf("fixture emitted projector declines: %v", introspected.StaticPromptProjectorDeclines)
+	}
+	for _, method := range sortedDescriptorKeys(buildDescriptors(t)) {
+		if _, ok := introspected.StaticPromptArgumentProjectors[method]; !ok {
+			t.Errorf("method %q has an emitted descriptor but NO argument projector", method)
 		}
 	}
 }

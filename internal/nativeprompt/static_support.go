@@ -261,7 +261,7 @@ func classifyExpr(inner string, gate *typeGate) (event, error) {
 		}
 	}
 	// Not an accepted form (or not even lexable): pick the specific decline key.
-	return event{}, classifyExprDecline(inner, toks, ok)
+	return event{}, classifyExprDecline(inner, toks, ok, gate)
 }
 
 // filterFence declines any expression that applies a filter, keyed
@@ -350,7 +350,7 @@ func matchAllowlist(toks []token, gate *typeGate) (event, bool) {
 // expression. These checks only ever DECLINE, so conservative matching cannot
 // cause a wrong accept. A body the MiniJinja lexer itself rejects (lexOK=false)
 // is the catch-all FeatureUnrecognizedPrompt.
-func classifyExprDecline(inner string, toks []token, lexOK bool) error {
+func classifyExprDecline(inner string, toks []token, lexOK bool, gate *typeGate) error {
 	if !lexOK {
 		return decline(FeatureUnrecognizedPrompt,
 			fmt.Sprintf("expression is not valid MiniJinja (non-lexer whitespace/character): %q", inner))
@@ -394,6 +394,15 @@ func classifyExprDecline(inner string, toks []token, lexOK bool) error {
 	if hasOpTok(toks, ".") {
 		return decline(FeatureEnumClassValue,
 			fmt.Sprintf("enum/class/global attribute access is not supported: %q", inner))
+	}
+	// A lone identifier that is a BOUND argument the allowlist refused: its value
+	// type is bindable but not directly renderable (a class, or a list reaching
+	// one — see directlyRenderable). That is a host-VALUE parity decline, not an
+	// unknown name, so it gets the enum/class key.
+	if len(toks) == 1 && toks[0].kind == tokIdent &&
+		!mjReserved[toks[0].text] && gate.isBoundArg(toks[0].text) {
+		return decline(FeatureEnumClassValue,
+			fmt.Sprintf("direct rendering of %q is not supported: stock BAML v0.223's Go client encodes a class argument through a Go map, so its rendered field order is not reproducible", inner))
 	}
 	// A lone identifier that is not a declared argument (or is a keyword).
 	if len(toks) == 1 && toks[0].kind == tokIdent {

@@ -55,6 +55,12 @@ func TestStaticBodyOracleParity(t *testing.T) {
 	for _, c := range oracleCases() {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
+			if c.declineFeature != "" {
+				// A parity-decline row never reaches the body builder: the prompt
+				// gate declines first, so there is no native body to compare. The
+				// decline itself is pinned by TestStaticOracleParity.
+				t.Skip("parity-decline row: native declines before a body is built")
+			}
 			fn, ok := descriptors[c.fn]
 			if !ok {
 				t.Fatalf("no built descriptor for %q", c.fn)
@@ -68,7 +74,7 @@ func TestStaticBodyOracleParity(t *testing.T) {
 			}
 
 			// Native leg: render + normalize client + build canonical body.
-			native := buildNativeBody(t, fn, c.args)
+			native := buildNativeBody(t, fn, c.nativeValues(t))
 
 			// BAML leg: build the provider request (no send) and read its body.
 			req, err := c.build()
@@ -107,8 +113,7 @@ func TestStaticBodyOracleMutation(t *testing.T) {
 	if !ok {
 		t.Fatalf("no built descriptor for StaticRoleChat")
 	}
-	args := map[string]any{"topic": "weather", "count": int64(3)}
-	native := buildNativeBody(t, fn, args)
+	native := buildNativeBody(t, fn, mustProject(t, "StaticRoleChat", []any{"weather", int64(3)}))
 
 	req, err := bamlclient.Request.StaticRoleChat("weather", 3)
 	if err != nil {
@@ -320,12 +325,12 @@ func eqStrings(a, b []string) bool {
 
 // buildNativeBody runs the native leg: SupportsStatic must accept, then
 // RenderStatic + NormalizeStaticClient + BuildOpenAIChat must produce a body.
-func buildNativeBody(t *testing.T, fn promptdescriptor.Function, args map[string]any) *nativebody.CanonicalBody {
+func buildNativeBody(t *testing.T, fn promptdescriptor.Function, values []promptdescriptor.ArgumentValue) *nativebody.CanonicalBody {
 	t.Helper()
-	if err := nativeprompt.SupportsStatic(fn, args); err != nil {
+	if err := nativeprompt.SupportsStatic(fn, values); err != nil {
 		t.Fatalf("SupportsStatic declined a claimed case: %v", err)
 	}
-	rendered, err := nativeprompt.RenderStatic(fn, args)
+	rendered, err := nativeprompt.RenderStatic(fn, values)
 	if err != nil {
 		t.Fatalf("RenderStatic failed after SupportsStatic accepted: %v", err)
 	}
@@ -371,7 +376,7 @@ func TestStaticBodyOracleStreamControl(t *testing.T) {
 	}
 
 	// Native leg: a streaming attempt must DECLINE FeatureStreaming, not serialize.
-	rendered, err := nativeprompt.RenderStatic(fn, map[string]any{"topic": "cats and dogs"})
+	rendered, err := nativeprompt.RenderStatic(fn, mustProject(t, "StaticCompletion", []any{"cats and dogs"}))
 	if err != nil {
 		t.Fatalf("RenderStatic: %v", err)
 	}
