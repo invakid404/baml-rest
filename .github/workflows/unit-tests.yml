@@ -22,11 +22,12 @@ jobs:
     # adapters/common/codegen/internal/testharness/stress.go.
     env:
       BAML_HEAVY_TEST_RUNS: "5"
-    # -race -count=100 across every module has grown past the 10-minute
-    # cap as suites expanded (bamlutils/buildrequest ~4 min,
-    # pool ~4 min on their own). 25 leaves headroom for further growth
-    # without masking a real stuck-test regression.
-    timeout-minutes: 35
+    # The -race -count=100 all-module suite runs ~33-34 min on master
+    # (bamlutils/llmhttp alone ~15 min, ~43% of the budget), so 35 left
+    # near-zero headroom and any substantial PR tipped it over. 50 is an
+    # INTERIM stopgap, not a target: the durable fix is sharding this job
+    # into a balanced parallel matrix, tracked in #656.
+    timeout-minutes: 50
 
     steps:
       - name: Checkout Repository
