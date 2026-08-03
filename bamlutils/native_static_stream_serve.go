@@ -79,6 +79,12 @@ type NativeStaticStreamInvocation struct {
 	// ArgOrder is the ordered list of argument names the generated binder emitted, in
 	// declared descriptor-argument order.
 	ArgOrder []string
+	// Values is the de-BAML Slice 7.1b PROJECTED argument vector — the same neutral,
+	// ordered host-value input the unary seam carries (see
+	// NativeStaticInvocation.Values). Args stays the BAML request fact only.
+	//
+	// SENSITIVE: it carries real request arguments — never log or format it.
+	Values []promptdescriptor.ArgumentValue
 	// Mode is the bounded streaming request mode (stream / stream_with_raw). Only the
 	// two REAL public streaming modes reach the seam; a unary /call{,-with-raw} bridged
 	// through the StreamRequest builder is never installed here.

@@ -12,3 +12,45 @@
 //  $ go install github.com/boundaryml/baml/baml-cli
 
 package type_builder
+
+import baml "github.com/boundaryml/baml/engine/language_client_go/pkg"
+
+type ColorEnumView struct {
+	inner baml.EnumBuilder
+}
+
+func (t *ColorEnumView) ListValues() ([]EnumValueView, error) {
+	result, err := t.inner.ListValues()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]EnumValueView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *ColorEnumView) ValueRED() (EnumValueView, error) {
+	return t.inner.Value("RED")
+}
+
+func (t *ColorEnumView) ValueGREEN() (EnumValueView, error) {
+	return t.inner.Value("GREEN")
+}
+
+func (t *ColorEnumView) ValueBLUE() (EnumValueView, error) {
+	return t.inner.Value("BLUE")
+}
+
+func (t *TypeBuilder) Color() (*ColorEnumView, error) {
+	bld, err := t.inner.Enum("Color")
+	if err != nil {
+		return nil, err
+	}
+	return &ColorEnumView{inner: bld}, nil
+}
+
+func (t *ColorEnumView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}

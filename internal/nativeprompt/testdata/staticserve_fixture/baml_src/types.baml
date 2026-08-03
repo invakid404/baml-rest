@@ -4,10 +4,18 @@
 // byte-for-byte between BAML's renderer and the native
 // internal/schema/outputformat renderer.
 //
-// NOTE: no enum, no @@dynamic, no @skip, no media, no template_string anywhere
-// in this project — the claimed corpus must stay inside the narrow static
-// surface, and a project template_string would attach to every function and
-// make the whole claimed set decline (FeatureTemplateString).
+// NOTE on the project-wide surface: no @@dynamic, no @skip, and no
+// template_string anywhere in this project — the claimed corpus must stay inside
+// the narrow static surface, and a project template_string would attach to every
+// function and make the whole claimed set decline (FeatureTemplateString). A
+// project @@dynamic enum would likewise decline V3 for EVERY function.
+//
+// The project DOES declare an enum (`Color`), media-free input classes, and — as
+// the de-BAML Slice 7.1b media-unreachability witnesses — a `MediaBundle` class
+// carrying media. See the sections at the end of this file. All of them are
+// INPUT types: no function returns them, so the output-format half of the corpus
+// above is unaffected, and the media-bearing signatures are exactly the routes
+// proven to reach no native admission.
 class StaticAnswer {
   answer string
   confidence int
@@ -98,3 +106,51 @@ type JsonValue = int | float | bool | string | null | JsonValue[] | map<string, 
 // arm-KIND, nullability and metadata rejections are pinned separately by the
 // synthetic-bundle fingerprint tests in internal/debaml.)
 type JsonValueReordered = float | int | bool | string | null | JsonValueReordered[] | map<string, JsonValueReordered>
+
+// De-BAML Slice 7.1b (resolved static values). The enum + nested input classes
+// that make every V3 fact OBSERVABLE in a differential:
+//
+//   - CANONICAL identity vs DISPLAY: RED/GREEN carry deliberately non-canonical
+//     aliases, so a renderer that confused the two is caught immediately;
+//     BLUE is unaliased, so the alias-or-canonical display rule is exercised
+//     both ways.
+//   - CLASS FIELD ORDER + ALIASES: Swatch/Palette declare aliased and unaliased
+//     fields in a fixed source order, so a Go-declaration-order or
+//     alphabetical-order renderer diverges.
+//   - LIST ORDER and NESTING: Palette carries Color[] and a nested Swatch, and
+//     StaticRenderPalettes takes Palette[], so item order and the
+//     class-inside-list / list-inside-class debug spellings are all covered.
+//
+// These are INPUT types only; no function returns them, so the output-format
+// half of the corpus is unchanged.
+enum Color {
+  RED @alias("rouge")
+  GREEN @alias("vert")
+  BLUE
+}
+
+class Swatch {
+  color Color
+  label string @alias("etiquette")
+}
+
+class Palette {
+  primary Color @alias("principale")
+  shades Color[]
+  swatch Swatch
+  name string
+}
+
+// De-BAML Slice 7.1b — the MEDIA unreachability witness (scope section 6, "Media
+// stays closed"). A class whose field is media, so the live proof covers not only
+// a direct media argument and a media list but a media value reached THROUGH a
+// class — the shape a naive input walker would be most likely to miss.
+//
+// Media is not a V3 input value node, so no function reaching this class gets a
+// V3 descriptor, and the generated static seam therefore installs nothing. It is
+// declared here (rather than only in a unit fixture) so that fact is proven at
+// the LIVE admission boundary, not just at descriptor construction.
+class MediaBundle {
+  img image
+  caption string
+}

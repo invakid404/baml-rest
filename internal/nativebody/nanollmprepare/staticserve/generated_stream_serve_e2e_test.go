@@ -41,13 +41,29 @@ type streamServeSpy struct {
 	fn       bamlutils.NativeStaticStreamServeFunc
 	calls    atomic.Int64
 	lastDisp atomic.Int64 // bamlutils.NativeStreamDisposition of the last invocation
+	// A DECLINED result carries bounded stage/reason tokens (see
+	// bamlutils.NativeStreamServeResult); canary forwards the real StaticDecline's
+	// pair. Retained so a one-callback decline row can assert WHERE native stepped
+	// aside, not merely THAT it did.
+	lastStage  atomic.Value // string
+	lastReason atomic.Value // string
 }
 
 func (s *streamServeSpy) Serve(ctx context.Context, inv bamlutils.NativeStaticStreamInvocation) bamlutils.NativeStreamServeResult {
 	s.calls.Add(1)
 	res := s.fn(ctx, inv)
 	s.lastDisp.Store(int64(res.Disposition))
+	s.lastStage.Store(res.Stage)
+	s.lastReason.Store(res.Reason)
 	return res
+}
+
+// lastDecline mirrors staticServeSpy.lastDecline for the stream lane: the last
+// invocation's disposition plus its declined-only stage/reason tokens.
+func (s *streamServeSpy) lastDecline() (int64, string, string) {
+	st, _ := s.lastStage.Load().(string)
+	rs, _ := s.lastReason.Load().(string)
+	return s.lastDisp.Load(), st, rs
 }
 
 // nativeSocketsZero reports whether the native stream lane opened ZERO provider sockets for
@@ -525,6 +541,41 @@ func TestStaticStreamManifest(t *testing.T) {
 			zeroSockets := spy.nativeSocketsZero()
 			server.close()
 
+			// Distinguish "the callback ran and DECLINED" from "no callback was ever
+			// installed". nativeSocketsZero() accepts BOTH (calls == 0 || declined), so
+			// on its own it would stay green if codegen dropped this method's descriptor
+			// or projector: the route would fall back to the ordinary BAML path — a safe
+			// over-decline, but it would no longer prove the NATIVE pre-transport refusal
+			// this manifest exists for.
+			calls := spy.calls.Load()
+			if row.callbackExpected {
+				if calls != 1 {
+					t.Fatalf("%s stream: serve func invoked %d times, want 1 — the method has an emitted descriptor + projector, so the seam MUST install the callback (a codegen loss would read as 0)", row.name, calls)
+				}
+				disp, stage, reason := spy.lastDecline()
+				if disp != int64(bamlutils.NativeStreamDeclined) {
+					t.Errorf("%s stream: disposition=%d, want NativeStreamDeclined (stage=%q reason=%q)", row.name, disp, stage, reason)
+				}
+				// The STAGE is uniform and pinned: both gates these rows reach are
+				// StagePrompt — the stream return-shape gate
+				// (admission/static_stream.go, reasonReturnShapeUnproven) and the
+				// native-final bundle check (admission/static.go,
+				// reasonReturnBundleFinalUnsupported). Pinning it is what proves a
+				// PROMPT-stage refusal; a gate moved to another stage would otherwise
+				// keep this matrix green with a merely non-empty token.
+				if stage != "prompt" {
+					t.Errorf("%s stream: declined at stage=%q, want %q (reason=%q)", row.name, stage, "prompt", reason)
+				}
+				// The REASON is deliberately NOT pinned per row: these rows decline for
+				// genuinely different causes (return_shape_decoder_unproven vs
+				// return_bundle_native_final_unsupported), so a fixed value would be the
+				// wrong assertion. But a decline that names nothing is not diagnosable.
+				if reason == "" {
+					t.Errorf("%s stream: declined with an empty reason (stage=%q), want a bounded reason token", row.name, stage)
+				}
+			} else if calls != 0 {
+				t.Errorf("%s stream: serve func invoked %d times, want 0 (no descriptor/projector is emitted, so no callback should be installed)", row.name, calls)
+			}
 			if tr.winner == bamlutils.NativeServeEngineNative {
 				t.Errorf("%s stream winner=%q, must NOT be native (declines pre-transport)", row.name, tr.winner)
 			}
@@ -540,8 +591,30 @@ func TestStaticStreamManifest(t *testing.T) {
 
 // declinedStreamRow is one non-JSON static-serve stream method that must decline natively.
 type declinedStreamRow struct {
+	// callbackExpected records whether codegen emitted BOTH a descriptor and an
+	// argument projector for this method — i.e. whether the generated stream
+	// adapter installs the native callback at all.
+	//
+	//   true  -> the callback MUST run and return NativeStreamDeclined.
+	//   false -> the seam never installs one, so it must NOT run (calls == 0).
+	//
+	// This is pinned BY HAND and deliberately NOT derived from
+	// introspected.StaticPromptDescriptors/ArgumentProjectors: deriving it would
+	// let a codegen loss silently flip a row to "no callback expected" and keep
+	// this matrix green, which is exactly the regression the flag exists to catch.
+	callbackExpected bool
+
 	name  string
 	drive func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error)
+}
+
+// callbackRow builds a declined row for a method that HAS an emitted descriptor and
+// argument projector, so the generated seam installs the native callback and it must
+// RUN and decline. Every row below is one: the fixture's only descriptor-less methods
+// are the three media routes in introspected.StaticPromptDeclines, and those are not
+// stream-driven here (generated_media_unreachable_e2e_test.go owns them).
+func callbackRow(name string, drive func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error)) declinedStreamRow {
+	return declinedStreamRow{callbackExpected: true, name: name, drive: drive}
 }
 
 // declinedStreamRows enumerates EVERY non-JSON fixture static-serve stream method (the
@@ -560,41 +633,41 @@ type declinedStreamRow struct {
 // internal/debaml/static_stream_serve.go.
 func declinedStreamRows() []declinedStreamRow {
 	return []declinedStreamRow{
-		{"StaticRecursiveAliasJsonValue", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
+		callbackRow("StaticRecursiveAliasJsonValue", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
 			return fixture.StaticRecursiveAliasJsonValue(a, &fixture.StaticRecursiveAliasJsonValueInput{Topic: "wide"})
-		}},
-		{"StaticRecursiveAliasJsonValueReordered", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
+		}),
+		callbackRow("StaticRecursiveAliasJsonValueReordered", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
 			return fixture.StaticRecursiveAliasJsonValueReordered(a, &fixture.StaticRecursiveAliasJsonValueReorderedInput{Topic: "reordered"})
-		}},
-		{"StaticCompletion", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
+		}),
+		callbackRow("StaticCompletion", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
 			return fixture.StaticCompletion(a, &fixture.StaticCompletionInput{Topic: "t"})
-		}},
-		{"StaticCompletionOutputFormat", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
+		}),
+		callbackRow("StaticCompletionOutputFormat", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
 			return fixture.StaticCompletionOutputFormat(a, &fixture.StaticCompletionOutputFormatInput{Topic: "t"})
-		}},
-		{"StaticOutputFormat", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
+		}),
+		callbackRow("StaticOutputFormat", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
 			return fixture.StaticOutputFormat(a, &fixture.StaticOutputFormatInput{Topic: "t"})
-		}},
-		{"StaticPrimitiveArgs", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
+		}),
+		callbackRow("StaticPrimitiveArgs", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
 			return fixture.StaticPrimitiveArgs(a, &fixture.StaticPrimitiveArgsInput{Text: "t", Count: 1, Ratio: 1, Flag: true})
-		}},
-		{"StaticRecursiveA", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
+		}),
+		callbackRow("StaticRecursiveA", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
 			return fixture.StaticRecursiveA(a, &fixture.StaticRecursiveAInput{Topic: "t"})
-		}},
-		{"StaticRecursiveB", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
+		}),
+		callbackRow("StaticRecursiveB", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
 			return fixture.StaticRecursiveB(a, &fixture.StaticRecursiveBInput{Topic: "t"})
-		}},
-		{"StaticRecursiveLoop", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
+		}),
+		callbackRow("StaticRecursiveLoop", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
 			return fixture.StaticRecursiveLoop(a, &fixture.StaticRecursiveLoopInput{Topic: "t"})
-		}},
-		{"StaticRecursiveNode", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
+		}),
+		callbackRow("StaticRecursiveNode", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
 			return fixture.StaticRecursiveNode(a, &fixture.StaticRecursiveNodeInput{Topic: "t"})
-		}},
-		{"StaticRecursiveNodeAnn", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
+		}),
+		callbackRow("StaticRecursiveNodeAnn", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
 			return fixture.StaticRecursiveNodeAnn(a, &fixture.StaticRecursiveNodeAnnInput{Topic: "t"})
-		}},
-		{"StaticRoleChat", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
+		}),
+		callbackRow("StaticRoleChat", func(a bamlutils.Adapter) (<-chan bamlutils.StreamResult, error) {
 			return fixture.StaticRoleChat(a, &fixture.StaticRoleChatInput{Topic: "t", Count: 1})
-		}},
+		}),
 	}
 }

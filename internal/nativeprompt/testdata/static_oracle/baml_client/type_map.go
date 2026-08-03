@@ -29,8 +29,14 @@ var typeMap = map[string]reflect.Type{
 	"STREAM_TYPES.Loop":         reflect.TypeOf(stream_types.Loop{}),
 	"TYPES.Node":                reflect.TypeOf(types.Node{}),
 	"STREAM_TYPES.Node":         reflect.TypeOf(stream_types.Node{}),
+	"TYPES.Palette":             reflect.TypeOf(types.Palette{}),
+	"STREAM_TYPES.Palette":      reflect.TypeOf(stream_types.Palette{}),
 	"TYPES.StaticAnswer":        reflect.TypeOf(types.StaticAnswer{}),
 	"STREAM_TYPES.StaticAnswer": reflect.TypeOf(stream_types.StaticAnswer{}),
+	"TYPES.Swatch":              reflect.TypeOf(types.Swatch{}),
+	"STREAM_TYPES.Swatch":       reflect.TypeOf(stream_types.Swatch{}),
+
+	"TYPES.Color": reflect.TypeOf(types.Color("")),
 
 	"TYPES.List__JSON__Map__string_JSON__bool__int__string":                                    reflect.TypeOf(types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString{}),
 	"TYPES.List__JsonValue__Map__string_JsonValue__bool__float__int__string":                   reflect.TypeOf(types.Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString{}),

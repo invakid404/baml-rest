@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
 	"github.com/invakid404/baml-rest/internal/bamlprofile"
 )
 
@@ -141,7 +142,11 @@ func TestOnlyReplaceFilterIsReachable_L2_DynamicLaneIsExactMatch(t *testing.T) {
 //     with the FENCE's exact decline value — so if a future edit both widened
 //     the allowlist and moved the fence after it, the result would differ here.
 func TestOnlyReplaceFilterIsReachable_L3a_FenceIsUnconditionalAndFirst(t *testing.T) {
-	argNames := map[string]bool{"arg": true}
+	// A minimal V3 type gate: one declared string argument named `arg` and an
+	// empty enum universe (this suite is about the filter fence, not enums).
+	gate := testTypeGate(map[string]promptdescriptor.ResolvedValueType{
+		"arg": {Kind: promptdescriptor.ValueString},
+	}, nil)
 
 	// assertFenced requires the decline to be EXACTLY what filterFence produces
 	// for this input — not merely "some decline", and not merely the right key.
@@ -155,7 +160,7 @@ func TestOnlyReplaceFilterIsReachable_L3a_FenceIsUnconditionalAndFirst(t *testin
 		if want == nil {
 			t.Fatalf("%q carries no pipe; this row does not test the fence", inner)
 		}
-		_, got := classifyExpr(inner, argNames)
+		_, got := classifyExpr(inner, gate)
 		if got == nil {
 			t.Fatalf("classifyExpr ACCEPTED a filter application: %q", inner)
 		}
@@ -204,7 +209,7 @@ func TestOnlyReplaceFilterIsReachable_L3a_FenceIsUnconditionalAndFirst(t *testin
 		for _, form := range acceptedSpellings {
 			// Non-vacuity: the un-spliced form must still be ACCEPTED, or splicing
 			// into it proves nothing.
-			if _, err := classifyExpr(form, argNames); err != nil {
+			if _, err := classifyExpr(form, gate); err != nil {
 				t.Fatalf("baseline form %q is not accepted (%v); the splice rows would be vacuous", form, err)
 			}
 			toks, ok := mjTokenize(form)
@@ -299,7 +304,11 @@ func formatStream(toks []token) string {
 // standing between a static prompt and a filter.
 func TestOnlyReplaceFilterIsReachable_L3b_NoShortPipedStreamReachesTheAllowlist(t *testing.T) {
 	alphabet := pipeProofAlphabet()
-	argNames := map[string]bool{"arg": true}
+	// A minimal V3 type gate: one declared string argument named `arg` and an
+	// empty enum universe (this suite is about the filter fence, not enums).
+	gate := testTypeGate(map[string]promptdescriptor.ResolvedValueType{
+		"arg": {Kind: promptdescriptor.ValueString},
+	}, nil)
 
 	// accepts counts the streams matchAllowlist DID accept. A classifier that
 	// rejected everything would satisfy the assertion below vacuously, so the walk
@@ -311,7 +320,7 @@ func TestOnlyReplaceFilterIsReachable_L3b_NoShortPipedStreamReachesTheAllowlist(
 	var walk func(depth int)
 	walk = func(depth int) {
 		if len(stream) > 0 {
-			_, ok := matchAllowlist(glueStream(stream), argNames)
+			_, ok := matchAllowlist(glueStream(stream), gate)
 			if ok {
 				accepts++
 				if streamHasPipe(stream) {
@@ -348,7 +357,11 @@ func TestOnlyReplaceFilterIsReachable_L3b_NoShortPipedStreamReachesTheAllowlist(
 // the allowlist is reached, rather than leaving the guarantee to this
 // enumeration.
 func TestOnlyReplaceFilterIsReachable_L3b_PipeInsertionBreaksEveryAcceptedForm(t *testing.T) {
-	argNames := map[string]bool{"arg": true}
+	// A minimal V3 type gate: one declared string argument named `arg` and an
+	// empty enum universe (this suite is about the filter fence, not enums).
+	gate := testTypeGate(map[string]promptdescriptor.ResolvedValueType{
+		"arg": {Kind: promptdescriptor.ValueString},
+	}, nil)
 	ident := func(s string) token { return token{kind: tokIdent, text: s} }
 	op := func(s string) token { return token{kind: tokOp, text: s} }
 	str := func(s string) token { return token{kind: tokString, text: s} }
@@ -364,7 +377,7 @@ func TestOnlyReplaceFilterIsReachable_L3b_PipeInsertionBreaksEveryAcceptedForm(t
 	// Sanity: each baseline form really is accepted, so the insertions below are
 	// perturbing something that was accepted rather than something already dead.
 	for name, form := range accepted {
-		if _, ok := matchAllowlist(glueStream(form), argNames); !ok {
+		if _, ok := matchAllowlist(glueStream(form), gate); !ok {
 			t.Fatalf("baseline form %q is not accepted; the proof would be vacuous", name)
 		}
 	}
@@ -383,7 +396,7 @@ func TestOnlyReplaceFilterIsReachable_L3b_PipeInsertionBreaksEveryAcceptedForm(t
 				mutated = append(mutated, form[:pos]...)
 				mutated = append(mutated, ins...)
 				mutated = append(mutated, form[pos:]...)
-				if _, ok := matchAllowlist(glueStream(mutated), argNames); ok {
+				if _, ok := matchAllowlist(glueStream(mutated), gate); ok {
 					t.Errorf("%s + %s at %d accepted: %s", formName, insName, pos, formatStream(mutated))
 				}
 			}
@@ -414,7 +427,7 @@ func TestOnlyReplaceFilterIsReachable_L3c_StaticSourceDeclinesEveryFilterSpellin
 	for _, tc := range declines {
 		t.Run(tc.name, func(t *testing.T) {
 			assertStaticDecline(t, staticFn(tc.prompt, primArg("arg", "string")),
-				map[string]any{"arg": "x"}, tc.want)
+				vals(argV("arg", strV("x"))), tc.want)
 		})
 	}
 
@@ -424,10 +437,10 @@ func TestOnlyReplaceFilterIsReachable_L3c_StaticSourceDeclinesEveryFilterSpellin
 	// substring search that would make this whole proof vacuous.
 	t.Run("literal_text_is_not_a_filter", func(t *testing.T) {
 		fn := staticFn(`{{ _.role("user") }}` + "\n" + `use regex_match(x) | sum when unsure`)
-		if err := SupportsStatic(fn, map[string]any{}); err != nil {
+		if err := SupportsStatic(fn, noVals()); err != nil {
 			t.Fatalf("literal text mentioning a filter must stay admitted: %v", err)
 		}
-		rp, err := RenderStatic(fn, map[string]any{})
+		rp, err := RenderStatic(fn, noVals())
 		if err != nil {
 			t.Fatalf("RenderStatic: %v", err)
 		}
@@ -468,7 +481,7 @@ func TestOnlyReplaceFilterIsReachable_L4_DataIsNeverCompiled(t *testing.T) {
 
 	t.Run("static_argument_value", func(t *testing.T) {
 		fn := staticFn(`{{ _.role("user") }}`+"\n"+`{{ arg }}`, primArg("arg", "string"))
-		rp := mustRenderStatic(t, fn, map[string]any{"arg": payload})
+		rp := mustRenderStaticValues(t, fn, vals(argV("arg", strV(payload))))
 		if got := *rp.Messages[0].Parts[0].Text; got != payload {
 			t.Errorf("static argument = %q, want it rendered verbatim (%q)", got, payload)
 		}
@@ -479,7 +492,7 @@ func TestOnlyReplaceFilterIsReachable_L4_DataIsNeverCompiled(t *testing.T) {
 		// ctx.output_format block, which the template then interpolates.
 		fn := staticFn(`{{ _.role("user") }}` + "\n" + `{{ ctx.output_format }}`)
 		fn.Return = returnBundleWithFieldDescription("F", payload)
-		rp := mustRenderStatic(t, fn, map[string]any{})
+		rp := mustRenderStaticValues(t, fn, noVals())
 		if got := *rp.Messages[0].Parts[0].Text; !strings.Contains(got, payload) {
 			t.Errorf("output_format block = %q, want it to contain %q verbatim", got, payload)
 		}

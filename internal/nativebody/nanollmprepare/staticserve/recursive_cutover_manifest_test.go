@@ -32,7 +32,6 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 
 	fixture "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/staticserve_fixture/generated"
-	introspected "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/staticserve_fixture/introspected"
 )
 
 // staticServingCorpusRecursive is the FROZEN recursive SERVED corpus.
@@ -312,11 +311,17 @@ func TestStaticServingCutover_StreamAnnotatedRouteDeclines(t *testing.T) {
 	}
 }
 
-// TestStaticServingCutover_RecursivePartition is the recursive anti-omission + the
-// partition-completeness check: the recursive served corpus is EXACTLY {Node, A, B},
-// and legacy ∪ recursive-served ∪ declined == the fixture's full emitted SyncMethods
-// (no method is silently unaccounted).
-func TestStaticServingCutover_RecursivePartition(t *testing.T) {
+// TestStaticServingCutover_RecursiveServedCorpusIsFrozen is the recursive
+// anti-omission: the recursive served corpus is EXACTLY {Node, A, B}, so a route
+// cannot be silently added to or dropped from the recursive family.
+//
+// The wider claim — that legacy ∪ recursive-served ∪ recursive-declined ∪
+// alias-served ∪ alias-declined ∪ valuebind-served ∪ valuebind-declined ∪
+// media-declined == introspected.SyncMethods — is owned by exactly one test,
+// TestStaticServingCutover_CompletePartition in alias_cutover_manifest_test.go.
+// Asserting it here too meant two copies of the same union drifting apart (this
+// copy's failure text had already gone stale on valuebind/media).
+func TestStaticServingCutover_RecursiveServedCorpusIsFrozen(t *testing.T) {
 	// Recursive served anti-omission against the explicit set.
 	wantRecursive := []string{"StaticRecursiveNode", "StaticRecursiveA", "StaticRecursiveB"}
 	gotRecursive := make([]string, 0, len(staticServingCorpusRecursive))
@@ -327,35 +332,5 @@ func TestStaticServingCutover_RecursivePartition(t *testing.T) {
 	sort.Strings(gotRecursive)
 	if strings.Join(wantRecursive, ",") != strings.Join(gotRecursive, ",") {
 		t.Fatalf("recursive served corpus %v != frozen %v", gotRecursive, wantRecursive)
-	}
-
-	// Partition completeness: legacy ∪ recursive-served ∪ recursive-declined ∪
-	// alias-served ∪ alias-declined == SyncMethods. The alias corpora (de-BAML Phase 3a,
-	// alias_cutover_manifest_test.go) are folded in so this anti-omission stays exact as
-	// new families are added — the frozen recursive corpus {Node, A, B} above is
-	// unchanged.
-	partition := map[string]bool{}
-	for _, m := range legacyStaticMethods {
-		partition[m] = true
-	}
-	for _, r := range staticServingCorpusRecursive {
-		partition[r.name] = true
-	}
-	for _, r := range staticServingCorpusDeclined {
-		partition[r.name] = true
-	}
-	for _, r := range staticServingCorpusAlias {
-		partition[r.name] = true
-	}
-	for _, r := range staticServingCorpusAliasDeclined {
-		partition[r.name] = true
-	}
-	if len(partition) != len(introspected.SyncMethods) {
-		t.Fatalf("partition covers %d methods but SyncMethods has %d", len(partition), len(introspected.SyncMethods))
-	}
-	for m := range introspected.SyncMethods {
-		if !partition[m] {
-			t.Errorf("emitted method %q is not covered by any partition (legacy/recursive/alias/declined)", m)
-		}
 	}
 }

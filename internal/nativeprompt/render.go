@@ -45,7 +45,10 @@ func Render(msgs []Message, outputSchema *bamlutils.DynamicOutputSchema) (*Rende
 		outputFormat = block
 	}
 
-	rc, err := newRenderContext(outputFormat)
+	// The dynamic lane installs NO enum namespace: its one admitted template (the
+	// generated Baml_Rest_Dynamic prompt) references none, and there is no
+	// descriptor to resolve a project enum set from.
+	rc, err := newRenderContext(outputFormat, nil)
 	if err != nil {
 		return nil, err
 	}

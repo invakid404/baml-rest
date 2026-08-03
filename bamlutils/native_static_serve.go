@@ -102,6 +102,20 @@ type NativeStaticInvocation struct {
 	// in declared descriptor-argument order. It lets the observer prove the binder
 	// matches Descriptor.Args by name AND order without relying on Go map iteration.
 	ArgOrder []string
+	// Values is the de-BAML Slice 7.1b PROJECTED argument vector: the ordered,
+	// neutral value tree the GENERATED per-method projector built from the call's
+	// already-typed Go arguments (exact type assertions, direct field selectors,
+	// canonical BAML names as literals — no runtime reflection, JSON, Encode(), or
+	// map iteration).
+	//
+	// It is the ONLY host-value input the native static binder accepts. Args above
+	// stays the BAML REQUEST fact (which values the generated call bound) and is
+	// never a source of enum/class/list semantics: a raw map cannot state nested
+	// order, canonical field names, or enum identity. A nil/short/permuted vector
+	// declines at the binder rather than being reconstructed.
+	//
+	// SENSITIVE: it carries real request arguments — never log or format it.
+	Values []promptdescriptor.ArgumentValue
 	// Mode is the bounded observation mode (final / parse-only / stream).
 	Mode NativeStaticMode
 

@@ -119,6 +119,42 @@ func (t *LoopClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 
+type MediaBundleClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *MediaBundleClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *MediaBundleClassView) PropertyImg() (ClassPropertyView, error) {
+	return t.inner.Property("img")
+}
+
+func (t *MediaBundleClassView) PropertyCaption() (ClassPropertyView, error) {
+	return t.inner.Property("caption")
+}
+
+func (t *TypeBuilder) MediaBundle() (*MediaBundleClassView, error) {
+	bld, err := t.inner.Class("MediaBundle")
+	if err != nil {
+		return nil, err
+	}
+	return &MediaBundleClassView{inner: bld}, nil
+}
+
+func (t *MediaBundleClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
 type NodeClassView struct {
 	inner baml.ClassBuilder
 }
@@ -191,6 +227,50 @@ func (t *NodeAnnClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 
+type PaletteClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *PaletteClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *PaletteClassView) PropertyPrimary() (ClassPropertyView, error) {
+	return t.inner.Property("primary")
+}
+
+func (t *PaletteClassView) PropertyShades() (ClassPropertyView, error) {
+	return t.inner.Property("shades")
+}
+
+func (t *PaletteClassView) PropertySwatch() (ClassPropertyView, error) {
+	return t.inner.Property("swatch")
+}
+
+func (t *PaletteClassView) PropertyName() (ClassPropertyView, error) {
+	return t.inner.Property("name")
+}
+
+func (t *TypeBuilder) Palette() (*PaletteClassView, error) {
+	bld, err := t.inner.Class("Palette")
+	if err != nil {
+		return nil, err
+	}
+	return &PaletteClassView{inner: bld}, nil
+}
+
+func (t *PaletteClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
 type StaticAnswerClassView struct {
 	inner baml.ClassBuilder
 }
@@ -224,5 +304,41 @@ func (t *TypeBuilder) StaticAnswer() (*StaticAnswerClassView, error) {
 }
 
 func (t *StaticAnswerClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type SwatchClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *SwatchClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *SwatchClassView) PropertyColor() (ClassPropertyView, error) {
+	return t.inner.Property("color")
+}
+
+func (t *SwatchClassView) PropertyLabel() (ClassPropertyView, error) {
+	return t.inner.Property("label")
+}
+
+func (t *TypeBuilder) Swatch() (*SwatchClassView, error) {
+	bld, err := t.inner.Class("Swatch")
+	if err != nil {
+		return nil, err
+	}
+	return &SwatchClassView{inner: bld}, nil
+}
+
+func (t *SwatchClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }

@@ -41,6 +41,124 @@ import (
 	"github.com/invakid404/baml-rest/internal/nativeschema"
 )
 
+// strArgs builds a single-string projected argument vector, the shape a
+// generated projector produces for a one-`string` signature.
+func strArgs(name, v string) []promptdescriptor.ArgumentValue {
+	return []promptdescriptor.ArgumentValue{{
+		Name:  name,
+		Value: promptdescriptor.StaticValue{Kind: promptdescriptor.StaticString, String: v},
+	}}
+}
+
+// enumArgs / classArgs / listArgs build the projected vectors for the enum,
+// class and list rows, exactly as a generated projector would: canonical member
+// and field names as literals, source field order, input item order.
+func enumArgs(name, enumName, canonical string) []promptdescriptor.ArgumentValue {
+	return []promptdescriptor.ArgumentValue{{
+		Name: name,
+		Value: promptdescriptor.StaticValue{
+			Kind: promptdescriptor.StaticEnum, TypeName: enumName, Canonical: canonical,
+		},
+	}}
+}
+
+func classArgs(name, className, field, value string) []promptdescriptor.ArgumentValue {
+	return []promptdescriptor.ArgumentValue{{
+		Name: name,
+		Value: promptdescriptor.StaticValue{
+			Kind: promptdescriptor.StaticClass, TypeName: className,
+			Fields: []promptdescriptor.StaticFieldValue{{
+				Canonical: field,
+				Value:     promptdescriptor.StaticValue{Kind: promptdescriptor.StaticString, String: value},
+			}},
+		},
+	}}
+}
+
+func listArgs(name string, items ...string) []promptdescriptor.ArgumentValue {
+	vs := make([]promptdescriptor.StaticValue, 0, len(items))
+	for _, it := range items {
+		vs = append(vs, promptdescriptor.StaticValue{Kind: promptdescriptor.StaticString, String: it})
+	}
+	return []promptdescriptor.ArgumentValue{{
+		Name:  name,
+		Value: promptdescriptor.StaticValue{Kind: promptdescriptor.StaticList, Items: vs},
+	}}
+}
+
+// TestRealDescriptorAdmitsBoundHostValues is the POSITIVE half of the same
+// pipeline: real .baml source whose enum/class/list argument the V3 resolver
+// describes exactly, bound through the production binder and RENDERED. It is
+// what makes the decline rows below meaningful — without it they could all be
+// passing because the pipeline declines everything.
+//
+// The byte-exact answers are owned by the stock differential oracle; this proves
+// the SOURCE -> descriptor -> binder -> render path is closed end to end.
+func TestRealDescriptorAdmitsBoundHostValues(t *testing.T) {
+	cases := []struct {
+		name   string
+		src    string
+		values []promptdescriptor.ArgumentValue
+		want   string
+	}{
+		{
+			name: "enum_argument_renders_its_alias",
+			src: `enum Color { RED @alias("rouge") GREEN }
+client<llm> C { provider openai options { model "m" } }
+function F(c: Color) -> string { client C prompt #"{{ c }}"# }`,
+			values: enumArgs("c", "Color", "RED"),
+			want:   "rouge",
+		},
+		{
+			name: "enum_argument_canonical_equality",
+			src: `enum Color { RED @alias("rouge") GREEN }
+client<llm> C { provider openai options { model "m" } }
+function F(c: Color) -> string { client C prompt #"{{ c == 'RED' }}"# }`,
+			values: enumArgs("c", "Color", "RED"),
+			want:   "true",
+		},
+		{
+			name: "literal_only_enum_comparison_needs_no_argument",
+			src: `enum Color { RED @alias("rouge") GREEN }
+client<llm> C { provider openai options { model "m" } }
+function F() -> string { client C prompt #"{{ Color.RED == 'RED' }}"# }`,
+			values: nil,
+			want:   "true",
+		},
+		{
+			name: "list_argument_renders_in_input_order",
+			src: `client<llm> C { provider openai options { model "m" } }
+function F(topics: string[]) -> string { client C prompt #"{{ topics }}"# }`,
+			values: listArgs("topics", "b", "a"),
+			want:   `["b", "a"]`,
+		},
+	}
+
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			descriptors, promptDeclines := buildOne(t, c.name, c.src)
+			fn, ok := descriptors["F"]
+			if !ok {
+				t.Fatalf("expected a built descriptor for F; builder decline = %q", promptDeclines["F"])
+			}
+			if err := nativeprompt.SupportsStatic(fn, c.values); err != nil {
+				t.Fatalf("SupportsStatic declined an admitted host-value row: %v", err)
+			}
+			rp, err := nativeprompt.RenderStatic(fn, c.values)
+			if err != nil {
+				t.Fatalf("RenderStatic: %v", err)
+			}
+			if rp == nil || rp.Kind != nativeprompt.KindCompletion {
+				t.Fatalf("expected a completion, got %+v", rp)
+			}
+			if rp.Completion != c.want {
+				t.Errorf("rendered %q, want %q", rp.Completion, c.want)
+			}
+		})
+	}
+}
+
 // declineClientProvider is the client->provider map shared by every mini-project
 // below (each declares `client<llm> C { provider openai ... }`).
 var declineClientProvider = map[string]string{"C": "openai"}
@@ -67,9 +185,13 @@ func buildOne(t *testing.T, name, src string) (map[string]promptdescriptor.Funct
 // errors.As(*Decline) with the exact Feature, and a nil RenderStatic result.
 func TestRealDescriptorDeclineMatrix(t *testing.T) {
 	cases := []struct {
-		name    string
-		src     string
-		args    map[string]any
+		name string
+		src  string
+		// values is the PROJECTED argument vector (de-BAML Slice 7.1b). A row
+		// states it explicitly because the vector — its order, names, and per-value
+		// kinds — is what the binder validates against the descriptor; deriving it
+		// from a raw map would test a translation the production path lacks.
+		values  []promptdescriptor.ArgumentValue
 		feature string
 	}{
 		// template_string, UNCALLED: BAML injects every project macro into every
@@ -80,7 +202,7 @@ func TestRealDescriptorDeclineMatrix(t *testing.T) {
 			src: `template_string Greet(n: string) #"hi {{ n }}"#
 client<llm> C { provider openai options { model "m" } }
 function F(topic: string) -> string { client C prompt #"About {{ topic }}."# }`,
-			args:    map[string]any{"topic": "x"},
+			values:  strArgs("topic", "x"),
 			feature: nativeprompt.FeatureTemplateString,
 		},
 		// template_string, CALLED: same decline; the macro is invoked in the prompt.
@@ -89,50 +211,65 @@ function F(topic: string) -> string { client C prompt #"About {{ topic }}."# }`,
 			src: `template_string Greet(n: string) #"hi {{ n }}"#
 client<llm> C { provider openai options { model "m" } }
 function F(topic: string) -> string { client C prompt #"{{ Greet(topic) }}"# }`,
-			args:    map[string]any{"topic": "x"},
+			values:  strArgs("topic", "x"),
 			feature: nativeprompt.FeatureTemplateString,
 		},
-		// Media argument (image, incl. URL at value time): declined as media.
+		// De-BAML Slice 7.1b: a bare enum/class/list ARGUMENT render is now
+		// ADMITTED (see TestRealDescriptorAdmitsBoundHostValues). What stays
+		// declined is TRAVERSING one — source field knowledge is not permission to
+		// walk it.
 		{
-			name: "media_image_arg",
-			src: `client<llm> C { provider openai options { model "m" } }
-function F(img: image) -> string { client C prompt #"see {{ img }}"# }`,
-			args:    map[string]any{"img": "https://x/y.png"},
-			feature: nativeprompt.FeatureUnsupportedMediaKind,
-		},
-		// Named enum argument: declined as enum/class value.
-		{
-			name: "enum_arg",
+			name: "enum_arg_attribute",
 			src: `enum Color { RED GREEN }
 client<llm> C { provider openai options { model "m" } }
-function F(c: Color) -> string { client C prompt #"pick {{ c }}"# }`,
-			args:    map[string]any{"c": "RED"},
+function F(c: Color) -> string { client C prompt #"pick {{ c.value }}"# }`,
+			values:  enumArgs("c", "Color", "RED"),
 			feature: nativeprompt.FeatureEnumClassValue,
 		},
-		// Named class argument: declined as enum/class value.
 		{
-			name: "class_arg",
+			name: "class_arg_field_access",
 			src: `class Item { name string }
 client<llm> C { provider openai options { model "m" } }
-function F(it: Item) -> string { client C prompt #"item {{ it }}"# }`,
-			args:    map[string]any{"it": "y"},
+function F(it: Item) -> string { client C prompt #"item {{ it.name }}"# }`,
+			values:  classArgs("it", "Item", "name", "n"),
 			feature: nativeprompt.FeatureEnumClassValue,
+		},
+		// A DIRECT class render is declined too — not for lack of resolved field
+		// order (V3 has it), but because stock BAML v0.223's Go client encodes a
+		// class through a Go map, so the order it prints is not reproducible. See
+		// TestStockClassRenderOrderIsNonDeterministic for the measurement.
+		{
+			name: "class_arg_direct_render",
+			src: `class Item { name string @alias("nom") }
+client<llm> C { provider openai options { model "m" } }
+function F(it: Item) -> string { client C prompt #"{{ it }}"# }`,
+			values:  classArgs("it", "Item", "name", "n"),
+			feature: nativeprompt.FeatureEnumClassValue,
+		},
+		{
+			name: "enum_arg_display_alias_equality",
+			src: `enum Color { RED @alias("rouge") GREEN }
+client<llm> C { provider openai options { model "m" } }
+function F(c: Color) -> string { client C prompt #"{{ c == 'rouge' }}"# }`,
+			values:  enumArgs("c", "Color", "RED"),
+			feature: nativeprompt.FeatureEnumComparison,
 		},
 		// Optional primitive argument: declined as an unsupported arg type.
 		{
 			name: "optional_primitive_arg",
 			src: `client<llm> C { provider openai options { model "m" } }
 function F(topic: string?) -> string { client C prompt #"About {{ topic }}"# }`,
-			args:    map[string]any{"topic": "x"},
+			values:  strArgs("topic", "x"),
 			feature: nativeprompt.FeatureStaticArgType,
 		},
-		// List primitive argument: declined as an unsupported arg type.
+		// A list argument renders bare (admitted in
+		// TestRealDescriptorAdmitsBoundHostValues); INDEXING it does not.
 		{
-			name: "list_primitive_arg",
+			name: "list_arg_index",
 			src: `client<llm> C { provider openai options { model "m" } }
-function F(topics: string[]) -> string { client C prompt #"About {{ topics }}"# }`,
-			args:    map[string]any{"topics": "x"},
-			feature: nativeprompt.FeatureStaticArgType,
+function F(topics: string[]) -> string { client C prompt #"About {{ topics[0] }}"# }`,
+			values:  listArgs("topics", "a", "b"),
+			feature: nativeprompt.FeatureUnrecognizedPrompt,
 		},
 		// Callable ctx.output_format (render_null_as): declined; only bare is ok.
 		{
@@ -140,7 +277,7 @@ function F(topics: string[]) -> string { client C prompt #"About {{ topics }}"# 
 			src: `class O { answer string }
 client<llm> C { provider openai options { model "m" } }
 function F(topic: string) -> O { client C prompt #"{{ ctx.output_format(render_null_as="null") }} {{ topic }}"# }`,
-			args:    map[string]any{"topic": "x"},
+			values:  strArgs("topic", "x"),
 			feature: nativeprompt.FeatureCallableOutputFmt,
 		},
 		// A custom BAML filter: declined (static Phase 3 reproduces no filters).
@@ -148,7 +285,7 @@ function F(topic: string) -> O { client C prompt #"{{ ctx.output_format(render_n
 			name: "filter_format",
 			src: `client<llm> C { provider openai options { model "m" } }
 function F(topic: string) -> string { client C prompt #"{{ topic | format(type="yaml") }}"# }`,
-			args:    map[string]any{"topic": "x"},
+			values:  strArgs("topic", "x"),
 			feature: nativeprompt.FeatureUnknownFilter,
 		},
 		// ctx.client is an unsupported ctx member.
@@ -156,7 +293,7 @@ function F(topic: string) -> string { client C prompt #"{{ topic | format(type="
 			name: "ctx_client",
 			src: `client<llm> C { provider openai options { model "m" } }
 function F(topic: string) -> string { client C prompt #"{{ ctx.client }} {{ topic }}"# }`,
-			args:    map[string]any{"topic": "x"},
+			values:  strArgs("topic", "x"),
 			feature: nativeprompt.FeatureUnsupportedCtx,
 		},
 		// A {% if %} statement (control flow) is outside the allowlist.
@@ -164,7 +301,7 @@ function F(topic: string) -> string { client C prompt #"{{ ctx.client }} {{ topi
 			name: "if_statement",
 			src: `client<llm> C { provider openai options { model "m" } }
 function F(topic: string) -> string { client C prompt #"{% if topic %}{{ topic }}{% endif %}"# }`,
-			args:    map[string]any{"topic": "x"},
+			values:  strArgs("topic", "x"),
 			feature: nativeprompt.FeatureUnrecognizedPrompt,
 		},
 	}
@@ -178,10 +315,10 @@ function F(topic: string) -> string { client C prompt #"{% if topic %}{{ topic }
 				t.Fatalf("expected a built descriptor for F (this row must decline at the STATIC GATE, not the builder); builder decline = %q", promptDeclines["F"])
 			}
 
-			err := nativeprompt.SupportsStatic(fn, c.args)
+			err := nativeprompt.SupportsStatic(fn, c.values)
 			assertDecline(t, err, c.feature)
 
-			rp, rerr := nativeprompt.RenderStatic(fn, c.args)
+			rp, rerr := nativeprompt.RenderStatic(fn, c.values)
 			if rp != nil {
 				t.Errorf("RenderStatic returned a non-nil prompt on a declined case: %+v", rp)
 			}
@@ -241,6 +378,43 @@ function F(x: In) -> string { client C prompt #"{{ x }}"# }`,
 client<llm> C { provider openai options { model "m" } }
 function F(topic: string) -> Out { client C prompt #"{{ ctx.output_format }} {{ topic }}"# }`,
 			reasonSubstr: "return bundle unavailable",
+		},
+		// De-BAML Slice 7.1b: a MEDIA argument moved DOWN a tier. Media is not a
+		// V3 input value node, so the descriptor is no longer built at all and the
+		// static gate is never reached — the media decline is now structural
+		// (build-time) rather than a render-time feature key.
+		{
+			name: "media_image_arg",
+			src: `client<llm> C { provider openai options { model "m" } }
+function F(img: image) -> string { client C prompt #"see {{ img }}"# }`,
+			reasonSubstr: "media types are not supported",
+		},
+		// A MAP argument: V3 has no map node, so it too declines pre-descriptor.
+		{
+			name: "map_arg",
+			src: `client<llm> C { provider openai options { model "m" } }
+function F(m: map<string, string>) -> string { client C prompt #"{{ m }}"# }`,
+			reasonSubstr: "map types are not supported",
+		},
+		// A RECURSIVE input class graph: representable as a name reference, but
+		// unproven for rendering, so it is a build-time decline (the binder
+		// declines a recursive universe independently).
+		{
+			name: "recursive_input_class",
+			src: `class NodeIn { value string next NodeIn? }
+client<llm> C { provider openai options { model "m" } }
+function F(n: NodeIn) -> string { client C prompt #"{{ n }}"# }`,
+			reasonSubstr: "recursive input class graph",
+		},
+		// An unresolvable PROJECT enum alias poisons V3 for every function, even
+		// one that never mentions the enum: BAML installs the namespace globals as
+		// a complete set, so a partial environment would be a lie.
+		{
+			name: "project_enum_dynamic_alias",
+			src: `enum Color { RED @alias(x) GREEN }
+client<llm> C { provider openai options { model "m" } }
+function F(topic: string) -> string { client C prompt #"About {{ topic }}"# }`,
+			reasonSubstr: "project enum \"Color\"",
 		},
 	}
 

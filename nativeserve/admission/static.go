@@ -145,8 +145,13 @@ type StaticInput struct {
 	Descriptor promptdescriptor.Function
 	Args       map[string]any
 	ArgOrder   []string
-	Alias      string
-	Mode       bamlutils.NativeStaticMode
+	// Values is the de-BAML Slice 7.1b PROJECTED argument vector the generated
+	// projector produced (see bamlutils.NativeStaticInvocation.Values). It is the
+	// ONLY host-value input the native static binder accepts; Args/ArgOrder stay
+	// the BAML request facts the binder-match gate proves.
+	Values []promptdescriptor.ArgumentValue
+	Alias  string
+	Mode   bamlutils.NativeStaticMode
 
 	// Whole orchestration plan + selected-child facts (layer 2). Any shape outside
 	// the narrow 8B matrix declines at the strategy/client stage before nanollm.New.
@@ -363,7 +368,7 @@ func admitStaticThroughPrepare(ctx context.Context, in StaticInput) (*staticPrep
 	}
 
 	// --- Layer 4: static prompt render support ------------------------------
-	if serr := nativeprompt.SupportsStatic(fn, in.Args); serr != nil {
+	if serr := nativeprompt.SupportsStatic(fn, in.Values); serr != nil {
 		var pd *nativeprompt.Decline
 		if errors.As(serr, &pd) && pd.Feature == nativeprompt.FeatureStaticDescriptor {
 			// A stricter envelope decline than the explicit checks above.
@@ -371,7 +376,7 @@ func admitStaticThroughPrepare(ctx context.Context, in StaticInput) (*staticPrep
 		}
 		return decline(bamlutils.NativeStaticFamilyPrompt, StagePrompt, reasonStaticPromptUnsupported)
 	}
-	rendered, rerr := nativeprompt.RenderStatic(fn, in.Args)
+	rendered, rerr := nativeprompt.RenderStatic(fn, in.Values)
 	if rerr != nil {
 		// SupportsStatic shares the preparer, so a render error here is unexpected —
 		// still a pre-socket decline (BAML serves), classified as a prompt decline.

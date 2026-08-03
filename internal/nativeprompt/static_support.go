@@ -44,16 +44,11 @@ type templatePlan struct {
 // only when name is a declared argument. It returns the ordered event plan or
 // the first decline. It does NOT validate chat layout — that is value-aware and
 // runs after argument binding and output-format rendering.
-func analyzeTemplate(src string, decls []argDecl) (*templatePlan, error) {
+func analyzeTemplate(src string, gate *typeGate) (*templatePlan, error) {
 	// The reserved-delimiter fence is applied byte-faithfully to the RENDERED
 	// output (validateRenderedMarkers), not to the raw source here: a marker in a
 	// comment (removed before render) or a marker synthesized only after
 	// dedent/interpolation must be judged on what lower actually sees.
-	argNames := make(map[string]bool, len(decls))
-	for _, d := range decls {
-		argNames[d.name] = true
-	}
-
 	segs, err := scanSegments(src)
 	if err != nil {
 		return nil, err
@@ -80,7 +75,7 @@ func analyzeTemplate(src string, decls []argDecl) (*templatePlan, error) {
 		case segStmt:
 			return nil, declineStatement(s.body)
 		case segExpr:
-			ev, err := classifyExpr(s.body, argNames)
+			ev, err := classifyExpr(s.body, gate)
 			if err != nil {
 				return nil, err
 			}
@@ -227,6 +222,11 @@ const (
 	evInterp                      // {{ arg }} (message content)
 	evOutputFormat                // {{ ctx.output_format }} (message content)
 	evRole                        // {{ _.role/_.chat(...) }} (opens a message)
+	// evEnumPredicate is a de-BAML Slice 7.1b enum equality / one-element
+	// membership expression. It renders MiniJinja's boolean spelling
+	// ("true"/"false"), which is always non-whitespace message content — so
+	// unlike evInterp it needs no per-value emptiness question.
+	evEnumPredicate
 )
 
 type event struct {
@@ -244,7 +244,7 @@ type event struct {
 // of the allowlisted forms. Anything the MiniJinja lexer would itself reject
 // (form-feed, NBSP, an unterminated string, …) fails to tokenize and declines,
 // so a nil support result can never lead RenderStatic to a raw compile error.
-func classifyExpr(inner string, argNames map[string]bool) (event, error) {
+func classifyExpr(inner string, gate *typeGate) (event, error) {
 	toks, ok := mjTokenize(inner)
 	if ok {
 		// PRE-ALLOWLIST FILTER FENCE. Order is load-bearing: the fence runs BEFORE
@@ -256,12 +256,12 @@ func classifyExpr(inner string, argNames map[string]bool) (event, error) {
 		if d := filterFence(inner, toks); d != nil {
 			return event{}, d
 		}
-		if ev, matched := matchAllowlist(toks, argNames); matched {
+		if ev, matched := matchAllowlist(toks, gate); matched {
 			return ev, nil
 		}
 	}
 	// Not an accepted form (or not even lexable): pick the specific decline key.
-	return event{}, classifyExprDecline(inner, toks, ok)
+	return event{}, classifyExprDecline(inner, toks, ok, gate)
 }
 
 // filterFence declines any expression that applies a filter, keyed
@@ -291,16 +291,30 @@ func filterFence(inner string, toks []token) error {
 // be CONTIGUOUS in the source — a whitespace-broken spelling such as `_ .role`
 // or `ctx . output_format` is declined (stricter than MiniJinja, which is
 // allowed) so the accepted surface stays exactly the documented spellings.
-func matchAllowlist(toks []token, argNames map[string]bool) (event, bool) {
-	// {{ argument_name }} — a lone identifier naming a declared argument. A
+func matchAllowlist(toks []token, gate *typeGate) (event, bool) {
+	// {{ argument_name }} — a lone identifier naming a declared argument whose V3
+	// type is directly renderable: a scalar, a bound enum, or a bound list whose
+	// element type is itself directly renderable. A direct CLASS is deliberately
+	// NOT admitted, and neither is a list whose element closure reaches one —
+	// directlyRenderable (static_typegate.go) refuses both, because stock BAML
+	// v0.223's Go client encodes a class through a Go map and its rendered field
+	// order is therefore not reproducible. Those spellings fall through to the
+	// bound-argument decline arm below, which relies on exactly that refusal. A
 	// MiniJinja keyword/literal (true/false/none/in/is/…) is not a variable
 	// reference, so it is never treated as a bare-arg interpolation.
 	if len(toks) == 1 && toks[0].kind == tokIdent {
 		name := toks[0].text
-		if argNames[name] && !mjReserved[name] {
+		if gate.isRenderableArg(name) && !mjReserved[name] {
 			return event{kind: evInterp, arg: name}, true
 		}
 		return event{}, false
+	}
+
+	// De-BAML Slice 7.1b enum predicates. They are matched ONLY after the V3
+	// type gate has resolved every operand, and only in the exact token shapes
+	// the stock fixture proves. See typeGate.matchEnumPredicate.
+	if ev, matched := gate.matchEnumPredicate(toks); matched {
+		return ev, true
 	}
 
 	// {{ ctx.output_format }} — bare attribute access, contiguous glue.
@@ -336,7 +350,7 @@ func matchAllowlist(toks []token, argNames map[string]bool) (event, bool) {
 // expression. These checks only ever DECLINE, so conservative matching cannot
 // cause a wrong accept. A body the MiniJinja lexer itself rejects (lexOK=false)
 // is the catch-all FeatureUnrecognizedPrompt.
-func classifyExprDecline(inner string, toks []token, lexOK bool) error {
+func classifyExprDecline(inner string, toks []token, lexOK bool, gate *typeGate) error {
 	if !lexOK {
 		return decline(FeatureUnrecognizedPrompt,
 			fmt.Sprintf("expression is not valid MiniJinja (non-lexer whitespace/character): %q", inner))
@@ -380,6 +394,15 @@ func classifyExprDecline(inner string, toks []token, lexOK bool) error {
 	if hasOpTok(toks, ".") {
 		return decline(FeatureEnumClassValue,
 			fmt.Sprintf("enum/class/global attribute access is not supported: %q", inner))
+	}
+	// A lone identifier that is a BOUND argument the allowlist refused: its value
+	// type is bindable but not directly renderable (a class, or a list reaching
+	// one — see directlyRenderable). That is a host-VALUE parity decline, not an
+	// unknown name, so it gets the enum/class key.
+	if len(toks) == 1 && toks[0].kind == tokIdent &&
+		!mjReserved[toks[0].text] && gate.isBoundArg(toks[0].text) {
+		return decline(FeatureEnumClassValue,
+			fmt.Sprintf("direct rendering of %q is not supported: stock BAML v0.223's Go client encodes a class argument through a Go map, so its rendered field order is not reproducible", inner))
 	}
 	// A lone identifier that is not a declared argument (or is a keyword).
 	if len(toks) == 1 && toks[0].kind == tokIdent {
@@ -698,7 +721,7 @@ func validateChatLayout(events []event, contentful func(event) bool) error {
 			}
 			msgs = append(msgs, layoutMsg{role: ev.role})
 			sawRole = true
-		case evText, evInterp, evOutputFormat:
+		case evText, evInterp, evOutputFormat, evEnumPredicate:
 			if !contentful(ev) {
 				continue // renders to whitespace-only: no message content
 			}

@@ -64,15 +64,18 @@ import (
 // descriptor provider, single leaf, no override/strategy/raw. mut applies a negative
 // mutation (a specific excluded route family) before observation.
 func staticInvocationLikeGenerated(
+	t *testing.T,
 	fn promptdescriptor.Function,
 	c staticCase,
 	mut func(*bamlutils.NativeStaticInvocation),
 ) bamlutils.NativeStaticInvocation {
+	t.Helper()
 	inv := bamlutils.NativeStaticInvocation{
 		Method:           fn.Method,
 		Descriptor:       fn,
 		Args:             c.args,
 		ArgOrder:         argOrderOf(fn),
+		Values:           staticValuesFor(t, fn, c.args),
 		Mode:             bamlutils.NativeStaticModeFinal,
 		Provider:         fn.Provider,
 		SingleLeaf:       true,
@@ -100,7 +103,7 @@ func TestStaticObserveEndToEnd(t *testing.T) {
 
 	// --- Positive: a default single-leaf OpenAI call would-admit (and, by the
 	// unroutable-base argument above, did so with ZERO provider RoundTrips). --------
-	got := observe(ctx, staticInvocationLikeGenerated(fn, base, nil))
+	got := observe(ctx, staticInvocationLikeGenerated(t, fn, base, nil))
 	if got.Disposition != bamlutils.NativeStaticDeclined {
 		t.Errorf("observe-only: Disposition = %v, want NativeStaticDeclined", got.Disposition)
 	}
@@ -137,7 +140,7 @@ func TestStaticObserveEndToEnd(t *testing.T) {
 	}
 	for _, n := range negatives {
 		t.Run(n.name, func(t *testing.T) {
-			res := observe(ctx, staticInvocationLikeGenerated(fn, base, n.mut))
+			res := observe(ctx, staticInvocationLikeGenerated(t, fn, base, n.mut))
 			if res.Disposition != bamlutils.NativeStaticDeclined {
 				t.Errorf("Disposition = %v, want NativeStaticDeclined", res.Disposition)
 			}

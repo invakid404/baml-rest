@@ -178,14 +178,67 @@ func buildSyntheticCorpus() (map[string]promptdescriptor.Function, map[string]st
 		StructuralRecursiveAliases: []schemadescriptor.RecursiveAliasDef{{Name: "JSON", Target: schemadescriptor.Type{Kind: schemadescriptor.TypePrimitive, Primitive: schemadescriptor.PrimitiveString}}},
 	}
 
+	// De-BAML Slice 7.1b: a V3 input value universe reaching every ValueKind,
+	// both nil and present enum-member / class-field aliases (including the
+	// distinct `@alias("")` empty-but-present case), a nullable edge, a nested
+	// list-of-list, and a class whose fields reference an enum, a list, and
+	// another class — so the V3 emitter arms are all exercised by the
+	// determinism / fidelity / freshness / mutation legs below.
+	enumEdge := &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueEnum, EnumName: "Color"}
+	classEdge := &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueClass, ClassName: "Palette"}
+	listOfListOfEnum := &promptdescriptor.ResolvedValueType{
+		Kind: promptdescriptor.ValueList,
+		Elem: &promptdescriptor.ResolvedValueType{
+			Kind: promptdescriptor.ValueList,
+			Elem: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueEnum, EnumName: "Color"},
+		},
+	}
+	universe := promptdescriptor.InputValueUniverse{
+		ProjectEnums: []promptdescriptor.ResolvedEnum{
+			{Name: "Color", Members: []promptdescriptor.ResolvedEnumMember{
+				{Canonical: "RED", Alias: sp("rouge")},
+				{Canonical: "GREEN"},               // nil alias: display is the canonical name
+				{Canonical: "BLUE", Alias: sp("")}, // present-but-empty @alias("") — distinct from nil
+				{Canonical: "WEIRD", Alias: sp(syntheticWeirdString)},
+			}},
+			{Name: "Empty", Members: []promptdescriptor.ResolvedEnumMember{}}, // empty-but-present
+		},
+		Classes: []promptdescriptor.ResolvedClass{
+			{Name: "Palette", Fields: []promptdescriptor.ResolvedClassField{
+				{Canonical: "primary", Alias: sp("principale"), Type: *enumEdge},
+				{Canonical: "shades", Type: promptdescriptor.ResolvedValueType{
+					Kind: promptdescriptor.ValueList,
+					Elem: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueEnum, EnumName: "Color"},
+				}},
+				{Canonical: "swatch", Alias: sp(""), Type: promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueClass, ClassName: "Swatch"}},
+				{Canonical: "count", Type: promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueInt}},
+				{Canonical: "ratio", Type: promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueFloat}},
+				{Canonical: "flag", Type: promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueBool}},
+				{Canonical: "nothing", Type: promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueNull}},
+				{Canonical: "maybe", Type: promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString, Nullable: true}},
+			}},
+			{Name: "Swatch", Fields: []promptdescriptor.ResolvedClassField{
+				{Canonical: "label", Alias: sp("etiquette"), Type: promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString}},
+			}},
+			{Name: "NoFields", Fields: []promptdescriptor.ResolvedClassField{}}, // empty-but-present
+		},
+	}
+
 	allArms := promptdescriptor.Function{
-		Version:  promptdescriptor.Version,
-		Method:   "AllArms",
-		Prompt:   syntheticWeirdString,
-		Args:     []promptdescriptor.Argument{{Name: "topic", Type: primArg}, {Name: "bare"}},
-		Client:   "SynthClient",
-		Provider: "openai",
-		Return:   bundle,
+		Version: promptdescriptor.Version,
+		Method:  "AllArms",
+		Prompt:  syntheticWeirdString,
+		Args: []promptdescriptor.Argument{
+			{Name: "topic", Type: primArg, ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString}},
+			{Name: "bare"}, // no Type AND no ValueType: the nil-vs-present arm
+			{Name: "color", ValueType: enumEdge},
+			{Name: "palette", ValueType: classEdge},
+			{Name: "grid", ValueType: listOfListOfEnum},
+		},
+		Client:      "SynthClient",
+		Provider:    "openai",
+		Return:      bundle,
+		InputValues: universe,
 		Macros: []promptdescriptor.TemplateString{{
 			Name:       "macro",
 			Args:       []promptdescriptor.Argument{{Name: "m", Type: &bamlparser.TypeExpr{Kind: bamlparser.KindPrimitive, Primitive: "string"}}},

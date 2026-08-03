@@ -89,6 +89,11 @@ func maybeObserveDeBAMLStaticFinal(
 	fn promptdescriptor.Function,
 	args map[string]any,
 	argOrder []string,
+	// values is the de-BAML Slice 7.1b PROJECTED argument vector: the ordered,
+	// already-typed neutral value tree the generated projector produced. It is the
+	// ONLY host-value input the native binder accepts; args/argOrder above remain
+	// the BAML request facts and are never a value-semantics source.
+	values []promptdescriptor.ArgumentValue,
 	provider string,
 	clientOverride string,
 	singleLeaf bool,
@@ -120,6 +125,7 @@ func maybeObserveDeBAMLStaticFinal(
 		Descriptor:              fn,
 		Args:                    args,
 		ArgOrder:                argOrder,
+		Values:                  values,
 		Mode:                    bamlutils.NativeStaticModeFinal,
 		Provider:                provider,
 		ClientOverride:          clientOverride,
@@ -215,6 +221,11 @@ func installNativeStaticCall(
 	fn promptdescriptor.Function,
 	args map[string]any,
 	argOrder []string,
+	// values is the de-BAML Slice 7.1b PROJECTED argument vector: the ordered,
+	// already-typed neutral value tree the generated projector produced. It is the
+	// ONLY host-value input the native binder accepts; args/argOrder above remain
+	// the BAML request facts and are never a value-semantics source.
+	values []promptdescriptor.ArgumentValue,
 	singleLeaf bool,
 	hasFallbackChain bool,
 	hasRoundRobin bool,
@@ -241,6 +252,7 @@ func installNativeStaticCall(
 			Descriptor:              fn,
 			Args:                    args,
 			ArgOrder:                argOrder,
+			Values:                  values,
 			Mode:                    bamlutils.NativeStaticModeFinal,
 			Provider:                att.Provider,
 			ClientOverride:          att.ClientOverride,
@@ -327,6 +339,11 @@ func installNativeStaticShadow(
 	fn promptdescriptor.Function,
 	args map[string]any,
 	argOrder []string,
+	// values is the de-BAML Slice 7.1b PROJECTED argument vector: the ordered,
+	// already-typed neutral value tree the generated projector produced. It is the
+	// ONLY host-value input the native binder accepts; args/argOrder above remain
+	// the BAML request facts and are never a value-semantics source.
+	values []promptdescriptor.ArgumentValue,
 	singleLeaf bool,
 	hasFallbackChain bool,
 	hasRoundRobin bool,
@@ -348,6 +365,7 @@ func installNativeStaticShadow(
 			Descriptor:              fn,
 			Args:                    args,
 			ArgOrder:                argOrder,
+			Values:                  values,
 			Mode:                    bamlutils.NativeStaticModeFinal,
 			Provider:                att.Provider,
 			ClientOverride:          att.ClientOverride,
@@ -431,6 +449,11 @@ func installNativeStaticStream(
 	fn promptdescriptor.Function,
 	args map[string]any,
 	argOrder []string,
+	// values is the de-BAML Slice 7.1b PROJECTED argument vector: the ordered,
+	// already-typed neutral value tree the generated projector produced. It is the
+	// ONLY host-value input the native binder accepts; args/argOrder above remain
+	// the BAML request facts and are never a value-semantics source.
+	values []promptdescriptor.ArgumentValue,
 	singleLeaf bool,
 	hasFallbackChain bool,
 	hasRoundRobin bool,
@@ -513,6 +536,7 @@ func installNativeStaticStream(
 			Descriptor:              descriptor,
 			Args:                    args,
 			ArgOrder:                argOrder,
+			Values:                  values,
 			Mode:                    streamMode,
 			Provider:                att.Provider,
 			ClientOverride:          att.ClientOverride,

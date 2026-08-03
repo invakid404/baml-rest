@@ -145,8 +145,9 @@ var legacyStaticMethods = []string{
 // EXACTLY the frozen legacy-8C route set — no legacy route may be silently omitted
 // from the frozen pin. It is pinned against the EXPLICIT legacyStaticMethods set (NOT
 // SyncMethods), so the Phase 2 recursive additions cannot change this legacy
-// assertion; the recursive partition + the SyncMethods completeness check live in the
-// separate recursive manifest (TestStaticServingCutover_RecursivePartition).
+// assertion; the frozen recursive served set lives in the separate recursive manifest
+// (TestStaticServingCutover_RecursiveServedCorpusIsFrozen) and the SyncMethods
+// completeness check in TestStaticServingCutover_CompletePartition.
 func TestStaticServingCutover_AntiOmission(t *testing.T) {
 	emitted := make([]string, 0, len(legacyStaticMethods))
 	emitted = append(emitted, legacyStaticMethods...)

@@ -11,6 +11,7 @@ import (
 	schemadescriptor "github.com/invakid404/baml-rest/bamlutils/schemadescriptor"
 	bamlclient "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/static_oracle/baml_client"
 	typebuilder "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/static_oracle/baml_client/type_builder"
+	types "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/static_oracle/baml_client/types"
 	"os"
 )
 
@@ -18,49 +19,49 @@ import (
 var Stream = bamlclient.Stream
 
 // StreamMethods is a map from method name to argument names
-var StreamMethods = map[string][]string{"StaticCompletion": []string{"topic"}, "StaticCompletionOutputFormat": []string{"topic"}, "StaticOutputFormat": []string{"topic"}, "StaticPrimitiveArgs": []string{"text", "count", "ratio", "flag"}, "StaticRecursiveA": []string{"topic"}, "StaticRecursiveAliasJSON": []string{"topic"}, "StaticRecursiveAliasJsonValue": []string{"topic"}, "StaticRecursiveAliasJsonValueReordered": []string{"topic"}, "StaticRecursiveB": []string{"topic"}, "StaticRecursiveLoop": []string{"topic"}, "StaticRecursiveNode": []string{"topic"}, "StaticRoleChat": []string{"topic", "count"}}
+var StreamMethods = map[string][]string{"StaticCompletion": []string{"topic"}, "StaticCompletionOutputFormat": []string{"topic"}, "StaticEnumArgCanonicalEq": []string{"color"}, "StaticEnumArgMemberEq": []string{"color"}, "StaticEnumCanonicalArgEq": []string{"color"}, "StaticEnumCanonicalEq": []string{}, "StaticEnumCanonicalInMemberList": []string{}, "StaticEnumDifferentMemberEq": []string{}, "StaticEnumDisplayAliasEq": []string{}, "StaticEnumMemberArgEq": []string{"color"}, "StaticEnumMemberInCanonicalList": []string{}, "StaticEnumReverseCanonicalEq": []string{}, "StaticEnumSameMemberEq": []string{}, "StaticOutputFormat": []string{"topic"}, "StaticPrimitiveArgs": []string{"text", "count", "ratio", "flag"}, "StaticRecursiveA": []string{"topic"}, "StaticRecursiveAliasJSON": []string{"topic"}, "StaticRecursiveAliasJsonValue": []string{"topic"}, "StaticRecursiveAliasJsonValueReordered": []string{"topic"}, "StaticRecursiveB": []string{"topic"}, "StaticRecursiveLoop": []string{"topic"}, "StaticRecursiveNode": []string{"topic"}, "StaticRenderEnum": []string{"color"}, "StaticRenderList": []string{"colors"}, "StaticRenderPalette": []string{"palette"}, "StaticRenderPalettes": []string{"palettes"}, "StaticRenderStrings": []string{"tags"}, "StaticRoleChat": []string{"topic", "count"}}
 
 // SyncMethods maps sync function names to their argument names
-var SyncMethods = map[string][]string{"StaticCompletion": []string{"topic"}, "StaticCompletionOutputFormat": []string{"topic"}, "StaticOutputFormat": []string{"topic"}, "StaticPrimitiveArgs": []string{"text", "count", "ratio", "flag"}, "StaticRecursiveA": []string{"topic"}, "StaticRecursiveAliasJSON": []string{"topic"}, "StaticRecursiveAliasJsonValue": []string{"topic"}, "StaticRecursiveAliasJsonValueReordered": []string{"topic"}, "StaticRecursiveB": []string{"topic"}, "StaticRecursiveLoop": []string{"topic"}, "StaticRecursiveNode": []string{"topic"}, "StaticRoleChat": []string{"topic", "count"}}
+var SyncMethods = map[string][]string{"StaticCompletion": []string{"topic"}, "StaticCompletionOutputFormat": []string{"topic"}, "StaticEnumArgCanonicalEq": []string{"color"}, "StaticEnumArgMemberEq": []string{"color"}, "StaticEnumCanonicalArgEq": []string{"color"}, "StaticEnumCanonicalEq": []string{}, "StaticEnumCanonicalInMemberList": []string{}, "StaticEnumDifferentMemberEq": []string{}, "StaticEnumDisplayAliasEq": []string{}, "StaticEnumMemberArgEq": []string{"color"}, "StaticEnumMemberInCanonicalList": []string{}, "StaticEnumReverseCanonicalEq": []string{}, "StaticEnumSameMemberEq": []string{}, "StaticOutputFormat": []string{"topic"}, "StaticPrimitiveArgs": []string{"text", "count", "ratio", "flag"}, "StaticRecursiveA": []string{"topic"}, "StaticRecursiveAliasJSON": []string{"topic"}, "StaticRecursiveAliasJsonValue": []string{"topic"}, "StaticRecursiveAliasJsonValueReordered": []string{"topic"}, "StaticRecursiveB": []string{"topic"}, "StaticRecursiveLoop": []string{"topic"}, "StaticRecursiveNode": []string{"topic"}, "StaticRenderEnum": []string{"color"}, "StaticRenderList": []string{"colors"}, "StaticRenderPalette": []string{"palette"}, "StaticRenderPalettes": []string{"palettes"}, "StaticRenderStrings": []string{"tags"}, "StaticRoleChat": []string{"topic", "count"}}
 
 // SyncFuncs maps sync function names to their function values (for reflection)
-var SyncFuncs = map[string]any{"StaticCompletion": bamlclient.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.StaticCompletionOutputFormat, "StaticOutputFormat": bamlclient.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.StaticRecursiveA, "StaticRecursiveAliasJSON": bamlclient.StaticRecursiveAliasJSON, "StaticRecursiveAliasJsonValue": bamlclient.StaticRecursiveAliasJsonValue, "StaticRecursiveAliasJsonValueReordered": bamlclient.StaticRecursiveAliasJsonValueReordered, "StaticRecursiveB": bamlclient.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.StaticRecursiveNode, "StaticRoleChat": bamlclient.StaticRoleChat}
+var SyncFuncs = map[string]any{"StaticCompletion": bamlclient.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.StaticCompletionOutputFormat, "StaticEnumArgCanonicalEq": bamlclient.StaticEnumArgCanonicalEq, "StaticEnumArgMemberEq": bamlclient.StaticEnumArgMemberEq, "StaticEnumCanonicalArgEq": bamlclient.StaticEnumCanonicalArgEq, "StaticEnumCanonicalEq": bamlclient.StaticEnumCanonicalEq, "StaticEnumCanonicalInMemberList": bamlclient.StaticEnumCanonicalInMemberList, "StaticEnumDifferentMemberEq": bamlclient.StaticEnumDifferentMemberEq, "StaticEnumDisplayAliasEq": bamlclient.StaticEnumDisplayAliasEq, "StaticEnumMemberArgEq": bamlclient.StaticEnumMemberArgEq, "StaticEnumMemberInCanonicalList": bamlclient.StaticEnumMemberInCanonicalList, "StaticEnumReverseCanonicalEq": bamlclient.StaticEnumReverseCanonicalEq, "StaticEnumSameMemberEq": bamlclient.StaticEnumSameMemberEq, "StaticOutputFormat": bamlclient.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.StaticRecursiveA, "StaticRecursiveAliasJSON": bamlclient.StaticRecursiveAliasJSON, "StaticRecursiveAliasJsonValue": bamlclient.StaticRecursiveAliasJsonValue, "StaticRecursiveAliasJsonValueReordered": bamlclient.StaticRecursiveAliasJsonValueReordered, "StaticRecursiveB": bamlclient.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.StaticRecursiveNode, "StaticRenderEnum": bamlclient.StaticRenderEnum, "StaticRenderList": bamlclient.StaticRenderList, "StaticRenderPalette": bamlclient.StaticRenderPalette, "StaticRenderPalettes": bamlclient.StaticRenderPalettes, "StaticRenderStrings": bamlclient.StaticRenderStrings, "StaticRoleChat": bamlclient.StaticRoleChat}
 
 // Parse is the parse API for parsing raw LLM responses into final types
 var Parse = bamlclient.Parse
 
 // ParseMethods is a set of method names available on Parse
-var ParseMethods = map[string]struct{}{"StaticCompletion": {}, "StaticCompletionOutputFormat": {}, "StaticOutputFormat": {}, "StaticPrimitiveArgs": {}, "StaticRecursiveA": {}, "StaticRecursiveAliasJSON": {}, "StaticRecursiveAliasJsonValue": {}, "StaticRecursiveAliasJsonValueReordered": {}, "StaticRecursiveB": {}, "StaticRecursiveLoop": {}, "StaticRecursiveNode": {}, "StaticRoleChat": {}}
+var ParseMethods = map[string]struct{}{"StaticCompletion": {}, "StaticCompletionOutputFormat": {}, "StaticEnumArgCanonicalEq": {}, "StaticEnumArgMemberEq": {}, "StaticEnumCanonicalArgEq": {}, "StaticEnumCanonicalEq": {}, "StaticEnumCanonicalInMemberList": {}, "StaticEnumDifferentMemberEq": {}, "StaticEnumDisplayAliasEq": {}, "StaticEnumMemberArgEq": {}, "StaticEnumMemberInCanonicalList": {}, "StaticEnumReverseCanonicalEq": {}, "StaticEnumSameMemberEq": {}, "StaticOutputFormat": {}, "StaticPrimitiveArgs": {}, "StaticRecursiveA": {}, "StaticRecursiveAliasJSON": {}, "StaticRecursiveAliasJsonValue": {}, "StaticRecursiveAliasJsonValueReordered": {}, "StaticRecursiveB": {}, "StaticRecursiveLoop": {}, "StaticRecursiveNode": {}, "StaticRenderEnum": {}, "StaticRenderList": {}, "StaticRenderPalette": {}, "StaticRenderPalettes": {}, "StaticRenderStrings": {}, "StaticRoleChat": {}}
 
 // ParseStream is the parse_stream API for parsing raw LLM responses into partial/stream types
 var ParseStream = bamlclient.ParseStream
 
 // ParseStreamMethods is a set of method names available on ParseStream
-var ParseStreamMethods = map[string]struct{}{"StaticCompletion": {}, "StaticCompletionOutputFormat": {}, "StaticOutputFormat": {}, "StaticPrimitiveArgs": {}, "StaticRecursiveA": {}, "StaticRecursiveAliasJSON": {}, "StaticRecursiveAliasJsonValue": {}, "StaticRecursiveAliasJsonValueReordered": {}, "StaticRecursiveB": {}, "StaticRecursiveLoop": {}, "StaticRecursiveNode": {}, "StaticRoleChat": {}}
+var ParseStreamMethods = map[string]struct{}{"StaticCompletion": {}, "StaticCompletionOutputFormat": {}, "StaticEnumArgCanonicalEq": {}, "StaticEnumArgMemberEq": {}, "StaticEnumCanonicalArgEq": {}, "StaticEnumCanonicalEq": {}, "StaticEnumCanonicalInMemberList": {}, "StaticEnumDifferentMemberEq": {}, "StaticEnumDisplayAliasEq": {}, "StaticEnumMemberArgEq": {}, "StaticEnumMemberInCanonicalList": {}, "StaticEnumReverseCanonicalEq": {}, "StaticEnumSameMemberEq": {}, "StaticOutputFormat": {}, "StaticPrimitiveArgs": {}, "StaticRecursiveA": {}, "StaticRecursiveAliasJSON": {}, "StaticRecursiveAliasJsonValue": {}, "StaticRecursiveAliasJsonValueReordered": {}, "StaticRecursiveB": {}, "StaticRecursiveLoop": {}, "StaticRecursiveNode": {}, "StaticRenderEnum": {}, "StaticRenderList": {}, "StaticRenderPalette": {}, "StaticRenderPalettes": {}, "StaticRenderStrings": {}, "StaticRoleChat": {}}
 
 // ParseStreamFuncs maps ParseStream method names to their function values (for reflection)
-var ParseStreamFuncs = map[string]any{"StaticCompletion": bamlclient.ParseStream.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.ParseStream.StaticCompletionOutputFormat, "StaticOutputFormat": bamlclient.ParseStream.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.ParseStream.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.ParseStream.StaticRecursiveA, "StaticRecursiveAliasJSON": bamlclient.ParseStream.StaticRecursiveAliasJSON, "StaticRecursiveAliasJsonValue": bamlclient.ParseStream.StaticRecursiveAliasJsonValue, "StaticRecursiveAliasJsonValueReordered": bamlclient.ParseStream.StaticRecursiveAliasJsonValueReordered, "StaticRecursiveB": bamlclient.ParseStream.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.ParseStream.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.ParseStream.StaticRecursiveNode, "StaticRoleChat": bamlclient.ParseStream.StaticRoleChat}
+var ParseStreamFuncs = map[string]any{"StaticCompletion": bamlclient.ParseStream.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.ParseStream.StaticCompletionOutputFormat, "StaticEnumArgCanonicalEq": bamlclient.ParseStream.StaticEnumArgCanonicalEq, "StaticEnumArgMemberEq": bamlclient.ParseStream.StaticEnumArgMemberEq, "StaticEnumCanonicalArgEq": bamlclient.ParseStream.StaticEnumCanonicalArgEq, "StaticEnumCanonicalEq": bamlclient.ParseStream.StaticEnumCanonicalEq, "StaticEnumCanonicalInMemberList": bamlclient.ParseStream.StaticEnumCanonicalInMemberList, "StaticEnumDifferentMemberEq": bamlclient.ParseStream.StaticEnumDifferentMemberEq, "StaticEnumDisplayAliasEq": bamlclient.ParseStream.StaticEnumDisplayAliasEq, "StaticEnumMemberArgEq": bamlclient.ParseStream.StaticEnumMemberArgEq, "StaticEnumMemberInCanonicalList": bamlclient.ParseStream.StaticEnumMemberInCanonicalList, "StaticEnumReverseCanonicalEq": bamlclient.ParseStream.StaticEnumReverseCanonicalEq, "StaticEnumSameMemberEq": bamlclient.ParseStream.StaticEnumSameMemberEq, "StaticOutputFormat": bamlclient.ParseStream.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.ParseStream.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.ParseStream.StaticRecursiveA, "StaticRecursiveAliasJSON": bamlclient.ParseStream.StaticRecursiveAliasJSON, "StaticRecursiveAliasJsonValue": bamlclient.ParseStream.StaticRecursiveAliasJsonValue, "StaticRecursiveAliasJsonValueReordered": bamlclient.ParseStream.StaticRecursiveAliasJsonValueReordered, "StaticRecursiveB": bamlclient.ParseStream.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.ParseStream.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.ParseStream.StaticRecursiveNode, "StaticRenderEnum": bamlclient.ParseStream.StaticRenderEnum, "StaticRenderList": bamlclient.ParseStream.StaticRenderList, "StaticRenderPalette": bamlclient.ParseStream.StaticRenderPalette, "StaticRenderPalettes": bamlclient.ParseStream.StaticRenderPalettes, "StaticRenderStrings": bamlclient.ParseStream.StaticRenderStrings, "StaticRoleChat": bamlclient.ParseStream.StaticRoleChat}
 
 // Request is the BAML Request singleton for building non-streaming HTTP requests
 var Request = bamlclient.Request
 
 // RequestFuncs maps Request method names to their function values (for reflection)
-var RequestFuncs = map[string]any{"StaticCompletion": bamlclient.Request.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.Request.StaticCompletionOutputFormat, "StaticOutputFormat": bamlclient.Request.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.Request.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.Request.StaticRecursiveA, "StaticRecursiveAliasJSON": bamlclient.Request.StaticRecursiveAliasJSON, "StaticRecursiveAliasJsonValue": bamlclient.Request.StaticRecursiveAliasJsonValue, "StaticRecursiveAliasJsonValueReordered": bamlclient.Request.StaticRecursiveAliasJsonValueReordered, "StaticRecursiveB": bamlclient.Request.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.Request.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.Request.StaticRecursiveNode, "StaticRoleChat": bamlclient.Request.StaticRoleChat}
+var RequestFuncs = map[string]any{"StaticCompletion": bamlclient.Request.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.Request.StaticCompletionOutputFormat, "StaticEnumArgCanonicalEq": bamlclient.Request.StaticEnumArgCanonicalEq, "StaticEnumArgMemberEq": bamlclient.Request.StaticEnumArgMemberEq, "StaticEnumCanonicalArgEq": bamlclient.Request.StaticEnumCanonicalArgEq, "StaticEnumMemberArgEq": bamlclient.Request.StaticEnumMemberArgEq, "StaticOutputFormat": bamlclient.Request.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.Request.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.Request.StaticRecursiveA, "StaticRecursiveAliasJSON": bamlclient.Request.StaticRecursiveAliasJSON, "StaticRecursiveAliasJsonValue": bamlclient.Request.StaticRecursiveAliasJsonValue, "StaticRecursiveAliasJsonValueReordered": bamlclient.Request.StaticRecursiveAliasJsonValueReordered, "StaticRecursiveB": bamlclient.Request.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.Request.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.Request.StaticRecursiveNode, "StaticRenderEnum": bamlclient.Request.StaticRenderEnum, "StaticRenderList": bamlclient.Request.StaticRenderList, "StaticRenderPalette": bamlclient.Request.StaticRenderPalette, "StaticRenderPalettes": bamlclient.Request.StaticRenderPalettes, "StaticRenderStrings": bamlclient.Request.StaticRenderStrings, "StaticRoleChat": bamlclient.Request.StaticRoleChat}
 
 // StreamRequest is the BAML StreamRequest singleton for building streaming HTTP requests
 var StreamRequest = bamlclient.StreamRequest
 
 // StreamRequestFuncs maps StreamRequest method names to their function values (for reflection)
-var StreamRequestFuncs = map[string]any{"StaticCompletion": bamlclient.StreamRequest.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.StreamRequest.StaticCompletionOutputFormat, "StaticOutputFormat": bamlclient.StreamRequest.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.StreamRequest.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.StreamRequest.StaticRecursiveA, "StaticRecursiveAliasJSON": bamlclient.StreamRequest.StaticRecursiveAliasJSON, "StaticRecursiveAliasJsonValue": bamlclient.StreamRequest.StaticRecursiveAliasJsonValue, "StaticRecursiveAliasJsonValueReordered": bamlclient.StreamRequest.StaticRecursiveAliasJsonValueReordered, "StaticRecursiveB": bamlclient.StreamRequest.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.StreamRequest.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.StreamRequest.StaticRecursiveNode, "StaticRoleChat": bamlclient.StreamRequest.StaticRoleChat}
+var StreamRequestFuncs = map[string]any{"StaticCompletion": bamlclient.StreamRequest.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.StreamRequest.StaticCompletionOutputFormat, "StaticEnumArgCanonicalEq": bamlclient.StreamRequest.StaticEnumArgCanonicalEq, "StaticEnumArgMemberEq": bamlclient.StreamRequest.StaticEnumArgMemberEq, "StaticEnumCanonicalArgEq": bamlclient.StreamRequest.StaticEnumCanonicalArgEq, "StaticEnumMemberArgEq": bamlclient.StreamRequest.StaticEnumMemberArgEq, "StaticOutputFormat": bamlclient.StreamRequest.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.StreamRequest.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.StreamRequest.StaticRecursiveA, "StaticRecursiveAliasJSON": bamlclient.StreamRequest.StaticRecursiveAliasJSON, "StaticRecursiveAliasJsonValue": bamlclient.StreamRequest.StaticRecursiveAliasJsonValue, "StaticRecursiveAliasJsonValueReordered": bamlclient.StreamRequest.StaticRecursiveAliasJsonValueReordered, "StaticRecursiveB": bamlclient.StreamRequest.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.StreamRequest.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.StreamRequest.StaticRecursiveNode, "StaticRenderEnum": bamlclient.StreamRequest.StaticRenderEnum, "StaticRenderList": bamlclient.StreamRequest.StaticRenderList, "StaticRenderPalette": bamlclient.StreamRequest.StaticRenderPalette, "StaticRenderPalettes": bamlclient.StreamRequest.StaticRenderPalettes, "StaticRenderStrings": bamlclient.StreamRequest.StaticRenderStrings, "StaticRoleChat": bamlclient.StreamRequest.StaticRoleChat}
 
 // SupportsWithClient is true when baml_client exposes WithClient(string) (BAML v0.219.0+)
 var SupportsWithClient = true
 
 // FunctionClient maps BAML function names to their default client name
-var FunctionClient = map[string]string{"StaticCompletion": "StaticOracleClient", "StaticCompletionOutputFormat": "StaticOracleClient", "StaticOutputFormat": "StaticOracleClient", "StaticPrimitiveArgs": "StaticOracleClient", "StaticRecursiveA": "StaticOracleClient", "StaticRecursiveAliasJSON": "StaticOracleClient", "StaticRecursiveAliasJsonValue": "StaticOracleClient", "StaticRecursiveAliasJsonValueReordered": "StaticOracleClient", "StaticRecursiveB": "StaticOracleClient", "StaticRecursiveLoop": "StaticOracleClient", "StaticRecursiveNode": "StaticOracleClient", "StaticRoleChat": "StaticOracleClient"}
+var FunctionClient = map[string]string{"StaticCompletion": "StaticOracleClient", "StaticCompletionOutputFormat": "StaticOracleClient", "StaticEnumArgCanonicalEq": "StaticOracleClient", "StaticEnumArgMemberEq": "StaticOracleClient", "StaticEnumCanonicalArgEq": "StaticOracleClient", "StaticEnumCanonicalEq": "StaticOracleClient", "StaticEnumCanonicalInMemberList": "StaticOracleClient", "StaticEnumDifferentMemberEq": "StaticOracleClient", "StaticEnumDisplayAliasEq": "StaticOracleClient", "StaticEnumMemberArgEq": "StaticOracleClient", "StaticEnumMemberInCanonicalList": "StaticOracleClient", "StaticEnumReverseCanonicalEq": "StaticOracleClient", "StaticEnumSameMemberEq": "StaticOracleClient", "StaticOutputFormat": "StaticOracleClient", "StaticPrimitiveArgs": "StaticOracleClient", "StaticRecursiveA": "StaticOracleClient", "StaticRecursiveAliasJSON": "StaticOracleClient", "StaticRecursiveAliasJsonValue": "StaticOracleClient", "StaticRecursiveAliasJsonValueReordered": "StaticOracleClient", "StaticRecursiveB": "StaticOracleClient", "StaticRecursiveLoop": "StaticOracleClient", "StaticRecursiveNode": "StaticOracleClient", "StaticRenderEnum": "StaticOracleClient", "StaticRenderList": "StaticOracleClient", "StaticRenderPalette": "StaticOracleClient", "StaticRenderPalettes": "StaticOracleClient", "StaticRenderStrings": "StaticOracleClient", "StaticRoleChat": "StaticOracleClient"}
 
 // FunctionProvider maps BAML function names to their default provider string
-var FunctionProvider = map[string]string{"StaticCompletion": "openai", "StaticCompletionOutputFormat": "openai", "StaticOutputFormat": "openai", "StaticPrimitiveArgs": "openai", "StaticRecursiveA": "openai", "StaticRecursiveAliasJSON": "openai", "StaticRecursiveAliasJsonValue": "openai", "StaticRecursiveAliasJsonValueReordered": "openai", "StaticRecursiveB": "openai", "StaticRecursiveLoop": "openai", "StaticRecursiveNode": "openai", "StaticRoleChat": "openai"}
+var FunctionProvider = map[string]string{"StaticCompletion": "openai", "StaticCompletionOutputFormat": "openai", "StaticEnumArgCanonicalEq": "openai", "StaticEnumArgMemberEq": "openai", "StaticEnumCanonicalArgEq": "openai", "StaticEnumCanonicalEq": "openai", "StaticEnumCanonicalInMemberList": "openai", "StaticEnumDifferentMemberEq": "openai", "StaticEnumDisplayAliasEq": "openai", "StaticEnumMemberArgEq": "openai", "StaticEnumMemberInCanonicalList": "openai", "StaticEnumReverseCanonicalEq": "openai", "StaticEnumSameMemberEq": "openai", "StaticOutputFormat": "openai", "StaticPrimitiveArgs": "openai", "StaticRecursiveA": "openai", "StaticRecursiveAliasJSON": "openai", "StaticRecursiveAliasJsonValue": "openai", "StaticRecursiveAliasJsonValueReordered": "openai", "StaticRecursiveB": "openai", "StaticRecursiveLoop": "openai", "StaticRecursiveNode": "openai", "StaticRenderEnum": "openai", "StaticRenderList": "openai", "StaticRenderPalette": "openai", "StaticRenderPalettes": "openai", "StaticRenderStrings": "openai", "StaticRoleChat": "openai"}
 
 // ClientProvider maps BAML client names to their provider strings
 var ClientProvider = map[string]string{"EmptyBodyClient": "openai", "EscapedModelClient": "openai", "RichBodyClient": "openai", "StaticOracleClient": "openai"}
@@ -170,6 +171,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 613,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
 		}},
 		Client: "StaticOracleClient",
 		ClientConfig: promptdescriptor.ClientConfig{
@@ -194,6 +196,22 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				},
 			}},
 		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
 		Method:   "StaticCompletion",
 		Prompt:   "\n    Write a short, plain note about {{ topic }}.\n  ",
 		Provider: "openai",
@@ -205,7 +223,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 			},
 			Version: 1,
 		},
-		Version: 2,
+		Version: 3,
 	}
 }, "StaticCompletionOutputFormat": func() promptdescriptor.Function {
 	return promptdescriptor.Function{
@@ -221,6 +239,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 2379,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
 		}},
 		Client: "StaticOracleClient",
 		ClientConfig: promptdescriptor.ClientConfig{
@@ -245,6 +264,22 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				},
 			}},
 		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
 		Method:   "StaticCompletionOutputFormat",
 		Prompt:   "\n    Summarize {{ topic }}.\n    {{ ctx.output_format }}\n  ",
 		Provider: "openai",
@@ -274,21 +309,25 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 			},
 			Version: 1,
 		},
-		Version: 2,
+		Version: 3,
 	}
-}, "StaticOutputFormat": func() promptdescriptor.Function {
+}, "StaticEnumArgCanonicalEq": func() promptdescriptor.Function {
 	return promptdescriptor.Function{
 		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
-			Name: "topic",
+			Name: "color",
 			Type: &bamlparser.TypeExpr{
-				Kind:      bamlparser.KindPrimitive,
-				Primitive: "string",
+				Kind: bamlparser.KindNameRef,
+				Name: "Color",
 				Span: bamlparser.Span{
-					Col:   36,
-					End:   2029,
-					Line:  49,
-					Start: 2023,
+					Col:   42,
+					End:   9339,
+					Line:  247,
+					Start: 9334,
 				},
+			},
+			ValueType: &promptdescriptor.ResolvedValueType{
+				EnumName: "Color",
+				Kind:     promptdescriptor.ValueEnum,
 			},
 		}},
 		Client: "StaticOracleClient",
@@ -314,6 +353,681 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				},
 			}},
 		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
+		Method:   "StaticEnumArgCanonicalEq",
+		Prompt:   "\n    {{ color == 'RED' }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Method: "StaticEnumArgCanonicalEq",
+			Target: schemadescriptor.Type{
+				Kind:      schemadescriptor.TypePrimitive,
+				Primitive: schemadescriptor.PrimitiveString,
+			},
+			Version: 1,
+		},
+		Version: 3,
+	}
+}, "StaticEnumArgMemberEq": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
+			Name: "color",
+			Type: &bamlparser.TypeExpr{
+				Kind: bamlparser.KindNameRef,
+				Name: "Color",
+				Span: bamlparser.Span{
+					Col:   39,
+					End:   9009,
+					Line:  232,
+					Start: 9004,
+				},
+			},
+			ValueType: &promptdescriptor.ResolvedValueType{
+				EnumName: "Color",
+				Kind:     promptdescriptor.ValueEnum,
+			},
+		}},
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "https://static-oracle.invalid/v1",
+				},
+			}},
+		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
+		Method:   "StaticEnumArgMemberEq",
+		Prompt:   "\n    {{ color == Color.RED }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Method: "StaticEnumArgMemberEq",
+			Target: schemadescriptor.Type{
+				Kind:      schemadescriptor.TypePrimitive,
+				Primitive: schemadescriptor.PrimitiveString,
+			},
+			Version: 1,
+		},
+		Version: 3,
+	}
+}, "StaticEnumCanonicalArgEq": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
+			Name: "color",
+			Type: &bamlparser.TypeExpr{
+				Kind: bamlparser.KindNameRef,
+				Name: "Color",
+				Span: bamlparser.Span{
+					Col:   42,
+					End:   9472,
+					Line:  254,
+					Start: 9467,
+				},
+			},
+			ValueType: &promptdescriptor.ResolvedValueType{
+				EnumName: "Color",
+				Kind:     promptdescriptor.ValueEnum,
+			},
+		}},
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "https://static-oracle.invalid/v1",
+				},
+			}},
+		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
+		Method:   "StaticEnumCanonicalArgEq",
+		Prompt:   "\n    {{ 'RED' == color }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Method: "StaticEnumCanonicalArgEq",
+			Target: schemadescriptor.Type{
+				Kind:      schemadescriptor.TypePrimitive,
+				Primitive: schemadescriptor.PrimitiveString,
+			},
+			Version: 1,
+		},
+		Version: 3,
+	}
+}, "StaticEnumCanonicalEq": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "https://static-oracle.invalid/v1",
+				},
+			}},
+		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
+		Method:   "StaticEnumCanonicalEq",
+		Prompt:   "\n    {{ Color.RED == 'RED' }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Method: "StaticEnumCanonicalEq",
+			Target: schemadescriptor.Type{
+				Kind:      schemadescriptor.TypePrimitive,
+				Primitive: schemadescriptor.PrimitiveString,
+			},
+			Version: 1,
+		},
+		Version: 3,
+	}
+}, "StaticEnumCanonicalInMemberList": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "https://static-oracle.invalid/v1",
+				},
+			}},
+		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
+		Method:   "StaticEnumCanonicalInMemberList",
+		Prompt:   "\n    {{ 'RED' in [Color.RED] }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Method: "StaticEnumCanonicalInMemberList",
+			Target: schemadescriptor.Type{
+				Kind:      schemadescriptor.TypePrimitive,
+				Primitive: schemadescriptor.PrimitiveString,
+			},
+			Version: 1,
+		},
+		Version: 3,
+	}
+}, "StaticEnumDifferentMemberEq": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "https://static-oracle.invalid/v1",
+				},
+			}},
+		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
+		Method:   "StaticEnumDifferentMemberEq",
+		Prompt:   "\n    {{ Color.RED == Color.BLUE }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Method: "StaticEnumDifferentMemberEq",
+			Target: schemadescriptor.Type{
+				Kind:      schemadescriptor.TypePrimitive,
+				Primitive: schemadescriptor.PrimitiveString,
+			},
+			Version: 1,
+		},
+		Version: 3,
+	}
+}, "StaticEnumDisplayAliasEq": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "https://static-oracle.invalid/v1",
+				},
+			}},
+		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
+		Method:   "StaticEnumDisplayAliasEq",
+		Prompt:   "\n    {{ Color.RED == 'rouge' }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Method: "StaticEnumDisplayAliasEq",
+			Target: schemadescriptor.Type{
+				Kind:      schemadescriptor.TypePrimitive,
+				Primitive: schemadescriptor.PrimitiveString,
+			},
+			Version: 1,
+		},
+		Version: 3,
+	}
+}, "StaticEnumMemberArgEq": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
+			Name: "color",
+			Type: &bamlparser.TypeExpr{
+				Kind: bamlparser.KindNameRef,
+				Name: "Color",
+				Span: bamlparser.Span{
+					Col:   39,
+					End:   9143,
+					Line:  239,
+					Start: 9138,
+				},
+			},
+			ValueType: &promptdescriptor.ResolvedValueType{
+				EnumName: "Color",
+				Kind:     promptdescriptor.ValueEnum,
+			},
+		}},
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "https://static-oracle.invalid/v1",
+				},
+			}},
+		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
+		Method:   "StaticEnumMemberArgEq",
+		Prompt:   "\n    {{ Color.RED == color }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Method: "StaticEnumMemberArgEq",
+			Target: schemadescriptor.Type{
+				Kind:      schemadescriptor.TypePrimitive,
+				Primitive: schemadescriptor.PrimitiveString,
+			},
+			Version: 1,
+		},
+		Version: 3,
+	}
+}, "StaticEnumMemberInCanonicalList": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "https://static-oracle.invalid/v1",
+				},
+			}},
+		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
+		Method:   "StaticEnumMemberInCanonicalList",
+		Prompt:   "\n    {{ Color.RED in ['RED'] }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Method: "StaticEnumMemberInCanonicalList",
+			Target: schemadescriptor.Type{
+				Kind:      schemadescriptor.TypePrimitive,
+				Primitive: schemadescriptor.PrimitiveString,
+			},
+			Version: 1,
+		},
+		Version: 3,
+	}
+}, "StaticEnumReverseCanonicalEq": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "https://static-oracle.invalid/v1",
+				},
+			}},
+		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
+		Method:   "StaticEnumReverseCanonicalEq",
+		Prompt:   "\n    {{ 'RED' == Color.RED }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Method: "StaticEnumReverseCanonicalEq",
+			Target: schemadescriptor.Type{
+				Kind:      schemadescriptor.TypePrimitive,
+				Primitive: schemadescriptor.PrimitiveString,
+			},
+			Version: 1,
+		},
+		Version: 3,
+	}
+}, "StaticEnumSameMemberEq": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "https://static-oracle.invalid/v1",
+				},
+			}},
+		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
+		Method:   "StaticEnumSameMemberEq",
+		Prompt:   "\n    {{ Color.RED == Color.RED }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Method: "StaticEnumSameMemberEq",
+			Target: schemadescriptor.Type{
+				Kind:      schemadescriptor.TypePrimitive,
+				Primitive: schemadescriptor.PrimitiveString,
+			},
+			Version: 1,
+		},
+		Version: 3,
+	}
+}, "StaticOutputFormat": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
+			Name: "topic",
+			Type: &bamlparser.TypeExpr{
+				Kind:      bamlparser.KindPrimitive,
+				Primitive: "string",
+				Span: bamlparser.Span{
+					Col:   36,
+					End:   2029,
+					Line:  49,
+					Start: 2023,
+				},
+			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
+		}},
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "https://static-oracle.invalid/v1",
+				},
+			}},
+		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
 		Method:   "StaticOutputFormat",
 		Prompt:   "\n    {{ _.role(\"user\") }}\n    Summarize {{ topic }} for me.\n    {{ ctx.output_format }}\n  ",
 		Provider: "openai",
@@ -343,7 +1057,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 			},
 			Version: 1,
 		},
-		Version: 2,
+		Version: 3,
 	}
 }, "StaticPrimitiveArgs": func() promptdescriptor.Function {
 	return promptdescriptor.Function{
@@ -359,6 +1073,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 1073,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
 		}, promptdescriptor.Argument{
 			Name: "count",
 			Type: &bamlparser.TypeExpr{
@@ -371,6 +1086,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 1088,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueInt},
 		}, promptdescriptor.Argument{
 			Name: "ratio",
 			Type: &bamlparser.TypeExpr{
@@ -383,6 +1099,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 1100,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueFloat},
 		}, promptdescriptor.Argument{
 			Name: "flag",
 			Type: &bamlparser.TypeExpr{
@@ -395,6 +1112,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 1113,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueBool},
 		}},
 		Client: "StaticOracleClient",
 		ClientConfig: promptdescriptor.ClientConfig{
@@ -419,6 +1137,22 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				},
 			}},
 		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
 		Method:   "StaticPrimitiveArgs",
 		Prompt:   "\n    text={{ text }}\n    count={{ count }}\n    ratio={{ ratio }}\n    flag={{ flag }}\n  ",
 		Provider: "openai",
@@ -430,7 +1164,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 			},
 			Version: 1,
 		},
-		Version: 2,
+		Version: 3,
 	}
 }, "StaticRecursiveA": func() promptdescriptor.Function {
 	return promptdescriptor.Function{
@@ -446,6 +1180,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 3349,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
 		}},
 		Client: "StaticOracleClient",
 		ClientConfig: promptdescriptor.ClientConfig{
@@ -470,6 +1205,22 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				},
 			}},
 		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
 		Method:   "StaticRecursiveA",
 		Prompt:   "\n    Summarize {{ topic }} as an alternating A/B chain.\n    {{ ctx.output_format }}\n  ",
 		Provider: "openai",
@@ -530,7 +1281,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 			},
 			Version: 1,
 		},
-		Version: 2,
+		Version: 3,
 	}
 }, "StaticRecursiveAliasJSON": func() promptdescriptor.Function {
 	return promptdescriptor.Function{
@@ -546,6 +1297,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 4906,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
 		}},
 		Client: "StaticOracleClient",
 		ClientConfig: promptdescriptor.ClientConfig{
@@ -570,6 +1322,22 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				},
 			}},
 		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
 		Method:   "StaticRecursiveAliasJSON",
 		Prompt:   "\n    Summarize {{ topic }} as arbitrary JSON.\n    {{ ctx.output_format }}\n  ",
 		Provider: "openai",
@@ -616,7 +1384,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 			},
 			Version: 1,
 		},
-		Version: 2,
+		Version: 3,
 	}
 }, "StaticRecursiveAliasJsonValue": func() promptdescriptor.Function {
 	return promptdescriptor.Function{
@@ -632,6 +1400,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 5894,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
 		}},
 		Client: "StaticOracleClient",
 		ClientConfig: promptdescriptor.ClientConfig{
@@ -656,6 +1425,22 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				},
 			}},
 		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
 		Method:   "StaticRecursiveAliasJsonValue",
 		Prompt:   "\n    Summarize {{ topic }} as arbitrary JSON (wide).\n    {{ ctx.output_format }}\n  ",
 		Provider: "openai",
@@ -708,7 +1493,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 			},
 			Version: 1,
 		},
-		Version: 2,
+		Version: 3,
 	}
 }, "StaticRecursiveAliasJsonValueReordered": func() promptdescriptor.Function {
 	return promptdescriptor.Function{
@@ -724,6 +1509,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 6478,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
 		}},
 		Client: "StaticOracleClient",
 		ClientConfig: promptdescriptor.ClientConfig{
@@ -748,6 +1534,22 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				},
 			}},
 		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
 		Method:   "StaticRecursiveAliasJsonValueReordered",
 		Prompt:   "\n    Summarize {{ topic }} as arbitrary JSON (reordered arms).\n    {{ ctx.output_format }}\n  ",
 		Provider: "openai",
@@ -800,7 +1602,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 			},
 			Version: 1,
 		},
-		Version: 2,
+		Version: 3,
 	}
 }, "StaticRecursiveB": func() promptdescriptor.Function {
 	return promptdescriptor.Function{
@@ -816,6 +1618,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 3794,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
 		}},
 		Client: "StaticOracleClient",
 		ClientConfig: promptdescriptor.ClientConfig{
@@ -840,6 +1643,22 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				},
 			}},
 		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
 		Method:   "StaticRecursiveB",
 		Prompt:   "\n    Summarize {{ topic }} as an alternating B/A chain.\n    {{ ctx.output_format }}\n  ",
 		Provider: "openai",
@@ -900,7 +1719,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 			},
 			Version: 1,
 		},
-		Version: 2,
+		Version: 3,
 	}
 }, "StaticRecursiveLoop": func() promptdescriptor.Function {
 	return promptdescriptor.Function{
@@ -916,6 +1735,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 4311,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
 		}},
 		Client: "StaticOracleClient",
 		ClientConfig: promptdescriptor.ClientConfig{
@@ -940,6 +1760,22 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				},
 			}},
 		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
 		Method:   "StaticRecursiveLoop",
 		Prompt:   "\n    Summarize {{ topic }} as a self-referential loop.\n    {{ ctx.output_format }}\n  ",
 		Provider: "openai",
@@ -971,7 +1807,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 			},
 			Version: 1,
 		},
-		Version: 2,
+		Version: 3,
 	}
 }, "StaticRecursiveNode": func() promptdescriptor.Function {
 	return promptdescriptor.Function{
@@ -987,6 +1823,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 					Start: 2936,
 				},
 			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
 		}},
 		Client: "StaticOracleClient",
 		ClientConfig: promptdescriptor.ClientConfig{
@@ -1011,6 +1848,22 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				},
 			}},
 		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
 		Method:   "StaticRecursiveNode",
 		Prompt:   "\n    Summarize {{ topic }} as a linked list of notes.\n    {{ ctx.output_format }}\n  ",
 		Provider: "openai",
@@ -1048,33 +1901,25 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 			},
 			Version: 1,
 		},
-		Version: 2,
+		Version: 3,
 	}
-}, "StaticRoleChat": func() promptdescriptor.Function {
+}, "StaticRenderEnum": func() promptdescriptor.Function {
 	return promptdescriptor.Function{
 		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
-			Name: "topic",
+			Name: "color",
 			Type: &bamlparser.TypeExpr{
-				Kind:      bamlparser.KindPrimitive,
-				Primitive: "string",
+				Kind: bamlparser.KindNameRef,
+				Name: "Color",
 				Span: bamlparser.Span{
-					Col:   32,
-					End:   1527,
-					Line:  34,
-					Start: 1521,
+					Col:   34,
+					End:   10020,
+					Line:  268,
+					Start: 10015,
 				},
 			},
-		}, promptdescriptor.Argument{
-			Name: "count",
-			Type: &bamlparser.TypeExpr{
-				Kind:      bamlparser.KindPrimitive,
-				Primitive: "int",
-				Span: bamlparser.Span{
-					Col:   47,
-					End:   1539,
-					Line:  34,
-					Start: 1536,
-				},
+			ValueType: &promptdescriptor.ResolvedValueType{
+				EnumName: "Color",
+				Kind:     promptdescriptor.ValueEnum,
 			},
 		}},
 		Client: "StaticOracleClient",
@@ -1100,6 +1945,523 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				},
 			}},
 		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
+		Method:   "StaticRenderEnum",
+		Prompt:   "\n    {{ color }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Method: "StaticRenderEnum",
+			Target: schemadescriptor.Type{
+				Kind:      schemadescriptor.TypePrimitive,
+				Primitive: schemadescriptor.PrimitiveString,
+			},
+			Version: 1,
+		},
+		Version: 3,
+	}
+}, "StaticRenderList": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
+			Name: "colors",
+			Type: &bamlparser.TypeExpr{
+				Dims: 1,
+				Elem: &bamlparser.TypeExpr{
+					Kind: bamlparser.KindNameRef,
+					Name: "Color",
+					Span: bamlparser.Span{
+						Col:   35,
+						End:   10137,
+						Line:  275,
+						Start: 10132,
+					},
+				},
+				Kind: bamlparser.KindList,
+				Span: bamlparser.Span{
+					Col:   35,
+					End:   10139,
+					Line:  275,
+					Start: 10132,
+				},
+			},
+			ValueType: &promptdescriptor.ResolvedValueType{
+				Elem: &promptdescriptor.ResolvedValueType{
+					EnumName: "Color",
+					Kind:     promptdescriptor.ValueEnum,
+				},
+				Kind: promptdescriptor.ValueList,
+			},
+		}},
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "https://static-oracle.invalid/v1",
+				},
+			}},
+		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
+		Method:   "StaticRenderList",
+		Prompt:   "\n    {{ colors }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Method: "StaticRenderList",
+			Target: schemadescriptor.Type{
+				Kind:      schemadescriptor.TypePrimitive,
+				Primitive: schemadescriptor.PrimitiveString,
+			},
+			Version: 1,
+		},
+		Version: 3,
+	}
+}, "StaticRenderPalette": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
+			Name: "palette",
+			Type: &bamlparser.TypeExpr{
+				Kind: bamlparser.KindNameRef,
+				Name: "Palette",
+				Span: bamlparser.Span{
+					Col:   39,
+					End:   12068,
+					Line:  316,
+					Start: 12061,
+				},
+			},
+			ValueType: &promptdescriptor.ResolvedValueType{
+				ClassName: "Palette",
+				Kind:      promptdescriptor.ValueClass,
+			},
+		}},
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "https://static-oracle.invalid/v1",
+				},
+			}},
+		},
+		InputValues: promptdescriptor.InputValueUniverse{
+			Classes: []promptdescriptor.ResolvedClass{promptdescriptor.ResolvedClass{
+				Fields: []promptdescriptor.ResolvedClassField{promptdescriptor.ResolvedClassField{
+					Canonical: "color",
+					Type: promptdescriptor.ResolvedValueType{
+						EnumName: "Color",
+						Kind:     promptdescriptor.ValueEnum,
+					},
+				}, promptdescriptor.ResolvedClassField{
+					Alias: func() *string {
+						s := "etiquette"
+						return &s
+					}(),
+					Canonical: "label",
+					Type:      promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
+				}},
+				Name: "Swatch",
+			}, promptdescriptor.ResolvedClass{
+				Fields: []promptdescriptor.ResolvedClassField{promptdescriptor.ResolvedClassField{
+					Alias: func() *string {
+						s := "principale"
+						return &s
+					}(),
+					Canonical: "primary",
+					Type: promptdescriptor.ResolvedValueType{
+						EnumName: "Color",
+						Kind:     promptdescriptor.ValueEnum,
+					},
+				}, promptdescriptor.ResolvedClassField{
+					Canonical: "shades",
+					Type: promptdescriptor.ResolvedValueType{
+						Elem: &promptdescriptor.ResolvedValueType{
+							EnumName: "Color",
+							Kind:     promptdescriptor.ValueEnum,
+						},
+						Kind: promptdescriptor.ValueList,
+					},
+				}, promptdescriptor.ResolvedClassField{
+					Canonical: "swatch",
+					Type: promptdescriptor.ResolvedValueType{
+						ClassName: "Swatch",
+						Kind:      promptdescriptor.ValueClass,
+					},
+				}, promptdescriptor.ResolvedClassField{
+					Canonical: "name",
+					Type:      promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
+				}},
+				Name: "Palette",
+			}},
+			ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+				Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+					Alias: func() *string {
+						s := "rouge"
+						return &s
+					}(),
+					Canonical: "RED",
+				}, promptdescriptor.ResolvedEnumMember{
+					Alias: func() *string {
+						s := "vert"
+						return &s
+					}(),
+					Canonical: "GREEN",
+				}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+				Name: "Color",
+			}},
+		},
+		Method:   "StaticRenderPalette",
+		Prompt:   "\n    {{ palette }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Method: "StaticRenderPalette",
+			Target: schemadescriptor.Type{
+				Kind:      schemadescriptor.TypePrimitive,
+				Primitive: schemadescriptor.PrimitiveString,
+			},
+			Version: 1,
+		},
+		Version: 3,
+	}
+}, "StaticRenderPalettes": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
+			Name: "palettes",
+			Type: &bamlparser.TypeExpr{
+				Dims: 1,
+				Elem: &bamlparser.TypeExpr{
+					Kind: bamlparser.KindNameRef,
+					Name: "Palette",
+					Span: bamlparser.Span{
+						Col:   41,
+						End:   12195,
+						Line:  323,
+						Start: 12188,
+					},
+				},
+				Kind: bamlparser.KindList,
+				Span: bamlparser.Span{
+					Col:   41,
+					End:   12197,
+					Line:  323,
+					Start: 12188,
+				},
+			},
+			ValueType: &promptdescriptor.ResolvedValueType{
+				Elem: &promptdescriptor.ResolvedValueType{
+					ClassName: "Palette",
+					Kind:      promptdescriptor.ValueClass,
+				},
+				Kind: promptdescriptor.ValueList,
+			},
+		}},
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "https://static-oracle.invalid/v1",
+				},
+			}},
+		},
+		InputValues: promptdescriptor.InputValueUniverse{
+			Classes: []promptdescriptor.ResolvedClass{promptdescriptor.ResolvedClass{
+				Fields: []promptdescriptor.ResolvedClassField{promptdescriptor.ResolvedClassField{
+					Canonical: "color",
+					Type: promptdescriptor.ResolvedValueType{
+						EnumName: "Color",
+						Kind:     promptdescriptor.ValueEnum,
+					},
+				}, promptdescriptor.ResolvedClassField{
+					Alias: func() *string {
+						s := "etiquette"
+						return &s
+					}(),
+					Canonical: "label",
+					Type:      promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
+				}},
+				Name: "Swatch",
+			}, promptdescriptor.ResolvedClass{
+				Fields: []promptdescriptor.ResolvedClassField{promptdescriptor.ResolvedClassField{
+					Alias: func() *string {
+						s := "principale"
+						return &s
+					}(),
+					Canonical: "primary",
+					Type: promptdescriptor.ResolvedValueType{
+						EnumName: "Color",
+						Kind:     promptdescriptor.ValueEnum,
+					},
+				}, promptdescriptor.ResolvedClassField{
+					Canonical: "shades",
+					Type: promptdescriptor.ResolvedValueType{
+						Elem: &promptdescriptor.ResolvedValueType{
+							EnumName: "Color",
+							Kind:     promptdescriptor.ValueEnum,
+						},
+						Kind: promptdescriptor.ValueList,
+					},
+				}, promptdescriptor.ResolvedClassField{
+					Canonical: "swatch",
+					Type: promptdescriptor.ResolvedValueType{
+						ClassName: "Swatch",
+						Kind:      promptdescriptor.ValueClass,
+					},
+				}, promptdescriptor.ResolvedClassField{
+					Canonical: "name",
+					Type:      promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
+				}},
+				Name: "Palette",
+			}},
+			ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+				Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+					Alias: func() *string {
+						s := "rouge"
+						return &s
+					}(),
+					Canonical: "RED",
+				}, promptdescriptor.ResolvedEnumMember{
+					Alias: func() *string {
+						s := "vert"
+						return &s
+					}(),
+					Canonical: "GREEN",
+				}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+				Name: "Color",
+			}},
+		},
+		Method:   "StaticRenderPalettes",
+		Prompt:   "\n    {{ palettes }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Method: "StaticRenderPalettes",
+			Target: schemadescriptor.Type{
+				Kind:      schemadescriptor.TypePrimitive,
+				Primitive: schemadescriptor.PrimitiveString,
+			},
+			Version: 1,
+		},
+		Version: 3,
+	}
+}, "StaticRenderStrings": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
+			Name: "tags",
+			Type: &bamlparser.TypeExpr{
+				Dims: 1,
+				Elem: &bamlparser.TypeExpr{
+					Kind:      bamlparser.KindPrimitive,
+					Primitive: "string",
+					Span: bamlparser.Span{
+						Col:   36,
+						End:   10404,
+						Line:  284,
+						Start: 10398,
+					},
+				},
+				Kind: bamlparser.KindList,
+				Span: bamlparser.Span{
+					Col:   36,
+					End:   10406,
+					Line:  284,
+					Start: 10398,
+				},
+			},
+			ValueType: &promptdescriptor.ResolvedValueType{
+				Elem: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
+				Kind: promptdescriptor.ValueList,
+			},
+		}},
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "https://static-oracle.invalid/v1",
+				},
+			}},
+		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
+		Method:   "StaticRenderStrings",
+		Prompt:   "\n    {{ tags }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Method: "StaticRenderStrings",
+			Target: schemadescriptor.Type{
+				Kind:      schemadescriptor.TypePrimitive,
+				Primitive: schemadescriptor.PrimitiveString,
+			},
+			Version: 1,
+		},
+		Version: 3,
+	}
+}, "StaticRoleChat": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
+			Name: "topic",
+			Type: &bamlparser.TypeExpr{
+				Kind:      bamlparser.KindPrimitive,
+				Primitive: "string",
+				Span: bamlparser.Span{
+					Col:   32,
+					End:   1527,
+					Line:  34,
+					Start: 1521,
+				},
+			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
+		}, promptdescriptor.Argument{
+			Name: "count",
+			Type: &bamlparser.TypeExpr{
+				Kind:      bamlparser.KindPrimitive,
+				Primitive: "int",
+				Span: bamlparser.Span{
+					Col:   47,
+					End:   1539,
+					Line:  34,
+					Start: 1536,
+				},
+			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueInt},
+		}},
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "https://static-oracle.invalid/v1",
+				},
+			}},
+		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
 		Method:   "StaticRoleChat",
 		Prompt:   "\n    {{ _.role(\"system\") }}\n    You are a concise assistant.\n    {{ _.role(\"user\") }}\n    Tell me about {{ topic }}.\n    {{ _.chat(role=\"assistant\") }}\n    Here are {{ count }} facts.\n  ",
 		Provider: "openai",
@@ -1111,7 +2473,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 			},
 			Version: 1,
 		},
-		Version: 2,
+		Version: 3,
 	}
 }}
 
@@ -1130,6 +2492,449 @@ func StaticPromptDescriptor(method string) (promptdescriptor.Function, bool) {
 		return promptdescriptor.Function{}, false
 	}
 	return factory(), true
+}
+
+// staticPromptValue* are the de-BAML Slice 7.1b generated value projectors: pure,
+// reflection-free functions from a generated client Go carrier to the neutral
+// promptdescriptor.StaticValue tree. Every canonical BAML enum member / class field
+// name they write is a LITERAL taken from the V3 source graph, and every Go field
+// selector was proven by a build-time AST audit of the generated types package.
+// SENSITIVE: they carry real request arguments; never log or format their input.
+func staticPromptValueBool(v bool) promptdescriptor.StaticValue {
+	return promptdescriptor.StaticValue{
+		Bool: v,
+		Kind: promptdescriptor.StaticBool,
+	}
+}
+func staticPromptValueClassPalette(v types.Palette) promptdescriptor.StaticValue {
+	return promptdescriptor.StaticValue{
+		Fields: []promptdescriptor.StaticFieldValue{promptdescriptor.StaticFieldValue{
+			Canonical: "primary",
+			Value:     staticPromptValueEnumColor(v.Primary),
+		}, promptdescriptor.StaticFieldValue{
+			Canonical: "shades",
+			Value:     staticPromptValueListOfEnumColor(v.Shades),
+		}, promptdescriptor.StaticFieldValue{
+			Canonical: "swatch",
+			Value:     staticPromptValueClassSwatch(v.Swatch),
+		}, promptdescriptor.StaticFieldValue{
+			Canonical: "name",
+			Value:     staticPromptValueString(v.Name),
+		}},
+		Kind:     promptdescriptor.StaticClass,
+		TypeName: "Palette",
+	}
+}
+func staticPromptValueClassSwatch(v types.Swatch) promptdescriptor.StaticValue {
+	return promptdescriptor.StaticValue{
+		Fields: []promptdescriptor.StaticFieldValue{promptdescriptor.StaticFieldValue{
+			Canonical: "color",
+			Value:     staticPromptValueEnumColor(v.Color),
+		}, promptdescriptor.StaticFieldValue{
+			Canonical: "label",
+			Value:     staticPromptValueString(v.Label),
+		}},
+		Kind:     promptdescriptor.StaticClass,
+		TypeName: "Swatch",
+	}
+}
+func staticPromptValueEnumColor(v types.Color) promptdescriptor.StaticValue {
+	return promptdescriptor.StaticValue{
+		Canonical: string(v),
+		Kind:      promptdescriptor.StaticEnum,
+		TypeName:  "Color",
+	}
+}
+func staticPromptValueFloat(v float64) promptdescriptor.StaticValue {
+	return promptdescriptor.StaticValue{
+		Float: v,
+		Kind:  promptdescriptor.StaticFloat,
+	}
+}
+func staticPromptValueInt(v int64) promptdescriptor.StaticValue {
+	return promptdescriptor.StaticValue{
+		Int:  v,
+		Kind: promptdescriptor.StaticInt,
+	}
+}
+func staticPromptValueListOfClassPalette(v []types.Palette) promptdescriptor.StaticValue {
+	items := make([]promptdescriptor.StaticValue, 0, len(v))
+	for i := range v {
+		items = append(items, staticPromptValueClassPalette(v[i]))
+	}
+	return promptdescriptor.StaticValue{
+		Items: items,
+		Kind:  promptdescriptor.StaticList,
+	}
+}
+func staticPromptValueListOfEnumColor(v []types.Color) promptdescriptor.StaticValue {
+	items := make([]promptdescriptor.StaticValue, 0, len(v))
+	for i := range v {
+		items = append(items, staticPromptValueEnumColor(v[i]))
+	}
+	return promptdescriptor.StaticValue{
+		Items: items,
+		Kind:  promptdescriptor.StaticList,
+	}
+}
+func staticPromptValueListOfString(v []string) promptdescriptor.StaticValue {
+	items := make([]promptdescriptor.StaticValue, 0, len(v))
+	for i := range v {
+		items = append(items, staticPromptValueString(v[i]))
+	}
+	return promptdescriptor.StaticValue{
+		Items: items,
+		Kind:  promptdescriptor.StaticList,
+	}
+}
+func staticPromptValueString(v string) promptdescriptor.StaticValue {
+	return promptdescriptor.StaticValue{
+		Kind:   promptdescriptor.StaticString,
+		String: v,
+	}
+}
+
+// StaticPromptArgumentProjectors maps a BAML method name to its generated argument
+// projector: an exact-type-assertion, direct-field-selector function from the ordered
+// []any the generated adapter emits to the neutral ordered promptdescriptor.ArgumentValue
+// vector the native static binder consumes (de-BAML Slice 7.1b). It performs NO runtime
+// reflection, JSON marshalling, Encode() call, struct-tag read, or map iteration, and it
+// returns ok=false — never a partial vector — on any arity or type mismatch.
+var StaticPromptArgumentProjectors = map[string]func([]any) ([]promptdescriptor.ArgumentValue, bool){"StaticCompletion": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticCompletionOutputFormat": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticEnumArgCanonicalEq": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(types.Color)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "color",
+		Value: staticPromptValueEnumColor(a0),
+	}}, true
+}, "StaticEnumArgMemberEq": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(types.Color)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "color",
+		Value: staticPromptValueEnumColor(a0),
+	}}, true
+}, "StaticEnumCanonicalArgEq": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(types.Color)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "color",
+		Value: staticPromptValueEnumColor(a0),
+	}}, true
+}, "StaticEnumCanonicalEq": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 0 {
+		return nil, false
+	}
+	return nil, true
+}, "StaticEnumCanonicalInMemberList": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 0 {
+		return nil, false
+	}
+	return nil, true
+}, "StaticEnumDifferentMemberEq": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 0 {
+		return nil, false
+	}
+	return nil, true
+}, "StaticEnumDisplayAliasEq": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 0 {
+		return nil, false
+	}
+	return nil, true
+}, "StaticEnumMemberArgEq": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(types.Color)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "color",
+		Value: staticPromptValueEnumColor(a0),
+	}}, true
+}, "StaticEnumMemberInCanonicalList": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 0 {
+		return nil, false
+	}
+	return nil, true
+}, "StaticEnumReverseCanonicalEq": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 0 {
+		return nil, false
+	}
+	return nil, true
+}, "StaticEnumSameMemberEq": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 0 {
+		return nil, false
+	}
+	return nil, true
+}, "StaticOutputFormat": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticPrimitiveArgs": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 4 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	a1, ok1 := args[1].(int64)
+	if !ok1 {
+		return nil, false
+	}
+	a2, ok2 := args[2].(float64)
+	if !ok2 {
+		return nil, false
+	}
+	a3, ok3 := args[3].(bool)
+	if !ok3 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "text",
+		Value: staticPromptValueString(a0),
+	}, promptdescriptor.ArgumentValue{
+		Name:  "count",
+		Value: staticPromptValueInt(a1),
+	}, promptdescriptor.ArgumentValue{
+		Name:  "ratio",
+		Value: staticPromptValueFloat(a2),
+	}, promptdescriptor.ArgumentValue{
+		Name:  "flag",
+		Value: staticPromptValueBool(a3),
+	}}, true
+}, "StaticRecursiveA": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticRecursiveAliasJSON": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticRecursiveAliasJsonValue": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticRecursiveAliasJsonValueReordered": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticRecursiveB": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticRecursiveLoop": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticRecursiveNode": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticRenderEnum": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(types.Color)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "color",
+		Value: staticPromptValueEnumColor(a0),
+	}}, true
+}, "StaticRenderList": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].([]types.Color)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "colors",
+		Value: staticPromptValueListOfEnumColor(a0),
+	}}, true
+}, "StaticRenderPalette": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(types.Palette)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "palette",
+		Value: staticPromptValueClassPalette(a0),
+	}}, true
+}, "StaticRenderPalettes": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].([]types.Palette)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "palettes",
+		Value: staticPromptValueListOfClassPalette(a0),
+	}}, true
+}, "StaticRenderStrings": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].([]string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "tags",
+		Value: staticPromptValueListOfString(a0),
+	}}, true
+}, "StaticRoleChat": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 2 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	a1, ok1 := args[1].(int64)
+	if !ok1 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}, promptdescriptor.ArgumentValue{
+		Name:  "count",
+		Value: staticPromptValueInt(a1),
+	}}, true
+}}
+
+// StaticPromptProjectorDeclines maps a BAML method name that HAS a V3 descriptor to the
+// stable build-time reason no argument projector could be generated for it (a missing,
+// ambiguous, or mismatched generated Go selector, or a value shape this slice does not
+// project). Such a method has no native static claim: the seam declines pre-render and
+// BAML serves it. Every entry is a #583 teardown blocker, not an accepted fallback.
+var StaticPromptProjectorDeclines = map[string]string{}
+
+// StaticPromptArgumentValues projects one call's ordered, already-typed arguments into
+// the neutral ArgumentValue vector for method, returning ok=false when the method has no
+// generated projector or the supplied arguments do not match its exact Go types. A false
+// result means "no native static value binding; stay on the BAML path" — it NEVER falls
+// back to reflection or to the raw argument map.
+func StaticPromptArgumentValues(method string, args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	project, ok := StaticPromptArgumentProjectors[method]
+	if !ok {
+		return nil, false
+	}
+	return project(args)
 }
 
 // MediaParams maps function name -> param name -> media kind for parameters that are BAML media types.
@@ -1191,15 +2996,21 @@ var StaticClasses = map[string]StaticClassAccessor{"A": func(tb *TypeBuilder) (T
 	return tb.Loop()
 }, "Node": func(tb *TypeBuilder) (Typed, error) {
 	return tb.Node()
+}, "Palette": func(tb *TypeBuilder) (Typed, error) {
+	return tb.Palette()
 }, "StaticAnswer": func(tb *TypeBuilder) (Typed, error) {
 	return tb.StaticAnswer()
+}, "Swatch": func(tb *TypeBuilder) (Typed, error) {
+	return tb.Swatch()
 }}
 
 // DynamicEnums maps dynamic enum names to their accessor functions
 var DynamicEnums = map[string]DynamicEnumAccessor{}
 
 // StaticEnums maps static enum names to their accessor functions
-var StaticEnums = map[string]StaticEnumAccessor{}
+var StaticEnums = map[string]StaticEnumAccessor{"Color": func(tb *TypeBuilder) (Typed, error) {
+	return tb.Color()
+}}
 
 // AllClasses returns all known class names (both dynamic and static)
 func AllClasses() []string {

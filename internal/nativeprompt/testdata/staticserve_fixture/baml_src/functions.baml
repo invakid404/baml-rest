@@ -172,3 +172,238 @@ function StaticRecursiveAliasJsonValueReordered(topic: string) -> JsonValueReord
     {{ ctx.output_format }}
   "#
 }
+
+// ---------------------------------------------------------------------------
+// De-BAML Slice 7.1b — resolved static VALUES and the #597 enum fence.
+//
+// Every function below returns `string` so the corpus stays about VALUE
+// rendering: no ctx.output_format, no schema, just the exact bytes the enum /
+// class / list host values and the admitted enum expressions produce. The
+// oracle drives each one through the generated Request.<Function> with typed
+// Go values and compares BAML's provider body byte-for-byte with the native
+// descriptor -> projector -> binder -> RenderStatic leg.
+// ---------------------------------------------------------------------------
+
+// #597 row 1: canonical-name equality. Stock answers `true`.
+function StaticEnumCanonicalEq() -> string {
+  client StaticOracleClient
+  prompt #"
+    {{ Color.RED == 'RED' }}
+  "#
+}
+
+// #597 row 2: DISPLAY-ALIAS equality. Stock answers `false` — and native
+// DELIBERATELY DECLINES it. This is the required negative control: 7.1b claims
+// canonical identity only, so the row is called through the stock client and
+// asserted as a native admission decline plus a live BAML fallback.
+function StaticEnumDisplayAliasEq() -> string {
+  client StaticOracleClient
+  prompt #"
+    {{ Color.RED == 'rouge' }}
+  "#
+}
+
+// #597 row 3: same-member equality. Stock answers `true`.
+function StaticEnumSameMemberEq() -> string {
+  client StaticOracleClient
+  prompt #"
+    {{ Color.RED == Color.RED }}
+  "#
+}
+
+// #597 row 4: one-element membership, canonical string in a member list.
+function StaticEnumCanonicalInMemberList() -> string {
+  client StaticOracleClient
+  prompt #"
+    {{ 'RED' in [Color.RED] }}
+  "#
+}
+
+// #597 row 5: different-member equality. Stock answers `false`.
+function StaticEnumDifferentMemberEq() -> string {
+  client StaticOracleClient
+  prompt #"
+    {{ Color.RED == Color.BLUE }}
+  "#
+}
+
+// Reverse-form witnesses. Only forms the stock fixture proves are admitted; no
+// symmetry is inferred beyond these.
+function StaticEnumReverseCanonicalEq() -> string {
+  client StaticOracleClient
+  prompt #"
+    {{ 'RED' == Color.RED }}
+  "#
+}
+
+function StaticEnumMemberInCanonicalList() -> string {
+  client StaticOracleClient
+  prompt #"
+    {{ Color.RED in ['RED'] }}
+  "#
+}
+
+// Enum ARGUMENT vs member token, both operand orders.
+function StaticEnumArgMemberEq(color: Color) -> string {
+  client StaticOracleClient
+  prompt #"
+    {{ color == Color.RED }}
+  "#
+}
+
+function StaticEnumMemberArgEq(color: Color) -> string {
+  client StaticOracleClient
+  prompt #"
+    {{ Color.RED == color }}
+  "#
+}
+
+// Enum ARGUMENT vs canonical string, both operand orders.
+function StaticEnumArgCanonicalEq(color: Color) -> string {
+  client StaticOracleClient
+  prompt #"
+    {{ color == 'RED' }}
+  "#
+}
+
+function StaticEnumCanonicalArgEq(color: Color) -> string {
+  client StaticOracleClient
+  prompt #"
+    {{ 'RED' == color }}
+  "#
+}
+
+// ADMITTED direct host-value renders. These are the rows that prove BINDING
+// rather than leaf-engine behavior: the bytes exist only because the descriptor
+// carried resolved aliases/element order and the binder built real host values.
+// Each is compared byte-for-byte against stock BAML.
+//
+// (The CLASS renders further below are NOT in this group — they are deliberate
+// decline witnesses; see their own header.)
+function StaticRenderEnum(color: Color) -> string {
+  client StaticOracleClient
+  prompt #"
+    {{ color }}
+  "#
+}
+
+function StaticRenderList(colors: Color[]) -> string {
+  client StaticOracleClient
+  prompt #"
+    {{ colors }}
+  "#
+}
+
+// A SCALAR list, so the admitted "bare list render" row is differentially
+// covered for a scalar element type too, not only for enum elements.
+function StaticRenderStrings(tags: string[]) -> string {
+  client StaticOracleClient
+  prompt #"
+    {{ tags }}
+  "#
+}
+
+// ---------------------------------------------------------------------------
+// DELIBERATE DECLINE WITNESSES — direct CLASS rendering.
+//
+// These two are NOT admitted, and that is the point of keeping them here. Stock
+// BAML v0.223's generated Go client encodes a class argument as
+// `fields := map[string]any{...}` and hands that map to EncodeClass, so the
+// field order the direct debug-map render prints follows GO MAP ITERATION and
+// differs between runs of the SAME call
+// (internal/nativeprompt/staticoracle's TestStockClassRenderOrderIsNonDeterministic
+// measures exactly that against this fixture). There is therefore no byte-exact
+// answer for native to reproduce, and admitting the shape would make the native
+// serve path's plan byte-compare fail RANDOMLY.
+//
+// They stay in the corpus so the decline keeps its EVIDENCE: the oracle still
+// builds each one through the generated stock Request.<Function>, then asserts
+// native's pre-claim decline. Section 4 of the 7.1b scope lists a bare class
+// render as admitted; this is the one documented under-approximation, tracked as
+// #583 and reopened only if BAML's Go client gains an order-preserving class
+// encoding.
+//
+// Their CONTENT is still deliberately rich (an aliased enum field, a list of
+// enums, a nested class with its own aliased field, a plain scalar, and a
+// list-of-classes) so that if the shape is ever admitted, the witnesses already
+// exercise every nested arm.
+// ---------------------------------------------------------------------------
+function StaticRenderPalette(palette: Palette) -> string {
+  client StaticOracleClient
+  prompt #"
+    {{ palette }}
+  "#
+}
+
+function StaticRenderPalettes(palettes: Palette[]) -> string {
+  client StaticOracleClient
+  prompt #"
+    {{ palettes }}
+  "#
+}
+
+// De-BAML Slice 7.1b — the STATIC STREAM witnesses for value binding.
+//
+// The unary rows above all return `string`, whose stream the native static stream
+// route does not claim, so they could only ever prove the stream route DECLINES.
+// These two return the SERVED recursive-alias family `JSON` — the one shape the
+// native static stream lane admits — while their PROMPTS differ only in whether
+// the admitted grammar covers them. That isolates the value/grammar gate as the
+// single variable on the stream route:
+//
+//   - StaticStreamRenderEnum binds an enum ARGUMENT and renders it, so the stream
+//     is claimed natively;
+//   - StaticStreamAliasEq is the display-alias equality negative neighbour, so the
+//     stream declines PRE-TRANSPORT and BAML serves it.
+//
+// Serve-fixture only: the stock differential oracle owns the rendered bytes.
+function StaticStreamRenderEnum(color: Color) -> JSON {
+  client StaticOracleClient
+  prompt #"
+    {{ color }}
+  "#
+}
+
+function StaticStreamAliasEq(color: Color) -> JSON {
+  client StaticOracleClient
+  prompt #"
+    {{ color == 'rouge' }}
+  "#
+}
+
+// ---------------------------------------------------------------------------
+// De-BAML Slice 7.1b — MEDIA unreachability witnesses (scope section 6).
+//
+// Media has no V3 input value node, so BuildPromptDescriptors emits NO descriptor
+// for these three functions and the generated static seam has nothing to install:
+// no projector runs, no native callback fires, no native socket opens, and BAML
+// serves them exactly as it always has — with the umbrella flag ON.
+//
+// They exist so that is proven at the LIVE unary /call and /stream admission
+// boundaries rather than only at descriptor construction: a future wiring change
+// that admitted a descriptor for a media-bearing signature would light these up
+// immediately. Direct media, a media LIST, and media reached THROUGH a class are
+// all covered because they take different paths through the generated adapter's
+// argument conversion.
+// ---------------------------------------------------------------------------
+
+function StaticMediaImage(img: image) -> string {
+  client StaticOracleClient
+  prompt #"
+    Describe {{ img }}
+  "#
+}
+
+function StaticMediaImageList(imgs: image[]) -> string {
+  client StaticOracleClient
+  prompt #"
+    Describe {{ imgs }}
+  "#
+}
+
+function StaticMediaInClass(bundle: MediaBundle) -> string {
+  client StaticOracleClient
+  prompt #"
+    Describe {{ bundle }}
+  "#
+}
