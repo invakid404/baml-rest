@@ -27,13 +27,12 @@
 // nanollmprepare module. The root module carries no release TAG (only the
 // submodules bamlutils/worker are tagged, and their tagged versions predate the
 // packages the root's internal/* imports here), so the three first-party requires
-// are pinned to the ORIGIN-RESOLVABLE pseudo-version of the single commit this
-// module targets (cff53b244ffa, de-BAML Slice 7.1b commit 2) — one consistent
-// snapshot that resolves cleanly off a fresh checkout with zero local replacements.
-// The replace directives below are for local development only; Go ignores a
-// dependency module's replaces, so an external consumer resolves those
-// pseudo-versions itself, DIRECT from the origin repo under GOPRIVATE (see the
-// branch-pin exception below).
+// are pinned to the ORIGIN-RESOLVABLE pseudo-version of the single MASTER commit
+// this module targets (15b98cf6ebe4, the de-BAML Slice 7.1b merge, #655) — one
+// consistent snapshot that resolves cleanly off a fresh checkout with zero local
+// replacements. The replace directives below are for local development only; Go
+// ignores a dependency module's replaces, so an external consumer resolves those
+// pseudo-versions itself, DIRECT from the origin repo under GOPRIVATE.
 // When the root module is eventually tagged for a release that includes these
 // packages, the three requires can be bumped to that tag.
 //
@@ -53,38 +52,37 @@
 // []promptdescriptor.ArgumentValue (a NEW bamlutils type), they are copied from the
 // equally new bamlutils.NativeStaticInvocation.Values / NativeStreamInvocation.Values,
 // and they are what the root's internal/nativeprompt.SupportsStatic + RenderStatic now
-// take in place of the raw Args map. Those symbols first appear at Slice 7.1b commit 2
-// (cff53b244ffa), which is why the three requires moved off the 2026-07-27 master
-// snapshot (e7480ef6f2ef): against it, an external consumer failed to build with
-// `undefined: promptdescriptor.ArgumentValue`.
+// take in place of the raw Args map. Those symbols reach master in the Slice 7.1b
+// squash-merge (15b98cf6ebe4, #655), which is why the three requires moved off the
+// 2026-07-27 master snapshot (e7480ef6f2ef): against it, an external consumer failed
+// to build with `undefined: promptdescriptor.ArgumentValue`.
 //
-// BUMP RULE — and the 7.1b exception. A bump must land on a commit whose root +
-// bamlutils carry every symbol nativeserve links, and a MASTER commit is strongly
-// preferred: it survives branch deletion and is what a released consumer resolves.
-// cff53b244ffa is a PRE-MERGE BRANCH commit, which is unavoidable here — the symbols
-// were introduced by this very change, so no master commit carries them yet, and a
-// module can never pin to its own not-yet-created SHA. Both gates that resolve these
-// pins were verified against it:
-//   - nativeserve-goget (external consumer) sets GOPRIVATE=github.com/invakid404/baml-rest,
-//     so a branch pseudo-version resolves DIRECT off the origin with no checksum-db
-//     lookup — the sumdb gap that makes branch pins risky elsewhere does not apply.
-//   - the native-worker PACKAGING build (nanollmprepare builder E2E, -mod=readonly)
-//     never fetches these at all: nanollmprepare directory-replaces root / bamlutils /
-//     worker / nativeserve, so only the version STRINGS reach MVS. That is also why a
-//     bump here must move internal/nativebody/nanollmprepare/go.mod's recorded
-//     bamlutils + worker selections in LOCKSTEP — raising the selected version without
-//     recording it there fails -mod=readonly with "updates to go.mod needed".
-// FOLLOW-UP: once this change squash-merges, re-pin all three requires to the resulting
-// MASTER commit; the branch SHA stays reachable only via refs/pull/<n>/head.
+// BUMP RULE. A bump must land on a commit whose root + bamlutils carry every symbol
+// nativeserve links, and it must be a MASTER commit: only that survives branch deletion
+// and is what an external consumer can resolve. Slice 7.1b briefly pinned its own
+// PRE-MERGE branch commit (cff53b244ffa) because the symbols were introduced by that
+// very change and no master commit carried them yet — then #655's squash-merge flattened
+// that SHA out of master, its branch was deleted, and nativeserve-goget went red until
+// the pins were moved here. Pin to a branch commit only if unavoidable, and re-pin to the
+// merged master commit as the immediate follow-up.
+//
+// A bump must ALSO move internal/nativebody/nanollmprepare/go.mod's recorded bamlutils +
+// worker selections in LOCKSTEP: nanollmprepare directory-replaces root / bamlutils /
+// worker / nativeserve, so only the version STRINGS reach MVS, and raising the selected
+// version without recording it there fails the native-worker PACKAGING build
+// (-mod=readonly) with "updates to go.mod needed". Note cmd/build/nativeworker_module.tar
+// embeds both manifests, so a bump must regenerate it (go run ./cmd/build/gen-nativeworker-src).
+// The nativeserve-goget gate sets GOPRIVATE=github.com/invakid404/baml-rest, so these
+// pseudo-versions resolve DIRECT off the origin with no checksum-db lookup.
 module github.com/invakid404/baml-rest/nativeserve
 
 go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260802233421-cff53b244ffa
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260802233421-cff53b244ffa
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260802233421-cff53b244ffa
+	github.com/invakid404/baml-rest v0.0.0-20260803125908-15b98cf6ebe4
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260803125908-15b98cf6ebe4
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260803125908-15b98cf6ebe4
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/viktordanov/nanollm-ffi/go v0.4.3
