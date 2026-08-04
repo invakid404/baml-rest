@@ -1324,3 +1324,117 @@ func TestConstraintSubscriptBoundsAreProvenNotFabricated(t *testing.T) {
 		}
 	}
 }
+
+// parseSubscriptIndexSignature is a COMPILE-TIME assertion that the subscript
+// index is accumulated in a 64-bit unsigned type.
+//
+// This is the half of the regression below that bites on EVERY architecture. The
+// defect it guards is conditional — a Go `int` accumulator only wraps where
+// `int` is 32 bits — so no test running on a 64-bit builder can observe it. A
+// signature pin can: narrow parseSubscriptIndex back to `int` (or to any signed
+// or shorter type) and this declaration stops compiling on amd64 and arm64 too,
+// which is what makes "revert and it re-admits" demonstrable rather than
+// theoretical.
+var parseSubscriptIndexSignature func(string) uint64 = parseSubscriptIndex
+
+// TestConstraintSubscriptIndexCannotWrapOnANarrowInt is the round-4 finding
+// (PR #649 thread r3711876834).
+//
+// THE DEFECT. The bracket rule admits a subscript of up to maxSmallDigits = 15
+// digits, and the gate accumulated it in a Go `int`. On GOARCH=386 and 32-bit
+// arm that type is 32 bits wide, so the accumulation WRAPS: `4294967297`
+// (2^32 + 1) becomes 1. With `this = ["x", 5]`, `this[4294967297] == 5` then had
+// its left operand certified as the in-bounds integer at position 1 — while the
+// engine resolves the source index as out of range, i.e. undefined. An unproven
+// comparison admitted, from a position never proven to exist: the same
+// reached-value-proof class as the nested-postfix and out-of-range findings
+// before it.
+//
+// Not a shipped-path wrong boolean today, since releases target 64-bit. But the
+// contract on EvaluateConstraint says native must NEVER out-claim BAML, and it
+// is not scoped to an architecture — so the fix is width independence, not a
+// narrower claim.
+//
+// WHAT PROVES IT. Two halves, because the defect is arch-conditional:
+//
+//   - parseSubscriptIndexSignature above — compile-time, fails the build on
+//     every architecture if the accumulator is narrowed again;
+//   - the declines below — the 32-bit witnesses. On a 64-bit builder they pass
+//     before and after the fix (nothing wraps at 64 bits), and on a 32-bit one
+//     they are exactly the cases that used to be admitted.
+//
+// WHY THERE IS NO GOARCH=386 CI LEG. This package cannot be built for any 32-bit
+// target at all: it reaches github.com/bytedance/sonic through bamlutils, and
+// sonic refuses 32-bit deliberately, with a named compile error
+// (`_Sonic_Not_Support_32Bit_Arch__Checking_32Bit_Arch_Here ... overflows int`).
+// `GOARCH=386` and `GOARCH=arm` both fail there before reaching this code, so a
+// 32-bit job would be permanently red and would prove nothing about the gate.
+// That also confirms the defect was never reachable on a buildable target — the
+// reason it is a contract violation rather than a shipped wrong boolean. The
+// signature pin is what keeps the contract enforced without an architecture to
+// run it on.
+func TestConstraintSubscriptIndexCannotWrapOnANarrowInt(t *testing.T) {
+	// The reviewer's exact repro shape: a two-element list, and an index that is
+	// congruent to an IN-BOUNDS position modulo 2^32.
+	this := ListValue([]ConstraintValue{StringValue("x"), IntValue(5)})
+
+	for name, expr := range map[string]string{
+		// 2^32 + 1 -> 1 under a 32-bit accumulator: the in-bounds integer 5.
+		"wraps to an in-bounds integer": `this[4294967297] == 5`,
+		// 2^32 + 0 -> 0: the in-bounds string "x".
+		"wraps to an in-bounds string": `this[4294967296] == "x"`,
+		// The negative spelling of the same index. Already declined for other
+		// reasons on a sequence, but pinned so a future relaxation of the
+		// negative rule cannot reintroduce the wrap through that door.
+		"negative spelling of the wrap": `this[-4294967297] == 5`,
+		// Two more multiples, so the pin is not a single-value coincidence.
+		"two wraps past the bound":  `this[8589934593] == 5`,
+		"largest admissible index":  `this[999999999999999] == 5`,
+		"just past 32-bit int max":  `this[2147483648] == 5`,
+		"just past 32-bit uint max": `this[4294967296] == 5`,
+	} {
+		if got, err := EvaluateConstraint(this, expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%s: %q answered (%v, %v); the index is out of range for a 2-element "+
+				"sequence, so its position was never proven to exist and the comparison "+
+				"must fail closed on every architecture", name, expr, got, err)
+		}
+	}
+
+	// The accumulator itself, asserted exactly. On a 32-bit `int` these are the
+	// values that used to come back wrapped; the assertion is written in uint64
+	// so it reads identically on every target.
+	for digits, want := range map[string]uint64{
+		"0":          0,
+		"1":          1,
+		"2147483647": 1<<31 - 1, // int32 max
+		"2147483648": 1 << 31,   // int32 max + 1
+		"4294967295": 1<<32 - 1, // uint32 max
+		"4294967296": 1 << 32,   // uint32 max + 1 — wraps to 0 in a 32-bit int
+		"4294967297": 1<<32 + 1, // wraps to 1, the reviewer's repro
+		// The largest spelling the bracket rule admits: maxSmallDigits nines.
+		"999999999999999": 999999999999999,
+	} {
+		if got := parseSubscriptIndex(digits); got != want {
+			t.Errorf("parseSubscriptIndex(%q) = %d, want %d; the accumulator is not "+
+				"width independent", digits, got, want)
+		}
+	}
+
+	// The bound is still a boundary, not a ban: an in-range index on the same
+	// value decides as before.
+	for expr, want := range map[string]bool{
+		`this[0] == "x"`:  true,
+		`this[1] == 5`:    true,
+		`this[-1] == 5`:   true,
+		`this[-2] == "x"`: true,
+	} {
+		got, err := EvaluateConstraint(this, expr)
+		if err != nil {
+			t.Errorf("%q was refused (%v); the width fix must not narrow the in-range arm", expr, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%q = %v, want %v", expr, got, want)
+		}
+	}
+}

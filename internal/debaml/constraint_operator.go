@@ -563,10 +563,7 @@ func (p *predParser) subscriptTerm(t term) (term, bool) {
 	if t.kind != kindSeqK && t.kind != kindStringK {
 		return refuse(), false
 	}
-	written := 0
-	for _, c := range p.src[start:p.pos] {
-		written = written*10 + int(c-'0')
-	}
+	written := parseSubscriptIndex(p.src[start:p.pos])
 	if neg && written == 0 {
 		// `-0` IS the integer 0, so this addresses position 0 — but every negative
 		// index below is resolved as size-n, which would read a valid zero index as
@@ -589,14 +586,24 @@ func (p *predParser) subscriptTerm(t term) (term, bool) {
 	// which is an out-claim of exactly the class the nested-postfix fix closed.
 	// A term whose size the gate cannot prove refuses rather than guessing.
 	n, sized := t.indexBound()
-	if !sized {
+	if !sized || n < 0 {
 		return refuse(), false
 	}
+	// The bound comparison runs in uint64 for the same width-independence reason
+	// the accumulation does — see [parseSubscriptIndex]. n is a length, so it is
+	// never negative and the conversion is exact on every architecture.
+	bound := uint64(n)
 	idx := written
 	if neg {
-		idx = n - written
+		if written > bound {
+			// Further before the start than the sequence is long. Computing
+			// bound-written here would UNDERFLOW an unsigned type into a huge
+			// in-range-looking value, so the ordering is checked first.
+			return term{kind: kindUndefK}, true
+		}
+		idx = bound - written
 	}
-	if idx < 0 || idx >= n {
+	if idx >= bound {
 		return term{kind: kindUndefK}, true
 	}
 	if t.kind == kindStringK {
@@ -612,6 +619,43 @@ func (p *predParser) subscriptTerm(t term) (term, bool) {
 		return refuse(), false
 	}
 	return term{kind: t.listElem}, true
+}
+
+// parseSubscriptIndex accumulates an already-validated digit run as the exact
+// integer it spells.
+//
+// THE RETURN TYPE IS THE POINT, and it is uint64 rather than `int` on purpose.
+//
+// A Go `int` is 32 bits on GOARCH=386 and 32-bit arm. The bracket rule admits a
+// subscript of up to [maxSmallDigits] = 15 digits, so an `int` accumulator
+// SILENTLY WRAPS there: `4294967297` (2^32 + 1) becomes 1. With
+// `this = ["x", 5]` that turns `this[4294967297] == 5` — whose index the engine
+// resolves as out of range, i.e. undefined — into a certificate that the left
+// operand is the IN-BOUNDS integer at position 1, and the comparison is admitted
+// when it must fail closed. That is the same reached-value-proof defect this
+// gate closed for nested postfixes and for out-of-range subscripts, one level
+// further down: a kind claimed for a position never proven to exist.
+//
+// It is not a wrong boolean on a shipped artifact today — releases target 64-bit
+// — but the contract on [EvaluateConstraint] says native must NEVER out-claim
+// BAML, and that contract is not scoped to an architecture.
+//
+// uint64 holds every admissible spelling exactly: 10^15 - 1 is four orders of
+// magnitude below 2^64, on every target Go supports. Unsigned also removes the
+// signed-overflow question entirely — the caller checks the negative spelling's
+// ordering against the bound before subtracting, so no underflow can manufacture
+// an in-range index either.
+//
+// TestConstraintSubscriptIndexCannotWrapOnANarrowInt pins both halves: a
+// compile-time assertion on this signature that fails the build on EVERY
+// architecture if the type is ever narrowed, and the behavioural declines that
+// are the 32-bit witnesses.
+func parseSubscriptIndex(digits string) uint64 {
+	var n uint64
+	for _, c := range digits {
+		n = n*10 + uint64(c-'0')
+	}
+	return n
 }
 
 // indexBound is how many positions an index into this term may address, and
