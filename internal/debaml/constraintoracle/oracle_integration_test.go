@@ -27,7 +27,7 @@
 //
 // # How it works
 //
-//   - corpus_test.go enumerates 706 (expression, `this`) cases. The expression
+//   - corpus_test.go enumerates 719 (expression, `this`) cases. The expression
 //     surface is enumerated from the minijinja-go/v2 v2.16.0 API — every
 //     registered filter, test, global function and operator — NOT inferred from
 //     what the prompt renderer happens to use, plus the operator/value cases the
@@ -522,9 +522,20 @@ func TestConstraintExpressionDifferential(t *testing.T) {
 //	                          the divergence the port had), +1 this_cls_nested_index
 //	                          (the gating fix reaches a value the root lookup missed)
 //	unsupported  445 -> 447   +4 new nested declines, -2 for the two rows above
+//
+// Then again for the round-2 subscript-bound fix. That change only ever turned
+// an answer into a decline, so NO existing row moved: all 13 rows below are new,
+// and the six new agreements are cases where stock answers and native now
+// matches it — not admissions the gate widened.
+//
+//	agree        259 -> 265   +6 in-range/undefined-classification rows
+//	                          (str_index_last, str_index_oob_undef,
+//	                          stru_index_last, stru_index_oob_undef,
+//	                          stru_index_byte_oob_undef, op_index_oob_undef)
+//	unsupported  447 -> 454   +7 out-of-range and `-0` declines
 const (
-	wantAgree       = 259
-	wantUnsupported = 447
+	wantAgree       = 265
+	wantUnsupported = 454
 )
 
 // TestConstraintProfileIsFailClosed is the load-bearing assertion of this

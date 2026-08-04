@@ -2,6 +2,7 @@ package debaml
 
 import (
 	"strings"
+	"unicode/utf8"
 )
 
 // The OPERATOR gate.
@@ -82,6 +83,29 @@ import (
 // to the root. TestConstraintNestedPostfixResolvesAgainstReachedValue pins the
 // classification directly, and the stock differential's `nested/*` group pins
 // the same chains against real BAML.
+//
+// AND A SUBSCRIPT MUST PROVE ITS POSITION EXISTS.
+//
+// Reaching the right value is only half of it. The gate's second cut still
+// answered a subscript's KIND without establishing that the index names a
+// position at all: every string subscript returned kindStringK, and a list
+// literal returned its uniform element kind for any index. An index past the end
+// is UNDEFINED in both engines — not a character, not an element — so
+// `this.s[9] == "x"` was admitted as a string/string comparison over an
+// undefined value, and `[1][9] == 1` as a number/number one. The same class of
+// out-claim, one level down.
+//
+// So a subscript now needs a proven BOUND ([term.indexBound]): read off the
+// reached value for a path, carried from the literal that built it otherwise. A
+// term whose size the gate cannot prove — a slice result, a filter result, an
+// escaped string literal — refuses every subscript. Two spellings are refused
+// outright rather than modelled, because modelling them would WIDEN what the
+// gate admits: `-0` (which is index 0, not size-0), and negative indexing into a
+// string (proven for sequences, not for strings).
+// TestConstraintSubscriptBoundsAreProvenNotFabricated pins it, and the
+// differential's `*_index_*` rows pin the bound against real BAML from both
+// sides — including a unicode string, where a byte-based bound would disagree
+// with stock.
 
 // inferredKind is what the gate can prove about a term before evaluation.
 type inferredKind uint8
@@ -170,6 +194,12 @@ type term struct {
 	reached  ConstraintValue
 	isPath   bool
 	listElem inferredKind
+	// size is how many positions an index into this term may address — elements
+	// for a sequence, characters for a string — and sizeKnown says whether the
+	// gate can prove it WITHOUT a value to read. A path term needs neither: its
+	// size comes from the reached value. See [term.indexBound].
+	size      int
+	sizeKnown bool
 }
 
 // valueTerm is the term for a place in the value model: its kind read from the
@@ -311,6 +341,7 @@ func (p *predParser) parseTerm() (term, bool) {
 				// `|reverse|first` as proven as `|first` — a claim about the
 				// ELEMENTS, carried without any claim about the sequence itself.
 				next.listElem = t.elementKind()
+				next.size, next.sizeKnown = t.indexBound()
 			}
 			t = next
 		case p.acceptWord("is"):
@@ -415,8 +446,17 @@ func (p *predParser) parsePrimary() (term, bool) {
 		if !ok {
 			return refuse(), false
 		}
+		inner := p.src[p.pos+1 : j]
 		p.pos = j + 1
-		return term{kind: kindStringK}, true
+		out := term{kind: kindStringK}
+		// A literal with NO escape sequence denotes exactly its inner text, so its
+		// character count is readable here and an index into it can be bounded.
+		// One carrying a backslash would need the engine's own unescaping to size
+		// correctly, so it is left unsized and every subscript into it refuses.
+		if !strings.ContainsRune(inner, '\\') {
+			out.size, out.sizeKnown = utf8.RuneCountInString(inner), true
+		}
+		return out, true
 	case c >= '0' && c <= '9':
 		start := p.pos
 		for p.pos < len(p.src) && isNumericTokenByte(p.src[p.pos]) {
@@ -432,11 +472,18 @@ func (p *predParser) parsePrimary() (term, bool) {
 			return refuse(), false
 		}
 		// A LIST LITERAL is not a place in the value model, so it carries an
-		// element kind instead of a value: `[1,2,3][0]` infers a number without
-		// evaluating anything, and a mixed literal infers nothing.
-		elem := listLiteralElementKind(p.src[p.pos+1 : j])
+		// element kind and an element COUNT instead of a value: `[1,2,3][0]`
+		// infers a number, and `[1][9]` is bounded as undefined, both without
+		// evaluating anything. A mixed literal infers neither, so it is left
+		// unsized and refuses.
+		region := p.src[p.pos+1 : j]
+		elem := listLiteralElementKind(region)
 		p.pos = j + 1
-		return term{kind: kindSeqK, listElem: elem}, true
+		out := term{kind: kindSeqK, listElem: elem}
+		if elem != kindUnknown {
+			out.size, out.sizeKnown = len(splitTopLevelCommas(region)), true
+		}
+		return out, true
 	case c == '(':
 		p.pos++
 		if !p.parsePredicate() || !p.accept(")") {
@@ -513,32 +560,82 @@ func (p *predParser) subscriptTerm(t term) (term, bool) {
 	if p.pos == start {
 		return refuse(), false
 	}
+	if t.kind != kindSeqK && t.kind != kindStringK {
+		return refuse(), false
+	}
+	written := 0
+	for _, c := range p.src[start:p.pos] {
+		written = written*10 + int(c-'0')
+	}
+	if neg && written == 0 {
+		// `-0` IS the integer 0, so this addresses position 0 — but every negative
+		// index below is resolved as size-n, which would read a valid zero index as
+		// out of bounds. Rather than special-case the normalisation (and thereby
+		// WIDEN what the gate admits), the spelling is refused outright. Nothing
+		// legitimate is lost: `[0]` says the same thing and stays admitted.
+		return refuse(), false
+	}
+	if neg && t.kind == kindStringK {
+		// Negative indexing into a STRING is not proven. `[1,2,3][-1]` is pinned
+		// for sequences, but no corpus row exercises the string arm, and which end
+		// minijinja counts from there is not something to guess at.
+		return refuse(), false
+	}
+
+	// THE BOUND. Every arm below needs to know how many positions this term has,
+	// because an index past the end is UNDEFINED in both engines — not a
+	// character, and not an element. Claiming the in-bounds kind for it would
+	// admit a comparison the engines actually answer over an undefined value,
+	// which is an out-claim of exactly the class the nested-postfix fix closed.
+	// A term whose size the gate cannot prove refuses rather than guessing.
+	n, sized := t.indexBound()
+	if !sized {
+		return refuse(), false
+	}
+	idx := written
+	if neg {
+		idx = n - written
+	}
+	if idx < 0 || idx >= n {
+		return term{kind: kindUndefK}, true
+	}
 	if t.kind == kindStringK {
 		return term{kind: kindStringK}, true // a character of a string is a string in both
 	}
-	if t.kind != kindSeqK {
+	if t.isPath {
+		return valueTerm(t.reached.list[idx]), true
+	}
+	// A LIST LITERAL, in bounds. There is no value to read, so the claim is the
+	// literal's uniform element kind; a mixed literal was left unsized above and
+	// never reaches here.
+	if t.listElem == kindUnknown {
 		return refuse(), false
 	}
-	if !t.isPath {
-		// A LIST LITERAL, or a slice result. There is no value to index, so the
-		// only available claim is the literal's uniform element kind; a mixed
-		// literal and an unmodelled sequence both refuse.
-		if t.listElem == kindUnknown {
-			return refuse(), false
+	return term{kind: t.listElem}, true
+}
+
+// indexBound is how many positions an index into this term may address, and
+// whether the gate can prove it.
+//
+// A PATH term reads it off the value it reached — elements of the list, or
+// CHARACTERS of the string, since minijinja indexes a string by character rather
+// than by byte (pinned by the corpus's unicode row, where `this[1]` on
+// "héllo ✓ 日本" is "é"). Everything else has to have been sized when it was
+// built: a list literal by its element count, an escape-free string literal by
+// its character count. A sequence or string the gate did not build — a slice
+// result, a filter result, an escaped literal — has no bound, and every subscript
+// into it refuses.
+func (t term) indexBound() (int, bool) {
+	if t.isPath {
+		switch t.kind {
+		case kindSeqK:
+			return len(t.reached.list), true
+		case kindStringK:
+			return utf8.RuneCountInString(t.reached.s), true
 		}
-		return term{kind: t.listElem}, true
+		return 0, false
 	}
-	idx := 0
-	for _, c := range p.src[start:p.pos] {
-		idx = idx*10 + int(c-'0')
-	}
-	if neg {
-		idx = len(t.reached.list) - idx
-	}
-	if idx < 0 || idx >= len(t.reached.list) {
-		return term{kind: kindUndefK}, true
-	}
-	return valueTerm(t.reached.list[idx]), true
+	return t.size, t.sizeKnown
 }
 
 // fieldTerm resolves `x.name` against the SUBJECT TERM's own value, so the kind

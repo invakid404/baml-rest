@@ -1223,3 +1223,104 @@ func TestConstraintNestedPostfixResolvesAgainstReachedValue(t *testing.T) {
 		}
 	}
 }
+
+// TestConstraintSubscriptBoundsAreProvenNotFabricated is the round-2 finding.
+//
+// THE DEFECT, and it is the same class as the nested-postfix one above: the gate
+// answered a subscript's KIND without establishing that the position it names
+// actually exists. An index past the end is UNDEFINED in both engines — not a
+// character, and not an element — so claiming the in-bounds kind for it admits a
+// comparison the engines answer over an undefined value. Three chains did that:
+//
+//	this.s[9] == "x"              a string subscript returned kindStringK for ANY
+//	                              index, before even checking whether the term was
+//	                              a path it could measure;
+//	[1][9] == 1                   a list LITERAL returned its uniform element kind
+//	                              for ANY index, having kept no element count;
+//	this.items[-0] is undefined   `-0` set the negative flag, so a VALID zero index
+//	                              resolved as size-0 and was classified undefined.
+//
+// THE FIX is fail-closed in the same direction as everything else here. Every
+// subscript now needs a proven bound ([term.indexBound]) — read off the reached
+// value for a path, carried from the literal otherwise — and a term whose size
+// the gate cannot prove refuses. `-0` is refused outright rather than normalised,
+// because normalising it would WIDEN what the gate admits; `[0]` says the same
+// thing and stays admitted. Negative indexing into a string is refused for the
+// same reason: sequences pin it, strings do not.
+//
+// The bound for a string is its CHARACTER count, not its byte count. The `stru`
+// rows in the stock corpus are what prove that: on "héllo ✓ 23日本" a byte model
+// would call index 10 in-bounds, and stock says it is undefined.
+func TestConstraintSubscriptBoundsAreProvenNotFabricated(t *testing.T) {
+	probe := ClassValue("Probe", []ConstraintEntry{
+		{Key: "s", Value: StringValue("abc")},
+		{Key: "items", Value: ListValue([]ConstraintValue{IntValue(1), IntValue(2)})},
+	})
+
+	for name, tc := range map[string]struct {
+		this ConstraintValue
+		expr string
+	}{
+		// (a) string OOB — "abc" has three characters, so index 9 is undefined.
+		"string subscript past the end":  {probe, `this.s[9] == "x"`},
+		"string subscript at the end":    {probe, `this.s[3] == "x"`},
+		"root string subscript past end": {StringValue("abc"), `this[9] == "x"`},
+		// A string the gate did not build has no bound to check at all.
+		"escaped string literal subscript": {probe, `"a\tb"[0] == "a"`},
+		"subscript of a string slice":      {probe, `this.s[0:2][0] == "a"`},
+		// Negative indexing into a string is not proven for either end.
+		"negative string subscript": {probe, `this.s[-1] == "c"`},
+		// (b) list-literal OOB — the literal carries an element COUNT now.
+		"list literal past the end":          {probe, `[1][9] == 1`},
+		"list literal at the end":            {probe, `[1,2][2] == 1`},
+		"list literal negative past the end": {probe, `[1,2][-5] == 1`},
+		// (c) -0 is refused rather than normalised, on every sequence shape.
+		"negative zero on a reached list": {probe, `this.items[-0] is undefined`},
+		"negative zero on a literal":      {probe, `[1,2][-0] == 1`},
+		"negative zero on a string":       {probe, `this.s[-0] == "a"`},
+	} {
+		if got, err := EvaluateConstraint(tc.this, tc.expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%s: %q answered (%v, %v); the subscript's position was never proven to exist, "+
+				"so its kind is fabricated and the comparison is admitted unproven",
+				name, tc.expr, got, err)
+		}
+	}
+
+	// The bound is a BOUNDARY, not a ban: every in-range subscript still decides,
+	// including the two shapes the stock corpus already pins (`[1,2][0]`,
+	// `[1,2,3][-1]`, `"abc"[0]`, `this[0]`).
+	unicode := StringValue("héllo")
+	for name, tc := range map[string]struct {
+		this ConstraintValue
+		expr string
+		want bool
+	}{
+		"reached string first":      {probe, `this.s[0] == "a"`, true},
+		"reached string last":       {probe, `this.s[2] == "c"`, true},
+		"root string first":         {StringValue("abc"), `this[0] == "a"`, true},
+		"string literal":            {probe, `"abc"[0] == "a"`, true},
+		"list literal first":        {probe, `[1,2][0] == 1`, true},
+		"list literal last":         {probe, `[1,2,3][2] == 3`, true},
+		"list literal negative":     {probe, `[1,2,3][-1] == 3`, true},
+		"reached list index":        {probe, `this.items[1] == 2`, true},
+		"reached list negative":     {probe, `this.items[-1] == 2`, true},
+		"string slice stays string": {probe, `this.s[0:2] == "ab"`, true},
+		// The character bound, not the byte bound: "héllo" is five characters and
+		// six bytes, so index 4 is the last one and a byte model would disagree.
+		"unicode string last char": {unicode, `this[4] == "o"`, true},
+		// An out-of-range subscript is still READABLE as undefined — the gate
+		// classifies it correctly now, it simply refuses to compare it to a value.
+		"reached list oob is undefined":   {probe, `this.items[9] is undefined`, true},
+		"reached string oob is undefined": {probe, `this.s[9] is undefined`, true},
+		"list literal oob is undefined":   {probe, `[1][9] is undefined`, true},
+	} {
+		got, err := EvaluateConstraint(tc.this, tc.expr)
+		if err != nil {
+			t.Errorf("%s: %q was refused (%v); the bound has become a ban", name, tc.expr, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s: %q = %v, want %v", name, tc.expr, got, tc.want)
+		}
+	}
+}

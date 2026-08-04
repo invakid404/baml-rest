@@ -879,4 +879,32 @@ var constraintCases = []constraintCase{
 	{Label: "nest_shadow_key", Group: "nest", Expr: "this.a[\"name\"] == \"x\"", Stock: outFalse, Native: outUnsupported, Note: "profile: the same mixed-kind refusal reached through a string subscript — this.a[\"name\"] is the integer 5, not the root's string"},
 	{Label: "nest_stale_list_elem", Group: "nest", Expr: "[1,2][0] == this.a.tags[0]", Stock: outFalse, Native: outUnsupported, Note: "profile: mixed-kind comparison — the list literal's element is a number and this.a.tags[0] is a string. The literal's element kind must not leak into a later term"},
 	{Label: "nest_slice_then_index", Group: "nest", Expr: "this.a.tags[0:1][0] == \"x\"", Stock: outTrue, Native: outUnsupported, Note: "profile: a slice yields a sequence the gate did not build, so it carries no element it can classify and indexing it again refuses"},
+	// ---------------------------------------------------------------------------
+	// SUBSCRIPT BOUNDS (the round-2 review finding).
+	//
+	// A subscript past the end is UNDEFINED in both engines — not a character and
+	// not an element — so a gate that answers its KIND without proving the
+	// position exists admits a comparison the engines settle over an undefined
+	// value. These rows pin the bound from both sides: the last in-range index
+	// still decides, and everything past it is refused.
+	//
+	// `stru_index_oob_undef` is the load-bearing one for STRINGS: "h\u00e9llo \u2713 \u65e5\u672c"
+	// is 10 characters but 17 bytes, so a byte-based bound would call index 10
+	// in-range. Stock says it is undefined.
+	// ---------------------------------------------------------------------------
+	{Label: "str_index_last", Group: "str", Expr: "this[10] == \"d\"", Stock: outTrue, Native: outTrue},
+	{Label: "str_index_oob", Group: "str", Expr: "this[11] == \"x\"", Stock: outFalse, Native: outUnsupported, Note: "profile: the subscript's position was never proven to exist. A string subscript is bounded by the reached string's CHARACTER count, so an index past the end classifies as undefined rather than fabricating kindStringK, and the comparison is refused"},
+	{Label: "str_index_oob_undef", Group: "str", Expr: "this[11] is undefined", Stock: outTrue, Native: outTrue},
+	{Label: "stru_index_last", Group: "stru", Expr: "this[9] == \"\u672c\"", Stock: outTrue, Native: outTrue},
+	{Label: "stru_index_oob_undef", Group: "stru", Expr: "this[10] is undefined", Stock: outTrue, Native: outTrue},
+	{Label: "stru_index_byte_oob_undef", Group: "stru", Expr: "this[16] is undefined", Stock: outTrue, Native: outTrue},
+	{Label: "nest_string_field_oob", Group: "nest", Expr: "this.name[9] == \"x\"", Stock: outFalse, Native: outUnsupported, Note: "profile: the subscript's position was never proven to exist. A string subscript is bounded by the reached string's CHARACTER count, so an index past the end classifies as undefined rather than fabricating kindStringK, and the comparison is refused"},
+
+	{Label: "op_index_oob", Group: "const", Expr: "[1][9] == 1", Stock: outFalse, Native: outUnsupported, Note: "profile: the subscript's position was never proven to exist. A list literal now carries its element COUNT, so an index past the end classifies as undefined rather than fabricating the element kind, and the comparison is refused"},
+	{Label: "op_index_oob_undef", Group: "const", Expr: "[1][9] is undefined", Stock: outTrue, Native: outTrue},
+	{Label: "op_index_at_end", Group: "const", Expr: "[1,2][2] == 1", Stock: outFalse, Native: outUnsupported, Note: "profile: the subscript's position was never proven to exist. A list literal now carries its element COUNT, so an index past the end classifies as undefined rather than fabricating the element kind, and the comparison is refused"},
+	{Label: "op_index_neg_oob", Group: "const", Expr: "[1,2][-5] == 1", Stock: outFalse, Native: outUnsupported, Note: "profile: the subscript's position was never proven to exist. A list literal now carries its element COUNT, so an index past the end classifies as undefined rather than fabricating the element kind, and the comparison is refused"},
+
+	{Label: "op_index_negzero_list", Group: "list", Expr: "this[-0] is undefined", Stock: outFalse, Native: outUnsupported, Note: "profile: `-0` is the integer 0, so it addresses position 0 — but every negative index resolves as size-n, which would read a valid zero index as out of bounds. The spelling is refused outright rather than normalised, because normalising it would widen what the gate admits"},
+	{Label: "op_index_negzero_lit", Group: "const", Expr: "[1,2][-0] == 1", Stock: outTrue, Native: outUnsupported, Note: "profile: `-0` is the integer 0, so it addresses position 0 — but every negative index resolves as size-n, which would read a valid zero index as out of bounds. The spelling is refused outright rather than normalised, because normalising it would widen what the gate admits"},
 }

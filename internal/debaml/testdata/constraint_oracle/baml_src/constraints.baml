@@ -449,6 +449,11 @@ b"|indent(2)|length > 3 }})
     @check(op_ctl_string_eq_r21, {{ "a" == "a" }})
     @check(op_ctl_bool_eq_r21, {{ true == true }})
     @check(op_ctl_arith_r21, {{ 1 + 2 == 3 }})
+    @check(op_index_oob, {{ [1][9] == 1 }})
+    @check(op_index_oob_undef, {{ [1][9] is undefined }})
+    @check(op_index_at_end, {{ [1,2][2] == 1 }})
+    @check(op_index_neg_oob, {{ [1,2][-5] == 1 }})
+    @check(op_index_negzero_lit, {{ [1,2][-0] == 1 }})
 }
 
 function Batch_constFn(topic: string) -> Batch_const {
@@ -565,6 +570,9 @@ class Batch_str {
     @check(op_ctl_this_string_r21, {{ this == "Hello World" }})
     @check(op_ctl_is_test_r21, {{ this is defined }})
     @check(op_ctl_is_not_r21, {{ this is not none }})
+    @check(str_index_last, {{ this[10] == "d" }})
+    @check(str_index_oob, {{ this[11] == "x" }})
+    @check(str_index_oob_undef, {{ this[11] is undefined }})
 }
 
 function Batch_strFn(topic: string) -> Batch_str {
@@ -595,6 +603,9 @@ class Batch_stru {
     @check(struct_ctl_length_unicode, {{ this|length == 13 }})
     @check(struct_ctl_startingwith_unicode, {{ this is startingwith("h") }})
     @check(struct_ctl_eq_unicode, {{ this == "héllo ✓ 日本" }})
+    @check(stru_index_last, {{ this[9] == "本" }})
+    @check(stru_index_oob_undef, {{ this[10] is undefined }})
+    @check(stru_index_byte_oob_undef, {{ this[16] is undefined }})
 }
 
 function Batch_struFn(topic: string) -> Batch_stru {
@@ -669,6 +680,7 @@ class Batch_list {
     @check(op_ctl_length_cmp_r21, {{ this|length == 3 }})
     @check(op_ctl_length_gt_r21, {{ this|length > 2 }})
     @check(op_ctl_sum_r21, {{ this|sum == 6 }})
+    @check(op_index_negzero_list, {{ this[-0] is undefined }})
 }
 
 function Batch_listFn(topic: string) -> Batch_list {
@@ -927,6 +939,7 @@ class Batch_nest {
     @check(nest_shadow_key, {{ this.a["name"] == "x" }})
     @check(nest_stale_list_elem, {{ [1,2][0] == this.a.tags[0] }})
     @check(nest_slice_then_index, {{ this.a.tags[0:1][0] == "x" }})
+    @check(nest_string_field_oob, {{ this.name[9] == "x" }})
 }
 
 function Batch_nestFn(topic: string) -> Batch_nest {
