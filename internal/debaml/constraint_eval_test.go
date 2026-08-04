@@ -1,0 +1,1440 @@
+package debaml
+
+import (
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+)
+
+// Unit-lane cover for the constraint evaluator. The AUTHORITATIVE proof is the
+// stock BAML v0.223.0 differential in internal/debaml/constraintoracle (330
+// cases, //go:build integration). These tests are the parts of that claim that
+// can be pinned without CGO and a generated client, so they run in the ordinary
+// `go test ./...` lane and catch a regression before anyone reaches for the
+// oracle:
+//
+//   - BAML's OWN jinja_helpers.rs unit tests (:102-218);
+//   - the evaluate_predicate contract (exact "true"/"false", else an error);
+//   - the value model's mappings and enum-to-string erasure;
+//   - the five builtins withdrawn because BAML's minijinja build lacks them;
+//   - the fail-closed profile, including the 64-bit numeric boundary.
+
+// TestJinjaHelpersPinnedRenders reproduces the render_expression, regex_match
+// and sum_filter assertions from BAML's own test module
+// (engine/baml-lib/baml-core/src/ir/jinja_helpers.rs:102-218). These are the
+// only expressions BAML itself pins, so a divergence here is unambiguous.
+//
+// The regex cases are reachable ONLY from this direction: BAML's @check
+// attribute lexer doubles backslashes, so a .baml constraint cannot express
+// `\d` at all (pinned by the oracle's f_regex_class / f_regex_word cases).
+func TestJinjaHelpersPinnedRenders(t *testing.T) {
+	list := ListValue([]ConstraintValue{IntValue(1), IntValue(2), IntValue(3)})
+	phone := StringValue("(123)456-7890")
+
+	cases := []struct {
+		name string
+		this ConstraintValue
+		expr string
+		want string
+	}{
+		{"literal", list, "1", "1"},
+		{"arithmetic", list, "1 + 1", "2"},
+		{"length_gt", list, "this|length > 2", "true"},
+		{"sum_ints", list, "[1,2]|sum", "3"},
+		{"sum_mixed", list, "[1,2.5]|sum", "3.5"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := RenderConstraintExpression(tc.this, tc.expr)
+			if err != nil {
+				t.Fatalf("render %q: %v", tc.expr, err)
+			}
+			if got != tc.want {
+				t.Fatalf("render %q = %q, want %q", tc.expr, got, tc.want)
+			}
+		})
+	}
+
+	// ACCEPTED COST, round 20. `regex_match` is withdrawn along with every other
+	// content-sensitive builtin: Go's RE2 and Rust's regex crate are different
+	// engines whose Unicode classes are not proven identical. BAML's own pinned
+	// case is kept here as a REFUSAL so the loss stays visible.
+	if _, err := RenderConstraintExpression(phone, `this|regex_match("123")`); !errors.Is(err, ErrConstraintUnsupported) {
+		t.Errorf("regex_match is withdrawn; expected a refusal, got %v", err)
+	}
+
+	// ACCEPTED COST. jinja_helpers.rs's own phone-number case carries a `-`
+	// inside a character class, and the arithmetic gate does not skip string
+	// literals — skipping them would need string lexing that could itself fail
+	// open, which is the mistake round 6 exists to undo. So a regex containing an
+	// arithmetic byte is refused rather than parsed. Pinned so the cost is
+	// visible rather than discovered.
+	phoneRe := `this|regex_match("\\(?\\d{3}\\)?[-.\\s]?\\d{3}[-.\\s]?\\d{4}")`
+	if _, err := RenderConstraintExpression(phone, phoneRe); !errors.Is(err, ErrConstraintUnsupported) {
+		t.Errorf("a regex containing an arithmetic byte is expected to be refused; got err=%v", err)
+	}
+}
+
+// TestEvaluateConstraintBooleanContract pins evaluate_predicate
+// (jinja_helpers.rs:83-94): the render must be EXACTLY "true" or "false".
+// Anything else is an evaluation error, which BAML turns into a coercion
+// failure of the constrained node — NOT a failed check — so a caller must never
+// map it to `status: failed`.
+func TestEvaluateConstraintBooleanContract(t *testing.T) {
+	t.Run("true", func(t *testing.T) {
+		ok, err := EvaluateConstraint(IntValue(5), "this > 0")
+		if err != nil || !ok {
+			t.Fatalf("got (%v, %v), want (true, nil)", ok, err)
+		}
+	})
+	t.Run("false", func(t *testing.T) {
+		ok, err := EvaluateConstraint(IntValue(-5), "this > 0")
+		if err != nil || ok {
+			t.Fatalf("got (%v, %v), want (false, nil)", ok, err)
+		}
+	})
+
+	// Each of these renders successfully but not to a boolean.
+	nonBoolean := []struct {
+		expr string
+		this ConstraintValue
+	}{
+		{"this", IntValue(7)},           // renders "7"
+		{`this ~ ""`, IntValue(1)},      // renders "1"
+		{"[this]", IntValue(1)},         // renders "[1]"
+		{`"yes"`, IntValue(1)},          // renders "yes"
+		{"this|length", ListValue(nil)}, // renders "0"
+	}
+	for _, tc := range nonBoolean {
+		if _, err := EvaluateConstraint(tc.this, tc.expr); err == nil {
+			t.Errorf("%q rendered a non-boolean but did not error", tc.expr)
+		}
+	}
+
+	// The check is on the rendered TEXT, not on a type: a string whose content
+	// happens to be "true" IS accepted, exactly as in BAML.
+	ok, err := EvaluateConstraint(StringValue("true"), "this")
+	if err != nil || !ok {
+		t.Errorf(`a string "true" should evaluate as the boolean true; got (%v, %v)`, ok, err)
+	}
+
+	// A null `this` renders "null" through BAML's formatter (jinja_helpers.rs:20-24
+	// substitutes the string "null" for a top-level none, where stock minijinja
+	// would render "none") — which is also not a boolean.
+	rendered, err := RenderConstraintExpression(NullValue(), "this")
+	if err != nil {
+		t.Fatalf("render bare null: %v", err)
+	}
+	if rendered != "null" {
+		t.Fatalf("bare null rendered %q, want %q (BAML's none formatter)", rendered, "null")
+	}
+	if _, err := EvaluateConstraint(NullValue(), "this"); err == nil {
+		t.Error("a null `this` is not a boolean but did not error")
+	}
+}
+
+// TestConstraintValueMappingIsOrderedInTheModelButOpaqueInTheEngine pins the
+// split the profile draws around mappings.
+//
+// The MODEL is lossless: BAML's BamlMap is an IndexMap, and insertion order
+// survives into ConstraintValue and out through MarshalJSON. The ENGINE is not:
+// minijinja-Go can represent a mapping either order-faithfully (an object,
+// invisible to `in`) or membership-faithfully (a Go map, enumerated sorted),
+// never both, so the evaluator refuses any expression whose answer depends on
+// which one it picked. What survives is the order-independent surface.
+//
+// "z","a","m" is deliberately neither sorted nor reverse-sorted, so a sorted
+// implementation cannot pass by accident.
+func TestConstraintValueMappingIsOrderedInTheModelButOpaqueInTheEngine(t *testing.T) {
+	entries := []ConstraintEntry{
+		{Key: "z", Value: IntValue(1)},
+		{Key: "a", Value: IntValue(2)},
+		{Key: "m", Value: IntValue(3)},
+	}
+	for _, this := range []ConstraintValue{MapValue(entries), ClassValue("Probe", entries)} {
+		t.Run(this.Kind().String(), func(t *testing.T) {
+			// The model keeps the order.
+			got, err := json.Marshal(this)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if want := `{"z":1,"a":2,"m":3}`; string(got) != want {
+				t.Fatalf("model marshalled %s, want %s (insertion order)", got, want)
+			}
+
+			// The order-independent surface still decides.
+			for expr, want := range map[string]string{
+				`this|length`: "3",
+				`this.z`:      "1",
+				`this["m"]`:   "3",
+			} {
+				got, err := RenderConstraintExpression(this, expr)
+				if err != nil {
+					t.Errorf("render %q: %v", expr, err)
+					continue
+				}
+				if got != want {
+					t.Errorf("render %q = %q, want %q", expr, got, want)
+				}
+			}
+
+			// Anything that would expose the order — or membership — is refused.
+			for _, expr := range []string{
+				`this|list|join(",")`, `this|first`, `this|last`, `this|items`,
+				`this|tojson`, `this|string`, `this.keys()`, `this.values()`,
+				`this.get("z")`, `"z" in this`,
+			} {
+				if _, err := RenderConstraintExpression(this, expr); !errors.Is(err, ErrConstraintUnsupported) {
+					t.Errorf("render %q should be outside the profile; got err=%v", expr, err)
+				}
+			}
+		})
+	}
+}
+
+// TestConstraintValueTypeNameIsInvisible pins that the class/enum type name is
+// carried by the model (BamlValue::Class(name, _) / Enum(name, _)) but is
+// INVISIBLE to the predicate: the expression sees a mapping or a string, and
+// nothing addressable by the type name.
+func TestConstraintValueTypeNameIsInvisible(t *testing.T) {
+	cls := ClassValue("Probe", []ConstraintEntry{{Key: "b", Value: IntValue(1)}})
+	enum := EnumValue("Hue", "RED")
+	if got := cls.TypeName(); got != "Probe" {
+		t.Errorf("class TypeName = %q, want %q", got, "Probe")
+	}
+	if got := enum.TypeName(); got != "Hue" {
+		t.Errorf("enum TypeName = %q, want %q", got, "Hue")
+	}
+	if got := IntValue(1).TypeName(); got != "" {
+		t.Errorf("scalar TypeName = %q, want empty", got)
+	}
+	// The name is not addressable, and not in the marshalled document either.
+	if _, err := EvaluateConstraint(cls, `this.Probe is defined`); err != nil {
+		t.Errorf("unexpected error probing for the class name: %v", err)
+	} else if ok, _ := EvaluateConstraint(cls, `this.Probe is defined`); ok {
+		t.Error("the class name is addressable as an attribute; it must be dropped")
+	}
+	doc, err := json.Marshal(cls)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(doc), "Probe") {
+		t.Errorf("marshalled class %s leaks the class name", doc)
+	}
+	if got, err := RenderConstraintExpression(enum, "this"); err != nil || got != "RED" {
+		t.Errorf(`render bare enum = (%q, %v), want ("RED", nil)`, got, err)
+	}
+}
+
+// TestConstraintValueEnumIsAString pins the value model's enum erasure
+// (baml_value.rs:51 — `BamlValue::Enum(_, v) => serializer.serialize_str(v)`).
+// It is also why the BoundaryML value_cmp fork, the one documented divergence
+// of the prompt renderer (internal/nativeprompt/valuecmp_test.go), does not
+// reach constraints at all: a predicate never sees an enum OBJECT, only its
+// variant name.
+func TestConstraintValueEnumIsAString(t *testing.T) {
+	red := EnumValue("Hue", "RED")
+	for expr, want := range map[string]string{
+		`this == "RED"`:   "true",
+		`this == "rouge"`: "false", // the @alias is NOT the value
+		`this is string`:  "true",
+		`this|length`:     "3",
+	} {
+		got, err := RenderConstraintExpression(red, expr)
+		if err != nil {
+			t.Fatalf("render %q: %v", expr, err)
+		}
+		if got != want {
+			t.Errorf("render %q = %q, want %q", expr, got, want)
+		}
+	}
+}
+
+// TestConstraintSumFilter pins BAML's `sum` (jinja_helpers.rs:45-65), which
+// REPLACES minijinja's built-in one. The int-vs-float rule is asymmetric
+// because minijinja's own conversions are: an integral float converts to i64,
+// a bool converts to i64 but NOT to f64.
+func TestConstraintSumFilter(t *testing.T) {
+	for expr, want := range map[string]string{
+		"[1,2]|sum":   "3",
+		"[1,2.5]|sum": "3.5",
+		"[1,2.0]|sum": "3", // 2.0 IS an i64 to minijinja, so this stays an int
+		`["a"]|sum`:   "0", // neither arm applies
+		"[]|sum":      "0",
+	} {
+		got, err := RenderConstraintExpression(NullValue(), expr)
+		if err != nil {
+			t.Fatalf("render %q: %v", expr, err)
+		}
+		if got != want {
+			t.Errorf("render %q = %q, want %q", expr, got, want)
+		}
+	}
+
+	// ACCEPTED COST, round 14. The bool arm is no longer reachable from a list
+	// literal: subscript and slice bounds reach Value.AsInt inside the VM, where
+	// nothing can be wrapped, so the profile admits only LITERAL numbers, strings
+	// and separators inside `[...]` (see bracketBoundsAreProvablySafe). A bare
+	// `true`/`false`/`none` keyword is refused with the rest, because deciding
+	// whether a given `[` opens a list literal or a subscript is exactly the
+	// hand-lexing that failed open in rounds 5 and 6. The bool -> i64 rule itself
+	// is unchanged in the engine; it is only unreachable from this syntax.
+	if _, err := RenderConstraintExpression(NullValue(), "[true,1]|sum"); !errors.Is(err, ErrConstraintUnsupported) {
+		t.Errorf("`[true,1]|sum`: expected the bracket-literal refusal, got %v", err)
+	}
+
+	// `Vec<Value>` accepts only a sequence or iterable, so a string, a mapping
+	// or a scalar is an error rather than 0 — and BAML's sum takes no arguments,
+	// so minijinja's `attribute=` kwarg is rejected too.
+	for _, expr := range []string{`"ab"|sum`, `{"a":1}|sum`, `1|sum`, `[{"a":1}]|sum(attribute="a")`} {
+		if _, err := RenderConstraintExpression(NullValue(), expr); err == nil {
+			t.Errorf("%q should have errored", expr)
+		}
+	}
+}
+
+// TestConstraintRegexMatchFilter pins BAML's `regex_match`
+// (jinja_helpers.rs:38-43): an INVALID pattern is `false`, not an error, and
+// both parameters are minijinja `String` args, which Display any value rather
+// than requiring a string.
+func TestConstraintRegexMatchFilter(t *testing.T) {
+	// ROUND 20: `regex_match` is WITHDRAWN. It is BAML's own filter, but the two
+	// implementations are two different regex engines — Go's RE2 and Rust's regex
+	// crate — and their Unicode character classes are not proven identical across
+	// the content space. Under the content-parity close, that is enough to
+	// withdraw it. Every shape must now decline.
+	for _, expr := range []string{
+		`"abc"|regex_match("b")`, `"abc"|regex_match("^a")`, `"abc"|regex_match("[")`,
+		`1|regex_match("1")`, `"abc"|regex_match(1)`,
+	} {
+		if _, err := RenderConstraintExpression(StringValue("abc"), expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%q: regex_match is withdrawn; expected a refusal, got %v", expr, err)
+		}
+	}
+}
+
+// TestWithdrawnBuiltinsError pins the five names minijinja-Go registers that
+// BAML's minijinja build does not have (engine/Cargo.toml:99-115 selects
+// default-features=false + builtins/json, which excludes urlencode; cycler,
+// joiner, lipsum and the `containing` test do not exist in minijinja 2.16.0 at
+// all). Leaving them live would be the dangerous asymmetry — native answering
+// where BAML rejects the value.
+func TestWithdrawnBuiltinsError(t *testing.T) {
+	for _, expr := range []string{
+		"range(3)|length == 3", // withdrawn in round 6: no handle to guard it
+		`"a b"|urlencode == "a%20b"`,
+		`"abc" is containing("b")`,
+		`cycler("a","b").next() == "a"`,
+		`joiner(",")() == ""`,
+		`lipsum(1)|length > 0`,
+	} {
+		if _, err := EvaluateConstraint(NullValue(), expr); err == nil {
+			t.Errorf("%q evaluated natively; BAML's minijinja build does not have it", expr)
+		}
+	}
+
+	// ACCEPTED COST, round 18. `dict` and `namespace` are withdrawn too, though
+	// BAML's build HAS them: the signature table is enforced by the filter and
+	// test wrappers, and a global callable goes through neither, so nothing
+	// governed their argument conversion. `dict(1)` returned an empty map where
+	// stock raises InvalidOperation. Admitting them would also mean proving the
+	// whole mapping surface for a mapping the value model never built — one the
+	// representation-agreement check cannot see, since it is identical under both
+	// projections. Recorded per case in the live corpus.
+	for _, expr := range []string{`dict(a=1)|length == 1`, `namespace(a=1).a == 1`} {
+		if _, err := EvaluateConstraint(NullValue(), expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%q: expected the withdrawn-callable refusal, got %v", expr, err)
+		}
+	}
+
+	// Control: the builtins BAML DOES have must still work, so the withdrawal is
+	// specific rather than a blanket break.
+	for _, expr := range []string{
+		`"abc"|length == 3`, `"abc" is startingwith("a")`,
+	} {
+		ok, err := EvaluateConstraint(NullValue(), expr)
+		if err != nil || !ok {
+			t.Errorf("%q = (%v, %v), want (true, nil)", expr, ok, err)
+		}
+	}
+}
+
+// TestConstraintValueMarshalJSON pins the value model's serialization against
+// BAML's `impl Serialize for BamlValue` (baml_value.rs:42-56): enum erasure,
+// class-name erasure, and INSERTION-ordered maps and classes (encoding/json
+// would sort a Go map, so the entries are written by hand).
+func TestConstraintValueMarshalJSON(t *testing.T) {
+	entries := []ConstraintEntry{
+		{Key: "z", Value: IntValue(1)},
+		{Key: "a", Value: StringValue("x")},
+		{Key: "m", Value: ListValue([]ConstraintValue{BoolValue(true), NullValue()})},
+	}
+	for _, tc := range []struct {
+		name string
+		val  ConstraintValue
+		want string
+	}{
+		{"null", NullValue(), "null"},
+		{"bool", BoolValue(true), "true"},
+		{"int", IntValue(-3), "-3"},
+		{"float", FloatValue(2.5), "2.5"},
+		{"string", StringValue("hi"), `"hi"`},
+		{"enum", EnumValue("Hue", "RED"), `"RED"`},
+		{"list", ListValue([]ConstraintValue{IntValue(1), IntValue(2)}), "[1,2]"},
+		{"empty_list", ListValue(nil), "[]"},
+		{"map", MapValue(entries), `{"z":1,"a":"x","m":[true,null]}`},
+		{"class", ClassValue("Probe", entries), `{"z":1,"a":"x","m":[true,null]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := json.Marshal(tc.val)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Fatalf("marshal = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestConstraintErrorsAreFailClosed pins that the shapes native cannot
+// reproduce come back as ERRORS rather than as a boolean. That is the whole
+// safety argument for the future serving slice: an error declines to BAML, a
+// wrong boolean would be served.
+//
+// The pycompat string and sequence methods are the bulk of it — BAML installs
+// minijinja-contrib's unknown-method callback and minijinja-Go v2.16.0 has no
+// hook for one. If a future minijinja-Go grows the hook, this test fails and
+// the corpus notes in constraintoracle must be revisited.
+func TestConstraintErrorsAreFailClosed(t *testing.T) {
+	for _, expr := range []string{
+		`"abc".upper() == "ABC"`,
+		`"{:,}".format(1234567) == "1,234,567"`,
+		`"abc".startswith("a")`,
+		`[1,1].count(1) == 2`,
+		`1|nosuchfilter == 1`,
+		`1 is nosuchtest`,
+		`nosuchfn() == 1`,
+		`(1).nosuchmethod() == 1`,
+	} {
+		if _, err := EvaluateConstraint(NullValue(), expr); err == nil {
+			t.Errorf("%q evaluated natively; expected a fail-closed error", expr)
+		}
+	}
+}
+
+// TestConstraintExpressionIsWrappedVerbatim pins the template
+// render_expression builds (jinja_helpers.rs:76): the literal "{{ ", the bare
+// source, then " }}". A stray trim or an extra space would change nothing for
+// most expressions and everything for one that is whitespace-sensitive, so it
+// is asserted directly rather than inferred.
+func TestConstraintExpressionIsWrappedVerbatim(t *testing.T) {
+	// A whitespace-control marker would only bite if the wrapper were rebuilt
+	// differently; `{{- ... }}` is legal inside the outer braces only because
+	// the source is interpolated verbatim.
+	got, err := RenderConstraintExpression(StringValue("  x  "), "this")
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if got != "  x  " {
+		t.Fatalf("render = %q, want %q — the wrapper must not trim the value", got, "  x  ")
+	}
+
+	// A syntactically broken expression must surface as a compile error naming
+	// the evaluator, not panic or render partially.
+	_, err = RenderConstraintExpression(NullValue(), "this |")
+	if err == nil {
+		t.Fatal("a malformed expression should not compile")
+	}
+	if !strings.Contains(err.Error(), "debaml:") {
+		t.Fatalf("compile error %q should be wrapped by the evaluator", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The proven profile (constraint_profile.go).
+// ---------------------------------------------------------------------------
+
+// TestConstraintProfileNeverAnswersOutsideTheProfile is the unit-lane statement
+// of the evaluator's contract: every shape the profile excludes must come back
+// as ErrConstraintUnsupported, never as a usable boolean.
+//
+// Each entry is a MEASURED divergence from stock BAML v0.223.0 — the stock side
+// of every one is pinned by the corresponding case in
+// internal/debaml/constraintoracle. This test is the cheap, CGO-free half: it
+// pins native's side so a guard cannot be removed without a red unit lane.
+func TestConstraintProfileNeverAnswersOutsideTheProfile(t *testing.T) {
+	mapping := MapValue([]ConstraintEntry{
+		{Key: "z", Value: IntValue(1)},
+		{Key: "a", Value: IntValue(2)},
+		{Key: "m", Value: IntValue(3)},
+	})
+	class := ClassValue("Probe", []ConstraintEntry{
+		{Key: "b", Value: IntValue(1)},
+		{Key: "a", Value: StringValue("x")},
+	})
+
+	cases := []struct {
+		name string
+		this ConstraintValue
+		expr string
+		why  string
+	}{
+		// Representation-sensitive over a mapping — caught by the agreement
+		// check, not by any per-filter guard.
+		{"membership_map", mapping, `"z" in this`, "`in` is invisible to the ordered projection"},
+		{"membership_class", class, `"a" in this`, "same, class-shaped"},
+		{"iteration_order", mapping, `this|list|join(",") == "z,a,m"`, "order differs between projections"},
+		{"first", mapping, `this|first == "z"`, "idem"},
+		{"keys_method", mapping, `this.keys()|join(",") == "z,a,m"`, "pycompat map methods exist on only one projection"},
+		{"render", mapping, `(this|string)[2] == "z"`, "rendering embeds the order"},
+		{"concat", mapping, `(this ~ "")[2] == "z"`, "`~` renders, and is an operator with no filter hook"},
+
+		// Shapes wrong in EVERY representation — caught by an explicit guard.
+		{"length_none", NullValue(), "none|length == 0", "minijinja rejects a lengthless value"},
+		{"length_undefined", NullValue(), "nosuchvar|length == 0", "idem"},
+		{"split", StringValue("a,b"), `this|split(",")|length == 2`, "minijinja's split is a lazy iterator"},
+		{"last_map", mapping, `this|last == "m"`, "minijinja rejects a mapping"},
+		{"items_map", mapping, "this|items|length == 3", "items sorts here, preserves order there"},
+		{"tojson_map", mapping, `(this|tojson)[2] == "z"`, "idem"},
+		{"tojson_nested", NullValue(), `[{"a":1}]|tojson == "x"`, "a nested mapping is equally order-bearing"},
+		{"maplit_order", NullValue(), `({"z":1,"a":2}|list|join(",")) == "z,a"`, "a mapping literal is minijinja-Go's own, enumerated sorted"},
+		{"divisibleby_zero", IntValue(1), "this is divisibleby(0)", "stock BAML aborts the process"},
+
+		// Contract narrowing: the pycompat string/sequence surface has no hook
+		// in minijinja-Go, so it is outside the profile BY CONSTRUCTION.
+		{"pycompat_upper", NullValue(), `"abc".upper() == "ABC"`, "no unknown-method callback"},
+		{"pycompat_format", NullValue(), `"{:,}".format(1234567) == "1,234,567"`, "idem"},
+		{"pycompat_seq_count", NullValue(), "[1,1].count(1) == 2", "idem"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := EvaluateConstraint(tc.this, tc.expr)
+			if err == nil {
+				t.Fatalf("%q answered %v; it is outside the profile (%s) and must refuse", tc.expr, got, tc.why)
+			}
+			if !errors.Is(err, ErrConstraintUnsupported) {
+				t.Fatalf("%q refused with %v, which does not wrap ErrConstraintUnsupported", tc.expr, err)
+			}
+		})
+	}
+}
+
+// TestConstraintProfileStillAnswersInsideIt is the other half: narrowing must
+// not have swallowed the surface the evaluator exists to decide. If any of
+// these starts refusing, a guard has become over-broad.
+func TestConstraintProfileStillAnswersInsideIt(t *testing.T) {
+	mapping := MapValue([]ConstraintEntry{{Key: "z", Value: IntValue(1)}, {Key: "a", Value: IntValue(2)}})
+	class := ClassValue("Probe", []ConstraintEntry{{Key: "b", Value: IntValue(1)}, {Key: "a", Value: StringValue("x")}})
+
+	cases := []struct {
+		this ConstraintValue
+		expr string
+		want bool
+	}{
+		// Mappings keep everything that is representation-independent.
+		{mapping, "this|length == 2", true},
+		{mapping, `this["z"] == 1`, true},
+		{mapping, "this.a == 2", true},
+		{mapping, "this is mapping", true},
+		{mapping, "this.q is undefined", true},
+		{class, `this.a == "x"`, true},
+		{class, "this|length == 2", true},
+		// Everything not involving a mapping is untouched by the profile.
+		{IntValue(7), "this > 0", true},
+		{StringValue("Hello"), `this|length == 5`, true},
+		{ListValue([]ConstraintValue{IntValue(1), IntValue(2)}), "this|sum == 3", true},
+		{EnumValue("Hue", "RED"), `this == "RED"`, true},
+		{NullValue(), "4 is divisibleby(2)", true},
+		{NullValue(), `"abc"|length == 3`, true},
+	}
+	for _, tc := range cases {
+		got, err := EvaluateConstraint(tc.this, tc.expr)
+		if err != nil {
+			t.Errorf("%q over %s refused (%v); it is inside the profile", tc.expr, tc.this.Kind(), err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%q over %s = %v, want %v", tc.expr, tc.this.Kind(), got, tc.want)
+		}
+	}
+}
+
+// TestConstraintMediaIsRefused pins the media contract.
+//
+// BAML's two conversions disagree on this one arm — `Value::from_serialize`
+// (the path evaluate_predicate takes) emits the BamlMedia serde document, while
+// `From<BamlValue> for minijinja::Value` (the prompt renderer's path) wraps it
+// in a magic-marker object — and no media value can reach a constraint on the
+// native path to decide between them: schema.Bundle.ValidateOutput rejects
+// every media output before parsing ("media is not usable as an output type",
+// internal/schema/validate.go:65). Rather than ship an unprovable conversion,
+// the profile refuses media, at any depth.
+func TestConstraintMediaIsRefused(t *testing.T) {
+	mime := "image/png"
+	media := MediaValue(ConstraintMedia{
+		MediaType: "Image",
+		MimeType:  &mime,
+		Content: ConstraintMediaContent{
+			Tag:    "Url",
+			Fields: []ConstraintEntry{{Key: "url", Value: StringValue("https://example.invalid/x.png")}},
+		},
+	})
+	for name, this := range map[string]ConstraintValue{
+		"bare":     media,
+		"in_list":  ListValue([]ConstraintValue{media}),
+		"in_class": ClassValue("Doc", []ConstraintEntry{{Key: "img", Value: media}}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := EvaluateConstraint(this, "true"); !errors.Is(err, ErrConstraintUnsupported) {
+				t.Fatalf("a media-bearing value evaluated (err=%v); media is outside the profile", err)
+			}
+		})
+	}
+}
+
+// TestEveryEvaluatorErrorIsTheSentinel pins the contract's totality: there is
+// no error path out of the evaluator that a caller could mistake for anything
+// other than "decline to BAML".
+func TestEveryEvaluatorErrorIsTheSentinel(t *testing.T) {
+	for _, expr := range []string{
+		"this |",           // compile error
+		"1|nosuchfilter",   // unknown filter
+		"1 is nosuchtest",  // unknown test
+		"nosuchfn()",       // unknown function
+		"this",             // non-boolean render
+		`"abc".upper()`,    // pycompat
+		`"a,b"|split(",")`, // profile guard
+		"none|length",      // profile guard
+	} {
+		_, err := EvaluateConstraint(IntValue(1), expr)
+		if err == nil {
+			t.Errorf("%q did not error", expr)
+			continue
+		}
+		if !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%q returned %v, which does not wrap ErrConstraintUnsupported", expr, err)
+		}
+	}
+}
+
+// TestNumericBoundaryIsRefusedOnEveryArchitecture pins the 64-bit numeric
+// boundary, the divergence that made the differential pass on darwin/arm64 and
+// FAIL on linux/amd64 (PR #649 CI run 30262325503).
+//
+// minijinja-Go computes and compares integers as float64 (value/ops.go
+// Add/Sub/Mul: `FromInt(int64(f1 - f2))`; Value.Equal compares via AsFloat),
+// while minijinja in Rust keeps i64 exact. Two distinct wrong answers follow,
+// and this test pins the refusal of both — plus, deliberately, the cases just
+// INSIDE the boundary that must still decide, so the guard cannot be widened
+// into a blanket ban on arithmetic.
+func TestNumericBoundaryIsRefusedOnEveryArchitecture(t *testing.T) {
+	refused := []struct {
+		expr string
+		why  string
+	}{
+		// Wrong on every architecture: 2^53 and 2^53+1 are the same float64.
+		{"9007199254740993 == 9007199254740992", "float64 conflates neighbours past 2^53"},
+		{"9007199254740992 == 9007199254740992", "exactly at the boundary"},
+		{"9007199254740991 + 1 == 9007199254740992", "the sum reaches the boundary"},
+		// Round-6: literal forms the previous hand scanner never modelled, each
+		// of which produced a wrong boolean live against stock.
+		{"0x20000000000001 == 0x20000000000000", "hexadecimal literals past 2^53"},
+		{"9_007_199_254_740_993 == 9_007_199_254_740_992", "underscore-separated literals"},
+		{"0b1 + 0b1 == 2", "binary literals are outside the recognised forms"},
+		{"1e5 + 1 == 100001", "exponent notation is outside the recognised forms"},
+		{"9007199254740991 \n + 1 \n + 1 == 9007199254740991 \n + 1", "newlines must not hide binary operators"},
+		{"2 ** -1 == 0.5", "stock converts the exponent to u32 and errors"},
+		{"2 ** 0.5 > 1", "a non-integer exponent is not the integer pow stock models"},
+		// ARCHITECTURE-DEPENDENT: i64::MAX rounds up to 2^63 as a float64, so
+		// int64(f) is out of range — arm64 saturates, amd64 does not.
+		{"9223372036854775807 - 1 == 9223372036854775806", "the i64::MAX case that split arm64 from amd64"},
+		{"0 - 9223372036854775807 == -9223372036854775807", "same, negative"},
+		// The result escapes even though both operands are exact.
+		{"3037000500 * 3037000500 > 9007199254740992", "the product escapes the exact range"},
+		{"2 ** 62 > 0", "exponentiation can escape from small operands"},
+	}
+	for _, tc := range refused {
+		if got, err := EvaluateConstraint(NullValue(), tc.expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%q answered %v (err=%v); it must be refused — %s", tc.expr, got, err, tc.why)
+		}
+	}
+
+	// A large integer arriving through the VALUE, not a literal, is equally
+	// unsafe and equally refused.
+	if _, err := EvaluateConstraint(IntValue(9007199254740993), "this > 0"); !errors.Is(err, ErrConstraintUnsupported) {
+		t.Errorf("a value-model integer past 2^53 must be refused; got err=%v", err)
+	}
+	if _, err := EvaluateConstraint(ListValue([]ConstraintValue{IntValue(1), IntValue(1 << 60)}), "this|length == 2"); !errors.Is(err, ErrConstraintUnsupported) {
+		t.Errorf("a large integer nested in a list must be refused; got err=%v", err)
+	}
+
+	// Just inside the boundary, and arithmetic that provably cannot escape it,
+	// must still DECIDE — otherwise the guard has swallowed the surface the
+	// evaluator exists for.
+	// The bound is OPERAND-AWARE: with a single growing operator whose operands
+	// are integer literals, the operation is evaluated exactly rather than
+	// estimated from the largest literal in sight. `2 ** 10` is 1024, not the
+	// 10^10 a global-maximum estimate would guess, so it stays decidable — and
+	// stays in live agreement with stock, which is what the corpus checks.
+	decided := map[string]bool{
+		"1000 * 1000 == 1000000":             true,
+		"3000000 * 3000000 == 9000000000000": true,
+		"2 ** 3 == 8":                        true,
+		"2 ** 10 == 1024":                    true, // operand-aware: 2^10, not 10^10
+		"1 + 1 == 2":                         true,
+		"7 // 2 == 3":                        true,
+		"0.1 + 0.2 == 0.3":                   false,
+	}
+	for expr, want := range decided {
+		got, err := EvaluateConstraint(IntValue(7), expr)
+		if err != nil {
+			t.Errorf("%q was refused (%v); it is inside the exact range", expr, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%q = %v, want %v", expr, got, want)
+		}
+	}
+}
+
+// TestRuntimeIntegerProducersAreRefused pins the round-4 P1 hole: an integer
+// manufactured DURING evaluation is invisible to the static magnitude bound.
+//
+// The reachable case is the `int` filter. minijinja-Go's FilterInt parses a
+// string with strconv.ParseInt(s, 10, 64), so `"9007199254740993"|int` is an
+// exact int64 — and then Value.Equal compares it through AsFloat, where it
+// collapses onto its neighbour. minijinja's `int` parses i128 and compares
+// exactly. Stock BAML v0.223 answers FALSE for the first case below; native
+// answered true before [guardIntegerResult] existed.
+//
+// Nothing here is about the `int` filter specifically: the guard is on the
+// VALUE a filter returns, so it closes the same hole for a string-valued
+// `this`, for elements reached through `map("int")`, and for producers nobody
+// has enumerated.
+func TestRuntimeIntegerProducersAreRefused(t *testing.T) {
+	refused := []struct {
+		this ConstraintValue
+		expr string
+	}{
+		{NullValue(), `"9007199254740993"|int == "9007199254740992"|int`},
+		{NullValue(), `["9007199254740993"]|map("int")|first > 0`},
+		{NullValue(), `"9007199254740993"|int|abs > 0`},
+		// The same integer arriving through the VALUE rather than a literal.
+		{StringValue("9007199254740993"), "this|int > 0"},
+		{ListValue([]ConstraintValue{StringValue("9007199254740993")}), `this|map("int")|first > 0`},
+	}
+	for _, tc := range refused {
+		if got, err := EvaluateConstraint(tc.this, tc.expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%q answered %v (err=%v); it manufactures an out-of-range integer and must be refused",
+				tc.expr, got, err)
+		}
+	}
+
+	// Controls. The guard is on the MAGNITUDE produced, not on the filter.
+	//
+	// ROUND 20 shrank this list: `int` (string parsing) and `max` (element
+	// ordering) are content-sensitive and are now withdrawn outright, so their
+	// rows moved to the refusal list above. `sum` survives because it is BAML's
+	// OWN filter, reimplemented here from jinja_helpers.rs and pinned by BAML's
+	// own unit tests rather than inherited from the port.
+	decided := []struct {
+		this ConstraintValue
+		expr string
+		want bool
+	}{
+		{NullValue(), "[1,2]|sum == 3", true},
+	}
+	for _, tc := range decided {
+		got, err := EvaluateConstraint(tc.this, tc.expr)
+		if err != nil {
+			t.Errorf("%q was refused (%v); it is inside the profile", tc.expr, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%q = %v, want %v", tc.expr, got, tc.want)
+		}
+	}
+
+	// ACCEPTED COST of the round-6 whitelist. These are safe in themselves, but
+	// they combine arithmetic with syntax the closed numeric grammar does not
+	// accept, or they mention a 16-digit token the literal recogniser will not
+	// vouch for. Refusing them is the price of never allowing an unmodelled
+	// form, and it is pinned so the cost stays visible.
+	for _, tc := range []struct {
+		this ConstraintValue
+		expr string
+	}{
+		{NullValue(), "-1|abs + 1 == 2"},
+		{NullValue(), `"9007199254740993"|float == "9007199254740992"|float`},
+		{ClassValue("P", []ConstraintEntry{{Key: "n", Value: IntValue(7)}}), "this.n + 1 == 8"},
+		{ListValue([]ConstraintValue{IntValue(1), IntValue(2)}), "this[0] + 1 == 2"},
+		{IntValue(7), "this + 1 == 8"},
+	} {
+		if _, err := EvaluateConstraint(tc.this, tc.expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%q is expected to be refused as an accepted cost of the whitelist; got err=%v",
+				tc.expr, err)
+		}
+	}
+}
+
+// TestArithmeticMixedWithOtherSyntaxIsRefused pins the reason the numeric
+// profile is a WHOLE-EXPRESSION whitelist rather than a per-operand rule.
+//
+// A runtime integer produced JUST INSIDE the exact range can cross 2^53 in a
+// LATER operator, and minijinja-Go offers no post-operator hook. The reachable
+// demonstration, live against stock:
+//
+//	this = "9007199254740991"   (2^53 - 1)
+//	this|int + 1 + 1 == this|int + 1     native (before) true, stock FALSE
+//
+// `int` legitimately yields 2^53-1, so guarding the producer does not help; the
+// source holds only literal 1s, so bounding their magnitudes does not either.
+// The profile therefore admits arithmetic ONLY when the whole expression parses
+// as the closed numeric sublanguage — literals, operators, parentheses,
+// comparisons and nothing else. A filter, call or identifier anywhere in the
+// expression ends that parse, so every case below is refused by construction.
+func TestArithmeticMixedWithOtherSyntaxIsRefused(t *testing.T) {
+	exact := StringValue("9007199254740991")
+	numStrings := ListValue([]ConstraintValue{StringValue("9007199254740991"), StringValue("1")})
+	bigInts := ListValue([]ConstraintValue{IntValue(4503599627370495), IntValue(4503599627370496)})
+	cls := ClassValue("P", []ConstraintEntry{{Key: "n", Value: IntValue(7)}})
+
+	for _, tc := range []struct {
+		name string
+		this ConstraintValue
+		expr string
+	}{
+		{"reviewer_case", exact, "this|int + 1 + 1 == this|int + 1"},
+		{"multiply", exact, "this|int * 2 > 0"},
+		{"power", exact, "this|int ** 2 > 0"},
+		{"subtract", exact, "this|int - 1 + 2 == this|int + 1"},
+		{"sum", bigInts, "this|sum + 1 == this|sum"},
+		{"max", bigInts, "this|max + 1 + 1 == this|max + 1"},
+		{"min", bigInts, "this|min * 4 > 0"},
+		{"abs_chain", exact, "this|int|abs + 1 + 1 == this|int|abs + 1"},
+		{"map_sum", numStrings, `this|map("int")|sum + 1 + 1 == this|map("int")|sum + 1`},
+		{"map_first", numStrings, `this|map("int")|first + 1 + 1 == this|map("int")|first + 1`},
+		{"nested_chain", numStrings, `this|map("int")|max|abs + 1 + 1 == this|map("int")|max|abs + 1`},
+		{"attr_filter", cls, `this|attr("n") + 1 == 8`},
+		{"round_filter", FloatValue(2.5), "this|round + 1 == 4"},
+		{"call_result", NullValue(), "range(3)|length + 1 == 4"},
+		// Over-refusals the rule accepts: these happen to be small, but their
+		// operands are filter results, which the rule cannot bound.
+		{"length_small", NullValue(), "[1,2]|length + 1 == 3"},
+		{"abs_small", NullValue(), "-1|abs + 1 == 2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, err := EvaluateConstraint(tc.this, tc.expr); !errors.Is(err, ErrConstraintUnsupported) {
+				t.Fatalf("%q answered %v (err=%v); a runtime integer reaches an arithmetic operator here",
+					tc.expr, got, err)
+			}
+		})
+	}
+}
+
+// TestPurelyNumericArithmeticStillDecides is the other half: the whitelist
+// narrows arithmetic to the closed numeric sublanguage, and leaves everything
+// outside arithmetic alone.
+//
+// NOTE ON SCOPE, corrected in round 8. An earlier version of this test claimed
+// arithmetic over VALUE-MODEL integers still decides — `this + 1 == 8`. It does
+// not, and has not since the whitelist landed: `this` is an identifier, so the
+// numeric grammar rejects the expression. The accepted-cost block below asserts
+// that refusal rather than the reverse. What survives is arithmetic over pure
+// literals, and filters used WITHOUT arithmetic.
+func TestPurelyNumericArithmeticStillDecides(t *testing.T) {
+	for _, tc := range []struct {
+		this ConstraintValue
+		expr string
+	}{
+		{NullValue(), "2 ** 10 == 1024"},
+		{NullValue(), "2 ** (10) == 1024"}, // parenthesised operands, round-6 P2
+		{NullValue(), "((2)) ** ((10)) == 1024"},
+		{NullValue(), "(1 + 2) * 3 == 9"},
+		{NullValue(), "1000 * 1000 == 1000000"},
+		{NullValue(), "3000000 * 3000000 == 9000000000000"},
+		{NullValue(), "1 + 1 == 2"},
+		{NullValue(), "1 \n + 1 == 2"}, // newlines are whitespace, round-6 P1.2
+		// Filters are fine on their own — it is only their composition with
+		// arithmetic that cannot be bounded. (`int` left this list in round 20:
+		// string parsing is content-sensitive and the filter is withdrawn.)
+		{NullValue(), "[1,2]|sum == 3"},
+		{IntValue(7), "this|abs == 7"},
+	} {
+		got, err := EvaluateConstraint(tc.this, tc.expr)
+		if err != nil {
+			t.Errorf("%q over %s was refused (%v); the proven-parity whitelist has become over-broad — "+
+				"this is a form it is supposed to ADMIT",
+				tc.expr, tc.this.Kind(), err)
+			continue
+		}
+		if !got {
+			t.Errorf("%q over %s = false, want true", tc.expr, tc.this.Kind())
+		}
+	}
+}
+
+// TestPowerBoundTerminates is a LIVENESS regression test.
+//
+// The round-4 operand-aware bound computed the exact power with a linear loop,
+// so `1 ** 9007199254740991` — a valid expression — spun roughly nine
+// quadrillion times BEFORE the template was compiled, because multiplying by 1
+// never saturates. satPow is now exponentiation by squaring with explicit 0/1
+// bases, and an exponent beyond what stock's u32 conversion accepts is refused
+// outright rather than evaluated (minijinja-Go would call math.Pow and answer
+// where stock errors).
+//
+// The deadline is what makes this a regression test rather than a description:
+// the previous implementation could not have finished inside it.
+func TestPowerBoundTerminates(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for _, expr := range []string{
+			"1 ** 9007199254740991 == 1",
+			"0 ** 9007199254740991 == 0",
+			"2 ** 9007199254740991 > 0",
+			"9007199254740991 ** 9007199254740991 > 0",
+			"1 ** 4294967296 == 1",
+		} {
+			if _, err := EvaluateConstraint(NullValue(), expr); !errors.Is(err, ErrConstraintUnsupported) {
+				t.Errorf("%q must be refused: stock rejects an exponent this large", expr)
+			}
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the numeric bound did not terminate within 10s; satPow has regressed to a linear loop")
+	}
+}
+
+// TestNumericProfileIsAWhitelist pins the ROUND-6 inversion: the numeric bound
+// refuses everything it does not positively recognise.
+//
+// Rounds 2-5 bounded numerics with a hand scanner, and each scanner failed OPEN
+// on a form it did not model — hexadecimal and underscored literals, newlines,
+// parenthesised operands, negative exponents. Deriving the bound from
+// minijinja-Go's real tokenizer is not possible (its lexer and parser are under
+// `internal/`, which Go forbids this package from importing, and no AST is
+// exported), so the default was inverted instead: a closed numeric sublanguage
+// is recognised and evaluated exactly, and everything else is refused.
+//
+// This test is the statement of that property — unrecognised INPUT SHAPES, not
+// just unrecognised magnitudes, must refuse.
+func TestNumericProfileIsAWhitelist(t *testing.T) {
+	// Shapes the grammar does not accept. None involves a large value; they are
+	// refused for being unrecognised, which is the point.
+	for _, expr := range []string{
+		"0b1 + 0b1 == 2",                   // binary literal
+		"0o7 + 1 == 8",                     // octal literal
+		"0x1 + 1 == 2",                     // hex literal
+		"1_0 + 1 == 11",                    // digit separator
+		"1e2 + 1 == 101",                   // exponent notation
+		`"a" ~ "b" == "ab" and 1 + 1 == 2`, // arithmetic mixed with non-numeric syntax
+		"[1,2]|length + 1 == 3",            // arithmetic over a filter result
+		"1 {# comment #} + 1 == 2",         // a comment inside arithmetic
+	} {
+		if got, err := EvaluateConstraint(NullValue(), expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%q answered %v (err=%v); the grammar does not recognise it and it must refuse",
+				expr, got, err)
+		}
+	}
+
+	// `range` is withdrawn: minijinja-Go exports no handle on its globals, so it
+	// cannot be wrapped by the integer-result guard.
+	for _, expr := range []string{"range(3)|length == 3", "range(3)|last == 2"} {
+		if _, err := EvaluateConstraint(NullValue(), expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%q must refuse: `range` is outside the profile", expr)
+		}
+	}
+
+	// Shapes the grammar DOES accept must still be evaluated on their real
+	// operands, including through parentheses and across newlines.
+	for expr, want := range map[string]bool{
+		"2 ** (10) == 1024":       true,
+		"((2)) ** ((10)) == 1024": true,
+		"(1 + 2) * 3 == 9":        true,
+		"1 \n + 1 == 2":           true,
+		"1 \r\n + 1 == 2":         true,
+		"7 % 3 == 1":              true,
+		"7 // 2 == 3":             true,
+		"-1 + 2 == 1":             true,
+		"0.1 + 0.2 == 0.3":        false,
+	} {
+		got, err := EvaluateConstraint(NullValue(), expr)
+		if err != nil {
+			t.Errorf("%q was refused (%v); the grammar accepts it", expr, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%q = %v, want %v", expr, got, want)
+		}
+	}
+}
+
+// TestProvenParityWhitelistForSignedOps pins the round-7 class: two operators
+// whose minijinja-Go and stock v0.223 semantics differ for reasons that have
+// nothing to do with 2^53, and which the closed sublanguage previously admitted.
+//
+//	minijinja-Go Value.Rem      = Go's truncated `%`   (-1 % 2 == -1)
+//	stock v2.16                 = checked_rem_euclid   (-1 % 2 ==  1)
+//	minijinja-Go Value.FloorDiv = math.Floor(a/b)      ( 1 // -2 == -1)
+//	stock v2.16                 = checked_div_euclid   ( 1 // -2 ==  0)
+//	minijinja-Go Value.Pow      = math.Pow             ( 2 ** -1 == 0.5)
+//	stock v2.16                 = u32 integer pow      ( 2 ** -1 ERRORS)
+//
+// So the sublanguage moved to a proven-parity posture: `//` and `%` require
+// non-negative literal operands, and `**` requires a non-negative integer
+// LITERAL exponent. Tracking a sign flag through unary syntax was not enough —
+// `2 ** (0 - 1)` computes -1 with no unary minus anywhere — and proving the sign
+// of a computed operand is deliberately not attempted.
+func TestProvenParityWhitelistForSignedOps(t *testing.T) {
+	for _, expr := range []string{
+		// Exponents that are computed, parenthesised-negative, or non-literal.
+		"2 ** (0 - 1) == 0.5", "2 ** (1 - 3) == 0.25", "2 ** (-1) == 0.5",
+		"2 ** -1 == 0.5", "2 ** (1 + 1) == 4", "2 ** (4 // 2) == 4",
+		"2 ** (5 % 3) == 4", "2 ** 3 ** 2 == 512", "2 ** 0.5 > 1",
+		// Signed `//` and `%`, whether written or computed.
+		"-1 % 2 == 1", "7 % -3 == 1", "(0 - 1) % 2 == 1", "-7 % 3 == 2",
+		"1 // -2 == 0", "-7 // 2 == -4", "1 // (0 - 2) == 0", "(1 - 2) // 3 == -1",
+		// Chained: the left operand is a computed value, not a literal.
+		"7 // 2 // 1 == 3", "7 % 3 % 2 == 1",
+	} {
+		if got, err := EvaluateConstraint(NullValue(), expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%q answered %v (err=%v); the engines can differ on this form and it must refuse",
+				expr, got, err)
+		}
+	}
+
+	// The proven forms — non-negative literal operands, parenthesised or not —
+	// must still decide, so the whitelist narrows the sign space and nothing else.
+	for expr, want := range map[string]bool{
+		"7 % 3 == 1":              true,
+		"(7) % (3) == 1":          true,
+		"7 // 2 == 3":             true,
+		"(7) // (2) == 3":         true,
+		"2 ** 10 == 1024":         true,
+		"2 ** (10) == 1024":       true,
+		"((2)) ** ((10)) == 1024": true,
+		"2 ** 0 == 1":             true,
+		// True division is f64 on both sides, so sign is immaterial there.
+		"7 / 2 == 3.5":   true,
+		"-7 / 2 == -3.5": true,
+		// `+`, `-`, `*` are exact below 2^53 on both sides at any sign.
+		"-1 + 2 == 1":      true,
+		"1 - 3 == -2":      true,
+		"(1 + 2) * 3 == 9": true,
+		"1 \r\n + 1 == 2":  true,
+	} {
+		got, err := EvaluateConstraint(NullValue(), expr)
+		if err != nil {
+			t.Errorf("%q was refused (%v); it is proven identical to stock", expr, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%q = %v, want %v", expr, got, want)
+		}
+	}
+}
+
+// TestAdditiveBoundIsTheSumNotTheMax pins the round-8 P1.3 hole.
+//
+// The additive magnitude bound used to be max(|a|, |b|), which is only an upper
+// bound when the operands share a sign. Subtracting a NEGATIVE grows by their
+// sum — `a - (-k) == a + k` — so a long chain crossed 2^53 while the retained
+// bound stayed at k. Live against stock, with k = 999999999999999 and ten
+// repetitions, the two chains differ (9999999999999991 vs 9999999999999992) and
+// stock returns false; minijinja-Go's float64 Sub collapsed both onto the same
+// value and returned true.
+//
+// The bound is now |a| + |b| for BOTH `+` and `-`. The signs are tracked
+// syntactically but deliberately not relied on here: a chain's signs cannot be
+// established without evaluating it, so the bound stays conservative.
+func TestAdditiveBoundIsTheSumNotTheMax(t *testing.T) {
+	const k = "999999999999999"
+	chain := func(start string, n int) string {
+		return "(" + start + strings.Repeat(" - (-"+k+")", n) + ")"
+	}
+
+	for _, expr := range []string{
+		// The reviewer's exact case.
+		chain("1", 10) + " == " + chain("2", 10),
+		// The same growth reaching a comparison, and feeding a later operator.
+		chain("1", 10) + " > 0",
+		"(1 - (-" + k + ")) * 100 > 0",
+		"2 ** (1 - (-" + k + ")) > 0",
+		// A positive chain has always been bounded correctly; it is here so the
+		// two directions are pinned together.
+		"1 + " + k + " + " + k + " + " + k + " + " + k + " + " + k + " + " + k + " + " + k + " + " + k + " + " + k + " + " + k + " > 0",
+		// Two operands that are individually in range and jointly are not.
+		"4503599627370496 + 4503599627370496 == 9007199254740992",
+		"9007199254740991 - (-1) == 9007199254740992",
+	} {
+		if got, err := EvaluateConstraint(NullValue(), expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("answered %v (err=%v) for a chain that can pass 2^53: %.80s", got, err, expr)
+		}
+	}
+
+	// The sum bound must not swallow ordinary arithmetic: |a| + |b| stays tiny
+	// for small operands whatever their signs.
+	for expr, want := range map[string]bool{
+		"1 + 2 == 3":                   true,
+		"5 - 3 == 2":                   true,
+		"1 - 3 == -2":                  true,
+		"-1 + 2 == 1":                  true,
+		"1 - (-2) == 3":                true,
+		"7 - 2 - 1 == 4":               true,
+		"1000000 + 1000000 == 2000000": true,
+		"(1 + 2) * 3 == 9":             true,
+	} {
+		got, err := EvaluateConstraint(NullValue(), expr)
+		if err != nil {
+			t.Errorf("%q was refused (%v); the sum bound has become over-broad", expr, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%q = %v, want %v", expr, got, want)
+		}
+	}
+}
+
+// TestConstraintNestedPostfixResolvesAgainstReachedValue is the unit half of the
+// nested-postfix over-claim fix.
+//
+// THE DEFECT. The operator gate's first cut carried only a KIND along a postfix
+// chain and answered every field/subscript question against the parser's ROOT
+// `this`, plus a list-literal element kind that was never cleared. Both make the
+// gate classify a nested term as something it is not — and because the gate's
+// whole job is to admit a comparison ONLY when both operands are the same proven
+// kind, a wrong classification ADMITS a comparison that was never proven. That is
+// an over-claim, the one direction [ErrConstraintUnsupported]'s contract forbids:
+// over-declining costs coverage, over-claiming serves a boolean BAML never
+// agreed to.
+//
+// Each case in the first table is a chain whose gate classification was wrong in
+// exactly that way. They are pinned as REFUSALS: the value the chain reaches is a
+// different kind from the operand it is compared against, so the comparison is
+// mixed-kind and outside the profile. Three of them — the two shadowed lookups
+// and the stale element kind — were ADMITTED and answered by the pre-fix gate,
+// which is the over-claim itself; the remaining two pin the rule that makes the
+// fix total, namely that a term the gate did not build (a slice result) supports
+// no further field or index at all.
+//
+// The `resolved` cases are the other half of the same change, and the reason the
+// fix threads the reached VALUE rather than declining nested chains outright: a
+// correctly-typed nested chain now classifies exactly and still decides. Several
+// of them were previously refused only because the root-relative lookup happened
+// to land on nothing — accidental fail-closure, not a proof.
+func TestConstraintNestedPostfixResolvesAgainstReachedValue(t *testing.T) {
+	// A class whose OUTER field and INNER field share a name but not a kind. The
+	// root-relative lookup found the outer "name" (a string) for the inner one
+	// (an integer).
+	shadowed := ClassValue("Outer", []ConstraintEntry{
+		{Key: "a", Value: ClassValue("Inner", []ConstraintEntry{{Key: "name", Value: IntValue(5)}})},
+		{Key: "name", Value: StringValue("x")},
+	})
+	// The same shadowing reached through a string subscript instead of a field.
+	shadowedKey := MapValue([]ConstraintEntry{
+		{Key: "a", Value: MapValue([]ConstraintEntry{{Key: "k", Value: StringValue("s")}})},
+		{Key: "k", Value: IntValue(1)},
+	})
+	// A mapping whose list field holds strings. A NUMERIC list literal earlier in
+	// the same expression left its element kind behind, and the stale value was
+	// then used to classify this list's element.
+	stringList := MapValue([]ConstraintEntry{
+		{Key: "a", Value: ListValue([]ConstraintValue{StringValue("x")})},
+	})
+
+	for name, tc := range map[string]struct {
+		this ConstraintValue
+		expr string
+	}{
+		// Root-relative FIELD: `this.a.name` is the integer 5, but "name" was
+		// looked up in the root and found the string "x", so a string comparison
+		// was admitted over an integer.
+		"nested field shadows root field": {shadowed, `this.a.name == "x"`},
+		// The same defect with the chain's last step written as a subscript.
+		"nested string subscript shadows root key": {shadowedKey, `this.a["k"] == 1`},
+		// Root-relative field reached THROUGH an index first.
+		"field after index shadows root field": {shadowed, `this.a.name > 0 == false`},
+		// Stale list-literal element kind: the left term's `[1,2]` set a numeric
+		// element kind that the right term's `this.a[0]` — a list of STRINGS —
+		// then inherited, admitting `number == string`.
+		"stale list-literal element kind": {stringList, `[1,2][0] == this.a[0]`},
+		// A slice result is a sequence the gate did not build, so it has no
+		// element to index and no proven element kind.
+		"index into a slice result": {stringList, `this.a[0:1][0] == "x"`},
+	} {
+		if got, err := EvaluateConstraint(tc.this, tc.expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%s: %q answered (%v, %v); the chain's kind was resolved against something "+
+				"other than the value it reaches, so an unproven comparison was admitted",
+				name, tc.expr, got, err)
+		}
+	}
+
+	nested := ClassValue("Outer", []ConstraintEntry{
+		{Key: "inner", Value: ClassValue("Inner", []ConstraintEntry{
+			{Key: "n", Value: IntValue(7)},
+			{Key: "s", Value: StringValue("deep")},
+		})},
+		{Key: "items", Value: ListValue([]ConstraintValue{IntValue(1), IntValue(2), IntValue(3)})},
+		{Key: "rows", Value: ListValue([]ConstraintValue{
+			ClassValue("Row", []ConstraintEntry{{Key: "label", Value: StringValue("first")}}),
+		})},
+	})
+	listOfMaps := ListValue([]ConstraintValue{
+		MapValue([]ConstraintEntry{{Key: "name", Value: StringValue("x")}}),
+	})
+
+	for name, tc := range map[string]struct {
+		this ConstraintValue
+		expr string
+		want bool
+	}{
+		"two-deep field":            {nested, `this.inner.n == 7`, true},
+		"two-deep field string":     {nested, `this.inner.s == "deep"`, true},
+		"two-deep field false":      {nested, `this.inner.n == 8`, false},
+		"field then index":          {nested, `this.items[0] == 1`, true},
+		"field then last index":     {nested, `this.items[2] == 3`, true},
+		"field then negative index": {nested, `this.items[-1] == 3`, true},
+		"field then edge filter":    {nested, `this.items|first == 1`, true},
+		"index then field":          {listOfMaps, `this[0].name == "x"`, true},
+		"field, index, field":       {nested, `this.rows[0].label == "first"`, true},
+		"field then length":         {nested, `this.items|length == 3`, true},
+		// A field that genuinely does not exist is undefined, and reading that is
+		// still exact.
+		"missing nested field": {nested, `this.inner.missing is undefined`, true},
+		// An index past the end is undefined for the same reason.
+		"index past the end": {nested, `this.items[9] is undefined`, true},
+	} {
+		got, err := EvaluateConstraint(tc.this, tc.expr)
+		if err != nil {
+			t.Errorf("%s: %q was refused (%v); a correctly-typed nested chain must still decide",
+				name, tc.expr, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s: %q = %v, want %v", name, tc.expr, got, tc.want)
+		}
+	}
+}
+
+// TestConstraintSubscriptBoundsAreProvenNotFabricated is the round-2 finding.
+//
+// THE DEFECT, and it is the same class as the nested-postfix one above: the gate
+// answered a subscript's KIND without establishing that the position it names
+// actually exists. An index past the end is UNDEFINED in both engines — not a
+// character, and not an element — so claiming the in-bounds kind for it admits a
+// comparison the engines answer over an undefined value. Three chains did that:
+//
+//	this.s[9] == "x"              a string subscript returned kindStringK for ANY
+//	                              index, before even checking whether the term was
+//	                              a path it could measure;
+//	[1][9] == 1                   a list LITERAL returned its uniform element kind
+//	                              for ANY index, having kept no element count;
+//	this.items[-0] is undefined   `-0` set the negative flag, so a VALID zero index
+//	                              resolved as size-0 and was classified undefined.
+//
+// THE FIX is fail-closed in the same direction as everything else here. Every
+// subscript now needs a proven bound ([term.indexBound]) — read off the reached
+// value for a path, carried from the literal otherwise — and a term whose size
+// the gate cannot prove refuses. `-0` is refused outright rather than normalised,
+// because normalising it would WIDEN what the gate admits; `[0]` says the same
+// thing and stays admitted. Negative indexing into a string is refused for the
+// same reason: sequences pin it, strings do not.
+//
+// The bound for a string is its CHARACTER count, not its byte count. The `stru`
+// rows in the stock corpus are what prove that: on "héllo ✓ 23日本" a byte model
+// would call index 10 in-bounds, and stock says it is undefined.
+func TestConstraintSubscriptBoundsAreProvenNotFabricated(t *testing.T) {
+	probe := ClassValue("Probe", []ConstraintEntry{
+		{Key: "s", Value: StringValue("abc")},
+		{Key: "items", Value: ListValue([]ConstraintValue{IntValue(1), IntValue(2)})},
+	})
+
+	for name, tc := range map[string]struct {
+		this ConstraintValue
+		expr string
+	}{
+		// (a) string OOB — "abc" has three characters, so index 9 is undefined.
+		"string subscript past the end":  {probe, `this.s[9] == "x"`},
+		"string subscript at the end":    {probe, `this.s[3] == "x"`},
+		"root string subscript past end": {StringValue("abc"), `this[9] == "x"`},
+		// A string the gate did not build has no bound to check at all.
+		"escaped string literal subscript": {probe, `"a\tb"[0] == "a"`},
+		"subscript of a string slice":      {probe, `this.s[0:2][0] == "a"`},
+		// Negative indexing into a string is not proven for either end.
+		"negative string subscript": {probe, `this.s[-1] == "c"`},
+		// (b) list-literal OOB — the literal carries an element COUNT now.
+		"list literal past the end":          {probe, `[1][9] == 1`},
+		"list literal at the end":            {probe, `[1,2][2] == 1`},
+		"list literal negative past the end": {probe, `[1,2][-5] == 1`},
+		// (c) -0 is refused rather than normalised, on every sequence shape.
+		"negative zero on a reached list": {probe, `this.items[-0] is undefined`},
+		"negative zero on a literal":      {probe, `[1,2][-0] == 1`},
+		"negative zero on a string":       {probe, `this.s[-0] == "a"`},
+	} {
+		if got, err := EvaluateConstraint(tc.this, tc.expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%s: %q answered (%v, %v); the subscript's position was never proven to exist, "+
+				"so its kind is fabricated and the comparison is admitted unproven",
+				name, tc.expr, got, err)
+		}
+	}
+
+	// The bound is a BOUNDARY, not a ban: every in-range subscript still decides,
+	// including the two shapes the stock corpus already pins (`[1,2][0]`,
+	// `[1,2,3][-1]`, `"abc"[0]`, `this[0]`).
+	unicode := StringValue("héllo")
+	for name, tc := range map[string]struct {
+		this ConstraintValue
+		expr string
+		want bool
+	}{
+		"reached string first":      {probe, `this.s[0] == "a"`, true},
+		"reached string last":       {probe, `this.s[2] == "c"`, true},
+		"root string first":         {StringValue("abc"), `this[0] == "a"`, true},
+		"string literal":            {probe, `"abc"[0] == "a"`, true},
+		"list literal first":        {probe, `[1,2][0] == 1`, true},
+		"list literal last":         {probe, `[1,2,3][2] == 3`, true},
+		"list literal negative":     {probe, `[1,2,3][-1] == 3`, true},
+		"reached list index":        {probe, `this.items[1] == 2`, true},
+		"reached list negative":     {probe, `this.items[-1] == 2`, true},
+		"string slice stays string": {probe, `this.s[0:2] == "ab"`, true},
+		// The character bound, not the byte bound: "héllo" is five characters and
+		// six bytes, so index 4 is the last one and a byte model would disagree.
+		"unicode string last char": {unicode, `this[4] == "o"`, true},
+		// An out-of-range subscript is still READABLE as undefined — the gate
+		// classifies it correctly now, it simply refuses to compare it to a value.
+		"reached list oob is undefined":   {probe, `this.items[9] is undefined`, true},
+		"reached string oob is undefined": {probe, `this.s[9] is undefined`, true},
+		"list literal oob is undefined":   {probe, `[1][9] is undefined`, true},
+	} {
+		got, err := EvaluateConstraint(tc.this, tc.expr)
+		if err != nil {
+			t.Errorf("%s: %q was refused (%v); the bound has become a ban", name, tc.expr, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s: %q = %v, want %v", name, tc.expr, got, tc.want)
+		}
+	}
+}
+
+// parseSubscriptIndexSignature is a COMPILE-TIME assertion that the subscript
+// index is accumulated in a 64-bit unsigned type.
+//
+// This is the half of the regression below that bites on EVERY architecture. The
+// defect it guards is conditional — a Go `int` accumulator only wraps where
+// `int` is 32 bits — so no test running on a 64-bit builder can observe it. A
+// signature pin can: narrow parseSubscriptIndex back to `int` (or to any signed
+// or shorter type) and this declaration stops compiling on amd64 and arm64 too,
+// which is what makes "revert and it re-admits" demonstrable rather than
+// theoretical.
+var parseSubscriptIndexSignature func(string) uint64 = parseSubscriptIndex
+
+// TestConstraintSubscriptIndexCannotWrapOnANarrowInt is the round-4 finding
+// (PR #649 thread r3711876834).
+//
+// THE DEFECT. The bracket rule admits a subscript of up to maxSmallDigits = 15
+// digits, and the gate accumulated it in a Go `int`. On GOARCH=386 and 32-bit
+// arm that type is 32 bits wide, so the accumulation WRAPS: `4294967297`
+// (2^32 + 1) becomes 1. With `this = ["x", 5]`, `this[4294967297] == 5` then had
+// its left operand certified as the in-bounds integer at position 1 — while the
+// engine resolves the source index as out of range, i.e. undefined. An unproven
+// comparison admitted, from a position never proven to exist: the same
+// reached-value-proof class as the nested-postfix and out-of-range findings
+// before it.
+//
+// Not a shipped-path wrong boolean today, since releases target 64-bit. But the
+// contract on EvaluateConstraint says native must NEVER out-claim BAML, and it
+// is not scoped to an architecture — so the fix is width independence, not a
+// narrower claim.
+//
+// WHAT PROVES IT. Two halves, because the defect is arch-conditional:
+//
+//   - parseSubscriptIndexSignature above — compile-time, fails the build on
+//     every architecture if the accumulator is narrowed again;
+//   - the declines below — the 32-bit witnesses. On a 64-bit builder they pass
+//     before and after the fix (nothing wraps at 64 bits), and on a 32-bit one
+//     they are exactly the cases that used to be admitted.
+//
+// WHY THERE IS NO GOARCH=386 CI LEG. This package cannot be built for any 32-bit
+// target at all: it reaches github.com/bytedance/sonic through bamlutils, and
+// sonic refuses 32-bit deliberately, with a named compile error
+// (`_Sonic_Not_Support_32Bit_Arch__Checking_32Bit_Arch_Here ... overflows int`).
+// `GOARCH=386` and `GOARCH=arm` both fail there before reaching this code, so a
+// 32-bit job would be permanently red and would prove nothing about the gate.
+// That also confirms the defect was never reachable on a buildable target — the
+// reason it is a contract violation rather than a shipped wrong boolean. The
+// signature pin is what keeps the contract enforced without an architecture to
+// run it on.
+func TestConstraintSubscriptIndexCannotWrapOnANarrowInt(t *testing.T) {
+	// The reviewer's exact repro shape: a two-element list, and an index that is
+	// congruent to an IN-BOUNDS position modulo 2^32.
+	this := ListValue([]ConstraintValue{StringValue("x"), IntValue(5)})
+
+	for name, expr := range map[string]string{
+		// 2^32 + 1 -> 1 under a 32-bit accumulator: the in-bounds integer 5.
+		"wraps to an in-bounds integer": `this[4294967297] == 5`,
+		// 2^32 + 0 -> 0: the in-bounds string "x".
+		"wraps to an in-bounds string": `this[4294967296] == "x"`,
+		// The negative spelling of the same index. Already declined for other
+		// reasons on a sequence, but pinned so a future relaxation of the
+		// negative rule cannot reintroduce the wrap through that door.
+		"negative spelling of the wrap": `this[-4294967297] == 5`,
+		// Two more multiples, so the pin is not a single-value coincidence.
+		"two wraps past the bound":  `this[8589934593] == 5`,
+		"largest admissible index":  `this[999999999999999] == 5`,
+		"just past 32-bit int max":  `this[2147483648] == 5`,
+		"just past 32-bit uint max": `this[4294967296] == 5`,
+	} {
+		if got, err := EvaluateConstraint(this, expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%s: %q answered (%v, %v); the index is out of range for a 2-element "+
+				"sequence, so its position was never proven to exist and the comparison "+
+				"must fail closed on every architecture", name, expr, got, err)
+		}
+	}
+
+	// The accumulator itself, asserted exactly. On a 32-bit `int` these are the
+	// values that used to come back wrapped; the assertion is written in uint64
+	// so it reads identically on every target.
+	for digits, want := range map[string]uint64{
+		"0":          0,
+		"1":          1,
+		"2147483647": 1<<31 - 1, // int32 max
+		"2147483648": 1 << 31,   // int32 max + 1
+		"4294967295": 1<<32 - 1, // uint32 max
+		"4294967296": 1 << 32,   // uint32 max + 1 — wraps to 0 in a 32-bit int
+		"4294967297": 1<<32 + 1, // wraps to 1, the reviewer's repro
+		// The largest spelling the bracket rule admits: maxSmallDigits nines.
+		"999999999999999": 999999999999999,
+	} {
+		if got := parseSubscriptIndex(digits); got != want {
+			t.Errorf("parseSubscriptIndex(%q) = %d, want %d; the accumulator is not "+
+				"width independent", digits, got, want)
+		}
+	}
+
+	// The bound is still a boundary, not a ban: an in-range index on the same
+	// value decides as before.
+	for expr, want := range map[string]bool{
+		`this[0] == "x"`:  true,
+		`this[1] == 5`:    true,
+		`this[-1] == 5`:   true,
+		`this[-2] == "x"`: true,
+	} {
+		got, err := EvaluateConstraint(this, expr)
+		if err != nil {
+			t.Errorf("%q was refused (%v); the width fix must not narrow the in-range arm", expr, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%q = %v, want %v", expr, got, want)
+		}
+	}
+}

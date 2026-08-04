@@ -1,0 +1,86 @@
+name: Constraint Evaluator Oracle
+
+# Runs the de-BAML constraint-evaluator differential against a STOCK BAML
+# v0.223.0 generated client (internal/debaml/constraintoracle).
+#
+# Why its own workflow. The oracle lives behind //go:build integration in a
+# package under internal/, so neither of the existing lanes reaches it:
+# `go build -tags integration ./...` skips _test.go files and testdata
+# directories, and the integration matrix runs `go test -tags=integration
+# ./integration/...` only. Without this job the fail-closed claim the evaluator
+# makes — never a boolean stock did not produce — would be unenforced on PRs,
+# which is exactly the gap this file closes.
+#
+# It is cheap: no Docker, no mock LLM, no container build. It links the stock
+# BAML CFFI (auto-downloaded on first use and cached here) and drives
+# Parse.<Method> over fixed assistant text — no network calls to a provider.
+
+on:
+  pull_request:
+    paths:
+      - "internal/debaml/**"
+      - ".github/workflows/constraint-oracle.yml"
+      - "go.mod"
+      - "go.sum"
+  push:
+    branches: [master]
+    paths:
+      - "internal/debaml/**"
+      - ".github/workflows/constraint-oracle.yml"
+      - "go.mod"
+      - "go.sum"
+  workflow_dispatch:
+
+concurrency:
+  group: constraint-oracle-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.26.5"
+
+jobs:
+  constraint-oracle:
+    # linux/amd64 ON PURPOSE. Part of what this job proves is architecture
+    # dependent: Go's out-of-range int64(float64) conversion SATURATES on arm64
+    # and does not on amd64, so the round-3 `op_i64max` divergence and the
+    # round-10 integral-float `2.0 ** 63` promotion are only observable here.
+    # A macOS/arm64 developer run is a weaker check, not an equivalent one.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache the stock BAML CFFI library
+        # The generated client downloads libbaml_cffi on first use and keeps it
+        # under the user cache dir. Caching it keeps the job at well under a
+        # minute after the first run; a miss just re-downloads.
+        uses: actions/cache@v4.2.4
+        with:
+          path: ~/.cache/baml
+          key: baml-cffi-0.223.0-${{ runner.os }}
+
+      - name: Compile the integration-tagged tree
+        # Cheap guard that the oracle's own sources still build under the tag,
+        # independent of whether the run below gets that far.
+        run: go vet -tags integration ./internal/debaml/...
+
+      - name: Constraint evaluator differential vs stock BAML v0.223.0
+        # The load-bearing assertion is TestConstraintProfileIsFailClosed: for
+        # every corpus case, native must reproduce stock exactly or refuse with
+        # ErrConstraintUnsupported. TestGeneratedClientIsFresh proves the client
+        # being driven was generated from the checked-in .baml, and
+        # TestConstraintFixtureDrift proves that .baml still matches the corpus.
+        env:
+          CGO_ENABLED: "1"
+        run: go test -tags integration -count=1 -v -timeout 15m ./internal/debaml/constraintoracle/
+
+      - name: Constraint evaluator unit lane
+        # The CGO-free half of the same claim, so a guard cannot be removed
+        # without a red lane even if the oracle job is skipped by paths.
+        run: go test -count=1 -run 'Constraint|JinjaHelpers|Evaluator|Withdrawn' ./internal/debaml/
