@@ -82,8 +82,20 @@ var bamlprofileConstraintAPI = map[string]bool{
 }
 
 // bamlprofileImportPath is the package whose constraint half must stay
-// test-only.
-const bamlprofileImportPath = "github.com/invakid404/baml-rest/internal/bamlprofile"
+// test-only, and defaultBamlprofileLocal is the name it binds when imported
+// without an explicit alias.
+const (
+	bamlprofileImportPath   = "github.com/invakid404/baml-rest/internal/bamlprofile"
+	defaultBamlprofileLocal = "bamlprofile"
+)
+
+// dotImportViolation is the message for rule 2 in [scanSeamViolations].
+const dotImportViolation = "dot-imports " + bamlprofileImportPath + " from PRODUCTION code.\n" +
+	"A dot import binds every exported name into file scope, so a call to the constraint " +
+	"façade is written unqualified (`EvaluateConstraints(...)`) and no qualified-reference " +
+	"check can see it. internal/debaml (ConstraintValue + EvaluateConstraint) is the single " +
+	"production constraint evaluator; import bamlprofile normally and use its prompt/host " +
+	"half, or move the caller behind a build tag."
 
 // TestBamlprofileConstraintAPIHasNoProductionCaller is the seam itself.
 //
@@ -265,27 +277,52 @@ func exportedTopLevelNames(decl ast.Decl) []string {
 // references at all:
 //
 //  1. A QUALIFIED reference — `bamlprofile.EvaluateConstraints(...)`. Found by
-//     walking selector expressions whose receiver is the import's local name.
+//     walking selector expressions whose receiver is ANY local name the file
+//     binds to this path.
 //
-//  2. A DOT IMPORT — `import . ".../internal/bamlprofile"`. This is rejected on
-//     sight, before any reference scan, and it is the round-5 fix. A dot import
-//     binds every exported name of the package into file scope, so a call to
-//     the constraint façade is written as a BARE identifier —
-//     `EvaluateConstraints(r)` — and produces no selector expression for rule 1
-//     to find. The previous cut looked only at selectors and returned "." as an
-//     ordinary local name, so the scan simply never matched and the guard stayed
-//     green over a genuine second evaluator on a production path. Rejecting the
-//     import itself is the only reliable rule: it does not depend on
-//     recognising the call, so it holds for every present and future symbol of
-//     the façade, including ones nobody has added to
-//     [bamlprofileConstraintAPI] yet.
+//  2. A DOT IMPORT — `import . ".../internal/bamlprofile"`. A dot import binds
+//     every exported name of the package into file scope, so a call to the
+//     constraint façade is written as a BARE identifier — `EvaluateConstraints(r)`
+//     — and produces no selector expression for rule 1 to find. Rejecting the
+//     import itself is the only reliable rule: it does not depend on recognising
+//     the call, so it holds for every present and future symbol of the façade,
+//     including ones nobody has added to [bamlprofileConstraintAPI] yet. It is
+//     refused whatever the file goes on to do with it, which costs nothing — no
+//     production file here dot-imports anything, and the prompt/host half is
+//     equally usable through a normal qualified import.
 //
-// A dot import is refused whatever the file goes on to do with it. That is
-// deliberate and costs nothing: no production file in this repo dot-imports
-// anything, and the prompt/host half is equally usable through a normal
-// qualified import.
+// EVERY IMPORT SPEC IS EXAMINED, WHICH IS THE ROUND-6 FIX. The first cut of
+// rule 2 inspected only the FIRST spec matching the path: a leading blank import
+// returned early, and a leading aliased one recorded its single local name and
+// broke out of the loop. Either way a LATER alias of the same path was never
+// collected, so its calls were never scanned:
+//
+//	import (
+//	    _  ".../internal/bamlprofile"
+//	    bp ".../internal/bamlprofile"
+//	)
+//	func f(r bp.ConstraintRequest) (bp.ConstraintReport, error) {
+//	    return bp.EvaluateConstraints(r)  // invisible to the first cut
+//	}
+//
+// That is legal Go, not a curiosity: the toolchain deduplicates only the package
+// LIST by import path and then declares a PkgName per ImportSpec, so one path
+// may be bound to several distinct local names in one file. The scan therefore
+// collects the COMPLETE alias set — explicit aliases and the default package
+// name alike — and a blank import contributes no alias without ending the walk.
+// Closing the class rather than the instance is the point: no import shape can
+// hide a qualified call, whatever order the specs appear in.
+//
+// KNOWN OVER-REPORT, deliberately kept. The scan is purely syntactic, so a local
+// identifier that shadows an alias inside a file that also imports the path
+// would be reported. That direction is safe — it fails a guard and asks a human
+// to look — and no such shadowing exists here.
 func scanSeamViolations(f *ast.File) (imports bool, violations []string) {
-	local := ""
+	// EVERY import spec for the path, not just the first. Go declares a PkgName
+	// per ImportSpec and only deduplicates the package LIST by path, so one path
+	// may legally be bound to several distinct local names in one file. A scan
+	// that stops at the first binding can be walked straight past.
+	aliases := map[string]bool{}
 	for _, imp := range f.Imports {
 		path, err := strconv.Unquote(imp.Path.Value)
 		if err != nil || path != bamlprofileImportPath {
@@ -294,43 +331,37 @@ func scanSeamViolations(f *ast.File) (imports bool, violations []string) {
 		imports = true
 		switch {
 		case imp.Name == nil:
-			local = "bamlprofile"
+			// The package's own name.
+			aliases[defaultBamlprofileLocal] = true
 		case imp.Name.Name == ".":
-			// RULE 2. Refuse and stop: with the package dot-imported there is no
-			// qualified reference left to look for.
-			return true, []string{
-				"dot-imports " + bamlprofileImportPath + " from PRODUCTION code.\n" +
-					"A dot import binds every exported name into file scope, so a call to the " +
-					"constraint façade is written unqualified (`EvaluateConstraints(...)`) and no " +
-					"qualified-reference check can see it. internal/debaml (ConstraintValue + " +
-					"EvaluateConstraint) is the single production constraint evaluator; import " +
-					"bamlprofile normally and use its prompt/host half, or move the caller behind " +
-					"a build tag.",
-			}
+			// RULE 2, recorded wherever it appears in the block rather than
+			// returning, so a file that ALSO aliases the path still gets its
+			// aliases collected and scanned below.
+			violations = append(violations, dotImportViolation)
 		case imp.Name.Name == "_":
-			// A blank import cannot name a symbol.
-			return true, nil
+			// A blank import binds no name, so it contributes no alias. It must
+			// not end the loop either: `_` followed by a real alias is exactly
+			// the bypass this rule exists to stop.
 		default:
-			local = imp.Name.Name
+			aliases[imp.Name.Name] = true
 		}
-		break
 	}
-	if !imports || local == "" {
-		return imports, nil
+	if !imports {
+		return false, nil
 	}
 
-	// RULE 1.
+	// RULE 1, over the FULL alias set.
 	ast.Inspect(f, func(n ast.Node) bool {
 		sel, ok := n.(*ast.SelectorExpr)
 		if !ok {
 			return true
 		}
 		ident, ok := sel.X.(*ast.Ident)
-		if !ok || ident.Name != local {
+		if !ok || !aliases[ident.Name] {
 			return true
 		}
 		if bamlprofileConstraintAPI[sel.Sel.Name] {
-			violations = append(violations, "references "+local+"."+sel.Sel.Name+
+			violations = append(violations, "references "+ident.Name+"."+sel.Sel.Name+
 				" from PRODUCTION code.\n"+
 				"internal/debaml (ConstraintValue + EvaluateConstraint) is the single production "+
 				"constraint evaluator; internal/bamlprofile's constraint façade is an oracle/test "+
@@ -463,6 +494,83 @@ func render() *bamlprofile.Environment { return bamlprofile.New(bamlprofile.Conf
 import "strings"
 func f() string { return strings.TrimSpace("x") }`,
 			wantImports: false, wantViolation: false,
+		},
+		// ---------------------------------------------------------------
+		// MULTI-ALIAS SHAPES (round 6). One path may be bound to several
+		// distinct local names in one file, and the first cut of this guard
+		// stopped at the first spec — so a later alias was never scanned.
+		// ---------------------------------------------------------------
+		// THE BYPASS, verbatim from the triage: the blank import used to return
+		// early and the aliased call was never examined.
+		"blank import then a working alias": {
+			src: `package nativeprompt
+import (
+	_ ` + imp + `
+	bp ` + imp + `
+)
+func evaluateViaWrongSeam(r bp.ConstraintRequest) (bp.ConstraintReport, error) {
+	return bp.EvaluateConstraints(r)
+}`,
+			wantImports: true, wantViolation: true, wantSubstr: "bp.EvaluateConstraints",
+		},
+		// The reverse order: a working alias FIRST, then a dot import. The dot
+		// must still be caught even though an earlier spec already bound a name.
+		"alias then dot import": {
+			src: `package nativeprompt
+import (
+	bp ` + imp + `
+	. ` + imp + `
+)
+func f() *bp.Environment { return nil }`,
+			wantImports: true, wantViolation: true, wantSubstr: "dot-imports",
+		},
+		// A dot import FIRST, then an alias that calls the API: both shapes are
+		// present and both must be reported.
+		"dot import then a calling alias": {
+			src: `package nativeprompt
+import (
+	. ` + imp + `
+	bp ` + imp + `
+)
+func f(r bp.ConstraintRequest) (bp.ConstraintReport, error) { return bp.EvaluateConstraints(r) }`,
+			wantImports: true, wantViolation: true, wantSubstr: "dot-imports",
+		},
+		// Several ordinary aliases, where only a LATER one calls the façade.
+		"several aliases, the last one calls the API": {
+			src: `package nativeprompt
+import (
+	one ` + imp + `
+	two ` + imp + `
+	three ` + imp + `
+)
+func f() *one.Environment { return nil }
+func g() two.ConstraintLevel { return two.ConstraintCheck }
+func h(r three.ConstraintRequest) (three.ConstraintReport, error) {
+	return three.EvaluateConstraints(r)
+}`,
+			wantImports: true, wantViolation: true, wantSubstr: "three.EvaluateConstraints",
+		},
+		// The default name alongside an alias, with the call on the default one.
+		"default name plus alias, call on the default": {
+			src: `package nativeprompt
+import (
+	bp ` + imp + `
+	` + imp + `
+)
+func f() *bp.Environment { return nil }
+func g() { _ = bamlprofile.ConstraintAssert }`,
+			wantImports: true, wantViolation: true, wantSubstr: "bamlprofile.ConstraintAssert",
+		},
+		// CONTROL: several aliases, none of which touches the constraint half.
+		"several aliases, prompt half only": {
+			src: `package nativeprompt
+import (
+	_ ` + imp + `
+	bp ` + imp + `
+	other ` + imp + `
+)
+func f() *bp.Environment { return other.New(bp.Config{}) }`,
+			wantImports: true, wantViolation: false,
 		},
 		// A same-named identifier that is not the import must not false-positive.
 		"unrelated selector with a colliding receiver name": {
