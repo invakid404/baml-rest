@@ -21,6 +21,17 @@ enum Hue {
   GREEN
 }
 
+class NestInner {
+  name int
+  tags string[]
+}
+
+class Nest {
+  a NestInner
+  name string
+  rows NestInner[]
+}
+
 
 class Batch_const {
   v int
@@ -891,6 +902,34 @@ class Batch_flistsm {
 }
 
 function Batch_flistsmFn(topic: string) -> Batch_flistsm {
+  client ConstraintOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+class Batch_nest {
+  v Nest
+    @check(nest_field_int, {{ this.a.name == 5 }})
+    @check(nest_field_int_false, {{ this.a.name == 6 }})
+    @check(nest_outer_field, {{ this.name == "x" }})
+    @check(nest_subscript_key, {{ this.a["name"] == 5 }})
+    @check(nest_field_index, {{ this.a.tags[0] == "x" }})
+    @check(nest_field_index_second, {{ this.a.tags[1] == "y" }})
+    @check(nest_field_neg_index, {{ this.a.tags[-1] == "y" }})
+    @check(nest_field_first, {{ this.a.tags|first == "x" }})
+    @check(nest_field_last, {{ this.a.tags|last == "y" }})
+    @check(nest_field_length, {{ this.a.tags|length == 2 }})
+    @check(nest_field_reverse_first, {{ this.a.tags|reverse|first == "y" }})
+    @check(nest_index_field, {{ this.rows[0].name == 7 }})
+    @check(nest_index_field_index, {{ this.rows[0].tags[0] == "z" }})
+    @check(nest_missing_field, {{ this.a.missing is undefined }})
+    @check(nest_index_oob, {{ this.a.tags[9] is undefined }})
+    @check(nest_shadow_field, {{ this.a.name == "x" }})
+    @check(nest_shadow_key, {{ this.a["name"] == "x" }})
+    @check(nest_stale_list_elem, {{ [1,2][0] == this.a.tags[0] }})
+    @check(nest_slice_then_index, {{ this.a.tags[0:1][0] == "x" }})
+}
+
+function Batch_nestFn(topic: string) -> Batch_nest {
   client ConstraintOracleClient
   prompt #"{{ topic }} {{ ctx.output_format }}"#
 }

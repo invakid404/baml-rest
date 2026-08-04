@@ -860,6 +860,48 @@ func (c Batch_map) BamlTypeName() string {
 	return "Batch_map"
 }
 
+type Batch_nest struct {
+	V Checked[Nest] `json:"v"`
+}
+
+func (c *Batch_nest) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Batch_nest" {
+		panic(fmt.Sprintf("expected Batch_nest, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "v":
+			c.V = baml.Decode(valueHolder).Interface().(Checked[Nest])
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Batch_nest", key))
+
+		}
+	}
+
+}
+
+func (c Batch_nest) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["v"] = c.V
+
+	return baml.EncodeClass("Batch_nest", fields, nil)
+}
+
+func (c Batch_nest) BamlTypeName() string {
+	return "Batch_nest"
+}
+
 type Batch_null struct {
 	V Checked[*int64] `json:"v"`
 }
@@ -4218,6 +4260,108 @@ func (c Iso_wd_test_extra_arg) Encode() (*cffi.HostValue, error) {
 
 func (c Iso_wd_test_extra_arg) BamlTypeName() string {
 	return "Iso_wd_test_extra_arg"
+}
+
+type Nest struct {
+	A    NestInner   `json:"a"`
+	Name string      `json:"name"`
+	Rows []NestInner `json:"rows"`
+}
+
+func (c *Nest) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "Nest" {
+		panic(fmt.Sprintf("expected Nest, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "a":
+			c.A = baml.Decode(valueHolder).Interface().(NestInner)
+
+		case "name":
+			c.Name = baml.Decode(valueHolder).Interface().(string)
+
+		case "rows":
+			c.Rows = baml.Decode(valueHolder).Interface().([]NestInner)
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class Nest", key))
+
+		}
+	}
+
+}
+
+func (c Nest) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["a"] = c.A
+
+	fields["name"] = c.Name
+
+	fields["rows"] = c.Rows
+
+	return baml.EncodeClass("Nest", fields, nil)
+}
+
+func (c Nest) BamlTypeName() string {
+	return "Nest"
+}
+
+type NestInner struct {
+	Name int64    `json:"name"`
+	Tags []string `json:"tags"`
+}
+
+func (c *NestInner) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "NestInner" {
+		panic(fmt.Sprintf("expected NestInner, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "name":
+			c.Name = baml.Decode(valueHolder).Int()
+
+		case "tags":
+			c.Tags = baml.Decode(valueHolder).Interface().([]string)
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class NestInner", key))
+
+		}
+	}
+
+}
+
+func (c NestInner) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["name"] = c.Name
+
+	fields["tags"] = c.Tags
+
+	return baml.EncodeClass("NestInner", fields, nil)
+}
+
+func (c NestInner) BamlTypeName() string {
+	return "NestInner"
 }
 
 type Probe struct {

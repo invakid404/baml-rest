@@ -77,6 +77,17 @@ enum Hue {
   RED @alias("rouge")
   GREEN
 }
+
+class NestInner {
+  name int
+  tags string[]
+}
+
+class Nest {
+  a NestInner
+  name string
+  rows NestInner[]
+}
 `
 
 var constraintGroups = []constraintGroup{
@@ -107,6 +118,27 @@ var constraintGroups = []constraintGroup{
 	{Name: "fbig", BAMLType: "float", Input: "{\"v\":9223372036854775808.0}", This: debaml.FloatValue(9.223372036854776e+18)},
 	{Name: "flistbig", BAMLType: "float[]", Input: "{\"v\":[2.0,3.0,9223372036854775808.0]}", This: debaml.ListValue([]debaml.ConstraintValue{debaml.FloatValue(2.0), debaml.FloatValue(3.0), debaml.FloatValue(9.223372036854776e+18)})},
 	{Name: "flistsm", BAMLType: "float[]", Input: "{\"v\":[2.0,3.0,4.0]}", This: debaml.ListValue([]debaml.ConstraintValue{debaml.FloatValue(2.0), debaml.FloatValue(3.0), debaml.FloatValue(4.0)})},
+	// NESTED CHAINS. This group exists for the nested-postfix gating fix, and its
+	// shape is chosen to make a root-relative resolution OBSERVABLE: the inner
+	// class and the outer class both declare `name`, and they hold DIFFERENT
+	// kinds (int inside, string outside). A gate that answers `this.a.name` by
+	// looking `name` up in the root classifies it as a string when the value it
+	// actually reaches is the integer 5 — which is precisely the over-claim the
+	// `nest_shadow_*` cases pin as a decline and the `nest_*` chains pin as
+	// agreements.
+	{Name: "nest", BAMLType: "Nest", Input: "{\"v\":{\"a\":{\"name\":5,\"tags\":[\"x\",\"y\"]},\"name\":\"x\",\"rows\":[{\"name\":7,\"tags\":[\"z\"]}]}}", This: debaml.ClassValue("Nest", []debaml.ConstraintEntry{
+		{Key: "a", Value: debaml.ClassValue("NestInner", []debaml.ConstraintEntry{
+			{Key: "name", Value: debaml.IntValue(5)},
+			{Key: "tags", Value: debaml.ListValue([]debaml.ConstraintValue{debaml.StringValue("x"), debaml.StringValue("y")})},
+		})},
+		{Key: "name", Value: debaml.StringValue("x")},
+		{Key: "rows", Value: debaml.ListValue([]debaml.ConstraintValue{
+			debaml.ClassValue("NestInner", []debaml.ConstraintEntry{
+				{Key: "name", Value: debaml.IntValue(7)},
+				{Key: "tags", Value: debaml.ListValue([]debaml.ConstraintValue{debaml.StringValue("z")})},
+			}),
+		})},
+	})},
 }
 
 var constraintCases = []constraintCase{
@@ -148,7 +180,12 @@ var constraintCases = []constraintCase{
 	{Label: "op_mixed_arith", Group: "const", Expr: "1 + 1.5 == 2.5", Stock: outTrue, Native: outTrue},
 	{Label: "op_i64max", Group: "const", Expr: "9223372036854775807 - 1 == 9223372036854775806", Stock: outTrue, Native: outUnsupported, Note: "profile: outside the proven numeric sublanguage. Numerics are admitted only with no arithmetic at all, or when the WHOLE expression parses as the closed numeric grammar whose forms are proven identical to stock across the sign and range space. This case falls outside it \u2014 an unrecognised literal form, arithmetic mixed with other syntax, an integer at or past 2^53, a signed `//`/`%`, or an exponent that is not a non-negative literal \u2014 and is refused rather than guessed at."},
 	{Label: "op_float_assoc", Group: "const", Expr: "0.1 + 0.2 == 0.3", Stock: outFalse, Native: outFalse},
-	{Label: "op_div_zero", Group: "const", Expr: "(1 / 0) > 0", Stock: outTrue, Native: outUnsupported, Note: "profile: minijinja-Go raises where BAML answers \u2014 invalid operation: division by zero (at <string> line 1)"},
+	// CLOSED BY THE FORK. The upstream port raised `invalid operation: division
+	// by zero` where BAML answers, so native declined. The BAML-exact fork makes
+	// `/` unconditionally f64 (PATCHES.md #16), so 1/0 is +inf and `+inf > 0` is
+	// true \u2014 the same answer stock gives, now re-proven as an agreement rather
+	// than recorded as a cost.
+	{Label: "op_div_zero", Group: "const", Expr: "(1 / 0) > 0", Stock: outTrue, Native: outTrue},
 	{Label: "op_floordiv_zero", Group: "const", Expr: "(1 // 0) > 0", Stock: outError, Native: outUnsupported},
 	{Label: "op_rem_zero", Group: "const", Expr: "(1 % 0) > 0", Stock: outError, Native: outUnsupported},
 	{Label: "op_str_gt_num", Group: "const", Expr: "\"x\" > 0", Stock: outTrue, Native: outUnsupported, Note: "profile: outside the proven operator profile: an expression is admitted only when the WHOLE of it parses as the closed predicate grammar \u2014 a comparison of two same-kind operands, or a test \u2014 over literals, `this`, its fields and the admitted filters. `in`/`not in`, `~`, `and`/`or`/`not`, the ternary and any mixed-kind comparison are refused, because each reaches its answer through a coercion the two engines do not share"},
@@ -416,7 +453,13 @@ var constraintCases = []constraintCase{
 	{Label: "this_map_string_len", Group: "map", Expr: "(this|string)|length == 24", Stock: outTrue, Native: outUnsupported, Note: "profile: outside the proven operator profile: an expression is admitted only when the WHOLE of it parses as the closed predicate grammar \u2014 a comparison of two same-kind operands, or a test \u2014 over literals, `this`, its fields and the admitted filters. `in`/`not in`, `~`, `and`/`or`/`not`, the ternary and any mixed-kind comparison are refused, because each reaches its answer through a coercion the two engines do not share"},
 	{Label: "this_cls_string_len", Group: "cls", Expr: "(this|string)|length == 33", Stock: outFalse, Native: outUnsupported, Note: "profile: outside the proven operator profile: an expression is admitted only when the WHOLE of it parses as the closed predicate grammar \u2014 a comparison of two same-kind operands, or a test \u2014 over literals, `this`, its fields and the admitted filters. `in`/`not in`, `~`, `and`/`or`/`not`, the ternary and any mixed-kind comparison are refused, because each reaches its answer through a coercion the two engines do not share"},
 	{Label: "this_list_string", Group: "list", Expr: "(this|string)[0] == \"[\"", Stock: outTrue, Native: outUnsupported, Note: "profile: outside the proven operator profile: an expression is admitted only when the WHOLE of it parses as the closed predicate grammar \u2014 a comparison of two same-kind operands, or a test \u2014 over literals, `this`, its fields and the admitted filters. `in`/`not in`, `~`, `and`/`or`/`not`, the ternary and any mixed-kind comparison are refused, because each reaches its answer through a coercion the two engines do not share"},
-	{Label: "this_cls_nested_index", Group: "cls", Expr: "this.c[0] == 1", Stock: outTrue, Native: outUnsupported, Note: "profile: outside the proven operator profile: an expression is admitted only when the WHOLE of it parses as the closed predicate grammar \u2014 a comparison of two same-kind operands, or a test \u2014 over literals, `this`, its fields and the admitted filters. `in`/`not in`, `~`, `and`/`or`/`not`, the ternary and any mixed-kind comparison are refused, because each reaches its answer through a coercion the two engines do not share"},
+	// CLOSED BY THE NESTED-POSTFIX FIX. `this.c` is Probe's int[], so `this.c[0]`
+	// is the integer 1 \u2014 but the gate used to resolve a nested subscript against
+	// the ROOT `this`, which is the class, found no list there, and classified the
+	// term as undefined; the comparison then read as mixed-kind and declined. With
+	// each postfix resolved against the value the preceding one reached, the kind
+	// is exact and the row is an agreement.
+	{Label: "this_cls_nested_index", Group: "cls", Expr: "this.c[0] == 1", Stock: outTrue, Native: outTrue},
 	{Label: "this_map_last", Group: "map", Expr: "this|last == \"m\"", Stock: outError, Native: outUnsupported},
 	{Label: "this_map_values_join", Group: "map", Expr: "this.values()|join(\",\") == \"1,2,3\"", Stock: outTrue, Native: outUnsupported, Note: "profile: outside the proven operator profile: an expression is admitted only when the WHOLE of it parses as the closed predicate grammar \u2014 a comparison of two same-kind operands, or a test \u2014 over literals, `this`, its fields and the admitted filters. `in`/`not in`, `~`, `and`/`or`/`not`, the ternary and any mixed-kind comparison are refused, because each reaches its answer through a coercion the two engines do not share"},
 	{Label: "this_stru_isascii", Group: "stru", Expr: "this|length > 0", Stock: outTrue, Native: outTrue},
@@ -797,4 +840,43 @@ var constraintCases = []constraintCase{
 	{Label: "op_ctl_is_test_r21", Group: "str", Expr: "this is defined", Stock: outTrue, Native: outTrue},
 	{Label: "op_ctl_is_not_r21", Group: "str", Expr: "this is not none", Stock: outTrue, Native: outTrue},
 	{Label: "op_ctl_arith_r21", Group: "const", Expr: "1 + 2 == 3", Stock: outTrue, Native: outTrue},
+
+	// ---------------------------------------------------------------------------
+	// NESTED POSTFIX CHAINS (the round-22 gating fix).
+	//
+	// Every case here walks at least two postfixes, so each one is answered
+	// against the value the PRECEDING postfix reached rather than against the
+	// root. The group is shaped so a root-relative resolution lands on a
+	// different KIND (see the `nest` group), which is what makes these rows
+	// evidence rather than decoration.
+	//
+	// The agreements below are also the fix's coverage half: before it, a nested
+	// chain resolved against the root, missed, and declined — so `this.a.name`
+	// and `this.rows[0].name` were unreachable even though stock answers them.
+	// ---------------------------------------------------------------------------
+	{Label: "nest_field_int", Group: "nest", Expr: "this.a.name == 5", Stock: outTrue, Native: outTrue},
+	{Label: "nest_field_int_false", Group: "nest", Expr: "this.a.name == 6", Stock: outFalse, Native: outFalse},
+	{Label: "nest_outer_field", Group: "nest", Expr: "this.name == \"x\"", Stock: outTrue, Native: outTrue},
+	{Label: "nest_subscript_key", Group: "nest", Expr: "this.a[\"name\"] == 5", Stock: outTrue, Native: outTrue},
+	{Label: "nest_field_index", Group: "nest", Expr: "this.a.tags[0] == \"x\"", Stock: outTrue, Native: outTrue},
+	{Label: "nest_field_index_second", Group: "nest", Expr: "this.a.tags[1] == \"y\"", Stock: outTrue, Native: outTrue},
+	{Label: "nest_field_neg_index", Group: "nest", Expr: "this.a.tags[-1] == \"y\"", Stock: outTrue, Native: outTrue},
+	{Label: "nest_field_first", Group: "nest", Expr: "this.a.tags|first == \"x\"", Stock: outTrue, Native: outTrue},
+	{Label: "nest_field_last", Group: "nest", Expr: "this.a.tags|last == \"y\"", Stock: outTrue, Native: outTrue},
+	{Label: "nest_field_length", Group: "nest", Expr: "this.a.tags|length == 2", Stock: outTrue, Native: outTrue},
+	{Label: "nest_field_reverse_first", Group: "nest", Expr: "this.a.tags|reverse|first == \"y\"", Stock: outTrue, Native: outTrue},
+	{Label: "nest_index_field", Group: "nest", Expr: "this.rows[0].name == 7", Stock: outTrue, Native: outTrue},
+	{Label: "nest_index_field_index", Group: "nest", Expr: "this.rows[0].tags[0] == \"z\"", Stock: outTrue, Native: outTrue},
+	{Label: "nest_missing_field", Group: "nest", Expr: "this.a.missing is undefined", Stock: outTrue, Native: outTrue},
+	{Label: "nest_index_oob", Group: "nest", Expr: "this.a.tags[9] is undefined", Stock: outTrue, Native: outTrue},
+
+	// THE OVER-CLAIMS, pinned as declines. Each reaches a value whose kind is not
+	// the kind of the operand it is compared against, so the comparison is
+	// mixed-kind and outside the proven profile. Native must REFUSE — and before
+	// the fix it answered instead, because the root-relative lookup classified
+	// the chain as the operand's kind.
+	{Label: "nest_shadow_field", Group: "nest", Expr: "this.a.name == \"x\"", Stock: outFalse, Native: outUnsupported, Note: "profile: the operator gate refuses a mixed-kind comparison — this.a.name reaches NestInner.name, the integer 5, and the operand is a string. Resolving the chain against the root would have found Nest.name and admitted it"},
+	{Label: "nest_shadow_key", Group: "nest", Expr: "this.a[\"name\"] == \"x\"", Stock: outFalse, Native: outUnsupported, Note: "profile: the same mixed-kind refusal reached through a string subscript — this.a[\"name\"] is the integer 5, not the root's string"},
+	{Label: "nest_stale_list_elem", Group: "nest", Expr: "[1,2][0] == this.a.tags[0]", Stock: outFalse, Native: outUnsupported, Note: "profile: mixed-kind comparison — the list literal's element is a number and this.a.tags[0] is a string. The literal's element kind must not leak into a later term"},
+	{Label: "nest_slice_then_index", Group: "nest", Expr: "this.a.tags[0:1][0] == \"x\"", Stock: outTrue, Native: outUnsupported, Note: "profile: a slice yields a sequence the gate did not build, so it carries no element it can classify and indexing it again refuses"},
 }

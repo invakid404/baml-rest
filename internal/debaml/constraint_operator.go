@@ -62,6 +62,26 @@ import (
 //
 // An inference that cannot determine a kind returns kindUnknown, which never
 // matches anything, so the fail-closed direction is the default.
+//
+// NESTED POSTFIXES RESOLVE AGAINST THE VALUE THEY REACH, NOT THE ROOT.
+//
+// This gate's first cut kept only a KIND as it walked a postfix chain, and
+// answered every field/subscript question against the parser's root `this`. That
+// is an OVER-CLAIM, the one direction the contract forbids. Given
+// `this = {a: {name: 5}, name: "x"}`, the chain `this.a.name` was resolved by
+// looking `name` up in the ROOT — finding the string "x" — so `this.a.name == "x"`
+// was admitted as a proven string/string comparison when the value actually
+// reached is the integer 5. The predicate the engines then ran is the mixed-kind
+// `5 == "x"` this gate exists to refuse, and its answer would have been served.
+// The stale [term.listElem] carried the same defect through index chains.
+//
+// So a term carries the VALUE it reaches, not just its kind ([term]), and each
+// postfix resolves against its immediate subject. A term that is not a path into
+// the value model — a literal, a slice result, a filter or test result — carries
+// no value, and a field or index postfix on one refuses rather than falling back
+// to the root. TestConstraintNestedPostfixResolvesAgainstReachedValue pins the
+// classification directly, and the stock differential's `nested/*` group pins
+// the same chains against real BAML.
 
 // inferredKind is what the gate can prove about a term before evaluation.
 type inferredKind uint8
@@ -127,11 +147,39 @@ type predParser struct {
 	src  string
 	pos  int
 	this ConstraintValue
-	// listElem is the common element kind of the most recent LIST LITERAL
-	// primary, or kindUnknown when its elements are not all the same kind. It
-	// lets `[1,2,3][0]` infer a number without evaluating anything.
+}
+
+// term is what the gate has proven about one parsed term.
+//
+// The kind is always meaningful. The other two fields say HOW a further postfix
+// may be resolved, and exactly one of them can be set:
+//
+//   - isPath marks a term that denotes a place in the VALUE MODEL — `this`, and
+//     any chain of field/subscript postfixes off it. reached is then the value
+//     that chain arrives at, and the next postfix is answered against it.
+//   - listElem is the common element kind of a LIST LITERAL, which has no
+//     value-model value to read. kindUnknown means the elements are mixed, and
+//     indexing such a literal refuses.
+//
+// A term with neither — a scalar literal, a slice result, a filter or test
+// result — supports no field or subscript postfix at all. That is the whole
+// fail-closed rule: the gate never answers a postfix from a value it did not
+// actually reach.
+type term struct {
+	kind     inferredKind
+	reached  ConstraintValue
+	isPath   bool
 	listElem inferredKind
 }
+
+// valueTerm is the term for a place in the value model: its kind read from the
+// value, and the value retained so the NEXT postfix resolves against it.
+func valueTerm(v ConstraintValue) term {
+	return term{kind: constraintValueKind(v), reached: v, isPath: true}
+}
+
+// refuse is the fail-closed term. Its kind is kindUnknown, which matches nothing.
+func refuse() term { return term{} }
 
 func (p *predParser) skipSpace() {
 	for p.pos < len(p.src) && isSpaceByte(p.src[p.pos]) {
@@ -188,7 +236,7 @@ func (p *predParser) parsePredicate() bool {
 		// SAME KIND, and a kind the engines compare alike. This is the round-21
 		// centre: the top-level predicate IS a comparison, so a mixed-kind one is
 		// a divergence delivered straight to the caller as the answer.
-		return left == right && comparableKind(left)
+		return left.kind == right.kind && comparableKind(left.kind)
 	}
 	// No comparison at all. There is no comparison operator to gate, and the
 	// remaining grammar contains none of the excluded operators — so the term is
@@ -196,76 +244,128 @@ func (p *predParser) parsePredicate() bool {
 	// "true"/"false" contract in EvaluateConstraint, which is where that rule
 	// lives; RenderConstraintExpression legitimately observes such renders, and
 	// BAML's own pinned cases (`1`, `[1,2]|sum`) are exactly those.
-	return left != kindUnknown
+	return left.kind != kindUnknown
 }
 
-func (p *predParser) parseTerm() (inferredKind, bool) {
+func (p *predParser) parseTerm() (term, bool) {
 	if p.accept("-") {
-		k, ok := p.parseTerm()
-		return k, ok && k == kindNumberK
+		t, ok := p.parseTerm()
+		// Negation produces a NEW number. It is not a place in the value model,
+		// so the operand's path is deliberately not carried through.
+		return term{kind: kindNumberK}, ok && t.kind == kindNumberK
 	}
-	k, ok := p.parsePrimary()
+	t, ok := p.parsePrimary()
 	if !ok {
-		return kindUnknown, false
+		return refuse(), false
 	}
 	for {
 		switch {
 		case p.accept("."):
 			name, ok := p.parseIdent()
 			if !ok {
-				return kindUnknown, false
+				return refuse(), false
 			}
-			k, ok = p.fieldKind(k, name)
+			// Resolved against t — the value the PRECEDING postfix reached — never
+			// against p.this.
+			t, ok = p.fieldTerm(t, name)
 			if !ok {
-				return kindUnknown, false
+				return refuse(), false
 			}
 		case p.accept("["):
 			// A subscript. The bracket rule upstream has already proved the region
-			// is a literal, so the only question here is the resulting KIND, and the
-			// value model answers it exactly.
-			k, ok = p.subscriptKind(k)
+			// is a literal, so the only question here is what the subscript reaches,
+			// and the subject term's own value answers it exactly.
+			t, ok = p.subscriptTerm(t)
 			if !ok || !p.accept("]") {
-				return kindUnknown, false
+				return refuse(), false
 			}
 		case p.accept("|"):
 			name, ok := p.parseIdent()
 			if !ok {
-				return kindUnknown, false
+				return refuse(), false
 			}
 			if p.accept("(") {
 				// A filter argument is another expression, and its kind would have
 				// to be inferred too. The surviving filters take none.
-				return kindUnknown, false
+				return refuse(), false
 			}
 			if name == "first" || name == "last" {
-				// The element kind, taken from the sequence this term came from:
-				// the value model for `this`, or a uniform list literal. A mixed
-				// sequence leaves it unknown, and unknown refuses.
-				if k != kindSeqK || p.listElem == kindUnknown {
-					return kindUnknown, false
+				t, ok = p.edgeElementTerm(t)
+				if !ok {
+					return refuse(), false
 				}
-				k = p.listElem
 				continue
 			}
-			k = filterResultKind(name, k)
+			k := filterResultKind(name, t.kind)
 			if k == kindUnknown {
-				return kindUnknown, false
+				return refuse(), false
 			}
+			// A filter RESULT is a fresh value the gate did not build, so it carries
+			// no path and no further postfix reads the original value.
+			next := term{kind: k}
+			if k == kindSeqK {
+				// `list` and `reverse` are the only sequence-valued filters the
+				// signature table admits, and both PERMUTE their subject: neither
+				// drops an element nor changes one's kind. A uniform element kind
+				// therefore survives them exactly, which is what keeps
+				// `|reverse|first` as proven as `|first` — a claim about the
+				// ELEMENTS, carried without any claim about the sequence itself.
+				next.listElem = t.elementKind()
+			}
+			t = next
 		case p.acceptWord("is"):
 			p.acceptWord("not")
 			if _, ok := p.parseIdent(); !ok {
-				return kindUnknown, false
+				return refuse(), false
 			}
 			if p.accept("(") {
 				if !p.skipTestArgument() {
-					return kindUnknown, false
+					return refuse(), false
 				}
 			}
-			k = kindBoolK
+			t = term{kind: kindBoolK}
 		default:
-			return k, true
+			return t, true
 		}
 	}
+}
+
+// edgeElementTerm resolves `|first` / `|last`.
+//
+// Unlike a subscript, whose index is written in the expression, the element a
+// filter picks is the FILTER's choice. The gate models a filter by a declared
+// result kind rather than by re-implementing it, so the claim it makes here is
+// the strongest one that holds without asserting WHICH element comes back: the
+// common element kind of the sequence. A mixed or unmodelled sequence has none,
+// and refuses.
+//
+// The sequence is the one this term reached — the value model for a path, or a
+// uniform list literal — so a nested `this.items|first` reads this.items, not the
+// root. An empty sequence yields undefined, which has no common element kind and
+// therefore refuses too.
+func (p *predParser) edgeElementTerm(t term) (term, bool) {
+	if t.kind != kindSeqK {
+		return refuse(), false
+	}
+	elem := t.elementKind()
+	if elem == kindUnknown {
+		return refuse(), false
+	}
+	return term{kind: elem}, true
+}
+
+// elementKind is the common kind of this term's elements: read out of the value
+// model for a path, or carried from a list literal (and through the permuting
+// filters) otherwise.
+//
+// It is kindUnknown — which refuses — whenever the claim cannot be made: mixed
+// elements, an empty sequence, a term that is not a sequence at all, and a
+// sequence the gate did not build such as a slice result.
+func (t term) elementKind() inferredKind {
+	if t.isPath {
+		return valueListElementKind(t.reached)
+	}
+	return t.listElem
 }
 
 // skipTestArgument consumes a single literal argument to a test — the only shape
@@ -304,93 +404,102 @@ func (p *predParser) parseIdent() (string, bool) {
 	return p.src[start:p.pos], true
 }
 
-func (p *predParser) parsePrimary() (inferredKind, bool) {
+func (p *predParser) parsePrimary() (term, bool) {
 	p.skipSpace()
 	if p.pos >= len(p.src) {
-		return kindUnknown, false
+		return refuse(), false
 	}
 	switch c := p.src[p.pos]; {
 	case c == '"' || c == '\'':
 		j, ok := skipStringLiteral(p.src, p.pos)
 		if !ok {
-			return kindUnknown, false
+			return refuse(), false
 		}
 		p.pos = j + 1
-		return kindStringK, true
+		return term{kind: kindStringK}, true
 	case c >= '0' && c <= '9':
 		start := p.pos
 		for p.pos < len(p.src) && isNumericTokenByte(p.src[p.pos]) {
 			p.pos++
 		}
 		if !isProvablySmallNumber(p.src[start:p.pos]) {
-			return kindUnknown, false
+			return refuse(), false
 		}
-		return kindNumberK, true
+		return term{kind: kindNumberK}, true
 	case c == '[':
 		j, ok := matchingBracket(p.src, p.pos)
 		if !ok || !listLiteralRegionIsSafe(p.src[p.pos+1:j]) {
-			return kindUnknown, false
+			return refuse(), false
 		}
-		p.listElem = listLiteralElementKind(p.src[p.pos+1 : j])
+		// A LIST LITERAL is not a place in the value model, so it carries an
+		// element kind instead of a value: `[1,2,3][0]` infers a number without
+		// evaluating anything, and a mixed literal infers nothing.
+		elem := listLiteralElementKind(p.src[p.pos+1 : j])
 		p.pos = j + 1
-		return kindSeqK, true
+		return term{kind: kindSeqK, listElem: elem}, true
 	case c == '(':
 		p.pos++
 		if !p.parsePredicate() || !p.accept(")") {
-			return kindUnknown, false
+			return refuse(), false
 		}
-		return kindBoolK, true
+		return term{kind: kindBoolK}, true
 	}
 	word, ok := p.parseIdent()
 	if !ok {
-		return kindUnknown, false
+		return refuse(), false
 	}
 	switch word {
 	case "true", "false":
-		return kindBoolK, true
+		return term{kind: kindBoolK}, true
 	case "none", "null":
-		return kindNoneK, true
+		return term{kind: kindNoneK}, true
 	case "this":
-		k := constraintValueKind(p.this)
-		if k == kindSeqK {
-			p.listElem = valueListElementKind(p.this)
-		}
-		return k, true
+		// The ROOT, and the only place p.this is read. Everything reached from
+		// here is read out of the term the preceding postfix produced.
+		return valueTerm(p.this), true
 	}
-	return kindUnknown, false // any other identifier
+	return refuse(), false // any other identifier
 }
 
-// subscriptKind resolves `x[...]` against the VALUE MODEL: a string key into a
-// mapping, or an integer index into a list. Anything else refuses.
-func (p *predParser) subscriptKind(subject inferredKind) (inferredKind, bool) {
+// subscriptTerm resolves `x[...]` against the SUBJECT TERM's own value: a string
+// key into the mapping it reached, or an integer index into the list it reached.
+// Anything else refuses.
+func (p *predParser) subscriptTerm(t term) (term, bool) {
 	p.skipSpace()
 	// A SLICE region — anything containing a colon — yields a sequence in both
 	// engines, and the bracket rule has already proved every bound is an integer
 	// literal or omitted.
 	if close := strings.IndexByte(p.src[p.pos:], ']'); close >= 0 &&
 		strings.Contains(p.src[p.pos:p.pos+close], ":") {
-		if subject != kindSeqK && subject != kindStringK {
-			return kindUnknown, false
+		if t.kind != kindSeqK && t.kind != kindStringK {
+			return refuse(), false
 		}
 		p.pos += close
-		if subject == kindStringK {
-			return kindStringK, true
+		if t.kind == kindStringK {
+			return term{kind: kindStringK}, true
 		}
-		return kindSeqK, true
+		// A slice of a sequence is a NEW sequence the gate did not build. It has
+		// no place in the value model and no proven element kind, so indexing it
+		// again — or taking its first/last — refuses.
+		return term{kind: kindSeqK}, true
 	}
 	if p.pos < len(p.src) && (p.src[p.pos] == '"' || p.src[p.pos] == '\'') {
 		j, ok := skipStringLiteral(p.src, p.pos)
-		if !ok || subject != kindMapK {
-			return kindUnknown, false
+		// A string key needs a mapping the gate can actually read. A kindMapK term
+		// that is not a path — which the grammar cannot produce today, since there
+		// is no map literal and no filter declaring a mapping result — refuses
+		// rather than falling back to the root.
+		if !ok || t.kind != kindMapK || !t.isPath {
+			return refuse(), false
 		}
 		key := p.src[p.pos+1 : j]
 		p.pos = j + 1
-		for _, e := range p.this.entries {
+		for _, e := range t.reached.entries {
 			if e.Key == key {
-				return constraintValueKind(e.Value), true
+				return valueTerm(e.Value), true
 			}
 		}
-		return kindUndefK, true
+		return term{kind: kindUndefK}, true
 	}
 	neg := false
 	if p.pos < len(p.src) && p.src[p.pos] == '-' {
@@ -402,43 +511,51 @@ func (p *predParser) subscriptKind(subject inferredKind) (inferredKind, bool) {
 		p.pos++
 	}
 	if p.pos == start {
-		return kindUnknown, false
+		return refuse(), false
 	}
-	if subject == kindStringK {
-		return kindStringK, true // a character of a string is a string in both
+	if t.kind == kindStringK {
+		return term{kind: kindStringK}, true // a character of a string is a string in both
 	}
-	if subject != kindSeqK {
-		return kindUnknown, false
+	if t.kind != kindSeqK {
+		return refuse(), false
 	}
-	if p.listElem != kindUnknown {
-		return p.listElem, true // indexing a LIST LITERAL of uniform elements
+	if !t.isPath {
+		// A LIST LITERAL, or a slice result. There is no value to index, so the
+		// only available claim is the literal's uniform element kind; a mixed
+		// literal and an unmodelled sequence both refuse.
+		if t.listElem == kindUnknown {
+			return refuse(), false
+		}
+		return term{kind: t.listElem}, true
 	}
 	idx := 0
 	for _, c := range p.src[start:p.pos] {
 		idx = idx*10 + int(c-'0')
 	}
 	if neg {
-		idx = len(p.this.list) - idx
+		idx = len(t.reached.list) - idx
 	}
-	if idx < 0 || idx >= len(p.this.list) {
-		return kindUndefK, true
+	if idx < 0 || idx >= len(t.reached.list) {
+		return term{kind: kindUndefK}, true
 	}
-	return constraintValueKind(p.this.list[idx]), true
+	return valueTerm(t.reached.list[idx]), true
 }
 
-// fieldKind resolves `this.name` against the VALUE MODEL, so the kind is read
-// rather than guessed. A subscript is handled the same way by the bracket rule
-// upstream; a field of anything but a mapping refuses.
-func (p *predParser) fieldKind(subject inferredKind, name string) (inferredKind, bool) {
-	if subject != kindMapK {
-		return kindUnknown, false
+// fieldTerm resolves `x.name` against the SUBJECT TERM's own value, so the kind
+// is read rather than guessed — and read from the mapping the preceding postfix
+// actually reached. A field of anything but a mapping the gate can read refuses.
+func (p *predParser) fieldTerm(t term, name string) (term, bool) {
+	if t.kind != kindMapK || !t.isPath {
+		return refuse(), false
 	}
-	for _, e := range p.this.entries {
+	for _, e := range t.reached.entries {
 		if e.Key == name {
-			return constraintValueKind(e.Value), true
+			return valueTerm(e.Value), true
 		}
 	}
-	return kindUndefK, true // a missing field is undefined, which `is undefined` reads
+	// A missing field is undefined, which `is defined` / `is undefined` reads.
+	// It is not a path, so a FURTHER postfix off it refuses.
+	return term{kind: kindUndefK}, true
 }
 
 // constraintValueKind maps a value-model value to the gate's kind lattice.

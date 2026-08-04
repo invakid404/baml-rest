@@ -6,10 +6,10 @@ import (
 	"regexp"
 	"sync"
 
-	mj "github.com/mitsuhiko/minijinja/minijinja-go/v2"
-	"github.com/mitsuhiko/minijinja/minijinja-go/v2/filters"
-	"github.com/mitsuhiko/minijinja/minijinja-go/v2/syntax"
-	mjvalue "github.com/mitsuhiko/minijinja/minijinja-go/v2/value"
+	mj "github.com/invakid404/minijinja-go/v2"
+	"github.com/invakid404/minijinja-go/v2/filters"
+	"github.com/invakid404/minijinja-go/v2/syntax"
+	mjvalue "github.com/invakid404/minijinja-go/v2/value"
 )
 
 // Constraint expression evaluation — the native half of BAML v0.223's
@@ -22,6 +22,18 @@ import (
 // proven expression engine to sit behind, and so the divergences it cannot
 // close are measured before anything depends on them.
 //
+// THE SINGLE PRODUCTION SEAM. [ConstraintValue] and [EvaluateConstraint] are the
+// one production constraint evaluator/value seam. internal/bamlprofile also
+// carries a constraint façade — a byte-faithful transcription of
+// run_user_checks/evaluate_predicate with its own stock-CFFI differential — and
+// that one is deliberately an ORACLE/TEST facade: two runtime evaluators would
+// mean two admission profiles and two fail-closed contracts able to drift apart
+// while both stay green. The rule is enforced by
+// constraint_evaluator_seam_test.go at the repo root, which fails on any
+// production reference to bamlprofile's constraint symbols. Both packages render
+// through the SAME engine (see below), so this is one evaluator over one engine,
+// not a parallel stack.
+//
 // AUTHORITY. BAML v0.223 evaluates a constraint by rendering a minijinja
 // template, not by walking a bespoke AST
 // (engine/baml-lib/baml-core/src/ir/jinja_helpers.rs):
@@ -31,9 +43,36 @@ import (
 //	evaluate_predicate   :83-94  context {"this": from_serialize(value)}; the render
 //	                             must be exactly "true" or "false", else an error
 //
-// The engine is the SAME minijinja 2.16.0 the prompt renderer already uses
-// (internal/nativeprompt), via the pinned pure-Go port
-// github.com/mitsuhiko/minijinja/minijinja-go/v2 v2.16.0. No new dependency.
+// THE ENGINE, AND WHY THIS FILE'S GUARDS OUTLIVED THEIR REASON.
+//
+// This evaluator was written against the UPSTREAM pure-Go port
+// github.com/mitsuhiko/minijinja/minijinja-go/v2 v2.16.0, whose behaviour
+// differs from BAML's Rust minijinja in a long list of measured ways. Rounds
+// 2-21 of this PR are almost entirely a fail-closed compensation layer for
+// those differences: the 2^53 numeric whitelist ([exceedsExactIntegerRange]),
+// the per-builtin guards ([installProfileGuards]), the dual mapping-
+// representation agreement check ([renderConstraint]), and the closed predicate
+// grammar ([operatorShapeIsProven]).
+//
+// Slice 7.1 then replaced that dependency, repo-wide, with the BAML-EXACT fork
+// github.com/invakid404/minijinja-go/v2 v2.16.0-baml.6, which is what this file
+// now compiles against — it is the SAME engine internal/nativeprompt and
+// internal/bamlprofile render through, so there is exactly one template engine
+// in the binary. The fork's PATCHES.md closes, upstream of this package, most of
+// what the compensation layer exists to survive: patches #10-#16 replace the
+// port's float64 integer core with BAML's checked i128 (the entire 2^53
+// rationale), and the operator, coercion, ordered-map and pycompat slices close
+// the `in`/`~`/truthiness divergences the predicate grammar was built to refuse.
+//
+// EVERY GUARD IS KEPT ANYWAY, DELIBERATELY. A guard decides from the expression
+// text and the value model, before and around evaluation, so a guard that is no
+// longer necessary can only make native DECLINE something the fork could now
+// answer. That is the safe direction of the contract below — over-declining
+// costs coverage, over-claiming would serve a wrong boolean — and it keeps every
+// differential row this PR already proved valid without re-deriving it. Removing
+// the now-redundant compensation, and re-widening the profile against fresh
+// stock-CFFI rows, is Slice 7.2a follow-up work; it is not done here, because
+// each removal is a re-widening that needs its own proof.
 
 // errConstraintNotBoolean is BAML's `Predicate did not evaluate to a boolean`
 // (jinja_helpers.rs:92): the render succeeded but produced something other than
@@ -61,18 +100,21 @@ var errConstraintNotBoolean = fmt.Errorf("%w: predicate did not evaluate to a bo
 //     selects AutoEscape::None. minijinja-Go's default callback is the same
 //     shape, but pinning it explicitly makes the constraint environment
 //     independent of how the port names an anonymous template.
-//   - UNKNOWN-METHOD CALLBACK. minijinja-Go v2.16.0 exposes no
-//     environment-level unknown-method hook (there is no SetUnknownMethodCallback;
-//     state.go dispatches obj.CallMethod then GetAttr and otherwise errors), and
-//     a Go string Value has no method table to hang one on — wrapping it in an
-//     object would stop it being a string for `|length`, `in`, comparison and
-//     every string filter. minijinja-contrib's pycompat surface is therefore not
-//     implementable against this engine, and rather than half-implement it the
-//     evaluator's CONTRACT EXCLUDES it: `"s".upper()`, `"{}".format(x)`,
-//     `[1,2].count(1)` and the rest are outside the proven profile BY
-//     CONSTRUCTION and return ErrConstraintUnsupported. See constraint_profile.go
-//     for the contract, and constraintoracle for the stock proof that native
-//     refuses exactly there and nowhere it could have answered correctly.
+//   - UNKNOWN-METHOD CALLBACK, i.e. minijinja-contrib's pycompat surface —
+//     `"s".upper()`, `"{}".format(x)`, `[1,2].count(1)` and the rest. The
+//     UPSTREAM port this evaluator was written against exposed no
+//     environment-level hook for it at all, so excluding pycompat was forced.
+//     The FORK does expose one (Environment.SetUnknownMethodCallback, plus a
+//     ./pycompat implementation of the callback, which internal/bamlprofile
+//     installs) — so this is now a CHOICE, and the choice is still to leave it
+//     uninstalled. A predicate that calls a pycompat method therefore raises,
+//     and the raise becomes ErrConstraintUnsupported: native declines where the
+//     fork could now answer. That is a coverage cost in the safe direction, and
+//     admitting the surface means proving it row by row against stock, which is
+//     7.2a follow-up work rather than a comment change here. See
+//     constraint_profile.go for the contract, and constraintoracle for the stock
+//     proof that native refuses exactly there and nowhere it could have answered
+//     correctly.
 //
 // constraintEnv is built once and shared. The environment is immutable after
 // construction — the only entry point is TemplateFromString, which compiles
@@ -113,11 +155,11 @@ func newConstraintEnv() *mj.Environment {
 // BAML links minijinja with `default-features = false` and an explicit feature
 // list (engine/Cargo.toml:99-115: macros, builtins, debug, preserve_order,
 // adjacent_loop_items, unicode, json, unstable_machinery, custom_syntax,
-// deserialization, serde). minijinja-Go registers one flat default set, so its
-// surface is a strict SUPERSET of BAML's. Comparing minijinja 2.16.0's
+// deserialization, serde). The UPSTREAM port registered one flat default set,
+// so its surface was a strict SUPERSET of BAML's. Comparing minijinja 2.16.0's
 // defaults.rs (get_builtin_filters / get_builtin_tests / get_globals under
-// builtins+json, without urlencode) against minijinja-go/v2 defaults.go, the
-// difference is exactly five names:
+// builtins+json, without urlencode) against upstream minijinja-go/v2
+// defaults.go, the difference was exactly five names:
 //
 //	filter   urlencode  — Rust-gated behind the `urlencode` feature, which BAML does not enable
 //	test     containing — not present in minijinja 2.16.0 at all
@@ -128,18 +170,27 @@ func newConstraintEnv() *mj.Environment {
 // Leaving them registered would be the DANGEROUS asymmetry: native would answer
 // `"a b"|urlencode == "a%20b"` -> true where BAML raises
 // `unknown filter: filter urlencode is unknown` and rejects the value. All five
-// are verified against stock v0.223 by the differential harness. minijinja-Go
-// has no RemoveFilter/RemoveTest/RemoveFunction, so each is replaced by a stub
-// that raises the same class of error minijinja raises for an unknown name.
+// are verified against stock v0.223 by the differential harness. The engine has
+// no RemoveFilter/RemoveTest/RemoveFunction, so each is replaced by a stub that
+// raises the same class of error minijinja raises for an unknown name.
+//
+// REDUNDANT UNDER THE FORK, AND KEPT. The fork's defaults.go registers none of
+// these five — its builtin registry is already BAML-exact — so the engine would
+// raise the same unknown-name error on its own and every stub below now merely
+// re-states an outcome that already holds. It is retained rather than deleted
+// because it is a BELT-AND-BRACES assertion of BAML's feature set at the seam
+// this package owns: if the fork ever regained one of these names, this function
+// is what keeps native from answering where BAML raises. It cannot widen
+// anything — every stub only ever errors.
 func withdrawNonBAMLBuiltins(env *mj.Environment) {
-	env.AddFilter("urlencode", func(filters.State, mjvalue.Value, []mjvalue.Value, map[string]mjvalue.Value) (mjvalue.Value, error) {
+	env.AddFilter("urlencode", func(filters.State, mjvalue.Value, []mjvalue.Value, *mjvalue.OrderedMap) (mjvalue.Value, error) {
 		return mjvalue.Undefined(), mj.NewError(mj.ErrUnknownFilter, "filter urlencode is unknown")
 	})
 	env.AddTest("containing", func(filters.State, mjvalue.Value, []mjvalue.Value) (bool, error) {
 		return false, mj.NewError(mj.ErrUnknownTest, "test containing is unknown")
 	})
 	for _, name := range []string{"cycler", "joiner", "lipsum"} {
-		env.AddFunction(name, func(*mj.State, []mjvalue.Value, map[string]mjvalue.Value) (mjvalue.Value, error) {
+		env.AddFunction(name, func(*mj.State, []mjvalue.Value, *mjvalue.OrderedMap) (mjvalue.Value, error) {
 			return mjvalue.Undefined(), mj.NewError(mj.ErrUnknownFunction, name+" is unknown")
 		})
 	}
@@ -278,10 +329,17 @@ func EvaluateConstraint(this ConstraintValue, expression string) (bool, error) {
 // displayString reproduces Rust's `impl Display for minijinja::Value` for the
 // value shapes the constraint model can produce.
 //
-// minijinja-Go's Value.String() does not consult value.ObjectWithString (the
-// same gap internal/nativeprompt/env.go documents for media markers), so a
-// mapping produced by the value model would otherwise render as Go's default
-// object formatting instead of the minijinja map rendering.
+// The UPSTREAM port's Value.String() did not consult value.ObjectWithString (the
+// same gap internal/nativeprompt/env.go documented for media markers), so a
+// mapping produced by the value model would otherwise have rendered as Go's
+// default object formatting instead of the minijinja map rendering.
+//
+// The fork closed that gap (value/value.go:1016 dispatches ObjectWithString from
+// Value.String, and :1040 from Value.Repr), so the explicit dispatch below now
+// duplicates what the engine already does. It is kept because it is exactly
+// identical — same interface, same method, same result — so it cannot diverge
+// from the engine, and it keeps this formatter readable without a reader having
+// to know which fork patch landed.
 func displayString(val mjvalue.Value) string {
 	if obj, ok := val.AsObject(); ok {
 		if s, ok := obj.(mjvalue.ObjectWithString); ok {
@@ -311,8 +369,8 @@ func displayString(val mjvalue.Value) string {
 // (linear-time, no backreferences, no lookaround), which is why this is
 // portable at all; the differential harness exercises the syntax surface that
 // the two do not share exactly.
-func filterRegexMatch(_ filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs map[string]mjvalue.Value) (mjvalue.Value, error) {
-	if len(kwargs) > 0 {
+func filterRegexMatch(_ filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs *mjvalue.OrderedMap) (mjvalue.Value, error) {
+	if kwargs.Len() > 0 {
 		return mjvalue.Undefined(), mj.NewError(mj.ErrTooManyArguments, "regex_match takes no keyword arguments")
 	}
 	if len(args) < 1 {
@@ -349,8 +407,8 @@ func filterRegexMatch(_ filters.State, val mjvalue.Value, args []mjvalue.Value, 
 // The input is declared `Vec<Value>`, whose ArgType requires an object with
 // ObjectRepr Seq or Iterable (value/argtypes.rs:987-1006): a string, a mapping
 // or a scalar is `not iterable`, an ERROR rather than 0.
-func filterSum(_ filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs map[string]mjvalue.Value) (mjvalue.Value, error) {
-	if len(args) > 0 || len(kwargs) > 0 {
+func filterSum(_ filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs *mjvalue.OrderedMap) (mjvalue.Value, error) {
+	if len(args) > 0 || kwargs.Len() > 0 {
 		// BAML's sum_filter declares no arguments, so minijinja rejects any.
 		// (This is also why `|sum(attribute="x")` — legal against minijinja's
 		// built-in — is an error under BAML.)

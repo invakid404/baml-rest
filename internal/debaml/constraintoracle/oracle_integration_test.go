@@ -27,7 +27,7 @@
 //
 // # How it works
 //
-//   - corpus_test.go enumerates 687 (expression, `this`) cases. The expression
+//   - corpus_test.go enumerates 706 (expression, `this`) cases. The expression
 //     surface is enumerated from the minijinja-go/v2 v2.16.0 API — every
 //     registered filter, test, global function and operator — NOT inferred from
 //     what the prompt renderer happens to use, plus the operator/value cases the
@@ -66,13 +66,26 @@
 // Requires CGO and the stock BAML v0.223.0 CFFI library (auto-located under the
 // user BAML cache dir), exactly like the #597/#603 oracles.
 //
-// ARCHITECTURE MATTERS HERE. Go's out-of-range int64(float64) conversion is
-// implementation-defined: arm64 saturates, amd64 does not. Two of the
-// divergences this corpus pins — the round-3 `op_i64max` case and the round-10
-// integral-float `2.0 ** 63` promotion, where minijinja-Go's Pow reads its
-// operands through AsInt and hands int64() a value at 2^63 — therefore only
-// SHOW on linux/amd64. The dedicated workflow pins that runner for exactly this
-// reason, so a local darwin/arm64 pass is a weaker signal than a green CI job.
+// ARCHITECTURE. This corpus was built against the UPSTREAM minijinja-Go port,
+// where Go's out-of-range int64(float64) conversion is implementation-defined —
+// arm64 saturates, amd64 does not — so two of the divergences it pins (the
+// round-3 `op_i64max` case and the round-10 integral-float `2.0 ** 63`
+// promotion, where Pow read its operands through AsInt and handed int64() a
+// value at 2^63) only SHOWED on linux/amd64. That is what pinned the workflow's
+// runner.
+//
+// The BAML-exact fork this package now links removes that particular
+// arch-dependence at its root: its integer core is checked i128 rather than
+// float64 round-tripping (PATCHES.md #10-#16), so those expressions no longer
+// have a machine-dependent answer to disagree about — and the numeric whitelist
+// refuses them structurally before evaluation either way, which is why both
+// rows are still recorded as declines.
+//
+// The workflow stays on linux/amd64 and stays the AUTHORITY regardless. A local
+// darwin/arm64 pass now covers more than it used to, but it is still one
+// architecture and one libc against a CFFI boundary, and the claim this package
+// makes — that native never answers where stock did not — is not one to certify
+// from a developer machine.
 //
 // UNLIKE those, this package is NOT a hand-run artifact: .github/workflows/
 // constraint-oracle.yml runs exactly this command on every change under
@@ -499,9 +512,19 @@ func TestConstraintExpressionDifferential(t *testing.T) {
 //
 // There is deliberately no third bucket. A case where native answers something
 // stock did not is a defect, and TestConstraintProfileIsFailClosed fails on it.
+// The counts moved once, when this package was rebased onto master's BAML-exact
+// minijinja fork and the nested-postfix gating fix landed. Every step is a
+// decline turning into an agreement or a new row; nothing turned from an
+// agreement into a decline, and nothing turned into a different boolean:
+//
+//	agree        242 -> 259   +15 new nested chains that stock and native both
+//	                          decide, +1 op_div_zero (the fork's f64 `/` closes
+//	                          the divergence the port had), +1 this_cls_nested_index
+//	                          (the gating fix reaches a value the root lookup missed)
+//	unsupported  445 -> 447   +4 new nested declines, -2 for the two rows above
 const (
-	wantAgree       = 242
-	wantUnsupported = 445
+	wantAgree       = 259
+	wantUnsupported = 447
 )
 
 // TestConstraintProfileIsFailClosed is the load-bearing assertion of this

@@ -7,13 +7,26 @@ import (
 	"strconv"
 	"strings"
 
-	mj "github.com/mitsuhiko/minijinja/minijinja-go/v2"
-	"github.com/mitsuhiko/minijinja/minijinja-go/v2/filters"
-	"github.com/mitsuhiko/minijinja/minijinja-go/v2/tests"
-	mjvalue "github.com/mitsuhiko/minijinja/minijinja-go/v2/value"
+	mj "github.com/invakid404/minijinja-go/v2"
+	"github.com/invakid404/minijinja-go/v2/filters"
+	"github.com/invakid404/minijinja-go/v2/tests"
+	mjvalue "github.com/invakid404/minijinja-go/v2/value"
 )
 
 // The PROVEN PROFILE — the evaluator's fail-closed boundary.
+//
+// ENGINE NOTE — READ THIS FIRST. Everything in this file was derived against the
+// UPSTREAM pure-Go minijinja port, and this package now compiles against the
+// BAML-exact fork github.com/invakid404/minijinja-go/v2 v2.16.0-baml.6 that
+// Slice 7.1 standardised the repo on. The fork closes most of the divergences
+// enumerated below at the engine level — see the ENGINE section on
+// [newConstraintEnv] in constraint_eval.go for the full account and for why
+// every guard here is nevertheless kept unchanged. In short: a guard reads the
+// expression text and the value model, so a guard whose divergence no longer
+// exists can only make native DECLINE something the fork could now answer, which
+// is the safe half of the contract stated immediately below. Narrowing the
+// profile back down to what the fork actually needs is Slice 7.2a work, and each
+// such narrowing is a re-widening of the claim that owes a fresh stock-CFFI row.
 //
 // THE CONTRACT. [EvaluateConstraint] returns either
 //
@@ -136,7 +149,7 @@ func installProfileGuards(env *mj.Environment) {
 	// recognisable input get a specific guard first; the integer-result guard is
 	// then layered over everything uniformly.
 	lengthGuard := func(name string, builtin mj.FilterFunc) mj.FilterFunc {
-		return func(state filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs map[string]mjvalue.Value) (mjvalue.Value, error) {
+		return func(state filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs *mjvalue.OrderedMap) (mjvalue.Value, error) {
 			if _, ok := val.Len(); !ok {
 				return mjvalue.Undefined(), unsupportedConstraint("length of a value with no length (kind %s); minijinja rejects it", val.Kind())
 			}
@@ -149,13 +162,13 @@ func installProfileGuards(env *mj.Environment) {
 	// `split`: minijinja returns a LAZY ITERATOR with no length, minijinja-Go a
 	// materialised list, and the difference leaks into length, indexing and
 	// equality on the result.
-	builtins["split"] = func(filters.State, mjvalue.Value, []mjvalue.Value, map[string]mjvalue.Value) (mjvalue.Value, error) {
+	builtins["split"] = func(filters.State, mjvalue.Value, []mjvalue.Value, *mjvalue.OrderedMap) (mjvalue.Value, error) {
 		return mjvalue.Undefined(), unsupportedConstraint("`split` returns a lazy iterator in minijinja and a list in minijinja-Go")
 	}
 
 	// `last`: minijinja rejects a mapping; minijinja-Go returns its final key.
 	lastBuiltin := builtins["last"]
-	builtins["last"] = func(state filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs map[string]mjvalue.Value) (mjvalue.Value, error) {
+	builtins["last"] = func(state filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs *mjvalue.OrderedMap) (mjvalue.Value, error) {
 		if val.Kind() == mjvalue.KindMap {
 			return mjvalue.Undefined(), unsupportedConstraint("`last` over a mapping; minijinja rejects it")
 		}
@@ -165,14 +178,14 @@ func installProfileGuards(env *mj.Environment) {
 	// `items`/`tojson`: BAML's insertion order is lost through minijinja-Go's
 	// unordered AsMap seam, and is unrecoverable for a mapping literal.
 	itemsBuiltin := builtins["items"]
-	builtins["items"] = func(state filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs map[string]mjvalue.Value) (mjvalue.Value, error) {
+	builtins["items"] = func(state filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs *mjvalue.OrderedMap) (mjvalue.Value, error) {
 		if val.Kind() == mjvalue.KindMap {
 			return mjvalue.Undefined(), unsupportedConstraint("`items` over a mapping; minijinja-Go sorts the keys, minijinja preserves insertion order")
 		}
 		return itemsBuiltin(state, val, args, kwargs)
 	}
 	tojsonBuiltin := builtins["tojson"]
-	builtins["tojson"] = func(state filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs map[string]mjvalue.Value) (mjvalue.Value, error) {
+	builtins["tojson"] = func(state filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs *mjvalue.OrderedMap) (mjvalue.Value, error) {
 		if containsMapping(val, 0) {
 			return mjvalue.Undefined(), unsupportedConstraint("`tojson` over a value containing a mapping; key order differs")
 		}
@@ -277,7 +290,7 @@ func installProfileGuards(env *mj.Environment) {
 	// are — and re-implementing it would be the look-alike this slice refuses to
 	// build. It is therefore withdrawn from the profile outright, which also
 	// removes the unbounded-allocation vector a large range argument would open.
-	env.AddFunction("range", func(*mj.State, []mjvalue.Value, map[string]mjvalue.Value) (mjvalue.Value, error) {
+	env.AddFunction("range", func(*mj.State, []mjvalue.Value, *mjvalue.OrderedMap) (mjvalue.Value, error) {
 		return mjvalue.Undefined(), unsupportedConstraint(
 			"`range` is outside the profile: minijinja-Go exports no handle on it to guard, so an " +
 				"out-of-range integer it produces could reach an exact comparison unchecked")
@@ -309,7 +322,7 @@ func installProfileGuards(env *mj.Environment) {
 	// The cost is measured: `dict(a=1)` was a live agreeing row and is now a
 	// refusal, recorded per case in the corpus.
 	for _, name := range []string{"dict", "namespace", "debug"} {
-		env.AddFunction(name, func(*mj.State, []mjvalue.Value, map[string]mjvalue.Value) (mjvalue.Value, error) {
+		env.AddFunction(name, func(*mj.State, []mjvalue.Value, *mjvalue.OrderedMap) (mjvalue.Value, error) {
 			return mjvalue.Undefined(), unsupportedConstraint(
 				"`%s` is outside the profile: a global callable is reached by neither the filter nor "+
 					"the test wrapper, so no proven-identical signature governs it", name)
@@ -319,7 +332,7 @@ func installProfileGuards(env *mj.Environment) {
 
 // guardForeignMapping refuses a mapping that the value model did not build.
 func guardForeignMapping(name string, builtin mj.FilterFunc) mj.FilterFunc {
-	return func(state filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs map[string]mjvalue.Value) (mjvalue.Value, error) {
+	return func(state filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs *mjvalue.OrderedMap) (mjvalue.Value, error) {
 		if val.Kind() == mjvalue.KindMap && !isOrderedMapping(val) {
 			return mjvalue.Undefined(), unsupportedConstraint("`%s` over a mapping literal; minijinja-Go enumerates it sorted, minijinja in insertion order", name)
 		}
@@ -447,7 +460,7 @@ const maxExactInt uint64 = 1 << 53
 //
 // The faithful alternative — deriving the bound from minijinja-Go's own
 // tokenizer and AST — is not available. Its lexer and parser live under
-// `github.com/mitsuhiko/minijinja/minijinja-go/v2/internal/...`, and Go's
+// `github.com/invakid404/minijinja-go/v2/internal/...`, and Go's
 // visibility rule forbids this package from importing them ("use of internal
 // package ... not allowed"); the module exports no AST accessor either. Writing
 // a Jinja lexer by hand is precisely what produced the previous holes.
@@ -1429,7 +1442,7 @@ const powExponentLimit uint64 = 1 << 32
 // and for any other producer, because the check is on the VALUE that comes back
 // rather than on the syntax that produced it.
 func guardIntegerResult(name string, builtin mj.FilterFunc) mj.FilterFunc {
-	return func(state filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs map[string]mjvalue.Value) (mjvalue.Value, error) {
+	return func(state filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs *mjvalue.OrderedMap) (mjvalue.Value, error) {
 		// INPUT half (round 13). A filter may read its subject or an argument
 		// through AsInt — `|abs`, `|int`, `|format("%d")`, `|batch(n)` and
 		// `|round(n)` all do — and AsInt's float arm is int64(d), which diverges
@@ -1444,7 +1457,12 @@ func guardIntegerResult(name string, builtin mj.FilterFunc) mj.FilterFunc {
 				return mjvalue.Undefined(), asIntHazardError(name)
 			}
 		}
-		for _, a := range kwargs {
+		// The fork carries kwargs as an insertion-ordered map rather than a Go map,
+		// so the scan walks Keys() to keep the FIRST hazardous argument — and hence
+		// the error — deterministic. The check itself is order-independent; only
+		// which argument reports it is not.
+		for _, k := range kwargs.Keys() {
+			a, _ := kwargs.Get(k)
 			if containsAsIntHazard(a, 0) {
 				return mjvalue.Undefined(), asIntHazardError(name)
 			}
@@ -1712,7 +1730,7 @@ var coercingNumericArg = map[string]bool{"is divisibleby": true}
 // the call, because the two engines also disagree about arity, about the KIND
 // an argument may be, and about what happens at an edge value like 0 — all at
 // perfectly ordinary magnitudes.
-func checkCallParity(name string, subject mjvalue.Value, args []mjvalue.Value, kwargs map[string]mjvalue.Value) error {
+func checkCallParity(name string, subject mjvalue.Value, args []mjvalue.Value, kwargs *mjvalue.OrderedMap) error {
 	if withdrawnBuiltins[name] {
 		return unsupportedConstraint(
 			"`%s` is withdrawn from the profile: its behaviour differs from stock across the kinds it "+
@@ -1724,7 +1742,7 @@ func checkCallParity(name string, subject mjvalue.Value, args []mjvalue.Value, k
 			"`%s` has no proven-identical signature; the profile admits only call shapes verified "+
 				"against stock BAML v0.223 and declines everything else", name)
 	}
-	if len(kwargs) > 0 {
+	if kwargs.Len() > 0 {
 		return unsupportedConstraint(
 			"`%s` was given keyword arguments; minijinja-Go's kwargs handling is port surface and "+
 				"stock's argument adapters differ per filter", name)

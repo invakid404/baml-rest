@@ -21,7 +21,7 @@ import (
 //     optional-swallow no-checks case), so its failure cannot take anything
 //     else down with it.
 //
-// 19 batches + 25 isolated functions, versus 310 functions if every case had
+// 20 batches + 25 isolated functions, versus 329 functions if every case had
 // its own — which mattered: the one-function-per-case discovery project
 // generated a 3.7 MB client, this fixture generates well under a tenth of that.
 

@@ -1102,3 +1102,124 @@ func TestAdditiveBoundIsTheSumNotTheMax(t *testing.T) {
 		}
 	}
 }
+
+// TestConstraintNestedPostfixResolvesAgainstReachedValue is the unit half of the
+// nested-postfix over-claim fix.
+//
+// THE DEFECT. The operator gate's first cut carried only a KIND along a postfix
+// chain and answered every field/subscript question against the parser's ROOT
+// `this`, plus a list-literal element kind that was never cleared. Both make the
+// gate classify a nested term as something it is not — and because the gate's
+// whole job is to admit a comparison ONLY when both operands are the same proven
+// kind, a wrong classification ADMITS a comparison that was never proven. That is
+// an over-claim, the one direction [ErrConstraintUnsupported]'s contract forbids:
+// over-declining costs coverage, over-claiming serves a boolean BAML never
+// agreed to.
+//
+// Each case in the first table is a chain whose gate classification was wrong in
+// exactly that way. They are pinned as REFUSALS: the value the chain reaches is a
+// different kind from the operand it is compared against, so the comparison is
+// mixed-kind and outside the profile. Three of them — the two shadowed lookups
+// and the stale element kind — were ADMITTED and answered by the pre-fix gate,
+// which is the over-claim itself; the remaining two pin the rule that makes the
+// fix total, namely that a term the gate did not build (a slice result) supports
+// no further field or index at all.
+//
+// The `resolved` cases are the other half of the same change, and the reason the
+// fix threads the reached VALUE rather than declining nested chains outright: a
+// correctly-typed nested chain now classifies exactly and still decides. Several
+// of them were previously refused only because the root-relative lookup happened
+// to land on nothing — accidental fail-closure, not a proof.
+func TestConstraintNestedPostfixResolvesAgainstReachedValue(t *testing.T) {
+	// A class whose OUTER field and INNER field share a name but not a kind. The
+	// root-relative lookup found the outer "name" (a string) for the inner one
+	// (an integer).
+	shadowed := ClassValue("Outer", []ConstraintEntry{
+		{Key: "a", Value: ClassValue("Inner", []ConstraintEntry{{Key: "name", Value: IntValue(5)}})},
+		{Key: "name", Value: StringValue("x")},
+	})
+	// The same shadowing reached through a string subscript instead of a field.
+	shadowedKey := MapValue([]ConstraintEntry{
+		{Key: "a", Value: MapValue([]ConstraintEntry{{Key: "k", Value: StringValue("s")}})},
+		{Key: "k", Value: IntValue(1)},
+	})
+	// A mapping whose list field holds strings. A NUMERIC list literal earlier in
+	// the same expression left its element kind behind, and the stale value was
+	// then used to classify this list's element.
+	stringList := MapValue([]ConstraintEntry{
+		{Key: "a", Value: ListValue([]ConstraintValue{StringValue("x")})},
+	})
+
+	for name, tc := range map[string]struct {
+		this ConstraintValue
+		expr string
+	}{
+		// Root-relative FIELD: `this.a.name` is the integer 5, but "name" was
+		// looked up in the root and found the string "x", so a string comparison
+		// was admitted over an integer.
+		"nested field shadows root field": {shadowed, `this.a.name == "x"`},
+		// The same defect with the chain's last step written as a subscript.
+		"nested string subscript shadows root key": {shadowedKey, `this.a["k"] == 1`},
+		// Root-relative field reached THROUGH an index first.
+		"field after index shadows root field": {shadowed, `this.a.name > 0 == false`},
+		// Stale list-literal element kind: the left term's `[1,2]` set a numeric
+		// element kind that the right term's `this.a[0]` — a list of STRINGS —
+		// then inherited, admitting `number == string`.
+		"stale list-literal element kind": {stringList, `[1,2][0] == this.a[0]`},
+		// A slice result is a sequence the gate did not build, so it has no
+		// element to index and no proven element kind.
+		"index into a slice result": {stringList, `this.a[0:1][0] == "x"`},
+	} {
+		if got, err := EvaluateConstraint(tc.this, tc.expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%s: %q answered (%v, %v); the chain's kind was resolved against something "+
+				"other than the value it reaches, so an unproven comparison was admitted",
+				name, tc.expr, got, err)
+		}
+	}
+
+	nested := ClassValue("Outer", []ConstraintEntry{
+		{Key: "inner", Value: ClassValue("Inner", []ConstraintEntry{
+			{Key: "n", Value: IntValue(7)},
+			{Key: "s", Value: StringValue("deep")},
+		})},
+		{Key: "items", Value: ListValue([]ConstraintValue{IntValue(1), IntValue(2), IntValue(3)})},
+		{Key: "rows", Value: ListValue([]ConstraintValue{
+			ClassValue("Row", []ConstraintEntry{{Key: "label", Value: StringValue("first")}}),
+		})},
+	})
+	listOfMaps := ListValue([]ConstraintValue{
+		MapValue([]ConstraintEntry{{Key: "name", Value: StringValue("x")}}),
+	})
+
+	for name, tc := range map[string]struct {
+		this ConstraintValue
+		expr string
+		want bool
+	}{
+		"two-deep field":            {nested, `this.inner.n == 7`, true},
+		"two-deep field string":     {nested, `this.inner.s == "deep"`, true},
+		"two-deep field false":      {nested, `this.inner.n == 8`, false},
+		"field then index":          {nested, `this.items[0] == 1`, true},
+		"field then last index":     {nested, `this.items[2] == 3`, true},
+		"field then negative index": {nested, `this.items[-1] == 3`, true},
+		"field then edge filter":    {nested, `this.items|first == 1`, true},
+		"index then field":          {listOfMaps, `this[0].name == "x"`, true},
+		"field, index, field":       {nested, `this.rows[0].label == "first"`, true},
+		"field then length":         {nested, `this.items|length == 3`, true},
+		// A field that genuinely does not exist is undefined, and reading that is
+		// still exact.
+		"missing nested field": {nested, `this.inner.missing is undefined`, true},
+		// An index past the end is undefined for the same reason.
+		"index past the end": {nested, `this.items[9] is undefined`, true},
+	} {
+		got, err := EvaluateConstraint(tc.this, tc.expr)
+		if err != nil {
+			t.Errorf("%s: %q was refused (%v); a correctly-typed nested chain must still decide",
+				name, tc.expr, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s: %q = %v, want %v", name, tc.expr, got, tc.want)
+		}
+	}
+}

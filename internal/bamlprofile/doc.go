@@ -64,7 +64,33 @@
 // each type). Byte-exactness is proven by the stock-CFFI differential in
 // ./profileoracle.
 //
-// PR-3 — the constraint lowerer & typed façade (constraints.go, project.go):
+// PR-3 — the constraint lowerer & typed façade (constraints.go, project.go).
+//
+// SEAM DECISION, recorded here because it governs everything in this section:
+// this constraint façade is an ORACLE / TEST FACADE, not the production
+// constraint evaluator. internal/debaml's ConstraintValue + EvaluateConstraint
+// is the SINGLE production evaluator/value seam that Slice 7.2's serving path
+// consumes; that package models BAML's value domain losslessly (insertion-
+// ordered maps and classes, canonical enum values, retained type identity),
+// which is what a coercion-time constraint runner needs, and it carries the
+// fail-closed ErrConstraintUnsupported contract the admission gate is built on.
+//
+// What lives here stays valuable and stays supported — it is a byte-faithful
+// transcription of run_user_checks/evaluate_predicate with its own stock-CFFI
+// differential, which is exactly what an oracle should be. What it must NOT
+// become is a second, independently evolving runtime evaluator reachable from a
+// serving path: two evaluators means two admission profiles and two fail-closed
+// contracts that can drift apart while both stay green, and the failure mode is
+// a served constraint one of them never proved.
+//
+// The rule is enforced mechanically, not by convention:
+// constraint_evaluator_seam_test.go at the repo root fails if any production
+// (non-_test.go) file outside this package names one of this façade's exported
+// constraint symbols. Note the scope — that guard is about the CONSTRAINT half
+// only. The prompt/host half of this package IS production and IS wired into
+// internal/nativeprompt's render seam, as bamlprofile_embed_test.go pins.
+//
+// What PR-3 provides:
 //   - EvaluateConstraints over resolved Constraint/ConstraintRequest values,
 //     reproducing run_user_checks + evaluate_predicate: a bare get_env()
 //     environment, the stored expression wrapped verbatim as `{{ <expr> }}`,

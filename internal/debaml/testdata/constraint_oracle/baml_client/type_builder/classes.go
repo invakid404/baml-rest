@@ -655,6 +655,38 @@ func (t *Batch_mapClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 
+type Batch_nestClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *Batch_nestClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *Batch_nestClassView) PropertyV() (ClassPropertyView, error) {
+	return t.inner.Property("v")
+}
+
+func (t *TypeBuilder) Batch_nest() (*Batch_nestClassView, error) {
+	bld, err := t.inner.Class("Batch_nest")
+	if err != nil {
+		return nil, err
+	}
+	return &Batch_nestClassView{inner: bld}, nil
+}
+
+func (t *Batch_nestClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
 type Batch_nullClassView struct {
 	inner baml.ClassBuilder
 }
@@ -3212,6 +3244,82 @@ func (t *TypeBuilder) Iso_wd_test_extra_arg() (*Iso_wd_test_extra_argClassView, 
 }
 
 func (t *Iso_wd_test_extra_argClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type NestClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *NestClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *NestClassView) PropertyA() (ClassPropertyView, error) {
+	return t.inner.Property("a")
+}
+
+func (t *NestClassView) PropertyName() (ClassPropertyView, error) {
+	return t.inner.Property("name")
+}
+
+func (t *NestClassView) PropertyRows() (ClassPropertyView, error) {
+	return t.inner.Property("rows")
+}
+
+func (t *TypeBuilder) Nest() (*NestClassView, error) {
+	bld, err := t.inner.Class("Nest")
+	if err != nil {
+		return nil, err
+	}
+	return &NestClassView{inner: bld}, nil
+}
+
+func (t *NestClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type NestInnerClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *NestInnerClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *NestInnerClassView) PropertyName() (ClassPropertyView, error) {
+	return t.inner.Property("name")
+}
+
+func (t *NestInnerClassView) PropertyTags() (ClassPropertyView, error) {
+	return t.inner.Property("tags")
+}
+
+func (t *TypeBuilder) NestInner() (*NestInnerClassView, error) {
+	bld, err := t.inner.Class("NestInner")
+	if err != nil {
+		return nil, err
+	}
+	return &NestInnerClassView{inner: bld}, nil
+}
+
+func (t *NestInnerClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 

@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	mjvalue "github.com/mitsuhiko/minijinja/minijinja-go/v2/value"
+	mjvalue "github.com/invakid404/minijinja-go/v2/value"
 )
 
 // ConstraintValueKind tags the BAML value domain a constraint predicate sees.
@@ -426,8 +426,8 @@ func (m *orderedMapping) ObjectString() string {
 // string and sequence halves of pycompat are therefore NOT available and error
 // out (fail-closed) rather than answer differently. See the doc comment on
 // [EvaluateConstraint].
-func (m *orderedMapping) CallMethod(_ mjvalue.State, name string, args []mjvalue.Value, kwargs map[string]mjvalue.Value) (mjvalue.Value, error) {
-	if len(kwargs) > 0 {
+func (m *orderedMapping) CallMethod(_ mjvalue.State, name string, args []mjvalue.Value, kwargs *mjvalue.OrderedMap) (mjvalue.Value, error) {
+	if kwargs.Len() > 0 {
 		return mjvalue.Undefined(), errUnknownKwargs(name)
 	}
 	switch name {
