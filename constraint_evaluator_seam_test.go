@@ -114,29 +114,14 @@ func TestBamlprofileConstraintAPIHasNoProductionCaller(t *testing.T) {
 			t.Errorf("parsing %s: %v", rel, err)
 			continue
 		}
-		local, imported := bamlprofileLocalName(f)
-		if !imported {
+		imports, violations := scanSeamViolations(f)
+		if !imports {
 			continue
 		}
 		scanned++
-		ast.Inspect(f, func(n ast.Node) bool {
-			sel, ok := n.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			ident, ok := sel.X.(*ast.Ident)
-			if !ok || ident.Name != local {
-				return true
-			}
-			if bamlprofileConstraintAPI[sel.Sel.Name] {
-				t.Errorf("%s references %s.%s from PRODUCTION code.\n"+
-					"internal/debaml (ConstraintValue + EvaluateConstraint) is the single production "+
-					"constraint evaluator; internal/bamlprofile's constraint façade is an oracle/test "+
-					"facade. Route this through internal/debaml, or move the caller behind a build tag.",
-					rel, local, sel.Sel.Name)
-			}
-			return true
-		})
+		for _, v := range violations {
+			t.Errorf("%s: %s", rel, v)
+		}
 	}
 
 	// Non-vacuity: if nothing outside bamlprofile imports it at all, this guard
@@ -267,25 +252,93 @@ func exportedTopLevelNames(decl ast.Decl) []string {
 	return out
 }
 
-// bamlprofileLocalName reports the local name internal/bamlprofile is bound to
-// in this file, and whether it is imported at all. A dot-import would make the
-// selector scan blind, so it is rejected outright rather than silently skipped.
-func bamlprofileLocalName(f *ast.File) (string, bool) {
+// scanSeamViolations reports every way this parsed file breaks the one-evaluator
+// seam. imports says whether it imports internal/bamlprofile at all, which the
+// caller uses for its non-vacuity check.
+//
+// It is a pure function of the AST, separated from the file walk on purpose:
+// that is what lets TestSeamGuardRejectsADotImportBypass drive the guard's own
+// logic over a SYNTHETIC file, including the bypass shape, without adding a real
+// violating file to the tree.
+//
+// TWO VIOLATION SHAPES, because one of them cannot be caught by scanning
+// references at all:
+//
+//  1. A QUALIFIED reference — `bamlprofile.EvaluateConstraints(...)`. Found by
+//     walking selector expressions whose receiver is the import's local name.
+//
+//  2. A DOT IMPORT — `import . ".../internal/bamlprofile"`. This is rejected on
+//     sight, before any reference scan, and it is the round-5 fix. A dot import
+//     binds every exported name of the package into file scope, so a call to
+//     the constraint façade is written as a BARE identifier —
+//     `EvaluateConstraints(r)` — and produces no selector expression for rule 1
+//     to find. The previous cut looked only at selectors and returned "." as an
+//     ordinary local name, so the scan simply never matched and the guard stayed
+//     green over a genuine second evaluator on a production path. Rejecting the
+//     import itself is the only reliable rule: it does not depend on
+//     recognising the call, so it holds for every present and future symbol of
+//     the façade, including ones nobody has added to
+//     [bamlprofileConstraintAPI] yet.
+//
+// A dot import is refused whatever the file goes on to do with it. That is
+// deliberate and costs nothing: no production file in this repo dot-imports
+// anything, and the prompt/host half is equally usable through a normal
+// qualified import.
+func scanSeamViolations(f *ast.File) (imports bool, violations []string) {
+	local := ""
 	for _, imp := range f.Imports {
 		path, err := strconv.Unquote(imp.Path.Value)
 		if err != nil || path != bamlprofileImportPath {
 			continue
 		}
-		if imp.Name == nil {
-			return "bamlprofile", true
-		}
-		if imp.Name.Name == "_" {
+		imports = true
+		switch {
+		case imp.Name == nil:
+			local = "bamlprofile"
+		case imp.Name.Name == ".":
+			// RULE 2. Refuse and stop: with the package dot-imported there is no
+			// qualified reference left to look for.
+			return true, []string{
+				"dot-imports " + bamlprofileImportPath + " from PRODUCTION code.\n" +
+					"A dot import binds every exported name into file scope, so a call to the " +
+					"constraint façade is written unqualified (`EvaluateConstraints(...)`) and no " +
+					"qualified-reference check can see it. internal/debaml (ConstraintValue + " +
+					"EvaluateConstraint) is the single production constraint evaluator; import " +
+					"bamlprofile normally and use its prompt/host half, or move the caller behind " +
+					"a build tag.",
+			}
+		case imp.Name.Name == "_":
 			// A blank import cannot name a symbol.
-			return "", false
+			return true, nil
+		default:
+			local = imp.Name.Name
 		}
-		return imp.Name.Name, true
+		break
 	}
-	return "", false
+	if !imports || local == "" {
+		return imports, nil
+	}
+
+	// RULE 1.
+	ast.Inspect(f, func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		ident, ok := sel.X.(*ast.Ident)
+		if !ok || ident.Name != local {
+			return true
+		}
+		if bamlprofileConstraintAPI[sel.Sel.Name] {
+			violations = append(violations, "references "+local+"."+sel.Sel.Name+
+				" from PRODUCTION code.\n"+
+				"internal/debaml (ConstraintValue + EvaluateConstraint) is the single production "+
+				"constraint evaluator; internal/bamlprofile's constraint façade is an oracle/test "+
+				"facade. Route this through internal/debaml, or move the caller behind a build tag.")
+		}
+		return true
+	})
+	return imports, violations
 }
 
 // allProductionGoFiles lists every non-test .go file in the root module, skipping
@@ -323,4 +376,119 @@ func allProductionGoFiles(t *testing.T, root string) []string {
 		t.Fatalf("walking the repo: %v", err)
 	}
 	return out
+}
+
+// TestSeamGuardRejectsADotImportBypass is the round-5 finding: the seam guard
+// had a hole exactly the size of a dot import.
+//
+// THE BYPASS. TestBamlprofileConstraintAPIHasNoProductionCaller looked only for
+// QUALIFIED references (`bamlprofile.EvaluateConstraints`) via selector
+// expressions. A dot import binds every exported name into file scope, so the
+// same call is written BARE:
+//
+//	import . "github.com/invakid404/baml-rest/internal/bamlprofile"
+//	func evaluateViaWrongSeam(r ConstraintRequest) (ConstraintReport, error) {
+//	    return EvaluateConstraints(r)
+//	}
+//
+// That is production code, outside bamlprofile, genuinely calling its evaluator
+// — the second production evaluator this PR expressly prohibits — and it
+// produced no selector for the scan to match, so the guard stayed green. The
+// helper even returned "." as an ordinary local name while its comment claimed
+// dot imports were "rejected outright", so the guard documented a protection it
+// did not have.
+//
+// The fix rejects the IMPORT rather than trying to recognise the call, which is
+// why it holds for every symbol of the façade rather than only the ones listed
+// in bamlprofileConstraintAPI.
+//
+// This drives [scanSeamViolations] over synthetic sources rather than adding a
+// real violating file to the tree: the bypass has to be exercised, not shipped.
+func TestSeamGuardRejectsADotImportBypass(t *testing.T) {
+	const imp = `"github.com/invakid404/baml-rest/internal/bamlprofile"`
+
+	for name, tc := range map[string]struct {
+		src           string
+		wantImports   bool
+		wantViolation bool
+		wantSubstr    string
+	}{
+		// THE BYPASS, verbatim from the review's repro.
+		"dot import calling the evaluator unqualified": {
+			src: `package nativeprompt
+import . ` + imp + `
+func evaluateViaWrongSeam(r ConstraintRequest) (ConstraintReport, error) {
+	return EvaluateConstraints(r)
+}`,
+			wantImports: true, wantViolation: true, wantSubstr: "dot-imports",
+		},
+		// A dot import is refused even when nothing obviously constraint-shaped
+		// is called: the point is that no reference check can see through it.
+		"dot import used only for the prompt half": {
+			src: `package nativeprompt
+import . ` + imp + `
+func render() *Environment { return New(Config{}) }`,
+			wantImports: true, wantViolation: true, wantSubstr: "dot-imports",
+		},
+		"dot import with no use at all": {
+			src:         `package nativeprompt` + "\n" + `import . ` + imp,
+			wantImports: true, wantViolation: true, wantSubstr: "dot-imports",
+		},
+		// RULE 1 must keep working — the qualified shape the guard always caught.
+		"qualified reference to the constraint API": {
+			src: `package nativeprompt
+import bp ` + imp + `
+func f(r bp.ConstraintRequest) (bp.ConstraintReport, error) { return bp.EvaluateConstraints(r) }`,
+			wantImports: true, wantViolation: true, wantSubstr: "EvaluateConstraints",
+		},
+		"qualified reference under the default local name": {
+			src: `package nativeprompt
+import ` + imp + `
+func f() { _ = bamlprofile.ConstraintCheck }`,
+			wantImports: true, wantViolation: true, wantSubstr: "ConstraintCheck",
+		},
+		// CONTROLS. The prompt/host half is production and must stay allowed.
+		"qualified use of the prompt half only": {
+			src: `package nativeprompt
+import ` + imp + `
+func render() *bamlprofile.Environment { return bamlprofile.New(bamlprofile.Config{}) }`,
+			wantImports: true, wantViolation: false,
+		},
+		"blank import": {
+			src:         `package nativeprompt` + "\n" + `import _ ` + imp,
+			wantImports: true, wantViolation: false,
+		},
+		"no bamlprofile import": {
+			src: `package nativeprompt
+import "strings"
+func f() string { return strings.TrimSpace("x") }`,
+			wantImports: false, wantViolation: false,
+		},
+		// A same-named identifier that is not the import must not false-positive.
+		"unrelated selector with a colliding receiver name": {
+			src: `package nativeprompt
+import "strings"
+func f(bamlprofile struct{ EvaluateConstraints string }) string {
+	return strings.TrimSpace(bamlprofile.EvaluateConstraints)
+}`,
+			wantImports: false, wantViolation: false,
+		},
+	} {
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, "synthetic.go", tc.src, 0)
+		if err != nil {
+			t.Fatalf("%s: parsing the synthetic source: %v", name, err)
+		}
+		imports, violations := scanSeamViolations(f)
+		if imports != tc.wantImports {
+			t.Errorf("%s: imports = %v, want %v", name, imports, tc.wantImports)
+		}
+		if got := len(violations) > 0; got != tc.wantViolation {
+			t.Errorf("%s: violation = %v, want %v (violations: %q)", name, got, tc.wantViolation, violations)
+			continue
+		}
+		if tc.wantSubstr != "" && !strings.Contains(strings.Join(violations, "\n"), tc.wantSubstr) {
+			t.Errorf("%s: violation text %q does not mention %q", name, violations, tc.wantSubstr)
+		}
+	}
 }
