@@ -94,6 +94,18 @@ internal/bamlprofile/profileoracle
 # above.
 internal/debaml/testdata/constraint_oracle
 
+# de-BAML Slice 7.2a-1 GUARD-REMOVAL LEDGER proof material
+# (internal/debaml/guardledger): the structured ledger the in-repo manifest
+# internal/debaml/guard_ledger.md is rendered from, the .baml witness project,
+# and its UNTOUCHED stock BAML v0.223.0 generated Go client. Like
+# constraint_oracle above, the generated baml_client imports the stock
+# github.com/boundaryml/baml runtime, so embedding it would make the root server
+# binary ship a SECOND generated BAML client — and the ledger JSON is test-only
+# proof material, not a customer-build input. Excluded here (cmd/embed includes
+# testdata dirs by default) so the root embed manifest gains only the rendered
+# markdown manifest itself.
+internal/debaml/testdata/guard_ledger
+
 # de-BAML Phase 4b + 5.1 gated nanollm Prepare validation: a SEPARATE, test-only
 # Go module (github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare)
 # excluded from go.work so the PUBLIC github.com/viktordanov/nanollm-ffi/go

@@ -1,0 +1,2119 @@
+{
+  "records": [
+    {
+      "key": "lengthGuard",
+      "name": "lengthGuard (length/count no-Len wrapper)",
+      "file": "internal/debaml/constraint_profile.go",
+      "class": "P",
+      "disposition": "removed",
+      "forkCapability": "PATCHES.md #50 (filter/function type errors) — the fork's own `length` raises the error class stock raises instead of answering.",
+      "witnessRows": [
+        "LEN_INT",
+        "LEN_BOOL",
+        "LEN_NULL",
+        "LEN_STR",
+        "LEN_LIST",
+        "LEN_MAP",
+        "LEN_CLS",
+        "CNT_INT",
+        "CNT_STR",
+        "CNT_LIST",
+        "CNT_MAP",
+        "CNT_CLS",
+        "CNT_BOOL",
+        "CNT_NULL",
+        "SPLIT_LENGTH"
+      ],
+      "stockEnvelope": "pass for LEN_STR, LEN_LIST, LEN_MAP, LEN_CLS, CNT_STR, CNT_LIST, CNT_MAP, CNT_CLS; evaluator-error for LEN_INT, CNT_INT (`invalid operation: cannot calculate length of value of type number`); LEN_BOOL, CNT_BOOL (`invalid operation: cannot calculate length of value of type bool`); SPLIT_LENGTH (`invalid operation: cannot calculate length of value of type iterator`); no-checks for LEN_NULL, CNT_NULL. LEN_NULL and CNT_NULL are no-checks for the same optional-swallow reason; SPLIT_LENGTH is the length-less ITERATOR case, which is why its message differs from the number/bool ones.",
+      "nativeEnvelope": "agreement — the same outcome stock recorded — for LEN_STR, LEN_LIST, LEN_MAP, LEN_CLS, CNT_STR, CNT_LIST, CNT_MAP, CNT_CLS; native-unsupported for LEN_INT, LEN_BOOL, LEN_NULL, CNT_INT, CNT_BOOL, CNT_NULL (attributed to checkCallParity/subject-kind); native-unsupported for SPLIT_LENGTH (attributed to operatorShapeIsProven). SPLIT_LENGTH is refused one gate earlier than its siblings: the operator gate declines the withdrawn `split` chain before the signature table is consulted.",
+      "effect": "none (subsumed)",
+      "subsumedBy": "checkCallParity + provenSignatures[\"length\"/\"count\"].subject == kSized",
+      "rollback": "TWO LAYERS stand behind the removal, and it is unsafe only when both fail together: a length-less value must REACH the builtin (checkCallParity stops refusing it, i.e. provenSignatures widens `length`/`count` beyond kSized, or kSized stops being exactly the set of kinds that answer Value.Len()) AND the engine's own `length` must stop RAISING for such a value. Either layer alone still yields a decline — the first leaves the engine's refusal, the second is unreachable while the signature table holds — so either on its own is an early warning rather than a wrong boolean. THREE INVARIANTS carry those two layers, and TestRemovedLengthGuardIsSubsumedAtTheFilterSeam asserts each directly, at the filter seam: (1) checkCallParity refuses every length-less subject for both `length` and `count`, and still admits every sized one; (2) kSized is exactly the has-a-Len set over every value the model produces, under both mapping projections; (3) the engine's own `length` raises — with stock's own error class — for a constructed kSized value that has no Len. Reinstate the guard if any of the three moves.",
+      "subprocessWitness": "",
+      "deferralRecord": "",
+      "notes": "checkCallParity runs BEFORE the wrapped builtin (guardIntegerResult calls it first) and admits `length`/`count` only for kSized, which is exactly the set of kinds that answer Value.Len() over every value the model produces under both mapping projections — so the guard could never fire. Unlike the `last` candidate, its witness rows REACH the filter seam: LEN_INT, LEN_BOOL, CNT_INT and CNT_BOOL are attributed to checkCallParity's subject rule, not to an earlier gate, so the survivor named here is the live one. The residual case — a kSized value with no Len — is constructed in the negative and shown to RAISE in the engine, which is still a decline.",
+      "livenessProof": ""
+    },
+    {
+      "key": "lastMappingGuard",
+      "name": "`last` over a mapping guard",
+      "file": "internal/debaml/constraint_profile.go",
+      "class": "P",
+      "disposition": "kept-unprovable",
+      "forkCapability": "PATCHES.md #36/#43 (ordered mappings; `reverse` on a mapping) bear on the behaviour, and the fork's `last` now raises exactly where stock raises — but fork capability is not what is missing here: an observable witness is.",
+      "witnessRows": [
+        "LAST_CLS_VALUE",
+        "LAST_CLS_KEY",
+        "LAST_MAP_KEY",
+        "LAST_LIST",
+        "FIRST_LIST"
+      ],
+      "stockEnvelope": "pass for LAST_LIST, FIRST_LIST; evaluator-error for LAST_CLS_VALUE, LAST_CLS_KEY, LAST_MAP_KEY (`invalid operation: cannot get last item from value`)",
+      "nativeEnvelope": "agreement — the same outcome stock recorded — for LAST_LIST, FIRST_LIST; native-unsupported for LAST_CLS_VALUE, LAST_CLS_KEY, LAST_MAP_KEY (attributed to operatorShapeIsProven). Every attribution is to operatorShapeIsProven — NOT to the guard under discussion, which is precisely why no row can observe its absence and why it stays.",
+      "effect": "none (unreachable in production; no row can observe its absence)",
+      "subsumedBy": "",
+      "rollback": "Revisit only when BOTH gates in front of this wrapper widen: operatorShapeIsProven must ADMIT `<mapping>|last` (today `|last` needs a sequence subject to infer an element kind) AND checkCallParity must admit a mapping subject for `last` (today provenSignatures[\"last\"] is kSequence, which excludes kMap). Either gate alone still blocks every witness row, so neither on its own makes the removal testable. TestLastOverMappingGuardPreEmptedByCheckCallParity asserts both conditions and fails the moment either changes.",
+      "subprocessWitness": "",
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "THREE layers of redundancy, all measured. (1) Stock RAISES on `<mapping>|last` — LAST_CLS_VALUE, LAST_CLS_KEY and LAST_MAP_KEY all record `invalid operation: cannot get last item from value`. (2) checkCallParity refuses a kMap subject for `last` before this wrapper is delegated to, so it is UNREACHABLE in production. (3) Even with that lifted, the fork's own `last` raises the SAME message stock raises (TestLastOverMappingEngineAlreadyRaises) — the guard was written against the UPSTREAM port, which returned the mapping's final key instead, and that divergence is closed. It is kept anyway because the removal is not ROW-provable: a witness row is an expression, and reaching this seam from one needs BOTH operatorShapeIsProven and checkCallParity to admit a mapping subject for `last` — the operator gate refuses the expression outright and the signature table refuses the call, so no row can distinguish an environment carrying the wrapper from one without it. Liveness is therefore proved in-package, by lifting the signature-table shadow and asserting the wrapper's own marker — deleting the wrapper fails that test while leaving every CFFI row green.",
+      "livenessProof": "TestLastOverMappingGuardIsLiveInTheInstalledChain (the wrapper is installed and fires once checkCallParity's subject rule is lifted), TestLastOverMappingGuardPreEmptedByCheckCallParity (it is unreachable while that rule stands), TestLastOverMappingGuardRefusesDirectly"
+    },
+    {
+      "key": "withdrawNonBAMLBuiltins",
+      "name": "withdrawNonBAMLBuiltins (urlencode, containing, cycler, joiner, lipsum)",
+      "file": "internal/debaml/constraint_eval.go",
+      "class": "P",
+      "disposition": "kept-inert",
+      "forkCapability": "PATCHES.md #45 — the fork's default registry no longer registers any of the five.",
+      "witnessRows": [
+        "WB_URLENCODE",
+        "WB_CONTAINING",
+        "WB_CYCLER",
+        "WB_JOINER",
+        "WB_LIPSUM"
+      ],
+      "stockEnvelope": "evaluator-error for WB_URLENCODE (`unknown filter: filter urlencode is unknown`); WB_CONTAINING (`unknown test: test containing is unknown`); WB_CYCLER (`unknown function: cycler is unknown`); WB_JOINER (`unknown function: joiner is unknown`); WB_LIPSUM (`unknown function: lipsum is unknown`)",
+      "nativeEnvelope": "native-unsupported for WB_URLENCODE, WB_CYCLER, WB_JOINER, WB_LIPSUM (attributed to operatorShapeIsProven); native-unsupported for WB_CONTAINING (attributed to engine/unknown-name)",
+      "effect": "none (all rows agree)",
+      "subsumedBy": "",
+      "rollback": "Remove the stubs only together with their five rows. If the fork re-registers `containing`, WB_CONTAINING flips straight from agree-refusal to a native answer stock does not produce, because a test call is inside the predicate grammar and reaches evaluation on its own. The other four are refused by operatorShapeIsProven first, so each of those rows flips only when BOTH the operator gate admits its shape AND the fork re-registers the name. Either way the fail-closed test is what catches it.",
+      "subprocessWitness": "",
+      "deferralRecord": "",
+      "notes": "Removal is PERMITTED by the evidence — every row is an agreement — and is declined anyway: the stubs cost no coverage, cannot widen anything (each only ever errors), and are a standing assertion of BAML's `default-features = false` feature set at the seam this package owns. Scope §1 states they need not be removed.",
+      "livenessProof": ""
+    },
+    {
+      "key": "numericProfile",
+      "name": "exceedsExactIntegerRange, numericParser/parseNumeric, isProvablySmallNumber, bracketRegionsBlanked, bracketIsListLiteral, listLiteralRegionIsSafe, subscriptRegionIsSafe, parsePow",
+      "file": "internal/debaml/constraint_profile.go",
+      "class": "P per operator family",
+      "disposition": "kept-over-decline",
+      "forkCapability": "PATCHES.md #10–#31 (checked i128 core, exact comparison, `%`/`//`/`**` conventions, slice bounds, AsInt consumers).",
+      "witnessRows": [
+        "N1",
+        "N1b",
+        "N2",
+        "N3",
+        "N4",
+        "N5",
+        "N6",
+        "N7",
+        "BS_REGEX"
+      ],
+      "stockEnvelope": "pass for N1b, N2, N3, N4, N5, BS_REGEX; failed-check for N1, N6, N7. N1 is 2^53+1 against 2^53, which stock's exact integer core keeps apart; N6 is a fractional DIRECT subscript, which resolves to undefined rather than erroring; N7 is two integers manufactured past 2^53 by `|int`.",
+      "nativeEnvelope": "agreement — the same outcome stock recorded — for N5; native-unsupported for N1, N1b, N2, N3, N4, N6, N7, BS_REGEX (attributed to exceedsExactIntegerRange)",
+      "effect": "coverage-only",
+      "subsumedBy": "",
+      "rollback": "n/a — nothing removed. A per-family widening must land with the family's own rows and may not lean on the fork ledger alone.",
+      "subprocessWitness": "",
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "Signed `%` and `//` are euclidean in stock and truncated/floored in Go, so only non-negative integer literal operands are proven; `**` is bounded only for a manifest literal base and exponent. BS_REGEX additionally records that a backslash inside a string literal makes the bracket-region scan refuse to say where the literal ends, so the whole expression is declined before the filter is reached.",
+      "livenessProof": ""
+    },
+    {
+      "key": "integerResultWrappers",
+      "name": "guardIntegerResult, guardTestInput, containsInexactInteger, containsAsIntHazard, maxAbsInt, floatIntConversionMagnitude, asIntHazardError",
+      "file": "internal/debaml/constraint_profile.go",
+      "class": "A",
+      "disposition": "kept-over-decline",
+      "forkCapability": "PATCHES.md #10–#31 close the same numeric class at the engine, but the wrappers are applied to EVERY registered filter and test.",
+      "witnessRows": [
+        "N7",
+        "N8",
+        "N9",
+        "N10",
+        "N11"
+      ],
+      "stockEnvelope": "pass for N9; failed-check for N7, N8; evaluator-error for N10 (`invalid operation: count cannot be 0`); N11 (`invalid operation: cannot convert number to usize`)",
+      "nativeEnvelope": "native-unsupported for N7, N8, N9 (attributed to exceedsExactIntegerRange); native-unsupported for N10, N11 (attributed to operatorShapeIsProven)",
+      "effect": "coverage-only",
+      "subsumedBy": "",
+      "rollback": "n/a — nothing removed. Deleting the wrappers wholesale is out of scope for 7.2a; a per-callable table-driven allowlist is a separate effort.",
+      "subprocessWitness": "",
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "N8 is the round-13 shape (a float at 2^63 read through AsInt); N9 manufactures an integer past 2^53 from a string subject. Neither is visible to a static scan, which is why the check is on the value at the point of production.",
+      "livenessProof": ""
+    },
+    {
+      "key": "splitWithdrawal",
+      "name": "`split` hard withdrawal",
+      "file": "internal/debaml/constraint_profile.go",
+      "class": "P after lifecycle rows",
+      "disposition": "kept-over-decline",
+      "forkCapability": "PATCHES.md #42/#50 (empty iterables; filter/function type errors).",
+      "witnessRows": [
+        "SPLIT_LIST",
+        "SPLIT_ITERABLE",
+        "SPLIT_INDEX",
+        "SPLIT_INDEX_BARE",
+        "SPLIT_LENGTH"
+      ],
+      "stockEnvelope": "pass for SPLIT_LIST, SPLIT_ITERABLE, SPLIT_INDEX; evaluator-error for SPLIT_LENGTH (`invalid operation: cannot calculate length of value of type iterator`); source-rejected for SPLIT_INDEX_BARE. SPLIT_INDEX_BARE has no stock leg at either level: BAML refuses to COMPILE that spelling, which is the observation the row records.",
+      "nativeEnvelope": "native-unsupported for SPLIT_LIST, SPLIT_ITERABLE, SPLIT_INDEX, SPLIT_INDEX_BARE, SPLIT_LENGTH (attributed to operatorShapeIsProven). SPLIT_INDEX_BARE has no stock leg to compare against and is still required to decline.",
+      "effect": "coverage-only",
+      "subsumedBy": "",
+      "rollback": "n/a — nothing removed. The lifecycle rows show the withdrawal is still load-bearing.",
+      "subprocessWitness": "",
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "SPLIT_LENGTH is the row that keeps this guard: the fork's own Iterator CARRIES a length (value/value.go Len's `*Iterator` arm), so `this|split(\" \")|length` would answer 2 where stock raises. The three rows on which the two engines WOULD match if the chain were admitted — SPLIT_LIST, SPLIT_ITERABLE and SPLIT_INDEX — do not offset that; in the ledger's own vocabulary none of the five is an agreement, because native declines every one of them.",
+      "livenessProof": ""
+    },
+    {
+      "key": "itemsTojsonMappingGuards",
+      "name": "`items` mapping guard, `tojson` containsMapping guard",
+      "file": "internal/debaml/constraint_profile.go",
+      "class": "P for ordered ConstraintValue maps",
+      "disposition": "kept-over-decline",
+      "forkCapability": "PATCHES.md #36/#37 (ordered mappings; map key spelling).",
+      "witnessRows": [
+        "ITEMS_MAP",
+        "ITEMS_CLS",
+        "TOJSON_MAP",
+        "TOJSON_NEST",
+        "ITEMS_NEST",
+        "ITEMS_ORDER_MAP",
+        "ITEMS_ORDER_CLS",
+        "TOJSON_ORDER_MAP",
+        "TOJSON_ORDER_NEST"
+      ],
+      "stockEnvelope": "pass for ITEMS_MAP, ITEMS_CLS, TOJSON_MAP, TOJSON_NEST, ITEMS_NEST, ITEMS_ORDER_MAP, ITEMS_ORDER_CLS, TOJSON_ORDER_MAP, TOJSON_ORDER_NEST. TOJSON_MAP records 13 rendered bytes (`{\"b\":1,\"a\":2}`) and TOJSON_NEST 23; TOJSON_ORDER_MAP and TOJSON_ORDER_NEST read byte 2 and byte 11 of that rendering, so insertion order is observed at both levels rather than inferred.",
+      "nativeEnvelope": "native-unsupported for ITEMS_MAP, ITEMS_CLS, TOJSON_MAP, TOJSON_NEST, ITEMS_NEST, ITEMS_ORDER_MAP, ITEMS_ORDER_CLS, TOJSON_ORDER_MAP, TOJSON_ORDER_NEST (attributed to operatorShapeIsProven)",
+      "effect": "coverage-only",
+      "subsumedBy": "",
+      "rollback": "n/a — nothing removed.",
+      "subprocessWitness": "",
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "The recorded lengths pin stock's rendering as compact and INSERTION-ordered at both levels, which is the property the guard exists to protect. Native cannot observe it through minijinja-Go's unordered AsMap seam.",
+      "livenessProof": ""
+    },
+    {
+      "key": "mappingDualRender",
+      "name": "mappingOrdered/mappingNative dual render in renderConstraint; orderedMapping, isOrderedMapping, hasMapping",
+      "file": "internal/debaml/constraint_eval.go, internal/debaml/constraint_value.go",
+      "class": "A",
+      "disposition": "kept-over-decline",
+      "forkCapability": "PATCHES.md #32–#44 (generic value_cmp dispatch, containment, ordered mappings, slicing).",
+      "witnessRows": [
+        "LEN_MAP",
+        "LEN_CLS",
+        "CNT_MAP",
+        "CNT_CLS",
+        "LAST_CLS_VALUE",
+        "LAST_CLS_KEY",
+        "LAST_MAP_KEY",
+        "ITEMS_MAP",
+        "ITEMS_CLS",
+        "ITEMS_NEST",
+        "O2",
+        "O2b",
+        "MAP_SUBSCRIPT",
+        "CLS_FIELD",
+        "MAP_LIST",
+        "MAP_REVERSE_LIST",
+        "MAP_STRING",
+        "MAP_STRING_LEN",
+        "MAP_CONCAT",
+        "MAP_EQUALITY",
+        "MAP_NESTED",
+        "CLS_NESTED_LIST",
+        "MAP_LIST_ORDER",
+        "CLS_LIST_ORDER",
+        "MAP_REVERSE_ORDER",
+        "MAP_REVERSE_ORDER_B",
+        "ITEMS_ORDER_MAP",
+        "ITEMS_ORDER_CLS",
+        "MAP_STRING_ORDER",
+        "PG_IS_MAPPING"
+      ],
+      "stockEnvelope": "pass for LEN_MAP, LEN_CLS, CNT_MAP, CNT_CLS, ITEMS_MAP, ITEMS_CLS, ITEMS_NEST, O2, MAP_SUBSCRIPT, CLS_FIELD, MAP_LIST, MAP_REVERSE_LIST, MAP_STRING, MAP_STRING_LEN, MAP_CONCAT, MAP_EQUALITY, MAP_NESTED, CLS_NESTED_LIST, MAP_LIST_ORDER, CLS_LIST_ORDER, MAP_REVERSE_ORDER_B, ITEMS_ORDER_MAP, ITEMS_ORDER_CLS, MAP_STRING_ORDER, PG_IS_MAPPING; failed-check for O2b, MAP_REVERSE_ORDER; evaluator-error for LAST_CLS_VALUE, LAST_CLS_KEY, LAST_MAP_KEY (`invalid operation: cannot get last item from value`). MAP_REVERSE_ORDER is false because stock does NOT reverse a mapping — a Rust quirk PATCHES.md #43 records — and MAP_REVERSE_ORDER_B is its true half.",
+      "nativeEnvelope": "agreement — the same outcome stock recorded — for LEN_MAP, LEN_CLS, CNT_MAP, CNT_CLS, MAP_SUBSCRIPT, CLS_FIELD, MAP_NESTED, CLS_NESTED_LIST, PG_IS_MAPPING; native-unsupported for LAST_CLS_VALUE, LAST_CLS_KEY, LAST_MAP_KEY, ITEMS_MAP, ITEMS_CLS, ITEMS_NEST, O2, O2b, MAP_STRING, MAP_STRING_LEN, MAP_CONCAT, MAP_EQUALITY, MAP_LIST_ORDER, CLS_LIST_ORDER, MAP_REVERSE_ORDER, MAP_REVERSE_ORDER_B, ITEMS_ORDER_MAP, ITEMS_ORDER_CLS, MAP_STRING_ORDER (attributed to operatorShapeIsProven); native-unsupported for MAP_LIST, MAP_REVERSE_LIST (attributed to checkCallParity/subject-kind). The agreements are the rows that only READ a mapping; every decline ENUMERATES or RENDERS one.",
+      "effect": "coverage-only",
+      "subsumedBy": "",
+      "rollback": "n/a — nothing removed. It stays until EVERY proposed operation has both an ordered-native row and a negative foreign-map row.",
+      "subprocessWitness": "",
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "The rows split cleanly: reading a mapping by key or field agrees, while anything that ENUMERATES or RENDERS it declines. That is the boundary the dual render draws, now measured per operation rather than asserted.",
+      "livenessProof": ""
+    },
+    {
+      "key": "guardForeignMapping",
+      "name": "guardForeignMapping over list, join, first, map, select, reject, selectattr, rejectattr, groupby, chain, zip, unique, batch, slice, reverse, pprint, string, indent",
+      "file": "internal/debaml/constraint_profile.go",
+      "class": "A for non-string keys",
+      "disposition": "kept-over-decline",
+      "forkCapability": "PATCHES.md #36/#37; the named gap 'mappings are keyed by string, not by value' is explicitly still open.",
+      "witnessRows": [
+        "FMAP_LIST",
+        "FMAP_DICT",
+        "FMAP_NONSTRING_KEY",
+        "FM_LIST_LIT",
+        "FM_LIST_DICT",
+        "FM_JOIN_LIT",
+        "FM_JOIN_DICT",
+        "FM_FIRST_LIT",
+        "FM_FIRST_DICT",
+        "FM_MAP_LIT",
+        "FM_MAP_DICT",
+        "FM_SELECT_LIT",
+        "FM_SELECT_DICT",
+        "FM_REJECT_LIT",
+        "FM_REJECT_DICT",
+        "FM_SELECTATTR_LIT",
+        "FM_SELECTATTR_DICT",
+        "FM_REJECTATTR_LIT",
+        "FM_REJECTATTR_DICT",
+        "FM_GROUPBY_LIT",
+        "FM_GROUPBY_DICT",
+        "FM_CHAIN_LIT",
+        "FM_CHAIN_DICT",
+        "FM_ZIP_LIT",
+        "FM_ZIP_DICT",
+        "FM_UNIQUE_LIT",
+        "FM_UNIQUE_DICT",
+        "FM_BATCH_LIT",
+        "FM_BATCH_DICT",
+        "FM_SLICE_LIT",
+        "FM_SLICE_DICT",
+        "FM_REVERSE_LIT",
+        "FM_REVERSE_DICT",
+        "FM_PPRINT_LIT",
+        "FM_PPRINT_DICT",
+        "FM_STRING_LIT",
+        "FM_STRING_DICT",
+        "FM_INDENT_LIT",
+        "FM_INDENT_DICT"
+      ],
+      "stockEnvelope": "pass for FMAP_LIST, FMAP_DICT, FMAP_NONSTRING_KEY, FM_LIST_LIT, FM_LIST_DICT, FM_JOIN_LIT, FM_JOIN_DICT, FM_FIRST_LIT, FM_FIRST_DICT, FM_MAP_LIT, FM_MAP_DICT, FM_SELECT_LIT, FM_SELECT_DICT, FM_REJECT_LIT, FM_REJECT_DICT, FM_SELECTATTR_LIT, FM_SELECTATTR_DICT, FM_REJECTATTR_LIT, FM_REJECTATTR_DICT, FM_CHAIN_LIT, FM_CHAIN_DICT, FM_ZIP_LIT, FM_ZIP_DICT, FM_UNIQUE_LIT, FM_UNIQUE_DICT, FM_BATCH_LIT, FM_BATCH_DICT, FM_SLICE_LIT, FM_SLICE_DICT, FM_PPRINT_LIT, FM_PPRINT_DICT, FM_STRING_LIT, FM_STRING_DICT, FM_INDENT_LIT, FM_INDENT_DICT; failed-check for FM_GROUPBY_LIT, FM_GROUPBY_DICT, FM_REVERSE_LIT, FM_REVERSE_DICT. The failed-check rows are `reverse` and `groupby` in both shapes; that is itself the order observation, since stock does not reverse a mapping.",
+      "nativeEnvelope": "native-unsupported for FMAP_LIST, FMAP_DICT, FMAP_NONSTRING_KEY, FM_LIST_LIT, FM_LIST_DICT, FM_JOIN_LIT, FM_JOIN_DICT, FM_FIRST_LIT, FM_FIRST_DICT, FM_MAP_LIT, FM_MAP_DICT, FM_SELECT_LIT, FM_SELECT_DICT, FM_REJECT_LIT, FM_REJECT_DICT, FM_SELECTATTR_LIT, FM_SELECTATTR_DICT, FM_REJECTATTR_LIT, FM_REJECTATTR_DICT, FM_GROUPBY_LIT, FM_GROUPBY_DICT, FM_CHAIN_LIT, FM_CHAIN_DICT, FM_ZIP_LIT, FM_ZIP_DICT, FM_UNIQUE_LIT, FM_UNIQUE_DICT, FM_BATCH_LIT, FM_BATCH_DICT, FM_SLICE_LIT, FM_SLICE_DICT, FM_REVERSE_LIT, FM_REVERSE_DICT, FM_PPRINT_LIT, FM_PPRINT_DICT, FM_STRING_LIT, FM_STRING_DICT, FM_INDENT_LIT, FM_INDENT_DICT (attributed to operatorShapeIsProven)",
+      "effect": "coverage-only",
+      "subsumedBy": "",
+      "rollback": "n/a — nothing removed. FMAP_NONSTRING_KEY is the MANDATORY negative: it must stay declined until the fork's non-string-key gap closes, and a string-key proof may not be used to remove this guard.",
+      "subprocessWitness": "",
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "A mapping manufactured inside the expression is identical under both projections, so the representation-agreement check cannot see it at all.",
+      "livenessProof": ""
+    },
+    {
+      "key": "rangeWithdrawal",
+      "name": "`range` global withdrawal",
+      "file": "internal/debaml/constraint_profile.go",
+      "class": "P for small bounded ranges only",
+      "disposition": "kept-over-decline",
+      "forkCapability": "PATCHES.md #26/#41 (range arguments; range error class).",
+      "witnessRows": [
+        "RANGE_LIST",
+        "RANGE_LAST",
+        "RANGE_STEP"
+      ],
+      "stockEnvelope": "pass for RANGE_LIST, RANGE_LAST, RANGE_STEP. The oversized-boundary row is not cited here — it cannot be driven in-process and is recorded from an isolated subprocess instead.",
+      "nativeEnvelope": "native-unsupported for RANGE_LIST, RANGE_LAST (attributed to operatorShapeIsProven); native-unsupported for RANGE_STEP (attributed to exceedsExactIntegerRange). RANGE_STEP is refused one gate earlier than its siblings, by the numeric sublanguage, because `-1` is an arithmetic byte outside any bracket region.",
+      "effect": "coverage-only",
+      "subsumedBy": "",
+      "rollback": "n/a — nothing removed. Admitting `range` is a bulk admission, not a row-by-row one.",
+      "subprocessWitness": "TestGuardLedgerHugeRangeIsIsolated",
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "RANGE_LAST is the round-5 escape shape — an out-of-range integer reaching an exact comparison — and stock decides it, which is exactly why the withdrawal is a cost rather than a no-op.",
+      "livenessProof": ""
+    },
+    {
+      "key": "globalWithdrawals",
+      "name": "`dict`, `namespace`, `debug` global withdrawals",
+      "file": "internal/debaml/constraint_profile.go",
+      "class": "A",
+      "disposition": "kept-over-decline",
+      "forkCapability": "PATCHES.md #49 (argument contract for every filter, test and function).",
+      "witnessRows": [
+        "FMAP_DICT",
+        "DICT_ARITY",
+        "NAMESPACE_ATTR",
+        "DEBUG_CALL",
+        "FM_LIST_DICT",
+        "FM_JOIN_DICT",
+        "FM_FIRST_DICT",
+        "FM_MAP_DICT",
+        "FM_SELECT_DICT",
+        "FM_REJECT_DICT",
+        "FM_SELECTATTR_DICT",
+        "FM_REJECTATTR_DICT",
+        "FM_GROUPBY_DICT",
+        "FM_CHAIN_DICT",
+        "FM_ZIP_DICT",
+        "FM_UNIQUE_DICT",
+        "FM_BATCH_DICT",
+        "FM_SLICE_DICT",
+        "FM_REVERSE_DICT",
+        "FM_PPRINT_DICT",
+        "FM_STRING_DICT",
+        "FM_INDENT_DICT"
+      ],
+      "stockEnvelope": "pass for FMAP_DICT, NAMESPACE_ATTR, DEBUG_CALL, FM_LIST_DICT, FM_JOIN_DICT, FM_FIRST_DICT, FM_MAP_DICT, FM_SELECT_DICT, FM_REJECT_DICT, FM_SELECTATTR_DICT, FM_REJECTATTR_DICT, FM_CHAIN_DICT, FM_ZIP_DICT, FM_UNIQUE_DICT, FM_BATCH_DICT, FM_SLICE_DICT, FM_PPRINT_DICT, FM_STRING_DICT, FM_INDENT_DICT; failed-check for FM_GROUPBY_DICT, FM_REVERSE_DICT; evaluator-error for DICT_ARITY (`invalid operation`). DICT_ARITY is the shape the withdrawal was introduced for: stock's functions::dict raises where the port answered.",
+      "nativeEnvelope": "native-unsupported for FMAP_DICT, DICT_ARITY, NAMESPACE_ATTR, DEBUG_CALL, FM_LIST_DICT, FM_JOIN_DICT, FM_FIRST_DICT, FM_MAP_DICT, FM_SELECT_DICT, FM_REJECT_DICT, FM_SELECTATTR_DICT, FM_REJECTATTR_DICT, FM_GROUPBY_DICT, FM_CHAIN_DICT, FM_ZIP_DICT, FM_UNIQUE_DICT, FM_BATCH_DICT, FM_SLICE_DICT, FM_REVERSE_DICT, FM_PPRINT_DICT, FM_STRING_DICT, FM_INDENT_DICT (attributed to operatorShapeIsProven)",
+      "effect": "coverage-only",
+      "subsumedBy": "",
+      "rollback": "n/a — nothing removed. No global is opened by another global's proof; each callable AND its returned object surface needs an allowlist.",
+      "subprocessWitness": "",
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "DICT_ARITY records the exact divergence the withdrawal was introduced for: the port answered TRUE where stock raises.",
+      "livenessProof": ""
+    },
+    {
+      "key": "operatorShapeIsProven",
+      "name": "operatorShapeIsProven and the predParser family (term, valueTerm, fieldTerm, subscriptTerm, indexBound, edgeElementTerm)",
+      "file": "internal/debaml/constraint_operator.go",
+      "class": "P per grammar family",
+      "disposition": "kept-over-decline",
+      "forkCapability": "PATCHES.md #33–#40 (comparison structure, total ordering, containment, truthiness, constant-folded `and`, slicing).",
+      "witnessRows": [
+        "O1",
+        "O1b",
+        "O2",
+        "O2b",
+        "O3",
+        "O4",
+        "O5",
+        "O6",
+        "O7",
+        "O8",
+        "O8b",
+        "O9",
+        "O9b",
+        "O9c",
+        "O9d",
+        "O9e"
+      ],
+      "stockEnvelope": "pass for O1, O2, O3, O4, O5, O6, O7, O8, O9b, O9d, O9e; failed-check for O1b, O2b, O8b, O9, O9c",
+      "nativeEnvelope": "agreement — the same outcome stock recorded — for O8, O9b, O9d, O9e; native-unsupported for O1, O1b, O2, O2b, O3, O4, O5, O6, O7, O8b, O9, O9c (attributed to operatorShapeIsProven)",
+      "effect": "coverage-only",
+      "subsumedBy": "",
+      "rollback": "n/a — nothing removed. The whole parser cannot be deleted as one change, and each family owes its own rows.",
+      "subprocessWitness": "",
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "O8/O8b are the nested-postfix pair: the shadowed `name` is an int inside and a string outside, so a gate resolving against the root would admit a mixed-kind comparison stock answers FALSE. O9e records that a slice result's length IS decided natively, which the first pass of this ledger predicted wrongly and the harness corrected.",
+      "livenessProof": ""
+    },
+    {
+      "key": "displayString",
+      "name": "displayString custom ObjectWithString dispatch",
+      "file": "internal/debaml/constraint_eval.go",
+      "class": "P",
+      "disposition": "kept-over-decline",
+      "forkCapability": "PATCHES.md #36 and value/value.go:1016/:1040 — the fork dispatches ObjectWithString from Value.String and Value.Repr.",
+      "witnessRows": [
+        "O3",
+        "MAP_STRING",
+        "MAP_STRING_LEN",
+        "MAP_CONCAT",
+        "MAP_STRING_ORDER"
+      ],
+      "stockEnvelope": "pass for O3, MAP_STRING, MAP_STRING_LEN, MAP_CONCAT, MAP_STRING_ORDER",
+      "nativeEnvelope": "native-unsupported for O3, MAP_STRING, MAP_STRING_LEN, MAP_CONCAT, MAP_STRING_ORDER (attributed to operatorShapeIsProven)",
+      "effect": "coverage-only",
+      "subsumedBy": "",
+      "rollback": "n/a — nothing removed. Its rows are native declines, so it has NO green witness and the removal rule does not permit deleting it.",
+      "subprocessWitness": "",
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "The 16-byte length pins stock's mapping rendering as `{\"b\": 1, \"a\": 2}` in insertion order, which is what orderedMapping.ObjectString reproduces — but every consumer of that rendering (`string`, `regex_match`, `~`) is withdrawn or refused, so the dispatch cannot be witnessed as an agreement.",
+      "livenessProof": ""
+    },
+    {
+      "key": "withdrawnBuiltinsTable",
+      "name": "withdrawnBuiltins (per-name default-decline list)",
+      "file": "internal/debaml/constraint_profile.go",
+      "class": "A",
+      "disposition": "kept-over-decline",
+      "forkCapability": "PATCHES.md #46–#48 close the Unicode case/whitespace/punctuation classes at the engine, which is capability evidence and not per-callable proof.",
+      "witnessRows": [
+        "N10",
+        "N11",
+        "PY_UPPER",
+        "WT_TITLE",
+        "WT_SORT",
+        "BS_REGEX"
+      ],
+      "stockEnvelope": "pass for PY_UPPER, WT_TITLE, WT_SORT, BS_REGEX; evaluator-error for N10 (`invalid operation: count cannot be 0`); N11 (`invalid operation: cannot convert number to usize`)",
+      "nativeEnvelope": "native-unsupported for N10, N11, PY_UPPER, WT_TITLE, WT_SORT (attributed to operatorShapeIsProven); native-unsupported for BS_REGEX (attributed to exceedsExactIntegerRange)",
+      "effect": "coverage-only",
+      "subsumedBy": "",
+      "rollback": "n/a — nothing removed. The only acceptable widening unit is a named callable plus a finite, representative CFFI matrix covering argument conversion and every observable return/error class.",
+      "subprocessWitness": "",
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "A green happy-path row does not prove an entire callable; the content space of a string filter is not enumerable from this side.",
+      "livenessProof": ""
+    },
+    {
+      "key": "installProfileGuardsTable",
+      "name": "installProfileGuards wrapper application over every registered filter and test",
+      "file": "internal/debaml/constraint_profile.go",
+      "class": "A",
+      "disposition": "kept-over-decline",
+      "forkCapability": "PATCHES.md #49 (argument contract) and #44 (VM integer conversion at every operand position).",
+      "witnessRows": [
+        "MAP_LIST",
+        "MAP_REVERSE_LIST",
+        "PG_SUM",
+        "PG_ABS",
+        "PG_IS_MAPPING",
+        "PG_DIVISIBLEBY"
+      ],
+      "stockEnvelope": "pass for MAP_LIST, MAP_REVERSE_LIST, PG_SUM, PG_ABS, PG_IS_MAPPING, PG_DIVISIBLEBY",
+      "nativeEnvelope": "agreement — the same outcome stock recorded — for PG_SUM, PG_ABS, PG_IS_MAPPING, PG_DIVISIBLEBY; native-unsupported for MAP_LIST, MAP_REVERSE_LIST (attributed to checkCallParity/subject-kind)",
+      "effect": "coverage-only",
+      "subsumedBy": "",
+      "rollback": "n/a — nothing removed. The table is an inventory record, not one removable guard.",
+      "subprocessWitness": "",
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "The control rows exist so the table's COST is separable from its correctness: the wrapped callables still decide everything they used to decide.",
+      "livenessProof": ""
+    },
+    {
+      "key": "checkCallParitySignatures",
+      "name": "checkCallParity, provenSignatures, kindOf, countDefaultingFilters, coercingNumericArg",
+      "file": "internal/debaml/constraint_profile.go",
+      "class": "A",
+      "disposition": "kept-over-decline",
+      "forkCapability": "PATCHES.md #49/#50 (argument contract; filter and function type errors).",
+      "witnessRows": [
+        "LEN_INT",
+        "LEN_BOOL",
+        "LEN_NULL",
+        "CNT_INT",
+        "CNT_BOOL",
+        "CNT_NULL",
+        "LAST_CLS_VALUE",
+        "LAST_CLS_KEY",
+        "LAST_MAP_KEY",
+        "MAP_LIST",
+        "MAP_REVERSE_LIST",
+        "MAP_LIST_ORDER",
+        "CLS_LIST_ORDER",
+        "MAP_REVERSE_ORDER",
+        "MAP_REVERSE_ORDER_B"
+      ],
+      "stockEnvelope": "pass for MAP_LIST, MAP_REVERSE_LIST, MAP_LIST_ORDER, CLS_LIST_ORDER, MAP_REVERSE_ORDER_B; failed-check for MAP_REVERSE_ORDER; evaluator-error for LEN_INT, CNT_INT (`invalid operation: cannot calculate length of value of type number`); LEN_BOOL, CNT_BOOL (`invalid operation: cannot calculate length of value of type bool`); LAST_CLS_VALUE, LAST_CLS_KEY, LAST_MAP_KEY (`invalid operation: cannot get last item from value`); no-checks for LEN_NULL, CNT_NULL. LEN_NULL and CNT_NULL are no-checks because the OPTIONAL coercion swallows the failure and the node becomes null, so the two levels are indistinguishable there.",
+      "nativeEnvelope": "native-unsupported for LEN_INT, LEN_BOOL, LEN_NULL, CNT_INT, CNT_BOOL, CNT_NULL, MAP_LIST, MAP_REVERSE_LIST (attributed to checkCallParity/subject-kind); native-unsupported for LAST_CLS_VALUE, LAST_CLS_KEY, LAST_MAP_KEY, MAP_LIST_ORDER, CLS_LIST_ORDER, MAP_REVERSE_ORDER, MAP_REVERSE_ORDER_B (attributed to operatorShapeIsProven)",
+      "effect": "coverage-only",
+      "subsumedBy": "",
+      "rollback": "n/a — nothing removed. It is ALSO the guard the slice's SOLE removal (lengthGuard) falls through to, so narrowing it would reopen that removal: TestRemovedLengthGuardIsSubsumedAtTheFilterSeam fails if its subject rule stops refusing a length-less subject. It is separately ONE OF THE TWO gates in front of the retained `last`-over-a-mapping wrapper — operatorShapeIsProven is the other, and BOTH must widen before a witness row could reach that seam — which TestLastOverMappingGuardPreEmptedByCheckCallParity asserts at the installed seam.",
+      "subprocessWitness": "",
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "Its subject-kind arm is what refuses `<number>|length` and `<mapping>|last` today. That is why the removed length/count guard could never fire, and why the retained `last` wrapper is unreachable — two different conclusions from one mechanism, and both are asserted against it directly rather than through an expression that some earlier gate might refuse first.",
+      "livenessProof": ""
+    },
+    {
+      "key": "divisibleByNonIntegral",
+      "name": "the non-integral branch of the `divisibleby` guard",
+      "file": "internal/debaml/constraint_profile.go",
+      "class": "A",
+      "disposition": "kept-over-decline",
+      "forkCapability": "not closed — the fork's TestDivisibleBy performs the test only when both operands pass AsInt.",
+      "witnessRows": [
+        "N12"
+      ],
+      "stockEnvelope": "pass for N12",
+      "nativeEnvelope": "native-unsupported for N12 (attributed to divisibleByNonIntegral)",
+      "effect": "coverage-only",
+      "subsumedBy": "",
+      "rollback": "n/a — nothing removed. It stays until the fork carries stock's exact f64 branch and rows prove it.",
+      "subprocessWitness": "",
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "A wrong boolean at perfectly ordinary magnitudes, which no magnitude bound can see.",
+      "livenessProof": ""
+    },
+    {
+      "key": "pycompatUnknownMethod",
+      "name": "the deliberately UNINSTALLED SetUnknownMethodCallback (pycompat)",
+      "file": "internal/debaml/constraint_eval.go",
+      "class": "A",
+      "disposition": "kept-over-decline",
+      "forkCapability": "PATCHES.md #8 (method calls) and the fork's ./pycompat package — the hook exists and is not installed.",
+      "witnessRows": [
+        "PY_FORMAT",
+        "PY_UPPER"
+      ],
+      "stockEnvelope": "pass for PY_FORMAT, PY_UPPER",
+      "nativeEnvelope": "native-unsupported for PY_FORMAT, PY_UPPER (attributed to operatorShapeIsProven)",
+      "effect": "coverage-only",
+      "subsumedBy": "",
+      "rollback": "n/a — nothing removed. Any future method needs a method-specific CFFI matrix and a permanent deny list; the callback is not enabled in 7.2a.",
+      "subprocessWitness": "",
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "Installing it exposes method dispatch including unbounded string and container semantics.",
+      "livenessProof": ""
+    },
+    {
+      "key": "hasMedia",
+      "name": "hasMedia",
+      "file": "internal/debaml/constraint_profile.go",
+      "class": "U",
+      "disposition": "kept-unwitnessable",
+      "forkCapability": "not applicable — BAML's two media conversions disagree and evaluate_predicate takes only one of them.",
+      "witnessRows": [],
+      "stockEnvelope": "no observable reference exists",
+      "nativeEnvelope": "native-unsupported (media values are refused before conversion)",
+      "effect": "coverage-only",
+      "subsumedBy": "",
+      "rollback": "n/a — nothing removed. A witness needs a media value that can reach a constraint on the native path, which schema.Bundle.ValidateOutput makes impossible today.",
+      "subprocessWitness": "",
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "No row can be constructed: every media output shape is rejected before parsing (\"media is not usable as an output type\"), so there is no serving-parity witness to record.",
+      "livenessProof": ""
+    },
+    {
+      "key": "divisibleByZero",
+      "name": "the `divisibleby(0)` guard",
+      "file": "internal/debaml/constraint_profile.go",
+      "class": "U",
+      "disposition": "kept-unwitnessable",
+      "forkCapability": "not applicable — stock takes the process down before any envelope can be read.",
+      "witnessRows": [],
+      "stockEnvelope": "process-fatal: stock BAML v0.223 aborts or hangs its CFFI process",
+      "nativeEnvelope": "native-unsupported (attributed to divisibleByZero)",
+      "effect": "coverage-only",
+      "subsumedBy": "",
+      "rollback": "n/a — nothing removed. If a future BAML makes the expression survivable, TestGuardLedgerDivisibleByZeroIsUnobservable fails and the U classification can be revisited on evidence.",
+      "subprocessWitness": "TestGuardLedgerDivisibleByZeroIsUnobservable",
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "Recorded from an ISOLATED SUBPROCESS under a deadline, and classified as process-fatal. No boolean is ever fabricated for it.",
+      "livenessProof": ""
+    }
+  ],
+  "callables": [
+    {
+      "callable": "filter:abs",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "subject {number}; arity 0..0; no positional arguments; kwargs rejected",
+      "disposition": "kept",
+      "witnessRows": [
+        "PG_ABS"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:attr",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:batch",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins",
+        "guardForeignMapping"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "FM_BATCH_DICT",
+        "FM_BATCH_LIT"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin. Also wrapped by guardForeignMapping, which refuses a mapping the value model did not build."
+    },
+    {
+      "callable": "filter:bool",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:capitalize",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:chain",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins",
+        "guardForeignMapping"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "FM_CHAIN_DICT",
+        "FM_CHAIN_LIT"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin. Also wrapped by guardForeignMapping, which refuses a mapping the value model did not build."
+    },
+    {
+      "callable": "filter:count",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "subject {string|seq|map|iterable}; arity 0..0; no positional arguments; kwargs rejected",
+      "disposition": "kept",
+      "witnessRows": [
+        "CNT_BOOL",
+        "CNT_CLS",
+        "CNT_INT",
+        "CNT_LIST",
+        "CNT_MAP",
+        "CNT_NULL",
+        "CNT_STR"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:d",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:default",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:dictsort",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:e",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:escape",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:first",
+      "tables": [
+        "installProfileGuards",
+        "guardForeignMapping"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "subject {seq|iterable}; arity 0..0; no positional arguments; kwargs rejected",
+      "disposition": "kept",
+      "witnessRows": [
+        "CLS_LIST_ORDER",
+        "FIRST_LIST",
+        "FM_CHAIN_DICT",
+        "FM_CHAIN_LIT",
+        "FM_FIRST_DICT",
+        "FM_FIRST_LIT",
+        "FM_LIST_DICT",
+        "FM_LIST_LIT",
+        "FM_MAP_DICT",
+        "FM_MAP_LIT",
+        "FM_REJECTATTR_DICT",
+        "FM_REJECTATTR_LIT",
+        "FM_REJECT_DICT",
+        "FM_REJECT_LIT",
+        "FM_REVERSE_DICT",
+        "FM_REVERSE_LIT",
+        "FM_SELECT_DICT",
+        "FM_SELECT_LIT",
+        "FM_UNIQUE_DICT",
+        "FM_UNIQUE_LIT",
+        "ITEMS_ORDER_CLS",
+        "ITEMS_ORDER_MAP",
+        "MAP_LIST_ORDER",
+        "MAP_REVERSE_ORDER",
+        "MAP_REVERSE_ORDER_B",
+        "MAP_STRING",
+        "WT_SORT"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin. Also wrapped by guardForeignMapping, which refuses a mapping the value model did not build."
+    },
+    {
+      "callable": "filter:float",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:format",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:groupby",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins",
+        "guardForeignMapping"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "FM_GROUPBY_DICT",
+        "FM_GROUPBY_LIT"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin. Also wrapped by guardForeignMapping, which refuses a mapping the value model did not build."
+    },
+    {
+      "callable": "filter:indent",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins",
+        "guardForeignMapping"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "FM_INDENT_DICT",
+        "FM_INDENT_LIT"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin. Also wrapped by guardForeignMapping, which refuses a mapping the value model did not build."
+    },
+    {
+      "callable": "filter:int",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "N7",
+        "N9"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:items",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "ITEMS_CLS",
+        "ITEMS_MAP",
+        "ITEMS_NEST",
+        "ITEMS_ORDER_CLS",
+        "ITEMS_ORDER_MAP"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:join",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins",
+        "guardForeignMapping"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "FM_JOIN_DICT",
+        "FM_JOIN_LIT"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin. Also wrapped by guardForeignMapping, which refuses a mapping the value model did not build."
+    },
+    {
+      "callable": "filter:last",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "subject {seq|iterable}; arity 0..0; no positional arguments; kwargs rejected",
+      "disposition": "kept",
+      "witnessRows": [
+        "LAST_CLS_KEY",
+        "LAST_CLS_VALUE",
+        "LAST_LIST",
+        "LAST_MAP_KEY",
+        "RANGE_LAST"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:length",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "subject {string|seq|map|iterable}; arity 0..0; no positional arguments; kwargs rejected",
+      "disposition": "kept",
+      "witnessRows": [
+        "DEBUG_CALL",
+        "DICT_ARITY",
+        "FMAP_DICT",
+        "FMAP_LIST",
+        "FMAP_NONSTRING_KEY",
+        "FM_BATCH_DICT",
+        "FM_BATCH_LIT",
+        "FM_GROUPBY_DICT",
+        "FM_GROUPBY_LIT",
+        "FM_INDENT_DICT",
+        "FM_INDENT_LIT",
+        "FM_PPRINT_DICT",
+        "FM_PPRINT_LIT",
+        "FM_SELECTATTR_DICT",
+        "FM_SELECTATTR_LIT",
+        "FM_SLICE_DICT",
+        "FM_SLICE_LIT",
+        "FM_ZIP_DICT",
+        "FM_ZIP_LIT",
+        "ITEMS_CLS",
+        "ITEMS_MAP",
+        "ITEMS_NEST",
+        "LEN_BOOL",
+        "LEN_CLS",
+        "LEN_INT",
+        "LEN_LIST",
+        "LEN_MAP",
+        "LEN_NULL",
+        "LEN_STR",
+        "MAP_CONCAT",
+        "MAP_LIST",
+        "MAP_REVERSE_LIST",
+        "MAP_STRING_LEN",
+        "N10",
+        "N11",
+        "O9e",
+        "RANGE_LIST",
+        "RANGE_STEP",
+        "SPLIT_LENGTH",
+        "SPLIT_LIST",
+        "TOJSON_MAP",
+        "TOJSON_NEST"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:lines",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:list",
+      "tables": [
+        "installProfileGuards",
+        "guardForeignMapping"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "subject {seq|iterable}; arity 0..0; no positional arguments; kwargs rejected",
+      "disposition": "kept",
+      "witnessRows": [
+        "CLS_LIST_ORDER",
+        "FMAP_DICT",
+        "FMAP_LIST",
+        "FMAP_NONSTRING_KEY",
+        "FM_BATCH_DICT",
+        "FM_BATCH_LIT",
+        "FM_CHAIN_DICT",
+        "FM_CHAIN_LIT",
+        "FM_GROUPBY_DICT",
+        "FM_GROUPBY_LIT",
+        "FM_LIST_DICT",
+        "FM_LIST_LIT",
+        "FM_REJECTATTR_DICT",
+        "FM_REJECTATTR_LIT",
+        "FM_REJECT_DICT",
+        "FM_REJECT_LIT",
+        "FM_REVERSE_DICT",
+        "FM_REVERSE_LIT",
+        "FM_SELECTATTR_DICT",
+        "FM_SELECTATTR_LIT",
+        "FM_SELECT_DICT",
+        "FM_SELECT_LIT",
+        "FM_SLICE_DICT",
+        "FM_SLICE_LIT",
+        "FM_UNIQUE_DICT",
+        "FM_UNIQUE_LIT",
+        "FM_ZIP_DICT",
+        "FM_ZIP_LIT",
+        "ITEMS_CLS",
+        "ITEMS_MAP",
+        "ITEMS_NEST",
+        "MAP_LIST",
+        "MAP_LIST_ORDER",
+        "MAP_REVERSE_LIST",
+        "MAP_REVERSE_ORDER",
+        "MAP_REVERSE_ORDER_B",
+        "RANGE_LIST",
+        "RANGE_STEP",
+        "SPLIT_LIST"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin. Also wrapped by guardForeignMapping, which refuses a mapping the value model did not build."
+    },
+    {
+      "callable": "filter:lower",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:map",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins",
+        "guardForeignMapping"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "FM_MAP_DICT",
+        "FM_MAP_LIT"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin. Also wrapped by guardForeignMapping, which refuses a mapping the value model did not build."
+    },
+    {
+      "callable": "filter:max",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:min",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:pprint",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins",
+        "guardForeignMapping"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "FM_PPRINT_DICT",
+        "FM_PPRINT_LIT"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin. Also wrapped by guardForeignMapping, which refuses a mapping the value model did not build."
+    },
+    {
+      "callable": "filter:regex_match",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "BS_REGEX"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:reject",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins",
+        "guardForeignMapping"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "FM_REJECT_DICT",
+        "FM_REJECT_LIT"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin. Also wrapped by guardForeignMapping, which refuses a mapping the value model did not build."
+    },
+    {
+      "callable": "filter:rejectattr",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins",
+        "guardForeignMapping"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "FM_REJECTATTR_DICT",
+        "FM_REJECTATTR_LIT"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin. Also wrapped by guardForeignMapping, which refuses a mapping the value model did not build."
+    },
+    {
+      "callable": "filter:replace",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:reverse",
+      "tables": [
+        "installProfileGuards",
+        "guardForeignMapping"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "subject {seq|iterable}; arity 0..0; no positional arguments; kwargs rejected",
+      "disposition": "kept",
+      "witnessRows": [
+        "FM_REVERSE_DICT",
+        "FM_REVERSE_LIT",
+        "MAP_REVERSE_LIST",
+        "MAP_REVERSE_ORDER",
+        "MAP_REVERSE_ORDER_B"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin. Also wrapped by guardForeignMapping, which refuses a mapping the value model did not build."
+    },
+    {
+      "callable": "filter:round",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:safe",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:select",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins",
+        "guardForeignMapping"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "FM_SELECT_DICT",
+        "FM_SELECT_LIT"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin. Also wrapped by guardForeignMapping, which refuses a mapping the value model did not build."
+    },
+    {
+      "callable": "filter:selectattr",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins",
+        "guardForeignMapping"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "FM_SELECTATTR_DICT",
+        "FM_SELECTATTR_LIT"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin. Also wrapped by guardForeignMapping, which refuses a mapping the value model did not build."
+    },
+    {
+      "callable": "filter:slice",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins",
+        "guardForeignMapping"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "FM_SLICE_DICT",
+        "FM_SLICE_LIT",
+        "N10",
+        "N11"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin. Also wrapped by guardForeignMapping, which refuses a mapping the value model did not build."
+    },
+    {
+      "callable": "filter:sort",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "WT_SORT"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:split",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "SPLIT_INDEX",
+        "SPLIT_INDEX_BARE",
+        "SPLIT_ITERABLE",
+        "SPLIT_LENGTH",
+        "SPLIT_LIST"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:string",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins",
+        "guardForeignMapping"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "FM_STRING_DICT",
+        "FM_STRING_LIT",
+        "MAP_STRING",
+        "MAP_STRING_LEN",
+        "MAP_STRING_ORDER"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin. Also wrapped by guardForeignMapping, which refuses a mapping the value model did not build."
+    },
+    {
+      "callable": "filter:sum",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "subject {seq|iterable}; arity 0..0; no positional arguments; kwargs rejected",
+      "disposition": "kept",
+      "witnessRows": [
+        "PG_SUM"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:title",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "WT_TITLE"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:tojson",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "TOJSON_MAP",
+        "TOJSON_NEST",
+        "TOJSON_ORDER_MAP",
+        "TOJSON_ORDER_NEST"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:trim",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:unique",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins",
+        "guardForeignMapping"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "FM_UNIQUE_DICT",
+        "FM_UNIQUE_LIT"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin. Also wrapped by guardForeignMapping, which refuses a mapping the value model did not build."
+    },
+    {
+      "callable": "filter:upper",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "filter:zip",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins",
+        "guardForeignMapping"
+      ],
+      "wrapper": "guardIntegerResult",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "FM_ZIP_DICT",
+        "FM_ZIP_LIT"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardIntegerResult, which runs checkCallParity before the builtin. Also wrapped by guardForeignMapping, which refuses a mapping the value model did not build."
+    },
+    {
+      "callable": "test:is !=",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "no proven signature: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is <",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "no proven signature: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is <=",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "no proven signature: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is ==",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "no proven signature: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is >",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "no proven signature: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is >=",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "no proven signature: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is boolean",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {none|bool|number|string|seq|map}; arity 0..0; no positional arguments; kwargs rejected",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is defined",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {undefined|none|bool|number|string|seq|map}; arity 0..0; no positional arguments; kwargs rejected",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is endingwith",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {string}; arity 1..1; positional [{string}]; kwargs rejected; a non-integral numeric argument is refused",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is eq",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {bool|number|string}; arity 1..1; positional [{bool|number|string}]; kwargs rejected; a non-integral numeric argument is refused",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is equalto",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {bool|number|string}; arity 1..1; positional [{bool|number|string}]; kwargs rejected; a non-integral numeric argument is refused",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is escaped",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {none|bool|number|string|seq|map}; arity 0..0; no positional arguments; kwargs rejected",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is even",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {number}; arity 0..0; no positional arguments; kwargs rejected",
+      "disposition": "kept",
+      "witnessRows": [
+        "N8"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is false",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {none|bool|number|string|seq|map}; arity 0..0; no positional arguments; kwargs rejected",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is filter",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is float",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {none|bool|number|string|seq|map}; arity 0..0; no positional arguments; kwargs rejected",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is ge",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {bool|number|string}; arity 1..1; positional [{bool|number|string}]; kwargs rejected; a non-integral numeric argument is refused",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is greaterthan",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {bool|number|string}; arity 1..1; positional [{bool|number|string}]; kwargs rejected; a non-integral numeric argument is refused",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is gt",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {bool|number|string}; arity 1..1; positional [{bool|number|string}]; kwargs rejected; a non-integral numeric argument is refused",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is in",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is int",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {none|bool|number|string|seq|map}; arity 0..0; no positional arguments; kwargs rejected",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is integer",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {none|bool|number|string|seq|map}; arity 0..0; no positional arguments; kwargs rejected",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is iterable",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "SPLIT_ITERABLE"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is le",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {bool|number|string}; arity 1..1; positional [{bool|number|string}]; kwargs rejected; a non-integral numeric argument is refused",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is lessthan",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {bool|number|string}; arity 1..1; positional [{bool|number|string}]; kwargs rejected; a non-integral numeric argument is refused",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is lower",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is lt",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {bool|number|string}; arity 1..1; positional [{bool|number|string}]; kwargs rejected; a non-integral numeric argument is refused",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is mapping",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {none|bool|number|string|seq|map}; arity 0..0; no positional arguments; kwargs rejected",
+      "disposition": "kept",
+      "witnessRows": [
+        "PG_IS_MAPPING"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is ne",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {bool|number|string}; arity 1..1; positional [{bool|number|string}]; kwargs rejected; a non-integral numeric argument is refused",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is none",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {undefined|none|bool|number|string|seq|map}; arity 0..0; no positional arguments; kwargs rejected",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is number",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {none|bool|number|string|seq|map}; arity 0..0; no positional arguments; kwargs rejected",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is odd",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {number}; arity 0..0; no positional arguments; kwargs rejected",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is safe",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {none|bool|number|string|seq|map}; arity 0..0; no positional arguments; kwargs rejected",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is sameas",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is sequence",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {none|bool|number|string|seq|map}; arity 0..0; no positional arguments; kwargs rejected",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is startingwith",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {string}; arity 1..1; positional [{string}]; kwargs rejected; a non-integral numeric argument is refused",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is string",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {none|bool|number|string|seq|map}; arity 0..0; no positional arguments; kwargs rejected",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is test",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is true",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {none|bool|number|string|seq|map}; arity 0..0; no positional arguments; kwargs rejected",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is undefined",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "subject {undefined|none|bool|number|string|seq|map}; arity 0..0; no positional arguments; kwargs rejected",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is upper",
+      "tables": [
+        "installProfileGuards",
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "guardTestInput",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "wrapped by guardTestInput, which runs checkCallParity before the builtin."
+    },
+    {
+      "callable": "test:is divisibleby",
+      "tables": [
+        "installProfileGuards"
+      ],
+      "wrapper": "guardTestInput + the divisibleby guard",
+      "admission": "subject {number}; arity 1..1; positional [{number}]; kwargs rejected; a numeric argument is coerced rather than type-checked",
+      "disposition": "kept",
+      "witnessRows": [
+        "N12",
+        "PG_DIVISIBLEBY"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "registered separately from the table so it can carry its own guard: a zero divisor is refused (stock aborts the process) and a non-integral operand is refused (stock has an f64 branch minijinja-Go lacks)."
+    },
+    {
+      "callable": "global:range",
+      "tables": [
+        "globalWithdrawals"
+      ],
+      "wrapper": "none — a global reaches neither wrapper",
+      "admission": "no proven signature: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "RANGE_LAST",
+        "RANGE_LIST",
+        "RANGE_STEP"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "withdrawn outright: minijinja-Go exports no handle to guard it, and an oversized argument is an unbounded-allocation vector."
+    },
+    {
+      "callable": "global:debug",
+      "tables": [
+        "globalWithdrawals"
+      ],
+      "wrapper": "none — a global reaches neither wrapper",
+      "admission": "no proven signature: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "DEBUG_CALL"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "withdrawn outright: a global callable is governed by no proven-identical signature."
+    },
+    {
+      "callable": "global:dict",
+      "tables": [
+        "globalWithdrawals"
+      ],
+      "wrapper": "none — a global reaches neither wrapper",
+      "admission": "no proven signature: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "DICT_ARITY",
+        "FMAP_DICT",
+        "FM_BATCH_DICT",
+        "FM_CHAIN_DICT",
+        "FM_FIRST_DICT",
+        "FM_GROUPBY_DICT",
+        "FM_INDENT_DICT",
+        "FM_JOIN_DICT",
+        "FM_LIST_DICT",
+        "FM_MAP_DICT",
+        "FM_PPRINT_DICT",
+        "FM_REJECTATTR_DICT",
+        "FM_REJECT_DICT",
+        "FM_REVERSE_DICT",
+        "FM_SELECTATTR_DICT",
+        "FM_SELECT_DICT",
+        "FM_SLICE_DICT",
+        "FM_STRING_DICT",
+        "FM_UNIQUE_DICT",
+        "FM_ZIP_DICT"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "withdrawn outright: a global callable is governed by no proven-identical signature."
+    },
+    {
+      "callable": "global:namespace",
+      "tables": [
+        "globalWithdrawals"
+      ],
+      "wrapper": "none — a global reaches neither wrapper",
+      "admission": "no proven signature: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "NAMESPACE_ATTR"
+      ],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "withdrawn outright: a global callable is governed by no proven-identical signature."
+    },
+    {
+      "callable": "filter:urlencode",
+      "tables": [
+        "withdrawNonBAMLBuiltins"
+      ],
+      "wrapper": "unknown-name stub",
+      "admission": "not part of BAML's feature set: raises an unknown-name error in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "WB_URLENCODE"
+      ],
+      "deferralRecord": "",
+      "notes": "BAML builds minijinja with default-features = false and does not have this name; the stub asserts that at this seam. Its rows are agreements, so it costs no coverage."
+    },
+    {
+      "callable": "test:is containing",
+      "tables": [
+        "withdrawNonBAMLBuiltins"
+      ],
+      "wrapper": "unknown-name stub",
+      "admission": "not part of BAML's feature set: raises an unknown-name error in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "WB_CONTAINING"
+      ],
+      "deferralRecord": "",
+      "notes": "BAML builds minijinja with default-features = false and does not have this name; the stub asserts that at this seam. Its rows are agreements, so it costs no coverage."
+    },
+    {
+      "callable": "global:cycler",
+      "tables": [
+        "withdrawNonBAMLBuiltins"
+      ],
+      "wrapper": "unknown-name stub",
+      "admission": "not part of BAML's feature set: raises an unknown-name error in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "WB_CYCLER"
+      ],
+      "deferralRecord": "",
+      "notes": "BAML builds minijinja with default-features = false and does not have this name; the stub asserts that at this seam. Its rows are agreements, so it costs no coverage."
+    },
+    {
+      "callable": "global:joiner",
+      "tables": [
+        "withdrawNonBAMLBuiltins"
+      ],
+      "wrapper": "unknown-name stub",
+      "admission": "not part of BAML's feature set: raises an unknown-name error in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "WB_JOINER"
+      ],
+      "deferralRecord": "",
+      "notes": "BAML builds minijinja with default-features = false and does not have this name; the stub asserts that at this seam. Its rows are agreements, so it costs no coverage."
+    },
+    {
+      "callable": "global:lipsum",
+      "tables": [
+        "withdrawNonBAMLBuiltins"
+      ],
+      "wrapper": "unknown-name stub",
+      "admission": "not part of BAML's feature set: raises an unknown-name error in every shape",
+      "disposition": "kept",
+      "witnessRows": [
+        "WB_LIPSUM"
+      ],
+      "deferralRecord": "",
+      "notes": "BAML builds minijinja with default-features = false and does not have this name; the stub asserts that at this seam. Its rows are agreements, so it costs no coverage."
+    },
+    {
+      "callable": "filter:truncate",
+      "tables": [
+        "withdrawnBuiltins"
+      ],
+      "wrapper": "none — the profile never registers it",
+      "admission": "withdrawn: declines in every shape",
+      "disposition": "kept",
+      "witnessRows": [],
+      "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
+      "notes": "listed in withdrawnBuiltins but NOT registered by installProfileGuards, so it is already an unknown filter. The entry exists because an inventory that silently drops a listed name cannot prove completeness."
+    }
+  ]
+}

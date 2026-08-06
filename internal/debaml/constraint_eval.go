@@ -64,15 +64,29 @@ import (
 // rationale), and the operator, coercion, ordered-map and pycompat slices close
 // the `in`/`~`/truthiness divergences the predicate grammar was built to refuse.
 //
-// EVERY GUARD IS KEPT ANYWAY, DELIBERATELY. A guard decides from the expression
-// text and the value model, before and around evaluation, so a guard that is no
-// longer necessary can only make native DECLINE something the fork could now
-// answer. That is the safe direction of the contract below — over-declining
-// costs coverage, over-claiming would serve a wrong boolean — and it keeps every
-// differential row this PR already proved valid without re-deriving it. Removing
-// the now-redundant compensation, and re-widening the profile against fresh
-// stock-CFFI rows, is Slice 7.2a follow-up work; it is not done here, because
-// each removal is a re-widening that needs its own proof.
+// A GUARD IS REMOVED ONLY ON MEASURED EVIDENCE. A guard decides from the
+// expression text and the value model, before and around evaluation, so a guard
+// that is no longer necessary can only make native DECLINE something the fork
+// could now answer. That is the safe direction of the contract below —
+// over-declining costs coverage, over-claiming would serve a wrong boolean — and
+// fork capability alone is not authority to change it: PATCHES.md says what the
+// ENGINE now does, not what STOCK BAML v0.223 does with a given value.
+//
+// Slice 7.2a-1 therefore built the evidence rather than reasoning from the patch
+// ledger: internal/debaml/guardledger drives every guard's named expressions
+// through the real stock CFFI, records the outcome envelope FIRST, and compares
+// the native leg against that recording. internal/debaml/guard_ledger.md is the
+// resulting inventory — one entry per guard, whether or not it moved, with the
+// witness rows, both envelopes, and a rollback condition.
+//
+// ONE guard was removed under that rule — the length/count no-Len wrapper —
+// because a guard that STAYS already refused every input it could see, at the
+// same seam, so the removal changed no recorded envelope. A second candidate,
+// the `last`-over-a-mapping wrapper, was RESTORED after measurement: it is
+// equally redundant, but the operator gate refuses `<mapping>|last` before the
+// filter seam, so no witness row can observe its absence and the removal is not
+// row-proven. Everything else in this file and in constraint_profile.go is
+// retained, and the ledger records why for each.
 
 // errConstraintNotBoolean is BAML's `Predicate did not evaluate to a boolean`
 // (jinja_helpers.rs:92): the render succeeded but produced something other than
@@ -183,18 +197,29 @@ func newConstraintEnv() *mj.Environment {
 // is what keeps native from answering where BAML raises. It cannot widen
 // anything — every stub only ever errors.
 func withdrawNonBAMLBuiltins(env *mj.Environment) {
-	env.AddFilter("urlencode", func(filters.State, mjvalue.Value, []mjvalue.Value, *mjvalue.OrderedMap) (mjvalue.Value, error) {
-		return mjvalue.Undefined(), mj.NewError(mj.ErrUnknownFilter, "filter urlencode is unknown")
+	env.AddFilter(nonBAMLFilter, func(filters.State, mjvalue.Value, []mjvalue.Value, *mjvalue.OrderedMap) (mjvalue.Value, error) {
+		return mjvalue.Undefined(), mj.NewError(mj.ErrUnknownFilter, "filter "+nonBAMLFilter+" is unknown")
 	})
-	env.AddTest("containing", func(filters.State, mjvalue.Value, []mjvalue.Value) (bool, error) {
-		return false, mj.NewError(mj.ErrUnknownTest, "test containing is unknown")
+	env.AddTest(nonBAMLTest, func(filters.State, mjvalue.Value, []mjvalue.Value) (bool, error) {
+		return false, mj.NewError(mj.ErrUnknownTest, "test "+nonBAMLTest+" is unknown")
 	})
-	for _, name := range []string{"cycler", "joiner", "lipsum"} {
+	for _, name := range nonBAMLGlobals {
 		env.AddFunction(name, func(*mj.State, []mjvalue.Value, *mjvalue.OrderedMap) (mjvalue.Value, error) {
 			return mjvalue.Undefined(), mj.NewError(mj.ErrUnknownFunction, name+" is unknown")
 		})
 	}
 }
+
+// The five names, as package-level tables so the guard ledger can ENUMERATE them
+// rather than restate them: internal/debaml's TestGuardLedgerCoversEveryCallable
+// reads these, so a name added or dropped here fails there until the inventory
+// follows.
+const (
+	nonBAMLFilter = "urlencode"
+	nonBAMLTest   = "containing"
+)
+
+var nonBAMLGlobals = []string{"cycler", "joiner", "lipsum"}
 
 // RenderConstraintExpression renders a bare BAML constraint expression against
 // the given value bound to `this`, returning the rendered TEXT.

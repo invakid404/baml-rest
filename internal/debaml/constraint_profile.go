@@ -3,6 +3,7 @@ package debaml
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"strconv"
 	"strings"
@@ -20,13 +21,20 @@ import (
 // BAML-exact fork github.com/invakid404/minijinja-go/v2 v2.16.0-baml.6 that
 // Slice 7.1 standardised the repo on. The fork closes most of the divergences
 // enumerated below at the engine level — see the ENGINE section on
-// [newConstraintEnv] in constraint_eval.go for the full account and for why
-// every guard here is nevertheless kept unchanged. In short: a guard reads the
-// expression text and the value model, so a guard whose divergence no longer
-// exists can only make native DECLINE something the fork could now answer, which
-// is the safe half of the contract stated immediately below. Narrowing the
-// profile back down to what the fork actually needs is Slice 7.2a work, and each
-// such narrowing is a re-widening of the claim that owes a fresh stock-CFFI row.
+// [newConstraintEnv] in constraint_eval.go for the full account. That is
+// CAPABILITY evidence, not removal authority: a guard reads the expression text
+// and the value model, so a guard whose divergence no longer exists can only
+// make native DECLINE something the fork could now answer, which is the safe
+// half of the contract stated immediately below.
+//
+// Narrowing the profile back down is therefore done against fresh stock-CFFI
+// rows, one guard at a time. internal/debaml/guardledger records the stock
+// envelope of every named expression scope §1 calls for, and
+// internal/debaml/guard_ledger.md carries the resulting per-guard entry —
+// including the guards that did NOT move and why, plus a per-callable inventory
+// of both broad default-decline tables. ONE guard has been removed under that
+// rule so far, provably subsumed by [checkCallParity] at the same seam; the
+// removal note is inline where it used to sit.
 //
 // THE CONTRACT. [EvaluateConstraint] returns either
 //
@@ -103,6 +111,97 @@ const (
 	mappingNative
 )
 
+// profileFilterBuiltins is EVERY filter minijinja-Go registers, so the
+// integer-result guard applied over it is TOTAL rather than a hand-picked
+// subset. Round 5 shipped a subset and `last` was missing from it, which let
+// `range(...)|last` carry an out-of-range integer into an exact comparison. A
+// list that must be complete is safer written out than inferred.
+//
+// It is a package-level table, and NEVER MUTATED: [installProfileGuards] clones
+// it before layering the per-filter guards on, so a second environment cannot
+// inherit the first one's wrappers. Hoisting it out of the function is what lets
+// the guard ledger ENUMERATE the wrapper table rather than restate it by hand —
+// internal/debaml's TestGuardLedgerCoversEveryCallable reads this map, so a
+// filter added here without a ledger record fails there.
+var profileFilterBuiltins = map[string]mj.FilterFunc{
+	"upper": filters.FilterUpper, "lower": filters.FilterLower,
+	"capitalize": filters.FilterCapitalize, "title": filters.FilterTitle,
+	"trim": filters.FilterTrim, "replace": filters.FilterReplace,
+	"format": filters.FilterFormat, "default": filters.FilterDefault,
+	"d": filters.FilterDefault, "safe": filters.FilterSafe,
+	"escape": filters.FilterEscape, "e": filters.FilterEscape,
+	"string": filters.FilterString, "bool": filters.FilterBool,
+	"split": filters.FilterSplit, "lines": filters.FilterLines,
+	"length": filters.FilterLength, "count": filters.FilterLength,
+	"first": filters.FilterFirst, "last": filters.FilterLast,
+	"reverse": filters.FilterReverse, "sort": filters.FilterSort,
+	"join": filters.FilterJoin, "list": filters.FilterList,
+	"unique": filters.FilterUnique, "min": filters.FilterMin,
+	"max": filters.FilterMax, "batch": filters.FilterBatch,
+	"slice": filters.FilterSlice, "map": filters.FilterMap,
+	"select": filters.FilterSelect, "reject": filters.FilterReject,
+	"selectattr": filters.FilterSelectAttr, "rejectattr": filters.FilterRejectAttr,
+	"groupby": filters.FilterGroupBy, "chain": filters.FilterChain,
+	"zip": filters.FilterZip, "abs": filters.FilterAbs,
+	"int": filters.FilterInt, "float": filters.FilterFloat,
+	"round": filters.FilterRound, "items": filters.FilterItems,
+	"dictsort": filters.FilterDictSort, "attr": filters.FilterAttr,
+	"indent": filters.FilterIndent, "pprint": filters.FilterPprint,
+	"tojson": filters.FilterTojson,
+	// BAML's own, replacing minijinja-Go's built-in `sum`.
+	"sum":         filterSum,
+	"regex_match": filterRegexMatch,
+}
+
+// profileTestBuiltins is the same total enumeration for TESTS. Round 12 wrapped
+// only `divisibleby`, so `even`/`odd` — which read their input through AsInt —
+// were reachable with any value at all. Written out rather than iterated because
+// minijinja-Go exports no accessor for its registered tests, and a list that must
+// be complete is safer explicit than inferred; the coverage is asserted
+// behaviourally by TestEveryRegisteredTestIsGuarded, and the ledger enumerates
+// this map the same way it enumerates the filters.
+//
+// `divisibleby` is deliberately ABSENT: it needs a guard of its own and is
+// registered separately by [installProfileGuards].
+//
+// `containing` is deliberately absent too: it is a minijinja-contrib test BAML
+// does not build, and [withdrawNonBAMLBuiltins] replaces it with an unknown-test
+// error. Re-registering it here would silently reinstate it — which is exactly
+// what happened on the first attempt, and the live corpus caught it as an UNSAFE
+// row (stock errors, native answered).
+var profileTestBuiltins = map[string]mj.TestFunc{
+	"defined": tests.TestDefined, "undefined": tests.TestUndefined,
+	"none": tests.TestNone, "true": tests.TestTrue, "false": tests.TestFalse,
+	"odd": tests.TestOdd, "even": tests.TestEven,
+	"eq": tests.TestEq, "equalto": tests.TestEq, "==": tests.TestEq,
+	"ne": tests.TestNe, "!=": tests.TestNe,
+	"lt": tests.TestLt, "lessthan": tests.TestLt, "<": tests.TestLt,
+	"le": tests.TestLe, "<=": tests.TestLe,
+	"gt": tests.TestGt, "greaterthan": tests.TestGt, ">": tests.TestGt,
+	"ge": tests.TestGe, ">=": tests.TestGe,
+	"in": tests.TestIn, "string": tests.TestString, "number": tests.TestNumber,
+	"integer": tests.TestInteger, "int": tests.TestInteger,
+	"float": tests.TestFloat, "boolean": tests.TestBoolean,
+	"sequence": tests.TestSequence, "mapping": tests.TestMapping,
+	"iterable":     tests.TestIterable,
+	"startingwith": tests.TestStartingWith, "endingwith": tests.TestEndingWith,
+	"safe": tests.TestSafe, "escaped": tests.TestSafe,
+	"sameas": tests.TestSameAs, "lower": tests.TestLower, "upper": tests.TestUpper,
+	"filter": tests.TestFilter, "test": tests.TestTest,
+}
+
+// foreignMappingFilters are the filters [guardForeignMapping] wraps: the ones
+// that can observe a mapping's iteration or membership.
+var foreignMappingFilters = []string{
+	"list", "join", "first", "map", "select", "reject", "selectattr",
+	"rejectattr", "groupby", "chain", "zip", "unique", "batch", "slice",
+	"reverse", "pprint", "string", "indent",
+}
+
+// withdrawnGlobals are the global callables withdrawn outright, besides `range`
+// (which is withdrawn for its own, additional reason — see below).
+var withdrawnGlobals = []string{"dict", "namespace", "debug"}
+
 // installProfileGuards wraps the builtins whose minijinja-Go behaviour differs
 // from BAML's minijinja for a recognisable input, so the difference surfaces as
 // ErrConstraintUnsupported instead of as a wrong boolean.
@@ -110,70 +209,43 @@ const (
 // Every entry below is a MEASURED divergence, each pinned by a case in the
 // stock differential; none is speculative.
 func installProfileGuards(env *mj.Environment) {
-	// EVERY filter minijinja-Go registers, so the integer-result guard below is
-	// TOTAL rather than a hand-picked subset. Round 5 shipped a subset and `last`
-	// was missing from it, which let `range(...)|last` carry an out-of-range
-	// integer into an exact comparison. A list that must be complete is safer
-	// written out than inferred.
-	builtins := map[string]mj.FilterFunc{
-		"upper": filters.FilterUpper, "lower": filters.FilterLower,
-		"capitalize": filters.FilterCapitalize, "title": filters.FilterTitle,
-		"trim": filters.FilterTrim, "replace": filters.FilterReplace,
-		"format": filters.FilterFormat, "default": filters.FilterDefault,
-		"d": filters.FilterDefault, "safe": filters.FilterSafe,
-		"escape": filters.FilterEscape, "e": filters.FilterEscape,
-		"string": filters.FilterString, "bool": filters.FilterBool,
-		"split": filters.FilterSplit, "lines": filters.FilterLines,
-		"length": filters.FilterLength, "count": filters.FilterLength,
-		"first": filters.FilterFirst, "last": filters.FilterLast,
-		"reverse": filters.FilterReverse, "sort": filters.FilterSort,
-		"join": filters.FilterJoin, "list": filters.FilterList,
-		"unique": filters.FilterUnique, "min": filters.FilterMin,
-		"max": filters.FilterMax, "batch": filters.FilterBatch,
-		"slice": filters.FilterSlice, "map": filters.FilterMap,
-		"select": filters.FilterSelect, "reject": filters.FilterReject,
-		"selectattr": filters.FilterSelectAttr, "rejectattr": filters.FilterRejectAttr,
-		"groupby": filters.FilterGroupBy, "chain": filters.FilterChain,
-		"zip": filters.FilterZip, "abs": filters.FilterAbs,
-		"int": filters.FilterInt, "float": filters.FilterFloat,
-		"round": filters.FilterRound, "items": filters.FilterItems,
-		"dictsort": filters.FilterDictSort, "attr": filters.FilterAttr,
-		"indent": filters.FilterIndent, "pprint": filters.FilterPprint,
-		"tojson": filters.FilterTojson,
-		// BAML's own, replacing minijinja-Go's built-in `sum`.
-		"sum":         filterSum,
-		"regex_match": filterRegexMatch,
-	}
+	// CLONED, never mutated in place: the per-filter guards below are layered
+	// onto this environment's copy, so building a second environment starts from
+	// the same unwrapped table.
+	builtins := maps.Clone(profileFilterBuiltins)
 
 	// Filters whose minijinja-Go behaviour differs from Rust's for a
 	// recognisable input get a specific guard first; the integer-result guard is
 	// then layered over everything uniformly.
-	lengthGuard := func(name string, builtin mj.FilterFunc) mj.FilterFunc {
-		return func(state filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs *mjvalue.OrderedMap) (mjvalue.Value, error) {
-			if _, ok := val.Len(); !ok {
-				return mjvalue.Undefined(), unsupportedConstraint("length of a value with no length (kind %s); minijinja rejects it", val.Kind())
-			}
-			return builtin(state, val, args, kwargs)
-		}
-	}
-	builtins["length"] = lengthGuard("length", builtins["length"])
-	builtins["count"] = lengthGuard("count", builtins["count"])
+	//
+	// ONE SUCH GUARD HAS BEEN REMOVED, on measured evidence rather than on the
+	// fork's patch ledger — see internal/debaml/guard_ledger.md for the entry and
+	// internal/debaml/guardledger for the stock-CFFI rows behind it:
+	//
+	//	length/count no-Len guard    every kind [provenSignatures] admits for
+	//	                             `length`/`count` (kSized) HAS a length, and
+	//	                             [checkCallParity] runs before the builtin, so
+	//	                             the guard could never fire. Should a
+	//	                             length-less value in kSized ever arise, the
+	//	                             engine's own `length` raises the same error
+	//	                             class stock raises, which is still a decline.
+	//
+	// The removal is INERT — no row's envelope changed, and every witness that
+	// used to reach it still declines, naming checkCallParity's subject rule —
+	// and the invariants it now rests on are asserted directly by
+	// constraint_guard_removal_test.go, which fails if any of them is narrowed.
 
 	// `split`: minijinja returns a LAZY ITERATOR with no length, minijinja-Go a
 	// materialised list, and the difference leaks into length, indexing and
-	// equality on the result.
+	// equality on the result. KEPT: the fork's own Iterator carries a length
+	// (value/value.go Len's `*Iterator` arm), so `"a b"|split(" ")|length` would
+	// ANSWER 2 where stock raises `cannot calculate length of value of type
+	// iterator` — recorded as guardledger row SPLIT_LENGTH.
 	builtins["split"] = func(filters.State, mjvalue.Value, []mjvalue.Value, *mjvalue.OrderedMap) (mjvalue.Value, error) {
 		return mjvalue.Undefined(), unsupportedConstraint("`split` returns a lazy iterator in minijinja and a list in minijinja-Go")
 	}
 
-	// `last`: minijinja rejects a mapping; minijinja-Go returns its final key.
-	lastBuiltin := builtins["last"]
-	builtins["last"] = func(state filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs *mjvalue.OrderedMap) (mjvalue.Value, error) {
-		if val.Kind() == mjvalue.KindMap {
-			return mjvalue.Undefined(), unsupportedConstraint("`last` over a mapping; minijinja rejects it")
-		}
-		return lastBuiltin(state, val, args, kwargs)
-	}
+	builtins["last"] = guardLastOverMapping(builtins["last"])
 
 	// `items`/`tojson`: BAML's insertion order is lost through minijinja-Go's
 	// unordered AsMap seam, and is unrecoverable for a mapping literal.
@@ -196,11 +268,7 @@ func installProfileGuards(env *mj.Environment) {
 	// expression — are minijinja-Go's native mapping, enumerated sorted where
 	// BAML preserves insertion order, and the representation-agreement check
 	// cannot see them (they are identical in both runs).
-	for _, name := range []string{
-		"list", "join", "first", "map", "select", "reject", "selectattr",
-		"rejectattr", "groupby", "chain", "zip", "unique", "batch", "slice",
-		"reverse", "pprint", "string", "indent",
-	} {
+	for _, name := range foreignMappingFilters {
 		builtins[name] = guardForeignMapping(name, builtins[name])
 	}
 
@@ -210,38 +278,9 @@ func installProfileGuards(env *mj.Environment) {
 		env.AddFilter(name, guardIntegerResult(name, builtin))
 	}
 
-	// The same INPUT guard over EVERY test minijinja-Go registers. Round 12 wrapped
-	// only `divisibleby`, so `even`/`odd` — which read their input through AsInt —
-	// were reachable with any value at all. Written out rather than iterated
-	// because minijinja-Go exports no accessor for its registered tests, and a
-	// list that must be complete is safer explicit than inferred; the coverage is
-	// asserted behaviourally by TestEveryRegisteredTestIsGuarded.
-	//
-	// `containing` is deliberately ABSENT: it is a minijinja-contrib test BAML
-	// does not build, and [withdrawNonBAMLBuiltins] replaces it with an
-	// unknown-test error. Re-registering it here would silently reinstate it —
-	// which is exactly what happened on the first attempt, and the live corpus
-	// caught it as an UNSAFE row (stock errors, native answered).
-	for name, builtin := range map[string]mj.TestFunc{
-		"defined": tests.TestDefined, "undefined": tests.TestUndefined,
-		"none": tests.TestNone, "true": tests.TestTrue, "false": tests.TestFalse,
-		"odd": tests.TestOdd, "even": tests.TestEven,
-		"eq": tests.TestEq, "equalto": tests.TestEq, "==": tests.TestEq,
-		"ne": tests.TestNe, "!=": tests.TestNe,
-		"lt": tests.TestLt, "lessthan": tests.TestLt, "<": tests.TestLt,
-		"le": tests.TestLe, "<=": tests.TestLe,
-		"gt": tests.TestGt, "greaterthan": tests.TestGt, ">": tests.TestGt,
-		"ge": tests.TestGe, ">=": tests.TestGe,
-		"in": tests.TestIn, "string": tests.TestString, "number": tests.TestNumber,
-		"integer": tests.TestInteger, "int": tests.TestInteger,
-		"float": tests.TestFloat, "boolean": tests.TestBoolean,
-		"sequence": tests.TestSequence, "mapping": tests.TestMapping,
-		"iterable":     tests.TestIterable,
-		"startingwith": tests.TestStartingWith, "endingwith": tests.TestEndingWith,
-		"safe": tests.TestSafe, "escaped": tests.TestSafe,
-		"sameas": tests.TestSameAs, "lower": tests.TestLower, "upper": tests.TestUpper,
-		"filter": tests.TestFilter, "test": tests.TestTest,
-	} {
+	// The same INPUT guard over EVERY test minijinja-Go registers; see
+	// [profileTestBuiltins] for the enumeration and why it is written out.
+	for name, builtin := range profileTestBuiltins {
 		env.AddTest(name, guardTestInput(name, builtin))
 	}
 
@@ -321,7 +360,7 @@ func installProfileGuards(env *mj.Environment) {
 	//
 	// The cost is measured: `dict(a=1)` was a live agreeing row and is now a
 	// refusal, recorded per case in the corpus.
-	for _, name := range []string{"dict", "namespace", "debug"} {
+	for _, name := range withdrawnGlobals {
 		env.AddFunction(name, func(*mj.State, []mjvalue.Value, *mjvalue.OrderedMap) (mjvalue.Value, error) {
 			return mjvalue.Undefined(), unsupportedConstraint(
 				"`%s` is outside the profile: a global callable is reached by neither the filter nor "+
@@ -329,6 +368,52 @@ func installProfileGuards(env *mj.Environment) {
 		})
 	}
 }
+
+// guardLastOverMapping is the `last` guard: it refuses a mapping subject.
+//
+// WHAT THE TWO ENGINES ACTUALLY DO, measured rather than remembered. Stock
+// raises on `<mapping>|last` — guardledger rows LAST_CLS_VALUE, LAST_CLS_KEY and
+// LAST_MAP_KEY all record `invalid operation: cannot get last item from value`.
+// So does THIS fork, at the same message
+// (TestLastOverMappingEngineAlreadyRaises). The guard was written against the
+// UPSTREAM port, which returned the mapping's final key instead; that is the
+// divergence it exists for, and it no longer exists.
+//
+// KEPT ANYWAY, AND UNREACHABLE IN PRODUCTION. It is shadowed twice over, by
+// guards that both stay:
+//
+//   - [checkCallParity] runs inside [guardIntegerResult] BEFORE this wrapper is
+//     delegated to, and `last`'s proven signature admits only kSequence, so a
+//     mapping subject never gets this far; and
+//   - [operatorShapeIsProven] refuses `<mapping>|last` earlier still, because
+//     `|last` needs a sequence subject to infer an element kind.
+//
+// The second shadow is why the guard was not removed, and the closed engine gap
+// is not enough to override it. A witness row is an expression, and no
+// expression can reach this seam, so no CFFI row can distinguish an environment
+// carrying this wrapper from one that does not — a removal nothing can observe
+// is not row-proven, whatever the fork now does.
+//
+// It is a NAMED function rather than a closure inside [installProfileGuards] so
+// the facts can be asserted separately and executably:
+// TestLastOverMappingGuardPreEmptedByCheckCallParity proves the shadowing,
+// TestLastOverMappingGuardIsLiveInTheInstalledChain proves this wrapper is
+// really installed and really fires once the shadow is lifted, and
+// TestLastOverMappingEngineAlreadyRaises records the engine's own behaviour. The
+// extraction is behaviour-identical: same body, same position in the chain.
+func guardLastOverMapping(builtin mj.FilterFunc) mj.FilterFunc {
+	return func(state filters.State, val mjvalue.Value, args []mjvalue.Value, kwargs *mjvalue.OrderedMap) (mjvalue.Value, error) {
+		if val.Kind() == mjvalue.KindMap {
+			return mjvalue.Undefined(), unsupportedConstraint(lastOverMappingMarker)
+		}
+		return builtin(state, val, args, kwargs)
+	}
+}
+
+// lastOverMappingMarker is [guardLastOverMapping]'s exact refusal text. It is a
+// constant so the liveness test asserts the message this guard produces rather
+// than "some error happened" — the distinction the round-2 review turned on.
+const lastOverMappingMarker = "`last` over a mapping; minijinja rejects it"
 
 // guardForeignMapping refuses a mapping that the value model did not build.
 func guardForeignMapping(name string, builtin mj.FilterFunc) mj.FilterFunc {

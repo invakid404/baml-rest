@@ -46,7 +46,14 @@ jobs:
     # round-10 integral-float `2.0 ** 63` promotion are only observable here.
     # A macOS/arm64 developer run is a weaker check, not an equivalent one.
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The two integration steps below each carry their own 15-minute `go test`
+    # timeout, and a Go timeout is worth more than a job cancellation here: it
+    # dumps every goroutine, which is the only diagnosis available for the CFFI
+    # HANG cases this lane deliberately isolates (`is divisibleby(0)` takes the
+    # stock process down rather than returning). A 20-minute job budget could
+    # pre-empt the second step's timeout and throw that dump away, so the job
+    # gets room for both plus setup.
+    timeout-minutes: 45
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v7.0.0
@@ -80,7 +87,23 @@ jobs:
           CGO_ENABLED: "1"
         run: go test -tags integration -count=1 -v -timeout 15m ./internal/debaml/constraintoracle/
 
+      - name: Guard-removal ledger proof harness vs stock BAML v0.223.0
+        # Slice 7.2a-1's witness rows: every guard in the constraint evaluator's
+        # compensation layer, driven through the same stock CFFI. The stock
+        # outcome envelope is RECORDED first and the native leg compared against
+        # that recording, so a guard can never be removed on fork-only evidence.
+        # TestGuardLedgerIsFailClosed is the load-bearing assertion here, and
+        # TestGuardLedgerCoversEveryLedgerRecord ties the in-repo ledger
+        # (internal/debaml/guard_ledger.md) to the rows that justify it.
+        #
+        # It carries two SUBPROCESS rows — `is divisibleby(0)`, which takes the
+        # CFFI process down, and an oversized `range` — so the timeout allows for
+        # a child that has to be killed at its 45s deadline.
+        env:
+          CGO_ENABLED: "1"
+        run: go test -tags integration -count=1 -v -timeout 15m ./internal/debaml/guardledger/
+
       - name: Constraint evaluator unit lane
         # The CGO-free half of the same claim, so a guard cannot be removed
         # without a red lane even if the oracle job is skipped by paths.
-        run: go test -count=1 -run 'Constraint|JinjaHelpers|Evaluator|Withdrawn' ./internal/debaml/
+        run: go test -count=1 -run 'Constraint|JinjaHelpers|Evaluator|Withdrawn|GuardLedger|RemovedGuard|RemovedLength|RemovedLast' ./internal/debaml/
