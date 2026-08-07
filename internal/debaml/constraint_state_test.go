@@ -24,24 +24,25 @@ package debaml
 //     only, that checkSupported still refuses its bundle, so no state result can
 //     be misread as admission moving.
 //
-// THE ONE NARROWED INVARIANT, and it is narrowed NOWHERE ELSE. "Constraint-
-// bearing bundles still decline" holds for every shape in this file except one:
-// a constraint declared on `b.Target` ITSELF (a bare-string return type, or a
-// constrained element/value of a target list/map) is currently ADMITTED, because
-// checkSupported -> checkSupportedFields walks b.Enums and b.Classes and never
-// walks b.Target. That is a PRE-EXISTING over-claim at the base revision
-// 707b2419, not something this TEST-ONLY slice introduces or may fix; the
-// repository owner granted an explicit, documented, TEMPORARY authority
-// exception for it and scheduled the fix as its own separate "decline-more"
-// production slice. Tracked on #583.
-//
-// The exception is stated as an ASSERTED TRIPWIRE, not a silent log:
-// [TestKnownGap_TargetLevelConstraintAdmission] asserts the wrong behaviour on
-// purpose — including that native SERVES a value failing its own @assert — and
-// fails the moment the gate starts declining, so it is a canary for the fix.
-// [TestConstraintStateConstrainedBundlesAreStillRefused] hard-asserts the
-// unchanged invariant for every other shape, through checkSupported,
-// SupportsNativeFinalBundle AND ParseStaticBundle.
+// THE INVARIANT IS NOW UNNARROWED. "Constraint-bearing bundles still decline"
+// holds for EVERY shape in this file, with no exception. It did not always: a
+// constraint declared on `b.Target` ITSELF (a bare-string return type, or a
+// constrained element/value of a target list/map) used to be ADMITTED, because
+// checkSupported -> checkSupportedFields walked b.Enums and b.Classes and never
+// walked b.Target. That pre-existing over-claim was carried here as a documented,
+// temporary exception and an asserted tripwire while the collector slice (which
+// was TEST-ONLY and could not touch a gate) landed. The decline-more fix has since
+// walked the target in checkSupportedFields, the tripwire tripped as designed, and
+// its fixtures now live in the ordinary declining set:
+// [TestConstraintStateConstrainedBundlesAreStillRefused] hard-asserts EVERY
+// constrained shape — target-level included — through checkSupported,
+// SupportsNativeFinalBundle AND ParseStaticBundle, and
+// [TestTargetLevelConstraintDeclineClassification] keeps the closed gap's own
+// evidence: per shape, the exact value native WOULD have served, and which of
+// stock v0.223's three dispositions that value met — an out-claim removed, or
+// plain over-decline. The stock half of that is measured live through CFFI by
+// TestStockTargetLevelConstraintDispositionAndNativeDecline in
+// internal/bamlprofile/profileoracle, never inferred from the native evaluator.
 
 import (
 	"context"
@@ -246,12 +247,9 @@ func requireConstraintStateSkipped(t *testing.T, st *constraintCoercionState, wa
 //
 // IT IS DELIBERATELY ONE-DIRECTIONAL. No fixture that runs through this helper
 // may assert that a bundle is ACCEPTED; the safe direction is the only one it
-// checks. The single shape the gate does not reach — a constraint on `b.Target`
-// itself — is deliberately NOT routed through here. It is handled by
-// [TestKnownGap_TargetLevelConstraintAdmission], which asserts that wrong
-// behaviour on purpose as a documented, temporary exception (#583) and FAILS the
-// moment the gate starts declining, so the gap is a canary for its fix rather
-// than a silent log or a permanent lock.
+// checks. EVERY fixture in this file routes through it, including the
+// target-level ones: checkSupportedFields walks b.Target for constraints, so
+// there is no longer a constrained shape the gate fails to reach.
 func requireConstraintStateStillDeclines(t *testing.T, run *constraintCoercionRun) {
 	t.Helper()
 	got := run.ProductionSupport
@@ -272,25 +270,6 @@ func collectConstraintStateFixture(t *testing.T, b *schema.Bundle, raw string) *
 		t.Fatalf("collect(%s): %v", raw, err)
 	}
 	requireConstraintStateStillDeclines(t, run)
-	return run
-}
-
-// collectConstraintStateTargetLevelFixture is the collector entry for the ONE
-// fixture family whose constrained node cannot be nested: a bare-string RETURN
-// TYPE (that IS the route under test). It makes no assertion about
-// checkSupported here, because a target-level constraint falls under the single
-// documented exception to the non-admission invariant — the pre-existing
-// b.Target gap at 707b2419, tracked on #583 and scheduled as its own
-// decline-more slice. The gap is asserted, in full and on purpose, by
-// [TestKnownGap_TargetLevelConstraintAdmission]; duplicating a weaker version of
-// that assertion in this helper would spread the exception instead of confining
-// it to one named test.
-func collectConstraintStateTargetLevelFixture(t *testing.T, b *schema.Bundle, raw string) *constraintCoercionRun {
-	t.Helper()
-	run, err := collectConstraintCoercionState(b, raw)
-	if err != nil {
-		t.Fatalf("collect(%s): %v", raw, err)
-	}
 	return run
 }
 
@@ -708,10 +687,11 @@ func TestConstraintStateBareStringReturnSkipsBothLevels(t *testing.T) {
 		"shape", `this == "also_expected"`,
 	)
 	b := constraintStateBundle(t, target, nil, nil)
-	// The gate does not walk the TARGET type, so this bundle is not declined
-	// today; that shape and its consequences are pinned by
-	// TestKnownGap_TargetLevelConstraintAdmission (#583).
-	run := collectConstraintStateTargetLevelFixture(t, b, `"actual"`)
+	// Production refuses this bundle like any other constrained one — the gate walks
+	// b.Target. The collector runs anyway: it is not gated, and the skip it records
+	// here is a STOCK BAML behaviour (the bare-string return route), which the
+	// evaluator slice models whether or not native is allowed to serve the shape.
+	run := collectConstraintStateFixture(t, b, `"actual"`)
 
 	root := run.Root
 	if got, want := root.Disposition, constraintDispositionSkipBareStringReturn; got != want {
@@ -1802,20 +1782,21 @@ func TestConstraintStateDuplicateMapKeysNeverReachTheBuilder(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestConstraintStateConstrainedBundlesAreStillRefused is the boundary lock: the
-// unchanged half of the non-admission invariant.
+// WHOLE non-admission invariant, with nothing carved out of it.
 //
 // It asserts, HARD, through the three gates that actually decide serving —
 // `checkSupported` (the Parse gate), `SupportsNativeFinalBundle` (the admission
 // predicate) and `ParseStaticBundle` (the static-final entry point) — that every
-// constrained shape reachable from a class field, a class declaration or an enum
-// declaration is REFUSED with the ErrDeBAMLParseUnsupported fallback sentinel.
-// That is the invariant Slice 7.2a must not move, and a state result must never
-// be readable as admission changing.
+// constrained shape reachable from the RETURN TYPE, a class field, a class
+// declaration or an enum declaration is REFUSED with the
+// ErrDeBAMLParseUnsupported fallback sentinel. A state result must never be
+// readable as admission changing.
 //
-// The single exception — a constraint on `b.Target` itself — is NOT quietly
-// omitted here. It is asserted in full, as the wrong behaviour it is, by
-// [TestKnownGap_TargetLevelConstraintAdmission], which also re-proves that the
-// exception stays confined to the target-level position.
+// The three target-level rows arrived from the retired #662 tripwire: they were
+// the one family the gate did not reach, and the decline-more fix that walks
+// b.Target moved them here. Each row carries its OWN raw, chosen so the DECLINE is
+// a gate decision rather than a coercion failure — the unconstrained-twin
+// assertion below proves that by serving the very same bytes.
 func TestConstraintStateConstrainedBundlesAreStillRefused(t *testing.T) {
 	suit := schema.EnumDef{
 		Name: schema.Name{Name: "Suit"},
@@ -1851,42 +1832,185 @@ func TestConstraintStateConstrainedBundlesAreStillRefused(t *testing.T) {
 	optionalField := constraintStateClass("Wrapper",
 		constraintStateField("note", "", constraintStateCheck(constraintStateOptional(constraintStateStringType()), "c", `this == "x"`)))
 
+	// The raw the CLASS-rooted rows are driven with: one object carrying every
+	// field any of them reads, so each row's stripped twin below coerces it
+	// cleanly.
+	const classRaw = `{"note":"x","suit":"Hearts","lvl":"Low","amount":3,"qty":3,"nums":[1],"scores":{"a":1}}`
+
 	gated := []struct {
 		name   string
 		bundle *schema.Bundle
+		raw    string
+		// twinServed is the EXACT document the constraint-stripped twin serves for
+		// raw, or "" when that twin still declines for a reason unrelated to
+		// constraints — in which case twinDeclines names that reason and the row
+		// asserts it instead. Exactly one of the two is set.
+		twinServed   string
+		twinDeclines string
 	}{
-		{"scalar-class-field", constraintStateBundle(t, constraintStateClassType("Wrapper"), []schema.ClassDef{scalarField}, nil)},
-		{"optional-class-field", constraintStateBundle(t, constraintStateClassType("Wrapper"), []schema.ClassDef{optionalField}, nil)},
-		{"enum-field", constraintStateBundle(t, constraintStateClassType("Hand"), []schema.ClassDef{hand}, []schema.EnumDef{suit})},
-		{"enum-declaration", constraintStateBundle(t, constraintStateClassType("Hand"), []schema.ClassDef{constraintStateClass("Hand", constraintStateField("lvl", "", schema.Type{Kind: schema.TypeEnum, Name: "Level"}))}, []schema.EnumDef{constrainedEnum})},
-		{"class-declaration", constraintStateBundle(t, constraintStateClassType("Order"), []schema.ClassDef{order}, nil)},
-		{"list-element", constraintStateBundle(t, constraintStateClassType("Bag"), []schema.ClassDef{bag}, nil)},
-		{"map-value", constraintStateBundle(t, constraintStateClassType("Board"), []schema.ClassDef{boardValue}, nil)},
-		{"map-key", constraintStateBundle(t, constraintStateClassType("Board"), []schema.ClassDef{boardKey}, nil)},
+		{"scalar-class-field", constraintStateBundle(t, constraintStateClassType("Wrapper"), []schema.ClassDef{scalarField}, nil), classRaw,
+			"", "single string-absorbing-field root class"},
+		{"optional-class-field", constraintStateBundle(t, constraintStateClassType("Wrapper"), []schema.ClassDef{optionalField}, nil), classRaw,
+			"", "single string-absorbing-field root class"},
+		{"enum-field", constraintStateBundle(t, constraintStateClassType("Hand"), []schema.ClassDef{hand}, []schema.EnumDef{suit}), classRaw,
+			"", `required field "suit" provably fails to coerce`},
+		{"enum-declaration", constraintStateBundle(t, constraintStateClassType("Hand"), []schema.ClassDef{constraintStateClass("Hand", constraintStateField("lvl", "", schema.Type{Kind: schema.TypeEnum, Name: "Level"}))}, []schema.EnumDef{constrainedEnum}), classRaw,
+			`{"lvl":"Low"}`, ""},
+		{"class-declaration", constraintStateBundle(t, constraintStateClassType("Order"), []schema.ClassDef{order}, nil), classRaw,
+			`{"amount":3}`, ""},
+		{"list-element", constraintStateBundle(t, constraintStateClassType("Bag"), []schema.ClassDef{bag}, nil), classRaw,
+			`{"nums":[1]}`, ""},
+		{"map-value", constraintStateBundle(t, constraintStateClassType("Board"), []schema.ClassDef{boardValue}, nil), classRaw,
+			"", "non-last unquoted-scalar class field or scalar map value"},
+		{"map-key", constraintStateBundle(t, constraintStateClassType("Board"), []schema.ClassDef{boardKey}, nil), classRaw,
+			"", "non-last unquoted-scalar class field or scalar map value"},
+		// The three rows the b.Target walk added — the retired #662 tripwire's own
+		// fixtures, now ordinary members of the declining set. Their twins SERVE, so
+		// they are also this change's no-over-decline regression fixtures: the exact
+		// bytes native used to serve WITH the constraint are still served without it.
+		{"target-assert", constraintStateBundle(t, constraintStateAssert(constraintStateStringType(), "shape", `this == "expected"`), nil, nil), `"actual"`,
+			`"actual"`, ""},
+		{"target-check", constraintStateBundle(t, constraintStateCheck(constraintStateStringType(), "shape", `this == "expected"`), nil, nil), `"actual"`,
+			`"actual"`, ""},
+		{"target-list-element", constraintStateBundle(t, schema.Type{
+			Kind: schema.TypeList,
+			Elem: ptrConstraintStateType(constraintStateAssert(constraintStateIntType(), "big", "this > 100")),
+		}, nil, nil), `[1,2]`,
+			`[1,2]`, ""},
 	}
-	requireConstraintStateCount(t, len(gated), 8, "gated constrained shapes")
+	requireConstraintStateCount(t, len(gated), 11, "gated constrained shapes")
+	served := 0
 	for _, g := range gated {
+		if g.twinServed != "" {
+			served++
+		}
 		t.Run(g.name, func(t *testing.T) {
+			if (g.twinServed == "") == (g.twinDeclines == "") {
+				t.Fatalf("the row sets neither or both of twinServed/twinDeclines; one outcome must be stated")
+			}
 			if err := checkSupported(g.bundle); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
 				t.Errorf("checkSupported = %v; want the ErrDeBAMLParseUnsupported fallback sentinel", err)
 			}
 			if err := SupportsNativeFinalBundle(g.bundle); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
 				t.Errorf("SupportsNativeFinalBundle = %v; want the fallback sentinel", err)
 			}
-			// The static-final entry point must refuse too, on a raw that would
-			// otherwise coerce cleanly — so this is a gate decision, not a parse
-			// failure.
-			_, err := ParseStaticBundle(context.Background(), g.bundle, `{"note":"x","suit":"Hearts","lvl":"Low","amount":3,"qty":3,"nums":[1],"scores":{"a":1}}`)
+			// The static-final entry point must refuse too.
+			_, err := ParseStaticBundle(context.Background(), g.bundle, g.raw)
 			if !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
 				t.Errorf("ParseStaticBundle = %v; want the fallback sentinel", err)
 			}
+
+			// NO OVER-DECLINE, and the reason the declines above are attributable to
+			// the constraint at all. The twin is DERIVED from this very bundle by
+			// deleting its constraints and nothing else, so the pair differs in
+			// exactly that attribute: whatever the twin admits, the constraint alone
+			// caused the gate to refuse it.
+			twin, removed := constraintStateWithoutConstraints(t, g.bundle)
+			if removed == 0 {
+				t.Fatalf("the fixture declares no constraint; its decline proves nothing about constraints")
+			}
+			// checkSupported is the gate the b.Target walk changed, so every twin —
+			// including the three target-level ones — must pass it.
+			if err := checkSupported(twin); err != nil {
+				t.Fatalf("stripped twin: checkSupported DECLINED (%v); removing the constraint must restore admission", err)
+			}
+			res, terr := ParseStaticBundle(context.Background(), twin, g.raw)
+			if g.twinServed != "" {
+				if terr != nil {
+					t.Fatalf("stripped twin: ParseStaticBundle = %v; want it to SERVE %s", terr, g.twinServed)
+				}
+				if got := string(res.JSON); got != g.twinServed {
+					t.Errorf("stripped twin served %s, want %s", got, g.twinServed)
+				}
+				return
+			}
+			// The twin passes the CONSTRAINT gate but still declines downstream, for
+			// a reason this row names. Pinning it is what stops the arm from being a
+			// silent "it declined, close enough": the reason must be the stated
+			// non-constraint one, so nothing here can be read as the constraint gate
+			// still firing.
+			if terr == nil {
+				t.Fatalf("stripped twin SERVED %s; the row claims it declines for %q", res.JSON, g.twinDeclines)
+			}
+			if !strings.Contains(terr.Error(), g.twinDeclines) {
+				t.Errorf("stripped twin declined with %v; want the non-constraint reason %q", terr, g.twinDeclines)
+			}
+			if strings.Contains(terr.Error(), "constraint") {
+				t.Errorf("stripped twin declined for a CONSTRAINT reason (%v) after every constraint was removed", terr)
+			}
 		})
 	}
+	requireConstraintStateCount(t, served, 6, "rows whose stripped twin serves")
+}
 
+// constraintStateWithoutConstraints returns a DEEP COPY of b with every declared
+// @assert/@check removed — from the target's whole type tree, from each enum and
+// class declaration, and from every field type — plus the number it removed.
+//
+// It is DERIVED rather than hand-written on purpose. A second, hand-built
+// "unconstrained version" of a fixture can drift into a different shape, and then
+// its admission says nothing about why the constrained one declined. Copying the
+// subject and deleting exactly one attribute makes the pair differ in exactly that
+// attribute, so the twin's admission isolates the constraint as the cause. The
+// count is returned so a caller can refuse a vacuous comparison against a fixture
+// that declared nothing.
+func constraintStateWithoutConstraints(t *testing.T, b *schema.Bundle) (*schema.Bundle, int) {
+	t.Helper()
+	removed := 0
+	var stripType func(schema.Type) schema.Type
+	stripType = func(x schema.Type) schema.Type {
+		removed += len(x.Meta.Constraints)
+		x.Meta.Constraints = nil
+		if x.Elem != nil {
+			x.Elem = ptrConstraintStateType(stripType(*x.Elem))
+		}
+		if x.Key != nil {
+			x.Key = ptrConstraintStateType(stripType(*x.Key))
+		}
+		if x.Value != nil {
+			x.Value = ptrConstraintStateType(stripType(*x.Value))
+		}
+		if len(x.Items) > 0 {
+			items := make([]schema.Type, len(x.Items))
+			for i := range x.Items {
+				items[i] = stripType(x.Items[i])
+			}
+			x.Items = items
+		}
+		if x.Union != nil {
+			u := *x.Union
+			u.Variants = make([]schema.Type, len(x.Union.Variants))
+			for i := range x.Union.Variants {
+				u.Variants[i] = stripType(x.Union.Variants[i])
+			}
+			x.Union = &u
+		}
+		return x
+	}
+
+	enums := make([]schema.EnumDef, len(b.Enums))
+	for i := range b.Enums {
+		enums[i] = b.Enums[i]
+		removed += len(enums[i].Constraints)
+		enums[i].Constraints = nil
+	}
+	classes := make([]schema.ClassDef, len(b.Classes))
+	for i := range b.Classes {
+		classes[i] = b.Classes[i]
+		removed += len(classes[i].Constraints)
+		classes[i].Constraints = nil
+		fields := make([]schema.ClassField, len(b.Classes[i].Fields))
+		for j := range b.Classes[i].Fields {
+			fields[j] = b.Classes[i].Fields[j]
+			fields[j].Type = stripType(fields[j].Type)
+		}
+		classes[i].Fields = fields
+	}
+	return constraintStateBundle(t, stripType(b.Target), classes, enums), removed
 }
 
 // ---------------------------------------------------------------------------
-// The ONE narrowed-invariant exception — an asserted known-gap tripwire
+// The closed target-level gap — what declining actually bought
 // ---------------------------------------------------------------------------
 
 // constraintStateDeclaredConstraints renders a schema node's DECLARED
@@ -1906,156 +2030,153 @@ func constraintStateDeclaredConstraints(t schema.Type) []string {
 	return out
 }
 
-// TestKnownGap_TargetLevelConstraintAdmission is a KNOWN-GAP TRIPWIRE. It
-// asserts a WRONG production behaviour on purpose, and it is expected to FAIL
-// the day that behaviour is fixed.
+// TestTargetLevelConstraintDeclineClassification is what the retired #662
+// known-gap tripwire turned into once the gap closed.
 //
-// THE GAP, exactly. `checkSupported` -> `checkSupportedFields`
-// (internal/debaml/parse.go) iterates `b.Enums` and `b.Classes` and never walks
-// `b.Target`. A constraint declared on the RETURN TYPE itself — `function F() ->
-// string @assert(...)`, or a constrained element/value of a target list/map — is
-// therefore never examined, so `checkSupported`, `SupportsNativeFinalBundle` and
-// `ParseStaticBundle` all ADMIT it. The observable consequence, asserted below,
-// is that native SERVES a value whose own `@assert` is FALSE — which is an
-// over-claim, not merely a coverage gap.
+// THE GAP THAT WAS. `checkSupported` -> `checkSupportedFields` iterated `b.Enums`
+// and `b.Classes` and never walked `b.Target`, so a constraint declared on the
+// RETURN TYPE itself — `function F() -> int @assert(...)`, or a constrained
+// element of a target list — was never examined and all three gates ADMITTED it.
+// The tripwire asserted that wrong behaviour on purpose and failed the moment
+// [checkTypeNoConstraints] landed.
 //
-// THIS IS PRE-EXISTING AT THE BASE REVISION 707b2419. Slice 7.2a-2 is
-// TEST-ONLY: it adds no production code and changes no gate, so it neither
-// introduced this nor may fix it. The repository owner granted an EXPLICIT,
-// DOCUMENTED, TEMPORARY authority exception narrowing the slice's
-// "constraint-bearing bundles still decline" invariant to exclude exactly this
-// target-level shape, and scheduled the fix as its own separate "decline-more"
-// production slice. Tracked on #583, which records the measured envelope, the
-// static-final reachability, and what the fix slice must do.
+// WHAT THIS TEST IS FOR. The decline itself is pinned alongside every other
+// constrained shape by [TestConstraintStateConstrainedBundlesAreStillRefused].
+// What is pinned HERE is the other half of the differential: for each
+// target-level shape, the exact value native SERVED while the gate admitted it.
+// That value is the native leg of the out-claim question, and it is derived
+// rather than quoted — from the constraint-stripped twin, which coerces
+// identically because native's coercer never reads Meta.Constraints.
 //
-// WHY ASSERTED RATHER THAN LOGGED. An earlier revision only `t.Log`ged the
-// verdict so that closing the gap would not turn the suite red. That is a
-// false-green: a silent log is indistinguishable from a test that checks
-// nothing, and nothing would notice if the over-claim widened. A tripwire is the
-// honest shape — it states the wrong behaviour as a fact, so
+// WHERE THE STOCK LEG LIVES, AND WHY NOT HERE. Whether declining a shape REMOVED
+// an out-claim depends on what stock BAML v0.223 does with it, and no unit test
+// in this package can answer that: [EvaluateConstraint] is the native evaluator,
+// and its verdict on a predicate is NOT stock's verdict on a parse. Stock is
+// measured live, through CFFI, by
+// TestStockTargetLevelConstraintDispositionAndNativeDecline in
+// internal/bamlprofile/profileoracle, which parses these same shapes through the
+// untouched v0.223 runtime and asserts the native decline beside each one. Its
+// measurement is a THREE-way taxonomy, and every row below carries the class it
+// landed in:
 //
-//   - while the gap is open, the exception is impossible to overlook: this test
-//     is named for it and describes it in full;
-//   - the moment the decline-more slice lands, EVERY gate assertion here fails
-//     with a message saying so, and the fix's author deletes the tripwire and
-//     moves the bare-string collector fixture from
-//     [collectConstraintStateTargetLevelFixture] to
-//     [collectConstraintStateFixture].
+//   - RAISES — a bare `int` return and a LIST-LEVEL constraint reject the parse
+//     with "Assertions failed.". Native served a value; BAML errors. A genuine
+//     out-claim, and declining restores the erroring fallback.
+//   - SERVES A DIFFERENT VALUE — a constrained list ELEMENT does not reject.
+//     coerce_array DROPS each failing element, so stock returns `[]` where native
+//     returned `[1,2]`. An out-claim in value rather than in outcome.
+//   - SERVES THE SAME VALUE — a bare `string` return skips constraint evaluation
+//     entirely, so native's served value MATCHED stock's. Declining it is NOT an
+//     out-claim fix; it is plain over-decline, safe under the parity principle.
+//     [TestConstraintStateBareStringReturnSkipsBothLevels] pins that skip on the
+//     collector side and profileoracle's TestStockSkipsConstraintsOnBareStringReturn
+//     measures it against stock. Calling this row a removed out-claim would
+//     contradict both, so it is labelled for what it is.
 //
-// WHY THE PROOF IS ATTACHED TO THE SCHEMA, and not to a literal. A previous cut
-// demonstrated the over-claim by calling EvaluateConstraint on a hand-written
-// expression over a hand-built value. That was DETACHED: deleting the @assert
-// from the probes left the test green, because nothing tied the predicate it
-// evaluated to the predicate the bundle actually declares. It now
-//
-//  1. pins each probe's EXACT declared constraints on its schema node — count,
-//     level, label and expression ([constraintStateDeclaredConstraints]);
-//  2. requires at least one of them to be an @assert;
-//  3. takes the expression FROM that schema node and evaluates it against the
-//     canonical value the collector built for the served document, after
-//     requiring that value's serialization to equal the bytes ParseStaticBundle
-//     ACTUALLY returned; and
-//  4. cross-checks that verdict against the collector's own recorded outcome for
-//     the same node.
-//
-// So deleting or changing either probe's constraint fails this test, and the
-// sentence "native served a value failing its own @assert" is backed by the
-// bundle's own predicate over the bundle's own served value.
-//
-// It is a canary, not a lock. Nothing else in this slice narrows the
-// non-admission invariant: every OTHER constrained shape is hard-asserted to
-// decline through all three gates by
-// [TestConstraintStateConstrainedBundlesAreStillRefused], and the contrast block
-// at the end of this test re-proves that the exception is confined to the
-// target-level position.
-func TestKnownGap_TargetLevelConstraintAdmission(t *testing.T) {
-	const gapClosed = "GAP CLOSED — this is the expected fix, not a regression. " +
-		"Delete TestKnownGap_TargetLevelConstraintAdmission, move the bare-string fixture from " +
-		"collectConstraintStateTargetLevelFixture to collectConstraintStateFixture, and drop the " +
-		"narrowed-invariant note from this file's header and the PR body. Detail: "
-
-	// The subject: a bare-string RETURN TYPE carrying a FALSE @assert.
-	bareString := constraintStateBundle(t,
-		constraintStateAssert(constraintStateStringType(), "shape", `this == "expected"`), nil, nil)
-	// And a constrained ELEMENT of a target list, so the gap is recorded as the
-	// shape it is (anything hanging off b.Target) rather than as one special case.
-	targetList := constraintStateBundle(t, schema.Type{
-		Kind: schema.TypeList,
-		Elem: ptrConstraintStateType(constraintStateAssert(constraintStateIntType(), "big", "this > 100")),
-	}, nil, nil)
-
+// The taxonomy is asserted, not just described: the row set must contain at least
+// one genuine out-claim and at least one over-decline, so it cannot quietly
+// collapse into "they all decline, therefore they were all bugs".
+func TestTargetLevelConstraintDeclineClassification(t *testing.T) {
 	probes := []struct {
-		name     string
-		bundle   *schema.Bundle
-		raw      string
-		wantJSON string
-		// constrained returns the schema node the predicate is DECLARED on. The
-		// expression evaluated below is read from here, never from a literal.
-		constrained func(*schema.Bundle) schema.Type
+		name   string
+		bundle *schema.Bundle
+		raw    string
+		// wouldHaveServed is what ParseStaticBundle returned for raw BEFORE the
+		// gate walked b.Target. Asserted against the constraint-stripped twin, so
+		// it is measured here rather than remembered.
+		wouldHaveServed string
+		// constrained returns the schema node the predicate is DECLARED on, and
 		// wantDeclared is that node's complete constraint list, in order.
+		constrained  func(*schema.Bundle) schema.Type
 		wantDeclared []string
-		// wantEvalPaths are the collector paths whose canonical value the declared
-		// predicate must evaluate FALSE against — the values native actually served.
-		//
-		// It is an EXPECTATION, not a loop driver: the set actually evaluated is
-		// DERIVED from the served state below, so emptying this field makes the
-		// coverage assertion FAIL rather than silently skipping links 3-4.
-		wantEvalPaths []string
-		// skipRoute selects how the collector records the verdict: the bare-string
-		// RETURN route skips evaluation and records a COUNTERFACTUAL, every other
-		// node records an EVENT. The expected rendering itself is DERIVED from the
-		// schema node below, never hard-coded, so there is no second literal that
-		// could drift away from what the bundle declares.
-		skipRoute bool
+		// stockDoes and outClaim record profileoracle's LIVE measurement for this
+		// shape. They are documentation of another test's result, which is why the
+		// row set's composition is asserted below rather than these values being
+		// re-derived from a native evaluator call.
+		stockDoes string
+		outClaim  bool
 	}{
 		{
-			name:          "bare-string-return",
-			bundle:        bareString,
-			raw:           `"actual"`,
-			wantJSON:      `"actual"`,
-			constrained:   func(b *schema.Bundle) schema.Type { return b.Target },
-			wantDeclared:  []string{`assert/"shape"/this == "expected"`},
-			wantEvalPaths: []string{"$"},
-			// The bare-string RETURN route skips evaluation, so the collector records
-			// the predicate as a COUNTERFACTUAL rather than an event — which is the
-			// same false verdict, reached the other way.
-			skipRoute: true,
+			// The genuine out-claim: stock REJECTS the parse, native served 5.
+			name:            "bare-int-return",
+			bundle:          constraintStateBundle(t, constraintStateAssert(constraintStateIntType(), "f", "false"), nil, nil),
+			raw:             `5`,
+			wouldHaveServed: `5`,
+			constrained:     func(b *schema.Bundle) schema.Type { return b.Target },
+			wantDeclared:    []string{`assert/"f"/false`},
+			stockDoes:       "raises (Assertions failed.)",
+			outClaim:        true,
 		},
 		{
-			name:         "target-list-element",
-			bundle:       targetList,
-			raw:          `[1,2]`,
-			wantJSON:     `[1,2]`,
-			constrained:  func(b *schema.Bundle) schema.Type { return *b.Target.Elem },
-			wantDeclared: []string{`assert/"big"/this > 100`},
-			// BOTH served elements fail the element's own @assert.
-			wantEvalPaths: []string{"$[0]", "$[1]"},
+			// The constraint on the LIST ITSELF. Stock rejects this one too.
+			name: "target-list-level",
+			bundle: constraintStateBundle(t, constraintStateAssert(schema.Type{
+				Kind: schema.TypeList, Elem: ptrConstraintStateType(constraintStateIntType()),
+			}, "f", "false"), nil, nil),
+			raw:             `[1,2]`,
+			wouldHaveServed: `[1,2]`,
+			constrained:     func(b *schema.Bundle) schema.Type { return b.Target },
+			wantDeclared:    []string{`assert/"f"/false`},
+			stockDoes:       "raises (Assertions failed.)",
+			outClaim:        true,
+		},
+		{
+			// The constrained ELEMENT of a target list — one of the two retired
+			// tripwire fixtures. Stock does NOT reject, so this is not the
+			// "native serves where BAML raises" shape; it is still an out-claim,
+			// in VALUE: coerce_array drops both failing elements and stock serves
+			// `[]` where native served both.
+			name: "target-list-element",
+			bundle: constraintStateBundle(t, schema.Type{
+				Kind: schema.TypeList,
+				Elem: ptrConstraintStateType(constraintStateAssert(constraintStateIntType(), "big", "this > 100")),
+			}, nil, nil),
+			raw:             `[1,2]`,
+			wouldHaveServed: `[1,2]`,
+			constrained:     func(b *schema.Bundle) schema.Type { return *b.Target.Elem },
+			wantDeclared:    []string{`assert/"big"/this > 100`},
+			stockDoes:       "serves [] (coerce_array drops the failing elements)",
+			outClaim:        true,
+		},
+		{
+			// The other retired tripwire fixture, and the row that keeps this test
+			// honest. Stock SKIPS constraints on a bare-string return, so it serves
+			// exactly what native served. Over-decline, not a removed out-claim.
+			name:            "bare-string-return",
+			bundle:          constraintStateBundle(t, constraintStateAssert(constraintStateStringType(), "shape", `this == "expected"`), nil, nil),
+			raw:             `"actual"`,
+			wouldHaveServed: `"actual"`,
+			constrained:     func(b *schema.Bundle) schema.Type { return b.Target },
+			wantDeclared:    []string{`assert/"shape"/this == "expected"`},
+			stockDoes:       "serves the same value (bare-string return skips constraints)",
+			outClaim:        false,
 		},
 	}
-	requireConstraintStateCount(t, len(probes), 2, "known-gap probes")
+	requireConstraintStateCount(t, len(probes), 4, "target-level probes")
+
+	// THE TAXONOMY IS NOT ALLOWED TO COLLAPSE. Without a genuine out-claim the
+	// gate would be removing nothing; without an over-decline row the bare-string
+	// contradiction this test exists to reconcile would have quietly vanished.
+	outClaims, overDeclines := 0, 0
+	for _, p := range probes {
+		if p.outClaim {
+			outClaims++
+		} else {
+			overDeclines++
+		}
+	}
+	if outClaims == 0 {
+		t.Fatal("no probe is a genuine out-claim; the gate would be removing nothing")
+	}
+	if overDeclines == 0 {
+		t.Fatal("no probe is an over-decline; the bare-string route's stock SKIP must stay represented")
+	}
+
 	for _, p := range probes {
 		t.Run(p.name, func(t *testing.T) {
-			// 1. The Parse gate admits it.
-			if err := checkSupported(p.bundle); err != nil {
-				t.Fatalf("%scheckSupported now DECLINES a target-level constraint: %v", gapClosed, err)
-			}
-			// 2. The admission predicate admits it.
-			if err := SupportsNativeFinalBundle(p.bundle); err != nil {
-				t.Fatalf("%sSupportsNativeFinalBundle now DECLINES a target-level constraint: %v", gapClosed, err)
-			}
-			// 3. The static-final entry point serves it.
-			res, err := ParseStaticBundle(context.Background(), p.bundle, p.raw)
-			if err != nil {
-				t.Fatalf("%sParseStaticBundle now DECLINES a target-level constraint: %v", gapClosed, err)
-			}
-			if got := string(res.JSON); got != p.wantJSON {
-				t.Fatalf("ParseStaticBundle served %s, want %s; the gap's shape changed and this "+
-					"tripwire needs re-deriving", got, p.wantJSON)
-			}
-
-			// 4. THE ATTACHED PREDICATE. Pin exactly what the probe declares, so the
-			// evaluation below cannot drift from the fixture — a deleted, relabelled,
-			// downgraded or reworded constraint fails right here.
+			// 1. Pin exactly what the probe declares, so nothing below can drift
+			// from the fixture — a deleted, relabelled, downgraded or reworded
+			// constraint fails right here.
 			node := p.constrained(p.bundle)
 			declared := constraintStateDeclaredConstraints(node)
 			requireConstraintStateCount(t, len(declared), len(p.wantDeclared), "declared constraints on the probe's schema node")
@@ -2064,127 +2185,95 @@ func TestKnownGap_TargetLevelConstraintAdmission(t *testing.T) {
 					t.Fatalf("declared constraint %d = %s, want %s", i, declared[i], p.wantDeclared[i])
 				}
 			}
-			asserts := 0
-			for i := range node.Meta.Constraints {
-				if node.Meta.Constraints[i].Level == schema.ConstraintAssert {
-					asserts++
-				}
+
+			// 2. NATIVE DECLINES, through all three gates, with the fallback
+			// sentinel — so the call routes to BAML and native serves nothing.
+			if err := checkSupported(p.bundle); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+				t.Errorf("checkSupported = %v; want the ErrDeBAMLParseUnsupported fallback sentinel", err)
 			}
-			if asserts == 0 {
-				t.Fatalf("the probe declares no @assert; it cannot demonstrate that native serves a " +
-					"value failing its own assertion")
+			if err := SupportsNativeFinalBundle(p.bundle); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+				t.Errorf("SupportsNativeFinalBundle = %v; want the fallback sentinel", err)
+			}
+			res, serr := ParseStaticBundle(context.Background(), p.bundle, p.raw)
+			if !errors.Is(serr, bamlutils.ErrDeBAMLParseUnsupported) {
+				t.Errorf("ParseStaticBundle = (%s, %v); want the fallback sentinel", res.JSON, serr)
+			}
+			if len(res.JSON) != 0 {
+				t.Errorf("a declining ParseStaticBundle still returned %s; a decline must serve nothing", res.JSON)
 			}
 
-			// 5. THE SERVED VALUE. The collector rebuilds the canonical value for the
-			// same bundle and raw; requiring its serialization to equal the bytes
-			// ParseStaticBundle ACTUALLY returned is what makes the evaluation below a
-			// statement about the served result rather than about a value this test
-			// invented.
-			run, err := collectConstraintCoercionState(p.bundle, p.raw)
-			if err != nil {
-				t.Fatalf("collect: %v", err)
+			// 3. WHAT NATIVE SERVED WHILE THE GATE ADMITTED THIS, measured. The
+			// constraint-stripped twin differs from the probe in exactly one
+			// attribute and native's coercer never reads that attribute, so the
+			// twin's output IS what the constrained bundle used to serve. This is
+			// also the row's no-over-decline control: removing the constraint must
+			// restore both admission and the byte-identical served document.
+			twin, removed := constraintStateWithoutConstraints(t, p.bundle)
+			if removed == 0 {
+				t.Fatalf("the probe declares no constraint; it cannot be about the target gate")
 			}
-			if got, want := string(run.Root.CanonicalJSON), string(res.JSON); got != want {
-				t.Fatalf("the collector's canonical document %s is not what ParseStaticBundle served (%s); "+
-					"the over-claim proof would be about a different value", got, want)
+			if err := checkSupported(twin); err != nil {
+				t.Fatalf("stripped twin: checkSupported DECLINED (%v); removing the constraint must restore admission", err)
 			}
-
-			// The expected recorded rendering, DERIVED from the schema node — so a
-			// changed level, label or expression moves both the pin above and the
-			// expectation below together, and neither can be satisfied by a stale
-			// literal.
-			wantRecorded := make([]string, 0, len(node.Meta.Constraints))
-			for i := range node.Meta.Constraints {
-				c := &node.Meta.Constraints[i]
-				label := "-"
-				if c.Label != nil {
-					label = strconv.Quote(*c.Label)
-				}
-				verdict := "=false"
-				if p.skipRoute {
-					verdict = "~would-be-false"
-				}
-				wantRecorded = append(wantRecorded, fmt.Sprintf("%s/%s/%s/%s%s",
-					constraintOriginTypeMeta, c.Level, label, c.Expression, verdict))
+			twinRes, terr := ParseStaticBundle(context.Background(), twin, p.raw)
+			if terr != nil {
+				t.Fatalf("stripped twin: ParseStaticBundle = %v; want it to SERVE %s", terr, p.wouldHaveServed)
+			}
+			if got := string(twinRes.JSON); got != p.wouldHaveServed {
+				t.Fatalf("native serves %s for %s, not the recorded %s; the out-claim classification in "+
+					"profileoracle's TestStockTargetLevelConstraintDispositionAndNativeDecline is derived "+
+					"from this value and must be re-measured", got, p.raw, p.wouldHaveServed)
 			}
 
-			// 6. THE EVALUATED SET, DERIVED FROM THE SERVED STATE. Every collected
-			// node whose schema type declares exactly the constraints pinned in link 1
-			// is a node the predicate must be false over. Deriving it — rather than
-			// iterating a fixture field — is what stops the over-claim proof from
-			// being skippable: emptying wantEvalPaths now makes the coverage
-			// assertion FAIL, where a fixture-driven loop would simply run zero times
-			// and report nothing.
-			var evalNodes []*constraintCoercionState
-			var evalPaths []string
-			run.Root.walk(func(n *constraintCoercionState) {
-				if !n.HasCanonical {
-					return
-				}
-				if !constraintStateStringsEqual(constraintStateDeclaredConstraints(n.Type), declared) {
-					return
-				}
-				evalNodes = append(evalNodes, n)
-				evalPaths = append(evalPaths, n.Path.String())
-			})
-			if len(evalNodes) == 0 {
-				t.Fatalf("no served node carries the probe's declared constraints %v; there is nothing "+
-					"to demonstrate the over-claim on", declared)
-			}
-			requireConstraintStateCount(t, len(evalPaths), len(p.wantEvalPaths), "constrained nodes in the served state")
-			for i := range p.wantEvalPaths {
-				if evalPaths[i] != p.wantEvalPaths[i] {
-					t.Fatalf("constrained node %d is at %s, want %s", i, evalPaths[i], p.wantEvalPaths[i])
-				}
-			}
-
-			// 7. THE OVER-CLAIM ITSELF: the bundle's OWN predicate, read from the
-			// schema node above, is FALSE over every value native served.
-			for _, st := range evalNodes {
-				path := st.Path.String()
-				for i := range node.Meta.Constraints {
-					c := &node.Meta.Constraints[i]
-					ok, err := EvaluateConstraint(st.Canonical, c.Expression)
-					if err != nil {
-						t.Fatalf("%s: the evaluator could not decide the served value's own %s %q (%v); "+
-							"the tripwire can no longer demonstrate the over-claim", path, c.Level, c.Expression, err)
-					}
-					if ok {
-						t.Fatalf("%s: the served value %s SATISFIES its own %s %q, so this probe "+
-							"demonstrates no over-claim", path, constraintStateDescribe(st.Canonical), c.Level, c.Expression)
-					}
-				}
-				// 8. Cross-check: the collector reached the same verdict by its own
-				// route — an event for an ordinary node, a counterfactual for the
-				// bare-string RETURN route that skips evaluation. Both renderings are
-				// derived from the schema node, so this also re-proves that what the
-				// collector evaluated is what the bundle declares.
-				if p.skipRoute {
-					requireConstraintStateEvents(t, st, nil)
-					requireConstraintStateSkipped(t, st, wantRecorded)
-				} else {
-					requireConstraintStateSkipped(t, st, nil)
-					requireConstraintStateEvents(t, st, wantRecorded)
-					if !st.AssertFailed {
-						t.Errorf("%s: a false @assert did not set AssertFailed; native served a value the "+
-							"collector does not even record as failing", path)
-					}
-				}
+			if p.outClaim {
+				t.Logf("OUT-CLAIM REMOVED: native served %s; stock %s. The decline routes the call to BAML.",
+					p.wouldHaveServed, p.stockDoes)
+			} else {
+				t.Logf("OVER-DECLINE (safe, not an out-claim fix): native served %s; stock %s.",
+					p.wouldHaveServed, p.stockDoes)
 			}
 		})
 	}
 
-	// CONTRAST — this must hold in EVERY world, gap open or closed, and it is
-	// what confines the exception to the target-level position. The SAME
-	// constrained string one level down inside a class field is refused by all
-	// three gates.
+	// CONTRAST — the decline is about the CONSTRAINT, not about the target
+	// position. The same target shapes with no constraint still admit and serve,
+	// and the same constrained string one level down inside a class field declines
+	// exactly as it always did.
+	unconstrained := []struct {
+		name       string
+		bundle     *schema.Bundle
+		raw        string
+		wantServed string
+	}{
+		{"bare string target", constraintStateBundle(t, constraintStateStringType(), nil, nil), `"actual"`, `"actual"`},
+		{"bare int target", constraintStateBundle(t, constraintStateIntType(), nil, nil), `5`, `5`},
+		{"int list target", constraintStateBundle(t, schema.Type{
+			Kind: schema.TypeList, Elem: ptrConstraintStateType(constraintStateIntType()),
+		}, nil, nil), `[1,2]`, `[1,2]`},
+	}
+	requireConstraintStateCount(t, len(unconstrained), 3, "unconstrained target controls")
+	for _, u := range unconstrained {
+		t.Run("still-served/"+u.name, func(t *testing.T) {
+			if err := SupportsNativeFinalBundle(u.bundle); err != nil {
+				t.Fatalf("SupportsNativeFinalBundle DECLINED an unconstrained target: %v", err)
+			}
+			res, err := ParseStaticBundle(context.Background(), u.bundle, u.raw)
+			if err != nil {
+				t.Fatalf("ParseStaticBundle = %v; an unconstrained target must still be served", err)
+			}
+			if got := string(res.JSON); got != u.wantServed {
+				t.Errorf("served %s, want %s", got, u.wantServed)
+			}
+		})
+	}
+
 	nested := constraintStateBundle(t, constraintStateClassType("Wrapper"), []schema.ClassDef{
 		constraintStateClass("Wrapper", constraintStateField("note", "",
 			constraintStateAssert(constraintStateStringType(), "shape", `this == "expected"`))),
 	}, nil)
 	if err := checkSupported(nested); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
 		t.Errorf("checkSupported on a constrained CLASS FIELD = %v; want the fallback sentinel — "+
-			"the exception must stay confined to the target-level position", err)
+			"the target walk must not have moved the field-level decline", err)
 	}
 	if err := SupportsNativeFinalBundle(nested); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
 		t.Errorf("SupportsNativeFinalBundle on a constrained CLASS FIELD = %v; want the fallback sentinel", err)
@@ -2199,13 +2288,10 @@ func TestKnownGap_TargetLevelConstraintAdmission(t *testing.T) {
 // are all still refused by production, so no state result in this file can be
 // read as admission moving.
 //
-// The bare-string RETURN family is deliberately absent: its constrained node
-// cannot be nested (that IS the route under test), and a target-level constraint
-// falls under the single documented exception to the non-admission invariant
-// (#583). It is covered by [TestKnownGap_TargetLevelConstraintAdmission], which
-// asserts the current admitted behaviour in full — including that the bundle's
-// own @assert is FALSE over the value ParseStaticBundle served — and fails when
-// the decline-more fix slice lands.
+// The bare-string RETURN family is included. It used to be the one family left
+// out, because its constrained node cannot be nested (that IS the route under
+// test) and the gate did not walk b.Target; now checkSupportedFields does, so the
+// family is refused like every other and belongs in this list.
 func TestConstraintStateEveryCollectorFixtureFamilyIsRefused(t *testing.T) {
 	suit := schema.EnumDef{
 		Name: schema.Name{Name: "Suit"},
@@ -2267,8 +2353,14 @@ func TestConstraintStateEveryCollectorFixtureFamilyIsRefused(t *testing.T) {
 		{"default-filled-required-field", constraintStateBundle(t, constraintStateClassType("Sack"), []schema.ClassDef{defaulted}, nil), `{"name":"x"}`},
 		{"single-field-implied-key", constraintStateBundle(t, constraintStateClassType("Note"), []schema.ClassDef{note}, nil), `{"other":"x"}`},
 		{"map-default-fill", constraintStateBundle(t, constraintStateClassType("Ledger"), []schema.ClassDef{ledger}, nil), `{"name":"x","tally":3}`},
+		// The bare-string RETURN family, the fixture of
+		// [TestConstraintStateBareStringReturnSkipsBothLevels] — declined since the
+		// gate started walking b.Target.
+		{"bare-string-return", constraintStateBundle(t, constraintStateAssert(
+			constraintStateCheck(constraintStateStringType(), "nonempty", `this == "expected"`),
+			"shape", `this == "also_expected"`), nil, nil), `"actual"`},
 	}
-	requireConstraintStateCount(t, len(fixtures), 9, "collector fixture families")
+	requireConstraintStateCount(t, len(fixtures), 10, "collector fixture families")
 	for _, f := range fixtures {
 		t.Run(f.name, func(t *testing.T) {
 			run, err := collectConstraintCoercionState(f.bundle, f.raw)

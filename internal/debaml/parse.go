@@ -480,8 +480,8 @@ func checkTypeNoStream(t schema.Type) error {
 }
 
 // checkSupported reports whether every type reachable from the lowered
-// bundle is inside the M1 coercion cut-line. It walks the synthetic
-// target's class and every other reachable class (TypeClass/TypeEnum
+// bundle is inside the M1 coercion cut-line. It walks the target type, the
+// synthetic target's class and every other reachable class (TypeClass/TypeEnum
 // references are leaves here because the bundle lists each reachable
 // definition as its own entry), returning a wrapped
 // bamlutils.ErrDeBAMLParseUnsupported for the first out-of-scope feature.
@@ -502,15 +502,36 @@ func checkSupported(b *schema.Bundle) error {
 	return checkSupportedFields(b)
 }
 
-// checkSupportedFields runs the per-enum / per-class / per-field cut-line that is
-// IDENTICAL for the non-recursive and the admitted-recursive-class final paths. It
-// is the body of [checkSupported] after the blanket structural-alias/recursive-class
-// rejects; the recursion-aware final profile (checkSupportedRecursive) reuses it so
-// the two paths share one field cut-line and only the top-level recursion admission
-// differs. It does NOT re-reject recursion — a recursive class's nullable-class edge
-// is a nullable union, which checkSupportedType already lets through its null fast
-// path, and the class definitions themselves are validated as ordinary class entries.
+// checkSupportedFields runs the per-target / per-enum / per-class / per-field
+// cut-line that is IDENTICAL for the non-recursive and the admitted-recursive-class
+// final paths. It is the body of [checkSupported] after the blanket
+// structural-alias/recursive-class rejects; the recursion-aware final profile
+// (checkSupportedRecursive) reuses it so the two paths share one field cut-line and
+// only the top-level recursion admission differs. It does NOT re-reject recursion —
+// a recursive class's nullable-class edge is a nullable union, which
+// checkSupportedType already lets through its null fast path, and the class
+// definitions themselves are validated as ordinary class entries.
+//
+// b.Target is walked FIRST, for constraints only ([checkTypeNoConstraints]). The
+// enum/class loops below cannot see a constraint declared on the RETURN TYPE
+// itself — `-> string @assert(...)`, or a constrained element/key/value/variant of
+// a target list/map/union — because those live on the target Type node, not on any
+// bundle entry. Admitting one is an OVER-CLAIM rather than a coverage gap: native
+// does not evaluate constraints, so it serves a value BAML would not. Measured
+// live against stock v0.223 (profileoracle's
+// TestStockTargetLevelConstraintDispositionAndNativeDecline): a bare `int` return
+// and a list-LEVEL constraint make stock REJECT the parse, and a constrained list
+// ELEMENT makes coerce_array drop the failing elements — where native served the
+// value and the whole list respectively. (A bare `string` return is the one shape
+// stock skips constraints on, so declining that one is safe over-decline rather
+// than a fix; the walk does not special-case it, because over-decline is allowed
+// and a carve-out would not be.) checkNoStreamAnnotations already pairs a target
+// walk with its per-class walk for the same reason; this is that pairing for
+// constraints.
 func checkSupportedFields(b *schema.Bundle) error {
+	if err := checkTypeNoConstraints(b.Target); err != nil {
+		return err
+	}
 	for i := range b.Enums {
 		if len(b.Enums[i].Constraints) > 0 {
 			return unsupported("enum constraints")
@@ -523,6 +544,59 @@ func checkSupportedFields(b *schema.Bundle) error {
 		}
 		for j := range c.Fields {
 			if err := checkSupportedType(b, c.Fields[j].Type); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// checkTypeNoConstraints walks one type tree rejecting any type-level
+// @assert/@check (Type.Meta.Constraints), and NOTHING else. Named class/enum
+// refs are leaves — their definitions are validated as bundle entries in
+// [checkSupportedFields] — exactly as in checkTypeNoStream, whose shape this
+// mirrors.
+//
+// IT IS DELIBERATELY NOT [checkSupportedType]. That function opens with the same
+// constraint reject but continues into the COERCION cut-line — the multi-arm-union
+// list element, the M2c safe-union families, the map key/value surface — declines
+// that the target position has never been subject to. Running the whole cut-line
+// over b.Target would decline bundles that admit (and, for the observe lane,
+// measure) today; the target gap is a constraint over-claim, so closing it removes
+// exactly one wrong admission and adds none.
+//
+// The descent into a list element / map key+value / union variant / tuple item is
+// what makes that removal complete: a constraint on any of them is declared on the
+// target's own type tree, so no class or enum entry reports it either.
+func checkTypeNoConstraints(t schema.Type) error {
+	if len(t.Meta.Constraints) > 0 {
+		return unsupported("target type constraints")
+	}
+	switch t.Kind {
+	case schema.TypeList:
+		if t.Elem != nil {
+			return checkTypeNoConstraints(*t.Elem)
+		}
+	case schema.TypeMap:
+		if t.Key != nil {
+			if err := checkTypeNoConstraints(*t.Key); err != nil {
+				return err
+			}
+		}
+		if t.Value != nil {
+			return checkTypeNoConstraints(*t.Value)
+		}
+	case schema.TypeUnion:
+		if t.Union != nil {
+			for i := range t.Union.Variants {
+				if err := checkTypeNoConstraints(t.Union.Variants[i]); err != nil {
+					return err
+				}
+			}
+		}
+	case schema.TypeTuple:
+		for i := range t.Items {
+			if err := checkTypeNoConstraints(t.Items[i]); err != nil {
 				return err
 			}
 		}
