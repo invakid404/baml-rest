@@ -72,6 +72,10 @@ func stringType() schema.Type {
 	return schema.Type{Kind: schema.TypePrimitive, Primitive: schema.PrimitiveString}
 }
 
+func intType() schema.Type {
+	return schema.Type{Kind: schema.TypePrimitive, Primitive: schema.PrimitiveInt}
+}
+
 func constrained(t schema.Type, level schema.ConstraintLevel, expr string) schema.Type {
 	t.Meta.Constraints = append(t.Meta.Constraints, schema.Constraint{Level: level, Expression: expr})
 	return t
@@ -81,9 +85,37 @@ func constrained(t schema.Type, level schema.ConstraintLevel, expr string) schem
 // constraint forces native fallback — native never evaluates constraints, so it
 // declines regardless of level (check vs assert) or whether the predicate would
 // pass or fail. Covers the scope's constraint sub-cases at the decline gate:
-// scalar field, list (and list element), class-level, and enum-level.
+// scalar field, list (and list element), class-level, enum-level, and — since the
+// b.Target walk landed — the RETURN TYPE itself and its list element.
 func TestNativeDeclines_Constraints(t *testing.T) {
 	label := func(s string) *string { return &s }
+
+	// TARGET-LEVEL. `function F() -> T @assert(...)` declares its predicate on
+	// b.Target, which no class or enum entry can report; before checkSupportedFields
+	// walked the target these bundles were ADMITTED and native served a value BAML
+	// would not. What BAML does instead varies by shape — a bare `int` return
+	// rejects the parse, a bare `string` return skips the constraint entirely — and
+	// that taxonomy is measured live against stock v0.223 by
+	// [TestTargetLevelConstraintDeclineClassification] and profileoracle's
+	// TestStockTargetLevelConstraintDispositionAndNativeDecline. The GATE does not
+	// care which: it declines on the constraint alone, at either level.
+	requireCheckSupportedDeclines(t, &schema.Bundle{
+		Target: constrained(intType(), schema.ConstraintAssert, "false"),
+	}, "@assert on the target type")
+	requireCheckSupportedDeclines(t, &schema.Bundle{
+		Target: constrained(stringType(), schema.ConstraintAssert, `this == "expected"`),
+	}, "@assert on a bare-string target type")
+
+	targetCheckType := stringType()
+	targetCheckType.Meta.Constraints = []schema.Constraint{{Level: schema.ConstraintCheck, Expression: `this == "expected"`, Label: label("expected")}}
+	requireCheckSupportedDeclines(t, &schema.Bundle{Target: targetCheckType}, "@check on the target type")
+
+	// A constrained ELEMENT of a target LIST — the same gap one structural step in,
+	// so the walk is pinned as a tree walk rather than a single-node check.
+	requireCheckSupportedDeclines(t, &schema.Bundle{Target: schema.Type{
+		Kind: schema.TypeList,
+		Elem: ptr(constrained(intType(), schema.ConstraintAssert, "this > 100")),
+	}}, "@assert on a target list element")
 
 	// @assert on a scalar field.
 	requireCheckSupportedDeclines(t, declineBundle(schema.ClassDef{
@@ -137,6 +169,36 @@ func TestNativeDeclines_Constraints(t *testing.T) {
 		Fields: []schema.ClassField{scalarField("s", stringType()), scalarField("xs", schema.Type{Kind: schema.TypeList, Elem: ptr(stringType())})},
 	})); err != nil {
 		t.Fatalf("constraint-free control: checkSupported unexpectedly declined: %v", err)
+	}
+
+	// TARGET-LEVEL CONTROL, and the reason the target walk is a decline-MORE change
+	// rather than a blanket target reject. Each of these is the SAME target shape as
+	// a decline above with the constraint REMOVED, plus the two target shapes the
+	// static corpus actually serves (a bare string return, a class return). All must
+	// still ADMIT — the target walk looks at Meta.Constraints and nothing else, so it
+	// must not import checkSupportedType's coercion-scope declines into a position
+	// that was never subject to them.
+	unconstrained := []struct {
+		name   string
+		target schema.Type
+	}{
+		{"bare string return", stringType()},
+		{"class return", schema.Type{Kind: schema.TypeClass, Name: "Root", Mode: schema.NonStreaming}},
+		{"list of string return", schema.Type{Kind: schema.TypeList, Elem: ptr(stringType())}},
+		{"list of int return", schema.Type{Kind: schema.TypeList, Elem: ptr(intType())}},
+		{"map return", schema.Type{Kind: schema.TypeMap, Key: ptr(stringType()), Value: ptr(intType())}},
+		{"optional string return", schema.Type{Kind: schema.TypeUnion, Union: &schema.UnionType{Variants: []schema.Type{stringType()}, Nullable: true}}},
+	}
+	if len(unconstrained) != 6 {
+		t.Fatalf("unconstrained target controls = %d, want 6", len(unconstrained))
+	}
+	for _, u := range unconstrained {
+		b := declineBundle(schema.ClassDef{Fields: []schema.ClassField{scalarField("s", stringType())}})
+		b.Target = u.target
+		if err := checkSupported(b); err != nil {
+			t.Errorf("unconstrained target %q: checkSupported DECLINED (%v); the target walk must "+
+				"reject constraints only, never a shape", u.name, err)
+		}
 	}
 }
 

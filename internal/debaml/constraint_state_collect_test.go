@@ -21,17 +21,16 @@ package debaml
 // constraint_state_seam_test.go proves that with a go/ast walk over the whole
 // repo rather than a source-text grep: it re-derives this file's declared names
 // from the AST and fails if any non-test .go file so much as mentions one.
-// Production internal/debaml is byte-identical to the base revision; nothing in
-// this slice changes coerce's return, checkSupported, Parse, ParseStaticBundle,
-// admission, or any public surface. Constraint-bearing bundles still decline —
-// [constraintCoercionRun.ProductionSupport] records that verdict on every run so
-// a fixture cannot quietly become admitted — with ONE documented exception: a
-// constraint declared on `b.Target` itself is currently ADMITTED, because
-// checkSupported never walks the target type. That is a pre-existing over-claim
-// at the base revision, granted an explicit temporary authority exception and
-// scheduled as its own separate "decline-more" production slice (#583); it is
-// asserted as a known-gap tripwire in constraint_state_test.go rather than
-// papered over, and the invariant is narrowed nowhere else.
+// Nothing in this collector changes coerce's return, checkSupported, Parse,
+// ParseStaticBundle, admission, or any public surface. Constraint-bearing bundles
+// decline — [constraintCoercionRun.ProductionSupport] records that verdict on
+// every run so a fixture cannot quietly become admitted — and that now holds with
+// NO exception. It briefly did not: a constraint declared on `b.Target` itself
+// was admitted, because checkSupported did not walk the target type. That
+// pre-existing over-claim was carried as a documented temporary exception and an
+// asserted known-gap tripwire while this TEST-ONLY collector landed; the
+// decline-more fix has since walked b.Target in checkSupportedFields, and
+// constraint_state_test.go asserts the whole invariant with nothing carved out.
 //
 // HOW IT STAYS HONEST ABOUT "THE SAME COERCION". The collector never
 // re-implements a canonicalization decision it could delegate. At every node it

@@ -1,24 +1,32 @@
 name: Constraint Evaluator Oracle
 
-# Runs the de-BAML constraint-evaluator differential against a STOCK BAML
-# v0.223.0 generated client (internal/debaml/constraintoracle).
+# Runs the de-BAML STOCK-BAML-v0.223.0 CFFI differentials that live behind
+# //go:build integration under internal/: the constraint evaluator oracle
+# (internal/debaml/constraintoracle), the guard-removal ledger harness
+# (internal/debaml/guardledger), and the bamlprofile oracle
+# (internal/bamlprofile/profileoracle).
 #
-# Why its own workflow. The oracle lives behind //go:build integration in a
-# package under internal/, so neither of the existing lanes reaches it:
+# Why its own workflow. Every one of those packages is integration-tagged and
+# under internal/, so neither of the existing lanes reaches it:
 # `go build -tags integration ./...` skips _test.go files and testdata
 # directories, and the integration matrix runs `go test -tags=integration
 # ./integration/...` only. Without this job the fail-closed claim the evaluator
 # makes — never a boolean stock did not produce — would be unenforced on PRs,
 # which is exactly the gap this file closes.
 #
-# It is cheap: no Docker, no mock LLM, no container build. It links the stock
-# BAML CFFI (auto-downloaded on first use and cached here) and drives
-# Parse.<Method> over fixed assistant text — no network calls to a provider.
+# It is cheap: no Docker, no mock LLM, no container build. Each lane links the
+# stock BAML CFFI (auto-downloaded on first use and cached here) and drives
+# Parse.<Method> / CallFunctionParse over fixed assistant text — no network
+# calls to a provider, and no secrets.
 
 on:
   pull_request:
     paths:
       - "internal/debaml/**"
+      # The profile oracle's CFFI differentials and their recorded fixtures live
+      # under profileoracle/; the constraint façade they measure lives one level
+      # up in the same tree, so the whole package is a trigger.
+      - "internal/bamlprofile/**"
       - ".github/workflows/constraint-oracle.yml"
       - "go.mod"
       - "go.sum"
@@ -26,6 +34,7 @@ on:
     branches: [master]
     paths:
       - "internal/debaml/**"
+      - "internal/bamlprofile/**"
       - ".github/workflows/constraint-oracle.yml"
       - "go.mod"
       - "go.sum"
@@ -46,14 +55,21 @@ jobs:
     # round-10 integral-float `2.0 ** 63` promotion are only observable here.
     # A macOS/arm64 developer run is a weaker check, not an equivalent one.
     runs-on: ubuntu-latest
-    # The two integration steps below each carry their own 15-minute `go test`
+    # The THREE integration steps below each carry their own 15-minute `go test`
     # timeout, and a Go timeout is worth more than a job cancellation here: it
     # dumps every goroutine, which is the only diagnosis available for the CFFI
     # HANG cases this lane deliberately isolates (`is divisibleby(0)` takes the
-    # stock process down rather than returning). A 20-minute job budget could
-    # pre-empt the second step's timeout and throw that dump away, so the job
-    # gets room for both plus setup.
-    timeout-minutes: 45
+    # stock process down rather than returning). An Actions cancellation throws
+    # that dump away.
+    #
+    # THE BUDGET MUST EXCEED THE SUM OF THE INNER GO TIMEOUTS, so the inner
+    # timeout always fires first and the dump always survives. 3 x 15m = 45m of
+    # inner budget, plus ~15m of headroom for checkout/setup/vet/the unit step
+    # and for the dump itself to be written and uploaded. At exactly 45 a hung
+    # first or second lane would starve the third of its own diagnostic timeout —
+    # which is how this number went from 45 to 60 when the profileoracle lane was
+    # added. Any future step with its own `-timeout` must raise this too.
+    timeout-minutes: 60
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v7.0.0
@@ -73,9 +89,9 @@ jobs:
           key: baml-cffi-0.223.0-${{ runner.os }}
 
       - name: Compile the integration-tagged tree
-        # Cheap guard that the oracle's own sources still build under the tag,
-        # independent of whether the run below gets that far.
-        run: go vet -tags integration ./internal/debaml/...
+        # Cheap guard that the oracles' own sources still build under the tag,
+        # independent of whether the runs below get that far.
+        run: go vet -tags integration ./internal/debaml/... ./internal/bamlprofile/...
 
       - name: Constraint evaluator differential vs stock BAML v0.223.0
         # The load-bearing assertion is TestConstraintProfileIsFailClosed: for
@@ -102,6 +118,26 @@ jobs:
         env:
           CGO_ENABLED: "1"
         run: go test -tags integration -count=1 -v -timeout 15m ./internal/debaml/guardledger/
+
+      - name: bamlprofile oracle vs stock BAML v0.223.0
+        # The third CFFI differential, and the one that makes the de-BAML
+        # TARGET-LEVEL constraint gate an enforced claim rather than an opt-in
+        # one. TestStockTargetLevelConstraintDispositionAndNativeDecline builds
+        # each constrained return type as real BAML source, parses it through the
+        # untouched v0.223 runtime (CallFunctionParse -> run_user_checks ->
+        # validate_asserts), and asserts internal/debaml DECLINES the equivalent
+        # bundle beside it — so "native no longer serves where stock raises" is
+        # measured on every PR instead of asserted in a report. Without this step
+        # the test is integration-tagged under internal/ and no lane reaches it:
+        # unit-tests runs untagged, the integration matrix runs ./integration/...
+        # only, and the two steps above name their packages explicitly.
+        #
+        # The whole package runs, not just that test: the prompt/fault/constraint
+        # differentials beside it are the same shape of stock-CFFI claim and were
+        # equally unenforced.
+        env:
+          CGO_ENABLED: "1"
+        run: go test -tags=integration -count=1 -v -timeout 15m ./internal/bamlprofile/profileoracle/
 
       - name: Constraint evaluator unit lane
         # The CGO-free half of the same claim, so a guard cannot be removed
