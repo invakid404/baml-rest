@@ -68,8 +68,9 @@ jobs:
     # and for the dump itself to be written and uploaded. At exactly 45 a hung
     # first or second lane would starve the third of its own diagnostic timeout —
     # which is how this number went from 45 to 60 when the profileoracle lane was
-    # added. Any future step with its own `-timeout` must raise this too.
-    timeout-minutes: 60
+    # added, and from 60 to 75 when the serving-oracle lane was. Any future step
+    # with its own `-timeout` must raise this too.
+    timeout-minutes: 75
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v7.0.0
@@ -139,7 +140,37 @@ jobs:
           CGO_ENABLED: "1"
         run: go test -tags=integration -count=1 -v -timeout 15m ./internal/bamlprofile/profileoracle/
 
+      - name: Serving-shaped differential oracle vs stock BAML v0.223.0
+        # Slice 7.2a-3. Builds an IN-MEMORY .baml project from each corpus row's
+        # schema.Bundle, drives it through the stock CFFI's CallFunctionParse —
+        # the same entry point the generated Parse.<Method> wrappers call — and
+        # compares the recorded stock envelope against the native coercion-state
+        # collector + evaluator. TestServingOracleFailClosed is the load-bearing
+        # assertion (native reproduces stock or refuses; never a boolean stock did
+        # not produce) and TestServingOracleBoundaryLock is the invariant that
+        # every constraint-bearing bundle still DECLINES through checkSupported,
+        # SupportsNativeFinalBundle and ParseStaticBundle, target-level included.
+        #
+        # It also RE-DRIVES the 719-case constraint corpus serving-shaped
+        # (TestServingOracleBridgeCorpus), through the checked-in artifact
+        # constraintoracle's TestConstraintCorpusBridgeExport re-renders and
+        # byte-compares in the step above — so the two lanes are ordered: a corpus
+        # change fails the export step first, and the consumer picks it up here.
+        #
+        # It carries one SUBPROCESS row — `is divisibleby(0)` again, isolated so a
+        # CFFI abort cannot take the corpus down — whose child is killed at a 45s
+        # deadline, so the step budget allows for that.
+        env:
+          CGO_ENABLED: "1"
+        run: go test -tags=integration -count=1 -v -timeout 15m -run 'TestServingOracle' ./internal/debaml/
+
       - name: Constraint evaluator unit lane
         # The CGO-free half of the same claim, so a guard cannot be removed
         # without a red lane even if the oracle job is skipped by paths.
-        run: go test -count=1 -run 'Constraint|JinjaHelpers|Evaluator|Withdrawn|GuardLedger|RemovedGuard|RemovedLength|RemovedLast' ./internal/debaml/
+        #
+        # ServingOracle is in the list because the serving oracle's BOUNDARY half
+        # is deliberately untagged (serving_oracle_gate_test.go): it drives
+        # checkSupported / checkSupportedFields / checkSupportedType by name and
+        # proves the oracle is unreachable from production, neither of which needs
+        # CGO or the CFFI.
+        run: go test -count=1 -run 'Constraint|JinjaHelpers|Evaluator|Withdrawn|GuardLedger|RemovedGuard|RemovedLength|RemovedLast|ServingOracle' ./internal/debaml/
