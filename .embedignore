@@ -118,6 +118,24 @@ internal/debaml/testdata/guard_ledger
 # oracle fixtures to every shipped binary for no runtime purpose.
 internal/debaml/testdata/serving_oracle
 
+# de-BAML Slice 7.2b-1 CHECKED-WIRE BYTE-AUTHORITY proof material
+# (internal/debaml/checkedwire): the recorded-asymmetry ledger the package's
+# //go:build integration tests assert against, and the rendered in-memory .baml
+# fixture project the stock BAML v0.223.0 CFFI compiles at test time. Both are read
+# FROM DISK by those tests (os.ReadFile), never through the embedded FS, and neither
+# is a customer-build input — they are test-only proof material exactly like
+# constraint_oracle, guard_ledger and serving_oracle above. Excluded here (cmd/embed
+# includes testdata dirs, and package-level .md files, by default) so the root embed
+# manifest and the server binary's bundle stay unchanged.
+#
+# The package is integration-test-ONLY: it carries no non-_test .go file, so these
+# two paths are its entire contribution to the root manifest. They are named
+# INDIVIDUALLY rather than by excluding the directory, so that a production .go file
+# added here later still surfaces as regen drift and gets a decision instead of being
+# silently swallowed by a directory-wide exclusion.
+internal/debaml/checkedwire/asymmetries.md
+internal/debaml/checkedwire/testdata
+
 # de-BAML Phase 4b + 5.1 gated nanollm Prepare validation: a SEPARATE, test-only
 # Go module (github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare)
 # excluded from go.work so the PUBLIC github.com/viktordanov/nanollm-ffi/go
