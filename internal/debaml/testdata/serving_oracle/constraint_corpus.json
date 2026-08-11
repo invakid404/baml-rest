@@ -1,0 +1,5186 @@
+{
+  "version": 1,
+  "prelude": "\nclass Probe {\n  b int\n  a string\n  c int[]\n}\n\nenum Hue {\n  RED @alias(\"rouge\")\n  GREEN\n}\n\nclass NestInner {\n  name int\n  tags string[]\n}\n\nclass Nest {\n  a NestInner\n  name string\n  rows NestInner[]\n}\n",
+  "groups": [
+    {
+      "name": "const",
+      "baml_type": "int",
+      "input": "{\"v\":1}"
+    },
+    {
+      "name": "int7",
+      "baml_type": "int",
+      "input": "{\"v\":7}"
+    },
+    {
+      "name": "intneg",
+      "baml_type": "int",
+      "input": "{\"v\":-3}"
+    },
+    {
+      "name": "int0",
+      "baml_type": "int",
+      "input": "{\"v\":0}"
+    },
+    {
+      "name": "f25",
+      "baml_type": "float",
+      "input": "{\"v\":2.5}"
+    },
+    {
+      "name": "f20",
+      "baml_type": "float",
+      "input": "{\"v\":2.0}"
+    },
+    {
+      "name": "str",
+      "baml_type": "string",
+      "input": "{\"v\":\"Hello World\"}"
+    },
+    {
+      "name": "stre",
+      "baml_type": "string",
+      "input": "{\"v\":\"\"}"
+    },
+    {
+      "name": "stru",
+      "baml_type": "string",
+      "input": "{\"v\":\"h\\u00e9llo \\u2713 \\u65e5\\u672c\"}"
+    },
+    {
+      "name": "boolt",
+      "baml_type": "bool",
+      "input": "{\"v\":true}"
+    },
+    {
+      "name": "boolf",
+      "baml_type": "bool",
+      "input": "{\"v\":false}"
+    },
+    {
+      "name": "list",
+      "baml_type": "int[]",
+      "input": "{\"v\":[1,2,3]}"
+    },
+    {
+      "name": "liste",
+      "baml_type": "int[]",
+      "input": "{\"v\":[]}"
+    },
+    {
+      "name": "listf",
+      "baml_type": "float[]",
+      "input": "{\"v\":[1,2.5]}"
+    },
+    {
+      "name": "lists",
+      "baml_type": "string[]",
+      "input": "{\"v\":[\"a\",\"b\"]}"
+    },
+    {
+      "name": "map",
+      "baml_type": "map<string, int>",
+      "input": "{\"v\":{\"z\":1,\"a\":2,\"m\":3}}"
+    },
+    {
+      "name": "cls",
+      "baml_type": "Probe",
+      "input": "{\"v\":{\"b\":1,\"a\":\"x\",\"c\":[1,2]}}"
+    },
+    {
+      "name": "enum",
+      "baml_type": "Hue",
+      "input": "{\"v\":\"rouge\"}"
+    },
+    {
+      "name": "null",
+      "baml_type": "int?",
+      "input": "{\"v\":null}"
+    },
+    {
+      "name": "strnum",
+      "baml_type": "string",
+      "input": "{\"v\":\"9007199254740993\"}"
+    },
+    {
+      "name": "strnumsm",
+      "baml_type": "string",
+      "input": "{\"v\":\"42\"}"
+    },
+    {
+      "name": "strexact",
+      "baml_type": "string",
+      "input": "{\"v\":\"9007199254740991\"}"
+    },
+    {
+      "name": "liststr2",
+      "baml_type": "string[]",
+      "input": "{\"v\":[\"9007199254740991\",\"1\"]}"
+    },
+    {
+      "name": "listbig",
+      "baml_type": "int[]",
+      "input": "{\"v\":[4503599627370495,4503599627370496]}"
+    },
+    {
+      "name": "fbig",
+      "baml_type": "float",
+      "input": "{\"v\":9223372036854775808.0}"
+    },
+    {
+      "name": "flistbig",
+      "baml_type": "float[]",
+      "input": "{\"v\":[2.0,3.0,9223372036854775808.0]}"
+    },
+    {
+      "name": "flistsm",
+      "baml_type": "float[]",
+      "input": "{\"v\":[2.0,3.0,4.0]}"
+    },
+    {
+      "name": "nest",
+      "baml_type": "Nest",
+      "input": "{\"v\":{\"a\":{\"name\":5,\"tags\":[\"x\",\"y\"]},\"name\":\"x\",\"rows\":[{\"name\":7,\"tags\":[\"z\"]}]}}"
+    }
+  ],
+  "cases": [
+    {
+      "label": "op_add",
+      "group": "const",
+      "expr": "1 + 1 == 2",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_sub",
+      "group": "const",
+      "expr": "1 - 2 == -1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_mul",
+      "group": "const",
+      "expr": "2 * 3 == 6",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_div",
+      "group": "const",
+      "expr": "7 / 2 == 3.5",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_div_int",
+      "group": "const",
+      "expr": "4 / 2 == 2",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_floordiv",
+      "group": "const",
+      "expr": "7 // 2 == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_rem",
+      "group": "const",
+      "expr": "7 % 3 == 1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_pow",
+      "group": "const",
+      "expr": "2 ** 10 == 1024",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_neg",
+      "group": "const",
+      "expr": "-3 < 0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_not",
+      "group": "const",
+      "expr": "not false",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_and",
+      "group": "const",
+      "expr": "(true and false) == false",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_or",
+      "group": "const",
+      "expr": "true or false",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_lt",
+      "group": "const",
+      "expr": "1 < 2",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_le",
+      "group": "const",
+      "expr": "2 <= 2",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_gt",
+      "group": "const",
+      "expr": "3 > 2",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_ge",
+      "group": "const",
+      "expr": "3 >= 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_eq",
+      "group": "const",
+      "expr": "1 == 1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_ne",
+      "group": "const",
+      "expr": "1 != 2",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_concat",
+      "group": "const",
+      "expr": "\"a\" ~ \"b\" == \"ab\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_concat_num",
+      "group": "const",
+      "expr": "1 ~ 2 == \"12\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_in_list",
+      "group": "const",
+      "expr": "1 in [1,2]",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_notin_list",
+      "group": "const",
+      "expr": "4 not in [1,2]",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_in_str",
+      "group": "const",
+      "expr": "\"ell\" in \"hello\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_in_maplit",
+      "group": "const",
+      "expr": "\"a\" in {\"a\": 1}",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_eq_list",
+      "group": "const",
+      "expr": "[1,2] == [1,2]",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_eq_map",
+      "group": "const",
+      "expr": "{\"a\":1} == {\"a\":1}",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_ternary",
+      "group": "const",
+      "expr": "(1 if true else 2) == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_float_int_eq",
+      "group": "const",
+      "expr": "1.0 == 1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_str_num_eq",
+      "group": "const",
+      "expr": "\"1\" == 1",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_bool_num_eq",
+      "group": "const",
+      "expr": "true == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_none_eq",
+      "group": "const",
+      "expr": "none == none",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_index",
+      "group": "const",
+      "expr": "[1,2][0] == 1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_index_neg",
+      "group": "const",
+      "expr": "[1,2,3][-1] == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_slice",
+      "group": "const",
+      "expr": "[1,2,3][1:] == [2,3]",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_str_index",
+      "group": "const",
+      "expr": "\"abc\"[0] == \"a\"",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_mixed_arith",
+      "group": "const",
+      "expr": "1 + 1.5 == 2.5",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_i64max",
+      "group": "const",
+      "expr": "9223372036854775807 - 1 == 9223372036854775806",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_float_assoc",
+      "group": "const",
+      "expr": "0.1 + 0.2 == 0.3",
+      "stock": "false",
+      "native": "false"
+    },
+    {
+      "label": "op_div_zero",
+      "group": "const",
+      "expr": "(1 / 0) > 0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_floordiv_zero",
+      "group": "const",
+      "expr": "(1 // 0) > 0",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_rem_zero",
+      "group": "const",
+      "expr": "(1 % 0) > 0",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_str_gt_num",
+      "group": "const",
+      "expr": "\"x\" > 0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_num_lt_list",
+      "group": "const",
+      "expr": "1 < [1]",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_undefined_cmp",
+      "group": "const",
+      "expr": "nosuchvar > 0",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_undefined_attr",
+      "group": "const",
+      "expr": "this.nope > 0",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_str_add_num",
+      "group": "const",
+      "expr": "(\"a\" + 1) == \"a1\"",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_length_str",
+      "group": "const",
+      "expr": "\"abc\"|length == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "f_length_list",
+      "group": "const",
+      "expr": "[1,2,3]|length == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "f_length_map",
+      "group": "const",
+      "expr": "{\"a\":1,\"b\":2}|length == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_count_alias",
+      "group": "const",
+      "expr": "\"abc\"|count == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "f_lower",
+      "group": "const",
+      "expr": "\"ABC\"|lower == \"abc\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_upper",
+      "group": "const",
+      "expr": "\"abc\"|upper == \"ABC\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_capitalize",
+      "group": "const",
+      "expr": "\"abc\"|capitalize == \"Abc\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_title",
+      "group": "const",
+      "expr": "\"a b\"|title == \"A B\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_trim",
+      "group": "const",
+      "expr": "\"  a \"|trim == \"a\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_replace",
+      "group": "const",
+      "expr": "\"aXa\"|replace(\"X\",\"-\") == \"a-a\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_format",
+      "group": "const",
+      "expr": "\"%s!\"|format(\"hi\") == \"hi!\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_default_present",
+      "group": "const",
+      "expr": "1|default(2) == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_default_missing",
+      "group": "const",
+      "expr": "nosuchvar|default(2) == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_d_alias",
+      "group": "const",
+      "expr": "\"abc\"|d(\"x\") == \"abc\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_escape",
+      "group": "const",
+      "expr": "\"<b>\"|escape == \"<b>\"",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_e_alias",
+      "group": "const",
+      "expr": "\"<\"|e == \"<\"",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_safe",
+      "group": "const",
+      "expr": "\"a\"|safe == \"a\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_string",
+      "group": "const",
+      "expr": "1|string == \"1\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_string_float",
+      "group": "const",
+      "expr": "2.0|string == \"2.0\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_bool",
+      "group": "const",
+      "expr": "1|bool == true",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_split",
+      "group": "const",
+      "expr": "\"a,b\"|split(\",\")|length == 2",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_lines",
+      "group": "const",
+      "expr": "\"a\\nb\"|lines|length == 2",
+      "retained": "\"a\\\\nb\"|lines|length == 2",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_first",
+      "group": "const",
+      "expr": "[1,2]|first == 1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "f_last",
+      "group": "const",
+      "expr": "[1,2]|last == 2",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "f_reverse",
+      "group": "const",
+      "expr": "[1,2]|reverse|first == 2",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "f_sort",
+      "group": "const",
+      "expr": "[2,1]|sort|first == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_join",
+      "group": "const",
+      "expr": "[1,2]|join(\"-\") == \"1-2\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_list_str",
+      "group": "const",
+      "expr": "\"ab\"|list|length == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_unique",
+      "group": "const",
+      "expr": "[1,1,2]|unique|length == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_min",
+      "group": "const",
+      "expr": "[1,2]|min == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_max",
+      "group": "const",
+      "expr": "[1,2]|max == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_sum_ints",
+      "group": "const",
+      "expr": "[1,2]|sum == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "f_sum_mixed",
+      "group": "const",
+      "expr": "[1,2.5]|sum == 3.5",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "f_sum_intfloat",
+      "group": "const",
+      "expr": "[1,2.0]|sum == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "f_sum_bool",
+      "group": "const",
+      "expr": "[true,1]|sum == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_sum_str",
+      "group": "const",
+      "expr": "[\"a\"]|sum == 0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "f_sum_empty",
+      "group": "const",
+      "expr": "[]|sum == 0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "f_sum_str_arg",
+      "group": "const",
+      "expr": "\"ab\"|sum == 0",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_sum_map",
+      "group": "const",
+      "expr": "{\"a\":1}|sum == 0",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_sum_attr_kwarg",
+      "group": "const",
+      "expr": "[{\"a\":1}]|sum(attribute=\"a\") == 1",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_batch",
+      "group": "const",
+      "expr": "[1,2,3,4]|batch(2)|length == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_slice",
+      "group": "const",
+      "expr": "[1,2,3]|slice(2)|length == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_map_filter",
+      "group": "const",
+      "expr": "[1,2]|map(\"string\")|first == \"1\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_select",
+      "group": "const",
+      "expr": "[1,2,3]|select(\"odd\")|length == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_reject",
+      "group": "const",
+      "expr": "[1,2,3]|reject(\"odd\")|length == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_selectattr",
+      "group": "const",
+      "expr": "[{\"a\":1}]|selectattr(\"a\")|length == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_rejectattr",
+      "group": "const",
+      "expr": "[{\"a\":1}]|rejectattr(\"a\")|length == 0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_groupby",
+      "group": "const",
+      "expr": "[{\"k\":\"a\"},{\"k\":\"a\"},{\"k\":\"b\"}]|groupby(\"k\")|length == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_chain",
+      "group": "const",
+      "expr": "[1,2]|chain([3])|length == 3",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_zip",
+      "group": "const",
+      "expr": "[1,2]|zip([3,4])|length == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_abs",
+      "group": "const",
+      "expr": "-1|abs == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_int",
+      "group": "const",
+      "expr": "\"2\"|int == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_float",
+      "group": "const",
+      "expr": "\"2.5\"|float == 2.5",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_round",
+      "group": "const",
+      "expr": "2.4|round == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_round_half",
+      "group": "const",
+      "expr": "2.5|round == 3",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_items",
+      "group": "const",
+      "expr": "{\"a\":1}|items|length == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_items_order",
+      "group": "const",
+      "expr": "({\"z\":1,\"a\":2}|items|first|first) == \"z\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_dictsort",
+      "group": "const",
+      "expr": "({\"b\":2,\"a\":1}|dictsort|first|first) == \"a\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_attr",
+      "group": "const",
+      "expr": "{\"a\":1}|attr(\"a\") == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_indent",
+      "group": "const",
+      "expr": "\"a\"|indent(2) == \"a\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_pprint",
+      "group": "const",
+      "expr": "[1]|pprint == \"[1]\"",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_tojson_list",
+      "group": "const",
+      "expr": "[1,2]|tojson == \"[1,2]\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_tojson_map",
+      "group": "const",
+      "expr": "({\"z\":1,\"a\":2}|tojson)[2] == \"z\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_urlencode",
+      "group": "const",
+      "expr": "\"a b\"|urlencode == \"a%20b\"",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_regex_simple",
+      "group": "const",
+      "expr": "\"abc\"|regex_match(\"^a\")",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_regex_class",
+      "group": "const",
+      "expr": "\"(123)456-7890\"|regex_match(\"\\\\(?\\\\d{3}\\\\)?[-.\\\\s]?\\\\d{3}[-.\\\\s]?\\\\d{4}\")",
+      "retained": "\"(123)456-7890\"|regex_match(\"\\\\\\\\(?\\\\\\\\d{3}\\\\\\\\)?[-.\\\\\\\\s]?\\\\\\\\d{3}[-.\\\\\\\\s]?\\\\\\\\d{4}\")",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_regex_bad",
+      "group": "const",
+      "expr": "\"abc\"|regex_match(\"[\")",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_regex_nonstr",
+      "group": "const",
+      "expr": "1|regex_match(\"1\")",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_regex_word",
+      "group": "const",
+      "expr": "\"a b\"|regex_match(\"\\\\ba\\\\b\")",
+      "retained": "\"a b\"|regex_match(\"\\\\\\\\ba\\\\\\\\b\")",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_regex_unicode",
+      "group": "const",
+      "expr": "\"\\u65e5\"|regex_match(\"\\\\p{Han}\")",
+      "retained": "\"\\\\u65e5\"|regex_match(\"\\\\\\\\p{Han}\")",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_regex_noarg",
+      "group": "const",
+      "expr": "\"a\"|regex_match",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_unknown",
+      "group": "const",
+      "expr": "1|nosuchfilter == 1",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "t_defined",
+      "group": "const",
+      "expr": "1 is defined",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "t_undefined",
+      "group": "const",
+      "expr": "nosuchvar is undefined",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "t_none",
+      "group": "const",
+      "expr": "none is none",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "t_true",
+      "group": "const",
+      "expr": "true is true",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "t_false",
+      "group": "const",
+      "expr": "false is false",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "t_odd",
+      "group": "const",
+      "expr": "1 is odd",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "t_even",
+      "group": "const",
+      "expr": "2 is even",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "t_divisibleby",
+      "group": "const",
+      "expr": "4 is divisibleby(2)",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "t_eq",
+      "group": "const",
+      "expr": "1 is eq(1)",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "t_equalto",
+      "group": "const",
+      "expr": "1 is equalto(1)",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "t_ne",
+      "group": "const",
+      "expr": "1 is ne(2)",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "t_lt",
+      "group": "const",
+      "expr": "1 is lt(2)",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "t_lessthan",
+      "group": "const",
+      "expr": "1 is lessthan(2)",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "t_le",
+      "group": "const",
+      "expr": "1 is le(1)",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "t_gt",
+      "group": "const",
+      "expr": "2 is gt(1)",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "t_greaterthan",
+      "group": "const",
+      "expr": "2 is greaterthan(1)",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "t_ge",
+      "group": "const",
+      "expr": "2 is ge(2)",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "t_in",
+      "group": "const",
+      "expr": "1 is in([1,2])",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "t_string",
+      "group": "const",
+      "expr": "\"a\" is string",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "t_number",
+      "group": "const",
+      "expr": "1 is number",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "t_integer",
+      "group": "const",
+      "expr": "1 is integer",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "t_int_alias",
+      "group": "const",
+      "expr": "1 is int",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "t_float",
+      "group": "const",
+      "expr": "1.5 is float",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "t_boolean",
+      "group": "const",
+      "expr": "true is boolean",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "t_sequence",
+      "group": "const",
+      "expr": "[1] is sequence",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "t_mapping",
+      "group": "const",
+      "expr": "{\"a\":1} is mapping",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "t_iterable",
+      "group": "const",
+      "expr": "[1] is iterable",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "t_startingwith",
+      "group": "const",
+      "expr": "\"abc\" is startingwith(\"a\")",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "t_endingwith",
+      "group": "const",
+      "expr": "\"abc\" is endingwith(\"c\")",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "t_containing",
+      "group": "const",
+      "expr": "\"abc\" is containing(\"b\")",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "t_safe",
+      "group": "const",
+      "expr": "\"a\" is safe",
+      "stock": "false",
+      "native": "false"
+    },
+    {
+      "label": "t_escaped",
+      "group": "const",
+      "expr": "1 is escaped",
+      "stock": "false",
+      "native": "false"
+    },
+    {
+      "label": "t_sameas",
+      "group": "const",
+      "expr": "1 is sameas(1)",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "t_lower",
+      "group": "const",
+      "expr": "\"a\" is lower",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "t_upper",
+      "group": "const",
+      "expr": "\"A\" is upper",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "t_filter",
+      "group": "const",
+      "expr": "\"upper\" is filter",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "t_test",
+      "group": "const",
+      "expr": "\"odd\" is test",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "t_unknown",
+      "group": "const",
+      "expr": "1 is nosuchtest",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "fn_range",
+      "group": "const",
+      "expr": "range(3)|length == 3",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "fn_range_args",
+      "group": "const",
+      "expr": "range(1,4)|first == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "fn_dict",
+      "group": "const",
+      "expr": "dict(a=1)|length == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "fn_namespace",
+      "group": "const",
+      "expr": "namespace(a=1).a == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "fn_cycler",
+      "group": "const",
+      "expr": "cycler(\"a\",\"b\").next() == \"a\"",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "fn_joiner",
+      "group": "const",
+      "expr": "joiner(\",\")() == \"\"",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "fn_unknown",
+      "group": "const",
+      "expr": "nosuchfn() == 1",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_upper",
+      "group": "const",
+      "expr": "\"abc\".upper() == \"ABC\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_lower",
+      "group": "const",
+      "expr": "\"ABC\".lower() == \"abc\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_startswith",
+      "group": "const",
+      "expr": "\"abc\".startswith(\"a\")",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_endswith",
+      "group": "const",
+      "expr": "\"abc\".endswith(\"c\")",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_split",
+      "group": "const",
+      "expr": "\"a-b\".split(\"-\")|length == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_format",
+      "group": "const",
+      "expr": "\"{}\".format(1) == \"1\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_format_commas",
+      "group": "const",
+      "expr": "\"{:,}\".format(1234567) == \"1,234,567\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_format_float",
+      "group": "const",
+      "expr": "\"{:.2f}\".format(3.14159) == \"3.14\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_find",
+      "group": "const",
+      "expr": "\"abc\".find(\"b\") == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_rfind",
+      "group": "const",
+      "expr": "\"abcb\".rfind(\"b\") == 3",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_count",
+      "group": "const",
+      "expr": "\"aba\".count(\"a\") == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_strip",
+      "group": "const",
+      "expr": "\"  a \".strip() == \"a\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_lstrip",
+      "group": "const",
+      "expr": "\" a\".lstrip() == \"a\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_rstrip",
+      "group": "const",
+      "expr": "\"a \".rstrip() == \"a\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_isalpha",
+      "group": "const",
+      "expr": "\"abc\".isalpha()",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_isdigit",
+      "group": "const",
+      "expr": "\"123\".isdigit()",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_isascii",
+      "group": "const",
+      "expr": "\"abc\".isascii()",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_islower",
+      "group": "const",
+      "expr": "\"abc\".islower()",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_isupper",
+      "group": "const",
+      "expr": "\"ABC\".isupper()",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_isspace",
+      "group": "const",
+      "expr": "\"  \".isspace()",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_isalnum",
+      "group": "const",
+      "expr": "\"a1\".isalnum()",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_isnumeric",
+      "group": "const",
+      "expr": "\"1\".isnumeric()",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_title",
+      "group": "const",
+      "expr": "\"a b\".title() == \"A B\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_capitalize",
+      "group": "const",
+      "expr": "\"abc\".capitalize() == \"Abc\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_replace",
+      "group": "const",
+      "expr": "\"aXa\".replace(\"X\",\"-\") == \"a-a\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_splitlines",
+      "group": "const",
+      "expr": "\"a\\nb\".splitlines()|length == 2",
+      "retained": "\"a\\\\nb\".splitlines()|length == 2",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_str_join",
+      "group": "const",
+      "expr": "\",\".join([\"a\",\"b\"]) == \"a,b\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_seq_count",
+      "group": "const",
+      "expr": "[1,1].count(1) == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "py_num_method",
+      "group": "const",
+      "expr": "(1).nosuchmethod() == 1",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_int_gt",
+      "group": "int7",
+      "expr": "this > 0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_int_eq",
+      "group": "int7",
+      "expr": "this == 7",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_int_abs",
+      "group": "int7",
+      "expr": "this|abs == 7",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_int_odd",
+      "group": "int7",
+      "expr": "this is odd",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_int_arith",
+      "group": "int7",
+      "expr": "this + 1 == 8",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_int_string",
+      "group": "int7",
+      "expr": "this|string == \"7\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_int_in",
+      "group": "int7",
+      "expr": "this in [7]",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_int_bare",
+      "group": "int7",
+      "expr": "this",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_intneg_abs",
+      "group": "intneg",
+      "expr": "this|abs == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_intneg_lt",
+      "group": "intneg",
+      "expr": "this < 0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_int0_eq",
+      "group": "int0",
+      "expr": "this == 0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_int0_bare",
+      "group": "int0",
+      "expr": "this",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_int0_bool",
+      "group": "int0",
+      "expr": "this|bool == false",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_f25_eq",
+      "group": "f25",
+      "expr": "this == 2.5",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_f25_gt",
+      "group": "f25",
+      "expr": "this > 2",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_f25_round",
+      "group": "f25",
+      "expr": "this|round == 3",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_f25_int",
+      "group": "f25",
+      "expr": "this|int == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_f25_string",
+      "group": "f25",
+      "expr": "this|string == \"2.5\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_f25_isfloat",
+      "group": "f25",
+      "expr": "this is float",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_f20_eq_int",
+      "group": "f20",
+      "expr": "this == 2",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_f20_string",
+      "group": "f20",
+      "expr": "this|string == \"2.0\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_f20_isint",
+      "group": "f20",
+      "expr": "this is integer",
+      "stock": "false",
+      "native": "false"
+    },
+    {
+      "label": "this_f20_sum",
+      "group": "f20",
+      "expr": "[this]|sum == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_str_length",
+      "group": "str",
+      "expr": "this|length == 11",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_str_lower",
+      "group": "str",
+      "expr": "this|lower == \"hello world\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_str_contains",
+      "group": "str",
+      "expr": "\"World\" in this",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_str_regex",
+      "group": "str",
+      "expr": "this|regex_match(\"^Hello\")",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_str_index",
+      "group": "str",
+      "expr": "this[0] == \"H\"",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_str_split",
+      "group": "str",
+      "expr": "this|split(\" \")|length == 2",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_str_isstring",
+      "group": "str",
+      "expr": "this is string",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_stre_length",
+      "group": "stre",
+      "expr": "this|length == 0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_stre_eq",
+      "group": "stre",
+      "expr": "this == \"\"",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_stre_nonempty",
+      "group": "stre",
+      "expr": "this|length > 0",
+      "stock": "false",
+      "native": "false"
+    },
+    {
+      "label": "this_stre_bare",
+      "group": "stre",
+      "expr": "this",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_stru_length",
+      "group": "stru",
+      "expr": "this|length == 10",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_stru_upper",
+      "group": "stru",
+      "expr": "this|upper == \"HÉLLO ✓ 日本\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_stru_regex",
+      "group": "stru",
+      "expr": "this|regex_match(\"日\")",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_stru_in",
+      "group": "stru",
+      "expr": "\"✓\" in this",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_stru_index",
+      "group": "stru",
+      "expr": "this[1] == \"é\"",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_boolt_bare",
+      "group": "boolt",
+      "expr": "this",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_boolt_eq",
+      "group": "boolt",
+      "expr": "this == true",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_boolt_eq_num",
+      "group": "boolt",
+      "expr": "this == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_boolf_not",
+      "group": "boolf",
+      "expr": "not this",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_boolf_bare",
+      "group": "boolf",
+      "expr": "this",
+      "stock": "false",
+      "native": "false"
+    },
+    {
+      "label": "this_list_length",
+      "group": "list",
+      "expr": "this|length == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_list_sum",
+      "group": "list",
+      "expr": "this|sum == 6",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_list_in",
+      "group": "list",
+      "expr": "1 in this",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_list_index",
+      "group": "list",
+      "expr": "this[0] == 1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_list_first",
+      "group": "list",
+      "expr": "this|first == 1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_list_join",
+      "group": "list",
+      "expr": "this|join(\",\") == \"1,2,3\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_list_max",
+      "group": "list",
+      "expr": "this|max == 3",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_list_sortlast",
+      "group": "list",
+      "expr": "this|sort|last == 3",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_list_isseq",
+      "group": "list",
+      "expr": "this is sequence",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_list_eq",
+      "group": "list",
+      "expr": "this == [1,2,3]",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_liste_length",
+      "group": "liste",
+      "expr": "this|length == 0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_liste_sum",
+      "group": "liste",
+      "expr": "this|sum == 0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_liste_first",
+      "group": "liste",
+      "expr": "this|first is undefined",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_listf_sum",
+      "group": "listf",
+      "expr": "this|sum == 3.5",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_lists_join",
+      "group": "lists",
+      "expr": "this|join(\"\") == \"ab\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_lists_in",
+      "group": "lists",
+      "expr": "\"a\" in this",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_map_length",
+      "group": "map",
+      "expr": "this|length == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_map_item",
+      "group": "map",
+      "expr": "this[\"z\"] == 1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_map_attr",
+      "group": "map",
+      "expr": "this.z == 1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_map_order",
+      "group": "map",
+      "expr": "this|list|join(\",\") == \"z,a,m\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_map_in",
+      "group": "map",
+      "expr": "\"z\" in this",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_map_notin",
+      "group": "map",
+      "expr": "\"q\" not in this",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_map_keys",
+      "group": "map",
+      "expr": "this.keys()|join(\",\") == \"z,a,m\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_map_values",
+      "group": "map",
+      "expr": "this.values()|sum == 6",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_map_items",
+      "group": "map",
+      "expr": "this.items()|length == 3",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_map_get",
+      "group": "map",
+      "expr": "this.get(\"z\") == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_map_get_missing",
+      "group": "map",
+      "expr": "this.get(\"q\") == none",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_map_get_default",
+      "group": "map",
+      "expr": "this.get(\"q\", 9) == 9",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_map_items_filter",
+      "group": "map",
+      "expr": "this|items|length == 3",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_map_dictsort",
+      "group": "map",
+      "expr": "(this|dictsort|first|first) == \"a\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_map_tojson",
+      "group": "map",
+      "expr": "(this|tojson)[2] == \"z\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_map_ismapping",
+      "group": "map",
+      "expr": "this is mapping",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_map_first",
+      "group": "map",
+      "expr": "this|first == \"z\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_map_sum",
+      "group": "map",
+      "expr": "this|sum == 0",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_map_eq",
+      "group": "map",
+      "expr": "this == {\"z\":1,\"a\":2,\"m\":3}",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_map_missing_attr",
+      "group": "map",
+      "expr": "this.q is undefined",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_cls_attr",
+      "group": "cls",
+      "expr": "this.b == 1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_cls_attr_str",
+      "group": "cls",
+      "expr": "this.a == \"x\"",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_cls_nested",
+      "group": "cls",
+      "expr": "this.c|sum == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_cls_order",
+      "group": "cls",
+      "expr": "this|list|join(\",\") == \"b,a,c\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_cls_in",
+      "group": "cls",
+      "expr": "\"a\" in this",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_cls_length",
+      "group": "cls",
+      "expr": "this|length == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_cls_ismapping",
+      "group": "cls",
+      "expr": "this is mapping",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_cls_item",
+      "group": "cls",
+      "expr": "this[\"b\"] == 1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_cls_keys",
+      "group": "cls",
+      "expr": "this.keys()|join(\",\") == \"b,a,c\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_enum_eq",
+      "group": "enum",
+      "expr": "this == \"RED\"",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_enum_alias",
+      "group": "enum",
+      "expr": "this == \"rouge\"",
+      "stock": "false",
+      "native": "false"
+    },
+    {
+      "label": "this_enum_length",
+      "group": "enum",
+      "expr": "this|length == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_enum_isstring",
+      "group": "enum",
+      "expr": "this is string",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_enum_in",
+      "group": "enum",
+      "expr": "this in [\"RED\",\"GREEN\"]",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_null_eq",
+      "group": "null",
+      "expr": "this == none",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_null_isnone",
+      "group": "null",
+      "expr": "this is none",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_null_defined",
+      "group": "null",
+      "expr": "this is defined",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_null_string",
+      "group": "null",
+      "expr": "this|string == \"none\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_null_default",
+      "group": "null",
+      "expr": "this|default(1) == 1",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_null_bare",
+      "group": "null",
+      "expr": "this",
+      "stock": "no-checks",
+      "native": "unsupported"
+    },
+    {
+      "label": "fn_debug",
+      "group": "const",
+      "expr": "debug()|length > 0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "fn_lipsum",
+      "group": "const",
+      "expr": "lipsum(1)|length > 0",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_str_lt_str",
+      "group": "const",
+      "expr": "\"a\" < \"b\"",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_empty_map",
+      "group": "const",
+      "expr": "{}|length == 0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_empty_list",
+      "group": "const",
+      "expr": "[]|length == 0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "f_sort_kwarg",
+      "group": "const",
+      "expr": "[1,2]|sort(reverse=true)|first == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_default_boolean",
+      "group": "const",
+      "expr": "\"\"|default(\"b\", true) == \"b\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_length_none",
+      "group": "const",
+      "expr": "none|length == 0",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_string_list",
+      "group": "const",
+      "expr": "([1,2]|string)[0] == \"[\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_string_map",
+      "group": "const",
+      "expr": "({\"z\":1}|string)[0] == \"{\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_map_string",
+      "group": "map",
+      "expr": "(this|string)[0] == \"{\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_map_string_len",
+      "group": "map",
+      "expr": "(this|string)|length == 24",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_cls_string_len",
+      "group": "cls",
+      "expr": "(this|string)|length == 33",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_list_string",
+      "group": "list",
+      "expr": "(this|string)[0] == \"[\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_cls_nested_index",
+      "group": "cls",
+      "expr": "this.c[0] == 1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_map_last",
+      "group": "map",
+      "expr": "this|last == \"m\"",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_map_values_join",
+      "group": "map",
+      "expr": "this.values()|join(\",\") == \"1,2,3\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_stru_isascii",
+      "group": "stru",
+      "expr": "this|length > 0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "f_maplit_order",
+      "group": "const",
+      "expr": "({\"z\":1,\"a\":2}|list|join(\",\")) == \"z,a\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_maplit_first",
+      "group": "const",
+      "expr": "{\"z\":1,\"a\":2}|first == \"z\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_maplit_string",
+      "group": "const",
+      "expr": "({\"z\":1,\"a\":2}|string)[2] == \"z\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_maplit_reverse",
+      "group": "const",
+      "expr": "({\"z\":1,\"a\":2}|reverse|first) == \"a\"",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_split_first",
+      "group": "const",
+      "expr": "\"a,b\"|split(\",\")|first == \"a\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_split_join",
+      "group": "const",
+      "expr": "(\"a,b\"|split(\",\")|join(\"-\")) == \"a-b\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_length_undefined",
+      "group": "const",
+      "expr": "nosuchvar|length == 0",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_length_int",
+      "group": "const",
+      "expr": "1|length == 0",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_map_concat",
+      "group": "map",
+      "expr": "(this ~ \"\")|length == 24",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_cls_concat",
+      "group": "cls",
+      "expr": "(this ~ \"\")|length == 33",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "num_exact_max",
+      "group": "const",
+      "expr": "9007199254740991 == 9007199254740991",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "num_conflate",
+      "group": "const",
+      "expr": "9007199254740993 == 9007199254740992",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "num_at_boundary",
+      "group": "const",
+      "expr": "9007199254740992 == 9007199254740992",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "num_add_inrange",
+      "group": "const",
+      "expr": "9007199254740990 + 1 == 9007199254740991",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "num_i64_min",
+      "group": "const",
+      "expr": "0 - 9223372036854775807 == -9223372036854775807",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "num_mul_escape",
+      "group": "const",
+      "expr": "3037000500 * 3037000500 > 9007199254740992",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "num_small_mul",
+      "group": "const",
+      "expr": "1000 * 1000 == 1000000",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "num_pow_small",
+      "group": "const",
+      "expr": "2 ** 3 == 8",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "num_float_big",
+      "group": "const",
+      "expr": "1.0e300 > 1.0e299",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_int_big_cmp",
+      "group": "int7",
+      "expr": "this * 1000000000 < 9007199254740992",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_int_boundary",
+      "group": "const",
+      "expr": "\"9007199254740993\"|int == \"9007199254740992\"|int",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_int_small",
+      "group": "const",
+      "expr": "\"42\"|int == 42",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_int_map_boundary",
+      "group": "const",
+      "expr": "[\"9007199254740993\"]|map(\"int\")|first > 0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_int_float_exempt",
+      "group": "const",
+      "expr": "\"9007199254740993\"|float == \"9007199254740992\"|float",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_strnum_int",
+      "group": "strnum",
+      "expr": "this|int > 0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_strnum_length",
+      "group": "strnum",
+      "expr": "this|length == 16",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_strnumsm_int",
+      "group": "strnumsm",
+      "expr": "this|int == 42",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "num_add_escape",
+      "group": "const",
+      "expr": "9007199254740991 + 1 == 9007199254740992",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "num_pow_escape",
+      "group": "const",
+      "expr": "2 ** 62 > 0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "num_mul_inrange",
+      "group": "const",
+      "expr": "3000000 * 3000000 == 9000000000000",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_strexact_compose",
+      "group": "strexact",
+      "expr": "this|int + 1 + 1 == this|int + 1",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_strexact_mul",
+      "group": "strexact",
+      "expr": "this|int * 2 > 0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_strexact_pow",
+      "group": "strexact",
+      "expr": "this|int ** 2 > 0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_strexact_int",
+      "group": "strexact",
+      "expr": "this|int == 9007199254740991",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_strexact_length",
+      "group": "strexact",
+      "expr": "this|length == 16",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_liststr_mapsum_compose",
+      "group": "liststr2",
+      "expr": "this|map(\"int\")|sum + 1 + 1 == this|map(\"int\")|sum + 1",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_liststr_mapsum",
+      "group": "liststr2",
+      "expr": "this|map(\"int\")|sum > 0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_listbig_sum_arith",
+      "group": "listbig",
+      "expr": "this|sum + 1 == this|sum",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "this_listbig_sum",
+      "group": "listbig",
+      "expr": "this|sum > 0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_listbig_max_arith",
+      "group": "listbig",
+      "expr": "this|max + 1 + 1 == this|max + 1",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_length_arith",
+      "group": "const",
+      "expr": "[1,2]|length + 1 == 3",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "f_abs_arith",
+      "group": "const",
+      "expr": "-1|abs + 1 == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "num_pow_oversized",
+      "group": "const",
+      "expr": "1 ** 9007199254740991 == 1",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "lit_hex",
+      "group": "const",
+      "expr": "0x20000000000001 == 0x20000000000000",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "lit_underscore",
+      "group": "const",
+      "expr": "9_007_199_254_740_993 == 9_007_199_254_740_992",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "lit_binary",
+      "group": "const",
+      "expr": "0b1 + 0b1 == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "lit_octal",
+      "group": "const",
+      "expr": "0o7 + 1 == 8",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "lit_exponent",
+      "group": "const",
+      "expr": "1e5 + 1 == 100001",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "ws_newline_static",
+      "group": "const",
+      "expr": "9007199254740991 \n + 1 \n + 1 == 9007199254740991 \n + 1",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "ws_newline_small",
+      "group": "const",
+      "expr": "1 \n + 1 == 2",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_strexact_newline",
+      "group": "strexact",
+      "expr": "this|int \n + 1 \n + 1 == this|int \n + 1",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "fn_range_last_big",
+      "group": "const",
+      "expr": "range(9007199254740990.0, 9007199254740994.0, 2.0)|last == range(9007199254740992.0, 9007199254740994.0, 1.0)|last",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "fn_range_last_small",
+      "group": "const",
+      "expr": "range(3)|last == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "pow_negative_exp",
+      "group": "const",
+      "expr": "2 ** -1 == 0.5",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "pow_float_exp",
+      "group": "const",
+      "expr": "2 ** 0.5 > 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "pow_parenthesised",
+      "group": "const",
+      "expr": "2 ** (10) == 1024",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "pow_double_paren",
+      "group": "const",
+      "expr": "((2)) ** ((10)) == 1024",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "arith_paren_group",
+      "group": "const",
+      "expr": "(1 + 2) * 3 == 9",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "pow_computed_neg_exp",
+      "group": "const",
+      "expr": "2 ** (0 - 1) == 0.5",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "pow_computed_neg_exp2",
+      "group": "const",
+      "expr": "2 ** (1 - 3) == 0.25",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "pow_paren_neg_exp",
+      "group": "const",
+      "expr": "2 ** (-1) == 0.5",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "pow_computed_exp",
+      "group": "const",
+      "expr": "2 ** (1 + 1) == 4",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "pow_floordiv_exp",
+      "group": "const",
+      "expr": "2 ** (4 // 2) == 4",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "pow_nested",
+      "group": "const",
+      "expr": "2 ** 3 ** 2 == 512",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "pow_zero_exp",
+      "group": "const",
+      "expr": "2 ** 0 == 1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "rem_negative_lhs",
+      "group": "const",
+      "expr": "-1 % 2 == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "rem_negative_rhs",
+      "group": "const",
+      "expr": "7 % -3 == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "rem_computed_neg",
+      "group": "const",
+      "expr": "(0 - 1) % 2 == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "floordiv_negative_rhs",
+      "group": "const",
+      "expr": "1 // -2 == 0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "floordiv_negative_lhs",
+      "group": "const",
+      "expr": "-7 // 2 == -4",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "floordiv_computed_neg",
+      "group": "const",
+      "expr": "1 // (0 - 2) == 0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "rem_paren_literals",
+      "group": "const",
+      "expr": "(7) % (3) == 1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "floordiv_paren_literals",
+      "group": "const",
+      "expr": "(7) // (2) == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "div_negative",
+      "group": "const",
+      "expr": "-7 / 2 == -3.5",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "ws_crlf_static",
+      "group": "const",
+      "expr": "9007199254740991 \r\n + 1 \r\n + 1 == 9007199254740991 \r\n + 1",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "ws_crlf_small",
+      "group": "const",
+      "expr": "1 \r\n + 1 == 2",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "this_strexact_crlf",
+      "group": "strexact",
+      "expr": "this|int \r\n + 1 \r\n + 1 == this|int \r\n + 1",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "add_sub_neg_chain",
+      "group": "const",
+      "expr": "(1 - (-999999999999999) - (-999999999999999) - (-999999999999999) - (-999999999999999) - (-999999999999999) - (-999999999999999) - (-999999999999999) - (-999999999999999) - (-999999999999999) - (-999999999999999)) == (2 - (-999999999999999) - (-999999999999999) - (-999999999999999) - (-999999999999999) - (-999999999999999) - (-999999999999999) - (-999999999999999) - (-999999999999999) - (-999999999999999) - (-999999999999999))",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "add_sub_neg_chain_gt",
+      "group": "const",
+      "expr": "(1 - (-999999999999999) - (-999999999999999) - (-999999999999999) - (-999999999999999) - (-999999999999999) - (-999999999999999) - (-999999999999999) - (-999999999999999) - (-999999999999999) - (-999999999999999)) > 0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "add_pos_chain",
+      "group": "const",
+      "expr": "1 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 == 2 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "add_two_near_2p52",
+      "group": "const",
+      "expr": "4503599627370496 + 4503599627370496 == 9007199254740992",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "add_sub_neg_small",
+      "group": "const",
+      "expr": "1 - (-2) == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "add_sub_chain_small",
+      "group": "const",
+      "expr": "7 - 2 - 1 == 4",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "add_pos_small",
+      "group": "const",
+      "expr": "1000000 + 1000000 == 2000000",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "add_sub_neg_big_single",
+      "group": "const",
+      "expr": "9007199254740991 - (-1) == 9007199254740992",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "sat_float_handoff_add",
+      "group": "const",
+      "expr": "(1 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 - 1 + 0.0) == (1 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 0.0)",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "sat_float_handoff_mul",
+      "group": "const",
+      "expr": "(1 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 - 1) * 1.0 == (1 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999) * 1.0",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "sat_float_handoff_div",
+      "group": "const",
+      "expr": "(1 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 - 1) / 1.0 == (1 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999) / 1.0",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "sat_float_handoff_sub",
+      "group": "const",
+      "expr": "(1 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 - 1) - 0.0 == (1 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999) - 0.0",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "sat_float_left",
+      "group": "const",
+      "expr": "0.0 + (1 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 - 1) == 0.0 + (1 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999)",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "sat_float_base_pow",
+      "group": "const",
+      "expr": "((1 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999) * 1.0) ** 1 == ((1 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 - 1) * 1.0) ** 1",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "sat_float_nested",
+      "group": "const",
+      "expr": "(((1 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999 + 999999999999999) + 0.0) - 1.0) * 2.0 > 0.0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "sat_ctl_float_add",
+      "group": "const",
+      "expr": "(1 + 2 + 0.0) == (3 + 0.0)",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "sat_ctl_float_mul",
+      "group": "const",
+      "expr": "(1 + 2) * 1.0 == 3 * 1.0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "sat_ctl_float_div",
+      "group": "const",
+      "expr": "(1 + 2) / 1.0 == 3.0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "sat_ctl_float_left",
+      "group": "const",
+      "expr": "0.0 + (1 + 2) == 0.0 + 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "sat_ctl_float_base_pow",
+      "group": "const",
+      "expr": "(3 * 1.0) ** 1 == 3.0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "sat_ctl_float_nested",
+      "group": "const",
+      "expr": "((1 + 2 + 0.0) - 1.0) * 2.0 > 0.0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "fpow_int64_boundary",
+      "group": "const",
+      "expr": "2.0 ** 63 > 0.0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "fpow_at_2p53",
+      "group": "const",
+      "expr": "2.0 ** 53 > 0.0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "fpow_paren_base",
+      "group": "const",
+      "expr": "(2.0) ** 63 > 0.0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "fpow_neg_base",
+      "group": "const",
+      "expr": "(-2.0) ** 63 < 0.0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "fpow_big_base",
+      "group": "const",
+      "expr": "999999999999999.0 ** 2 > 0.0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "fpow_computed_base_div",
+      "group": "const",
+      "expr": "(2.0 / 0.0000000000001) ** 2 > 0.0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "fpow_computed_base_add",
+      "group": "const",
+      "expr": "(1.0 + 1.0) ** 63 > 0.0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "fpow_float_exponent",
+      "group": "const",
+      "expr": "2.0 ** 63.0 > 0.0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "fpow_int_base_float_exp",
+      "group": "const",
+      "expr": "2 ** 3.0 == 8",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "frem_float_operand",
+      "group": "const",
+      "expr": "4.0 % 3 == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "frem_past_int64",
+      "group": "const",
+      "expr": "1000000000000000.0 * 1000.0 % 3 == 0",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "ffloordiv_float_operands",
+      "group": "const",
+      "expr": "7.0 // 2.0 == 3.0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "fpow_ctl_small",
+      "group": "const",
+      "expr": "2.0 ** 3 == 8.0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "fpow_ctl_small_vs_int",
+      "group": "const",
+      "expr": "2.0 ** 3 == 8",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "fpow_ctl_below_2p53",
+      "group": "const",
+      "expr": "2.0 ** 52 > 0.0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "fpow_ctl_fraction_base",
+      "group": "const",
+      "expr": "0.5 ** 3 == 0.125",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "fpow_ctl_nonintegral_base",
+      "group": "const",
+      "expr": "2.5 ** 2 == 6.25",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "fpow_ctl_ten",
+      "group": "const",
+      "expr": "10.0 ** 3 == 1000.0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "fmul_big_integral_floats",
+      "group": "const",
+      "expr": "999999999999999.0 * 999999999999999.0 > 0.0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "fadd_big_integral_floats",
+      "group": "const",
+      "expr": "999999999999999.0 + 999999999999999.0 > 0.0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "fdiv_floats",
+      "group": "const",
+      "expr": "7.0 / 2.0 == 3.5",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "prom_compose_mul",
+      "group": "const",
+      "expr": "(2.0 ** 52) * (2.0 ** 11) > 0.0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "prom_compose_mul_even",
+      "group": "const",
+      "expr": "(2.0 ** 26) * (2.0 ** 27) > 0.0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "prom_times_int_literal",
+      "group": "const",
+      "expr": "(2.0 ** 52) * 2 > 0.0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "prom_int_literal_times",
+      "group": "const",
+      "expr": "2 * (2.0 ** 52) > 0.0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "prom_compose_add",
+      "group": "const",
+      "expr": "(2.0 ** 52) + (2.0 ** 52) > 0.0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "prom_compose_sub",
+      "group": "const",
+      "expr": "(2.0 ** 52) - (2.0 ** 52) == 0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "prom_compose_nested",
+      "group": "const",
+      "expr": "((2.0 ** 26) * (2.0 ** 26)) * 2 > 0.0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "prom_as_pow_base",
+      "group": "const",
+      "expr": "(2.0 ** 52) ** 2 > 0.0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "prom_base_four",
+      "group": "const",
+      "expr": "(4.0 ** 26) * (4.0 ** 1) > 0.0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "prom_base_ten",
+      "group": "const",
+      "expr": "(10.0 ** 15) * (10.0 ** 3) > 0.0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "prom_into_floordiv",
+      "group": "const",
+      "expr": "(2.0 ** 52) // 1 > 0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "prom_into_rem",
+      "group": "const",
+      "expr": "(2.0 ** 52) % 3 == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "prom_then_compare",
+      "group": "const",
+      "expr": "(2.0 ** 52) * (2.0 ** 11) == 9223372036854775808",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "prom_ctl_compose_mul",
+      "group": "const",
+      "expr": "(2.0 ** 3) * (2.0 ** 4) == 128.0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "prom_ctl_compose_add",
+      "group": "const",
+      "expr": "(2.0 ** 3) + (2.0 ** 4) == 24.0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "prom_ctl_compose_sub",
+      "group": "const",
+      "expr": "(2.0 ** 3) - 1 == 7",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "prom_ctl_half_bound",
+      "group": "const",
+      "expr": "(2.0 ** 26) * (2.0 ** 26) > 0.0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "prom_ctl_float_operand",
+      "group": "const",
+      "expr": "(2.0 ** 52) * 2.0 > 0.0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "prom_ctl_float_add",
+      "group": "const",
+      "expr": "(2.0 ** 52) + 1.0 > 0.0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "prom_ctl_nonintegral",
+      "group": "const",
+      "expr": "(2.5 ** 2) * (2.5 ** 2) == 39.0625",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "payload_round_mul",
+      "group": "const",
+      "expr": "(562949953421312.000000000000001 ** 1) * 16384 > 0.0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "payload_round_via_pow",
+      "group": "const",
+      "expr": "(562949953421312.000000000000001 ** 1) * (2.0 ** 14) > 0.0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "payload_round_nines",
+      "group": "const",
+      "expr": "(999999999999999.000000000000001 ** 1) * 16 > 0.0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "payload_round_additive",
+      "group": "const",
+      "expr": "(562949953421312.000000000000001 ** 1) * 8 + (2.0 ** 52) > 0.0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "payload_canonical_spelling",
+      "group": "const",
+      "expr": "(562949953421312.0 ** 1) * 16384 > 0.0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "payload_neighbour_half",
+      "group": "const",
+      "expr": "(562949953421312.5 ** 1) * 16384 > 0.0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "payload_neighbour_quarter",
+      "group": "const",
+      "expr": "(562949953421312.25 ** 1) * 16384 > 0.0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "payload_small_nonintegral",
+      "group": "const",
+      "expr": "(2.000000000000001 ** 52) * (2.0 ** 11) > 0.0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "payload_round_direct_mul",
+      "group": "const",
+      "expr": "562949953421312.000000000000001 * 16384 > 0.0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "payload_round_small_pow",
+      "group": "const",
+      "expr": "(2.000000000000000 ** 3) == 8.0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "payload_round_in_range",
+      "group": "const",
+      "expr": "(562949953421312.000000000000001 ** 1) * 4 > 0.0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "asint_float_even",
+      "group": "fbig",
+      "expr": "this is even",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "asint_float_odd",
+      "group": "fbig",
+      "expr": "this is odd",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "asint_float_divisibleby",
+      "group": "fbig",
+      "expr": "this is divisibleby(2)",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "asint_float_integer",
+      "group": "fbig",
+      "expr": "this is integer",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "asint_float_abs",
+      "group": "fbig",
+      "expr": "this|abs > 0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "asint_float_int",
+      "group": "fbig",
+      "expr": "this|int > 0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "asint_float_compare",
+      "group": "fbig",
+      "expr": "this > 0",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "asint_float_string",
+      "group": "fbig",
+      "expr": "this|string != \"\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "asint_select_even",
+      "group": "flistbig",
+      "expr": "this|select(\"even\")|list|length == 2",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "asint_reject_odd",
+      "group": "flistbig",
+      "expr": "this|reject(\"odd\")|list|length == 2",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "asint_list_elem_even",
+      "group": "flistbig",
+      "expr": "this[2] is even",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "asint_list_sum",
+      "group": "flistbig",
+      "expr": "this|sum > 0",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "asint_ctl_small_even",
+      "group": "f20",
+      "expr": "this is even",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "asint_ctl_small_odd",
+      "group": "f20",
+      "expr": "this is odd",
+      "stock": "false",
+      "native": "false"
+    },
+    {
+      "label": "asint_ctl_small_divisibleby",
+      "group": "f20",
+      "expr": "this is divisibleby(2)",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "asint_ctl_small_abs",
+      "group": "f20",
+      "expr": "this|abs == 2",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "asint_ctl_nonintegral_even",
+      "group": "f25",
+      "expr": "this is even",
+      "stock": "false",
+      "native": "false"
+    },
+    {
+      "label": "asint_ctl_select_even",
+      "group": "flistsm",
+      "expr": "this|select(\"even\")|list|length == 3",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "asint_ctl_reject_odd",
+      "group": "flistsm",
+      "expr": "this|reject(\"odd\")|list|length == 3",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "asint_ctl_list_elem_even",
+      "group": "flistsm",
+      "expr": "this[2] is even",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "asint_ctl_literal_even",
+      "group": "const",
+      "expr": "4 is even",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "slice_start_bigfloat",
+      "group": "const",
+      "expr": "[1,2,3][((\"9223372036854\" ~ \"775808\")|float):]|length == 3",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "slice_stop_bigfloat",
+      "group": "const",
+      "expr": "[1,2,3][:((\"9223372036854\" ~ \"775808\")|float)]|length == 3",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "slice_step_bigfloat",
+      "group": "const",
+      "expr": "[1,2,3][::((\"9223372036854\" ~ \"775808\")|float)]|length == 3",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "index_bigfloat",
+      "group": "const",
+      "expr": "[1,2,3][((\"9223372036854\" ~ \"775808\")|float)] == 1",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "index_this_bigfloat",
+      "group": "list",
+      "expr": "this[((\"9223372036854\" ~ \"775808\")|float)] == 1",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "slice_this_bigfloat",
+      "group": "str",
+      "expr": "this[((\"9223372036854\" ~ \"775808\")|float):] == \"H\"",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "index_filter_derived",
+      "group": "list",
+      "expr": "this[this|length] == 1",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "slice_filter_derived",
+      "group": "list",
+      "expr": "this[0:this|length]|length == 3",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "index_intcast_derived",
+      "group": "list",
+      "expr": "this[\"9007199254740993\"|int] == 1",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "index_float_literal",
+      "group": "const",
+      "expr": "[1,2,3][1.0] == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "index_nested_brackets",
+      "group": "const",
+      "expr": "[[1],[2]][0][0] == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "index_ctl_literal",
+      "group": "const",
+      "expr": "[1,2,3][0] == 1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "slice_ctl_from",
+      "group": "const",
+      "expr": "[1,2,3][1:]|length == 2",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "slice_ctl_to",
+      "group": "const",
+      "expr": "[1,2,3][:2]|length == 2",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "slice_ctl_step",
+      "group": "const",
+      "expr": "[1,2,3][::2]|length == 2",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "slice_ctl_all_three",
+      "group": "const",
+      "expr": "[1,2,3][0:3:1]|length == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "index_ctl_this",
+      "group": "list",
+      "expr": "this[0] == 1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "slice_ctl_this",
+      "group": "list",
+      "expr": "this[1:]|length == 2",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "index_ctl_string",
+      "group": "str",
+      "expr": "this[0] == \"H\"",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "slice_ctl_string",
+      "group": "str",
+      "expr": "this[1:3] == \"el\"",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "index_ctl_mapping",
+      "group": "map",
+      "expr": "this[\"z\"] == 1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "index_ctl_list_literal",
+      "group": "const",
+      "expr": "\"a\" in [\"a\",\"b\"]",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "slice_start_fractional",
+      "group": "const",
+      "expr": "[1,2,3][1.5:]|length == 3",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "slice_stop_fractional",
+      "group": "const",
+      "expr": "[1,2,3][:1.5]|length == 3",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "slice_step_fractional",
+      "group": "const",
+      "expr": "[1,2,3][::1.5]|length == 3",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "slice_start_string",
+      "group": "const",
+      "expr": "[1,2,3][\"x\":]|length == 3",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "slice_stop_string",
+      "group": "const",
+      "expr": "[1,2,3][:\"x\"]|length == 3",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "index_fractional_direct",
+      "group": "const",
+      "expr": "[1,2,3][1.5] == 2",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "slice_this_fractional",
+      "group": "str",
+      "expr": "this[1.5:] == \"H\"",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "slice_ctl_step_one",
+      "group": "const",
+      "expr": "[1,2,3][::1]|length == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "slice_ctl_open_both",
+      "group": "const",
+      "expr": "[1,2,3][:]|length == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "index_ctl_string_key_seq",
+      "group": "const",
+      "expr": "[1,2,3][\"x\"] == 1",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "slice_ctl_negative_start",
+      "group": "const",
+      "expr": "[1,2,3][-1:]|length == 1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "index_ctl_negative",
+      "group": "const",
+      "expr": "[1,2,3][-1] == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "list_ctl_fractional_elems",
+      "group": "const",
+      "expr": "[1.5,2.5]|sum == 4.0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "arity_divisibleby_float",
+      "group": "const",
+      "expr": "1.5 is divisibleby(0.5)",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "arity_divisibleby_float_subject",
+      "group": "const",
+      "expr": "4.0 is divisibleby(2)",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "arity_divisibleby_float_divisor",
+      "group": "const",
+      "expr": "4 is divisibleby(2.0)",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "arity_slice_zero",
+      "group": "const",
+      "expr": "[1,2,3]|slice(0)|length == 1",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "arity_slice_fractional",
+      "group": "const",
+      "expr": "[1,2,3]|slice(1.5)|length == 1",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "arity_batch_zero",
+      "group": "const",
+      "expr": "[1,2,3]|batch(0)|length == 1",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "arity_batch_fractional",
+      "group": "const",
+      "expr": "[1,2,3]|batch(1.5)|length == 1",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "arity_replace_extra_arg",
+      "group": "const",
+      "expr": "\"aaa\"|replace(\"a\",\"b\",1) == \"baa\"",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "arity_tojson_indent_frac",
+      "group": "const",
+      "expr": "[1,2]|tojson(indent=1.5) != \"\"",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "arity_truncate_zero",
+      "group": "str",
+      "expr": "this|truncate(0) != \"\"",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "arity_indent_fractional",
+      "group": "str",
+      "expr": "this|indent(1.5) != \"\"",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "arity_format_extra_arg",
+      "group": "const",
+      "expr": "1|format(\"%d\",\"x\") == \"1\"",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "arity_ctl_divisibleby_int",
+      "group": "const",
+      "expr": "9 is divisibleby(3)",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "arity_ctl_slice_two",
+      "group": "const",
+      "expr": "[1,2,3]|slice(2)|length == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "arity_ctl_batch_two",
+      "group": "const",
+      "expr": "[1,2,3]|batch(2)|length == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "arity_ctl_replace_two",
+      "group": "const",
+      "expr": "\"aaa\"|replace(\"a\",\"b\") == \"bbb\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "neg_ctl_slice_start",
+      "group": "const",
+      "expr": "[1,2,3][-1:]|length == 1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "neg_ctl_slice_start_two",
+      "group": "const",
+      "expr": "[1,2,3][-2:]|length == 2",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "neg_ctl_slice_stop",
+      "group": "const",
+      "expr": "[1,2,3][:-1]|length == 2",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "neg_ctl_index",
+      "group": "const",
+      "expr": "[1,2,3][-1] == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "neg_ctl_step_reverse",
+      "group": "const",
+      "expr": "[1,2,3][::-1]|length == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "neg_ctl_this_slice",
+      "group": "list",
+      "expr": "this[-1:]|length == 1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "listarith_binary_sub_chain",
+      "group": "const",
+      "expr": "[900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -3][0] == [900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -900719925474099 - -2][0]",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "listarith_binary_sub_small",
+      "group": "const",
+      "expr": "[1 - -2][0] == 3",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "listarith_binary_plain",
+      "group": "const",
+      "expr": "[1 - 2][0] == -1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "listarith_ctl_unary_elems",
+      "group": "const",
+      "expr": "[-1, 2][0] == -1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "listarith_ctl_plain_list",
+      "group": "const",
+      "expr": "[1, 2, 3][2] == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "listarith_ctl_string_list",
+      "group": "const",
+      "expr": "[\"a\", \"b\"][0] == \"a\"",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "sig_slice_bool",
+      "group": "const",
+      "expr": "[1,2,3]|slice(false)|length == 1",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "sig_batch_bool",
+      "group": "const",
+      "expr": "[1,2,3]|batch(true)|length == 1",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "sig_replace_int_from",
+      "group": "const",
+      "expr": "\"aaa\"|replace(1,\"b\") == \"bababab\"",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "sig_replace_int_to",
+      "group": "const",
+      "expr": "\"aaa\"|replace(\"a\",1) == \"111\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "sig_replace_missing_arg",
+      "group": "const",
+      "expr": "\"aaa\"|replace(\"a\") == \"aaa\"",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "sig_defined_extra_arg",
+      "group": "const",
+      "expr": "1 is defined(0)",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "sig_none_extra_arg",
+      "group": "const",
+      "expr": "1 is none(0)",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "sig_even_extra_arg",
+      "group": "const",
+      "expr": "4 is even(1)",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "sig_upper_extra_arg",
+      "group": "str",
+      "expr": "this|upper(\"x\") != \"\"",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "sig_join_number_arg",
+      "group": "const",
+      "expr": "[1,2]|join(1) != \"\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "sig_length_extra_arg",
+      "group": "list",
+      "expr": "this|length(1) == 3",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "sig_ctl_replace_two",
+      "group": "str",
+      "expr": "this|replace(\"H\",\"J\")|length == 11",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "sig_ctl_slice_two",
+      "group": "const",
+      "expr": "[1,2,3]|slice(2)|length == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "sig_ctl_defined",
+      "group": "str",
+      "expr": "this is defined",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "sig_ctl_even",
+      "group": "const",
+      "expr": "4 is even",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "sig_ctl_join_string",
+      "group": "const",
+      "expr": "[\"a\",\"b\"]|join(\",\") == \"a,b\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "sig_ctl_upper",
+      "group": "str",
+      "expr": "this|upper != \"\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "sig_ctl_startingwith",
+      "group": "str",
+      "expr": "this is startingwith(\"H\")",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "fn_dict_number_arg",
+      "group": "const",
+      "expr": "dict(1)|length == 0",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "fn_dict_kwargs",
+      "group": "const",
+      "expr": "dict(a=1)|length == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "fn_namespace_call",
+      "group": "const",
+      "expr": "namespace(a=1) is defined",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "subj_bool_odd",
+      "group": "const",
+      "expr": "true is odd",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "subj_bool_even",
+      "group": "const",
+      "expr": "false is even",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "subj_string_odd",
+      "group": "const",
+      "expr": "\"3\" is odd",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "subj_number_first",
+      "group": "const",
+      "expr": "(1|first) is undefined",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "subj_number_last",
+      "group": "const",
+      "expr": "(1|last) is undefined",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "subj_bool_list",
+      "group": "const",
+      "expr": "(true|list) is undefined",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "subj_number_min",
+      "group": "const",
+      "expr": "(1|min) is undefined",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "subj_number_max",
+      "group": "const",
+      "expr": "(1|max) is undefined",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "subj_number_reverse",
+      "group": "const",
+      "expr": "(1|reverse) is undefined",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "subj_number_join",
+      "group": "const",
+      "expr": "1|join(\",\") == \"\"",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "subj_number_sum",
+      "group": "const",
+      "expr": "1|sum == 0",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "subj_string_abs",
+      "group": "str",
+      "expr": "this|abs != \"\"",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "subj_number_upper",
+      "group": "const",
+      "expr": "1|upper != \"\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "subj_ctl_odd",
+      "group": "const",
+      "expr": "3 is odd",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "subj_ctl_even",
+      "group": "const",
+      "expr": "4 is even",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "subj_ctl_first",
+      "group": "list",
+      "expr": "this|first == 1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "subj_ctl_last",
+      "group": "list",
+      "expr": "this|last == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "subj_ctl_min",
+      "group": "list",
+      "expr": "this|min == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "subj_ctl_max",
+      "group": "list",
+      "expr": "this|max == 3",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "subj_ctl_list",
+      "group": "list",
+      "expr": "this|list|length == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "subj_ctl_reverse",
+      "group": "list",
+      "expr": "this|reverse|first == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "subj_ctl_join",
+      "group": "list",
+      "expr": "this|join(\",\") == \"1,2,3\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "subj_ctl_sum",
+      "group": "list",
+      "expr": "this|sum == 6",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "subj_ctl_upper",
+      "group": "str",
+      "expr": "this|upper != \"\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "subj_ctl_abs",
+      "group": "intneg",
+      "expr": "this|abs == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "subj_ctl_length_string",
+      "group": "str",
+      "expr": "this|length == 11",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "subj_ctl_length_map",
+      "group": "map",
+      "expr": "this|length == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "subj_ctl_defined",
+      "group": "str",
+      "expr": "this is defined",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "wd_iterable_none",
+      "group": "null",
+      "expr": "this is iterable",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "wd_iterable_list",
+      "group": "list",
+      "expr": "this is iterable",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "wd_iterable_literal",
+      "group": "const",
+      "expr": "[1,2] is iterable",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "wd_filter_extra_arg",
+      "group": "const",
+      "expr": "\"upper\" is filter(\"x\")",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "wd_test_extra_arg",
+      "group": "const",
+      "expr": "\"odd\" is test(\"x\")",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "wd_filter_number_subject",
+      "group": "const",
+      "expr": "1 is filter(\"upper\")",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "wd_filter_bare",
+      "group": "str",
+      "expr": "this is filter",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "wd_test_bare",
+      "group": "str",
+      "expr": "this is test",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "wd_in_string_container",
+      "group": "const",
+      "expr": "1 is in \"1\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "wd_in_number_container",
+      "group": "const",
+      "expr": "1 is in 2",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "wd_in_list_container",
+      "group": "const",
+      "expr": "1 is in [1,2]",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "wd_sameas",
+      "group": "const",
+      "expr": "1 is sameas 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "cmp_eq_list",
+      "group": "const",
+      "expr": "[1,2] is eq([1,2])",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "cmp_eq_this_list",
+      "group": "list",
+      "expr": "this is eq(this)",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "kind_ctl_defined",
+      "group": "str",
+      "expr": "this is defined",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "kind_ctl_none",
+      "group": "null",
+      "expr": "this is none",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "kind_ctl_is_string",
+      "group": "str",
+      "expr": "this is string",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "kind_ctl_is_number",
+      "group": "int7",
+      "expr": "this is number",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "kind_ctl_is_seq",
+      "group": "list",
+      "expr": "this is sequence",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "kind_ctl_is_map",
+      "group": "map",
+      "expr": "this is mapping",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "kind_ctl_eq_int",
+      "group": "const",
+      "expr": "1 is eq(1)",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "kind_ctl_eq_str",
+      "group": "const",
+      "expr": "\"a\" is eq(\"a\")",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "kind_ctl_lt",
+      "group": "const",
+      "expr": "1 is lt(2)",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "kind_ctl_in_operator",
+      "group": "const",
+      "expr": "\"a\" in [\"a\",\"b\"]",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "kind_ctl_odd",
+      "group": "const",
+      "expr": "3 is odd",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "kind_ctl_first",
+      "group": "list",
+      "expr": "this|first == 1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "kind_ctl_upper",
+      "group": "str",
+      "expr": "this|upper != \"\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "kind_ctl_tojson_seq",
+      "group": "const",
+      "expr": "[1,2]|tojson == \"[1,2]\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "kind_ctl_startingwith",
+      "group": "str",
+      "expr": "this is startingwith(\"H\")",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "content_title_punct",
+      "group": "const",
+      "expr": "\"a!b\"|title == \"A!B\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "content_trim_nbsp",
+      "group": "const",
+      "expr": "\" a \"|trim == \"a\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "content_title_ascii",
+      "group": "const",
+      "expr": "\"a b\"|title == \"A B\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "content_upper_sharp_s",
+      "group": "const",
+      "expr": "\"straße\"|upper == \"STRASSE\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "content_lower_turkish",
+      "group": "const",
+      "expr": "\"İ\"|lower|length == 1",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "content_capitalize_unicode",
+      "group": "const",
+      "expr": "\"été\"|capitalize|length == 3",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "content_replace_empty",
+      "group": "const",
+      "expr": "\"ab\"|replace(\"\",\"-\")|length == 2",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "content_int_spaces",
+      "group": "const",
+      "expr": "\" 12\"|int == 12",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "content_join_numbers",
+      "group": "const",
+      "expr": "[1,2]|join(\",\") == \"1,2\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "content_tojson_escape",
+      "group": "const",
+      "expr": "\"<a>\"|tojson|length == 5",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "content_string_float",
+      "group": "const",
+      "expr": "2.5|string == \"2.5\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "content_sort_strings",
+      "group": "const",
+      "expr": "[\"b\",\"A\"]|sort|first == \"A\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "content_unique_strings",
+      "group": "const",
+      "expr": "[\"a\",\"a\"]|unique|length == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "content_min_strings",
+      "group": "const",
+      "expr": "[\"b\",\"A\"]|min == \"A\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "content_is_lower",
+      "group": "str",
+      "expr": "this is lower",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "content_is_upper",
+      "group": "str",
+      "expr": "this is upper",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "content_format_pct",
+      "group": "const",
+      "expr": "1|format(\"%d\") == \"1\"",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "content_indent_tabs",
+      "group": "const",
+      "expr": "\"a\nb\"|indent(2)|length > 3",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "content_truncate",
+      "group": "str",
+      "expr": "this|truncate(3)|length <= 5",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "struct_ctl_length_list",
+      "group": "list",
+      "expr": "this|length == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "struct_ctl_length_string",
+      "group": "str",
+      "expr": "this|length == 11",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "struct_ctl_length_map",
+      "group": "map",
+      "expr": "this|length == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "struct_ctl_length_unicode",
+      "group": "stru",
+      "expr": "this|length == 13",
+      "stock": "false",
+      "native": "false"
+    },
+    {
+      "label": "struct_ctl_first",
+      "group": "list",
+      "expr": "this|first == 1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "struct_ctl_last",
+      "group": "list",
+      "expr": "this|last == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "struct_ctl_list",
+      "group": "list",
+      "expr": "this|list|length == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "struct_ctl_reverse",
+      "group": "list",
+      "expr": "this|reverse|first == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "struct_ctl_sum",
+      "group": "list",
+      "expr": "this|sum == 6",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "struct_ctl_abs",
+      "group": "intneg",
+      "expr": "this|abs == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "struct_ctl_startingwith_unicode",
+      "group": "stru",
+      "expr": "this is startingwith(\"h\")",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "struct_ctl_endingwith",
+      "group": "str",
+      "expr": "this is endingwith(\"d\")",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "struct_ctl_eq_unicode",
+      "group": "stru",
+      "expr": "this == \"héllo ✓ 日本\"",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "struct_ctl_is_seq",
+      "group": "list",
+      "expr": "this is sequence",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "struct_ctl_odd",
+      "group": "const",
+      "expr": "3 is odd",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_in_string_needle_r21",
+      "group": "const",
+      "expr": "1 in \"1\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_not_in_string_needle_r21",
+      "group": "const",
+      "expr": "1 not in \"1\"",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_in_noniterable_r21",
+      "group": "const",
+      "expr": "1 in 2",
+      "stock": "error",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_in_list_literal_r21",
+      "group": "const",
+      "expr": "\"a\" in [\"a\",\"b\"]",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_in_this_list_r21",
+      "group": "list",
+      "expr": "1 in this",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_cmp_int_string_r21",
+      "group": "const",
+      "expr": "1 == \"1\"",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_cmp_int_lt_string_r21",
+      "group": "const",
+      "expr": "1 < \"a\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_cmp_none_false_r21",
+      "group": "const",
+      "expr": "none == false",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_cmp_true_one_r21",
+      "group": "const",
+      "expr": "true == 1",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_cmp_this_mixed_r21",
+      "group": "str",
+      "expr": "this == 1",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_cmp_list_literal_r21",
+      "group": "list",
+      "expr": "this == [1,2,3]",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_concat_number_r21",
+      "group": "const",
+      "expr": "1 ~ \"a\" == \"1a\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_and_r21",
+      "group": "const",
+      "expr": "true and false",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_or_r21",
+      "group": "const",
+      "expr": "true or false",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_not_r21",
+      "group": "const",
+      "expr": "not true",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_ternary_r21",
+      "group": "const",
+      "expr": "1 == 1 if true else 2 == 2",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_truthy_none_r21",
+      "group": "null",
+      "expr": "this and true",
+      "stock": "no-checks",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_truthy_empty_list_r21",
+      "group": "liste",
+      "expr": "this or true",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_ctl_int_eq_r21",
+      "group": "const",
+      "expr": "1 == 1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_ctl_string_eq_r21",
+      "group": "const",
+      "expr": "\"a\" == \"a\"",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_ctl_bool_eq_r21",
+      "group": "const",
+      "expr": "true == true",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_ctl_this_int_r21",
+      "group": "int7",
+      "expr": "this == 7",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_ctl_this_gt_r21",
+      "group": "int7",
+      "expr": "this > 0",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_ctl_this_string_r21",
+      "group": "str",
+      "expr": "this == \"Hello World\"",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_ctl_length_cmp_r21",
+      "group": "list",
+      "expr": "this|length == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_ctl_length_gt_r21",
+      "group": "list",
+      "expr": "this|length > 2",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_ctl_sum_r21",
+      "group": "list",
+      "expr": "this|sum == 6",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_ctl_field_r21",
+      "group": "cls",
+      "expr": "this.b == 1",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_ctl_is_test_r21",
+      "group": "str",
+      "expr": "this is defined",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_ctl_is_not_r21",
+      "group": "str",
+      "expr": "this is not none",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_ctl_arith_r21",
+      "group": "const",
+      "expr": "1 + 2 == 3",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "nest_field_int",
+      "group": "nest",
+      "expr": "this.a.name == 5",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "nest_field_int_false",
+      "group": "nest",
+      "expr": "this.a.name == 6",
+      "stock": "false",
+      "native": "false"
+    },
+    {
+      "label": "nest_outer_field",
+      "group": "nest",
+      "expr": "this.name == \"x\"",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "nest_subscript_key",
+      "group": "nest",
+      "expr": "this.a[\"name\"] == 5",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "nest_field_index",
+      "group": "nest",
+      "expr": "this.a.tags[0] == \"x\"",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "nest_field_index_second",
+      "group": "nest",
+      "expr": "this.a.tags[1] == \"y\"",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "nest_field_neg_index",
+      "group": "nest",
+      "expr": "this.a.tags[-1] == \"y\"",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "nest_field_first",
+      "group": "nest",
+      "expr": "this.a.tags|first == \"x\"",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "nest_field_last",
+      "group": "nest",
+      "expr": "this.a.tags|last == \"y\"",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "nest_field_length",
+      "group": "nest",
+      "expr": "this.a.tags|length == 2",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "nest_field_reverse_first",
+      "group": "nest",
+      "expr": "this.a.tags|reverse|first == \"y\"",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "nest_index_field",
+      "group": "nest",
+      "expr": "this.rows[0].name == 7",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "nest_index_field_index",
+      "group": "nest",
+      "expr": "this.rows[0].tags[0] == \"z\"",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "nest_missing_field",
+      "group": "nest",
+      "expr": "this.a.missing is undefined",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "nest_index_oob",
+      "group": "nest",
+      "expr": "this.a.tags[9] is undefined",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "nest_shadow_field",
+      "group": "nest",
+      "expr": "this.a.name == \"x\"",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "nest_shadow_key",
+      "group": "nest",
+      "expr": "this.a[\"name\"] == \"x\"",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "nest_stale_list_elem",
+      "group": "nest",
+      "expr": "[1,2][0] == this.a.tags[0]",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "nest_slice_then_index",
+      "group": "nest",
+      "expr": "this.a.tags[0:1][0] == \"x\"",
+      "stock": "true",
+      "native": "unsupported"
+    },
+    {
+      "label": "str_index_last",
+      "group": "str",
+      "expr": "this[10] == \"d\"",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "str_index_oob",
+      "group": "str",
+      "expr": "this[11] == \"x\"",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "str_index_oob_undef",
+      "group": "str",
+      "expr": "this[11] is undefined",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "stru_index_last",
+      "group": "stru",
+      "expr": "this[9] == \"本\"",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "stru_index_oob_undef",
+      "group": "stru",
+      "expr": "this[10] is undefined",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "stru_index_byte_oob_undef",
+      "group": "stru",
+      "expr": "this[16] is undefined",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "nest_string_field_oob",
+      "group": "nest",
+      "expr": "this.name[9] == \"x\"",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_index_oob",
+      "group": "const",
+      "expr": "[1][9] == 1",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_index_oob_undef",
+      "group": "const",
+      "expr": "[1][9] is undefined",
+      "stock": "true",
+      "native": "true"
+    },
+    {
+      "label": "op_index_at_end",
+      "group": "const",
+      "expr": "[1,2][2] == 1",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_index_neg_oob",
+      "group": "const",
+      "expr": "[1,2][-5] == 1",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_index_negzero_list",
+      "group": "list",
+      "expr": "this[-0] is undefined",
+      "stock": "false",
+      "native": "unsupported"
+    },
+    {
+      "label": "op_index_negzero_lit",
+      "group": "const",
+      "expr": "[1,2][-0] == 1",
+      "stock": "true",
+      "native": "unsupported"
+    }
+  ]
+}

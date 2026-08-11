@@ -106,6 +106,18 @@ internal/debaml/testdata/constraint_oracle
 # markdown manifest itself.
 internal/debaml/testdata/guard_ledger
 
+# de-BAML Slice 7.2a-3 SERVING-SHAPED DIFFERENTIAL ORACLE proof material: the
+# rendered in-memory .baml fixture project the stock BAML v0.223.0 CFFI compiles at
+# test time, and the byte-compared JSON export of the 719-case constraintoracle
+# corpus the serving oracle consumes as a regression source. Both are read FROM
+# DISK by the //go:build integration tests in internal/debaml (os.ReadFile), never
+# through the embedded FS, and neither is a customer-build input — they are
+# test-only proof material like constraint_oracle and guard_ledger above. Excluded
+# here (cmd/embed includes testdata dirs by default) so the root embed manifest and
+# the server binary's bundle stay unchanged; embedding them would add ~132 KB of
+# oracle fixtures to every shipped binary for no runtime purpose.
+internal/debaml/testdata/serving_oracle
+
 # de-BAML Phase 4b + 5.1 gated nanollm Prepare validation: a SEPARATE, test-only
 # Go module (github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare)
 # excluded from go.work so the PUBLIC github.com/viktordanov/nanollm-ffi/go
