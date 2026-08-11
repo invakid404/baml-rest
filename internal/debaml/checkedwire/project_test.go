@@ -131,6 +131,15 @@ type cwFixture struct {
 
 func (f cwFixture) method() string { return cwPrefix + f.Name }
 
+// cwFixtureDeclaration is the exact function declaration cwRenderProject puts in the
+// source it hands to the stock runtime. Keeping this formatter shared lets guards tie
+// a row to its own declaration bytes rather than finding a fragment somewhere else in
+// the whole project.
+func cwFixtureDeclaration(f cwFixture) string {
+	return fmt.Sprintf("function %s(topic: string) -> %s {\n  client %s\n  prompt #\"{{ topic }} {{ ctx.output_format }}\"#\n}\n",
+		f.method(), f.Target, cwClient)
+}
+
 // cwRenderProject renders the whole in-memory project from the fixture table.
 //
 // Declarations come first in first-contribution order, then the functions in table
@@ -170,8 +179,7 @@ func cwRenderProject(fixtures []cwFixture) (string, error) {
 				fmt.Fprintf(&b, "// %s\n", line)
 			}
 		}
-		fmt.Fprintf(&b, "function %s(topic: string) -> %s {\n  client %s\n  prompt #\"{{ topic }} {{ ctx.output_format }}\"#\n}\n",
-			f.method(), f.Target, cwClient)
+		b.WriteString(cwFixtureDeclaration(f))
 	}
 	return b.String(), nil
 }

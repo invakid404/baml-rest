@@ -82,6 +82,199 @@ func cwConstraintAttr(c schema.Constraint) string {
 	return fmt.Sprintf("@%s(%s, {{ %s }})", kind, *c.Label, c.Expression)
 }
 
+// cwFixtureDeclarationScope is the only part of a rendered project an asymmetry row
+// is allowed to use as evidence: its named function declaration and the exact class
+// declarations that fixture supplied. Searching cwSource globally would let an
+// attribute migrate to an unrelated fixture or class while this row still passed.
+type cwFixtureDeclarationScope struct {
+	function string
+	classes  map[string]string
+}
+
+func cwFixtureFrom(fixtures []cwFixture, name string) (cwFixture, bool) {
+	for _, f := range fixtures {
+		if f.Name == name {
+			return f, true
+		}
+	}
+	return cwFixture{}, false
+}
+
+// cwRenderedDeclarationPresent requires the exact source to begin at a declaration
+// boundary, so a lookalike inside a fixture Doc comment cannot become evidence.
+func cwRenderedDeclarationPresent(source, declaration string) bool {
+	return strings.Contains(source, "\n"+declaration)
+}
+
+// cwAsymmetryRowScopes verifies that each named fixture's exact rendered declaration
+// and required class declarations occur in source, then returns only those bytes as
+// the row's evidence scope. source is cwSource in the real guard — the same source
+// the stock CFFI was created from and that the drift test byte-pins.
+func cwAsymmetryRowScopes(source string, fixtures []cwFixture, row asymmetryRow) ([]cwFixtureDeclarationScope, []string) {
+	var problems []string
+	if len(row.Fixtures) == 0 {
+		return nil, []string{fmt.Sprintf("row %q names no fixture", row.ID)}
+	}
+
+	scopes := make([]cwFixtureDeclarationScope, 0, len(row.Fixtures))
+	seen := make(map[string]struct{}, len(row.Fixtures))
+	for _, fixtureName := range row.Fixtures {
+		if _, duplicate := seen[fixtureName]; duplicate {
+			continue
+		}
+		seen[fixtureName] = struct{}{}
+
+		f, ok := cwFixtureFrom(fixtures, fixtureName)
+		if !ok {
+			problems = append(problems, fmt.Sprintf("row %q names unknown fixture %q", row.ID, fixtureName))
+			continue
+		}
+		function := cwFixtureDeclaration(f)
+		if !cwRenderedDeclarationPresent(source, function) {
+			problems = append(problems, fmt.Sprintf("fixture %s's exact declaration is absent from the compiled project", f.Name))
+			continue
+		}
+
+		scope := cwFixtureDeclarationScope{
+			function: function,
+			classes:  make(map[string]string, len(f.Classes)),
+		}
+		for _, classSource := range f.Classes {
+			className, err := cwClassName(classSource)
+			if err != nil {
+				problems = append(problems, fmt.Sprintf("fixture %s has invalid class source: %v", f.Name, err))
+				continue
+			}
+			if !cwRenderedDeclarationPresent(source, classSource) {
+				problems = append(problems, fmt.Sprintf("fixture %s's required class %s is absent from the compiled project", f.Name, className))
+				continue
+			}
+			scope.classes[className] = classSource
+		}
+		scopes = append(scopes, scope)
+	}
+	return scopes, problems
+}
+
+func cwScopesContain(scopes []cwFixtureDeclarationScope, fragment string) bool {
+	for _, scope := range scopes {
+		if strings.Contains(scope.function, fragment) {
+			return true
+		}
+		for _, classSource := range scope.classes {
+			if strings.Contains(classSource, fragment) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func cwTargetScopesContain(scopes []cwFixtureDeclarationScope, fragment string) bool {
+	for _, scope := range scopes {
+		if strings.Contains(scope.function, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+// cwClassFieldSource extracts one fixture class field's declaration line. Fixture
+// classes are rendered as line-oriented source literals; if that format changes, the
+// guard fails closed instead of accepting an attribute from another field.
+func cwClassFieldSource(classSource, fieldName string) (string, bool) {
+	for _, line := range strings.Split(classSource, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, fieldName) {
+			continue
+		}
+		rest := strings.TrimPrefix(trimmed, fieldName)
+		if rest == "" || (rest[0] != ' ' && rest[0] != '\t') {
+			continue
+		}
+		return trimmed, true
+	}
+	return "", false
+}
+
+func cwFieldScopesContain(scopes []cwFixtureDeclarationScope, className, fieldName, fragment string) (classPresent, fieldPresent, contains bool) {
+	for _, scope := range scopes {
+		classSource, ok := scope.classes[className]
+		if !ok {
+			continue
+		}
+		classPresent = true
+		fieldSource, ok := cwClassFieldSource(classSource, fieldName)
+		if !ok {
+			continue
+		}
+		fieldPresent = true
+		if strings.Contains(fieldSource, fragment) {
+			return true, true, true
+		}
+	}
+	return classPresent, fieldPresent, false
+}
+
+// cwValidateAsymmetryRowScope ties every row claim to its own fixture declaration
+// scope. It deliberately does not search the whole project for a fragment: an exact
+// function/class presence check above retains the compiled-project proof, while the
+// narrower searches prevent an unrelated declaration from satisfying this row.
+func cwValidateAsymmetryRowScope(source string, fixtures []cwFixture, row asymmetryRow) error {
+	scopes, problems := cwAsymmetryRowScopes(source, fixtures, row)
+	if len(row.BAMLText) == 0 {
+		problems = append(problems, fmt.Sprintf("row %q declares no BAML text", row.ID))
+	}
+	for _, want := range row.BAMLText {
+		if !cwScopesContain(scopes, want) {
+			problems = append(problems, fmt.Sprintf("row %q's BAML text %q is absent from its fixture declaration scope", row.ID, want))
+		}
+	}
+
+	if row.Bundle == nil {
+		problems = append(problems, fmt.Sprintf("row %q has no native bundle", row.ID))
+	} else {
+		bundle := row.Bundle()
+		for _, c := range bundle.Target.Meta.Constraints {
+			attr := cwConstraintAttr(c)
+			if !cwTargetScopesContain(scopes, attr) {
+				problems = append(problems, fmt.Sprintf("row %q's target constraint %s is absent from its fixture target declaration", row.ID, attr))
+			}
+		}
+		for _, cls := range bundle.Classes {
+			for _, fld := range cls.Fields {
+				for _, c := range fld.Type.Meta.Constraints {
+					attr := cwConstraintAttr(c)
+					classPresent, fieldPresent, contains := cwFieldScopesContain(scopes, cls.Name.Name, fld.Name.Name, attr)
+					if !classPresent {
+						problems = append(problems, fmt.Sprintf("row %q's class %s is not required by its fixture", row.ID, cls.Name.Name))
+					} else if !fieldPresent {
+						problems = append(problems, fmt.Sprintf("row %q's field %s is absent from class %s in its fixture scope", row.ID, fld.Name.Name, cls.Name.Name))
+					} else if !contains {
+						problems = append(problems, fmt.Sprintf("row %q's field %s constraint %s is absent from class %s in its fixture scope", row.ID, fld.Name.Name, attr, cls.Name.Name))
+					}
+				}
+				if fld.Name.Alias != nil {
+					attr := fmt.Sprintf("@alias(%q)", *fld.Name.Alias)
+					classPresent, fieldPresent, contains := cwFieldScopesContain(scopes, cls.Name.Name, fld.Name.Name, attr)
+					if !classPresent {
+						problems = append(problems, fmt.Sprintf("row %q's class %s is not required by its fixture", row.ID, cls.Name.Name))
+					} else if !fieldPresent {
+						problems = append(problems, fmt.Sprintf("row %q's field %s is absent from class %s in its fixture scope", row.ID, fld.Name.Name, cls.Name.Name))
+					} else if !contains {
+						problems = append(problems, fmt.Sprintf("row %q's field %s alias %s is absent from class %s in its fixture scope", row.ID, fld.Name.Name, attr, cls.Name.Name))
+					}
+				}
+			}
+		}
+	}
+
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("asymmetry row %q is not tied to its own declaration scope: %s", row.ID, strings.Join(problems, "; "))
+}
+
 var asymmetryRows = []asymmetryRow{{
 	ID:       "bare-string-return-skips-its-constraints",
 	Fixtures: []string{"BareStringAssertSkipped"},
@@ -280,49 +473,102 @@ func TestAsymmetriesRemainDeclined(t *testing.T) {
 	}
 }
 
+// TestAsymmetryRowScopeRejectsRelocatedClassFragment is the anti-false-green control
+// for the declaration scope guard. It moves the AliasIngress row's exact class-field
+// fragment to NestedCheck's unrelated class while keeping the named AliasIngress
+// function in the rendered project. Every old global cwSource containment check would
+// still pass; the scoped guard must reject the move.
+func TestAsymmetryRowScopeRejectsRelocatedClassFragment(t *testing.T) {
+	var row asymmetryRow
+	foundRow := false
+	for _, candidate := range asymmetryRows {
+		if candidate.ID == "alias-ingress-has-canonical-output" {
+			row = candidate
+			foundRow = true
+			break
+		}
+	}
+	if !foundRow {
+		t.Fatal("the alias asymmetry row is missing; this proof would be vacuous")
+	}
+
+	mutated := make([]cwFixture, len(cwFixtures))
+	copy(mutated, cwFixtures)
+	aliasFixture, nestedFixture := -1, -1
+	for i := range mutated {
+		mutated[i].Classes = append([]string(nil), mutated[i].Classes...)
+		switch mutated[i].Name {
+		case "AliasIngress":
+			aliasFixture = i
+		case "NestedCheck":
+			nestedFixture = i
+		}
+	}
+	if aliasFixture < 0 || nestedFixture < 0 {
+		t.Fatalf("the relocation fixture needs AliasIngress and NestedCheck (got alias=%d nested=%d)", aliasFixture, nestedFixture)
+	}
+	if len(mutated[aliasFixture].Classes) != 1 || len(mutated[nestedFixture].Classes) != 1 {
+		t.Fatal("the relocation fixture's class layout changed; update this proof rather than silently weakening it")
+	}
+
+	const moved = `qty int @alias("amount") @check(positive, {{ this > 0 }})`
+	mutated[aliasFixture].Classes[0] = `class CW_AliasedChecked {
+  qty int
+}
+`
+	nestedClass := strings.Replace(mutated[nestedFixture].Classes[0], "\n}\n", "\n  "+moved+"\n}\n", 1)
+	if nestedClass == mutated[nestedFixture].Classes[0] {
+		t.Fatal("could not move the alias fragment into the unrelated class")
+	}
+	mutated[nestedFixture].Classes[0] = nestedClass
+
+	source, err := cwRenderProject(mutated)
+	if err != nil {
+		t.Fatalf("render relocated project: %v", err)
+	}
+	// The historical GLOBAL searches all remain satisfied: this is a real false-green
+	// mutation, not merely a missing-fragment test.
+	for _, want := range row.BAMLText {
+		if !strings.Contains(source, want) {
+			t.Fatalf("relocated project lost global BAML text %q", want)
+		}
+	}
+	if !strings.Contains(source, "function CW_AliasIngress(") {
+		t.Fatal("relocated project lost the named row fixture, so it would not reproduce the old false green")
+	}
+	for _, cls := range row.Bundle().Classes {
+		for _, fld := range cls.Fields {
+			for _, c := range fld.Type.Meta.Constraints {
+				if attr := cwConstraintAttr(c); !strings.Contains(source, attr) {
+					t.Fatalf("relocated project lost global field constraint %s", attr)
+				}
+			}
+			if fld.Name.Alias != nil {
+				if attr := fmt.Sprintf("@alias(%q)", *fld.Name.Alias); !strings.Contains(source, attr) {
+					t.Fatalf("relocated project lost global field alias %s", attr)
+				}
+			}
+		}
+	}
+
+	if err := cwValidateAsymmetryRowScope(source, mutated, row); err == nil {
+		t.Fatal("scoped guard accepted a row whose fragments moved to an unrelated declaration")
+	}
+}
+
 // TestAsymmetryRowsMatchTheCompiledProject ties each row's hand-built schema.Bundle to
 // the .baml stock actually compiled.
 //
 // Without it a row could decline one shape natively while measuring a different one
-// through the CFFI, and both halves would still be green.
+// through the CFFI, and both halves would still be green. The row's BAML fragments
+// must occur in that row's own fixture declaration scope, never merely somewhere in
+// the rendered project.
 func TestAsymmetryRowsMatchTheCompiledProject(t *testing.T) {
 	cwEnsureRuntime(t)
 	for _, row := range asymmetryRows {
 		t.Run(row.ID, func(t *testing.T) {
-			if len(row.BAMLText) == 0 {
-				t.Fatal("row declares no BAML text, so it is untied to the compiled project")
-			}
-			for _, want := range row.BAMLText {
-				if !strings.Contains(cwSource, want) {
-					t.Errorf("the compiled project does not contain %q", want)
-				}
-			}
-			for _, name := range row.Fixtures {
-				f := cwFixtureNamed(t, name)
-				if !strings.Contains(cwSource, "function "+f.method()+"(") {
-					t.Errorf("fixture %s is not in the compiled project", name)
-				}
-			}
-			// The bundle's own constraints must render to attribute text the project
-			// carries, so the two descriptions cannot drift apart silently.
-			for _, c := range row.Bundle().Target.Meta.Constraints {
-				if attr := cwConstraintAttr(c); !strings.Contains(cwSource, attr) {
-					t.Errorf("the bundle declares %s, which the compiled project does not carry", attr)
-				}
-			}
-			for _, cls := range row.Bundle().Classes {
-				for _, fld := range cls.Fields {
-					for _, c := range fld.Type.Meta.Constraints {
-						if attr := cwConstraintAttr(c); !strings.Contains(cwSource, attr) {
-							t.Errorf("field %s declares %s, which the compiled project does not carry", fld.Name.Name, attr)
-						}
-					}
-					if fld.Name.Alias != nil {
-						if attr := fmt.Sprintf("@alias(%q)", *fld.Name.Alias); !strings.Contains(cwSource, attr) {
-							t.Errorf("field %s declares %s, which the compiled project does not carry", fld.Name.Name, attr)
-						}
-					}
-				}
+			if err := cwValidateAsymmetryRowScope(cwSource, cwFixtures, row); err != nil {
+				t.Error(err)
 			}
 		})
 	}
