@@ -72,7 +72,7 @@ const (
 // after the golden byte-comparison succeeds, so it is not a second copy of the
 // same check: it is what makes regenerating the golden a deliberate, reviewable
 // act rather than a silent one.
-const soWantProjectHash = "537a585b81527fa9ab54c95fcc076bc126d10e4d1a175348dfc8719b1e2cc9c3"
+const soWantProjectHash = "8ec226ef989f47367b003554349bf9227ba77e75b1ffd33b0786b20ade4a9c44"
 
 // soStockCache memoizes one stock parse per fixture. The CFFI runtime is
 // process-global and the suite deliberately does not parallelise over it, so no
@@ -467,8 +467,8 @@ func TestServingOracleFailClosed(t *testing.T) {
 // quietly turned a decline into an answer — or an answer into a decline — has to
 // be acknowledged.
 var soWantAgreement = map[soAgreement]int{
-	soAgreeValue:               27,
-	soAgreeAssertFailure:       3,
+	soAgreeValue:               30,
+	soAgreeAssertFailure:       4,
 	soAgreeRefusal:             1,
 	soNativeDeclinesPredicate:  6,
 	soNativeDeclinesCoercion:   3,
@@ -606,6 +606,81 @@ func TestServingOracleBoundaryLock(t *testing.T) {
 		"constraints (the stripped twin is admitted), %d of them named a constraint in the message; "+
 		"%d unconstrained controls admitted (%d of them served bytes)",
 		constrained, attributed, namedConstraint, controls, servedControls)
+}
+
+// soCompanionRowNames are the four Slice 7.2b-2 serving-shaped companion rows: the
+// exact two-field fingerprint the production mapper serves, in all four outcomes.
+//
+// They are listed EXPLICITLY rather than discovered by a name prefix, so a row that
+// was renamed or dropped fails the guard instead of silently emptying it.
+var soCompanionRowNames = []string{
+	"static_answer_confidence_check_pass",
+	"static_answer_confidence_check_fail",
+	"static_answer_confidence_assert_pass",
+	"static_answer_confidence_assert_fail",
+}
+
+// TestServingOracleCompanionRowsAreTheAdmittedFingerprint is what makes the four
+// companion rows' decline mean something.
+//
+// TestServingOracleBoundaryLock already refuses them through every gate — but so it
+// would if their shape were simply unrecognised. This proves the opposite: each row IS
+// the fingerprint the 7.2b-2 mapper classifies and serves, so the ONLY thing refusing
+// them is the non-admitting seam, and 7.2b-3's flip is a change of one constant rather
+// than of the shape they describe.
+//
+// It also drives the mapper over each row's own raw text, so the corpus rows and the
+// mapper's byte proof (checked_static_test.go) are known to be about the same four
+// shapes rather than two similar-looking sets.
+func TestServingOracleCompanionRowsAreTheAdmittedFingerprint(t *testing.T) {
+	byName := map[string]servingOracleFixture{}
+	for _, f := range servingOracleFixtures {
+		byName[f.Name] = f
+	}
+	served, rejected := 0, 0
+	for _, name := range soCompanionRowNames {
+		f, ok := byName[name]
+		if !ok {
+			t.Fatalf("companion row %q is missing from the corpus; the 7.2b-2 candidate set would be "+
+				"unwitnessed", name)
+		}
+		t.Run(name, func(t *testing.T) {
+			prof, ok := staticCheckedProfileOf(f.Bundle)
+			if !ok {
+				t.Fatal("the row is NOT the admitted fingerprint, so its decline witnesses an unrecognised " +
+					"shape rather than the closed seam")
+			}
+			// The mapper reaches one of the two public outcomes for every row — a value
+			// or the rendered assertion failure — and never the decline sentinel, which
+			// would mean the seam is not the only thing holding the row back.
+			res, err := staticCheckedMap(f.Bundle, prof, f.Raw)
+			switch {
+			case err == nil:
+				if len(res.JSON) == 0 {
+					t.Fatal("the mapper succeeded but produced no bytes")
+				}
+				served++
+			case staticCheckedIsAssertFailure(err):
+				if len(res.JSON) != 0 {
+					t.Fatalf("the mapper rejected the node but still produced %s bytes", res.JSON)
+				}
+				rejected++
+			default:
+				t.Fatalf("the mapper neither served nor rejected the row: %v", err)
+			}
+			// And the seam is still shut for it.
+			if serr := SupportsNativeFinalBundle(f.Bundle); !errors.Is(serr, bamlutils.ErrDeBAMLParseUnsupported) {
+				t.Fatalf("SupportsNativeFinalBundle returned %v for a companion row; the seam must stay "+
+					"closed until 7.2b-3", serr)
+			}
+		})
+	}
+	// BOTH outcome classes must be represented, or the mapper half of this proof would
+	// only cover one of the two public shapes the cutover has to get right.
+	if served == 0 || rejected == 0 {
+		t.Fatalf("the companion rows produced %d served and %d rejected outcomes; both classes must be "+
+			"exercised", served, rejected)
+	}
 }
 
 // soRequireDeclined drives every gate and requires the fallback sentinel from each.
@@ -947,7 +1022,7 @@ func TestServingOracleCanonicalMatchesProductionServing(t *testing.T) {
 // stream cut-line declines the shape for a NON-constraint reason. Both are pinned
 // so a shape moving between them is acknowledged rather than absorbed.
 const (
-	soWantServingComparable    = 26
+	soWantServingComparable    = 30
 	soWantServingNotComparable = 17
 )
 

@@ -42,6 +42,154 @@ func (s *StreamValue[TStream, TFinal]) Stream() *TStream {
 	return s.as_stream
 }
 
+// / Streaming version of StaticAssertConfidence
+func (*stream) StaticAssertConfidence(ctx context.Context, topic string, opts ...CallOptionFunc) (<-chan StreamValue[stream_types.StaticAssertAnswer, types.StaticAssertAnswer], error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticAssertConfidence: %w", err)
+		panic(wrapped_err)
+	}
+
+	internal_channel, err := bamlRuntime.CallFunctionStream(ctx, "StaticAssertConfidence", encoded, callOpts.onTick)
+	if err != nil {
+		return nil, err
+	}
+
+	channel := make(chan StreamValue[stream_types.StaticAssertAnswer, types.StaticAssertAnswer])
+	go func() {
+		for result := range internal_channel {
+			if result.Error != nil {
+				channel <- StreamValue[stream_types.StaticAssertAnswer, types.StaticAssertAnswer]{
+					IsError: true,
+					Error:   result.Error,
+				}
+				close(channel)
+				return
+			}
+			if result.HasData {
+				data := (result.Data).(types.StaticAssertAnswer)
+				channel <- StreamValue[stream_types.StaticAssertAnswer, types.StaticAssertAnswer]{
+					IsFinal:  true,
+					as_final: &data,
+				}
+			} else {
+				data := (result.StreamData).(stream_types.StaticAssertAnswer)
+				channel <- StreamValue[stream_types.StaticAssertAnswer, types.StaticAssertAnswer]{
+					IsFinal:   false,
+					as_stream: &data,
+				}
+			}
+		}
+
+		// when internal_channel is closed, close the output too
+		close(channel)
+	}()
+	return channel, nil
+}
+
+// / Streaming version of StaticCheckedConfidence
+func (*stream) StaticCheckedConfidence(ctx context.Context, topic string, opts ...CallOptionFunc) (<-chan StreamValue[stream_types.StaticCheckedAnswer, types.StaticCheckedAnswer], error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticCheckedConfidence: %w", err)
+		panic(wrapped_err)
+	}
+
+	internal_channel, err := bamlRuntime.CallFunctionStream(ctx, "StaticCheckedConfidence", encoded, callOpts.onTick)
+	if err != nil {
+		return nil, err
+	}
+
+	channel := make(chan StreamValue[stream_types.StaticCheckedAnswer, types.StaticCheckedAnswer])
+	go func() {
+		for result := range internal_channel {
+			if result.Error != nil {
+				channel <- StreamValue[stream_types.StaticCheckedAnswer, types.StaticCheckedAnswer]{
+					IsError: true,
+					Error:   result.Error,
+				}
+				close(channel)
+				return
+			}
+			if result.HasData {
+				data := (result.Data).(types.StaticCheckedAnswer)
+				channel <- StreamValue[stream_types.StaticCheckedAnswer, types.StaticCheckedAnswer]{
+					IsFinal:  true,
+					as_final: &data,
+				}
+			} else {
+				data := (result.StreamData).(stream_types.StaticCheckedAnswer)
+				channel <- StreamValue[stream_types.StaticCheckedAnswer, types.StaticCheckedAnswer]{
+					IsFinal:   false,
+					as_stream: &data,
+				}
+			}
+		}
+
+		// when internal_channel is closed, close the output too
+		close(channel)
+	}()
+	return channel, nil
+}
+
 // / Streaming version of StaticCompletion
 func (*stream) StaticCompletion(ctx context.Context, topic string, opts ...CallOptionFunc) (<-chan StreamValue[string, string], error) {
 

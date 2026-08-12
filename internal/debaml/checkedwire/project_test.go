@@ -240,6 +240,32 @@ func (c *cwStaticCheckedAnswer) Decode(holder *cffi.CFFIValueClass, _ baml.TypeM
 	}
 }
 
+// cwStaticAssertAnswer mirrors what BAML's Go generator emits for
+// `class CW_StaticAssertAnswer { answer string; confidence int @assert(...) }`.
+//
+// The `confidence` field is a BARE int64, not a wrapper: `as_check()` excludes an
+// assert from the CFFI check list, so a PASSING assert leaves the generated field its
+// ordinary Go type. That is the claim [TestStockNestedAssertIsNotAWrapper] turns into
+// a byte fact, and it is why the production codegen leaves an assert-only field
+// untouched while wrapping a checked one.
+type cwStaticAssertAnswer struct {
+	Answer     string `json:"answer"`
+	Confidence int64  `json:"confidence"`
+}
+
+func (c *cwStaticAssertAnswer) Decode(holder *cffi.CFFIValueClass, _ baml.TypeMap) {
+	for _, field := range holder.Fields {
+		switch field.Key {
+		case "answer":
+			c.Answer, _ = baml.Decode(field.Value).Interface().(string)
+		case "confidence":
+			c.Confidence, _ = baml.Decode(field.Value).Interface().(int64)
+		default:
+			cwUnexpected("CW_StaticAssertAnswer", field.Key)
+		}
+	}
+}
+
 // cwRequiredAssert is the wrapper-chain fixture's class: one REQUIRED int field
 // carrying a failing @assert, which is the shape that makes stock wrap the assertion
 // error in its required-fields / field-coercion chain.
@@ -311,9 +337,10 @@ func cwBuildTypeMap() map[string]reflect.Type {
 		tm["CHECKED_TYPES."+n] = anyChecked
 	}
 	tm["TYPES.CW_StaticCheckedAnswer"] = reflect.TypeOf(cwStaticCheckedAnswer{})
+	tm["TYPES.CW_StaticAssertAnswer"] = reflect.TypeOf(cwStaticAssertAnswer{})
 	tm["TYPES.CW_RequiredAssert"] = reflect.TypeOf(cwRequiredAssert{})
 	tm["TYPES.CW_AliasedChecked"] = reflect.TypeOf(cwAliasedChecked{})
-	for _, n := range []string{"CW_StaticCheckedAnswer", "CW_RequiredAssert", "CW_AliasedChecked"} {
+	for _, n := range []string{"CW_StaticCheckedAnswer", "CW_StaticAssertAnswer", "CW_RequiredAssert", "CW_AliasedChecked"} {
 		tm["CHECKED_TYPES."+n] = anyChecked
 	}
 	return tm

@@ -516,11 +516,28 @@ func TestAsymmetryRowScopeRejectsRelocatedClassFragment(t *testing.T) {
   qty int
 }
 `
-	nestedClass := strings.Replace(mutated[nestedFixture].Classes[0], "\n}\n", "\n  "+moved+"\n}\n", 1)
-	if nestedClass == mutated[nestedFixture].Classes[0] {
+	original := mutated[nestedFixture].Classes[0]
+	nestedClass := strings.Replace(original, "\n}\n", "\n  "+moved+"\n}\n", 1)
+	if nestedClass == original {
 		t.Fatal("could not move the alias fragment into the unrelated class")
 	}
-	mutated[nestedFixture].Classes[0] = nestedClass
+	// The class is declared by EVERY fixture that returns it (NestedCheck and its
+	// false-check twin both contribute the identical source), and cwRenderProject
+	// refuses two different bodies under one name. Rewriting every contributor keeps
+	// the mutation a RELOCATION of the fragment rather than a rendering error, which
+	// would make the guard below pass for the wrong reason.
+	rewritten := 0
+	for i := range mutated {
+		for j, src := range mutated[i].Classes {
+			if src == original {
+				mutated[i].Classes[j] = nestedClass
+				rewritten++
+			}
+		}
+	}
+	if rewritten == 0 {
+		t.Fatal("no fixture declared the class the fragment was moved into")
+	}
 
 	source, err := cwRenderProject(mutated)
 	if err != nil {

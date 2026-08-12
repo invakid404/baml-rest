@@ -25,6 +25,100 @@ type parse_stream struct{}
 
 var ParseStream = &parse_stream{}
 
+// / Parse version of StaticAssertConfidence (Takes in string and returns stream_types.StaticAssertAnswer)
+func (*parse_stream) StaticAssertConfidence(ctx context.Context, text string, opts ...CallOptionFunc) (stream_types.StaticAssertAnswer, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticAssertConfidence: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(ctx, "StaticAssertConfidence", encoded)
+	if err != nil {
+		return stream_types.StaticAssertAnswer{}, err
+	}
+
+	casted := (result).(stream_types.StaticAssertAnswer)
+
+	return casted, nil
+}
+
+// / Parse version of StaticCheckedConfidence (Takes in string and returns stream_types.StaticCheckedAnswer)
+func (*parse_stream) StaticCheckedConfidence(ctx context.Context, text string, opts ...CallOptionFunc) (stream_types.StaticCheckedAnswer, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": true},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticCheckedConfidence: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(ctx, "StaticCheckedConfidence", encoded)
+	if err != nil {
+		return stream_types.StaticCheckedAnswer{}, err
+	}
+
+	casted := (result).(stream_types.StaticCheckedAnswer)
+
+	return casted, nil
+}
+
 // / Parse version of StaticCompletion (Takes in string and returns string)
 func (*parse_stream) StaticCompletion(ctx context.Context, text string, opts ...CallOptionFunc) (string, error) {
 

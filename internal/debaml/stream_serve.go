@@ -953,6 +953,17 @@ func SupportsNativeFinalBundle(bundle *schema.Bundle) error {
 	if IsProvenServedRecursiveAliasStaticFamily(bundle) {
 		return nil
 	}
+	// De-BAML Slice 7.2b-2: the narrow CHECKED-STATIC case, behind its NON-ADMITTING
+	// seam. Support is a property of the SHAPE, so this hook carries no route capability;
+	// while the seam is closed it claims NOTHING and every constraint-bearing bundle (the
+	// four #665 companion rows for this exact fingerprint included) falls through to
+	// checkSupported's unchanged constraint decline below. WHICH ROUTE may then claim the
+	// shape is decided at parse time — see staticCheckedParse, which declines a matched
+	// fingerprint on a route that may not claim it rather than falling through to the
+	// constraint-blind ordinary path.
+	if err, claimed := staticCheckedFinalSupport(bundle); claimed {
+		return err
+	}
 	// De-BAML Phase 2: classify the bundle against the narrow static-final
 	// recursive-class family FIRST. An admitted family (self Node, mutual A<->B)
 	// runs the recursion-aware cut-line (recursive-class reject skipped, blanket

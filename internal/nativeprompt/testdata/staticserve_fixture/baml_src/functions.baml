@@ -407,3 +407,25 @@ function StaticMediaInClass(bundle: MediaBundle) -> string {
     Describe {{ bundle }}
   "#
 }
+
+// De-BAML Slice 7.2b-2 — the two constraint-bearing static returns. Same bare
+// ctx.output_format shape as StaticOutputFormat, so the ONLY difference from an
+// admitted route is the constraint on `confidence`. Both DECLINE pre-transport
+// while the checked-static seam is closed.
+function StaticCheckedConfidence(topic: string) -> StaticCheckedAnswer {
+  client StaticOracleClient
+  prompt #"
+    {{ _.role("user") }}
+    Summarize {{ topic }} for me.
+    {{ ctx.output_format }}
+  "#
+}
+
+function StaticAssertConfidence(topic: string) -> StaticAssertAnswer {
+  client StaticOracleClient
+  prompt #"
+    {{ _.role("user") }}
+    Summarize {{ topic }} for me.
+    {{ ctx.output_format }}
+  "#
+}

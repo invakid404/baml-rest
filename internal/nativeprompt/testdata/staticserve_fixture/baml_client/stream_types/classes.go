@@ -412,6 +412,102 @@ func (c StaticAnswer) BamlTypeName() string {
 	return "StaticAnswer"
 }
 
+type StaticAssertAnswer struct {
+	Answer     *string `json:"answer"`
+	Confidence *int64  `json:"confidence"`
+}
+
+func (c *StaticAssertAnswer) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "StaticAssertAnswer" {
+		panic(fmt.Sprintf("expected StaticAssertAnswer, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "answer":
+			c.Answer = baml.Decode(valueHolder).Interface().(*string)
+
+		case "confidence":
+			c.Confidence = baml.Decode(valueHolder).Interface().(*int64)
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class StaticAssertAnswer", key))
+
+		}
+	}
+
+}
+
+func (c StaticAssertAnswer) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["answer"] = c.Answer
+
+	fields["confidence"] = c.Confidence
+
+	return baml.EncodeClass("StaticAssertAnswer", fields, nil)
+}
+
+func (c StaticAssertAnswer) BamlTypeName() string {
+	return "StaticAssertAnswer"
+}
+
+type StaticCheckedAnswer struct {
+	Answer     *string               `json:"answer"`
+	Confidence *types.Checked[int64] `json:"confidence"`
+}
+
+func (c *StaticCheckedAnswer) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "StaticCheckedAnswer" {
+		panic(fmt.Sprintf("expected StaticCheckedAnswer, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "answer":
+			c.Answer = baml.Decode(valueHolder).Interface().(*string)
+
+		case "confidence":
+			c.Confidence = types.FromStockCheckedPtr(baml.Decode(valueHolder).Interface().(*types.StockChecked[int64]))
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class StaticCheckedAnswer", key))
+
+		}
+	}
+
+}
+
+func (c StaticCheckedAnswer) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["answer"] = c.Answer
+
+	fields["confidence"] = c.Confidence
+
+	return baml.EncodeClass("StaticCheckedAnswer", fields, nil)
+}
+
+func (c StaticCheckedAnswer) BamlTypeName() string {
+	return "StaticCheckedAnswer"
+}
+
 type Swatch struct {
 	Color *types.Color `json:"color"`
 	Label *string      `json:"label"`

@@ -81,6 +81,10 @@ CGO_ENABLED=0 go run ./cmd/introspect \
 # fixture regeneration stays IDEMPOTENT (a clean second run). rm -f no-ops on a
 # fresh tree where the helpers do not yet exist.
 find "$SF/baml_client" -name ordered_map_static.go -delete
+# Same reason for the bamlutils-checked-carrier bridge the hack ADDS to the types
+# package (cmd/hacks/hacks/checked_carrier.go): BAML's generator would abort on a file
+# it did not itself produce, so remove it before regenerating.
+find "$SF/baml_client" -name checked_carrier_bridge.go -delete
 regen_client "$SF"
 
 echo "==> [$SF] cmd/hacks (context-fix + lazy-runtime + …)"
@@ -92,7 +96,14 @@ echo "==> [$SF] cmd/hacks (context-fix + lazy-runtime + …)"
 # selects baml.DecodeToValue (present in stock) for that arm — byte-equivalent since
 # the arm materialises a plain map[string]T and loses CFFI order either way. The
 # default (unset) keeps DecodeToOrderedValue so the patched dynclient stays unchanged.
-BAML_HACKS_STOCK_STATIC_MAP_DECODE=1 go run ./cmd/hacks --skip-baml-module-patch \
+# BAML_HACKS_BAMLUTILS_CHECKED=1 re-points this client's generated
+# `type Checked[T any] = baml.Checked[T]` alias at bamlutils.Checked (de-BAML Slice
+# 7.2b-2), so every generated `@check`-bearing field resolves to the carrier whose
+# sonic bytes are deterministic. It is opt-in per client: the DYNAMIC client has no
+# constraint channel at all (DynamicOutputSchema cannot express a @check — the #572
+# ceiling), so its alias is unreachable and stays stock.
+BAML_HACKS_STOCK_STATIC_MAP_DECODE=1 BAML_HACKS_BAMLUTILS_CHECKED=1 \
+  go run ./cmd/hacks --skip-baml-module-patch \
   --baml-client-dir "$SF/baml_client" --baml-version "$BAML_VERSION"
 
 # The BAML generator emits a stray absolute type_builder import

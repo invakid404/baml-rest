@@ -20,7 +20,7 @@ import (
 // tests.
 
 // cwProjectSHA256 pins the rendered project. See TestCheckedWireProjectDrift.
-const cwProjectSHA256 = "0b99e92ca4718cd1b6b1ed1370d300813ad3fafa1353ce632b050230e8ca0ce1"
+const cwProjectSHA256 = "a7962e0c18a6ca343e883c843fbe109392586cace3f855853485d98a760f3d8d"
 
 // The two cause-length probes. stock's validate_asserts measures the WHOLE cause —
 // `Failed: ` + label + ' ' + expression — with Rust's String::len(), i.e. in BYTES,
@@ -85,6 +85,16 @@ const (
   qty int @alias("amount") @check(positive, {{ this > 0 }})
 }
 `
+	// De-BAML Slice 7.2b-2 — the ASSERT half of the two narrow production fixtures.
+	// Structurally identical to CW_StaticCheckedAnswer (same field names, same order,
+	// same types, same predicate) with `@check` swapped for `@assert`, so every byte
+	// difference between the two families is attributable to the level and to nothing
+	// else. The two outcomes are driven from the SAME declaration by two raw texts.
+	cwStaticAssertAnswerClass = `class CW_StaticAssertAnswer {
+  answer string
+  confidence int @assert(positive, {{ this > 0 }})
+}
+`
 )
 
 var cwFixtures = []cwFixture{{
@@ -103,6 +113,30 @@ var cwFixtures = []cwFixture{{
 	Classes: []string{cwStaticCheckedAnswerClass},
 	Target:  "CW_StaticCheckedAnswer",
 	Raw:     `{"answer": "sunny", "confidence": 9}`,
+}, {
+	Name:    "NestedCheckFail",
+	Doc:     "WIRE: the SAME nested class with a FALSE check. The value is still emitted, nested, with status \"failed\".",
+	Classes: []string{cwStaticCheckedAnswerClass},
+	Target:  "CW_StaticCheckedAnswer",
+	Raw:     `{"answer": "sunny", "confidence": -1}`,
+}, {
+	Name:    "NestedCheckDuplicateKey",
+	Doc:     "WIRE: the same nested class given `answer` TWICE. Stock keeps the FIRST occurrence, and the check still runs on the single `confidence`.",
+	Classes: []string{cwStaticCheckedAnswerClass},
+	Target:  "CW_StaticCheckedAnswer",
+	Raw:     `{"answer": "first", "answer": "second", "confidence": 9}`,
+}, {
+	Name:    "NestedAssertPass",
+	Doc:     "WIRE: the ASSERT twin of the nested class, predicate HOLDING — no wrapper, no check entry, an ordinary int field.",
+	Classes: []string{cwStaticAssertAnswerClass},
+	Target:  "CW_StaticAssertAnswer",
+	Raw:     `{"answer": "sunny", "confidence": 9}`,
+}, {
+	Name:    "NestedAssertFail",
+	Doc:     "ERROR BYTES: the same declaration with the predicate FALSE — no value at all, and the required-field wrapper chain around the two-field class.",
+	Classes: []string{cwStaticAssertAnswerClass},
+	Target:  "CW_StaticAssertAnswer",
+	Raw:     `{"answer": "sunny", "confidence": -1}`,
 }, {
 	Name:   "CheckLessThan",
 	Doc:    "WIRE: an expression carrying `<`, which encoding/json HTML-escapes and sonic does not.",

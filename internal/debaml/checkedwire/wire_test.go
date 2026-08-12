@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -39,7 +40,31 @@ const (
 	wireCheckPlusAssert = `{"value":5,"checks":{"c":{"name":"c","expression":"this > 0","status":"succeeded"}}}`
 	// A passing assert is not a check at all: the value stays a bare int.
 	wireAssertPassNoCheck = `5`
+
+	// De-BAML Slice 7.2b-2 — the two narrow PRODUCTION fixtures, in all three of
+	// their outcomes. These are the bytes the production coercion-state → carrier
+	// mapper (internal/debaml's staticCheckedMap) has to reproduce exactly; package
+	// debaml pins the same literals and TestStaticCheckedStockAuthorityAgrees there
+	// proves the two copies are byte-identical to these.
+	//
+	// The FALSE nested check keeps its value, nested, exactly as the top-level false
+	// check does — the difference from wireNestedCheck is the value and the status,
+	// and nothing structural.
+	wireNestedCheckFail = `{"answer":"sunny","confidence":{"value":-1,"checks":{"positive":{"name":"positive","expression":"this > 0","status":"failed"}}}}`
+	// The ASSERT twin with the predicate HOLDING: an ordinary int field, no wrapper.
+	wireNestedAssertPass = `{"answer":"sunny","confidence":9}`
+	// A DUPLICATE canonical key: `answer` arrives twice. Stock keeps the FIRST
+	// occurrence and the check still runs on the single `confidence`. This is a
+	// property of the COERCION, not of the constraint layer, and it is pinned here so
+	// the production mapper's identical answer is a measured agreement rather than an
+	// argument (see TestStaticCheckedDuplicateKeysMatchTheUnconstrainedLane).
+	wireNestedCheckDuplicateKey = `{"answer":"first","confidence":{"value":9,"checks":{"positive":{"name":"positive","expression":"this > 0","status":"succeeded"}}}}`
 )
+
+// errNestedAssertFail is the UNMODIFIED stock `err.Error()` for the assert twin with
+// the predicate FALSE: no value at all, and the required-field wrapper chain around
+// the two-field class. It is the authority for the native assertion renderer.
+const errNestedAssertFail = `Failed to coerce value: ParsingError { scope: [], reason: "Failed while parsing required fields: missing=0, unparsed=1", causes: [ParsingError { scope: [], reason: "Failed to parse field confidence: <root>: Assertions failed.\n  - <root>: Failed: positive this > 0", causes: [ParsingError { scope: [], reason: "Assertions failed.", causes: [ParsingError { scope: [], reason: "Failed: positive this > 0", causes: [] }] }] }] }`
 
 // cwStockChecked pulls the decoded stock value out of a fixture and requires it to be
 // the concrete generated shape, `shared.Checked[int64]`.
@@ -163,6 +188,139 @@ func TestStockNestedCheckedWireBytes(t *testing.T) {
 	}
 	native := nativeAnswer{Answer: stock.Answer, Confidence: cwCarrierFromStock(t, stock.Confidence, "positive")}
 	cwRequireSonicBytes(t, "bamlutils.Checked", native, wireNestedCheck)
+}
+
+// TestStockNestedCheckFailWireBytes pins the FALSE nested check — the second of the
+// three outcomes the production mapper must reproduce.
+//
+// It is a separate row rather than a variant of the pass case because a false check
+// is DATA: stock still emits the value, nested, and only the status differs. An
+// implementation that dropped the value on a false check would still satisfy the
+// pass fixture.
+func TestStockNestedCheckFailWireBytes(t *testing.T) {
+	v := cwValue(t, "NestedCheckFail")
+	stock, ok := v.(cwStaticCheckedAnswer)
+	if !ok {
+		t.Fatalf("stock decoded a %T, want cwStaticCheckedAnswer", v)
+	}
+	if stock.Answer != "sunny" || stock.Confidence.Value != -1 {
+		t.Fatalf("stock value = %+v, want answer=sunny confidence.value=-1", stock)
+	}
+	want := shared.Check{Name: "positive", Expression: "this > 0", Status: "failed"}
+	if got := stock.Confidence.Checks["positive"]; got != want {
+		t.Fatalf("stock nested check = %+v, want %+v", got, want)
+	}
+	cwRequireSonicBytes(t, "stock", stock, wireNestedCheckFail)
+
+	type nativeAnswer struct {
+		Answer     string                   `json:"answer"`
+		Confidence bamlutils.Checked[int64] `json:"confidence"`
+	}
+	native := nativeAnswer{Answer: stock.Answer, Confidence: cwCarrierFromStock(t, stock.Confidence, "positive")}
+	cwRequireSonicBytes(t, "bamlutils.Checked", native, wireNestedCheckFail)
+
+	// The two nested literals must differ in BOTH the value and the status, so
+	// neither fixture can stand in for the other.
+	if wireNestedCheck == wireNestedCheckFail {
+		t.Fatal("the nested pass and fail literals are identical")
+	}
+	if !strings.Contains(wireNestedCheckFail, `"status":"failed"`) || !strings.Contains(wireNestedCheckFail, `"value":-1`) {
+		t.Fatalf("the nested fail literal does not carry both a failed status and its value: %s", wireNestedCheckFail)
+	}
+}
+
+// TestStockNestedDuplicateKeyKeepsTheFirst pins what stock does when a canonical field
+// arrives TWICE — the one input shape where "which occurrence wins" is decidable, and
+// therefore the one where the native coercion could silently disagree.
+//
+// It is a COERCION fact rather than a constraint fact: the check is unaffected and runs
+// on the single `confidence`. Pinning it here is what lets the production mapper's
+// identical answer be a measured agreement rather than an assumption.
+func TestStockNestedDuplicateKeyKeepsTheFirst(t *testing.T) {
+	v := cwValue(t, "NestedCheckDuplicateKey")
+	stock, ok := v.(cwStaticCheckedAnswer)
+	if !ok {
+		t.Fatalf("stock decoded a %T, want cwStaticCheckedAnswer", v)
+	}
+	if stock.Answer != "first" {
+		t.Fatalf("stock kept answer=%q; the FIRST occurrence is the measured behaviour", stock.Answer)
+	}
+	if stock.Confidence.Value != 9 {
+		t.Fatalf("stock confidence.value = %d, want 9", stock.Confidence.Value)
+	}
+	want := shared.Check{Name: "positive", Expression: "this > 0", Status: "succeeded"}
+	if got := stock.Confidence.Checks["positive"]; got != want {
+		t.Fatalf("stock check = %+v, want %+v", got, want)
+	}
+	cwRequireSonicBytes(t, "stock", stock, wireNestedCheckDuplicateKey)
+	// DISCRIMINATING: the losing occurrence is absent from the bytes, so a decoder that
+	// took the last one would fail here rather than pass on a superset.
+	if strings.Contains(wireNestedCheckDuplicateKey, "second") {
+		t.Fatalf("the pinned duplicate-key literal carries the SECOND occurrence: %s", wireNestedCheckDuplicateKey)
+	}
+}
+
+// TestStockNestedAssertIsNotAWrapper pins the ASSERT twin's two outcomes on the
+// EXACT two-field shape the production fingerprint admits.
+//
+// The class differs from CW_StaticCheckedAnswer in one token — `@assert` for
+// `@check` — so every difference below is attributable to the level:
+//
+//   - a HOLDING assert leaves `confidence` an ordinary int on the wire, with no
+//     check entry and no wrapper (which is why the generated static type for an
+//     assert-only field stays its plain Go type);
+//   - a FALSE assert emits NO value at all, and its error carries stock's
+//     required-field wrapper chain naming the failing field.
+func TestStockNestedAssertIsNotAWrapper(t *testing.T) {
+	v := cwValue(t, "NestedAssertPass")
+	stock, ok := v.(cwStaticAssertAnswer)
+	if !ok {
+		t.Fatalf("stock decoded a %T, want cwStaticAssertAnswer", v)
+	}
+	if stock.Answer != "sunny" || stock.Confidence != 9 {
+		t.Fatalf("stock value = %+v, want answer=sunny confidence=9", stock)
+	}
+	cwRequireSonicBytes(t, "stock", stock, wireNestedAssertPass)
+	// The DISCRIMINATING half: the emitted bytes carry no wrapper at all, so an
+	// implementation that wrapped a passing assert would fail here rather than pass
+	// on a superset.
+	if strings.Contains(wireNestedAssertPass, `"checks"`) || strings.Contains(wireNestedAssertPass, `"value"`) {
+		t.Fatalf("the passing-assert literal carries wrapper keys: %s", wireNestedAssertPass)
+	}
+
+	// And the FALSE assert: an error, with no value beside it.
+	f := cwFixtureNamed(t, "NestedAssertFail")
+	r := cwDrive(t, f)
+	if r.err == nil {
+		t.Fatalf("a failing nested @assert produced a value: %#v", r.value)
+	}
+	if r.value != nil {
+		t.Fatalf("a failing nested @assert produced BOTH an error and a value (%#v)", r.value)
+	}
+	if got := r.err.Error(); got != errNestedAssertFail {
+		t.Fatalf("stock assertion error bytes:\n got %s\nwant %s", strconv.Quote(got), strconv.Quote(errNestedAssertFail))
+	}
+	// The wrapper chain is the point of driving this on a CLASS FIELD rather than on
+	// a bare target: it names the field, counts the required-field outcome, and keeps
+	// the inner tree beside the flattened display text.
+	for _, want := range []string{
+		`reason: "Failed while parsing required fields: missing=0, unparsed=1"`,
+		`reason: "Failed to parse field confidence: <root>: Assertions failed.\n  - <root>: Failed: positive this > 0"`,
+		`reason: "Assertions failed."`,
+		`reason: "Failed: positive this > 0"`,
+	} {
+		if !strings.Contains(errNestedAssertFail, want) {
+			t.Errorf("the pinned assertion error does not carry %s", want)
+		}
+	}
+	// The embedded newline is DEBUG-ESCAPED (two bytes), never a real one — the
+	// single most likely way a renderer gets this wrong.
+	if strings.Contains(errNestedAssertFail, "\n") {
+		t.Fatal("the pinned assertion error carries a REAL newline; stock's `{:?}` rendering escapes it")
+	}
+	if !strings.Contains(errNestedAssertFail, `\n  - <root>: `) {
+		t.Fatalf("the pinned assertion error does not carry the escaped display separator: %s", errNestedAssertFail)
+	}
 }
 
 // TestStockWireEncoderFraming pins the one place the two Go encoders disagree over

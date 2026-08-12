@@ -205,6 +205,83 @@ func IsAdmittedJSONAliasStreamCarrier(t reflect.Type) bool {
 	return isAdmittedJSONAliasStreamCarrier(t)
 }
 
+// isCheckedConstraintCarrier reports whether t is the `Checked[T]` constraint carrier
+// — the shape stock v0.223.0 emits for a `@check`-bearing node and the shape
+// [bamlutils.Checked] mirrors:
+//
+//	struct {
+//	    Value  T                `json:"value"`
+//	    Checks map[string]Check `json:"checks"`
+//	}
+//
+// It is a STRUCTURAL fingerprint, deliberately not a type-name or package match, for
+// two reasons. A generated client reaches the carrier through an ALIAS
+// (`type Checked[T any] = baml.Checked[T]`, which a de-BAML client re-points at
+// bamlutils), so the reflected name is the aliased target rather than anything this
+// generator chose; and both spellings — stock's and bamlutils' — are the same shape
+// and must both keep the strict decoder, so matching one package would leave the other
+// mis-routed.
+//
+// A pointer is unwrapped first: a nullable checked return lowers to `*Checked[T]`.
+//
+// UNEXPORTED fields are ignored, and only they are: [bamlutils.Checked] carries the
+// constraint DECLARATION ORDER out of band in an unexported slice (that is what makes
+// its bytes deterministic where stock's map iteration is not), while stock's own
+// carrier has no such field. An unexported field cannot appear on the wire, so
+// ignoring it recognises both spellings without widening the shape the fingerprint is
+// about; the EXPORTED set is still bounded to exactly the two stock fields.
+func isCheckedConstraintCarrier(t reflect.Type) bool {
+	if t == nil {
+		return false
+	}
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return false
+	}
+	var exported []reflect.StructField
+	for i := 0; i < t.NumField(); i++ {
+		if f := t.Field(i); f.IsExported() {
+			exported = append(exported, f)
+		}
+	}
+	if len(exported) != 2 {
+		return false
+	}
+	value, checks := exported[0], exported[1]
+	if value.Name != "Value" || value.Tag.Get("json") != "value" {
+		return false
+	}
+	if checks.Name != "Checks" || checks.Tag.Get("json") != "checks" {
+		return false
+	}
+	m := checks.Type
+	if m.Kind() != reflect.Map || m.Key().Kind() != reflect.String {
+		return false
+	}
+	return isCheckResult(m.Elem())
+}
+
+// isCheckResult reports whether t is stock v0.223.0's `Check` — three strings named
+// and tagged `name`, `expression`, `status`, in that order. The ORDER is part of the
+// fingerprint because it is part of the emitted bytes.
+func isCheckResult(t reflect.Type) bool {
+	if t.Kind() != reflect.Struct || t.NumField() != 3 {
+		return false
+	}
+	for i, want := range []struct{ name, tag string }{
+		{"Name", "name"}, {"Expression", "expression"}, {"Status", "status"},
+	} {
+		f := t.Field(i)
+		if !f.IsExported() || f.Name != want.name || f.Tag.Get("json") != want.tag ||
+			f.Type.Kind() != reflect.String {
+			return false
+		}
+	}
+	return true
+}
+
 // jsonUnmarshalerType is the interface a generated TAGGED-UNION carrier (BAML's
 // types.JSON — a recursive structural-alias return, Union5.../Union6...) implements via
 // its generated UnmarshalJSON, while a flat or recursive CLASS carrier and a scalar
@@ -223,6 +300,27 @@ func (me *methodEmitter) finalResultDecoderName() string {
 	if me.syncFuncType != nil && me.syncFuncType.NumOut() >= 1 {
 		out := me.syncFuncType.Out(0)
 		if out.Kind() == reflect.Interface {
+			return "DecodeStaticFinal"
+		}
+		// De-BAML Slice 7.2b-2: the `Checked[T]` CONSTRAINT CARRIER must stay on the
+		// STRICT generic decoder, checked BEFORE the json.Unmarshaler probe below.
+		//
+		// This is not a preference, it is a correctness rule the carrier introduces.
+		// `Checked[T]` declares UnmarshalJSON on its POINTER receiver so a decode into a
+		// carrier REPLACES rather than merges (bamlutils/checked.go), which makes
+		// `reflect.PointerTo(out)` satisfy json.Unmarshaler for a TOP-LEVEL checked
+		// return — exactly the probe the recursive-ALIAS router uses. Routing it there
+		// would hand a constraint carrier to [bamlutils.DecodeStaticAliasFinal], which
+		// deliberately does NOT set DisallowUnknownFields because a tagged union cannot
+		// meaningfully allowlist struct fields. The carrier CAN: it is a fixed-field
+		// struct, its strictness is proven, and losing it would silently accept a field
+		// stock cannot produce.
+		//
+		// A NESTED carrier (the `StaticCheckedAnswer{answer string; confidence
+		// Checked[int64]}` fingerprint) is unaffected either way — the enclosing struct
+		// implements nothing — so this arm is about the top-level instantiation, and the
+		// nested one is covered by the generic decoder it already selects.
+		if isCheckedConstraintCarrier(out) {
 			return "DecodeStaticFinal"
 		}
 		// A value union (JSON -> Union5, UnmarshalJSON on *Union5) is caught by
