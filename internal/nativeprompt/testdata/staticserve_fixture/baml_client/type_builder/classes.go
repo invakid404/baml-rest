@@ -307,6 +307,78 @@ func (t *StaticAnswerClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 
+type StaticAssertAnswerClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *StaticAssertAnswerClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *StaticAssertAnswerClassView) PropertyAnswer() (ClassPropertyView, error) {
+	return t.inner.Property("answer")
+}
+
+func (t *StaticAssertAnswerClassView) PropertyConfidence() (ClassPropertyView, error) {
+	return t.inner.Property("confidence")
+}
+
+func (t *TypeBuilder) StaticAssertAnswer() (*StaticAssertAnswerClassView, error) {
+	bld, err := t.inner.Class("StaticAssertAnswer")
+	if err != nil {
+		return nil, err
+	}
+	return &StaticAssertAnswerClassView{inner: bld}, nil
+}
+
+func (t *StaticAssertAnswerClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type StaticCheckedAnswerClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *StaticCheckedAnswerClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *StaticCheckedAnswerClassView) PropertyAnswer() (ClassPropertyView, error) {
+	return t.inner.Property("answer")
+}
+
+func (t *StaticCheckedAnswerClassView) PropertyConfidence() (ClassPropertyView, error) {
+	return t.inner.Property("confidence")
+}
+
+func (t *TypeBuilder) StaticCheckedAnswer() (*StaticCheckedAnswerClassView, error) {
+	bld, err := t.inner.Class("StaticCheckedAnswer")
+	if err != nil {
+		return nil, err
+	}
+	return &StaticCheckedAnswerClassView{inner: bld}, nil
+}
+
+func (t *StaticCheckedAnswerClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
 type SwatchClassView struct {
 	inner baml.ClassBuilder
 }

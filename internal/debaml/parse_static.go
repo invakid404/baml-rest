@@ -62,6 +62,19 @@ func ParseStaticBundle(ctx context.Context, bundle *schema.Bundle, raw string) (
 		return bamlutils.DeBAMLParseResult{}, err
 	}
 
+	// De-BAML Slice 7.2b-2: the narrow CHECKED-STATIC case, behind the SAME
+	// non-admitting seam SupportsNativeFinalBundle consults, and carrying the SAME
+	// DIRECT capability.
+	//
+	// This function is not reached from one place: the static unary /call serve seam,
+	// its shadow comparator, the stream-final completion lane and root [Parse]'s
+	// ordinary static-descriptor lane all land here. Only the first is inside the
+	// boundary the scope admits, so the capability — not this call site — is what
+	// decides, and every route that arrives without one keeps declining.
+	if res, err, claimed := staticCheckedParse(bundle, raw, staticCheckedDirect()); claimed {
+		return res, err
+	}
+
 	// Strip JSONish comments (string-aware) exactly as BAML does before extraction,
 	// then extract the single cleanly-claimable JSON candidate (strict → markdown
 	// fence → balanced span, each strict-then-M2a-fixed). No cleanly-claimable

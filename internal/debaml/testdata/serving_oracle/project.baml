@@ -218,6 +218,16 @@ class SoCtlMap {
   v map<string, int>
 }
 
+class StaticCheckedAnswer {
+  answer string
+  confidence int @check(positive, {{ this > 0 }})
+}
+
+class StaticAssertAnswer {
+  answer string
+  confidence int @assert(positive, {{ this > 0 }})
+}
+
 function SO_scalar_int_check_pass(topic: string) -> SoIntPass {
   client ServingOracleClient
   prompt #"{{ topic }} {{ ctx.output_format }}"#
@@ -484,6 +494,26 @@ function SO_control_target_string(topic: string) -> string {
 }
 
 function SO_bare_string_quoted_text(topic: string) -> string {
+  client ServingOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+function SO_static_answer_confidence_check_pass(topic: string) -> StaticCheckedAnswer {
+  client ServingOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+function SO_static_answer_confidence_check_fail(topic: string) -> StaticCheckedAnswer {
+  client ServingOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+function SO_static_answer_confidence_assert_pass(topic: string) -> StaticAssertAnswer {
+  client ServingOracleClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+function SO_static_answer_confidence_assert_fail(topic: string) -> StaticAssertAnswer {
   client ServingOracleClient
   prompt #"{{ topic }} {{ ctx.output_format }}"#
 }

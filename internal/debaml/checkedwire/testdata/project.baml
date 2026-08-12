@@ -19,6 +19,11 @@ class CW_StaticCheckedAnswer {
   confidence int @check(positive, {{ this > 0 }})
 }
 
+class CW_StaticAssertAnswer {
+  answer string
+  confidence int @assert(positive, {{ this > 0 }})
+}
+
 class CW_RequiredAssert {
   v int @assert(gt, {{ this > 100 }})
 }
@@ -41,6 +46,30 @@ function CW_CheckFail(topic: string) -> int @check(gt, {{ this > 100 }}) {
 
 // WIRE: the nested class placement — the carrier sits on the `confidence` field.
 function CW_NestedCheck(topic: string) -> CW_StaticCheckedAnswer {
+  client CheckedWireClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+// WIRE: the SAME nested class with a FALSE check. The value is still emitted, nested, with status "failed".
+function CW_NestedCheckFail(topic: string) -> CW_StaticCheckedAnswer {
+  client CheckedWireClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+// WIRE: the same nested class given `answer` TWICE. Stock keeps the FIRST occurrence, and the check still runs on the single `confidence`.
+function CW_NestedCheckDuplicateKey(topic: string) -> CW_StaticCheckedAnswer {
+  client CheckedWireClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+// WIRE: the ASSERT twin of the nested class, predicate HOLDING — no wrapper, no check entry, an ordinary int field.
+function CW_NestedAssertPass(topic: string) -> CW_StaticAssertAnswer {
+  client CheckedWireClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+// ERROR BYTES: the same declaration with the predicate FALSE — no value at all, and the required-field wrapper chain around the two-field class.
+function CW_NestedAssertFail(topic: string) -> CW_StaticAssertAnswer {
   client CheckedWireClient
   prompt #"{{ topic }} {{ ctx.output_format }}"#
 }

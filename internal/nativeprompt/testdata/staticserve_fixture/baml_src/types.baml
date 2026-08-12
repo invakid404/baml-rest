@@ -154,3 +154,31 @@ class MediaBundle {
   img image
   caption string
 }
+
+// De-BAML Slice 7.2b-2 — the TWO NARROW CONSTRAINT-BEARING return types.
+//
+// These are the exact two concrete generated fixture return types the 7.2b scope
+// admits as the first production-admission fingerprint: a flat class with exactly
+// `answer string` then `confidence int`, and EXACTLY ONE direct constraint on
+// `confidence` — one @check or one @assert, never both and never more.
+//
+// They exist HERE, in a real generated project, so the generated Go carrier is the
+// one BAML's own generator emits rather than a hand-written look-alike: the checked
+// field lowers to the generated `Checked[int64]` alias (which the fixture transform
+// re-points at bamlutils.Checked, the carrier with deterministic bytes), while the
+// assert-only field stays an ordinary int64 because `as_check()` excludes an assert
+// from the CFFI check list.
+//
+// Both are DECLINED at this stage: Slice 7.2b-2 adds the mapper and the generated
+// types behind a non-admitting seam, so the generated /call for each opens ZERO
+// native sockets and BAML serves. They sit on the DECLINED side of the static
+// serving partition (staticServingCorpusConstraintDeclined) until 7.2b-3.
+class StaticCheckedAnswer {
+  answer string
+  confidence int @check(positive, {{ this > 0 }})
+}
+
+class StaticAssertAnswer {
+  answer string
+  confidence int @assert(positive, {{ this > 0 }})
+}

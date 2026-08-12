@@ -311,19 +311,25 @@ func TestStaticServingCutover_CompletePartition(t *testing.T) {
 	for _, r := range staticServingCorpusMediaDeclined {
 		partition[r.name] = true
 	}
+	// De-BAML Slice 7.2b-2 constraint-bearing routes: emitted, descriptored and
+	// seam-installed, declined INSIDE admission until 7.2b-3.
+	for _, r := range staticServingCorpusConstraintDeclined {
+		partition[r.name] = true
+	}
 	// Errorf, not Fatalf: a count mismatch IS the "a newly generated route was
 	// never classified" failure, and the per-method loops below are what name the
 	// offender. Aborting here would report the count and hide the name.
 	if len(partition) != len(introspected.SyncMethods) {
 		t.Errorf("the complete static-serving partition (legacy + recursive-served + recursive-declined + "+
-			"alias-served + alias-declined + valuebind-served + valuebind-declined + media-declined) covers "+
+			"alias-served + alias-declined + valuebind-served + valuebind-declined + media-declined + "+
+			"constraint-declined) covers "+
 			"%d methods but the fixture emits %d SyncMethods", len(partition), len(introspected.SyncMethods))
 	}
 	// FORWARD: a method the fixture emits that no corpus claims.
 	for m := range introspected.SyncMethods {
 		if !partition[m] {
 			t.Errorf("emitted method %q is not covered by any static-serving partition "+
-				"(legacy/recursive/alias/valuebind/media, served or declined)", m)
+				"(legacy/recursive/alias/valuebind/media/constraint, served or declined)", m)
 		}
 	}
 	// REVERSE: a corpus entry the fixture no longer emits. Without this the count

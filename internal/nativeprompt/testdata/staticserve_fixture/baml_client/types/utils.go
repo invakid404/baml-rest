@@ -15,9 +15,10 @@ package types
 
 import (
 	baml "github.com/boundaryml/baml/engine/language_client_go/pkg"
+	"github.com/invakid404/baml-rest/bamlutils"
 )
 
-type Checked[T any] = baml.Checked[T]
+type Checked[T any] = bamlutils.Checked[T]
 
 type Image baml.Image
 type Audio baml.Audio

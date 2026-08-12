@@ -725,6 +725,73 @@ var servingOracleFixtures = []servingOracleFixture{
 		Stock:  "value string:\"\\\"actual\\\"\" checks=[]",
 		Native: "value string:\"actual\" events=[]",
 	},
+
+	// -- the Slice 7.2b-2 SERVING-SHAPED companion rows ----------------------
+	//
+	// The four rows the 7.2b scope names as the first production-admission
+	// candidates. Unlike the one-field `SoInt*` witnesses above, these are the EXACT
+	// two-field `answer:string, confidence:int` shape the production fingerprint
+	// admits (internal/debaml's staticCheckedProfileOf), in all four of its
+	// serving-shaped outcomes.
+	//
+	// THEY STILL DECLINE. Slice 7.2b-2 adds the mapper and the generated types behind
+	// a non-admitting seam; TestServingOracleBoundaryLock refuses them through every
+	// gate exactly as it refuses the other 49 constraint-bearing rows, and
+	// TestServingOracleCompanionRowsAreTheAdmittedFingerprint proves the decline is
+	// about the seam rather than about the shape being unrecognised. 7.2b-3 flips
+	// them, and only them.
+	{
+		Name: "static_answer_confidence_check_pass", Family: "class",
+		Doc: "7.2b-2 COMPANION: the production two-field fingerprint with a HOLDING @check — the " +
+			"outcome that becomes a Checked[int64] carrier on the `confidence` field",
+		Bundle: soBundle(soClassType("StaticCheckedAnswer"),
+			[]schema.ClassDef{soClassOf("StaticCheckedAnswer", []schema.ClassField{
+				soField("answer", stringType()),
+				soField("confidence", soWith(intType(), soCheck("positive", "this > 0"))),
+			})}, nil),
+		Raw:    `{"answer":"sunny","confidence":9}`,
+		Stock:  "value class:StaticCheckedAnswer{answer=string:\"sunny\",confidence=int:9} checks=[$.confidence|\"positive\"|this > 0=succeeded]",
+		Native: "value class:StaticCheckedAnswer{answer=string:\"sunny\",confidence=int:9} events=[$.confidence|type_meta/check/\"positive\"/this > 0=true]",
+	},
+	{
+		Name: "static_answer_confidence_check_fail", Family: "class",
+		Doc: "7.2b-2 COMPANION: the same declaration with the predicate FALSE. A false @check is DATA — " +
+			"the value is still emitted, with status failed",
+		Bundle: soBundle(soClassType("StaticCheckedAnswer"),
+			[]schema.ClassDef{soClassOf("StaticCheckedAnswer", []schema.ClassField{
+				soField("answer", stringType()),
+				soField("confidence", soWith(intType(), soCheck("positive", "this > 0"))),
+			})}, nil),
+		Raw:    `{"answer":"sunny","confidence":-1}`,
+		Stock:  "value class:StaticCheckedAnswer{answer=string:\"sunny\",confidence=int:-1} checks=[$.confidence|\"positive\"|this > 0=failed]",
+		Native: "value class:StaticCheckedAnswer{answer=string:\"sunny\",confidence=int:-1} events=[$.confidence|type_meta/check/\"positive\"/this > 0=false]",
+	},
+	{
+		Name: "static_answer_confidence_assert_pass", Family: "class",
+		Doc: "7.2b-2 COMPANION: the @assert twin with the predicate HOLDING — no check entry and no " +
+			"wrapper, so the generated field stays an ordinary int64",
+		Bundle: soBundle(soClassType("StaticAssertAnswer"),
+			[]schema.ClassDef{soClassOf("StaticAssertAnswer", []schema.ClassField{
+				soField("answer", stringType()),
+				soField("confidence", soWith(intType(), soAssert("positive", "this > 0"))),
+			})}, nil),
+		Raw:    `{"answer":"sunny","confidence":9}`,
+		Stock:  "value class:StaticAssertAnswer{answer=string:\"sunny\",confidence=int:9} checks=[]",
+		Native: "value class:StaticAssertAnswer{answer=string:\"sunny\",confidence=int:9} events=[$.confidence|type_meta/assert/\"positive\"/this > 0=true]",
+	},
+	{
+		Name: "static_answer_confidence_assert_fail", Family: "class",
+		Doc: "7.2b-2 COMPANION: the @assert twin with the predicate FALSE — no value at all, and the " +
+			"required-field wrapper chain internal/debaml/checkedwire pins byte-for-byte",
+		Bundle: soBundle(soClassType("StaticAssertAnswer"),
+			[]schema.ClassDef{soClassOf("StaticAssertAnswer", []schema.ClassField{
+				soField("answer", stringType()),
+				soField("confidence", soWith(intType(), soAssert("positive", "this > 0"))),
+			})}, nil),
+		Raw:    `{"answer":"sunny","confidence":-1}`,
+		Stock:  "assertion-failure Failed while parsing required fields: missing=0, unparsed=1 | Failed to parse field confidence: <root>: Assertions failed. / - <root>: Failed: positive this > 0 | Assertions failed. | Failed: positive this > 0",
+		Native: "assertion-failure class:StaticAssertAnswer{answer=string:\"sunny\",confidence=int:-1} events=[$.confidence|type_meta/assert/\"positive\"/this > 0=false]",
+	},
 }
 
 // servingOracleProbes are project functions that are NOT corpus rows.
