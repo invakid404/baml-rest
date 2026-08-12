@@ -3,8 +3,10 @@ name: Constraint Evaluator Oracle
 # Runs the de-BAML STOCK-BAML-v0.223.0 CFFI differentials that live behind
 # //go:build integration under internal/: the constraint evaluator oracle
 # (internal/debaml/constraintoracle), the guard-removal ledger harness
-# (internal/debaml/guardledger), and the bamlprofile oracle
-# (internal/bamlprofile/profileoracle).
+# (internal/debaml/guardledger), the bamlprofile oracle
+# (internal/bamlprofile/profileoracle), the serving-shaped oracle (in package
+# internal/debaml) and the Checked[T] wire/assert-error byte authority
+# (internal/debaml/checkedwire).
 #
 # Why its own workflow. Every one of those packages is integration-tagged and
 # under internal/, so neither of the existing lanes reaches it:
@@ -27,6 +29,13 @@ on:
       # under profileoracle/; the constraint façade they measure lives one level
       # up in the same tree, so the whole package is a trigger.
       - "internal/bamlprofile/**"
+      # bamlutils is a trigger because the checked-wire lane is the SOURCE OF
+      # TRUTH for bamlutils.Checked: it is the only place the carrier's bytes are
+      # compared against the live stock v0.223.0 CFFI. Without this path a change
+      # to bamlutils/checked.go alone would skip the byte oracle entirely and the
+      # carrier's stock-parity claim would rest on its unit literals, which are
+      # copies of what that lane measures rather than an independent check.
+      - "bamlutils/**"
       - ".github/workflows/constraint-oracle.yml"
       - "go.mod"
       - "go.sum"
@@ -35,6 +44,7 @@ on:
     paths:
       - "internal/debaml/**"
       - "internal/bamlprofile/**"
+      - "bamlutils/**"
       - ".github/workflows/constraint-oracle.yml"
       - "go.mod"
       - "go.sum"
@@ -63,14 +73,15 @@ jobs:
     # that dump away.
     #
     # THE BUDGET MUST EXCEED THE SUM OF THE INNER GO TIMEOUTS, so the inner
-    # timeout always fires first and the dump always survives. 3 x 15m = 45m of
+    # timeout always fires first and the dump always survives. 5 x 15m = 75m of
     # inner budget, plus ~15m of headroom for checkout/setup/vet/the unit step
-    # and for the dump itself to be written and uploaded. At exactly 45 a hung
-    # first or second lane would starve the third of its own diagnostic timeout —
+    # and for the dump itself to be written and uploaded. At exactly 75 a hung
+    # earlier lane would starve a later one of its own diagnostic timeout —
     # which is how this number went from 45 to 60 when the profileoracle lane was
-    # added, and from 60 to 75 when the serving-oracle lane was. Any future step
-    # with its own `-timeout` must raise this too.
-    timeout-minutes: 75
+    # added, from 60 to 75 when the serving-oracle lane was, and from 75 to 90
+    # when the checked-wire lane was. Any future step with its own `-timeout`
+    # must raise this too.
+    timeout-minutes: 90
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v7.0.0
@@ -163,6 +174,22 @@ jobs:
         env:
           CGO_ENABLED: "1"
         run: go test -tags=integration -count=1 -v -timeout 15m -run 'TestServingOracle' ./internal/debaml/
+
+      - name: Checked[T] wire + assert-error byte authority vs stock BAML v0.223.0
+        # Slice 7.2b-1. The BYTE ORACLE the serving slice stands on: an in-memory
+        # .baml project driven through the same CallFunctionParse entry point, whose
+        # captures are pinned as raw literals — the wire form of a checked value under
+        # sonic (the serializer worker/parse.go uses), and the UNMODIFIED err.Error()
+        # of a failed @assert, escaping and wrapper chain included. The #665 collapsed
+        # `reason` strings are explicitly NOT the acceptance assertion here.
+        #
+        # It also proves bamlutils.Checked reproduces stock's bytes exactly, and
+        # re-asserts the three recorded asymmetries (bare-string skip, duplicate
+        # labels, alias ingress) as declines at the exported entry points. Nothing in
+        # it is reachable from a production build.
+        env:
+          CGO_ENABLED: "1"
+        run: go test -tags=integration -count=1 -v -timeout 15m ./internal/debaml/checkedwire/
 
       - name: Constraint evaluator unit lane
         # The CGO-free half of the same claim, so a guard cannot be removed
