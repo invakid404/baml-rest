@@ -5,8 +5,9 @@ name: Constraint Evaluator Oracle
 # (internal/debaml/constraintoracle), the guard-removal ledger harness
 # (internal/debaml/guardledger), the bamlprofile oracle
 # (internal/bamlprofile/profileoracle), the serving-shaped oracle (in package
-# internal/debaml) and the Checked[T] wire/assert-error byte authority
-# (internal/debaml/checkedwire).
+# internal/debaml), the Checked[T] wire/assert-error byte authority
+# (internal/debaml/checkedwire) and the six-operator predicate authority
+# (internal/debaml/predicatewire).
 #
 # Why its own workflow. Every one of those packages is integration-tagged and
 # under internal/, so neither of the existing lanes reaches it:
@@ -65,7 +66,7 @@ jobs:
     # round-10 integral-float `2.0 ** 63` promotion are only observable here.
     # A macOS/arm64 developer run is a weaker check, not an equivalent one.
     runs-on: ubuntu-latest
-    # The THREE integration steps below each carry their own 15-minute `go test`
+    # The SIX integration steps below each carry their own 15-minute `go test`
     # timeout, and a Go timeout is worth more than a job cancellation here: it
     # dumps every goroutine, which is the only diagnosis available for the CFFI
     # HANG cases this lane deliberately isolates (`is divisibleby(0)` takes the
@@ -73,15 +74,15 @@ jobs:
     # that dump away.
     #
     # THE BUDGET MUST EXCEED THE SUM OF THE INNER GO TIMEOUTS, so the inner
-    # timeout always fires first and the dump always survives. 5 x 15m = 75m of
+    # timeout always fires first and the dump always survives. 6 x 15m = 90m of
     # inner budget, plus ~15m of headroom for checkout/setup/vet/the unit step
     # and for the dump itself to be written and uploaded. At exactly 75 a hung
     # earlier lane would starve a later one of its own diagnostic timeout —
     # which is how this number went from 45 to 60 when the profileoracle lane was
-    # added, from 60 to 75 when the serving-oracle lane was, and from 75 to 90
-    # when the checked-wire lane was. Any future step with its own `-timeout`
-    # must raise this too.
-    timeout-minutes: 90
+    # added, from 60 to 75 when the serving-oracle lane was, from 75 to 90 when the
+    # checked-wire lane was, and from 90 to 105 when the predicate-wire lane was.
+    # Any future step with its own `-timeout` must raise this too.
+    timeout-minutes: 105
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v7.0.0
@@ -190,6 +191,28 @@ jobs:
         env:
           CGO_ENABLED: "1"
         run: go test -tags=integration -count=1 -v -timeout 15m ./internal/debaml/checkedwire/
+
+      - name: Six-operator predicate authority vs stock BAML v0.223.0
+        # Slice 7.2c-1. The byte + error authority for the six DIRECT COMPARISONS on the
+        # two name-pinned static families, captured before any of them is admitted. Unlike
+        # the checked-wire lane above it builds ISOLATED projects — one runtime each —
+        # because a single .baml cannot declare six predicate variants of one class name,
+        # and renaming the class would capture a different family.
+        #
+        # Three load-bearing assertions: TestStockOperatorWireBytes /
+        # TestStockOperatorAssertBytes and their TestStockTopLevelOperator* twins pin raw
+        # sonic bytes and whole unmodified err.Error() strings for all 48 rows — 24 nested
+        # and 24 top-level, which the scope requires separately because a top-level assert
+        # failure carries no required-field wrapper; TestDirectIntBoundaryMatrix drives
+        # the ±2^53 and i64-endpoint matrix through stock and independently re-evaluates
+        # every row with the production evaluator, failing on any boolean stock did not
+        # produce; and TestPredicateWireAdmissionIsUnchanged re-asserts that FIVE of the
+        # six are still refused by the production gates — the no-flip invariant, stated
+        # where the captures are and proven to bite by
+        # TestPredicateWireAdmissionIsProvenToBite.
+        env:
+          CGO_ENABLED: "1"
+        run: go test -tags=integration -count=1 -v -timeout 15m ./internal/debaml/predicatewire/
 
       - name: Constraint evaluator unit lane
         # The CGO-free half of the same claim, so a guard cannot be removed
