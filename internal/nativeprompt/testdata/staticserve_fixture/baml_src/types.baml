@@ -169,10 +169,9 @@ class MediaBundle {
 // assert-only field stays an ordinary int64 because `as_check()` excludes an assert
 // from the CFFI check list.
 //
-// Both are DECLINED at this stage: Slice 7.2b-2 adds the mapper and the generated
-// types behind a non-admitting seam, so the generated /call for each opens ZERO
-// native sockets and BAML serves. They sit on the DECLINED side of the static
-// serving partition (staticServingCorpusConstraintDeclined) until 7.2b-3.
+// Slice 7.2b-3 turns admission ON for exactly these two: the generated /call for
+// each OPENS one native socket and native serves the result. They sit on the SERVED
+// side of the static serving partition (staticServingCorpusConstraintServed).
 class StaticCheckedAnswer {
   answer string
   confidence int @check(positive, {{ this > 0 }})
@@ -181,4 +180,93 @@ class StaticCheckedAnswer {
 class StaticAssertAnswer {
   answer string
   confidence int @assert(positive, {{ this > 0 }})
+}
+
+// De-BAML Slice 7.2b-3 — the LIVE RETURN-SCHEMA SIBLINGS of the two admitted return
+// types.
+//
+// Each differs from StaticCheckedAnswer in exactly one property — these three do; the
+// type-category group below is one-/two-property and says which is which — and each
+// must still decline INSIDE admission — descriptored, projector-emitted,
+// seam-installed, and refused BEFORE a socket, with BAML supplying the result. They exist in the real
+// generated project (rather than only as hand-built Bundles in a unit test) so the
+// cutover's narrowness is a fact about the shipping route, not about a fixture.
+//
+// StaticTwoCheckAnswer     — a SECOND @check. Two entries is a collection the scope
+//                            leaves declined even though the carrier is deterministic.
+// StaticReorderedAnswer    — the SAME two fields in the OTHER order.
+// OtherCheckedAnswer       — byte-for-byte StaticCheckedAnswer's shape under a
+//                            DIFFERENT class name: the fixture-identity pin, and the
+//                            only sibling whose delta is invisible in the type graph.
+class StaticTwoCheckAnswer {
+  answer string
+  confidence int @check(positive, {{ this > 0 }}) @check(big, {{ this > 5 }})
+}
+
+class StaticReorderedAnswer {
+  confidence int @check(positive, {{ this > 0 }})
+  answer string
+}
+
+class OtherCheckedAnswer {
+  answer string
+  confidence int @check(positive, {{ this > 0 }})
+}
+
+// The TYPE-CATEGORY siblings — the families the scope leaves declined (floats, lists,
+// unions, optionals). Each keeps the two fields, their order and the label.
+//
+// Only the FLOAT row isolates the type axis alone: it keeps `this > 0` unchanged, so its
+// live zero-socket result is attributable to the type and nothing else. The list, union
+// and optional rows necessarily change the PREDICATE too, because `this > 0` is not
+// well-typed for a list, a union or a null — a BAML project that tried it would not
+// compile. They are therefore type+predicate pairs, and they are honest about it: what
+// they prove live is that the family is refused pre-socket, not which of the two
+// properties refused it. Independent type-versus-predicate rejection is proven at the
+// descriptor/Bundle level by internal/debaml's single-axis sibling corpus, which varies
+// one axis at a time because it never has to compile.
+//
+// A `map<string, int>` sibling is DELIBERATELY absent, and for a generated-client
+// reason rather than a gate one: BAML v0.223's Go generator lowers a class-field map to
+// `baml.OrderedMap[T]`, a symbol this fixture's client does not carry (the project is
+// generated with --skip-baml-module-patch, exactly as the arm-COUNT alias witness note
+// in this file records for the same hack). The map family is covered at the
+// descriptor/bundle level instead — internal/debaml's sibling corpus and nativeserve's
+// admission sibling table both carry one — so the gate is proven; only the LIVE socket
+// row is unavailable.
+class StaticFloatCheckedAnswer {
+  answer string
+  confidence float @check(positive, {{ this > 0 }})
+}
+
+class StaticListCheckedAnswer {
+  answer string
+  confidence int[] @check(positive, {{ this|length > 0 }})
+}
+
+class StaticUnionCheckedAnswer {
+  answer string
+  confidence int | string @check(positive, {{ this != null }})
+}
+
+class StaticOptionalCheckedAnswer {
+  answer string
+  confidence int? @check(positive, {{ this != null }})
+}
+
+// The METADATA / PREDICATE / LABEL siblings — the same `int` field with exactly one
+// property changed.
+class StaticAliasedCheckedAnswer {
+  answer string
+  confidence int @alias("score") @check(positive, {{ this > 0 }})
+}
+
+class StaticGtePredicateAnswer {
+  answer string
+  confidence int @check(positive, {{ this >= 0 }})
+}
+
+class StaticNonAsciiLabelAnswer {
+  answer string
+  confidence int @check(positivé, {{ this > 0 }})
 }

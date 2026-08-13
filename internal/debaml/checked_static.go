@@ -9,7 +9,6 @@ import (
 	"io"
 	"strconv"
 	"strings"
-	"sync/atomic"
 
 	"github.com/bytedance/sonic"
 
@@ -17,8 +16,8 @@ import (
 	"github.com/invakid404/baml-rest/internal/schema"
 )
 
-// De-BAML Slice 7.2b-2 — the PRODUCTION coercion-state → `Checked[T]` carrier mapper,
-// behind a NON-ADMITTING seam.
+// De-BAML Slice 7.2b-3 — the PRODUCTION coercion-state → `Checked[T]` carrier mapper,
+// and the ONE fingerprint native now SERVES.
 //
 // # Why this file exists at all
 //
@@ -32,21 +31,47 @@ import (
 // [bamlutils.Checked] carrier, or an assertion error. The collector stays beside it
 // as an INDEPENDENT oracle.
 //
-// # It admits nothing yet
+// # What it admits, and what still admits nothing
 //
-// Admission needs BOTH halves of the seam, and both are DENY in 7.2b-2:
-// [staticCheckedAdmitsConstraints] (the cutover constant, or the
-// descriptor-specific test seam [staticCheckedSeamOpen] standing in for it), and a
-// route CAPABILITY that only the static unary /call route carries. Every
-// constraint-bearing bundle therefore still declines through checkSupported /
-// checkSupportedFields / checkSupportedType / [SupportsNativeFinalBundle] / [Parse] /
-// [ParseStaticBundle] and through nativeserve's admission gate — the four #665
-// companion rows for this exact fingerprint included.
+// 7.2b-2 built everything below behind a non-admitting seam. 7.2b-3 opens it — for
+// EXACTLY the fingerprint [staticCheckedProfileOf] classifies, on EXACTLY the static
+// unary /call route, and for nothing else. Admission still needs BOTH halves:
+// [staticCheckedAdmitsConstraints] (now true — the cutover) AND a route CAPABILITY
+// only the static unary /call route constructs. Every constraint-bearing bundle
+// OUTSIDE the fingerprint still declines through checkSupported / checkSupportedFields
+// / checkSupportedType / [SupportsNativeFinalBundle] / [Parse] / [ParseStaticBundle]
+// and through nativeserve's admission gate, and every bundle INSIDE it still declines
+// on every route but one.
 //
 // Splitting it that way is what keeps the cutover inside the scope's boundary
-// ("static unary /call final parsing only", direct parse endpoints left declined) and
-// what lets the closed seam be PROVEN to be the only thing holding the fingerprint
-// back: the tests open it and watch these same production gates move.
+// ("static unary /call final parsing only", direct parse endpoints left declined),
+// and it is why the boundary is a MEASURED fact rather than a comment: the same
+// production gates that serve the four companion rows on the /call route are driven
+// over the direct routes and over one-property siblings, and keep declining.
+//
+// # ONE fingerprint, shared by every named schema gate
+//
+// [staticCheckedProfileOf] is the ONLY place in the repository that decides a
+// constraint-bearing bundle may be claimed, and EVERY named schema gate invokes it:
+// checkSupported, checkSupportedFields and checkSupportedType (through
+// [staticCheckedAdmittedConstraintNode]), [SupportsNativeFinalBundle], and — through
+// [IsAdmittedStaticCheckedFamily] — nativeserve's admission return-shape gate. They give
+// the SAME answer for the SAME schema, in both directions, which
+// TestStaticCheckedGatesShareOneFingerprint asserts symmetrically over the four admitted
+// rows plus every one-property sibling, and TestStaticCheckedGateAgreementIsProvenToBite
+// proves by mutating each gate in turn, both ways.
+//
+// There is no codegen-side twin, and none can exist: adapters/common does not depend on
+// the root module and codegen's Introspection carries no static descriptors, so codegen
+// cannot see a return SCHEMA at emission time. It emits the seam unconditionally and
+// admission decides — see nativeserve/admission/static.go and
+// adapters/common/codegen.TestCodegenMakesNoStaticReturnShapeClaim.
+//
+// Keeping the DYNAMIC and STREAM lanes on BAML is therefore a ROUTE decision rather than
+// a shape one, made at the route by [staticCheckedRouteBoundary]. That split is what lets
+// the shape gates agree with each other while the lanes the scope leaves declined still
+// refuse the fingerprint — and it declines by naming the route, so a fallback is
+// attributable to the boundary rather than to the shape.
 //
 // # The six requirements (scope §"Coercion-state to output mapper")
 //
@@ -69,22 +94,24 @@ import (
 // independently (internal/debaml/checkedwire) and compared against, never consulted
 // at runtime.
 
-// staticCheckedAdmitsConstraints is THE non-admitting seam of Slice 7.2b-2.
+// staticCheckedAdmitsConstraints is THE cutover switch of Slice 7.2b-3, and it is the
+// ONLY one at this layer.
 //
-// While it is false, [staticCheckedFinalSupport] and [staticCheckedParse] report
-// "not my case" for EVERY bundle, so both entry points fall through to the
-// unchanged constraint decline and nothing below this line is reachable from a
-// request. The mapper is exercised only by this package's own tests, which call it
-// directly.
+// While it was false (7.2b-2), [staticCheckedAdmittedFamily] answered no for EVERY
+// bundle, so every named schema gate fell through to its ordinary constraint decline and
+// [staticCheckedParse] reported "not my case". It is now true, which is deliberately the whole
+// cutover here: there is no second, more permissive switch to forget, which is the
+// failure mode the scope calls out ("do not lift one blanket 'has constraints'
+// rejection and leave another gate more permissive").
 //
-// 7.2b-3 flips it to true. That is deliberately the whole cutover at this layer:
-// there is no second, more permissive switch to forget, which is the failure mode
-// the scope calls out ("do not lift one blanket 'has constraints' rejection and
-// leave another gate more permissive").
-const staticCheckedAdmitsConstraints = false
+// It is a compile-time CONSTANT rather than a variable so no production code path can
+// widen the claim at runtime; TestStaticCheckedSeamIsTheOnlySwitch pins that
+// structurally. Flipping it back to false restores 7.2b-2's total decline without any
+// other edit — which is what makes it the rollback as well as the cutover.
+const staticCheckedAdmitsConstraints = true
 
 // staticCheckedClaim is the CAPABILITY to claim the checked-static fingerprint, and it
-// is the second half of the seam.
+// is the second half of the cutover.
 //
 // The flip of [staticCheckedAdmitsConstraints] alone admits NOTHING: a route must also
 // hand in a granting capability, and only the static unary /call route may construct
@@ -113,53 +140,127 @@ type staticCheckedClaim struct {
 // fingerprint stays declined on all of them no matter what the seam constant says.
 func staticCheckedDirect() staticCheckedClaim { return staticCheckedClaim{} }
 
-// staticCheckedSeamOpen is the DESCRIPTOR-SPECIFIC test seam.
-//
-// It exists so the closed seam can be shown to be the ONLY thing holding the
-// fingerprint back — by opening it and watching the REAL production gates admit the
-// same four rows, rather than by driving stand-ins that never execute production code.
-//
-// It is DENY by default and no production code writes it: the only writer is
-// [OpenStaticCheckedSeamForTest], and [TestStaticCheckedSeamHasNoProductionWriter]
-// proves that structurally. Opening it does NOT lift the constraint cut-line generally
-// — every gate still runs [staticCheckedProfileOf] first, so exactly the two concrete
-// generated fixture return types are affected and every other constraint-bearing bundle
-// keeps declining.
-//
-// atomic.Bool rather than a plain bool: a test that opens it while another goroutine
-// reads a gate would otherwise be a data race under `-race -count=100`.
-var staticCheckedSeamOpen atomic.Bool
-
-// OpenStaticCheckedSeamForTest opens the checked-static seam and returns the closer.
-//
-// It is EXPORTED only because the admission gate that consults this package lives in
-// another module (nativeserve), which must be able to drive the same open state; the
-// package is `internal/`, so the reach is bounded to this repository. It is deliberately
-// NOT a general "constraints supported" switch: it gates the two concrete fixture
-// fingerprints and nothing else.
-//
-// SENSITIVE TO MISUSE, so it is loud rather than convenient: it returns a closer the
-// caller must defer, and opening an already-open seam panics rather than silently
-// nesting (which would let one test's closer re-close another's open state).
-func OpenStaticCheckedSeamForTest() func() {
-	if !staticCheckedSeamOpen.CompareAndSwap(false, true) {
-		panic("debaml: the checked-static test seam is already open; nested opens would make one " +
-			"test's closer end another test's open state")
-	}
-	return func() { staticCheckedSeamOpen.Store(false) }
-}
-
 // staticCheckedGrantStaticUnaryCall is the ONE granting constructor: the capability the
 // static unary /call serve route carries.
 //
-// It grants when the seam constant is flipped (the 7.2b-3 cutover) OR while the
-// descriptor-specific test seam is open. Both are DENY today, so it grants nothing in a
-// production process.
+// It reads the cutover constant directly and nothing else. 7.2b-2 additionally
+// consulted a test-only atomic seam so the closed state could be shown to be the only
+// thing holding the fingerprint back; that stand-in is GONE with the cutover, because a
+// mutable test switch that can only re-open an already-open gate proves nothing and is
+// a way for a test to widen production's claim. The attribution it used to provide is
+// now carried by the one-property siblings, which decline against the same production
+// gates the four admitted rows pass.
 func staticCheckedGrantStaticUnaryCall() staticCheckedClaim {
-	if !staticCheckedAdmitsConstraints && !staticCheckedSeamOpen.Load() {
-		return staticCheckedClaim{}
+	return staticCheckedClaim{staticUnaryCall: staticCheckedAdmitsConstraints}
+}
+
+// staticCheckedAdmittedFamily is THE admission answer for a whole bundle, and the ONLY
+// place the shape side of the cutover is decided.
+//
+// It is the fingerprint AND the cutover constant, together. Both halves matter:
+//
+//   - without the fingerprint it would admit any constraint, which is the whole point of
+//     the slice;
+//   - without the CONSTANT, flipping [staticCheckedAdmitsConstraints] back to false would
+//     leave the SHAPE gates still admitting (they consult this, not the route capability)
+//     while the parse routes declined — a gate disagreement in the rollback state, and a
+//     silent falsification of "flipping it back restores the total decline". That is not
+//     hypothetical: it was measured before this function existed.
+//
+// Every named schema gate reaches the fingerprint through here — checkSupported /
+// checkSupportedFields / checkSupportedType via [staticCheckedAdmittedConstraintNode],
+// nativeserve's admission return-shape gate via [IsAdmittedStaticCheckedFamily] — so the
+// cutover is one constant with exactly two production readers: this, and the route
+// capability [staticCheckedGrantStaticUnaryCall].
+func staticCheckedAdmittedFamily(b *schema.Bundle) bool {
+	if !staticCheckedAdmitsConstraints {
+		return false
 	}
-	return staticCheckedClaim{staticUnaryCall: true}
+	_, ok := staticCheckedProfileOf(b)
+	return ok
+}
+
+// staticCheckedAdmittedConstraintNode reports whether t is THE constrained type node of
+// the one admitted fingerprint carried by b.
+//
+// It is the single-node form of [staticCheckedProfileOf], and it is what lets the three
+// GENERIC shape gates (checkSupported / checkSupportedFields / checkSupportedType) give
+// the same answer as [SupportsNativeFinalBundle] for the same schema instead of refusing
+// every constraint outright. The bundle is required, not just the node: `confidence int
+// @check(positive, {{ this > 0 }})` is admissible ONLY inside the exact two-field class
+// the byte captures were taken from, so a node that looks identical in a DIFFERENT bundle
+// is not this node.
+//
+// The node is matched by VALUE (kind, primitive, dynamic/stream metadata and the single
+// constraint's level, label and expression) rather than by index: checkSupportedType is
+// handed a type, not a path, and it is also reached from coerce's single-non-null-optional
+// re-check — so "is this the fingerprint's constrained node" has to be answerable from the
+// node itself.
+func staticCheckedAdmittedConstraintNode(b *schema.Bundle, t schema.Type) bool {
+	if !staticCheckedAdmittedFamily(b) {
+		return false
+	}
+	// staticCheckedProfileOf has already proven the bundle has exactly one class with
+	// exactly two fields and one direct constraint on the second.
+	node := b.Classes[0].Fields[1].Type
+	if len(t.Meta.Constraints) != 1 {
+		return false
+	}
+	got, want := t.Meta.Constraints[0], node.Meta.Constraints[0]
+	if got.Level != want.Level || got.Expression != want.Expression {
+		return false
+	}
+	if (got.Label == nil) != (want.Label == nil) {
+		return false
+	}
+	if got.Label != nil && *got.Label != *want.Label {
+		return false
+	}
+	return t.Kind == schema.TypePrimitive && t.Primitive == schema.PrimitiveInt &&
+		!t.Dynamic && t.Meta.Stream.IsZero()
+}
+
+// staticCheckedRouteBoundary is the DECLINE a route that may not claim the checked-static
+// fingerprint must return for it, and nil for every other bundle.
+//
+// It exists because the shape gates now AGREE with each other about the fingerprint (the
+// single-fingerprint contract), which means "this schema is claimable" no longer implies
+// "this route may claim it". The scope admits the fingerprint on the static unary /call
+// route ONLY, so the DYNAMIC final lane, the DYNAMIC/static STREAM lanes and every direct
+// parse endpoint have to say so themselves — as a route decision, at the route.
+//
+// `route` names the caller and is a fixed, secret-free token: it goes into the decline
+// message so a fallback is attributable to the route rather than to the shape.
+func staticCheckedRouteBoundary(b *schema.Bundle, route string) error {
+	// [staticCheckedAdmittedFamily], not the bare fingerprint: this boundary exists only
+	// because the SHAPE gates admit, and they admit only while the cutover is on. Reading
+	// the same choke point makes the rollback EXACT — with the constant off this is a
+	// no-op and every lane falls through to the ordinary constraint decline it had in
+	// 7.2b-2, message included, instead of declining here for a route reason.
+	if !staticCheckedAdmittedFamily(b) {
+		return nil
+	}
+	return unsupported("checked-static fingerprint on " + route + ", which may not claim it")
+}
+
+// IsAdmittedStaticCheckedFamily reports whether b is the ONE checked-static fingerprint
+// the cutover admits — the exported form of the SAME decision
+// [SupportsNativeFinalBundle] makes.
+//
+// It exists for nativeserve/admission's return-shape gate — the SOLE pre-claim
+// return-shape decision, since codegen makes none (it is schema-blind and emits the seam
+// unconditionally; see nativeserve/admission/static.go and
+// adapters/common/codegen.TestCodegenMakesNoStaticReturnShapeClaim). That gate lives in
+// an isolated, out-of-go.work module, and spelling the fingerprint there is precisely how
+// two gates drift apart — so the predicate lives ONCE here and is delegated to, exactly
+// as [IsProvenServedRecursiveAliasStaticFamily] and [IsProvenRecursiveStaticFamily]
+// already are for their families.
+//
+// It is deliberately NOT a general "constraints supported" switch: it answers only
+// "is this one of the two concrete generated fixture return types the byte differential
+// covers, with the cutover on".
+func IsAdmittedStaticCheckedFamily(b *schema.Bundle) bool {
+	return staticCheckedAdmittedFamily(b)
 }
 
 // admits reports whether this capability may claim the checked-static fingerprint.
@@ -213,9 +314,18 @@ type staticCheckedProfile struct {
 	// grammar does too, and it is the carrier's map key); a `@assert` may omit it,
 	// which changes only the rendered cause text.
 	label string
-	// expression is the source predicate text, VERBATIM. It is what
-	// [bamlutils.Check.Expression] must carry and what the rendered assertion cause
-	// must quote, so it is never normalised, re-spaced or re-serialized.
+	// expression is the predicate text stock puts in [bamlutils.Check.Expression] and
+	// quotes in the rendered assertion cause.
+	//
+	// It is the source text with the `{{ }}` block's PADDING removed and NOTHING else
+	// changed — never re-spaced inside, never re-serialized. That one normalisation is
+	// measured rather than assumed: a generated static method's descriptor carries the
+	// attribute text with the delimiters stripped and the padding KEPT (the staticserve
+	// fixture's descriptor for `{{ this > 0 }}` is literally " this > 0 "), while stock
+	// emits `this > 0`. internal/debaml/checkedwire's ExprPadNone / ExprPadOne /
+	// ExprPadTwo rows drive all three paddings through the real CFFI and pin that stock
+	// emits the SAME unpadded string for each. See [staticCheckedCanonicalExpression]
+	// for which paddings are admitted.
 	expression string
 }
 
@@ -233,28 +343,47 @@ func staticCheckedProfileOf(b *schema.Bundle) (staticCheckedProfile, bool) {
 	}
 	// Recursion markers: not this family, and they would change the coercion the
 	// mapper consumes.
-	if len(b.RecursiveClasses) > 0 || len(b.StructuralRecursiveAliases) > 0 {
+	//
+	// PRESENCE, not emptiness, for every collection the fingerprint requires to be
+	// ABSENT — the same rule [staticCheckedCanonicalType] applies to Type.Items, and for
+	// the same reason: a slice's zero value is nil, so a non-nil empty one is a
+	// populated field that ordinary lowering never produces. Every one of these is nil
+	// on the real descriptor-lowered path (TestStaticCheckedLoweringProducesNilAbsences
+	// measures it), so requiring nil costs no admitted shape.
+	if b.RecursiveClasses != nil || b.StructuralRecursiveAliases != nil {
 		return staticCheckedProfile{}, false
 	}
 	// EXACTLY one class and no enums. A second definition is a different schema even
 	// if the root class matches.
-	if len(b.Classes) != 1 || len(b.Enums) != 0 {
+	if len(b.Classes) != 1 || b.Enums != nil {
 		return staticCheckedProfile{}, false
 	}
 	cls := &b.Classes[0]
 	// The target is the class itself, non-streaming, and carries NO metadata of its
-	// own — a target-level constraint is the #664 over-claim and stays declined.
-	if b.Target.Kind != schema.TypeClass || b.Target.Name != cls.Name.Name ||
-		b.Target.Mode != schema.NonStreaming || !b.Target.Meta.IsZero() || b.Target.Dynamic {
+	// own — a target-level constraint is the #664 over-claim and stays declined — and
+	// NO payload its kind does not select ([staticCheckedCanonicalType]).
+	//
+	// The target's Meta is tested FIELD BY FIELD rather than through
+	// [schema.TypeMeta.IsZero], and that is the point rather than verbosity: IsZero's
+	// body is `len(m.Constraints) == 0 && m.Stream.IsZero()`, a LENGTH test, so a
+	// non-nil EMPTY `Constraints` slice on the target satisfied it and the whole
+	// fingerprint admitted a populated metadata payload. A helper that hides a length
+	// check behind a name that reads like "is the zero value" is exactly how the
+	// nil-versus-empty class kept reappearing, so the absence question is asked here
+	// where it can be seen. (`Stream` is three BOOLs, so its IsZero carries no
+	// collection and is safe to delegate to.)
+	if !staticCheckedCanonicalType(b.Target, schema.TypeClass) ||
+		b.Target.Name != cls.Name.Name || b.Target.Mode != schema.NonStreaming ||
+		b.Target.Meta.Constraints != nil || !b.Target.Meta.Stream.IsZero() {
 		return staticCheckedProfile{}, false
 	}
 	if cls.Mode != schema.NonStreaming || cls.Name.Alias != nil || cls.Description != nil ||
-		len(cls.Constraints) > 0 || !cls.Stream.IsZero() || len(cls.Fields) != 2 {
+		cls.Constraints != nil || !cls.Stream.IsZero() || len(cls.Fields) != 2 {
 		return staticCheckedProfile{}, false
 	}
 	answer, confidence := &cls.Fields[0], &cls.Fields[1]
 	if !staticCheckedPlainField(answer, staticCheckedAnswerField, schema.PrimitiveString) ||
-		len(answer.Type.Meta.Constraints) > 0 {
+		answer.Type.Meta.Constraints != nil {
 		return staticCheckedProfile{}, false
 	}
 	if !staticCheckedPlainField(confidence, staticCheckedConfidenceField, schema.PrimitiveInt) {
@@ -286,40 +415,107 @@ func staticCheckedProfileOf(b *schema.Bundle) (staticCheckedProfile, bool) {
 		if cls.Name.Name != staticCheckedAssertClass {
 			return staticCheckedProfile{}, false
 		}
-		// An assert's label is optional — stock renders `Failed: <expr>` without one —
-		// but a present one must still be inside the proven ASCII set.
-		if label != "" && !staticCheckedASCIILabel(label) {
+		// An assert's label is OPTIONAL — stock renders `Failed: <expr>` without one —
+		// but a PRESENT one must be inside the proven ASCII set.
+		//
+		// PRESENCE is tested on the POINTER, never on the normalised string. A
+		// pointer-to-empty-string is a label that is THERE and is empty, which is a
+		// different schema from an absent one: internal/bamlprofile rejects it as an
+		// invalid BAML identifier, schema.lowerConstraints deliberately preserves the
+		// nil-versus-present distinction, and nothing has captured what stock does with
+		// it. Collapsing the two — `label != "" && …`, which is what this used to say —
+		// silently admitted the present-empty form through EVERY gate and rendered its
+		// false assert as the UNLABELLED error, a byte shape no capture establishes for
+		// that source.
+		if c.Label != nil && !staticCheckedASCIILabel(*c.Label) {
 			return staticCheckedProfile{}, false
 		}
 	default:
 		return staticCheckedProfile{}, false
 	}
-	if _, ok := staticCheckedThreshold(c.Expression); !ok {
+	expression, ok := staticCheckedCanonicalExpression(c.Expression)
+	if !ok {
 		return staticCheckedProfile{}, false
 	}
 	return staticCheckedProfile{
 		className:  cls.Name.Name,
 		level:      c.Level,
 		label:      label,
-		expression: c.Expression,
+		expression: expression,
 	}, true
+}
+
+// staticCheckedCanonicalType reports whether t carries ONLY the payloads its Kind
+// selects, with every other [schema.Type] field at its zero value.
+//
+// It exists because [schema.Bundle.ValidateOutput] validates the SELECTED kind and
+// IGNORES irrelevant populated payloads, while [SupportsNativeFinalBundle] and
+// [ParseStaticBundleUnaryCall] deliberately accept a PRE-LOWERED Bundle. So a
+// hand-constructed, ValidateOutput-valid bundle could set `Media`, `Name`, `Mode`,
+// `Literal`, `Elem`, `Key`, `Value`, `Items`, `Union` or `Arrow` on a primitive field —
+// or the primitive/collection payloads on the class target — and still look like the
+// fingerprint to a predicate that only read Kind/Primitive. That is a representation the
+// byte captures say nothing about, so it must FAIL CLOSED, exactly as the `dynamic`
+// primitive already does.
+//
+// Ordinary static-descriptor lowering rejects a stray payload today, so this is not a
+// generated-BAML route; it is the same class of hand-built Bundle ingress the `dynamic`
+// guard is about, and "no other metadata" has to mean the whole struct.
+//
+// TestStaticCheckedCanonicalTypeCoversEveryField reflects over schema.Type and fails if a
+// field appears that this function neither SELECTS nor requires to be zero, so a future
+// payload cannot slip in behind it.
+func staticCheckedCanonicalType(t schema.Type, kind schema.TypeKind) bool {
+	if t.Kind != kind || t.Dynamic {
+		return false
+	}
+	// Payloads NO admitted kind selects. Meta is governed separately (it carries the one
+	// admitted constraint and the stream flags the callers check).
+	//
+	// PRESENCE, not emptiness. `Items` is a SLICE, whose zero value is nil, so a
+	// non-nil EMPTY slice — `Items: []schema.Type{}` — is a populated payload even
+	// though it has length zero. Testing `len(t.Items) != 0` admitted exactly that
+	// representation: ValidateOutput does not traverse Items on a primitive or class
+	// node, so it reached the fingerprint and was claimed. The pointer payloads have
+	// always used `!= nil` for the same reason; this is the slice getting the same rule.
+	// (The descriptor lowerer is already stricter here, so ordinary generated BAML never
+	// produced it — but SupportsNativeFinalBundle and ParseStaticBundleUnaryCall accept
+	// PRE-LOWERED bundles, which is the ingress this whole predicate exists for.)
+	if t.Media != "" || t.Literal != nil || t.Elem != nil || t.Key != nil || t.Value != nil ||
+		t.Items != nil || t.Union != nil || t.Arrow != nil {
+		return false
+	}
+	switch kind {
+	case schema.TypePrimitive:
+		// Primitive selects Primitive alone; Name/Mode belong to a class/enum reference.
+		return t.Name == "" && t.Mode == ""
+	case schema.TypeClass:
+		// Class selects Name + Mode, which the caller pins to the fixture identity.
+		return t.Primitive == ""
+	default:
+		// The fingerprint uses no other kind, and a kind this function has not been
+		// taught is not something to guess about.
+		return false
+	}
 }
 
 // staticCheckedPlainField reports whether f is the named, unaliased, undescribed,
 // non-streaming, non-dynamic, directly-typed primitive the fingerprint requires. It
 // does NOT look at constraints — the caller wants opposite answers for the two fields.
 //
-// [schema.Type.Dynamic] is checked even though it is documented as meaningful only for
-// enums and classes: it is a field of EVERY Type, and [schema.Bundle.ValidateOutput]
-// does not reject it on a primitive, so a hand-constructed Bundle could otherwise carry
-// it into the fingerprint. Nothing has measured what stock does for that variant, and
-// the whole point of a fingerprint is that everything inside it has a byte capture
-// behind it — so it declines rather than being admitted on the grounds that ordinary
-// descriptor lowering happens not to produce it today.
+// The TYPE payload rule is [staticCheckedCanonicalType], and it covers the WHOLE
+// schema.Type rather than the kind-selected part. `Dynamic` is the case that made the
+// rule necessary — it is documented as meaningful only for enums and classes, but it is
+// a field of EVERY Type and [schema.Bundle.ValidateOutput] does not reject it on a
+// primitive — and Media/Name/Mode/Literal/Elem/Key/Value/Items/Union/Arrow are the same
+// hazard. Nothing has measured what stock does for any of those variants, and the whole
+// point of a fingerprint is that everything inside it has a byte capture behind it, so
+// each declines rather than being admitted on the grounds that ordinary descriptor
+// lowering happens not to produce it today.
 func staticCheckedPlainField(f *schema.ClassField, name string, prim schema.PrimitiveKind) bool {
 	return f.Name.Name == name && f.Name.Alias == nil && f.Description == nil && !f.StreamingNeeded &&
-		f.Type.Kind == schema.TypePrimitive && f.Type.Primitive == prim &&
-		!f.Type.Dynamic && f.Type.Meta.Stream.IsZero()
+		staticCheckedCanonicalType(f.Type, schema.TypePrimitive) && f.Type.Primitive == prim &&
+		f.Type.Meta.Stream.IsZero()
 }
 
 // staticCheckedMaxCauseLen is the length at which stock v0.223.0 TRUNCATES a
@@ -369,6 +565,45 @@ func staticCheckedASCIILabel(s string) bool {
 	return true
 }
 
+// staticCheckedExprMaxPad is the most ASCII-space padding an admitted SOURCE expression
+// may carry on each side: one, which is exactly what BAML's `{{ expr }}` block produces.
+//
+// internal/debaml/checkedwire measured zero, one and TWO spaces and found stock emits
+// the same unpadded string for all three, so the rule generalises — but only the two
+// paddings that actually occur are admitted. A `{{ expr }}` attribute gives one space
+// each side (the production descriptor form) and a hand-built Bundle gives none (the
+// unit corpus form); nothing produces two, so admitting it would widen the fingerprint
+// for no route. The ExprPadTwo capture stays as the non-admission oracle row that makes
+// this a bounded over-decline rather than an unmeasured edge.
+const staticCheckedExprMaxPad = 1
+
+// staticCheckedCanonicalExpression strips the admitted `{{ }}` padding from a source
+// predicate and proves what remains is the statically proven profile.
+//
+// It returns the string stock puts in [bamlutils.Check.Expression] and quotes in the
+// assertion cause. Padding is ASCII SPACE only: a tab, newline or non-breaking space has
+// no capture behind it, and `strings.TrimSpace` would have silently accepted all three.
+func staticCheckedCanonicalExpression(src string) (string, bool) {
+	lead, trail := 0, 0
+	for lead < len(src) && src[lead] == ' ' {
+		lead++
+	}
+	if lead == len(src) {
+		return "", false // all padding, no expression
+	}
+	for trail < len(src)-lead && src[len(src)-1-trail] == ' ' {
+		trail++
+	}
+	if lead > staticCheckedExprMaxPad || trail > staticCheckedExprMaxPad {
+		return "", false
+	}
+	canonical := src[lead : len(src)-trail]
+	if _, ok := staticCheckedThreshold(canonical); !ok {
+		return "", false
+	}
+	return canonical, true
+}
+
 // staticCheckedThreshold is the STATICALLY PROVEN expression profile: exactly
 // `this > <ASCII decimal integer literal>`, and nothing else.
 //
@@ -394,34 +629,9 @@ func staticCheckedThreshold(expr string) (int64, bool) {
 // The seam
 // ---------------------------------------------------------------------------
 
-// staticCheckedFinalSupport is the narrow checked-static case of
-// [SupportsNativeFinalBundle].
-//
-// The SECOND return is the seam: false means "not this case, keep going", which is
-// what every caller gets while [staticCheckedAdmitsConstraints] is false. Wiring it
-// as a claim-the-decision hook rather than as an early `return nil` is what keeps
-// the flip to a single constant: with the seam open, an admitted bundle answers
-// `nil` HERE and never reaches the constraint decline below it, while every
-// non-matching bundle still falls through to the identical gate it has today.
-// It carries no route capability, and deliberately so: "can the native final parser own
-// this shape" is a property of the SHAPE, not of who is asking. The route decision is
-// [staticCheckedParse]'s, which is why that function declines a matched fingerprint on a
-// route that may not claim it rather than falling through.
-func staticCheckedFinalSupport(b *schema.Bundle) (error, bool) {
-	if !staticCheckedGrantStaticUnaryCall().admits() {
-		return nil, false
-	}
-	if _, ok := staticCheckedProfileOf(b); !ok {
-		return nil, false
-	}
-	return nil, true
-}
-
-// staticCheckedParse is the narrow checked-static case of [ParseStaticBundle], with
-// the same claim-the-decision seam as [staticCheckedFinalSupport].
-//
-// With the seam closed it never runs, because [SupportsNativeFinalBundle] has
-// already declined the bundle before ParseStaticBundle reaches this point.
+// staticCheckedParse is the narrow checked-static case of [ParseStaticBundle]: it CLAIMS
+// the decision for the fingerprint (the second return) instead of letting it fall through
+// to the constraint-blind ordinary path.
 func staticCheckedParse(b *schema.Bundle, raw string, claim staticCheckedClaim) (bamlutils.DeBAMLParseResult, error, bool) {
 	prof, ok := staticCheckedProfileOf(b)
 	if !ok {
@@ -873,18 +1083,16 @@ func staticCheckedIsAssertFailure(err error) bool {
 // route — the ONE route the 7.2b scope admits the checked-static fingerprint on.
 //
 // It is byte-for-byte [ParseStaticBundle] for every bundle except the two concrete
-// checked-static fixtures, and identical even for those while the seam is closed. The
-// difference is the capability it carries: this route may claim the fingerprint, and
-// the direct routes ([ParseStaticBundle] itself, root [Parse]'s ordinary
-// static-descriptor lane, the shadow comparator, the stream-final completion lane) may
-// not. That is the scope's boundary — "static unary /call final parsing only", with
-// direct parse endpoints not behind the static unary seam left declined — expressed as
-// a route rather than as a comment.
+// checked-static fixtures. The difference is the capability it carries: this route may
+// claim the fingerprint, and the direct routes ([ParseStaticBundle] itself, root
+// [Parse]'s ordinary static-descriptor lane, the shadow comparator, the stream-final
+// completion lane) may not. That is the scope's boundary — "static unary /call final
+// parsing only", with direct parse endpoints not behind the static unary seam left
+// declined — expressed as a route rather than as a comment.
 //
-// It exists NOW, closed, so the boundary can be exercised: opening the
-// descriptor-specific test seam makes this route serve the fingerprint while every
-// direct route still declines, which is what makes the boundary a measured fact.
-// Wiring the isolated serve core to call it is the 7.2b-3 cutover's own step.
+// Slice 7.2b-3 wires the isolated serve core's SAP closure
+// (nativeserve/canary.ServeStatic) to this function; it is the only production caller,
+// and every other consumer of the static parser keeps calling [ParseStaticBundle].
 //
 // SENSITIVE: raw is provider output and the returned JSON is parsed provider output.
 func ParseStaticBundleUnaryCall(ctx context.Context, bundle *schema.Bundle, raw string) (bamlutils.DeBAMLParseResult, error) {

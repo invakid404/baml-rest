@@ -4,6 +4,7 @@ import (
 	"bytes"
 	stdjson "encoding/json"
 	"fmt"
+	"io"
 	"sort"
 
 	"github.com/invakid404/baml-rest/internal/schema"
@@ -43,9 +44,9 @@ func CompareStaticStructured(nativeFlat, bamlFlat []byte, bundle *schema.Bundle)
 // class-field order (recursing through classes, lists, and the direct nullable-class
 // edge), so an order-only diff is normalized away and a residual byte diff is a real
 // content/order divergence. It ALSO canonicalizes string-scalar ESCAPING to
-// SetEscapeHTML(false): the native SAP emits strings unescaped (coerce.go's
-// marshalJSON), but the production BAML-only callback returns encoding/json.Marshal
-// (which escapes `<` `>` `&` to </>/&, codegen_buildrequest.go), so a
+// SetEscapeHTML(false) at EVERY depth: the native SAP emits strings unescaped
+// (coerce.go's marshalJSON), but the production BAML-only callback returns
+// encoding/json.Marshal (which escapes `<` `>` `&` to </>/&, codegen_buildrequest.go), so a
 // value like `<tag> &` would otherwise byte-differ and force a false order mismatch →
 // a silent BAML-parse winner even though the two parses are identical. Canonicalizing
 // both sides to native's escaping makes the admitted family serve native for
@@ -173,8 +174,11 @@ func reorderStaticByBundle(data []byte, t schema.Type, bundle *schema.Bundle) ([
 
 	default:
 		// Primitives, enums, literals, maps (insertion-order preserved), and TypeTop:
-		// compacted, with string scalars re-escaped to native's SetEscapeHTML(false) so
-		// an escaping-only difference never reads as a content/order divergence.
+		// compacted, with EVERY string inside re-escaped to native's SetEscapeHTML(false)
+		// so an escaping-only difference never reads as a content/order divergence. The
+		// de-BAML Slice 7.2b-3 `Checked[T]` carrier lands here: its schema type is the
+		// constrained `int` PRIMITIVE while its value is an object whose `expression`
+		// string carries the predicate's `>`.
 		return canonicalScalar(data)
 	}
 }
@@ -205,26 +209,144 @@ func canonicalizeAliasJSON(data []byte) ([]byte, error) {
 	return out, nil
 }
 
-// canonicalScalar compacts data, and for a JSON STRING re-encodes it with
+// canonicalScalar compacts data, and re-encodes every JSON STRING inside it with
 // SetEscapeHTML(false) — matching the native SAP's string emission (coerce.go's
 // marshalJSON) so an HTML-metacharacter value (`<` `>` `&`) that the production
 // BAML-only callback escaped (encoding/json.Marshal) canonicalizes to the SAME bytes.
-// Non-string scalars fall back to plain compaction (their native/BAML forms already
-// agree).
+//
+// It descends into OBJECTS and ARRAYS, and de-BAML Slice 7.2b-3 is why. A constrained
+// `int` field's schema type is a PRIMITIVE, but its value is the `Checked[T]` carrier —
+// an object whose `expression` string is the predicate source, and every admitted
+// predicate contains `>`. Native's sonic bytes carry it raw; the BAML-only callback's
+// encoding/json.Marshal escapes it to `>`. Canonicalizing only top-level string
+// scalars left that difference inside the carrier, so the order compare failed and the
+// route served BAML's parse of the same bytes — native computing the right answer and
+// shipping someone else's. Descending fixes it for the carrier and for any other
+// composite whose strings differ only in escaping.
+//
+// Object key ORDER is preserved exactly as it appears (this function normalizes
+// escaping, never order — reordering is [reorderStaticByBundle]'s job and is
+// schema-driven), and number tokens are copied VERBATIM, so a large integer cannot be
+// corrupted by a float64 round trip.
 func canonicalScalar(data []byte) ([]byte, error) {
-	trimmed := bytes.TrimSpace(data)
-	if len(trimmed) > 0 && trimmed[0] == '"' {
-		var s string
-		if err := stdjson.Unmarshal(trimmed, &s); err == nil {
-			var buf bytes.Buffer
-			enc := stdjson.NewEncoder(&buf)
-			enc.SetEscapeHTML(false)
-			if err := enc.Encode(s); err == nil {
-				return bytes.TrimRight(buf.Bytes(), "\n"), nil
-			}
-		}
+	var buf bytes.Buffer
+	if err := canonicalEscapeInto(&buf, stdjson.NewDecoder(bytes.NewReader(data))); err != nil {
+		// Not decodable as a single JSON value: fall back to plain compaction, which is
+		// what this function did before it descended.
+		return compactJSON(data)
 	}
-	return compactJSON(data)
+	return buf.Bytes(), nil
+}
+
+// canonicalEscapeInto copies one JSON value from dec into buf, compacted, with every
+// string re-encoded under SetEscapeHTML(false) and every number token verbatim.
+func canonicalEscapeInto(buf *bytes.Buffer, dec *stdjson.Decoder) error {
+	dec.UseNumber()
+	if err := canonicalEscapeValue(buf, dec); err != nil {
+		return err
+	}
+	// Exactly ONE value: trailing content means this was not a single JSON document and
+	// the caller must fall back rather than emit a truncated prefix.
+	if _, err := dec.Token(); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("parity: trailing JSON value")
+		}
+		return err
+	}
+	return nil
+}
+
+func canonicalEscapeValue(buf *bytes.Buffer, dec *stdjson.Decoder) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	return canonicalEscapeToken(buf, dec, tok)
+}
+
+func canonicalEscapeToken(buf *bytes.Buffer, dec *stdjson.Decoder, tok stdjson.Token) error {
+	switch t := tok.(type) {
+	case stdjson.Delim:
+		switch t {
+		case '{':
+			buf.WriteByte('{')
+			first := true
+			for dec.More() {
+				keyTok, err := dec.Token()
+				if err != nil {
+					return err
+				}
+				key, ok := keyTok.(string)
+				if !ok {
+					return fmt.Errorf("parity: non-string object key")
+				}
+				if !first {
+					buf.WriteByte(',')
+				}
+				first = false
+				if err := writeCanonicalString(buf, key); err != nil {
+					return err
+				}
+				buf.WriteByte(':')
+				if err := canonicalEscapeValue(buf, dec); err != nil {
+					return err
+				}
+			}
+			if _, err := dec.Token(); err != nil { // the closing '}'
+				return err
+			}
+			buf.WriteByte('}')
+			return nil
+		case '[':
+			buf.WriteByte('[')
+			first := true
+			for dec.More() {
+				if !first {
+					buf.WriteByte(',')
+				}
+				first = false
+				if err := canonicalEscapeValue(buf, dec); err != nil {
+					return err
+				}
+			}
+			if _, err := dec.Token(); err != nil { // the closing ']'
+				return err
+			}
+			buf.WriteByte(']')
+			return nil
+		default:
+			return fmt.Errorf("parity: unexpected JSON delimiter %q", t)
+		}
+	case string:
+		return writeCanonicalString(buf, t)
+	case stdjson.Number:
+		// VERBATIM: the decoded token text, never a re-formatted float.
+		buf.WriteString(t.String())
+		return nil
+	case bool:
+		if t {
+			buf.WriteString("true")
+		} else {
+			buf.WriteString("false")
+		}
+		return nil
+	case nil:
+		buf.WriteString("null")
+		return nil
+	default:
+		return fmt.Errorf("parity: unexpected JSON token %T", tok)
+	}
+}
+
+func writeCanonicalString(buf *bytes.Buffer, s string) error {
+	var enc bytes.Buffer
+	e := stdjson.NewEncoder(&enc)
+	e.SetEscapeHTML(false)
+	if err := e.Encode(s); err != nil {
+		return err
+	}
+	buf.Write(bytes.TrimRight(enc.Bytes(), "\n"))
+	return nil
 }
 
 func compactJSON(data []byte) ([]byte, error) {

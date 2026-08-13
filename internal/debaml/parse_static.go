@@ -62,15 +62,17 @@ func ParseStaticBundle(ctx context.Context, bundle *schema.Bundle, raw string) (
 		return bamlutils.DeBAMLParseResult{}, err
 	}
 
-	// De-BAML Slice 7.2b-2: the narrow CHECKED-STATIC case, behind the SAME
-	// non-admitting seam SupportsNativeFinalBundle consults, and carrying the SAME
-	// DIRECT capability.
+	// De-BAML Slice 7.2b-3: the narrow CHECKED-STATIC case, matched by the SAME
+	// fingerprint SupportsNativeFinalBundle consults, and carrying the DIRECT
+	// capability — which never admits.
 	//
-	// This function is not reached from one place: the static unary /call serve seam,
-	// its shadow comparator, the stream-final completion lane and root [Parse]'s
-	// ordinary static-descriptor lane all land here. Only the first is inside the
-	// boundary the scope admits, so the capability — not this call site — is what
-	// decides, and every route that arrives without one keeps declining.
+	// This function is not reached from one place: the static unary /call serve seam
+	// (through ParseStaticBundleUnaryCall), its shadow comparator, the stream-final
+	// completion lane and root [Parse]'s ordinary static-descriptor lane all land here.
+	// Only the first is inside the boundary the scope admits, so the capability — not
+	// this call site — is what decides, and every route that arrives without one
+	// DECLINES a matched fingerprint rather than falling through to the
+	// constraint-blind ordinary path below.
 	if res, err, claimed := staticCheckedParse(bundle, raw, staticCheckedDirect()); claimed {
 		return res, err
 	}

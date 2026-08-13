@@ -21,6 +21,144 @@ import (
 	"github.com/boundaryml/baml/engine/language_client_go/pkg/cffi"
 )
 
+type Union2IntOrString struct {
+	variant string
+
+	variant_Int *int64
+
+	variant_String *string
+}
+
+func (u *Union2IntOrString) Decode(holder *cffi.CFFIValueUnionVariant, typeMap baml.TypeMap) {
+	valueHolder := holder.Value
+	variantName := holder.ValueOptionName
+	switch variantName {
+	case "int":
+		u.variant = "Int"
+		value := baml.Decode(valueHolder).Int()
+		u.variant_Int = &value
+	case "string":
+		u.variant = "String"
+		value := baml.Decode(valueHolder).Interface().(string)
+		u.variant_String = &value
+
+	default:
+		panic(fmt.Sprintf("invalid union variant: %s", variantName))
+	}
+}
+
+func (u Union2IntOrString) Encode() (*cffi.HostValue, error) {
+	switch u.variant {
+
+	case "Int":
+		return baml.EncodeValue(*u.variant_Int)
+
+	case "String":
+		return baml.EncodeValue(*u.variant_String)
+
+	case "":
+		return nil, fmt.Errorf("invalid union variant: [unset]")
+	}
+
+	return nil, fmt.Errorf("invalid union variant: %s", u.variant)
+}
+
+func (u Union2IntOrString) BamlTypeName() string {
+	return "Union2IntOrString"
+}
+
+func (u Union2IntOrString) MarshalJSON() ([]byte, error) {
+	switch u.variant {
+
+	case "Int":
+		return json.Marshal(u.variant_Int)
+
+	case "String":
+		return json.Marshal(u.variant_String)
+
+	}
+
+	return nil, fmt.Errorf("invalid union variant: %s", u.variant)
+}
+
+func (u *Union2IntOrString) UnmarshalJSON(data []byte) error {
+	var err error
+
+	err = json.Unmarshal(data, &u.variant_Int)
+	if err == nil {
+		u.variant = "Int"
+		return nil
+	} else {
+		u.variant_Int = nil
+	}
+
+	err = json.Unmarshal(data, &u.variant_String)
+	if err == nil {
+		u.variant = "String"
+		return nil
+	} else {
+		u.variant_String = nil
+	}
+
+	return fmt.Errorf("invalid union variant: %s", string(data))
+}
+
+func Union2IntOrString__NewInt(v int64) Union2IntOrString {
+
+	return Union2IntOrString{
+		variant:     "Int",
+		variant_Int: &v,
+	}
+}
+
+func (u *Union2IntOrString) SetInt(v int64) {
+
+	u.variant = "Int"
+	u.variant_Int = &v
+
+	u.variant_String = nil
+
+}
+
+func (u *Union2IntOrString) IsInt() bool {
+	return u.variant == "Int"
+}
+
+func (u *Union2IntOrString) AsInt() *int64 {
+	if u.variant != "Int" {
+		return nil
+	}
+	return u.variant_Int
+}
+
+func Union2IntOrString__NewString(v string) Union2IntOrString {
+
+	return Union2IntOrString{
+		variant:        "String",
+		variant_String: &v,
+	}
+}
+
+func (u *Union2IntOrString) SetString(v string) {
+
+	u.variant = "String"
+	u.variant_String = &v
+
+	u.variant_Int = nil
+
+}
+
+func (u *Union2IntOrString) IsString() bool {
+	return u.variant == "String"
+}
+
+func (u *Union2IntOrString) AsString() *string {
+	if u.variant != "String" {
+		return nil
+	}
+	return u.variant_String
+}
+
 type Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString struct {
 	variant string
 

@@ -248,9 +248,16 @@ func AdmitStaticClaim(ctx context.Context, in StaticInput) (*StaticClaim, error)
 	// BAML-v0.223-differential-proven. SupportsNativeFinalBundle admits more than the
 	// proven-decoder set (optionals, enums, nested classes, lists, maps), so a shape
 	// the parser supports but the decoder has not proven declines PRE-CLAIM here so
-	// BAML serves. Codegen emits a serve seam for exactly this set; this is the
-	// runtime backstop that keeps the two in lockstep. The observe path (AdmitStatic)
-	// does NOT apply this gate — it measures parser attachment, not decoder support.
+	// BAML serves.
+	//
+	// This is the SOLE return-shape decision — there is no codegen-side twin to be in
+	// lockstep with. Codegen emits the serve seam for EVERY serve-enabled static method
+	// and makes no return-shape claim, because it cannot: see admittedStaticReturnShape
+	// below for why (adapters/common has no root-module dependency and codegen's
+	// Introspection carries no static descriptors), and
+	// adapters/common/codegen.TestCodegenMakesNoStaticReturnShapeClaim for the proof
+	// from the other side. The observe path (AdmitStatic) does NOT apply this gate — it
+	// measures parser attachment, not decoder support.
 	if !admittedStaticReturnShape(prep.bundle) {
 		prep.close()
 		return nil, staticDeclineFromObs(declineStatic(bamlutils.NativeStaticFamilyDescriptorEnvelope, StagePrompt, reasonReturnShapeUnproven))
@@ -617,9 +624,20 @@ func checkStaticReturnBundle(fn promptdescriptor.Function) (*schema.Bundle, *Sta
 // INITIAL admitted return-shape set — the EXACT shapes whose generated
 // DecodeNativeStaticFinal mapper is BAML-v0.223-**differential-proven** (see
 // internal/nativebody/nanollmprepare/static/mapper_differential_integration_test.go).
-// It MUST stay in exact lockstep with the codegen decoder-emission gate
-// (adapters/common/codegen `isAdmittedStaticServeReturn`): codegen emits a serve seam
-// + mapper ONLY for the same set, and this is the runtime backstop.
+//
+// IT IS THE SOLE RETURN-SHAPE GATE. There is no codegen-side twin to stay in lockstep
+// with, and an earlier revision of this comment named one (`isAdmittedStaticServeReturn`
+// in adapters/common/codegen) that has never existed. That was a false claim about where
+// the decision lives, and the reason a codegen twin cannot exist is structural rather
+// than an omission: `adapters/common` does not depend on the root module at all (its
+// go.mod requires only bamlutils + introspected), and codegen's own [Introspection]
+// carries no static prompt descriptors — so codegen cannot see a method's RETURN SCHEMA
+// at emission time and cannot evaluate the fingerprint. What codegen does emit for every
+// serve-enabled static method is unconditional: the seam plus a STRICT
+// bamlutils.DecodeStaticFinal closure at the method's concrete return type. That is not
+// an admission claim; admission is decided here, pre-claim and pre-socket, and
+// TestCodegenMakesNoStaticReturnShapeClaim (adapters/common/codegen) pins the absence
+// structurally so a future codegen-side claim cannot appear unnoticed.
 //
 // The set is deliberately NARROWED to EXACTLY the two shapes the v0.223 differential
 // covers (review P1.3) — NOT every flat class of bare string/int fields (which would
@@ -633,12 +651,17 @@ func checkStaticReturnBundle(fn promptdescriptor.Function) (*schema.Bundle, *Sta
 //     then `confidence` (int), no @alias/constraints, single class, no nested/list/
 //     map/union/enum/alias/recursion — the exact StaticAnswer{answer:string,
 //     confidence:int} shape the mapper differential proves.
+//   - de-BAML Slice 7.2b-3: the same two-field pair with EXACTLY ONE direct
+//     `@check`/`@assert(<ascii label>, {{ this > <int> }})` on `confidence`, under the
+//     two pinned class names — see isAdmittedStaticCheckedReturn, which delegates the
+//     whole decision to the root-owned fingerprint.
 //
 // Every other shape — a top-level int/float/bool scalar, ANY other class (different
 // field names/types/order/count, a float/bool field, optionals, enums, unions, maps,
-// lists, nested/recursive classes, aliases, field aliases, constraints) — declines
-// until its OWN mapper + v0.223 differential fixture + explicit gate is added. This is
-// the precise "every admitted shape has a mapper + fixture" boundary.
+// lists, nested/recursive classes, aliases, field aliases, and every constraint outside
+// that one fingerprint) — declines until its OWN mapper + v0.223 differential fixture +
+// explicit gate is added. This is the precise "every admitted shape has a mapper +
+// fixture" boundary.
 func admittedStaticReturnShape(b *schema.Bundle) bool {
 	if b == nil {
 		return false
@@ -653,6 +676,19 @@ func admittedStaticReturnShape(b *schema.Bundle) bool {
 	// shapes and the parser stay in exact lockstep; every OTHER alias bundle still
 	// declines at the reject.
 	if isProvenRecursiveAliasStaticReturn(b) {
+		return true
+	}
+	// De-BAML Slice 7.2b-3: the ONE constraint-bearing family native serves — the two
+	// concrete generated fixture return types
+	// `{answer string; confidence int @check|@assert(<ascii>, {{ this > <int> }})}`,
+	// whose generated decoder is bamlutils.DecodeStaticFinal at Checked[int64] / int64
+	// and whose bytes are pinned against the real BAML v0.223.0 CFFI
+	// (internal/debaml/checkedwire). Checked BEFORE the generic per-field reject below,
+	// which refuses every constrained field, and delegated to the ROOT-owned predicate so
+	// this gate cannot drift from the parser that has to produce the bytes.
+	//
+	// Every OTHER constraint-bearing return still falls through to that reject.
+	if isAdmittedStaticCheckedReturn(b) {
 		return true
 	}
 	// Structural recursive aliases and enums stay declined (no proven decoder).
@@ -710,6 +746,23 @@ func admittedStaticReturnShape(b *schema.Bundle) bool {
 // module is exactly how the final gate and the stream gate would drift apart.
 func isProvenRecursiveAliasStaticReturn(b *schema.Bundle) bool {
 	return debaml.IsProvenServedRecursiveAliasStaticFamily(b)
+}
+
+// isAdmittedStaticCheckedReturn reports whether the lowered Return Bundle is the ONE
+// checked-static fingerprint of de-BAML Slice 7.2b-3:
+//
+//	class StaticCheckedAnswer { answer string; confidence int @check(<ascii>, {{ this > <int> }}) }
+//	class StaticAssertAnswer  { answer string; confidence int @assert(<ascii?>, {{ this > <int> }}) }
+//
+// It DELEGATES to debaml.IsAdmittedStaticCheckedFamily, which is the exported form of
+// the very predicate debaml.SupportsNativeFinalBundle consults, so this serve gate and
+// the parser that must produce the bytes can never disagree about which schema is
+// claimed. Restating the fingerprint in this isolated module is exactly how the two
+// would drift: a second constraint, a duplicate label, an alias, a reordered field pair,
+// a non-ASCII label, a different predicate or a differently-named class has no stock
+// byte capture behind it and must decline PRE-CLAIM.
+func isAdmittedStaticCheckedReturn(b *schema.Bundle) bool {
+	return debaml.IsAdmittedStaticCheckedFamily(b)
 }
 
 // isProvenStaticStringScalar reports whether t is a bare, constraint-free primitive

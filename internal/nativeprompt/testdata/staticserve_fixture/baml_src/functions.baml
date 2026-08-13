@@ -408,10 +408,9 @@ function StaticMediaInClass(bundle: MediaBundle) -> string {
   "#
 }
 
-// De-BAML Slice 7.2b-2 — the two constraint-bearing static returns. Same bare
-// ctx.output_format shape as StaticOutputFormat, so the ONLY difference from an
-// admitted route is the constraint on `confidence`. Both DECLINE pre-transport
-// while the checked-static seam is closed.
+// De-BAML Slice 7.2b-3 — the two constraint-bearing static returns native SERVES.
+// Same bare ctx.output_format shape as StaticOutputFormat, so the ONLY difference
+// from the already-admitted class route is the constraint on `confidence`.
 function StaticCheckedConfidence(topic: string) -> StaticCheckedAnswer {
   client StaticOracleClient
   prompt #"
@@ -422,6 +421,116 @@ function StaticCheckedConfidence(topic: string) -> StaticCheckedAnswer {
 }
 
 function StaticAssertConfidence(topic: string) -> StaticAssertAnswer {
+  client StaticOracleClient
+  prompt #"
+    {{ _.role("user") }}
+    Summarize {{ topic }} for me.
+    {{ ctx.output_format }}
+  "#
+}
+
+// De-BAML Slice 7.2b-3 — the LIVE RETURN-SCHEMA SIBLINGS. Identical prompt, client
+// and argument shape to the two routes above, so the ONLY thing that can decline
+// them is the return fingerprint. Each must open ZERO native sockets and be served
+// by BAML. These three differ in exactly ONE property (a second @check, the two
+// fields reordered, a different class name); see the note on the type-category
+// group below for the rows that necessarily differ in two.
+function StaticCheckedTwoChecks(topic: string) -> StaticTwoCheckAnswer {
+  client StaticOracleClient
+  prompt #"
+    {{ _.role("user") }}
+    Summarize {{ topic }} for me.
+    {{ ctx.output_format }}
+  "#
+}
+
+function StaticCheckedReordered(topic: string) -> StaticReorderedAnswer {
+  client StaticOracleClient
+  prompt #"
+    {{ _.role("user") }}
+    Summarize {{ topic }} for me.
+    {{ ctx.output_format }}
+  "#
+}
+
+function StaticCheckedRenamedClass(topic: string) -> OtherCheckedAnswer {
+  client StaticOracleClient
+  prompt #"
+    {{ _.role("user") }}
+    Summarize {{ topic }} for me.
+    {{ ctx.output_format }}
+  "#
+}
+
+// The remaining RETURN-SCHEMA siblings, one per family the scope leaves declined.
+// Identical prompt, client and argument shape to the admitted pair, so the ONLY
+// thing that can decline them is the return fingerprint.
+//
+// One-/two-property, and the split is not cosmetic. StaticCheckedFloat is the
+// SINGLE-AXIS type witness: it keeps the label and the exact `this > 0` predicate,
+// so only the type moved. StaticCheckedList, StaticCheckedUnion and
+// StaticCheckedOptional necessarily move the PREDICATE too — `this > 0` is not
+// well-typed for a list, a union or a null, and a project that tried it would not
+// compile — so what they prove live is that the family is refused pre-socket, NOT
+// which of the two properties refused it. Independent type-versus-predicate
+// rejection is proven at the descriptor/Bundle level by internal/debaml's sibling
+// corpus, which varies one axis at a time because it never has to compile.
+// StaticCheckedAliasedField and StaticCheckedGtePredicate are one-property rows.
+function StaticCheckedFloat(topic: string) -> StaticFloatCheckedAnswer {
+  client StaticOracleClient
+  prompt #"
+    {{ _.role("user") }}
+    Summarize {{ topic }} for me.
+    {{ ctx.output_format }}
+  "#
+}
+
+function StaticCheckedList(topic: string) -> StaticListCheckedAnswer {
+  client StaticOracleClient
+  prompt #"
+    {{ _.role("user") }}
+    Summarize {{ topic }} for me.
+    {{ ctx.output_format }}
+  "#
+}
+
+function StaticCheckedUnion(topic: string) -> StaticUnionCheckedAnswer {
+  client StaticOracleClient
+  prompt #"
+    {{ _.role("user") }}
+    Summarize {{ topic }} for me.
+    {{ ctx.output_format }}
+  "#
+}
+
+function StaticCheckedOptional(topic: string) -> StaticOptionalCheckedAnswer {
+  client StaticOracleClient
+  prompt #"
+    {{ _.role("user") }}
+    Summarize {{ topic }} for me.
+    {{ ctx.output_format }}
+  "#
+}
+
+function StaticCheckedAliasedField(topic: string) -> StaticAliasedCheckedAnswer {
+  client StaticOracleClient
+  prompt #"
+    {{ _.role("user") }}
+    Summarize {{ topic }} for me.
+    {{ ctx.output_format }}
+  "#
+}
+
+function StaticCheckedGtePredicate(topic: string) -> StaticGtePredicateAnswer {
+  client StaticOracleClient
+  prompt #"
+    {{ _.role("user") }}
+    Summarize {{ topic }} for me.
+    {{ ctx.output_format }}
+  "#
+}
+
+function StaticCheckedNonAsciiLabel(topic: string) -> StaticNonAsciiLabelAnswer {
   client StaticOracleClient
   prompt #"
     {{ _.role("user") }}

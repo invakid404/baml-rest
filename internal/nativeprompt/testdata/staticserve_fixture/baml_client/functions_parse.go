@@ -72,6 +72,53 @@ func (*parse) StaticAssertConfidence(ctx context.Context, text string, opts ...C
 	return casted, nil
 }
 
+// / Parse version of StaticCheckedAliasedField (Takes in string and returns types.StaticAliasedCheckedAnswer)
+func (*parse) StaticCheckedAliasedField(ctx context.Context, text string, opts ...CallOptionFunc) (types.StaticAliasedCheckedAnswer, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticCheckedAliasedField: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(ctx, "StaticCheckedAliasedField", encoded)
+	if err != nil {
+		return types.StaticAliasedCheckedAnswer{}, err
+	}
+
+	casted := (result).(types.StaticAliasedCheckedAnswer)
+
+	return casted, nil
+}
+
 // / Parse version of StaticCheckedConfidence (Takes in string and returns types.StaticCheckedAnswer)
 func (*parse) StaticCheckedConfidence(ctx context.Context, text string, opts ...CallOptionFunc) (types.StaticCheckedAnswer, error) {
 
@@ -115,6 +162,429 @@ func (*parse) StaticCheckedConfidence(ctx context.Context, text string, opts ...
 	}
 
 	casted := (result).(types.StaticCheckedAnswer)
+
+	return casted, nil
+}
+
+// / Parse version of StaticCheckedFloat (Takes in string and returns types.StaticFloatCheckedAnswer)
+func (*parse) StaticCheckedFloat(ctx context.Context, text string, opts ...CallOptionFunc) (types.StaticFloatCheckedAnswer, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticCheckedFloat: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(ctx, "StaticCheckedFloat", encoded)
+	if err != nil {
+		return types.StaticFloatCheckedAnswer{}, err
+	}
+
+	casted := (result).(types.StaticFloatCheckedAnswer)
+
+	return casted, nil
+}
+
+// / Parse version of StaticCheckedGtePredicate (Takes in string and returns types.StaticGtePredicateAnswer)
+func (*parse) StaticCheckedGtePredicate(ctx context.Context, text string, opts ...CallOptionFunc) (types.StaticGtePredicateAnswer, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticCheckedGtePredicate: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(ctx, "StaticCheckedGtePredicate", encoded)
+	if err != nil {
+		return types.StaticGtePredicateAnswer{}, err
+	}
+
+	casted := (result).(types.StaticGtePredicateAnswer)
+
+	return casted, nil
+}
+
+// / Parse version of StaticCheckedList (Takes in string and returns types.StaticListCheckedAnswer)
+func (*parse) StaticCheckedList(ctx context.Context, text string, opts ...CallOptionFunc) (types.StaticListCheckedAnswer, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticCheckedList: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(ctx, "StaticCheckedList", encoded)
+	if err != nil {
+		return types.StaticListCheckedAnswer{}, err
+	}
+
+	casted := (result).(types.StaticListCheckedAnswer)
+
+	return casted, nil
+}
+
+// / Parse version of StaticCheckedNonAsciiLabel (Takes in string and returns types.StaticNonAsciiLabelAnswer)
+func (*parse) StaticCheckedNonAsciiLabel(ctx context.Context, text string, opts ...CallOptionFunc) (types.StaticNonAsciiLabelAnswer, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticCheckedNonAsciiLabel: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(ctx, "StaticCheckedNonAsciiLabel", encoded)
+	if err != nil {
+		return types.StaticNonAsciiLabelAnswer{}, err
+	}
+
+	casted := (result).(types.StaticNonAsciiLabelAnswer)
+
+	return casted, nil
+}
+
+// / Parse version of StaticCheckedOptional (Takes in string and returns types.StaticOptionalCheckedAnswer)
+func (*parse) StaticCheckedOptional(ctx context.Context, text string, opts ...CallOptionFunc) (types.StaticOptionalCheckedAnswer, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticCheckedOptional: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(ctx, "StaticCheckedOptional", encoded)
+	if err != nil {
+		return types.StaticOptionalCheckedAnswer{}, err
+	}
+
+	casted := (result).(types.StaticOptionalCheckedAnswer)
+
+	return casted, nil
+}
+
+// / Parse version of StaticCheckedRenamedClass (Takes in string and returns types.OtherCheckedAnswer)
+func (*parse) StaticCheckedRenamedClass(ctx context.Context, text string, opts ...CallOptionFunc) (types.OtherCheckedAnswer, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticCheckedRenamedClass: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(ctx, "StaticCheckedRenamedClass", encoded)
+	if err != nil {
+		return types.OtherCheckedAnswer{}, err
+	}
+
+	casted := (result).(types.OtherCheckedAnswer)
+
+	return casted, nil
+}
+
+// / Parse version of StaticCheckedReordered (Takes in string and returns types.StaticReorderedAnswer)
+func (*parse) StaticCheckedReordered(ctx context.Context, text string, opts ...CallOptionFunc) (types.StaticReorderedAnswer, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticCheckedReordered: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(ctx, "StaticCheckedReordered", encoded)
+	if err != nil {
+		return types.StaticReorderedAnswer{}, err
+	}
+
+	casted := (result).(types.StaticReorderedAnswer)
+
+	return casted, nil
+}
+
+// / Parse version of StaticCheckedTwoChecks (Takes in string and returns types.StaticTwoCheckAnswer)
+func (*parse) StaticCheckedTwoChecks(ctx context.Context, text string, opts ...CallOptionFunc) (types.StaticTwoCheckAnswer, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticCheckedTwoChecks: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(ctx, "StaticCheckedTwoChecks", encoded)
+	if err != nil {
+		return types.StaticTwoCheckAnswer{}, err
+	}
+
+	casted := (result).(types.StaticTwoCheckAnswer)
+
+	return casted, nil
+}
+
+// / Parse version of StaticCheckedUnion (Takes in string and returns types.StaticUnionCheckedAnswer)
+func (*parse) StaticCheckedUnion(ctx context.Context, text string, opts ...CallOptionFunc) (types.StaticUnionCheckedAnswer, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"text": text, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		// This should never happen. if it does, please file an issue at https://github.com/boundaryml/baml/issues
+		// and include the type of the args you're passing in.
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticCheckedUnion: %w", err)
+		panic(wrapped_err)
+	}
+
+	result, err := bamlRuntime.CallFunctionParse(ctx, "StaticCheckedUnion", encoded)
+	if err != nil {
+		return types.StaticUnionCheckedAnswer{}, err
+	}
+
+	casted := (result).(types.StaticUnionCheckedAnswer)
 
 	return casted, nil
 }

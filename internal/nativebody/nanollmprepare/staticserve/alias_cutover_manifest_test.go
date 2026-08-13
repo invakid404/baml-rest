@@ -311,9 +311,11 @@ func TestStaticServingCutover_CompletePartition(t *testing.T) {
 	for _, r := range staticServingCorpusMediaDeclined {
 		partition[r.name] = true
 	}
-	// De-BAML Slice 7.2b-2 constraint-bearing routes: emitted, descriptored and
-	// seam-installed, declined INSIDE admission until 7.2b-3.
-	for _, r := range staticServingCorpusConstraintDeclined {
+	// De-BAML Slice 7.2b-3 constraint-bearing routes: the TWO the ONE admitted
+	// fingerprint SERVES, plus their TEN siblings — eight emitted, descriptored and
+	// seam-installed (declining INSIDE admission) and two refused by the descriptor
+	// extractor, so they carry no descriptor and install no seam.
+	for _, r := range constraintRoutes() {
 		partition[r.name] = true
 	}
 	// Errorf, not Fatalf: a count mismatch IS the "a newly generated route was
@@ -322,7 +324,7 @@ func TestStaticServingCutover_CompletePartition(t *testing.T) {
 	if len(partition) != len(introspected.SyncMethods) {
 		t.Errorf("the complete static-serving partition (legacy + recursive-served + recursive-declined + "+
 			"alias-served + alias-declined + valuebind-served + valuebind-declined + media-declined + "+
-			"constraint-declined) covers "+
+			"constraint-served + constraint-declined) covers "+
 			"%d methods but the fixture emits %d SyncMethods", len(partition), len(introspected.SyncMethods))
 	}
 	// FORWARD: a method the fixture emits that no corpus claims.

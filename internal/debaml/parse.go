@@ -126,6 +126,17 @@ func Parse(ctx context.Context, req bamlutils.DeBAMLParseRequest) (bamlutils.DeB
 	if err := checkSupported(bundle); err != nil {
 		return bamlutils.DeBAMLParseResult{}, err
 	}
+	// De-BAML Slice 7.2b-3 ROUTE BOUNDARY. The shape gates agree with
+	// SupportsNativeFinalBundle about the checked-static fingerprint, so a schema that
+	// matches it now passes checkSupported — and the DYNAMIC lane must still refuse it.
+	// The coercion below is constraint-blind: serving it here would emit
+	// `{"answer":…,"confidence":9}` with no carrier and no assertion, which is exactly
+	// the over-claim the scope forbids. (The dynamic TypeBuilder has no constraint
+	// channel today — the #572 ceiling — so this is unreachable through the public API;
+	// it is stated anyway, because "unreachable" is not a boundary.)
+	if err := staticCheckedRouteBoundary(bundle, "the dynamic final route"); err != nil {
+		return bamlutils.DeBAMLParseResult{}, err
+	}
 
 	// Strip JSONish comments (string-aware) exactly as BAML does before extraction,
 	// so a comment-bearing final an admitted schema can receive parses to the SAME
@@ -199,6 +210,12 @@ func parseStream(req bamlutils.DeBAMLParseRequest) (bamlutils.DeBAMLParseResult,
 	// decline that keeps the deferred array union_variant_hint fallback). Anything
 	// finer is decided at coerce time.
 	if err := checkSupported(bundle); err != nil {
+		return bamlutils.DeBAMLParseResult{}, err
+	}
+	// De-BAML Slice 7.2b-3 ROUTE BOUNDARY: `/stream` is a zero-socket decline for the
+	// checked-static fingerprint. coerceStream knows nothing about constraints, and a
+	// claimed stream has no route back to BAML, so this must refuse rather than serve.
+	if err := staticCheckedRouteBoundary(bundle, "the stream route"); err != nil {
 		return bamlutils.DeBAMLParseResult{}, err
 	}
 	if err := checkNoStreamAnnotations(bundle); err != nil {
@@ -529,7 +546,7 @@ func checkSupported(b *schema.Bundle) error {
 // walk with its per-class walk for the same reason; this is that pairing for
 // constraints.
 func checkSupportedFields(b *schema.Bundle) error {
-	if err := checkTypeNoConstraints(b.Target); err != nil {
+	if err := checkTypeNoConstraints(b, b.Target, "target type constraints"); err != nil {
 		return err
 	}
 	for i := range b.Enums {
@@ -552,51 +569,57 @@ func checkSupportedFields(b *schema.Bundle) error {
 }
 
 // checkTypeNoConstraints walks one type tree rejecting any type-level
-// @assert/@check (Type.Meta.Constraints), and NOTHING else. Named class/enum
-// refs are leaves — their definitions are validated as bundle entries in
-// [checkSupportedFields] — exactly as in checkTypeNoStream, whose shape this
-// mirrors.
+// @assert/@check (Type.Meta.Constraints) that is not the ONE admitted checked-static
+// node, and NOTHING else. Named class/enum refs are leaves — their definitions are
+// validated as bundle entries in [checkSupportedFields] — exactly as in
+// checkTypeNoStream, whose shape this mirrors.
 //
-// IT IS DELIBERATELY NOT [checkSupportedType]. That function opens with the same
-// constraint reject but continues into the COERCION cut-line — the multi-arm-union
-// list element, the M2c safe-union families, the map key/value surface — declines
-// that the target position has never been subject to. Running the whole cut-line
-// over b.Target would decline bundles that admit (and, for the observe lane,
-// measure) today; the target gap is a constraint over-claim, so closing it removes
-// exactly one wrong admission and adds none.
+// De-BAML Slice 7.2b-3: the exemption is [staticCheckedAdmittedConstraintNode], the ONE
+// canonical fingerprint, so this walk answers the same question every other named schema
+// gate answers. `reason` is the caller's decline token, kept per-caller so a target-level
+// rejection still reads "target type constraints" and a field-level one "type
+// constraints" — the two the corpus and the profileoracle rows pin.
+//
+// IT IS NOT [checkSupportedType], and the target walk must not become it. That function
+// runs THIS one first (so the two share exactly one constraint decision) and then
+// continues into the COERCION cut-line — the multi-arm-union list element, the M2c
+// safe-union families, the map key/value surface — declines that the target position has
+// never been subject to. Running the whole cut-line over b.Target would decline bundles
+// that admit (and, for the observe lane, measure) today; the target gap is a constraint
+// over-claim, so closing it removes exactly one wrong admission and adds none.
 //
 // The descent into a list element / map key+value / union variant / tuple item is
 // what makes that removal complete: a constraint on any of them is declared on the
 // target's own type tree, so no class or enum entry reports it either.
-func checkTypeNoConstraints(t schema.Type) error {
-	if len(t.Meta.Constraints) > 0 {
-		return unsupported("target type constraints")
+func checkTypeNoConstraints(b *schema.Bundle, t schema.Type, reason string) error {
+	if len(t.Meta.Constraints) > 0 && !staticCheckedAdmittedConstraintNode(b, t) {
+		return unsupported(reason)
 	}
 	switch t.Kind {
 	case schema.TypeList:
 		if t.Elem != nil {
-			return checkTypeNoConstraints(*t.Elem)
+			return checkTypeNoConstraints(b, *t.Elem, reason)
 		}
 	case schema.TypeMap:
 		if t.Key != nil {
-			if err := checkTypeNoConstraints(*t.Key); err != nil {
+			if err := checkTypeNoConstraints(b, *t.Key, reason); err != nil {
 				return err
 			}
 		}
 		if t.Value != nil {
-			return checkTypeNoConstraints(*t.Value)
+			return checkTypeNoConstraints(b, *t.Value, reason)
 		}
 	case schema.TypeUnion:
 		if t.Union != nil {
 			for i := range t.Union.Variants {
-				if err := checkTypeNoConstraints(t.Union.Variants[i]); err != nil {
+				if err := checkTypeNoConstraints(b, t.Union.Variants[i], reason); err != nil {
 					return err
 				}
 			}
 		}
 	case schema.TypeTuple:
 		for i := range t.Items {
-			if err := checkTypeNoConstraints(t.Items[i]); err != nil {
+			if err := checkTypeNoConstraints(b, t.Items[i], reason); err != nil {
 				return err
 			}
 		}
@@ -609,9 +632,34 @@ func checkTypeNoConstraints(t schema.Type) error {
 // validated via the bundle's class/enum slices). It needs the bundle so a
 // general union can be checked against the M2c safe-union families (which
 // inspect each class variant's fields).
+//
+// De-BAML Slice 7.2b-3: the constraint reject below consults the ONE canonical
+// fingerprint rather than refusing every constraint outright.
+//
+// This is the SHAPE half of the single-fingerprint contract: this gate, its caller
+// [checkSupportedFields], [checkSupported] above them and [SupportsNativeFinalBundle]
+// must all give the SAME answer for the SAME schema, or a bundle that passes one and
+// fails another is a bug. [staticCheckedAdmittedConstraintNode] is that one answer,
+// expressed for a single type node.
+//
+// Keeping the DYNAMIC and STREAM lanes closed is a ROUTE decision, not a shape one, and
+// it is made where those routes are ([staticCheckedRouteBoundary], called by root
+// [Parse]'s dynamic branch, [parseStream] and [SupportsNativeStreamBundle]). Expressing
+// it there rather than as a blanket shape reject is what lets the shape gates agree with
+// each other while the routes that may not claim the fingerprint still decline it.
 func checkSupportedType(b *schema.Bundle, t schema.Type) error {
-	if len(t.Meta.Constraints) > 0 {
-		return unsupported("type constraints")
+	// CONSTRAINTS are decided over the WHOLE subtree, not just this node. The kind
+	// switch below SHORT-CIRCUITS in three places — the nullable union returns before
+	// recursing (the null fast path), a map key is delegated to checkSupportedMapKey,
+	// and a class/enum reference is a leaf — so a constraint hidden behind one of them
+	// would never be seen by this walk, and this gate would answer differently from
+	// SupportsNativeFinalBundle for the same schema. Deciding it up front over the
+	// subtree is what makes the two agree by construction rather than by luck: it costs
+	// one extra walk of a tiny tree and removes an entire class of hole (e.g.
+	// `list<int @check(...)>?`, whose constraint the nullable fast path used to skip and
+	// which was left for coerce to refuse at value time).
+	if err := checkTypeNoConstraints(b, t, "type constraints"); err != nil {
+		return err
 	}
 	switch t.Kind {
 	case schema.TypePrimitive, schema.TypeLiteral, schema.TypeEnum, schema.TypeClass:
@@ -713,6 +761,11 @@ func checkSupportedType(b *schema.Bundle, t schema.Type) error {
 // checkSupportedType so the legal union-of-string-literals key is not
 // caught by the general-union rejection. A constrained key is out of scope.
 func checkSupportedMapKey(t schema.Type) error {
+	// De-BAML Slice 7.2b-3: [checkSupportedType] now decides constraints over the whole
+	// subtree before its kind switch runs, so a constrained key has already been
+	// rejected by the time this is reached. The check is KEPT as a defensive backstop —
+	// this function is exported to the map arm only by convention, and a future caller
+	// that reached it directly would otherwise skip the constraint decision entirely.
 	if len(t.Meta.Constraints) > 0 {
 		return unsupported("map key constraints")
 	}

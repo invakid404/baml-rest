@@ -10,8 +10,11 @@ import (
 // TestAdmittedStaticReturnShape pins the NARROWED proven-decoder return-shape set
 // (review P2.1): admit exactly what the BAML v0.223 differential covers — a top-level
 // string scalar and a flat class of string|int fields — and decline every shape whose
-// mapper is not differential-proven. This is the runtime backstop that must stay in
-// lockstep with the codegen serve-seam emission gate.
+// mapper is not differential-proven. It is the SOLE pre-claim return-shape decision:
+// codegen has no return-shape gate to be in lockstep with — it is schema-blind and emits
+// the serve seam for every serve-enabled static method (see
+// adapters/common/codegen.TestCodegenMakesNoStaticReturnShapeClaim) — so this predicate
+// being exact is the whole of the guarantee.
 func TestAdmittedStaticReturnShape(t *testing.T) {
 	prim := func(p schemadescriptor.PrimitiveKind) schemadescriptor.Type {
 		return schemadescriptor.Type{Kind: schemadescriptor.TypePrimitive, Primitive: p}

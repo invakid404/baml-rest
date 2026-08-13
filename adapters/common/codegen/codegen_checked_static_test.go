@@ -108,8 +108,14 @@ func TestCheckedStaticRoutingIsProvenToBite(t *testing.T) {
 	}
 }
 
-// TestCheckedStaticCarrierFingerprintIsNarrow drives the fingerprint over one-property
+// TestCheckedStaticCarrierFingerprintIsNarrow drives the fingerprint over CARRIER-SHAPE
 // siblings, so a recognition is attributable to the shape rather than to a loose match.
+//
+// The corpus is deliberately mixed and is NOT wholly one-property: the mutated carriers
+// (an extra field, a renamed or re-tagged value field, checks as a list, checks keyed by
+// int, the check fields permuted) each differ from the real carrier in ONE property,
+// while the two fixture structs, the scalar and the map are whole shapes the decoder must
+// never route as a carrier at all.
 func TestCheckedStaticCarrierFingerprintIsNarrow(t *testing.T) {
 	type check struct {
 		Name       string `json:"name"`
@@ -208,5 +214,88 @@ func TestCheckedStaticDecodeClosureInstantiatesBothForms(t *testing.T) {
 				t.Fatalf("emitted closure routes through an ALIAS decoder, losing strictness:\n%s", rendered)
 			}
 		})
+	}
+}
+
+// TestCodegenMakesNoStaticReturnShapeClaim pins, STRUCTURALLY, that codegen decides
+// nothing about which return SHAPES may be served natively.
+//
+// De-BAML Slice 7.2b-3 review finding: nativeserve/admission/static.go used to claim
+// lockstep with a codegen "static return-shape gate" (`isAdmittedStaticServeReturn`) that
+// has never existed. The claim was not merely stale — a codegen twin CANNOT exist:
+// `adapters/common` does not depend on the root module (its go.mod requires only
+// bamlutils + introspected), so it cannot reach internal/debaml's fingerprint, and
+// [Introspection] carries no static prompt descriptors, so codegen cannot see a method's
+// return SCHEMA at emission time either. All it has is the Go return TYPE, which cannot
+// distinguish one @check from two, a predicate, or a label — the very properties the
+// fingerprint turns on.
+//
+// So codegen emits the serve seam UNCONDITIONALLY for every serve-enabled static method
+// and lets admission decide, pre-claim and pre-socket. That is safe, and this test is
+// what keeps it honest in both directions:
+//
+//  1. the seam-emission predicate depends ONLY on the global serve option and the
+//     method name — never on the return type — so codegen cannot quietly acquire a
+//     shape-keyed admission claim that admission does not know about; and
+//  2. isCheckedConstraintCarrier, the one shape-inspecting helper nearby, is DECODER
+//     ROUTING (choose the strict decoder) and not an admission gate — which is why it
+//     accepts an arbitrary Checked[T] such as Checked[string]. Routing more types to the
+//     STRICTER decoder can only reject documents; it can never claim a schema.
+func TestCodegenMakesNoStaticReturnShapeClaim(t *testing.T) {
+	// (1) The emission predicate is return-type-blind: the SAME method name answers the
+	// same way whatever it returns, and the option alone decides.
+	for _, tc := range []struct {
+		name  string
+		serve bool
+		want  bool
+	}{
+		{"serve option off", false, false},
+		{"serve option on", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := &generator{opts: Options{DeBAMLStaticServe: tc.serve}}
+			if got := g.isDeBAMLStaticServeMethod("StaticCheckedConfidence"); got != tc.want {
+				t.Fatalf("isDeBAMLStaticServeMethod = %v, want %v", got, tc.want)
+			}
+			// An UNADMITTABLE constraint shape answers identically — codegen makes no
+			// distinction, which is precisely the property admission relies on.
+			if got := g.isDeBAMLStaticServeMethod("StaticCheckedTwoChecks"); got != tc.want {
+				t.Fatalf("isDeBAMLStaticServeMethod for an unadmittable shape = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	// The dynamic method is the ONE name-based exclusion, and it is about the dynamic
+	// seam rather than about any return shape.
+	dyn := &generator{opts: Options{DeBAMLStaticServe: true, DeBAMLDynamicMethod: "Dynamic"}}
+	if dyn.isDeBAMLStaticServeMethod("Dynamic") {
+		t.Fatal("the dynamic method must not be a static serve target")
+	}
+
+	// (2) The carrier fingerprint is decoder ROUTING, not admission: it deliberately
+	// accepts a carrier admission would refuse. Asserting that here is what stops a
+	// future reader from mistaking it for the missing gate.
+	if !isCheckedConstraintCarrier(reflect.TypeOf(bamlutils.Checked[string]{})) {
+		t.Fatal("isCheckedConstraintCarrier no longer accepts Checked[string]; if it became " +
+			"admission-shaped, the comment describing it as routing is now wrong")
+	}
+
+	// (3) Codegen's Introspection genuinely cannot see a return SCHEMA — the structural
+	// reason a codegen fingerprint is impossible rather than merely absent. Stated as a
+	// field-set assertion so a future field carrying descriptors makes this test fail and
+	// forces the decision to be revisited.
+	var fields []string
+	it := reflect.TypeOf(Introspection{})
+	for i := 0; i < it.NumField(); i++ {
+		fields = append(fields, it.Field(i).Name)
+	}
+	for _, f := range fields {
+		if strings.Contains(f, "Descriptor") || strings.Contains(f, "Prompt") || strings.Contains(f, "Return") {
+			t.Fatalf("codegen's Introspection now carries %q; it can see return schemas, so the "+
+				"'no codegen fingerprint is possible' reasoning in nativeserve/admission/static.go "+
+				"must be revisited rather than left in place", f)
+		}
+	}
+	if len(fields) == 0 {
+		t.Fatal("Introspection has no fields; the scan above would be vacuous")
 	}
 }

@@ -296,7 +296,7 @@ func TestServingOracleCorpusIsWellFormed(t *testing.T) {
 // constraint — the property the boundary lock is about.
 func soBundleHasConstraint(b *schema.Bundle) bool {
 	found := false
-	soWalkTypes(b.Target, func(t schema.Type) {
+	bundleWalkTypes(b.Target, func(t schema.Type) {
 		if len(t.Meta.Constraints) > 0 {
 			found = true
 		}
@@ -306,7 +306,7 @@ func soBundleHasConstraint(b *schema.Bundle) bool {
 			found = true
 		}
 		for _, f := range c.Fields {
-			soWalkTypes(f.Type, func(t schema.Type) {
+			bundleWalkTypes(f.Type, func(t schema.Type) {
 				if len(t.Meta.Constraints) > 0 {
 					found = true
 				}
@@ -322,7 +322,7 @@ func soBundleHasConstraint(b *schema.Bundle) bool {
 	// misclassify a carrier as unconstrained, and an "unconstrained control" that
 	// actually carries a constraint asserts the opposite of what it claims.
 	for _, a := range b.StructuralRecursiveAliases {
-		soWalkTypes(a.Target, func(t schema.Type) {
+		bundleWalkTypes(a.Target, func(t schema.Type) {
 			if len(t.Meta.Constraints) > 0 {
 				found = true
 			}
@@ -549,13 +549,25 @@ func soRequireDivergenceNote(t *testing.T, f servingOracleFixture, bucket soAgre
 // (5) The boundary lock.
 // ---------------------------------------------------------------------------
 
-// TestServingOracleBoundaryLock is the UNNARROWED invariant, over every fixture:
-// a constraint-bearing bundle is refused by every production entry point, and the
-// refusal is caused by the constraint rather than by the shape.
+// TestServingOracleBoundaryLock is the boundary lock, and since de-BAML Slice 7.2b-3 it
+// is an explicit PER-ROW expected disposition rather than a blanket refusal.
 //
-// Four gates are driven, not one:
+// Three populations, each with its own requirement:
+//
+//	Unconstrained (control)   ADMITTED by the constraint cut-line, and at least one
+//	                          actually SERVES bytes.
+//	Served (4 rows)           the ONE admitted fingerprint: ADMITTED by the native-final
+//	                          support predicate and SERVED by the static unary /call
+//	                          route — while still DECLINING on the direct parse endpoints
+//	                          and through the generic shape cut-line.
+//	Constrained (49 rows)     refused by every production entry point, with the refusal
+//	                          caused by the constraint rather than by the shape.
+//
+// Six gates are driven for the declining population, not one:
 //
 //	checkSupported            the gate Parse runs
+//	checkSupportedFields      its body, pinned to agree
+//	checkSupportedType        per constrained type node
 //	SupportsNativeFinalBundle the admission predicate
 //	ParseStaticBundle         the static-final serving entry point
 //	Parse                     the dynamic entry point, reached through the same gate
@@ -564,14 +576,23 @@ func soRequireDivergenceNote(t *testing.T, f servingOracleFixture, bucket soAgre
 // element) are included with nothing carved out: since #664 walked b.Target there
 // is no exception left, and this test fails if one reappears.
 func TestServingOracleBoundaryLock(t *testing.T) {
-	constrained, controls, servedControls, attributed, namedConstraint := 0, 0, 0, 0, 0
+	constrained, controls, servedControls, attributed, namedConstraint, served := 0, 0, 0, 0, 0, 0
 	for _, f := range servingOracleFixtures {
 		t.Run(f.Name, func(t *testing.T) {
 			if f.Unconstrained {
+				if f.Served {
+					t.Fatal("a row is BOTH unconstrained and Served; Served is the constraint-bearing " +
+						"fingerprint the cutover admits")
+				}
 				controls++
 				if soRequireAdmitted(t, f) {
 					servedControls++
 				}
+				return
+			}
+			if f.Served {
+				served++
+				soRequireServed(t, f)
 				return
 			}
 			constrained++
@@ -602,14 +623,246 @@ func TestServingOracleBoundaryLock(t *testing.T) {
 		t.Fatal("no row's decline message NAMED a constraint; the constraint cut-line itself would be " +
 			"unwitnessed even though every stripped twin is admitted")
 	}
+	// The SERVED population is exactly the four companion rows — declared as data in
+	// two places that have to agree, so a fifth row cannot acquire the flag quietly and
+	// the four cannot lose it.
+	if served != len(soCompanionRowNames) {
+		t.Fatalf("%d rows carry Served but %d companion rows are named; the per-row disposition and the "+
+			"named set have parted company", served, len(soCompanionRowNames))
+	}
+	byName := map[string]servingOracleFixture{}
+	for _, f := range servingOracleFixtures {
+		byName[f.Name] = f
+	}
+	for _, name := range soCompanionRowNames {
+		f, ok := byName[name]
+		if !ok {
+			t.Fatalf("companion row %q is missing from the corpus", name)
+		}
+		if !f.Served {
+			t.Fatalf("companion row %q does not carry Served; the cutover's four-row flip would be "+
+				"unwitnessed for it", name)
+		}
+	}
 	t.Logf("boundary lock: %d constraint-bearing bundles declined by all gates, all %d attributed to their "+
 		"constraints (the stripped twin is admitted), %d of them named a constraint in the message; "+
+		"%d rows SERVED through the static unary /call route; "+
 		"%d unconstrained controls admitted (%d of them served bytes)",
-		constrained, attributed, namedConstraint, controls, servedControls)
+		constrained, attributed, namedConstraint, served, controls, servedControls)
 }
 
-// soCompanionRowNames are the four Slice 7.2b-2 serving-shaped companion rows: the
-// exact two-field fingerprint the production mapper serves, in all four outcomes.
+// soRequireServed is the per-row disposition for the FOUR rows the Slice 7.2b-3 cutover
+// admits, and it asserts BOTH halves of the boundary.
+//
+// ADMITTED: EVERY named schema gate says yes — the three generic ones
+// (checkSupported / checkSupportedFields / checkSupportedType, which since the cutover
+// consult the same fingerprint), the native-final support predicate, and its exported
+// twin (the one nativeserve's admission return-shape gate delegates to) — and the static
+// unary /call route reaches one of the two public outcomes: bytes, or the CLAIMED
+// assertion failure. DECLINED: the direct parse endpoints and the /stream admission
+// predicate keep refusing, which is the scope's "static unary /call final parsing only"
+// boundary, now expressed as a ROUTE decision rather than as a shape reject.
+//
+// Like soRequireDeclined it runs under BAML_REST_USE_DEBAML set both ways and unset, so
+// the disposition is shown to be independent of the serve-level umbrella switch.
+func soRequireServed(t *testing.T, f servingOracleFixture) {
+	t.Helper()
+	for _, flag := range []string{"true", "false", ""} {
+		soWithDeBAMLFlag(t, flag, func() {
+			if err := SupportsNativeFinalBundle(f.Bundle); err != nil {
+				t.Fatalf("BAML_REST_USE_DEBAML=%q: SupportsNativeFinalBundle DECLINED an admitted "+
+					"fingerprint: %v", flag, err)
+			}
+			if !IsAdmittedStaticCheckedFamily(f.Bundle) {
+				t.Fatalf("BAML_REST_USE_DEBAML=%q: the exported fingerprint (nativeserve's return-shape "+
+					"delegate) rejected a row the support predicate admitted", flag)
+			}
+			// The /call route reaches a PUBLIC OUTCOME: bytes, or the claimed assertion
+			// failure. A decline here would mean the row was admitted and then found
+			// unservable AFTER transport — the exact thing the scope forbids.
+			res, err := ParseStaticBundleUnaryCall(context.Background(), f.Bundle, f.Raw)
+			switch {
+			case err == nil:
+				if len(res.JSON) == 0 {
+					t.Fatalf("BAML_REST_USE_DEBAML=%q: the /call route succeeded but served no bytes", flag)
+				}
+			case errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported):
+				t.Fatalf("BAML_REST_USE_DEBAML=%q: the /call route DECLINED an admitted fingerprint (%v); "+
+					"admission happens before the socket, so a post-admission decline is a broken claim",
+					flag, err)
+			default:
+				if len(res.JSON) != 0 {
+					t.Fatalf("BAML_REST_USE_DEBAML=%q: the /call route claimed a failure but still produced "+
+						"%s bytes", flag, res.JSON)
+				}
+				// The failure must be the RENDERED STOCK ASSERTION, not merely "some
+				// non-sentinel error with no bytes". Without this the route-level proof
+				// green-lit any unrelated empty-result failure — an extraction refusal, a
+				// carrier build error, a renderer decline — as if it were the one public
+				// outcome this branch documents. checked_static_test.go proves the MAPPER
+				// produces that error class; this is the same claim for the INTEGRATED
+				// /call route, which is what a caller actually reaches.
+				if !staticCheckedIsAssertFailure(err) {
+					t.Fatalf("BAML_REST_USE_DEBAML=%q: the /call route failed with %T (%v); an admitted "+
+						"fingerprint has exactly two public outcomes, and the failing one is the "+
+						"rendered stock assertion error", flag, err, err)
+				}
+			}
+
+			// The DIRECT endpoints stay closed.
+			dres, derr := ParseStaticBundle(context.Background(), f.Bundle, f.Raw)
+			if !errors.Is(derr, bamlutils.ErrDeBAMLParseUnsupported) {
+				t.Fatalf("BAML_REST_USE_DEBAML=%q: ParseStaticBundle returned (%s, %v); the direct endpoint "+
+					"is outside the admitted route", flag, dres.JSON, derr)
+			}
+			pres, perr := Parse(context.Background(), soParseRequestFor(t, f.Bundle, f.Raw))
+			if !errors.Is(perr, bamlutils.ErrDeBAMLParseUnsupported) {
+				t.Fatalf("BAML_REST_USE_DEBAML=%q: root Parse returned (%s, %v); the direct endpoint is "+
+					"outside the admitted route", flag, pres.JSON, perr)
+			}
+
+			// And the GENERIC shape cut-line AGREES: since the cutover it answers the
+			// ONE canonical fingerprint, so these three admit exactly what the support
+			// predicate admits. A decline here would be the gates disagreeing about a
+			// single schema, which the scope calls a bug in its own right.
+			if err := checkSupported(f.Bundle); err != nil {
+				t.Fatalf("BAML_REST_USE_DEBAML=%q: checkSupported DECLINED an admitted fingerprint (%v); "+
+					"the named schema gates must share one fingerprint", flag, err)
+			}
+			if err := checkSupportedFields(f.Bundle); err != nil {
+				t.Fatalf("BAML_REST_USE_DEBAML=%q: checkSupportedFields DECLINED an admitted fingerprint "+
+					"(%v)", flag, err)
+			}
+			nodes := bundleConstrainedTypeNodes(f.Bundle)
+			if len(nodes) == 0 {
+				t.Fatalf("BAML_REST_USE_DEBAML=%q: the row carries no constrained TYPE node; "+
+					"checkSupportedType would be unasserted for it", flag)
+			}
+			for _, n := range nodes {
+				if err := checkSupportedType(f.Bundle, n); err != nil {
+					t.Fatalf("BAML_REST_USE_DEBAML=%q: checkSupportedType(%s) DECLINED the admitted "+
+						"constrained node (%v)", flag, soTypeExpr(n), err)
+				}
+			}
+			// The DYNAMIC and STREAM lanes stay closed — as a ROUTE decision now that
+			// the shape gates agree, which is what keeps this admission /call-only.
+			if err := SupportsNativeStreamBundle(f.Bundle); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+				t.Fatalf("BAML_REST_USE_DEBAML=%q: the /stream admission predicate returned %v; the "+
+					"stream lane is a zero-socket decline for this fingerprint", flag, err)
+			}
+		})
+	}
+}
+
+// TestServingOracleSiblingsStillDeclineBeforeTransport is the guard the scope requires
+// beside the four-row flip, at the ORACLE's own boundary.
+//
+// Each row is ONE property away from an admitted companion row — a second check, a
+// duplicate label, an alias, a reordered pair, a different predicate, a non-ASCII
+// label, a renamed class — and each must be refused by the admission-time predicates
+// BEFORE any socket, and by every parse entry point.
+//
+// It is asserted here, beside the corpus, because these are the shapes the corpus's
+// admitted rows are nearest to; internal/debaml's own untagged sweep
+// (TestStaticCheckedOnePropertySiblingsDeclineEverywhere) covers the same property over
+// a wider set without the CFFI.
+func TestServingOracleSiblingsStillDeclineBeforeTransport(t *testing.T) {
+	base := func() *schema.Bundle {
+		return soBundle(soClassType("StaticCheckedAnswer"),
+			[]schema.ClassDef{soClassOf("StaticCheckedAnswer", []schema.ClassField{
+				soField("answer", stringType()),
+				soField("confidence", soWith(intType(), soCheck("positive", "this > 0"))),
+			})}, nil)
+	}
+	// CONTROL: the base IS the admitted fingerprint, so every rejection below is
+	// attributable to the one property that was changed.
+	if err := SupportsNativeFinalBundle(base()); err != nil {
+		t.Fatalf("the sibling base is NOT the admitted fingerprint (%v); every assertion below is vacuous", err)
+	}
+
+	alias := func(s string) *string { return &s }
+	mutate := func(fn func(*schema.Bundle)) *schema.Bundle {
+		b := base()
+		fn(b)
+		return b
+	}
+	const raw = `{"answer":"sunny","confidence":9}`
+	siblings := []struct {
+		name string
+		b    *schema.Bundle
+	}{
+		{"a second check", mutate(func(b *schema.Bundle) {
+			b.Classes[0].Fields[1].Type.Meta.Constraints = append(
+				b.Classes[0].Fields[1].Type.Meta.Constraints,
+				schema.Constraint{Level: schema.ConstraintCheck, Expression: "this > 5", Label: alias("big")})
+		})},
+		{"a duplicate check label", mutate(func(b *schema.Bundle) {
+			b.Classes[0].Fields[1].Type.Meta.Constraints = append(
+				b.Classes[0].Fields[1].Type.Meta.Constraints,
+				schema.Constraint{Level: schema.ConstraintCheck, Expression: "this > 5", Label: alias("positive")})
+		})},
+		{"a check plus an assert", mutate(func(b *schema.Bundle) {
+			b.Classes[0].Fields[1].Type.Meta.Constraints = append(
+				b.Classes[0].Fields[1].Type.Meta.Constraints,
+				schema.Constraint{Level: schema.ConstraintAssert, Expression: "this > 5", Label: alias("big")})
+		})},
+		{"an aliased field", mutate(func(b *schema.Bundle) {
+			b.Classes[0].Fields[1].Name.Alias = alias("score")
+		})},
+		{"the two fields in the other order", mutate(func(b *schema.Bundle) {
+			f := b.Classes[0].Fields
+			f[0], f[1] = f[1], f[0]
+		})},
+		{"a different predicate", soBundle(soClassType("StaticCheckedAnswer"),
+			[]schema.ClassDef{soClassOf("StaticCheckedAnswer", []schema.ClassField{
+				soField("answer", stringType()),
+				soField("confidence", soWith(intType(), soCheck("positive", "this >= 0"))),
+			})}, nil)},
+		{"a non-ASCII label", soBundle(soClassType("StaticCheckedAnswer"),
+			[]schema.ClassDef{soClassOf("StaticCheckedAnswer", []schema.ClassField{
+				soField("answer", stringType()),
+				soField("confidence", soWith(intType(), soCheck("positifé", "this > 0"))),
+			})}, nil)},
+		{"a renamed class", soBundle(soClassType("SomeOtherAnswer"),
+			[]schema.ClassDef{soClassOf("SomeOtherAnswer", []schema.ClassField{
+				soField("answer", stringType()),
+				soField("confidence", soWith(intType(), soCheck("positive", "this > 0"))),
+			})}, nil)},
+	}
+	for _, s := range siblings {
+		t.Run(s.name, func(t *testing.T) {
+			// PRE-SOCKET: admission never sees a supported shape, so no socket can open.
+			if err := SupportsNativeFinalBundle(s.b); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+				t.Errorf("SupportsNativeFinalBundle ADMITTED a one-property sibling: %v", err)
+			}
+			if IsAdmittedStaticCheckedFamily(s.b) {
+				t.Error("the exported fingerprint ADMITTED a one-property sibling; nativeserve's " +
+					"return-shape gate would let it claim a socket")
+			}
+			// …and every parse entry point refuses it too, so a sibling that somehow
+			// reached one could still not be served.
+			for _, tc := range []struct {
+				name  string
+				parse func(context.Context, *schema.Bundle, string) (bamlutils.DeBAMLParseResult, error)
+			}{
+				{"ParseStaticBundleUnaryCall", ParseStaticBundleUnaryCall},
+				{"ParseStaticBundle", ParseStaticBundle},
+			} {
+				res, err := tc.parse(context.Background(), s.b, raw)
+				if !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+					t.Errorf("%s returned (%s, %v) for a one-property sibling; want the decline sentinel",
+						tc.name, res.JSON, err)
+				}
+				if len(res.JSON) != 0 {
+					t.Errorf("%s declined a sibling but still produced %s bytes", tc.name, res.JSON)
+				}
+			}
+		})
+	}
+}
+
+// soCompanionRowNames are the four Slice 7.2b-3 serving-shaped companion rows: the
+// exact two-field fingerprint native now SERVES, in all four outcomes.
 //
 // They are listed EXPLICITLY rather than discovered by a name prefix, so a row that
 // was renamed or dropped fails the guard instead of silently emptying it.
@@ -620,18 +873,15 @@ var soCompanionRowNames = []string{
 	"static_answer_confidence_assert_fail",
 }
 
-// TestServingOracleCompanionRowsAreTheAdmittedFingerprint is what makes the four
-// companion rows' decline mean something.
+// TestServingOracleCompanionRowsAreTheAdmittedFingerprint ties the corpus rows to the
+// production classifier and to the mapper's byte proof.
 //
-// TestServingOracleBoundaryLock already refuses them through every gate — but so it
-// would if their shape were simply unrecognised. This proves the opposite: each row IS
-// the fingerprint the 7.2b-2 mapper classifies and serves, so the ONLY thing refusing
-// them is the non-admitting seam, and 7.2b-3's flip is a change of one constant rather
-// than of the shape they describe.
-//
-// It also drives the mapper over each row's own raw text, so the corpus rows and the
-// mapper's byte proof (checked_static_test.go) are known to be about the same four
-// shapes rather than two similar-looking sets.
+// TestServingOracleBoundaryLock requires these four to be SERVED — but it would say the
+// same for four rows that happened to be admitted for some other reason. This proves
+// they are the fingerprint staticCheckedProfileOf classifies, and drives the mapper over
+// each row's own raw text, so the corpus rows and the mapper's byte proof
+// (checked_static_test.go) are known to be about the same four shapes rather than two
+// similar-looking sets.
 func TestServingOracleCompanionRowsAreTheAdmittedFingerprint(t *testing.T) {
 	byName := map[string]servingOracleFixture{}
 	for _, f := range servingOracleFixtures {
@@ -668,10 +918,11 @@ func TestServingOracleCompanionRowsAreTheAdmittedFingerprint(t *testing.T) {
 			default:
 				t.Fatalf("the mapper neither served nor rejected the row: %v", err)
 			}
-			// And the seam is still shut for it.
-			if serr := SupportsNativeFinalBundle(f.Bundle); !errors.Is(serr, bamlutils.ErrDeBAMLParseUnsupported) {
-				t.Fatalf("SupportsNativeFinalBundle returned %v for a companion row; the seam must stay "+
-					"closed until 7.2b-3", serr)
+			// And the cutover really admits it: the mapper's outcome above is what the
+			// route serves, not what a closed gate keeps to itself.
+			if serr := SupportsNativeFinalBundle(f.Bundle); serr != nil {
+				t.Fatalf("SupportsNativeFinalBundle DECLINED a companion row (%v); the mapper outcome "+
+					"above would never reach a caller", serr)
 			}
 		})
 	}
@@ -744,7 +995,7 @@ func soRequireDeclined(t *testing.T, f servingOracleFixture) (attributedToConstr
 			// checkSupportedType is driven on EVERY constrained type node of the
 			// fixture, which for a target-level row is the return type itself and for a
 			// list/map/union row is the nested node the constraint sits on.
-			nodes := soConstrainedTypeNodes(f.Bundle)
+			nodes := bundleConstrainedTypeNodes(f.Bundle)
 			if len(nodes) == 0 && !soBundleHasDeclarationConstraint(f.Bundle) {
 				t.Fatalf("%s carries no constrained TYPE node and no class/enum declaration constraint; "+
 					"checkSupportedType would be unasserted for it", f.Name)
@@ -790,31 +1041,6 @@ func soRequireDeclined(t *testing.T, f servingOracleFixture) (attributedToConstr
 	return attributed, namedConstraint
 }
 
-// soConstrainedTypeNodes returns every TYPE node of a bundle that carries a
-// constraint — the target, its nested nodes, and every class field's type tree.
-//
-// These are exactly the nodes checkSupportedType is responsible for. A class-level
-// or enum-level constraint is NOT one of them (it lives on the definition, which
-// checkSupportedType never sees), so claiming a decline for it would be asserting
-// something that function does not do.
-func soConstrainedTypeNodes(b *schema.Bundle) []schema.Type {
-	var out []schema.Type
-	collect := func(t schema.Type) {
-		soWalkTypes(t, func(n schema.Type) {
-			if len(n.Meta.Constraints) > 0 {
-				out = append(out, n)
-			}
-		})
-	}
-	collect(b.Target)
-	for _, c := range b.Classes {
-		for _, f := range c.Fields {
-			collect(f.Type)
-		}
-	}
-	return out
-}
-
 // soBundleHasDeclarationConstraint reports a constraint on a class or enum
 // DEFINITION, which checkSupportedFields owns and checkSupportedType does not.
 func soBundleHasDeclarationConstraint(b *schema.Bundle) bool {
@@ -843,7 +1069,7 @@ func soBundleHasDeclarationConstraint(b *schema.Bundle) bool {
 // declining a bundle that merely resembles the fixture's.
 func soParseRequestFor(t *testing.T, b *schema.Bundle, raw string) bamlutils.DeBAMLParseRequest {
 	t.Helper()
-	desc := soDescriptorFor(b)
+	desc := bundleDescriptorFor(b)
 	lowered, err := schema.FromStaticDescriptor(desc)
 	if err != nil {
 		t.Fatalf("the descriptor derived from the fixture does not lower: %v", err)
