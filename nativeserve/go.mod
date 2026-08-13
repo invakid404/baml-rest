@@ -80,9 +80,9 @@ go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260813122840-e484b3ba55ce
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260813122840-e484b3ba55ce
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260813122840-e484b3ba55ce
+	github.com/invakid404/baml-rest v0.0.0-20260813140859-b8d4bb0861fa
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260813140859-b8d4bb0861fa
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260813140859-b8d4bb0861fa
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/viktordanov/nanollm-ffi/go v0.4.3
