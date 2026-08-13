@@ -141,7 +141,14 @@ func (s *Server) ServeStatic(ctx context.Context, inv bamlutils.NativeStaticInvo
 		Prepared: claim.Prepared,
 		Executor: s.exec,
 		ParseResponse: func(pctx context.Context, raw string) ([]byte, error) {
-			parsed, perr := debaml.ParseStaticBundle(pctx, bundle, raw)
+			// De-BAML Slice 7.2b-3: the STATIC UNARY /call route — the ONE route the
+			// scope admits the checked-static fingerprint on — so it calls the
+			// capability-carrying entry point rather than the bare one. For every other
+			// bundle ParseStaticBundleUnaryCall IS ParseStaticBundle, so nothing else
+			// moves; for the fingerprint it is the difference between serving the
+			// Checked[T] carrier / stock's assertion error and declining. The shadow
+			// comparator next door deliberately keeps the DIRECT entry point.
+			parsed, perr := debaml.ParseStaticBundleUnaryCall(pctx, bundle, raw)
 			if perr != nil {
 				return nil, perr
 			}
@@ -180,8 +187,20 @@ func (s *Server) mapStaticAttempt(ctx context.Context, inv bamlutils.NativeStati
 		if res.SAPInvoked {
 			// CLAIMED native SAP parse failure -> ErrOutputParse + the extracted
 			// assistant text as details.raw (mirrors BAML's parse_error envelope).
+			//
+			// The `buildrequest: failed to parse final result: ` PREFIX is part of that
+			// envelope, not decoration: BAML's own final-parse site wraps identically
+			// (call_orchestrator.go's parseFinal branch), and the orchestrator hands a
+			// native failure straight to the outer policy without adding anything. Without
+			// it the two engines rendered DIFFERENT error strings for the same rejected
+			// response — measured by the Slice 7.2b-3 live differential, whose false-@assert
+			// row runs the same fixture flag-on and flag-off and byte-compares err.Error().
+			// The wrapped cause is untouched, so the stock ParsingError bytes inside are
+			// still exactly what the CFFI produced.
 			s.metrics.RecordServeOutcome(admission.ModeCall, inv.Provider, admission.OutcomeParseError)
-			return failStaticResult(&buildrequest.OutputParseError{Err: aerr}, res.Raw)
+			return failStaticResult(&buildrequest.OutputParseError{
+				Err: fmt.Errorf("buildrequest: failed to parse final result: %w", aerr),
+			}, res.Raw)
 		}
 		// Translate / non-JSON-2xx / assistant-extraction failure -> today's extraction
 		// error class with the raw upstream body retained as details.raw.

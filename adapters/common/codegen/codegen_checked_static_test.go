@@ -108,8 +108,14 @@ func TestCheckedStaticRoutingIsProvenToBite(t *testing.T) {
 	}
 }
 
-// TestCheckedStaticCarrierFingerprintIsNarrow drives the fingerprint over one-property
+// TestCheckedStaticCarrierFingerprintIsNarrow drives the fingerprint over CARRIER-SHAPE
 // siblings, so a recognition is attributable to the shape rather than to a loose match.
+//
+// The corpus is deliberately mixed and is NOT wholly one-property: the mutated carriers
+// (an extra field, a renamed or re-tagged value field, checks as a list, checks keyed by
+// int, the check fields permuted) each differ from the real carrier in ONE property,
+// while the two fixture structs, the scalar and the map are whole shapes the decoder must
+// never route as a carrier at all.
 func TestCheckedStaticCarrierFingerprintIsNarrow(t *testing.T) {
 	type check struct {
 		Name       string `json:"name"`
