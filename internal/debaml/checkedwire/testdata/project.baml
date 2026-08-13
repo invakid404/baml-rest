@@ -146,6 +146,24 @@ function CW_CauseExpr101Probe(topic: string) -> int @check(t, {{ this > 100 and 
   prompt #"{{ topic }} {{ ctx.output_format }}"#
 }
 
+// EXPRESSION TEXT: `{{this > 0}}` — no padding at all.
+function CW_ExprPadNone(topic: string) -> int @check(pad0, {{this > 0}}) {
+  client CheckedWireClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+// EXPRESSION TEXT: `{{ this > 0 }}` — the ordinary one-space form every fixture writes.
+function CW_ExprPadOne(topic: string) -> int @check(pad1, {{ this > 0 }}) {
+  client CheckedWireClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
+// EXPRESSION TEXT: `{{  this > 0  }}` — two spaces each side, the padding the fingerprint DECLINES.
+function CW_ExprPadTwo(topic: string) -> int @check(pad2, {{  this > 0  }}) {
+  client CheckedWireClient
+  prompt #"{{ topic }} {{ ctx.output_format }}"#
+}
+
 // ERROR BYTES: an expression that fails to EVALUATE. Stock reports `Failed to evaluate constraints:` and must NOT turn it into a failed check.
 function CW_EvaluatorError(topic: string) -> int @check(ev, {{ this|urlencode }}) {
   client CheckedWireClient

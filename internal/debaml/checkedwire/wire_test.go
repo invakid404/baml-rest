@@ -61,6 +61,52 @@ const (
 	wireNestedCheckDuplicateKey = `{"answer":"first","confidence":{"value":9,"checks":{"positive":{"name":"positive","expression":"this > 0","status":"succeeded"}}}}`
 )
 
+// De-BAML Slice 7.2b-3 — what stock puts in `Check.Expression` for a `{{ EXPR }}`
+// attribute, for zero, one and two spaces of padding.
+//
+// This is the relationship the admitted fingerprint depends on and could not assume.
+// A generated static method's descriptor carries the attribute text with the `{{`/`}}`
+// delimiters stripped and the padding KEPT — the staticserve fixture's descriptor for
+// `{{ this > 0 }}` is literally " this > 0 " — while the string stock emits is a
+// different one. These are the measured pairs; nothing extrapolates past them.
+const (
+	wireExprPadNone = `{"value":5,"checks":{"pad0":{"name":"pad0","expression":"this > 0","status":"succeeded"}}}`
+	wireExprPadOne  = `{"value":5,"checks":{"pad1":{"name":"pad1","expression":"this > 0","status":"succeeded"}}}`
+	wireExprPadTwo  = `{"value":5,"checks":{"pad2":{"name":"pad2","expression":"this > 0","status":"succeeded"}}}`
+)
+
+// TestStockExpressionTextIsPaddingIndependent measures what stock emits for the three
+// paddings, so the fingerprint's normalisation rule is a captured fact.
+//
+// It reads `Check.Expression` DIRECTLY as well as through the wire bytes: the wire
+// comparison alone could pass on a carrier that dropped the field entirely.
+func TestStockExpressionTextIsPaddingIndependent(t *testing.T) {
+	for _, tc := range []struct{ fixture, label, want, wire string }{
+		{"ExprPadNone", "pad0", "this > 0", wireExprPadNone},
+		{"ExprPadOne", "pad1", "this > 0", wireExprPadOne},
+		{"ExprPadTwo", "pad2", "this > 0", wireExprPadTwo},
+	} {
+		t.Run(tc.fixture, func(t *testing.T) {
+			stock := cwStockChecked(t, tc.fixture)
+			got, ok := stock.Checks[tc.label]
+			if !ok {
+				t.Fatalf("stock reported no check under %q: %v", tc.label, stock.Checks)
+			}
+			if got.Expression != tc.want {
+				t.Fatalf("stock Check.Expression = %s, want %s", strconv.Quote(got.Expression), strconv.Quote(tc.want))
+			}
+			cwRequireSonicBytes(t, "stock", stock, tc.wire)
+		})
+	}
+	// DISCRIMINATING: the three literals must be distinguishable from a padded form,
+	// or "stock trims" would be unfalsifiable here.
+	for _, w := range []string{wireExprPadNone, wireExprPadOne, wireExprPadTwo} {
+		if strings.Contains(w, `"expression":" `) || strings.Contains(w, ` ","status"`) {
+			t.Fatalf("a pinned literal carries padding in the expression: %s", w)
+		}
+	}
+}
+
 // errNestedAssertFail is the UNMODIFIED stock `err.Error()` for the assert twin with
 // the predicate FALSE: no value at all, and the required-field wrapper chain around
 // the two-field class. It is the authority for the native assertion renderer.

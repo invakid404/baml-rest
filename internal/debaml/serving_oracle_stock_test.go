@@ -170,34 +170,6 @@ func soCheckedValueName(t schema.Type) string {
 	return string(t.Kind)
 }
 
-// soWalkTypes yields t and every type nested inside it.
-func soWalkTypes(t schema.Type, fn func(schema.Type)) {
-	fn(t)
-	if t.Elem != nil {
-		soWalkTypes(*t.Elem, fn)
-	}
-	if t.Key != nil {
-		soWalkTypes(*t.Key, fn)
-	}
-	if t.Value != nil {
-		soWalkTypes(*t.Value, fn)
-	}
-	for _, it := range t.Items {
-		soWalkTypes(it, fn)
-	}
-	if t.Union != nil {
-		for _, v := range t.Union.Variants {
-			soWalkTypes(v, fn)
-		}
-	}
-	if t.Arrow != nil {
-		for _, p := range t.Arrow.Params {
-			soWalkTypes(p, fn)
-		}
-		soWalkTypes(t.Arrow.Return, fn)
-	}
-}
-
 // soBuildTypeMap derives the process-global BAML type map from the corpus.
 //
 // extra carries bundles that are driven through the CFFI but are not corpus rows —
@@ -222,12 +194,12 @@ func soBuildTypeMap(fixtures []servingOracleFixture, extra []*schema.Bundle) map
 			tm["TYPES."+c.Name.Name] = clsT
 			tm["CHECKED_TYPES."+c.Name.Name] = chkT
 			for _, fld := range c.Fields {
-				soWalkTypes(fld.Type, func(t schema.Type) {
+				bundleWalkTypes(fld.Type, func(t schema.Type) {
 					tm["CHECKED_TYPES."+soCheckedValueName(t)] = chkT
 				})
 			}
 		}
-		soWalkTypes(pr.Bundle.Target, func(t schema.Type) {
+		bundleWalkTypes(pr.Bundle.Target, func(t schema.Type) {
 			tm["CHECKED_TYPES."+soCheckedValueName(t)] = chkT
 		})
 	}
@@ -239,7 +211,7 @@ func soBuildTypeMap(fixtures []servingOracleFixture, extra []*schema.Bundle) map
 			tm["TYPES."+c.Name.Name] = clsT
 			tm["CHECKED_TYPES."+c.Name.Name] = chkT
 			for _, fld := range c.Fields {
-				soWalkTypes(fld.Type, func(t schema.Type) {
+				bundleWalkTypes(fld.Type, func(t schema.Type) {
 					tm["CHECKED_TYPES."+soCheckedValueName(t)] = chkT
 				})
 			}
@@ -248,7 +220,7 @@ func soBuildTypeMap(fixtures []servingOracleFixture, extra []*schema.Bundle) map
 			tm["TYPES."+e.Name.Name] = enumT
 			tm["CHECKED_TYPES."+e.Name.Name] = chkT
 		}
-		soWalkTypes(b.Target, func(t schema.Type) {
+		bundleWalkTypes(b.Target, func(t schema.Type) {
 			tm["CHECKED_TYPES."+soCheckedValueName(t)] = chkT
 		})
 	}
@@ -260,7 +232,7 @@ func soBuildTypeMap(fixtures []servingOracleFixture, extra []*schema.Bundle) map
 			tm["TYPES."+c.Name.Name] = clsT
 			tm["CHECKED_TYPES."+c.Name.Name] = chkT
 			for _, fld := range c.Fields {
-				soWalkTypes(fld.Type, func(t schema.Type) {
+				bundleWalkTypes(fld.Type, func(t schema.Type) {
 					tm["CHECKED_TYPES."+soCheckedValueName(t)] = chkT
 				})
 			}
@@ -269,7 +241,7 @@ func soBuildTypeMap(fixtures []servingOracleFixture, extra []*schema.Bundle) map
 			tm["TYPES."+e.Name.Name] = enumT
 			tm["CHECKED_TYPES."+e.Name.Name] = chkT
 		}
-		soWalkTypes(f.Bundle.Target, func(t schema.Type) {
+		bundleWalkTypes(f.Bundle.Target, func(t schema.Type) {
 			tm["CHECKED_TYPES."+soCheckedValueName(t)] = chkT
 		})
 	}
@@ -716,10 +688,10 @@ func TestServingOracleTypeMapCoversTheCorpus(t *testing.T) {
 			}
 			checkedSeen[key] = true
 		}
-		soWalkTypes(f.Bundle.Target, want)
+		bundleWalkTypes(f.Bundle.Target, want)
 		for _, c := range f.Bundle.Classes {
 			for _, fld := range c.Fields {
-				soWalkTypes(fld.Type, want)
+				bundleWalkTypes(fld.Type, want)
 			}
 		}
 	}

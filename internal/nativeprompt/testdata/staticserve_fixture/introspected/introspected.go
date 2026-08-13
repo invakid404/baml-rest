@@ -19,49 +19,49 @@ import (
 var Stream = bamlclient.Stream
 
 // StreamMethods is a map from method name to argument names
-var StreamMethods = map[string][]string{"StaticAssertConfidence": []string{"topic"}, "StaticCheckedConfidence": []string{"topic"}, "StaticCompletion": []string{"topic"}, "StaticCompletionOutputFormat": []string{"topic"}, "StaticEnumArgCanonicalEq": []string{"color"}, "StaticEnumArgMemberEq": []string{"color"}, "StaticEnumCanonicalArgEq": []string{"color"}, "StaticEnumCanonicalEq": []string{}, "StaticEnumCanonicalInMemberList": []string{}, "StaticEnumDifferentMemberEq": []string{}, "StaticEnumDisplayAliasEq": []string{}, "StaticEnumMemberArgEq": []string{"color"}, "StaticEnumMemberInCanonicalList": []string{}, "StaticEnumReverseCanonicalEq": []string{}, "StaticEnumSameMemberEq": []string{}, "StaticMediaImage": []string{"img"}, "StaticMediaImageList": []string{"imgs"}, "StaticMediaInClass": []string{"bundle"}, "StaticOutputFormat": []string{"topic"}, "StaticPrimitiveArgs": []string{"text", "count", "ratio", "flag"}, "StaticRecursiveA": []string{"topic"}, "StaticRecursiveAliasJSON": []string{"topic"}, "StaticRecursiveAliasJsonValue": []string{"topic"}, "StaticRecursiveAliasJsonValueReordered": []string{"topic"}, "StaticRecursiveB": []string{"topic"}, "StaticRecursiveLoop": []string{"topic"}, "StaticRecursiveNode": []string{"topic"}, "StaticRecursiveNodeAnn": []string{"topic"}, "StaticRenderEnum": []string{"color"}, "StaticRenderList": []string{"colors"}, "StaticRenderPalette": []string{"palette"}, "StaticRenderPalettes": []string{"palettes"}, "StaticRenderStrings": []string{"tags"}, "StaticRoleChat": []string{"topic", "count"}, "StaticStreamAliasEq": []string{"color"}, "StaticStreamRenderEnum": []string{"color"}}
+var StreamMethods = map[string][]string{"StaticAssertConfidence": []string{"topic"}, "StaticCheckedAliasedField": []string{"topic"}, "StaticCheckedConfidence": []string{"topic"}, "StaticCheckedFloat": []string{"topic"}, "StaticCheckedGtePredicate": []string{"topic"}, "StaticCheckedList": []string{"topic"}, "StaticCheckedNonAsciiLabel": []string{"topic"}, "StaticCheckedOptional": []string{"topic"}, "StaticCheckedRenamedClass": []string{"topic"}, "StaticCheckedReordered": []string{"topic"}, "StaticCheckedTwoChecks": []string{"topic"}, "StaticCheckedUnion": []string{"topic"}, "StaticCompletion": []string{"topic"}, "StaticCompletionOutputFormat": []string{"topic"}, "StaticEnumArgCanonicalEq": []string{"color"}, "StaticEnumArgMemberEq": []string{"color"}, "StaticEnumCanonicalArgEq": []string{"color"}, "StaticEnumCanonicalEq": []string{}, "StaticEnumCanonicalInMemberList": []string{}, "StaticEnumDifferentMemberEq": []string{}, "StaticEnumDisplayAliasEq": []string{}, "StaticEnumMemberArgEq": []string{"color"}, "StaticEnumMemberInCanonicalList": []string{}, "StaticEnumReverseCanonicalEq": []string{}, "StaticEnumSameMemberEq": []string{}, "StaticMediaImage": []string{"img"}, "StaticMediaImageList": []string{"imgs"}, "StaticMediaInClass": []string{"bundle"}, "StaticOutputFormat": []string{"topic"}, "StaticPrimitiveArgs": []string{"text", "count", "ratio", "flag"}, "StaticRecursiveA": []string{"topic"}, "StaticRecursiveAliasJSON": []string{"topic"}, "StaticRecursiveAliasJsonValue": []string{"topic"}, "StaticRecursiveAliasJsonValueReordered": []string{"topic"}, "StaticRecursiveB": []string{"topic"}, "StaticRecursiveLoop": []string{"topic"}, "StaticRecursiveNode": []string{"topic"}, "StaticRecursiveNodeAnn": []string{"topic"}, "StaticRenderEnum": []string{"color"}, "StaticRenderList": []string{"colors"}, "StaticRenderPalette": []string{"palette"}, "StaticRenderPalettes": []string{"palettes"}, "StaticRenderStrings": []string{"tags"}, "StaticRoleChat": []string{"topic", "count"}, "StaticStreamAliasEq": []string{"color"}, "StaticStreamRenderEnum": []string{"color"}}
 
 // SyncMethods maps sync function names to their argument names
-var SyncMethods = map[string][]string{"StaticAssertConfidence": []string{"topic"}, "StaticCheckedConfidence": []string{"topic"}, "StaticCompletion": []string{"topic"}, "StaticCompletionOutputFormat": []string{"topic"}, "StaticEnumArgCanonicalEq": []string{"color"}, "StaticEnumArgMemberEq": []string{"color"}, "StaticEnumCanonicalArgEq": []string{"color"}, "StaticEnumCanonicalEq": []string{}, "StaticEnumCanonicalInMemberList": []string{}, "StaticEnumDifferentMemberEq": []string{}, "StaticEnumDisplayAliasEq": []string{}, "StaticEnumMemberArgEq": []string{"color"}, "StaticEnumMemberInCanonicalList": []string{}, "StaticEnumReverseCanonicalEq": []string{}, "StaticEnumSameMemberEq": []string{}, "StaticMediaImage": []string{"img"}, "StaticMediaImageList": []string{"imgs"}, "StaticMediaInClass": []string{"bundle"}, "StaticOutputFormat": []string{"topic"}, "StaticPrimitiveArgs": []string{"text", "count", "ratio", "flag"}, "StaticRecursiveA": []string{"topic"}, "StaticRecursiveAliasJSON": []string{"topic"}, "StaticRecursiveAliasJsonValue": []string{"topic"}, "StaticRecursiveAliasJsonValueReordered": []string{"topic"}, "StaticRecursiveB": []string{"topic"}, "StaticRecursiveLoop": []string{"topic"}, "StaticRecursiveNode": []string{"topic"}, "StaticRecursiveNodeAnn": []string{"topic"}, "StaticRenderEnum": []string{"color"}, "StaticRenderList": []string{"colors"}, "StaticRenderPalette": []string{"palette"}, "StaticRenderPalettes": []string{"palettes"}, "StaticRenderStrings": []string{"tags"}, "StaticRoleChat": []string{"topic", "count"}, "StaticStreamAliasEq": []string{"color"}, "StaticStreamRenderEnum": []string{"color"}}
+var SyncMethods = map[string][]string{"StaticAssertConfidence": []string{"topic"}, "StaticCheckedAliasedField": []string{"topic"}, "StaticCheckedConfidence": []string{"topic"}, "StaticCheckedFloat": []string{"topic"}, "StaticCheckedGtePredicate": []string{"topic"}, "StaticCheckedList": []string{"topic"}, "StaticCheckedNonAsciiLabel": []string{"topic"}, "StaticCheckedOptional": []string{"topic"}, "StaticCheckedRenamedClass": []string{"topic"}, "StaticCheckedReordered": []string{"topic"}, "StaticCheckedTwoChecks": []string{"topic"}, "StaticCheckedUnion": []string{"topic"}, "StaticCompletion": []string{"topic"}, "StaticCompletionOutputFormat": []string{"topic"}, "StaticEnumArgCanonicalEq": []string{"color"}, "StaticEnumArgMemberEq": []string{"color"}, "StaticEnumCanonicalArgEq": []string{"color"}, "StaticEnumCanonicalEq": []string{}, "StaticEnumCanonicalInMemberList": []string{}, "StaticEnumDifferentMemberEq": []string{}, "StaticEnumDisplayAliasEq": []string{}, "StaticEnumMemberArgEq": []string{"color"}, "StaticEnumMemberInCanonicalList": []string{}, "StaticEnumReverseCanonicalEq": []string{}, "StaticEnumSameMemberEq": []string{}, "StaticMediaImage": []string{"img"}, "StaticMediaImageList": []string{"imgs"}, "StaticMediaInClass": []string{"bundle"}, "StaticOutputFormat": []string{"topic"}, "StaticPrimitiveArgs": []string{"text", "count", "ratio", "flag"}, "StaticRecursiveA": []string{"topic"}, "StaticRecursiveAliasJSON": []string{"topic"}, "StaticRecursiveAliasJsonValue": []string{"topic"}, "StaticRecursiveAliasJsonValueReordered": []string{"topic"}, "StaticRecursiveB": []string{"topic"}, "StaticRecursiveLoop": []string{"topic"}, "StaticRecursiveNode": []string{"topic"}, "StaticRecursiveNodeAnn": []string{"topic"}, "StaticRenderEnum": []string{"color"}, "StaticRenderList": []string{"colors"}, "StaticRenderPalette": []string{"palette"}, "StaticRenderPalettes": []string{"palettes"}, "StaticRenderStrings": []string{"tags"}, "StaticRoleChat": []string{"topic", "count"}, "StaticStreamAliasEq": []string{"color"}, "StaticStreamRenderEnum": []string{"color"}}
 
 // SyncFuncs maps sync function names to their function values (for reflection)
-var SyncFuncs = map[string]any{"StaticAssertConfidence": bamlclient.StaticAssertConfidence, "StaticCheckedConfidence": bamlclient.StaticCheckedConfidence, "StaticCompletion": bamlclient.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.StaticCompletionOutputFormat, "StaticEnumArgCanonicalEq": bamlclient.StaticEnumArgCanonicalEq, "StaticEnumArgMemberEq": bamlclient.StaticEnumArgMemberEq, "StaticEnumCanonicalArgEq": bamlclient.StaticEnumCanonicalArgEq, "StaticEnumCanonicalEq": bamlclient.StaticEnumCanonicalEq, "StaticEnumCanonicalInMemberList": bamlclient.StaticEnumCanonicalInMemberList, "StaticEnumDifferentMemberEq": bamlclient.StaticEnumDifferentMemberEq, "StaticEnumDisplayAliasEq": bamlclient.StaticEnumDisplayAliasEq, "StaticEnumMemberArgEq": bamlclient.StaticEnumMemberArgEq, "StaticEnumMemberInCanonicalList": bamlclient.StaticEnumMemberInCanonicalList, "StaticEnumReverseCanonicalEq": bamlclient.StaticEnumReverseCanonicalEq, "StaticEnumSameMemberEq": bamlclient.StaticEnumSameMemberEq, "StaticMediaImage": bamlclient.StaticMediaImage, "StaticMediaImageList": bamlclient.StaticMediaImageList, "StaticMediaInClass": bamlclient.StaticMediaInClass, "StaticOutputFormat": bamlclient.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.StaticRecursiveA, "StaticRecursiveAliasJSON": bamlclient.StaticRecursiveAliasJSON, "StaticRecursiveAliasJsonValue": bamlclient.StaticRecursiveAliasJsonValue, "StaticRecursiveAliasJsonValueReordered": bamlclient.StaticRecursiveAliasJsonValueReordered, "StaticRecursiveB": bamlclient.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.StaticRecursiveNode, "StaticRecursiveNodeAnn": bamlclient.StaticRecursiveNodeAnn, "StaticRenderEnum": bamlclient.StaticRenderEnum, "StaticRenderList": bamlclient.StaticRenderList, "StaticRenderPalette": bamlclient.StaticRenderPalette, "StaticRenderPalettes": bamlclient.StaticRenderPalettes, "StaticRenderStrings": bamlclient.StaticRenderStrings, "StaticRoleChat": bamlclient.StaticRoleChat, "StaticStreamAliasEq": bamlclient.StaticStreamAliasEq, "StaticStreamRenderEnum": bamlclient.StaticStreamRenderEnum}
+var SyncFuncs = map[string]any{"StaticAssertConfidence": bamlclient.StaticAssertConfidence, "StaticCheckedAliasedField": bamlclient.StaticCheckedAliasedField, "StaticCheckedConfidence": bamlclient.StaticCheckedConfidence, "StaticCheckedFloat": bamlclient.StaticCheckedFloat, "StaticCheckedGtePredicate": bamlclient.StaticCheckedGtePredicate, "StaticCheckedList": bamlclient.StaticCheckedList, "StaticCheckedNonAsciiLabel": bamlclient.StaticCheckedNonAsciiLabel, "StaticCheckedOptional": bamlclient.StaticCheckedOptional, "StaticCheckedRenamedClass": bamlclient.StaticCheckedRenamedClass, "StaticCheckedReordered": bamlclient.StaticCheckedReordered, "StaticCheckedTwoChecks": bamlclient.StaticCheckedTwoChecks, "StaticCheckedUnion": bamlclient.StaticCheckedUnion, "StaticCompletion": bamlclient.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.StaticCompletionOutputFormat, "StaticEnumArgCanonicalEq": bamlclient.StaticEnumArgCanonicalEq, "StaticEnumArgMemberEq": bamlclient.StaticEnumArgMemberEq, "StaticEnumCanonicalArgEq": bamlclient.StaticEnumCanonicalArgEq, "StaticEnumCanonicalEq": bamlclient.StaticEnumCanonicalEq, "StaticEnumCanonicalInMemberList": bamlclient.StaticEnumCanonicalInMemberList, "StaticEnumDifferentMemberEq": bamlclient.StaticEnumDifferentMemberEq, "StaticEnumDisplayAliasEq": bamlclient.StaticEnumDisplayAliasEq, "StaticEnumMemberArgEq": bamlclient.StaticEnumMemberArgEq, "StaticEnumMemberInCanonicalList": bamlclient.StaticEnumMemberInCanonicalList, "StaticEnumReverseCanonicalEq": bamlclient.StaticEnumReverseCanonicalEq, "StaticEnumSameMemberEq": bamlclient.StaticEnumSameMemberEq, "StaticMediaImage": bamlclient.StaticMediaImage, "StaticMediaImageList": bamlclient.StaticMediaImageList, "StaticMediaInClass": bamlclient.StaticMediaInClass, "StaticOutputFormat": bamlclient.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.StaticRecursiveA, "StaticRecursiveAliasJSON": bamlclient.StaticRecursiveAliasJSON, "StaticRecursiveAliasJsonValue": bamlclient.StaticRecursiveAliasJsonValue, "StaticRecursiveAliasJsonValueReordered": bamlclient.StaticRecursiveAliasJsonValueReordered, "StaticRecursiveB": bamlclient.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.StaticRecursiveNode, "StaticRecursiveNodeAnn": bamlclient.StaticRecursiveNodeAnn, "StaticRenderEnum": bamlclient.StaticRenderEnum, "StaticRenderList": bamlclient.StaticRenderList, "StaticRenderPalette": bamlclient.StaticRenderPalette, "StaticRenderPalettes": bamlclient.StaticRenderPalettes, "StaticRenderStrings": bamlclient.StaticRenderStrings, "StaticRoleChat": bamlclient.StaticRoleChat, "StaticStreamAliasEq": bamlclient.StaticStreamAliasEq, "StaticStreamRenderEnum": bamlclient.StaticStreamRenderEnum}
 
 // Parse is the parse API for parsing raw LLM responses into final types
 var Parse = bamlclient.Parse
 
 // ParseMethods is a set of method names available on Parse
-var ParseMethods = map[string]struct{}{"StaticAssertConfidence": {}, "StaticCheckedConfidence": {}, "StaticCompletion": {}, "StaticCompletionOutputFormat": {}, "StaticEnumArgCanonicalEq": {}, "StaticEnumArgMemberEq": {}, "StaticEnumCanonicalArgEq": {}, "StaticEnumCanonicalEq": {}, "StaticEnumCanonicalInMemberList": {}, "StaticEnumDifferentMemberEq": {}, "StaticEnumDisplayAliasEq": {}, "StaticEnumMemberArgEq": {}, "StaticEnumMemberInCanonicalList": {}, "StaticEnumReverseCanonicalEq": {}, "StaticEnumSameMemberEq": {}, "StaticMediaImage": {}, "StaticMediaImageList": {}, "StaticMediaInClass": {}, "StaticOutputFormat": {}, "StaticPrimitiveArgs": {}, "StaticRecursiveA": {}, "StaticRecursiveAliasJSON": {}, "StaticRecursiveAliasJsonValue": {}, "StaticRecursiveAliasJsonValueReordered": {}, "StaticRecursiveB": {}, "StaticRecursiveLoop": {}, "StaticRecursiveNode": {}, "StaticRecursiveNodeAnn": {}, "StaticRenderEnum": {}, "StaticRenderList": {}, "StaticRenderPalette": {}, "StaticRenderPalettes": {}, "StaticRenderStrings": {}, "StaticRoleChat": {}, "StaticStreamAliasEq": {}, "StaticStreamRenderEnum": {}}
+var ParseMethods = map[string]struct{}{"StaticAssertConfidence": {}, "StaticCheckedAliasedField": {}, "StaticCheckedConfidence": {}, "StaticCheckedFloat": {}, "StaticCheckedGtePredicate": {}, "StaticCheckedList": {}, "StaticCheckedNonAsciiLabel": {}, "StaticCheckedOptional": {}, "StaticCheckedRenamedClass": {}, "StaticCheckedReordered": {}, "StaticCheckedTwoChecks": {}, "StaticCheckedUnion": {}, "StaticCompletion": {}, "StaticCompletionOutputFormat": {}, "StaticEnumArgCanonicalEq": {}, "StaticEnumArgMemberEq": {}, "StaticEnumCanonicalArgEq": {}, "StaticEnumCanonicalEq": {}, "StaticEnumCanonicalInMemberList": {}, "StaticEnumDifferentMemberEq": {}, "StaticEnumDisplayAliasEq": {}, "StaticEnumMemberArgEq": {}, "StaticEnumMemberInCanonicalList": {}, "StaticEnumReverseCanonicalEq": {}, "StaticEnumSameMemberEq": {}, "StaticMediaImage": {}, "StaticMediaImageList": {}, "StaticMediaInClass": {}, "StaticOutputFormat": {}, "StaticPrimitiveArgs": {}, "StaticRecursiveA": {}, "StaticRecursiveAliasJSON": {}, "StaticRecursiveAliasJsonValue": {}, "StaticRecursiveAliasJsonValueReordered": {}, "StaticRecursiveB": {}, "StaticRecursiveLoop": {}, "StaticRecursiveNode": {}, "StaticRecursiveNodeAnn": {}, "StaticRenderEnum": {}, "StaticRenderList": {}, "StaticRenderPalette": {}, "StaticRenderPalettes": {}, "StaticRenderStrings": {}, "StaticRoleChat": {}, "StaticStreamAliasEq": {}, "StaticStreamRenderEnum": {}}
 
 // ParseStream is the parse_stream API for parsing raw LLM responses into partial/stream types
 var ParseStream = bamlclient.ParseStream
 
 // ParseStreamMethods is a set of method names available on ParseStream
-var ParseStreamMethods = map[string]struct{}{"StaticAssertConfidence": {}, "StaticCheckedConfidence": {}, "StaticCompletion": {}, "StaticCompletionOutputFormat": {}, "StaticEnumArgCanonicalEq": {}, "StaticEnumArgMemberEq": {}, "StaticEnumCanonicalArgEq": {}, "StaticEnumCanonicalEq": {}, "StaticEnumCanonicalInMemberList": {}, "StaticEnumDifferentMemberEq": {}, "StaticEnumDisplayAliasEq": {}, "StaticEnumMemberArgEq": {}, "StaticEnumMemberInCanonicalList": {}, "StaticEnumReverseCanonicalEq": {}, "StaticEnumSameMemberEq": {}, "StaticMediaImage": {}, "StaticMediaImageList": {}, "StaticMediaInClass": {}, "StaticOutputFormat": {}, "StaticPrimitiveArgs": {}, "StaticRecursiveA": {}, "StaticRecursiveAliasJSON": {}, "StaticRecursiveAliasJsonValue": {}, "StaticRecursiveAliasJsonValueReordered": {}, "StaticRecursiveB": {}, "StaticRecursiveLoop": {}, "StaticRecursiveNode": {}, "StaticRecursiveNodeAnn": {}, "StaticRenderEnum": {}, "StaticRenderList": {}, "StaticRenderPalette": {}, "StaticRenderPalettes": {}, "StaticRenderStrings": {}, "StaticRoleChat": {}, "StaticStreamAliasEq": {}, "StaticStreamRenderEnum": {}}
+var ParseStreamMethods = map[string]struct{}{"StaticAssertConfidence": {}, "StaticCheckedAliasedField": {}, "StaticCheckedConfidence": {}, "StaticCheckedFloat": {}, "StaticCheckedGtePredicate": {}, "StaticCheckedList": {}, "StaticCheckedNonAsciiLabel": {}, "StaticCheckedOptional": {}, "StaticCheckedRenamedClass": {}, "StaticCheckedReordered": {}, "StaticCheckedTwoChecks": {}, "StaticCheckedUnion": {}, "StaticCompletion": {}, "StaticCompletionOutputFormat": {}, "StaticEnumArgCanonicalEq": {}, "StaticEnumArgMemberEq": {}, "StaticEnumCanonicalArgEq": {}, "StaticEnumCanonicalEq": {}, "StaticEnumCanonicalInMemberList": {}, "StaticEnumDifferentMemberEq": {}, "StaticEnumDisplayAliasEq": {}, "StaticEnumMemberArgEq": {}, "StaticEnumMemberInCanonicalList": {}, "StaticEnumReverseCanonicalEq": {}, "StaticEnumSameMemberEq": {}, "StaticMediaImage": {}, "StaticMediaImageList": {}, "StaticMediaInClass": {}, "StaticOutputFormat": {}, "StaticPrimitiveArgs": {}, "StaticRecursiveA": {}, "StaticRecursiveAliasJSON": {}, "StaticRecursiveAliasJsonValue": {}, "StaticRecursiveAliasJsonValueReordered": {}, "StaticRecursiveB": {}, "StaticRecursiveLoop": {}, "StaticRecursiveNode": {}, "StaticRecursiveNodeAnn": {}, "StaticRenderEnum": {}, "StaticRenderList": {}, "StaticRenderPalette": {}, "StaticRenderPalettes": {}, "StaticRenderStrings": {}, "StaticRoleChat": {}, "StaticStreamAliasEq": {}, "StaticStreamRenderEnum": {}}
 
 // ParseStreamFuncs maps ParseStream method names to their function values (for reflection)
-var ParseStreamFuncs = map[string]any{"StaticAssertConfidence": bamlclient.ParseStream.StaticAssertConfidence, "StaticCheckedConfidence": bamlclient.ParseStream.StaticCheckedConfidence, "StaticCompletion": bamlclient.ParseStream.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.ParseStream.StaticCompletionOutputFormat, "StaticEnumArgCanonicalEq": bamlclient.ParseStream.StaticEnumArgCanonicalEq, "StaticEnumArgMemberEq": bamlclient.ParseStream.StaticEnumArgMemberEq, "StaticEnumCanonicalArgEq": bamlclient.ParseStream.StaticEnumCanonicalArgEq, "StaticEnumCanonicalEq": bamlclient.ParseStream.StaticEnumCanonicalEq, "StaticEnumCanonicalInMemberList": bamlclient.ParseStream.StaticEnumCanonicalInMemberList, "StaticEnumDifferentMemberEq": bamlclient.ParseStream.StaticEnumDifferentMemberEq, "StaticEnumDisplayAliasEq": bamlclient.ParseStream.StaticEnumDisplayAliasEq, "StaticEnumMemberArgEq": bamlclient.ParseStream.StaticEnumMemberArgEq, "StaticEnumMemberInCanonicalList": bamlclient.ParseStream.StaticEnumMemberInCanonicalList, "StaticEnumReverseCanonicalEq": bamlclient.ParseStream.StaticEnumReverseCanonicalEq, "StaticEnumSameMemberEq": bamlclient.ParseStream.StaticEnumSameMemberEq, "StaticMediaImage": bamlclient.ParseStream.StaticMediaImage, "StaticMediaImageList": bamlclient.ParseStream.StaticMediaImageList, "StaticMediaInClass": bamlclient.ParseStream.StaticMediaInClass, "StaticOutputFormat": bamlclient.ParseStream.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.ParseStream.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.ParseStream.StaticRecursiveA, "StaticRecursiveAliasJSON": bamlclient.ParseStream.StaticRecursiveAliasJSON, "StaticRecursiveAliasJsonValue": bamlclient.ParseStream.StaticRecursiveAliasJsonValue, "StaticRecursiveAliasJsonValueReordered": bamlclient.ParseStream.StaticRecursiveAliasJsonValueReordered, "StaticRecursiveB": bamlclient.ParseStream.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.ParseStream.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.ParseStream.StaticRecursiveNode, "StaticRecursiveNodeAnn": bamlclient.ParseStream.StaticRecursiveNodeAnn, "StaticRenderEnum": bamlclient.ParseStream.StaticRenderEnum, "StaticRenderList": bamlclient.ParseStream.StaticRenderList, "StaticRenderPalette": bamlclient.ParseStream.StaticRenderPalette, "StaticRenderPalettes": bamlclient.ParseStream.StaticRenderPalettes, "StaticRenderStrings": bamlclient.ParseStream.StaticRenderStrings, "StaticRoleChat": bamlclient.ParseStream.StaticRoleChat, "StaticStreamAliasEq": bamlclient.ParseStream.StaticStreamAliasEq, "StaticStreamRenderEnum": bamlclient.ParseStream.StaticStreamRenderEnum}
+var ParseStreamFuncs = map[string]any{"StaticAssertConfidence": bamlclient.ParseStream.StaticAssertConfidence, "StaticCheckedAliasedField": bamlclient.ParseStream.StaticCheckedAliasedField, "StaticCheckedConfidence": bamlclient.ParseStream.StaticCheckedConfidence, "StaticCheckedFloat": bamlclient.ParseStream.StaticCheckedFloat, "StaticCheckedGtePredicate": bamlclient.ParseStream.StaticCheckedGtePredicate, "StaticCheckedList": bamlclient.ParseStream.StaticCheckedList, "StaticCheckedNonAsciiLabel": bamlclient.ParseStream.StaticCheckedNonAsciiLabel, "StaticCheckedOptional": bamlclient.ParseStream.StaticCheckedOptional, "StaticCheckedRenamedClass": bamlclient.ParseStream.StaticCheckedRenamedClass, "StaticCheckedReordered": bamlclient.ParseStream.StaticCheckedReordered, "StaticCheckedTwoChecks": bamlclient.ParseStream.StaticCheckedTwoChecks, "StaticCheckedUnion": bamlclient.ParseStream.StaticCheckedUnion, "StaticCompletion": bamlclient.ParseStream.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.ParseStream.StaticCompletionOutputFormat, "StaticEnumArgCanonicalEq": bamlclient.ParseStream.StaticEnumArgCanonicalEq, "StaticEnumArgMemberEq": bamlclient.ParseStream.StaticEnumArgMemberEq, "StaticEnumCanonicalArgEq": bamlclient.ParseStream.StaticEnumCanonicalArgEq, "StaticEnumCanonicalEq": bamlclient.ParseStream.StaticEnumCanonicalEq, "StaticEnumCanonicalInMemberList": bamlclient.ParseStream.StaticEnumCanonicalInMemberList, "StaticEnumDifferentMemberEq": bamlclient.ParseStream.StaticEnumDifferentMemberEq, "StaticEnumDisplayAliasEq": bamlclient.ParseStream.StaticEnumDisplayAliasEq, "StaticEnumMemberArgEq": bamlclient.ParseStream.StaticEnumMemberArgEq, "StaticEnumMemberInCanonicalList": bamlclient.ParseStream.StaticEnumMemberInCanonicalList, "StaticEnumReverseCanonicalEq": bamlclient.ParseStream.StaticEnumReverseCanonicalEq, "StaticEnumSameMemberEq": bamlclient.ParseStream.StaticEnumSameMemberEq, "StaticMediaImage": bamlclient.ParseStream.StaticMediaImage, "StaticMediaImageList": bamlclient.ParseStream.StaticMediaImageList, "StaticMediaInClass": bamlclient.ParseStream.StaticMediaInClass, "StaticOutputFormat": bamlclient.ParseStream.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.ParseStream.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.ParseStream.StaticRecursiveA, "StaticRecursiveAliasJSON": bamlclient.ParseStream.StaticRecursiveAliasJSON, "StaticRecursiveAliasJsonValue": bamlclient.ParseStream.StaticRecursiveAliasJsonValue, "StaticRecursiveAliasJsonValueReordered": bamlclient.ParseStream.StaticRecursiveAliasJsonValueReordered, "StaticRecursiveB": bamlclient.ParseStream.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.ParseStream.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.ParseStream.StaticRecursiveNode, "StaticRecursiveNodeAnn": bamlclient.ParseStream.StaticRecursiveNodeAnn, "StaticRenderEnum": bamlclient.ParseStream.StaticRenderEnum, "StaticRenderList": bamlclient.ParseStream.StaticRenderList, "StaticRenderPalette": bamlclient.ParseStream.StaticRenderPalette, "StaticRenderPalettes": bamlclient.ParseStream.StaticRenderPalettes, "StaticRenderStrings": bamlclient.ParseStream.StaticRenderStrings, "StaticRoleChat": bamlclient.ParseStream.StaticRoleChat, "StaticStreamAliasEq": bamlclient.ParseStream.StaticStreamAliasEq, "StaticStreamRenderEnum": bamlclient.ParseStream.StaticStreamRenderEnum}
 
 // Request is the BAML Request singleton for building non-streaming HTTP requests
 var Request = bamlclient.Request
 
 // RequestFuncs maps Request method names to their function values (for reflection)
-var RequestFuncs = map[string]any{"StaticAssertConfidence": bamlclient.Request.StaticAssertConfidence, "StaticCheckedConfidence": bamlclient.Request.StaticCheckedConfidence, "StaticCompletion": bamlclient.Request.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.Request.StaticCompletionOutputFormat, "StaticEnumArgCanonicalEq": bamlclient.Request.StaticEnumArgCanonicalEq, "StaticEnumArgMemberEq": bamlclient.Request.StaticEnumArgMemberEq, "StaticEnumCanonicalArgEq": bamlclient.Request.StaticEnumCanonicalArgEq, "StaticEnumCanonicalEq": bamlclient.Request.StaticEnumCanonicalEq, "StaticEnumCanonicalInMemberList": bamlclient.Request.StaticEnumCanonicalInMemberList, "StaticEnumDifferentMemberEq": bamlclient.Request.StaticEnumDifferentMemberEq, "StaticEnumDisplayAliasEq": bamlclient.Request.StaticEnumDisplayAliasEq, "StaticEnumMemberArgEq": bamlclient.Request.StaticEnumMemberArgEq, "StaticEnumMemberInCanonicalList": bamlclient.Request.StaticEnumMemberInCanonicalList, "StaticEnumReverseCanonicalEq": bamlclient.Request.StaticEnumReverseCanonicalEq, "StaticEnumSameMemberEq": bamlclient.Request.StaticEnumSameMemberEq, "StaticMediaImage": bamlclient.Request.StaticMediaImage, "StaticMediaImageList": bamlclient.Request.StaticMediaImageList, "StaticMediaInClass": bamlclient.Request.StaticMediaInClass, "StaticOutputFormat": bamlclient.Request.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.Request.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.Request.StaticRecursiveA, "StaticRecursiveAliasJSON": bamlclient.Request.StaticRecursiveAliasJSON, "StaticRecursiveAliasJsonValue": bamlclient.Request.StaticRecursiveAliasJsonValue, "StaticRecursiveAliasJsonValueReordered": bamlclient.Request.StaticRecursiveAliasJsonValueReordered, "StaticRecursiveB": bamlclient.Request.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.Request.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.Request.StaticRecursiveNode, "StaticRecursiveNodeAnn": bamlclient.Request.StaticRecursiveNodeAnn, "StaticRenderEnum": bamlclient.Request.StaticRenderEnum, "StaticRenderList": bamlclient.Request.StaticRenderList, "StaticRenderPalette": bamlclient.Request.StaticRenderPalette, "StaticRenderPalettes": bamlclient.Request.StaticRenderPalettes, "StaticRenderStrings": bamlclient.Request.StaticRenderStrings, "StaticRoleChat": bamlclient.Request.StaticRoleChat, "StaticStreamAliasEq": bamlclient.Request.StaticStreamAliasEq, "StaticStreamRenderEnum": bamlclient.Request.StaticStreamRenderEnum}
+var RequestFuncs = map[string]any{"StaticAssertConfidence": bamlclient.Request.StaticAssertConfidence, "StaticCheckedAliasedField": bamlclient.Request.StaticCheckedAliasedField, "StaticCheckedConfidence": bamlclient.Request.StaticCheckedConfidence, "StaticCheckedFloat": bamlclient.Request.StaticCheckedFloat, "StaticCheckedGtePredicate": bamlclient.Request.StaticCheckedGtePredicate, "StaticCheckedList": bamlclient.Request.StaticCheckedList, "StaticCheckedNonAsciiLabel": bamlclient.Request.StaticCheckedNonAsciiLabel, "StaticCheckedOptional": bamlclient.Request.StaticCheckedOptional, "StaticCheckedRenamedClass": bamlclient.Request.StaticCheckedRenamedClass, "StaticCheckedReordered": bamlclient.Request.StaticCheckedReordered, "StaticCheckedTwoChecks": bamlclient.Request.StaticCheckedTwoChecks, "StaticCheckedUnion": bamlclient.Request.StaticCheckedUnion, "StaticCompletion": bamlclient.Request.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.Request.StaticCompletionOutputFormat, "StaticEnumArgCanonicalEq": bamlclient.Request.StaticEnumArgCanonicalEq, "StaticEnumArgMemberEq": bamlclient.Request.StaticEnumArgMemberEq, "StaticEnumCanonicalArgEq": bamlclient.Request.StaticEnumCanonicalArgEq, "StaticEnumCanonicalEq": bamlclient.Request.StaticEnumCanonicalEq, "StaticEnumCanonicalInMemberList": bamlclient.Request.StaticEnumCanonicalInMemberList, "StaticEnumDifferentMemberEq": bamlclient.Request.StaticEnumDifferentMemberEq, "StaticEnumDisplayAliasEq": bamlclient.Request.StaticEnumDisplayAliasEq, "StaticEnumMemberArgEq": bamlclient.Request.StaticEnumMemberArgEq, "StaticEnumMemberInCanonicalList": bamlclient.Request.StaticEnumMemberInCanonicalList, "StaticEnumReverseCanonicalEq": bamlclient.Request.StaticEnumReverseCanonicalEq, "StaticEnumSameMemberEq": bamlclient.Request.StaticEnumSameMemberEq, "StaticMediaImage": bamlclient.Request.StaticMediaImage, "StaticMediaImageList": bamlclient.Request.StaticMediaImageList, "StaticMediaInClass": bamlclient.Request.StaticMediaInClass, "StaticOutputFormat": bamlclient.Request.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.Request.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.Request.StaticRecursiveA, "StaticRecursiveAliasJSON": bamlclient.Request.StaticRecursiveAliasJSON, "StaticRecursiveAliasJsonValue": bamlclient.Request.StaticRecursiveAliasJsonValue, "StaticRecursiveAliasJsonValueReordered": bamlclient.Request.StaticRecursiveAliasJsonValueReordered, "StaticRecursiveB": bamlclient.Request.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.Request.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.Request.StaticRecursiveNode, "StaticRecursiveNodeAnn": bamlclient.Request.StaticRecursiveNodeAnn, "StaticRenderEnum": bamlclient.Request.StaticRenderEnum, "StaticRenderList": bamlclient.Request.StaticRenderList, "StaticRenderPalette": bamlclient.Request.StaticRenderPalette, "StaticRenderPalettes": bamlclient.Request.StaticRenderPalettes, "StaticRenderStrings": bamlclient.Request.StaticRenderStrings, "StaticRoleChat": bamlclient.Request.StaticRoleChat, "StaticStreamAliasEq": bamlclient.Request.StaticStreamAliasEq, "StaticStreamRenderEnum": bamlclient.Request.StaticStreamRenderEnum}
 
 // StreamRequest is the BAML StreamRequest singleton for building streaming HTTP requests
 var StreamRequest = bamlclient.StreamRequest
 
 // StreamRequestFuncs maps StreamRequest method names to their function values (for reflection)
-var StreamRequestFuncs = map[string]any{"StaticAssertConfidence": bamlclient.StreamRequest.StaticAssertConfidence, "StaticCheckedConfidence": bamlclient.StreamRequest.StaticCheckedConfidence, "StaticCompletion": bamlclient.StreamRequest.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.StreamRequest.StaticCompletionOutputFormat, "StaticEnumArgCanonicalEq": bamlclient.StreamRequest.StaticEnumArgCanonicalEq, "StaticEnumArgMemberEq": bamlclient.StreamRequest.StaticEnumArgMemberEq, "StaticEnumCanonicalArgEq": bamlclient.StreamRequest.StaticEnumCanonicalArgEq, "StaticEnumCanonicalEq": bamlclient.StreamRequest.StaticEnumCanonicalEq, "StaticEnumCanonicalInMemberList": bamlclient.StreamRequest.StaticEnumCanonicalInMemberList, "StaticEnumDifferentMemberEq": bamlclient.StreamRequest.StaticEnumDifferentMemberEq, "StaticEnumDisplayAliasEq": bamlclient.StreamRequest.StaticEnumDisplayAliasEq, "StaticEnumMemberArgEq": bamlclient.StreamRequest.StaticEnumMemberArgEq, "StaticEnumMemberInCanonicalList": bamlclient.StreamRequest.StaticEnumMemberInCanonicalList, "StaticEnumReverseCanonicalEq": bamlclient.StreamRequest.StaticEnumReverseCanonicalEq, "StaticEnumSameMemberEq": bamlclient.StreamRequest.StaticEnumSameMemberEq, "StaticMediaImage": bamlclient.StreamRequest.StaticMediaImage, "StaticMediaImageList": bamlclient.StreamRequest.StaticMediaImageList, "StaticMediaInClass": bamlclient.StreamRequest.StaticMediaInClass, "StaticOutputFormat": bamlclient.StreamRequest.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.StreamRequest.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.StreamRequest.StaticRecursiveA, "StaticRecursiveAliasJSON": bamlclient.StreamRequest.StaticRecursiveAliasJSON, "StaticRecursiveAliasJsonValue": bamlclient.StreamRequest.StaticRecursiveAliasJsonValue, "StaticRecursiveAliasJsonValueReordered": bamlclient.StreamRequest.StaticRecursiveAliasJsonValueReordered, "StaticRecursiveB": bamlclient.StreamRequest.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.StreamRequest.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.StreamRequest.StaticRecursiveNode, "StaticRecursiveNodeAnn": bamlclient.StreamRequest.StaticRecursiveNodeAnn, "StaticRenderEnum": bamlclient.StreamRequest.StaticRenderEnum, "StaticRenderList": bamlclient.StreamRequest.StaticRenderList, "StaticRenderPalette": bamlclient.StreamRequest.StaticRenderPalette, "StaticRenderPalettes": bamlclient.StreamRequest.StaticRenderPalettes, "StaticRenderStrings": bamlclient.StreamRequest.StaticRenderStrings, "StaticRoleChat": bamlclient.StreamRequest.StaticRoleChat, "StaticStreamAliasEq": bamlclient.StreamRequest.StaticStreamAliasEq, "StaticStreamRenderEnum": bamlclient.StreamRequest.StaticStreamRenderEnum}
+var StreamRequestFuncs = map[string]any{"StaticAssertConfidence": bamlclient.StreamRequest.StaticAssertConfidence, "StaticCheckedAliasedField": bamlclient.StreamRequest.StaticCheckedAliasedField, "StaticCheckedConfidence": bamlclient.StreamRequest.StaticCheckedConfidence, "StaticCheckedFloat": bamlclient.StreamRequest.StaticCheckedFloat, "StaticCheckedGtePredicate": bamlclient.StreamRequest.StaticCheckedGtePredicate, "StaticCheckedList": bamlclient.StreamRequest.StaticCheckedList, "StaticCheckedNonAsciiLabel": bamlclient.StreamRequest.StaticCheckedNonAsciiLabel, "StaticCheckedOptional": bamlclient.StreamRequest.StaticCheckedOptional, "StaticCheckedRenamedClass": bamlclient.StreamRequest.StaticCheckedRenamedClass, "StaticCheckedReordered": bamlclient.StreamRequest.StaticCheckedReordered, "StaticCheckedTwoChecks": bamlclient.StreamRequest.StaticCheckedTwoChecks, "StaticCheckedUnion": bamlclient.StreamRequest.StaticCheckedUnion, "StaticCompletion": bamlclient.StreamRequest.StaticCompletion, "StaticCompletionOutputFormat": bamlclient.StreamRequest.StaticCompletionOutputFormat, "StaticEnumArgCanonicalEq": bamlclient.StreamRequest.StaticEnumArgCanonicalEq, "StaticEnumArgMemberEq": bamlclient.StreamRequest.StaticEnumArgMemberEq, "StaticEnumCanonicalArgEq": bamlclient.StreamRequest.StaticEnumCanonicalArgEq, "StaticEnumCanonicalEq": bamlclient.StreamRequest.StaticEnumCanonicalEq, "StaticEnumCanonicalInMemberList": bamlclient.StreamRequest.StaticEnumCanonicalInMemberList, "StaticEnumDifferentMemberEq": bamlclient.StreamRequest.StaticEnumDifferentMemberEq, "StaticEnumDisplayAliasEq": bamlclient.StreamRequest.StaticEnumDisplayAliasEq, "StaticEnumMemberArgEq": bamlclient.StreamRequest.StaticEnumMemberArgEq, "StaticEnumMemberInCanonicalList": bamlclient.StreamRequest.StaticEnumMemberInCanonicalList, "StaticEnumReverseCanonicalEq": bamlclient.StreamRequest.StaticEnumReverseCanonicalEq, "StaticEnumSameMemberEq": bamlclient.StreamRequest.StaticEnumSameMemberEq, "StaticMediaImage": bamlclient.StreamRequest.StaticMediaImage, "StaticMediaImageList": bamlclient.StreamRequest.StaticMediaImageList, "StaticMediaInClass": bamlclient.StreamRequest.StaticMediaInClass, "StaticOutputFormat": bamlclient.StreamRequest.StaticOutputFormat, "StaticPrimitiveArgs": bamlclient.StreamRequest.StaticPrimitiveArgs, "StaticRecursiveA": bamlclient.StreamRequest.StaticRecursiveA, "StaticRecursiveAliasJSON": bamlclient.StreamRequest.StaticRecursiveAliasJSON, "StaticRecursiveAliasJsonValue": bamlclient.StreamRequest.StaticRecursiveAliasJsonValue, "StaticRecursiveAliasJsonValueReordered": bamlclient.StreamRequest.StaticRecursiveAliasJsonValueReordered, "StaticRecursiveB": bamlclient.StreamRequest.StaticRecursiveB, "StaticRecursiveLoop": bamlclient.StreamRequest.StaticRecursiveLoop, "StaticRecursiveNode": bamlclient.StreamRequest.StaticRecursiveNode, "StaticRecursiveNodeAnn": bamlclient.StreamRequest.StaticRecursiveNodeAnn, "StaticRenderEnum": bamlclient.StreamRequest.StaticRenderEnum, "StaticRenderList": bamlclient.StreamRequest.StaticRenderList, "StaticRenderPalette": bamlclient.StreamRequest.StaticRenderPalette, "StaticRenderPalettes": bamlclient.StreamRequest.StaticRenderPalettes, "StaticRenderStrings": bamlclient.StreamRequest.StaticRenderStrings, "StaticRoleChat": bamlclient.StreamRequest.StaticRoleChat, "StaticStreamAliasEq": bamlclient.StreamRequest.StaticStreamAliasEq, "StaticStreamRenderEnum": bamlclient.StreamRequest.StaticStreamRenderEnum}
 
 // SupportsWithClient is true when baml_client exposes WithClient(string) (BAML v0.219.0+)
 var SupportsWithClient = true
 
 // FunctionClient maps BAML function names to their default client name
-var FunctionClient = map[string]string{"StaticAssertConfidence": "StaticOracleClient", "StaticCheckedConfidence": "StaticOracleClient", "StaticCompletion": "StaticOracleClient", "StaticCompletionOutputFormat": "StaticOracleClient", "StaticEnumArgCanonicalEq": "StaticOracleClient", "StaticEnumArgMemberEq": "StaticOracleClient", "StaticEnumCanonicalArgEq": "StaticOracleClient", "StaticEnumCanonicalEq": "StaticOracleClient", "StaticEnumCanonicalInMemberList": "StaticOracleClient", "StaticEnumDifferentMemberEq": "StaticOracleClient", "StaticEnumDisplayAliasEq": "StaticOracleClient", "StaticEnumMemberArgEq": "StaticOracleClient", "StaticEnumMemberInCanonicalList": "StaticOracleClient", "StaticEnumReverseCanonicalEq": "StaticOracleClient", "StaticEnumSameMemberEq": "StaticOracleClient", "StaticMediaImage": "StaticOracleClient", "StaticMediaImageList": "StaticOracleClient", "StaticMediaInClass": "StaticOracleClient", "StaticOutputFormat": "StaticOracleClient", "StaticPrimitiveArgs": "StaticOracleClient", "StaticRecursiveA": "StaticOracleClient", "StaticRecursiveAliasJSON": "StaticOracleClient", "StaticRecursiveAliasJsonValue": "StaticOracleClient", "StaticRecursiveAliasJsonValueReordered": "StaticOracleClient", "StaticRecursiveB": "StaticOracleClient", "StaticRecursiveLoop": "StaticOracleClient", "StaticRecursiveNode": "StaticOracleClient", "StaticRecursiveNodeAnn": "StaticOracleClient", "StaticRenderEnum": "StaticOracleClient", "StaticRenderList": "StaticOracleClient", "StaticRenderPalette": "StaticOracleClient", "StaticRenderPalettes": "StaticOracleClient", "StaticRenderStrings": "StaticOracleClient", "StaticRoleChat": "StaticOracleClient", "StaticStreamAliasEq": "StaticOracleClient", "StaticStreamRenderEnum": "StaticOracleClient"}
+var FunctionClient = map[string]string{"StaticAssertConfidence": "StaticOracleClient", "StaticCheckedAliasedField": "StaticOracleClient", "StaticCheckedConfidence": "StaticOracleClient", "StaticCheckedFloat": "StaticOracleClient", "StaticCheckedGtePredicate": "StaticOracleClient", "StaticCheckedList": "StaticOracleClient", "StaticCheckedNonAsciiLabel": "StaticOracleClient", "StaticCheckedOptional": "StaticOracleClient", "StaticCheckedRenamedClass": "StaticOracleClient", "StaticCheckedReordered": "StaticOracleClient", "StaticCheckedTwoChecks": "StaticOracleClient", "StaticCheckedUnion": "StaticOracleClient", "StaticCompletion": "StaticOracleClient", "StaticCompletionOutputFormat": "StaticOracleClient", "StaticEnumArgCanonicalEq": "StaticOracleClient", "StaticEnumArgMemberEq": "StaticOracleClient", "StaticEnumCanonicalArgEq": "StaticOracleClient", "StaticEnumCanonicalEq": "StaticOracleClient", "StaticEnumCanonicalInMemberList": "StaticOracleClient", "StaticEnumDifferentMemberEq": "StaticOracleClient", "StaticEnumDisplayAliasEq": "StaticOracleClient", "StaticEnumMemberArgEq": "StaticOracleClient", "StaticEnumMemberInCanonicalList": "StaticOracleClient", "StaticEnumReverseCanonicalEq": "StaticOracleClient", "StaticEnumSameMemberEq": "StaticOracleClient", "StaticMediaImage": "StaticOracleClient", "StaticMediaImageList": "StaticOracleClient", "StaticMediaInClass": "StaticOracleClient", "StaticOutputFormat": "StaticOracleClient", "StaticPrimitiveArgs": "StaticOracleClient", "StaticRecursiveA": "StaticOracleClient", "StaticRecursiveAliasJSON": "StaticOracleClient", "StaticRecursiveAliasJsonValue": "StaticOracleClient", "StaticRecursiveAliasJsonValueReordered": "StaticOracleClient", "StaticRecursiveB": "StaticOracleClient", "StaticRecursiveLoop": "StaticOracleClient", "StaticRecursiveNode": "StaticOracleClient", "StaticRecursiveNodeAnn": "StaticOracleClient", "StaticRenderEnum": "StaticOracleClient", "StaticRenderList": "StaticOracleClient", "StaticRenderPalette": "StaticOracleClient", "StaticRenderPalettes": "StaticOracleClient", "StaticRenderStrings": "StaticOracleClient", "StaticRoleChat": "StaticOracleClient", "StaticStreamAliasEq": "StaticOracleClient", "StaticStreamRenderEnum": "StaticOracleClient"}
 
 // FunctionProvider maps BAML function names to their default provider string
-var FunctionProvider = map[string]string{"StaticAssertConfidence": "openai", "StaticCheckedConfidence": "openai", "StaticCompletion": "openai", "StaticCompletionOutputFormat": "openai", "StaticEnumArgCanonicalEq": "openai", "StaticEnumArgMemberEq": "openai", "StaticEnumCanonicalArgEq": "openai", "StaticEnumCanonicalEq": "openai", "StaticEnumCanonicalInMemberList": "openai", "StaticEnumDifferentMemberEq": "openai", "StaticEnumDisplayAliasEq": "openai", "StaticEnumMemberArgEq": "openai", "StaticEnumMemberInCanonicalList": "openai", "StaticEnumReverseCanonicalEq": "openai", "StaticEnumSameMemberEq": "openai", "StaticMediaImage": "openai", "StaticMediaImageList": "openai", "StaticMediaInClass": "openai", "StaticOutputFormat": "openai", "StaticPrimitiveArgs": "openai", "StaticRecursiveA": "openai", "StaticRecursiveAliasJSON": "openai", "StaticRecursiveAliasJsonValue": "openai", "StaticRecursiveAliasJsonValueReordered": "openai", "StaticRecursiveB": "openai", "StaticRecursiveLoop": "openai", "StaticRecursiveNode": "openai", "StaticRecursiveNodeAnn": "openai", "StaticRenderEnum": "openai", "StaticRenderList": "openai", "StaticRenderPalette": "openai", "StaticRenderPalettes": "openai", "StaticRenderStrings": "openai", "StaticRoleChat": "openai", "StaticStreamAliasEq": "openai", "StaticStreamRenderEnum": "openai"}
+var FunctionProvider = map[string]string{"StaticAssertConfidence": "openai", "StaticCheckedAliasedField": "openai", "StaticCheckedConfidence": "openai", "StaticCheckedFloat": "openai", "StaticCheckedGtePredicate": "openai", "StaticCheckedList": "openai", "StaticCheckedNonAsciiLabel": "openai", "StaticCheckedOptional": "openai", "StaticCheckedRenamedClass": "openai", "StaticCheckedReordered": "openai", "StaticCheckedTwoChecks": "openai", "StaticCheckedUnion": "openai", "StaticCompletion": "openai", "StaticCompletionOutputFormat": "openai", "StaticEnumArgCanonicalEq": "openai", "StaticEnumArgMemberEq": "openai", "StaticEnumCanonicalArgEq": "openai", "StaticEnumCanonicalEq": "openai", "StaticEnumCanonicalInMemberList": "openai", "StaticEnumDifferentMemberEq": "openai", "StaticEnumDisplayAliasEq": "openai", "StaticEnumMemberArgEq": "openai", "StaticEnumMemberInCanonicalList": "openai", "StaticEnumReverseCanonicalEq": "openai", "StaticEnumSameMemberEq": "openai", "StaticMediaImage": "openai", "StaticMediaImageList": "openai", "StaticMediaInClass": "openai", "StaticOutputFormat": "openai", "StaticPrimitiveArgs": "openai", "StaticRecursiveA": "openai", "StaticRecursiveAliasJSON": "openai", "StaticRecursiveAliasJsonValue": "openai", "StaticRecursiveAliasJsonValueReordered": "openai", "StaticRecursiveB": "openai", "StaticRecursiveLoop": "openai", "StaticRecursiveNode": "openai", "StaticRecursiveNodeAnn": "openai", "StaticRenderEnum": "openai", "StaticRenderList": "openai", "StaticRenderPalette": "openai", "StaticRenderPalettes": "openai", "StaticRenderStrings": "openai", "StaticRoleChat": "openai", "StaticStreamAliasEq": "openai", "StaticStreamRenderEnum": "openai"}
 
 // ClientProvider maps BAML client names to their provider strings
 var ClientProvider = map[string]string{"EmptyBodyClient": "openai", "EscapedModelClient": "openai", "RichBodyClient": "openai", "StaticOracleClient": "openai"}
@@ -166,9 +166,9 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				Primitive: "string",
 				Span: bamlparser.Span{
 					Col:   40,
-					End:   16043,
-					Line:  424,
-					Start: 16037,
+					End:   16001,
+					Line:  423,
+					Start: 15995,
 				},
 			},
 			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
@@ -251,6 +251,106 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 		},
 		Version: 3,
 	}
+}, "StaticCheckedAliasedField": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
+			Name: "topic",
+			Type: &bamlparser.TypeExpr{
+				Kind:      bamlparser.KindPrimitive,
+				Primitive: "string",
+				Span: bamlparser.Span{
+					Col:   43,
+					End:   19170,
+					Line:  515,
+					Start: 19164,
+				},
+			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
+		}},
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "http://127.0.0.1:17654/v1",
+				},
+			}},
+		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
+		Method:   "StaticCheckedAliasedField",
+		Prompt:   "\n    {{ _.role(\"user\") }}\n    Summarize {{ topic }} for me.\n    {{ ctx.output_format }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Classes: []schemadescriptor.ClassDef{schemadescriptor.ClassDef{
+				Fields: []schemadescriptor.ClassField{schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "answer"},
+					Type: schemadescriptor.Type{
+						Kind:      schemadescriptor.TypePrimitive,
+						Primitive: schemadescriptor.PrimitiveString,
+					},
+				}, schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{
+						Alias: func() *string {
+							s := "score"
+							return &s
+						}(),
+						Name: "confidence",
+					},
+					Type: schemadescriptor.Type{
+						Kind: schemadescriptor.TypePrimitive,
+						Meta: schemadescriptor.TypeMeta{Constraints: []schemadescriptor.Constraint{schemadescriptor.Constraint{
+							Expression: " this > 0 ",
+							Label: func() *string {
+								s := "positive"
+								return &s
+							}(),
+							Level: schemadescriptor.ConstraintCheck,
+						}}},
+						Primitive: schemadescriptor.PrimitiveInt,
+					},
+				}},
+				Mode: schemadescriptor.NonStreaming,
+				Name: schemadescriptor.Name{Name: "StaticAliasedCheckedAnswer"},
+			}},
+			Method: "StaticCheckedAliasedField",
+			Target: schemadescriptor.Type{
+				Kind: schemadescriptor.TypeClass,
+				Mode: schemadescriptor.NonStreaming,
+				Name: "StaticAliasedCheckedAnswer",
+			},
+			Version: 1,
+		},
+		Version: 3,
+	}
 }, "StaticCheckedConfidence": func() promptdescriptor.Function {
 	return promptdescriptor.Function{
 		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
@@ -260,9 +360,9 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				Primitive: "string",
 				Span: bamlparser.Span{
 					Col:   41,
-					End:   15836,
-					Line:  415,
-					Start: 15830,
+					End:   15794,
+					Line:  414,
+					Start: 15788,
 				},
 			},
 			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
@@ -340,6 +440,680 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 				Kind: schemadescriptor.TypeClass,
 				Mode: schemadescriptor.NonStreaming,
 				Name: "StaticCheckedAnswer",
+			},
+			Version: 1,
+		},
+		Version: 3,
+	}
+}, "StaticCheckedFloat": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
+			Name: "topic",
+			Type: &bamlparser.TypeExpr{
+				Kind:      bamlparser.KindPrimitive,
+				Primitive: "string",
+				Span: bamlparser.Span{
+					Col:   36,
+					End:   18327,
+					Line:  479,
+					Start: 18321,
+				},
+			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
+		}},
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "http://127.0.0.1:17654/v1",
+				},
+			}},
+		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
+		Method:   "StaticCheckedFloat",
+		Prompt:   "\n    {{ _.role(\"user\") }}\n    Summarize {{ topic }} for me.\n    {{ ctx.output_format }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Classes: []schemadescriptor.ClassDef{schemadescriptor.ClassDef{
+				Fields: []schemadescriptor.ClassField{schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "answer"},
+					Type: schemadescriptor.Type{
+						Kind:      schemadescriptor.TypePrimitive,
+						Primitive: schemadescriptor.PrimitiveString,
+					},
+				}, schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "confidence"},
+					Type: schemadescriptor.Type{
+						Kind: schemadescriptor.TypePrimitive,
+						Meta: schemadescriptor.TypeMeta{Constraints: []schemadescriptor.Constraint{schemadescriptor.Constraint{
+							Expression: " this > 0 ",
+							Label: func() *string {
+								s := "positive"
+								return &s
+							}(),
+							Level: schemadescriptor.ConstraintCheck,
+						}}},
+						Primitive: schemadescriptor.PrimitiveFloat,
+					},
+				}},
+				Mode: schemadescriptor.NonStreaming,
+				Name: schemadescriptor.Name{Name: "StaticFloatCheckedAnswer"},
+			}},
+			Method: "StaticCheckedFloat",
+			Target: schemadescriptor.Type{
+				Kind: schemadescriptor.TypeClass,
+				Mode: schemadescriptor.NonStreaming,
+				Name: "StaticFloatCheckedAnswer",
+			},
+			Version: 1,
+		},
+		Version: 3,
+	}
+}, "StaticCheckedGtePredicate": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
+			Name: "topic",
+			Type: &bamlparser.TypeExpr{
+				Kind:      bamlparser.KindPrimitive,
+				Primitive: "string",
+				Span: bamlparser.Span{
+					Col:   43,
+					End:   19387,
+					Line:  524,
+					Start: 19381,
+				},
+			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
+		}},
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "http://127.0.0.1:17654/v1",
+				},
+			}},
+		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
+		Method:   "StaticCheckedGtePredicate",
+		Prompt:   "\n    {{ _.role(\"user\") }}\n    Summarize {{ topic }} for me.\n    {{ ctx.output_format }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Classes: []schemadescriptor.ClassDef{schemadescriptor.ClassDef{
+				Fields: []schemadescriptor.ClassField{schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "answer"},
+					Type: schemadescriptor.Type{
+						Kind:      schemadescriptor.TypePrimitive,
+						Primitive: schemadescriptor.PrimitiveString,
+					},
+				}, schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "confidence"},
+					Type: schemadescriptor.Type{
+						Kind: schemadescriptor.TypePrimitive,
+						Meta: schemadescriptor.TypeMeta{Constraints: []schemadescriptor.Constraint{schemadescriptor.Constraint{
+							Expression: " this >= 0 ",
+							Label: func() *string {
+								s := "positive"
+								return &s
+							}(),
+							Level: schemadescriptor.ConstraintCheck,
+						}}},
+						Primitive: schemadescriptor.PrimitiveInt,
+					},
+				}},
+				Mode: schemadescriptor.NonStreaming,
+				Name: schemadescriptor.Name{Name: "StaticGtePredicateAnswer"},
+			}},
+			Method: "StaticCheckedGtePredicate",
+			Target: schemadescriptor.Type{
+				Kind: schemadescriptor.TypeClass,
+				Mode: schemadescriptor.NonStreaming,
+				Name: "StaticGtePredicateAnswer",
+			},
+			Version: 1,
+		},
+		Version: 3,
+	}
+}, "StaticCheckedList": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
+			Name: "topic",
+			Type: &bamlparser.TypeExpr{
+				Kind:      bamlparser.KindPrimitive,
+				Primitive: "string",
+				Span: bamlparser.Span{
+					Col:   35,
+					End:   18534,
+					Line:  488,
+					Start: 18528,
+				},
+			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
+		}},
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "http://127.0.0.1:17654/v1",
+				},
+			}},
+		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
+		Method:   "StaticCheckedList",
+		Prompt:   "\n    {{ _.role(\"user\") }}\n    Summarize {{ topic }} for me.\n    {{ ctx.output_format }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Classes: []schemadescriptor.ClassDef{schemadescriptor.ClassDef{
+				Fields: []schemadescriptor.ClassField{schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "answer"},
+					Type: schemadescriptor.Type{
+						Kind:      schemadescriptor.TypePrimitive,
+						Primitive: schemadescriptor.PrimitiveString,
+					},
+				}, schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "confidence"},
+					Type: schemadescriptor.Type{
+						Elem: &schemadescriptor.Type{
+							Kind:      schemadescriptor.TypePrimitive,
+							Primitive: schemadescriptor.PrimitiveInt,
+						},
+						Kind: schemadescriptor.TypeList,
+						Meta: schemadescriptor.TypeMeta{Constraints: []schemadescriptor.Constraint{schemadescriptor.Constraint{
+							Expression: " this|length > 0 ",
+							Label: func() *string {
+								s := "positive"
+								return &s
+							}(),
+							Level: schemadescriptor.ConstraintCheck,
+						}}},
+					},
+				}},
+				Mode: schemadescriptor.NonStreaming,
+				Name: schemadescriptor.Name{Name: "StaticListCheckedAnswer"},
+			}},
+			Method: "StaticCheckedList",
+			Target: schemadescriptor.Type{
+				Kind: schemadescriptor.TypeClass,
+				Mode: schemadescriptor.NonStreaming,
+				Name: "StaticListCheckedAnswer",
+			},
+			Version: 1,
+		},
+		Version: 3,
+	}
+}, "StaticCheckedOptional": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
+			Name: "topic",
+			Type: &bamlparser.TypeExpr{
+				Kind:      bamlparser.KindPrimitive,
+				Primitive: "string",
+				Span: bamlparser.Span{
+					Col:   39,
+					End:   18952,
+					Line:  506,
+					Start: 18946,
+				},
+			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
+		}},
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "http://127.0.0.1:17654/v1",
+				},
+			}},
+		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
+		Method:   "StaticCheckedOptional",
+		Prompt:   "\n    {{ _.role(\"user\") }}\n    Summarize {{ topic }} for me.\n    {{ ctx.output_format }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Classes: []schemadescriptor.ClassDef{schemadescriptor.ClassDef{
+				Fields: []schemadescriptor.ClassField{schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "answer"},
+					Type: schemadescriptor.Type{
+						Kind:      schemadescriptor.TypePrimitive,
+						Primitive: schemadescriptor.PrimitiveString,
+					},
+				}, schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "confidence"},
+					Type: schemadescriptor.Type{
+						Kind: schemadescriptor.TypeUnion,
+						Meta: schemadescriptor.TypeMeta{Constraints: []schemadescriptor.Constraint{schemadescriptor.Constraint{
+							Expression: " this != null ",
+							Label: func() *string {
+								s := "positive"
+								return &s
+							}(),
+							Level: schemadescriptor.ConstraintCheck,
+						}}},
+						Union: &schemadescriptor.UnionType{
+							Nullable: true,
+							Variants: []schemadescriptor.Type{schemadescriptor.Type{
+								Kind:      schemadescriptor.TypePrimitive,
+								Primitive: schemadescriptor.PrimitiveInt,
+							}},
+						},
+					},
+				}},
+				Mode: schemadescriptor.NonStreaming,
+				Name: schemadescriptor.Name{Name: "StaticOptionalCheckedAnswer"},
+			}},
+			Method: "StaticCheckedOptional",
+			Target: schemadescriptor.Type{
+				Kind: schemadescriptor.TypeClass,
+				Mode: schemadescriptor.NonStreaming,
+				Name: "StaticOptionalCheckedAnswer",
+			},
+			Version: 1,
+		},
+		Version: 3,
+	}
+}, "StaticCheckedRenamedClass": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
+			Name: "topic",
+			Type: &bamlparser.TypeExpr{
+				Kind:      bamlparser.KindPrimitive,
+				Primitive: "string",
+				Span: bamlparser.Span{
+					Col:   43,
+					End:   17100,
+					Line:  456,
+					Start: 17094,
+				},
+			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
+		}},
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "http://127.0.0.1:17654/v1",
+				},
+			}},
+		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
+		Method:   "StaticCheckedRenamedClass",
+		Prompt:   "\n    {{ _.role(\"user\") }}\n    Summarize {{ topic }} for me.\n    {{ ctx.output_format }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Classes: []schemadescriptor.ClassDef{schemadescriptor.ClassDef{
+				Fields: []schemadescriptor.ClassField{schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "answer"},
+					Type: schemadescriptor.Type{
+						Kind:      schemadescriptor.TypePrimitive,
+						Primitive: schemadescriptor.PrimitiveString,
+					},
+				}, schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "confidence"},
+					Type: schemadescriptor.Type{
+						Kind: schemadescriptor.TypePrimitive,
+						Meta: schemadescriptor.TypeMeta{Constraints: []schemadescriptor.Constraint{schemadescriptor.Constraint{
+							Expression: " this > 0 ",
+							Label: func() *string {
+								s := "positive"
+								return &s
+							}(),
+							Level: schemadescriptor.ConstraintCheck,
+						}}},
+						Primitive: schemadescriptor.PrimitiveInt,
+					},
+				}},
+				Mode: schemadescriptor.NonStreaming,
+				Name: schemadescriptor.Name{Name: "OtherCheckedAnswer"},
+			}},
+			Method: "StaticCheckedRenamedClass",
+			Target: schemadescriptor.Type{
+				Kind: schemadescriptor.TypeClass,
+				Mode: schemadescriptor.NonStreaming,
+				Name: "OtherCheckedAnswer",
+			},
+			Version: 1,
+		},
+		Version: 3,
+	}
+}, "StaticCheckedReordered": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
+			Name: "topic",
+			Type: &bamlparser.TypeExpr{
+				Kind:      bamlparser.KindPrimitive,
+				Primitive: "string",
+				Span: bamlparser.Span{
+					Col:   40,
+					End:   16888,
+					Line:  447,
+					Start: 16882,
+				},
+			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
+		}},
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "http://127.0.0.1:17654/v1",
+				},
+			}},
+		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
+		Method:   "StaticCheckedReordered",
+		Prompt:   "\n    {{ _.role(\"user\") }}\n    Summarize {{ topic }} for me.\n    {{ ctx.output_format }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Classes: []schemadescriptor.ClassDef{schemadescriptor.ClassDef{
+				Fields: []schemadescriptor.ClassField{schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "confidence"},
+					Type: schemadescriptor.Type{
+						Kind: schemadescriptor.TypePrimitive,
+						Meta: schemadescriptor.TypeMeta{Constraints: []schemadescriptor.Constraint{schemadescriptor.Constraint{
+							Expression: " this > 0 ",
+							Label: func() *string {
+								s := "positive"
+								return &s
+							}(),
+							Level: schemadescriptor.ConstraintCheck,
+						}}},
+						Primitive: schemadescriptor.PrimitiveInt,
+					},
+				}, schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "answer"},
+					Type: schemadescriptor.Type{
+						Kind:      schemadescriptor.TypePrimitive,
+						Primitive: schemadescriptor.PrimitiveString,
+					},
+				}},
+				Mode: schemadescriptor.NonStreaming,
+				Name: schemadescriptor.Name{Name: "StaticReorderedAnswer"},
+			}},
+			Method: "StaticCheckedReordered",
+			Target: schemadescriptor.Type{
+				Kind: schemadescriptor.TypeClass,
+				Mode: schemadescriptor.NonStreaming,
+				Name: "StaticReorderedAnswer",
+			},
+			Version: 1,
+		},
+		Version: 3,
+	}
+}, "StaticCheckedTwoChecks": func() promptdescriptor.Function {
+	return promptdescriptor.Function{
+		Args: []promptdescriptor.Argument{promptdescriptor.Argument{
+			Name: "topic",
+			Type: &bamlparser.TypeExpr{
+				Kind:      bamlparser.KindPrimitive,
+				Primitive: "string",
+				Span: bamlparser.Span{
+					Col:   40,
+					End:   16680,
+					Line:  438,
+					Start: 16674,
+				},
+			},
+			ValueType: &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
+		}},
+		Client: "StaticOracleClient",
+		ClientConfig: promptdescriptor.ClientConfig{
+			Model: promptdescriptor.ClientModel{
+				Provenance: promptdescriptor.ModelProvenanceLiteral,
+				Value:      "fake-static-oracle-model",
+			},
+			Name:     "StaticOracleClient",
+			Present:  true,
+			Provider: "openai",
+			TransportOptions: []promptdescriptor.ClientOption{promptdescriptor.ClientOption{
+				Key: "api_key",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "fake-static-oracle-key",
+				},
+			}, promptdescriptor.ClientOption{
+				Key: "base_url",
+				Value: promptdescriptor.OptionValue{
+					Kind:   promptdescriptor.OptionString,
+					String: "http://127.0.0.1:17654/v1",
+				},
+			}},
+		},
+		InputValues: promptdescriptor.InputValueUniverse{ProjectEnums: []promptdescriptor.ResolvedEnum{promptdescriptor.ResolvedEnum{
+			Members: []promptdescriptor.ResolvedEnumMember{promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "rouge"
+					return &s
+				}(),
+				Canonical: "RED",
+			}, promptdescriptor.ResolvedEnumMember{
+				Alias: func() *string {
+					s := "vert"
+					return &s
+				}(),
+				Canonical: "GREEN",
+			}, promptdescriptor.ResolvedEnumMember{Canonical: "BLUE"}},
+			Name: "Color",
+		}}},
+		Method:   "StaticCheckedTwoChecks",
+		Prompt:   "\n    {{ _.role(\"user\") }}\n    Summarize {{ topic }} for me.\n    {{ ctx.output_format }}\n  ",
+		Provider: "openai",
+		Return: schemadescriptor.Bundle{
+			Classes: []schemadescriptor.ClassDef{schemadescriptor.ClassDef{
+				Fields: []schemadescriptor.ClassField{schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "answer"},
+					Type: schemadescriptor.Type{
+						Kind:      schemadescriptor.TypePrimitive,
+						Primitive: schemadescriptor.PrimitiveString,
+					},
+				}, schemadescriptor.ClassField{
+					Name: schemadescriptor.Name{Name: "confidence"},
+					Type: schemadescriptor.Type{
+						Kind: schemadescriptor.TypePrimitive,
+						Meta: schemadescriptor.TypeMeta{Constraints: []schemadescriptor.Constraint{schemadescriptor.Constraint{
+							Expression: " this > 0 ",
+							Label: func() *string {
+								s := "positive"
+								return &s
+							}(),
+							Level: schemadescriptor.ConstraintCheck,
+						}, schemadescriptor.Constraint{
+							Expression: " this > 5 ",
+							Label: func() *string {
+								s := "big"
+								return &s
+							}(),
+							Level: schemadescriptor.ConstraintCheck,
+						}}},
+						Primitive: schemadescriptor.PrimitiveInt,
+					},
+				}},
+				Mode: schemadescriptor.NonStreaming,
+				Name: schemadescriptor.Name{Name: "StaticTwoCheckAnswer"},
+			}},
+			Method: "StaticCheckedTwoChecks",
+			Target: schemadescriptor.Type{
+				Kind: schemadescriptor.TypeClass,
+				Mode: schemadescriptor.NonStreaming,
+				Name: "StaticTwoCheckAnswer",
 			},
 			Version: 1,
 		},
@@ -2975,7 +3749,7 @@ var StaticPromptDescriptors = map[string]func() promptdescriptor.Function{"Stati
 // StaticPromptDeclines maps a BAML method name to the stable build-time reason it is NOT
 // an eligible static prompt descriptor. Disjoint from StaticPromptDescriptors. Every entry
 // is a #583 teardown blocker to close, not an accepted permanent fallback.
-var StaticPromptDeclines = map[string]string{"StaticMediaImage": "input value graph cannot be resolved faithfully: argument \"img\": media types are not supported", "StaticMediaImageList": "input value graph cannot be resolved faithfully: argument \"imgs\": list element: media types are not supported", "StaticMediaInClass": "input value graph cannot be resolved faithfully: argument \"bundle\": class \"MediaBundle\" field \"img\": media types are not supported"}
+var StaticPromptDeclines = map[string]string{"StaticCheckedNonAsciiLabel": "prompt descriptor return bundle unavailable: class \"StaticNonAsciiLabelAnswer\" field \"confidence\": @check: constraint label \"positivé\" must be a bare identifier", "StaticCheckedUnion": "prompt descriptor return bundle unavailable: class \"StaticUnionCheckedAnswer\" field \"confidence\": attribute @check is not supported here (unknown attributes are declined, and @check/@assert/@stream.* have no home on this node; @alias/@description are lowered everywhere, constraints/streaming where representable, and @skip drops a class field / enum value)", "StaticMediaImage": "input value graph cannot be resolved faithfully: argument \"img\": media types are not supported", "StaticMediaImageList": "input value graph cannot be resolved faithfully: argument \"imgs\": list element: media types are not supported", "StaticMediaInClass": "input value graph cannot be resolved faithfully: argument \"bundle\": class \"MediaBundle\" field \"img\": media types are not supported"}
 
 // StaticPromptDescriptor returns a fresh descriptor and true when method has an emitted
 // static prompt descriptor; it returns the zero Function and false otherwise (method absent
@@ -3107,7 +3881,103 @@ var StaticPromptArgumentProjectors = map[string]func([]any) ([]promptdescriptor.
 		Name:  "topic",
 		Value: staticPromptValueString(a0),
 	}}, true
+}, "StaticCheckedAliasedField": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
 }, "StaticCheckedConfidence": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticCheckedFloat": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticCheckedGtePredicate": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticCheckedList": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticCheckedOptional": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticCheckedRenamedClass": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticCheckedReordered": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
+	if len(args) != 1 {
+		return nil, false
+	}
+	a0, ok0 := args[0].(string)
+	if !ok0 {
+		return nil, false
+	}
+	return []promptdescriptor.ArgumentValue{promptdescriptor.ArgumentValue{
+		Name:  "topic",
+		Value: staticPromptValueString(a0),
+	}}, true
+}, "StaticCheckedTwoChecks": func(args []any) ([]promptdescriptor.ArgumentValue, bool) {
 	if len(args) != 1 {
 		return nil, false
 	}
@@ -3555,14 +4425,34 @@ var StaticClasses = map[string]StaticClassAccessor{"A": func(tb *TypeBuilder) (T
 	return tb.Node()
 }, "NodeAnn": func(tb *TypeBuilder) (Typed, error) {
 	return tb.NodeAnn()
+}, "OtherCheckedAnswer": func(tb *TypeBuilder) (Typed, error) {
+	return tb.OtherCheckedAnswer()
 }, "Palette": func(tb *TypeBuilder) (Typed, error) {
 	return tb.Palette()
+}, "StaticAliasedCheckedAnswer": func(tb *TypeBuilder) (Typed, error) {
+	return tb.StaticAliasedCheckedAnswer()
 }, "StaticAnswer": func(tb *TypeBuilder) (Typed, error) {
 	return tb.StaticAnswer()
 }, "StaticAssertAnswer": func(tb *TypeBuilder) (Typed, error) {
 	return tb.StaticAssertAnswer()
 }, "StaticCheckedAnswer": func(tb *TypeBuilder) (Typed, error) {
 	return tb.StaticCheckedAnswer()
+}, "StaticFloatCheckedAnswer": func(tb *TypeBuilder) (Typed, error) {
+	return tb.StaticFloatCheckedAnswer()
+}, "StaticGtePredicateAnswer": func(tb *TypeBuilder) (Typed, error) {
+	return tb.StaticGtePredicateAnswer()
+}, "StaticListCheckedAnswer": func(tb *TypeBuilder) (Typed, error) {
+	return tb.StaticListCheckedAnswer()
+}, "StaticNonAsciiLabelAnswer": func(tb *TypeBuilder) (Typed, error) {
+	return tb.StaticNonAsciiLabelAnswer()
+}, "StaticOptionalCheckedAnswer": func(tb *TypeBuilder) (Typed, error) {
+	return tb.StaticOptionalCheckedAnswer()
+}, "StaticReorderedAnswer": func(tb *TypeBuilder) (Typed, error) {
+	return tb.StaticReorderedAnswer()
+}, "StaticTwoCheckAnswer": func(tb *TypeBuilder) (Typed, error) {
+	return tb.StaticTwoCheckAnswer()
+}, "StaticUnionCheckedAnswer": func(tb *TypeBuilder) (Typed, error) {
+	return tb.StaticUnionCheckedAnswer()
 }, "Swatch": func(tb *TypeBuilder) (Typed, error) {
 	return tb.Swatch()
 }}

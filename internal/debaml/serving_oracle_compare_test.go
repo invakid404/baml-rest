@@ -176,23 +176,30 @@ func soCompare(f servingOracleFixture, stock soStockEnvelope, native soNativeEnv
 	// ---- boundary -------------------------------------------------------
 	//
 	// Recorded for EVERY row, on every run: the support verdict the collector read
-	// off production's own checkSupported. A constraint-bearing row that became
-	// admitted is a boundary mismatch here as well as a failure of the dedicated
-	// boundary test, so the differential cannot go green on an admitted fixture.
-	if f.Unconstrained {
+	// off production's own checkSupported. The expected verdict is the row's DECLARED
+	// disposition, so a row that silently changed sides is a boundary mismatch here as
+	// well as a failure of the dedicated boundary test, and the differential cannot go
+	// green on it either way.
+	//
+	// De-BAML Slice 7.2b-3: checkSupported now answers the ONE canonical fingerprint
+	// like every other named schema gate, so the four Served rows are ADMITTED by it and
+	// an admitted verdict is a mismatch only for the 49 that are not.
+	switch {
+	case f.Unconstrained || f.Served:
 		if native.Support != nil {
-			add(soMismatchBoundary, "the UNCONSTRAINED control was DECLINED by checkSupported (%v); the "+
-				"decline must be caused by constraints, not by the shape", native.Support)
+			what := "UNCONSTRAINED control"
+			if f.Served {
+				what = "SERVED fingerprint row"
+			}
+			add(soMismatchBoundary, "the %s was DECLINED by checkSupported (%v); the schema gates share "+
+				"one fingerprint, so this row must be admitted", what, native.Support)
 		}
-	} else {
-		switch {
-		case native.Support == nil:
-			add(soMismatchBoundary, "checkSupported ADMITTED a constraint-bearing bundle; native would serve a "+
-				"value BAML computes differently")
-		case !errors.Is(native.Support, bamlutils.ErrDeBAMLParseUnsupported):
-			add(soMismatchBoundary, "checkSupported declined with an error that does not wrap "+
-				"ErrDeBAMLParseUnsupported: %v", native.Support)
-		}
+	case native.Support == nil:
+		add(soMismatchBoundary, "checkSupported ADMITTED a constraint-bearing bundle that is NOT the "+
+			"admitted fingerprint; native would serve a value BAML computes differently")
+	case !errors.Is(native.Support, bamlutils.ErrDeBAMLParseUnsupported):
+		add(soMismatchBoundary, "checkSupported declined with an error that does not wrap "+
+			"ErrDeBAMLParseUnsupported: %v", native.Support)
 	}
 
 	if f.Fatal {

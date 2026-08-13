@@ -227,6 +227,42 @@ func (t *NodeAnnClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 
+type OtherCheckedAnswerClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *OtherCheckedAnswerClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *OtherCheckedAnswerClassView) PropertyAnswer() (ClassPropertyView, error) {
+	return t.inner.Property("answer")
+}
+
+func (t *OtherCheckedAnswerClassView) PropertyConfidence() (ClassPropertyView, error) {
+	return t.inner.Property("confidence")
+}
+
+func (t *TypeBuilder) OtherCheckedAnswer() (*OtherCheckedAnswerClassView, error) {
+	bld, err := t.inner.Class("OtherCheckedAnswer")
+	if err != nil {
+		return nil, err
+	}
+	return &OtherCheckedAnswerClassView{inner: bld}, nil
+}
+
+func (t *OtherCheckedAnswerClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
 type PaletteClassView struct {
 	inner baml.ClassBuilder
 }
@@ -268,6 +304,42 @@ func (t *TypeBuilder) Palette() (*PaletteClassView, error) {
 }
 
 func (t *PaletteClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type StaticAliasedCheckedAnswerClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *StaticAliasedCheckedAnswerClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *StaticAliasedCheckedAnswerClassView) PropertyAnswer() (ClassPropertyView, error) {
+	return t.inner.Property("answer")
+}
+
+func (t *StaticAliasedCheckedAnswerClassView) PropertyConfidence() (ClassPropertyView, error) {
+	return t.inner.Property("confidence")
+}
+
+func (t *TypeBuilder) StaticAliasedCheckedAnswer() (*StaticAliasedCheckedAnswerClassView, error) {
+	bld, err := t.inner.Class("StaticAliasedCheckedAnswer")
+	if err != nil {
+		return nil, err
+	}
+	return &StaticAliasedCheckedAnswerClassView{inner: bld}, nil
+}
+
+func (t *StaticAliasedCheckedAnswerClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 
@@ -376,6 +448,294 @@ func (t *TypeBuilder) StaticCheckedAnswer() (*StaticCheckedAnswerClassView, erro
 }
 
 func (t *StaticCheckedAnswerClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type StaticFloatCheckedAnswerClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *StaticFloatCheckedAnswerClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *StaticFloatCheckedAnswerClassView) PropertyAnswer() (ClassPropertyView, error) {
+	return t.inner.Property("answer")
+}
+
+func (t *StaticFloatCheckedAnswerClassView) PropertyConfidence() (ClassPropertyView, error) {
+	return t.inner.Property("confidence")
+}
+
+func (t *TypeBuilder) StaticFloatCheckedAnswer() (*StaticFloatCheckedAnswerClassView, error) {
+	bld, err := t.inner.Class("StaticFloatCheckedAnswer")
+	if err != nil {
+		return nil, err
+	}
+	return &StaticFloatCheckedAnswerClassView{inner: bld}, nil
+}
+
+func (t *StaticFloatCheckedAnswerClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type StaticGtePredicateAnswerClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *StaticGtePredicateAnswerClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *StaticGtePredicateAnswerClassView) PropertyAnswer() (ClassPropertyView, error) {
+	return t.inner.Property("answer")
+}
+
+func (t *StaticGtePredicateAnswerClassView) PropertyConfidence() (ClassPropertyView, error) {
+	return t.inner.Property("confidence")
+}
+
+func (t *TypeBuilder) StaticGtePredicateAnswer() (*StaticGtePredicateAnswerClassView, error) {
+	bld, err := t.inner.Class("StaticGtePredicateAnswer")
+	if err != nil {
+		return nil, err
+	}
+	return &StaticGtePredicateAnswerClassView{inner: bld}, nil
+}
+
+func (t *StaticGtePredicateAnswerClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type StaticListCheckedAnswerClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *StaticListCheckedAnswerClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *StaticListCheckedAnswerClassView) PropertyAnswer() (ClassPropertyView, error) {
+	return t.inner.Property("answer")
+}
+
+func (t *StaticListCheckedAnswerClassView) PropertyConfidence() (ClassPropertyView, error) {
+	return t.inner.Property("confidence")
+}
+
+func (t *TypeBuilder) StaticListCheckedAnswer() (*StaticListCheckedAnswerClassView, error) {
+	bld, err := t.inner.Class("StaticListCheckedAnswer")
+	if err != nil {
+		return nil, err
+	}
+	return &StaticListCheckedAnswerClassView{inner: bld}, nil
+}
+
+func (t *StaticListCheckedAnswerClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type StaticNonAsciiLabelAnswerClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *StaticNonAsciiLabelAnswerClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *StaticNonAsciiLabelAnswerClassView) PropertyAnswer() (ClassPropertyView, error) {
+	return t.inner.Property("answer")
+}
+
+func (t *StaticNonAsciiLabelAnswerClassView) PropertyConfidence() (ClassPropertyView, error) {
+	return t.inner.Property("confidence")
+}
+
+func (t *TypeBuilder) StaticNonAsciiLabelAnswer() (*StaticNonAsciiLabelAnswerClassView, error) {
+	bld, err := t.inner.Class("StaticNonAsciiLabelAnswer")
+	if err != nil {
+		return nil, err
+	}
+	return &StaticNonAsciiLabelAnswerClassView{inner: bld}, nil
+}
+
+func (t *StaticNonAsciiLabelAnswerClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type StaticOptionalCheckedAnswerClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *StaticOptionalCheckedAnswerClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *StaticOptionalCheckedAnswerClassView) PropertyAnswer() (ClassPropertyView, error) {
+	return t.inner.Property("answer")
+}
+
+func (t *StaticOptionalCheckedAnswerClassView) PropertyConfidence() (ClassPropertyView, error) {
+	return t.inner.Property("confidence")
+}
+
+func (t *TypeBuilder) StaticOptionalCheckedAnswer() (*StaticOptionalCheckedAnswerClassView, error) {
+	bld, err := t.inner.Class("StaticOptionalCheckedAnswer")
+	if err != nil {
+		return nil, err
+	}
+	return &StaticOptionalCheckedAnswerClassView{inner: bld}, nil
+}
+
+func (t *StaticOptionalCheckedAnswerClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type StaticReorderedAnswerClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *StaticReorderedAnswerClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *StaticReorderedAnswerClassView) PropertyConfidence() (ClassPropertyView, error) {
+	return t.inner.Property("confidence")
+}
+
+func (t *StaticReorderedAnswerClassView) PropertyAnswer() (ClassPropertyView, error) {
+	return t.inner.Property("answer")
+}
+
+func (t *TypeBuilder) StaticReorderedAnswer() (*StaticReorderedAnswerClassView, error) {
+	bld, err := t.inner.Class("StaticReorderedAnswer")
+	if err != nil {
+		return nil, err
+	}
+	return &StaticReorderedAnswerClassView{inner: bld}, nil
+}
+
+func (t *StaticReorderedAnswerClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type StaticTwoCheckAnswerClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *StaticTwoCheckAnswerClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *StaticTwoCheckAnswerClassView) PropertyAnswer() (ClassPropertyView, error) {
+	return t.inner.Property("answer")
+}
+
+func (t *StaticTwoCheckAnswerClassView) PropertyConfidence() (ClassPropertyView, error) {
+	return t.inner.Property("confidence")
+}
+
+func (t *TypeBuilder) StaticTwoCheckAnswer() (*StaticTwoCheckAnswerClassView, error) {
+	bld, err := t.inner.Class("StaticTwoCheckAnswer")
+	if err != nil {
+		return nil, err
+	}
+	return &StaticTwoCheckAnswerClassView{inner: bld}, nil
+}
+
+func (t *StaticTwoCheckAnswerClassView) Type() (baml.Type, error) {
+	return t.inner.Type()
+}
+
+type StaticUnionCheckedAnswerClassView struct {
+	inner baml.ClassBuilder
+}
+
+func (t *StaticUnionCheckedAnswerClassView) ListProperties() ([]ClassPropertyView, error) {
+	result, err := t.inner.ListProperties()
+	if err != nil {
+		return nil, err
+	}
+	builders := make([]ClassPropertyView, len(result))
+	for i, p := range result {
+		builders[i] = p
+	}
+	return builders, nil
+}
+
+func (t *StaticUnionCheckedAnswerClassView) PropertyAnswer() (ClassPropertyView, error) {
+	return t.inner.Property("answer")
+}
+
+func (t *StaticUnionCheckedAnswerClassView) PropertyConfidence() (ClassPropertyView, error) {
+	return t.inner.Property("confidence")
+}
+
+func (t *TypeBuilder) StaticUnionCheckedAnswer() (*StaticUnionCheckedAnswerClassView, error) {
+	bld, err := t.inner.Class("StaticUnionCheckedAnswer")
+	if err != nil {
+		return nil, err
+	}
+	return &StaticUnionCheckedAnswerClassView{inner: bld}, nil
+}
+
+func (t *StaticUnionCheckedAnswerClassView) Type() (baml.Type, error) {
 	return t.inner.Type()
 }
 

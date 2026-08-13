@@ -734,14 +734,14 @@ var servingOracleFixtures = []servingOracleFixture{
 	// admits (internal/debaml's staticCheckedProfileOf), in all four of its
 	// serving-shaped outcomes.
 	//
-	// THEY STILL DECLINE. Slice 7.2b-2 adds the mapper and the generated types behind
-	// a non-admitting seam; TestServingOracleBoundaryLock refuses them through every
-	// gate exactly as it refuses the other 49 constraint-bearing rows, and
-	// TestServingOracleCompanionRowsAreTheAdmittedFingerprint proves the decline is
-	// about the seam rather than about the shape being unrecognised. 7.2b-3 flips
-	// them, and only them.
+	// THEY ARE THE FOUR ROWS SLICE 7.2b-3 FLIPPED, and the only ones. Each carries
+	// Served, so TestServingOracleBoundaryLock requires it to be ADMITTED by the
+	// native-final support predicate and SERVED by the static unary /call route while
+	// the other 49 constraint-bearing rows keep their existing declines — and while
+	// these four still decline on the DIRECT parse endpoints and through the generic
+	// shape cut-line, which is the scope's `/call`-only boundary.
 	{
-		Name: "static_answer_confidence_check_pass", Family: "class",
+		Name: "static_answer_confidence_check_pass", Family: "class", Served: true,
 		Doc: "7.2b-2 COMPANION: the production two-field fingerprint with a HOLDING @check — the " +
 			"outcome that becomes a Checked[int64] carrier on the `confidence` field",
 		Bundle: soBundle(soClassType("StaticCheckedAnswer"),
@@ -754,7 +754,7 @@ var servingOracleFixtures = []servingOracleFixture{
 		Native: "value class:StaticCheckedAnswer{answer=string:\"sunny\",confidence=int:9} events=[$.confidence|type_meta/check/\"positive\"/this > 0=true]",
 	},
 	{
-		Name: "static_answer_confidence_check_fail", Family: "class",
+		Name: "static_answer_confidence_check_fail", Family: "class", Served: true,
 		Doc: "7.2b-2 COMPANION: the same declaration with the predicate FALSE. A false @check is DATA — " +
 			"the value is still emitted, with status failed",
 		Bundle: soBundle(soClassType("StaticCheckedAnswer"),
@@ -767,7 +767,7 @@ var servingOracleFixtures = []servingOracleFixture{
 		Native: "value class:StaticCheckedAnswer{answer=string:\"sunny\",confidence=int:-1} events=[$.confidence|type_meta/check/\"positive\"/this > 0=false]",
 	},
 	{
-		Name: "static_answer_confidence_assert_pass", Family: "class",
+		Name: "static_answer_confidence_assert_pass", Family: "class", Served: true,
 		Doc: "7.2b-2 COMPANION: the @assert twin with the predicate HOLDING — no check entry and no " +
 			"wrapper, so the generated field stays an ordinary int64",
 		Bundle: soBundle(soClassType("StaticAssertAnswer"),
@@ -780,7 +780,7 @@ var servingOracleFixtures = []servingOracleFixture{
 		Native: "value class:StaticAssertAnswer{answer=string:\"sunny\",confidence=int:9} events=[$.confidence|type_meta/assert/\"positive\"/this > 0=true]",
 	},
 	{
-		Name: "static_answer_confidence_assert_fail", Family: "class",
+		Name: "static_answer_confidence_assert_fail", Family: "class", Served: true,
 		Doc: "7.2b-2 COMPANION: the @assert twin with the predicate FALSE — no value at all, and the " +
 			"required-field wrapper chain internal/debaml/checkedwire pins byte-for-byte",
 		Bundle: soBundle(soClassType("StaticAssertAnswer"),

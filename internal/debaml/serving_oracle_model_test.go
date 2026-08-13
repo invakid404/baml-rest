@@ -85,6 +85,21 @@ type servingOracleFixture struct {
 	// decline of every other fixture constraint-specific rather than a blanket
 	// refusal of the corpus.
 	Unconstrained bool
+	// Served marks a CONSTRAINT-BEARING fixture the de-BAML Slice 7.2b-3 cutover
+	// ADMITS: the one production fingerprint, on the static unary /call route.
+	//
+	// It is the per-row expected disposition the scope replaced the blanket
+	// "every constraint-bearing fixture declines" lock with. Exactly the four #665
+	// companion rows carry it (TestServingOracleBoundaryLock cross-checks that
+	// against soCompanionRowNames, so a fifth row cannot acquire it quietly), and
+	// every other constraint-bearing row keeps its existing decline.
+	//
+	// Served does NOT mean "admitted everywhere". EVERY named SCHEMA gate admits these
+	// rows — the three generic ones included, since the cutover they consult the same
+	// fingerprint — while the direct parse endpoints and the /stream admission predicate
+	// keep declining them as a ROUTE decision. That split is the scope's `/call`-only
+	// boundary, and soRequireServed drives both halves.
+	Served bool
 	// Divergence explains, in one sentence, why this row does NOT land in an
 	// agreement bucket: a predicate native refuses to evaluate, a coercion native
 	// declines outright, a value the two legs canonicalize differently, or a check

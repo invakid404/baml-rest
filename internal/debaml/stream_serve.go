@@ -81,6 +81,13 @@ func SupportsNativeStreamBundle(bundle *schema.Bundle) error {
 	if err := checkSupported(bundle); err != nil {
 		return err
 	}
+	// De-BAML Slice 7.2b-3 ROUTE BOUNDARY: `/stream` is a ZERO-SOCKET decline for the
+	// checked-static fingerprint. This is the PRE-TRANSPORT half — admission consults
+	// this predicate before any socket, so a constrained return never reaches the stream
+	// serve core at all. parseStream carries the same boundary for the runtime lane.
+	if err := staticCheckedRouteBoundary(bundle, "the stream route"); err != nil {
+		return err
+	}
 	// The STREAM lane keeps its blanket cycle/union declines: unary static-final only,
 	// never a static streaming change. Pass a nil recursive profile.
 	if err := checkStreamRootSupported(bundle, nil); err != nil {
@@ -920,6 +927,18 @@ func SupportsNativeFinal(s *bamlutils.DynamicOutputSchema) error {
 	if err != nil {
 		return err
 	}
+	// De-BAML Slice 7.2b-3: this DYNAMIC wrapper carries NO checked-static route
+	// boundary, and deliberately so.
+	//
+	// [SupportsNativeFinalBundle] answers about the SHAPE and therefore admits the
+	// checked-static fingerprint, so it would be natural to add one here. But a
+	// DynamicOutputSchema HAS NO CONSTRAINT CHANNEL — the #572 ceiling — so
+	// lowerForSupport cannot produce a constrained bundle at all, and a guard placed
+	// here could never execute or be tested. Unverifiable code that looks like a
+	// boundary is worse than none: TestDynamicLoweringCannotExpressAConstraint pins the
+	// ceiling itself, which is the statement that actually holds, and root [Parse]'s
+	// dynamic branch keeps a real, driven boundary for a hand-built bundle that reaches
+	// it by another path.
 	return SupportsNativeFinalBundle(bundle)
 }
 
@@ -952,17 +971,6 @@ func SupportsNativeFinalBundle(bundle *schema.Bundle) error {
 	// structural-recursive-alias decline unchanged.
 	if IsProvenServedRecursiveAliasStaticFamily(bundle) {
 		return nil
-	}
-	// De-BAML Slice 7.2b-2: the narrow CHECKED-STATIC case, behind its NON-ADMITTING
-	// seam. Support is a property of the SHAPE, so this hook carries no route capability;
-	// while the seam is closed it claims NOTHING and every constraint-bearing bundle (the
-	// four #665 companion rows for this exact fingerprint included) falls through to
-	// checkSupported's unchanged constraint decline below. WHICH ROUTE may then claim the
-	// shape is decided at parse time — see staticCheckedParse, which declines a matched
-	// fingerprint on a route that may not claim it rather than falling through to the
-	// constraint-blind ordinary path.
-	if err, claimed := staticCheckedFinalSupport(bundle); claimed {
-		return err
 	}
 	// De-BAML Phase 2: classify the bundle against the narrow static-final
 	// recursive-class family FIRST. An admitted family (self Node, mutual A<->B)

@@ -95,6 +95,80 @@ func StaticAssertConfidence(ctx context.Context, topic string, opts ...CallOptio
 	}
 }
 
+func StaticCheckedAliasedField(ctx context.Context, topic string, opts ...CallOptionFunc) (types.StaticAliasedCheckedAnswer, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "StaticCheckedAliasedField", encoded, callOpts.onTick)
+		if err != nil {
+			return types.StaticAliasedCheckedAnswer{}, err
+		}
+
+		if result.Error != nil {
+			return types.StaticAliasedCheckedAnswer{}, result.Error
+		}
+
+		casted := (result.Data).(types.StaticAliasedCheckedAnswer)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "StaticCheckedAliasedField", encoded, callOpts.onTick)
+		if err != nil {
+			return types.StaticAliasedCheckedAnswer{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.StaticAliasedCheckedAnswer{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.StaticAliasedCheckedAnswer), nil
+			}
+		}
+
+		return types.StaticAliasedCheckedAnswer{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
 func StaticCheckedConfidence(ctx context.Context, topic string, opts ...CallOptionFunc) (types.StaticCheckedAnswer, error) {
 
 	var callOpts callOption
@@ -166,6 +240,672 @@ func StaticCheckedConfidence(ctx context.Context, topic string, opts ...CallOpti
 		}
 
 		return types.StaticCheckedAnswer{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func StaticCheckedFloat(ctx context.Context, topic string, opts ...CallOptionFunc) (types.StaticFloatCheckedAnswer, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "StaticCheckedFloat", encoded, callOpts.onTick)
+		if err != nil {
+			return types.StaticFloatCheckedAnswer{}, err
+		}
+
+		if result.Error != nil {
+			return types.StaticFloatCheckedAnswer{}, result.Error
+		}
+
+		casted := (result.Data).(types.StaticFloatCheckedAnswer)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "StaticCheckedFloat", encoded, callOpts.onTick)
+		if err != nil {
+			return types.StaticFloatCheckedAnswer{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.StaticFloatCheckedAnswer{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.StaticFloatCheckedAnswer), nil
+			}
+		}
+
+		return types.StaticFloatCheckedAnswer{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func StaticCheckedGtePredicate(ctx context.Context, topic string, opts ...CallOptionFunc) (types.StaticGtePredicateAnswer, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "StaticCheckedGtePredicate", encoded, callOpts.onTick)
+		if err != nil {
+			return types.StaticGtePredicateAnswer{}, err
+		}
+
+		if result.Error != nil {
+			return types.StaticGtePredicateAnswer{}, result.Error
+		}
+
+		casted := (result.Data).(types.StaticGtePredicateAnswer)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "StaticCheckedGtePredicate", encoded, callOpts.onTick)
+		if err != nil {
+			return types.StaticGtePredicateAnswer{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.StaticGtePredicateAnswer{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.StaticGtePredicateAnswer), nil
+			}
+		}
+
+		return types.StaticGtePredicateAnswer{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func StaticCheckedList(ctx context.Context, topic string, opts ...CallOptionFunc) (types.StaticListCheckedAnswer, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "StaticCheckedList", encoded, callOpts.onTick)
+		if err != nil {
+			return types.StaticListCheckedAnswer{}, err
+		}
+
+		if result.Error != nil {
+			return types.StaticListCheckedAnswer{}, result.Error
+		}
+
+		casted := (result.Data).(types.StaticListCheckedAnswer)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "StaticCheckedList", encoded, callOpts.onTick)
+		if err != nil {
+			return types.StaticListCheckedAnswer{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.StaticListCheckedAnswer{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.StaticListCheckedAnswer), nil
+			}
+		}
+
+		return types.StaticListCheckedAnswer{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func StaticCheckedNonAsciiLabel(ctx context.Context, topic string, opts ...CallOptionFunc) (types.StaticNonAsciiLabelAnswer, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "StaticCheckedNonAsciiLabel", encoded, callOpts.onTick)
+		if err != nil {
+			return types.StaticNonAsciiLabelAnswer{}, err
+		}
+
+		if result.Error != nil {
+			return types.StaticNonAsciiLabelAnswer{}, result.Error
+		}
+
+		casted := (result.Data).(types.StaticNonAsciiLabelAnswer)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "StaticCheckedNonAsciiLabel", encoded, callOpts.onTick)
+		if err != nil {
+			return types.StaticNonAsciiLabelAnswer{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.StaticNonAsciiLabelAnswer{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.StaticNonAsciiLabelAnswer), nil
+			}
+		}
+
+		return types.StaticNonAsciiLabelAnswer{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func StaticCheckedOptional(ctx context.Context, topic string, opts ...CallOptionFunc) (types.StaticOptionalCheckedAnswer, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "StaticCheckedOptional", encoded, callOpts.onTick)
+		if err != nil {
+			return types.StaticOptionalCheckedAnswer{}, err
+		}
+
+		if result.Error != nil {
+			return types.StaticOptionalCheckedAnswer{}, result.Error
+		}
+
+		casted := (result.Data).(types.StaticOptionalCheckedAnswer)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "StaticCheckedOptional", encoded, callOpts.onTick)
+		if err != nil {
+			return types.StaticOptionalCheckedAnswer{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.StaticOptionalCheckedAnswer{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.StaticOptionalCheckedAnswer), nil
+			}
+		}
+
+		return types.StaticOptionalCheckedAnswer{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func StaticCheckedRenamedClass(ctx context.Context, topic string, opts ...CallOptionFunc) (types.OtherCheckedAnswer, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "StaticCheckedRenamedClass", encoded, callOpts.onTick)
+		if err != nil {
+			return types.OtherCheckedAnswer{}, err
+		}
+
+		if result.Error != nil {
+			return types.OtherCheckedAnswer{}, result.Error
+		}
+
+		casted := (result.Data).(types.OtherCheckedAnswer)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "StaticCheckedRenamedClass", encoded, callOpts.onTick)
+		if err != nil {
+			return types.OtherCheckedAnswer{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.OtherCheckedAnswer{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.OtherCheckedAnswer), nil
+			}
+		}
+
+		return types.OtherCheckedAnswer{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func StaticCheckedReordered(ctx context.Context, topic string, opts ...CallOptionFunc) (types.StaticReorderedAnswer, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "StaticCheckedReordered", encoded, callOpts.onTick)
+		if err != nil {
+			return types.StaticReorderedAnswer{}, err
+		}
+
+		if result.Error != nil {
+			return types.StaticReorderedAnswer{}, result.Error
+		}
+
+		casted := (result.Data).(types.StaticReorderedAnswer)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "StaticCheckedReordered", encoded, callOpts.onTick)
+		if err != nil {
+			return types.StaticReorderedAnswer{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.StaticReorderedAnswer{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.StaticReorderedAnswer), nil
+			}
+		}
+
+		return types.StaticReorderedAnswer{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func StaticCheckedTwoChecks(ctx context.Context, topic string, opts ...CallOptionFunc) (types.StaticTwoCheckAnswer, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "StaticCheckedTwoChecks", encoded, callOpts.onTick)
+		if err != nil {
+			return types.StaticTwoCheckAnswer{}, err
+		}
+
+		if result.Error != nil {
+			return types.StaticTwoCheckAnswer{}, result.Error
+		}
+
+		casted := (result.Data).(types.StaticTwoCheckAnswer)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "StaticCheckedTwoChecks", encoded, callOpts.onTick)
+		if err != nil {
+			return types.StaticTwoCheckAnswer{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.StaticTwoCheckAnswer{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.StaticTwoCheckAnswer), nil
+			}
+		}
+
+		return types.StaticTwoCheckAnswer{}, fmt.Errorf("No data returned from stream")
+	}
+}
+
+func StaticCheckedUnion(ctx context.Context, topic string, opts ...CallOptionFunc) (types.StaticUnionCheckedAnswer, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		panic(err)
+	}
+
+	if callOpts.onTick == nil {
+		result, err := bamlRuntime.CallFunction(ctx, "StaticCheckedUnion", encoded, callOpts.onTick)
+		if err != nil {
+			return types.StaticUnionCheckedAnswer{}, err
+		}
+
+		if result.Error != nil {
+			return types.StaticUnionCheckedAnswer{}, result.Error
+		}
+
+		casted := (result.Data).(types.StaticUnionCheckedAnswer)
+
+		return casted, nil
+	} else {
+		channel, err := bamlRuntime.CallFunctionStream(ctx, "StaticCheckedUnion", encoded, callOpts.onTick)
+		if err != nil {
+			return types.StaticUnionCheckedAnswer{}, err
+		}
+
+		for result := range channel {
+			if result.Error != nil {
+				return types.StaticUnionCheckedAnswer{}, result.Error
+			}
+
+			if result.HasData {
+				return result.Data.(types.StaticUnionCheckedAnswer), nil
+			}
+		}
+
+		return types.StaticUnionCheckedAnswer{}, fmt.Errorf("No data returned from stream")
 	}
 }
 

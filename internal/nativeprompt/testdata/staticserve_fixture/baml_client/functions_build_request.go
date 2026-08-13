@@ -71,6 +71,52 @@ func (*build_request) StaticAssertConfidence(ctx context.Context, topic string, 
 	return bamlRuntime.BuildRequest(ctx, "StaticAssertConfidence", encoded)
 }
 
+// Build HTTP request for StaticCheckedAliasedField (returns baml.HTTPRequest)
+func (*build_request) StaticCheckedAliasedField(ctx context.Context, topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticCheckedAliasedField: %w", err)
+		panic(wrapped_err)
+	}
+
+	return bamlRuntime.BuildRequest(ctx, "StaticCheckedAliasedField", encoded)
+}
+
 // Build HTTP request for StaticCheckedConfidence (returns baml.HTTPRequest)
 func (*build_request) StaticCheckedConfidence(ctx context.Context, topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
 
@@ -115,6 +161,420 @@ func (*build_request) StaticCheckedConfidence(ctx context.Context, topic string,
 	}
 
 	return bamlRuntime.BuildRequest(ctx, "StaticCheckedConfidence", encoded)
+}
+
+// Build HTTP request for StaticCheckedFloat (returns baml.HTTPRequest)
+func (*build_request) StaticCheckedFloat(ctx context.Context, topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticCheckedFloat: %w", err)
+		panic(wrapped_err)
+	}
+
+	return bamlRuntime.BuildRequest(ctx, "StaticCheckedFloat", encoded)
+}
+
+// Build HTTP request for StaticCheckedGtePredicate (returns baml.HTTPRequest)
+func (*build_request) StaticCheckedGtePredicate(ctx context.Context, topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticCheckedGtePredicate: %w", err)
+		panic(wrapped_err)
+	}
+
+	return bamlRuntime.BuildRequest(ctx, "StaticCheckedGtePredicate", encoded)
+}
+
+// Build HTTP request for StaticCheckedList (returns baml.HTTPRequest)
+func (*build_request) StaticCheckedList(ctx context.Context, topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticCheckedList: %w", err)
+		panic(wrapped_err)
+	}
+
+	return bamlRuntime.BuildRequest(ctx, "StaticCheckedList", encoded)
+}
+
+// Build HTTP request for StaticCheckedNonAsciiLabel (returns baml.HTTPRequest)
+func (*build_request) StaticCheckedNonAsciiLabel(ctx context.Context, topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticCheckedNonAsciiLabel: %w", err)
+		panic(wrapped_err)
+	}
+
+	return bamlRuntime.BuildRequest(ctx, "StaticCheckedNonAsciiLabel", encoded)
+}
+
+// Build HTTP request for StaticCheckedOptional (returns baml.HTTPRequest)
+func (*build_request) StaticCheckedOptional(ctx context.Context, topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticCheckedOptional: %w", err)
+		panic(wrapped_err)
+	}
+
+	return bamlRuntime.BuildRequest(ctx, "StaticCheckedOptional", encoded)
+}
+
+// Build HTTP request for StaticCheckedRenamedClass (returns baml.HTTPRequest)
+func (*build_request) StaticCheckedRenamedClass(ctx context.Context, topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticCheckedRenamedClass: %w", err)
+		panic(wrapped_err)
+	}
+
+	return bamlRuntime.BuildRequest(ctx, "StaticCheckedRenamedClass", encoded)
+}
+
+// Build HTTP request for StaticCheckedReordered (returns baml.HTTPRequest)
+func (*build_request) StaticCheckedReordered(ctx context.Context, topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticCheckedReordered: %w", err)
+		panic(wrapped_err)
+	}
+
+	return bamlRuntime.BuildRequest(ctx, "StaticCheckedReordered", encoded)
+}
+
+// Build HTTP request for StaticCheckedTwoChecks (returns baml.HTTPRequest)
+func (*build_request) StaticCheckedTwoChecks(ctx context.Context, topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticCheckedTwoChecks: %w", err)
+		panic(wrapped_err)
+	}
+
+	return bamlRuntime.BuildRequest(ctx, "StaticCheckedTwoChecks", encoded)
+}
+
+// Build HTTP request for StaticCheckedUnion (returns baml.HTTPRequest)
+func (*build_request) StaticCheckedUnion(ctx context.Context, topic string, opts ...CallOptionFunc) (baml.HTTPRequest, error) {
+
+	var callOpts callOption
+	for _, opt := range opts {
+		opt(&callOpts)
+	}
+
+	// Resolve client option to clientRegistry (client takes precedence)
+	if callOpts.client != nil {
+		if callOpts.clientRegistry == nil {
+			callOpts.clientRegistry = baml.NewClientRegistry()
+		}
+		callOpts.clientRegistry.SetPrimaryClient(*callOpts.client)
+	}
+
+	args := baml.BamlFunctionArguments{
+		Kwargs: map[string]any{"topic": topic, "stream": false},
+		Env:    getEnvVars(callOpts.env),
+	}
+
+	if callOpts.clientRegistry != nil {
+		args.ClientRegistry = callOpts.clientRegistry
+	}
+
+	if callOpts.collectors != nil {
+		args.Collectors = callOpts.collectors
+	}
+
+	if callOpts.typeBuilder != nil {
+		args.TypeBuilder = callOpts.typeBuilder
+	}
+
+	if callOpts.tags != nil {
+		args.Tags = callOpts.tags
+	}
+
+	encoded, err := args.Encode()
+	if err != nil {
+		wrapped_err := fmt.Errorf("BAML INTERNAL ERROR: StaticCheckedUnion: %w", err)
+		panic(wrapped_err)
+	}
+
+	return bamlRuntime.BuildRequest(ctx, "StaticCheckedUnion", encoded)
 }
 
 // Build HTTP request for StaticCompletion (returns baml.HTTPRequest)

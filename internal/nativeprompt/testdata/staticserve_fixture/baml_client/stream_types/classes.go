@@ -304,6 +304,54 @@ func (c NodeAnn) BamlTypeName() string {
 	return "NodeAnn"
 }
 
+type OtherCheckedAnswer struct {
+	Answer     *string               `json:"answer"`
+	Confidence *types.Checked[int64] `json:"confidence"`
+}
+
+func (c *OtherCheckedAnswer) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "OtherCheckedAnswer" {
+		panic(fmt.Sprintf("expected OtherCheckedAnswer, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "answer":
+			c.Answer = baml.Decode(valueHolder).Interface().(*string)
+
+		case "confidence":
+			c.Confidence = types.FromStockCheckedPtr(baml.Decode(valueHolder).Interface().(*types.StockChecked[int64]))
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class OtherCheckedAnswer", key))
+
+		}
+	}
+
+}
+
+func (c OtherCheckedAnswer) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["answer"] = c.Answer
+
+	fields["confidence"] = c.Confidence
+
+	return baml.EncodeClass("OtherCheckedAnswer", fields, nil)
+}
+
+func (c OtherCheckedAnswer) BamlTypeName() string {
+	return "OtherCheckedAnswer"
+}
+
 type Palette struct {
 	Primary *types.Color  `json:"primary"`
 	Shades  []types.Color `json:"shades"`
@@ -362,6 +410,54 @@ func (c Palette) Encode() (*cffi.HostValue, error) {
 
 func (c Palette) BamlTypeName() string {
 	return "Palette"
+}
+
+type StaticAliasedCheckedAnswer struct {
+	Answer     *string               `json:"answer"`
+	Confidence *types.Checked[int64] `json:"confidence"`
+}
+
+func (c *StaticAliasedCheckedAnswer) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "StaticAliasedCheckedAnswer" {
+		panic(fmt.Sprintf("expected StaticAliasedCheckedAnswer, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "answer":
+			c.Answer = baml.Decode(valueHolder).Interface().(*string)
+
+		case "confidence":
+			c.Confidence = types.FromStockCheckedPtr(baml.Decode(valueHolder).Interface().(*types.StockChecked[int64]))
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class StaticAliasedCheckedAnswer", key))
+
+		}
+	}
+
+}
+
+func (c StaticAliasedCheckedAnswer) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["answer"] = c.Answer
+
+	fields["confidence"] = c.Confidence
+
+	return baml.EncodeClass("StaticAliasedCheckedAnswer", fields, nil)
+}
+
+func (c StaticAliasedCheckedAnswer) BamlTypeName() string {
+	return "StaticAliasedCheckedAnswer"
 }
 
 type StaticAnswer struct {
@@ -506,6 +602,390 @@ func (c StaticCheckedAnswer) Encode() (*cffi.HostValue, error) {
 
 func (c StaticCheckedAnswer) BamlTypeName() string {
 	return "StaticCheckedAnswer"
+}
+
+type StaticFloatCheckedAnswer struct {
+	Answer     *string                 `json:"answer"`
+	Confidence *types.Checked[float64] `json:"confidence"`
+}
+
+func (c *StaticFloatCheckedAnswer) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "StaticFloatCheckedAnswer" {
+		panic(fmt.Sprintf("expected StaticFloatCheckedAnswer, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "answer":
+			c.Answer = baml.Decode(valueHolder).Interface().(*string)
+
+		case "confidence":
+			c.Confidence = types.FromStockCheckedPtr(baml.Decode(valueHolder).Interface().(*types.StockChecked[float64]))
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class StaticFloatCheckedAnswer", key))
+
+		}
+	}
+
+}
+
+func (c StaticFloatCheckedAnswer) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["answer"] = c.Answer
+
+	fields["confidence"] = c.Confidence
+
+	return baml.EncodeClass("StaticFloatCheckedAnswer", fields, nil)
+}
+
+func (c StaticFloatCheckedAnswer) BamlTypeName() string {
+	return "StaticFloatCheckedAnswer"
+}
+
+type StaticGtePredicateAnswer struct {
+	Answer     *string               `json:"answer"`
+	Confidence *types.Checked[int64] `json:"confidence"`
+}
+
+func (c *StaticGtePredicateAnswer) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "StaticGtePredicateAnswer" {
+		panic(fmt.Sprintf("expected StaticGtePredicateAnswer, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "answer":
+			c.Answer = baml.Decode(valueHolder).Interface().(*string)
+
+		case "confidence":
+			c.Confidence = types.FromStockCheckedPtr(baml.Decode(valueHolder).Interface().(*types.StockChecked[int64]))
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class StaticGtePredicateAnswer", key))
+
+		}
+	}
+
+}
+
+func (c StaticGtePredicateAnswer) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["answer"] = c.Answer
+
+	fields["confidence"] = c.Confidence
+
+	return baml.EncodeClass("StaticGtePredicateAnswer", fields, nil)
+}
+
+func (c StaticGtePredicateAnswer) BamlTypeName() string {
+	return "StaticGtePredicateAnswer"
+}
+
+type StaticListCheckedAnswer struct {
+	Answer     *string                `json:"answer"`
+	Confidence types.Checked[[]int64] `json:"confidence"`
+}
+
+func (c *StaticListCheckedAnswer) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "StaticListCheckedAnswer" {
+		panic(fmt.Sprintf("expected StaticListCheckedAnswer, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "answer":
+			c.Answer = baml.Decode(valueHolder).Interface().(*string)
+
+		case "confidence":
+			c.Confidence = types.FromStockChecked(baml.Decode(valueHolder).Interface().(types.StockChecked[[]int64]))
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class StaticListCheckedAnswer", key))
+
+		}
+	}
+
+}
+
+func (c StaticListCheckedAnswer) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["answer"] = c.Answer
+
+	fields["confidence"] = c.Confidence
+
+	return baml.EncodeClass("StaticListCheckedAnswer", fields, nil)
+}
+
+func (c StaticListCheckedAnswer) BamlTypeName() string {
+	return "StaticListCheckedAnswer"
+}
+
+type StaticNonAsciiLabelAnswer struct {
+	Answer     *string               `json:"answer"`
+	Confidence *types.Checked[int64] `json:"confidence"`
+}
+
+func (c *StaticNonAsciiLabelAnswer) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "StaticNonAsciiLabelAnswer" {
+		panic(fmt.Sprintf("expected StaticNonAsciiLabelAnswer, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "answer":
+			c.Answer = baml.Decode(valueHolder).Interface().(*string)
+
+		case "confidence":
+			c.Confidence = types.FromStockCheckedPtr(baml.Decode(valueHolder).Interface().(*types.StockChecked[int64]))
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class StaticNonAsciiLabelAnswer", key))
+
+		}
+	}
+
+}
+
+func (c StaticNonAsciiLabelAnswer) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["answer"] = c.Answer
+
+	fields["confidence"] = c.Confidence
+
+	return baml.EncodeClass("StaticNonAsciiLabelAnswer", fields, nil)
+}
+
+func (c StaticNonAsciiLabelAnswer) BamlTypeName() string {
+	return "StaticNonAsciiLabelAnswer"
+}
+
+type StaticOptionalCheckedAnswer struct {
+	Answer     *string               `json:"answer"`
+	Confidence types.Checked[*int64] `json:"confidence"`
+}
+
+func (c *StaticOptionalCheckedAnswer) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "StaticOptionalCheckedAnswer" {
+		panic(fmt.Sprintf("expected StaticOptionalCheckedAnswer, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "answer":
+			c.Answer = baml.Decode(valueHolder).Interface().(*string)
+
+		case "confidence":
+			c.Confidence = types.FromStockChecked(baml.Decode(valueHolder).Interface().(types.StockChecked[*int64]))
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class StaticOptionalCheckedAnswer", key))
+
+		}
+	}
+
+}
+
+func (c StaticOptionalCheckedAnswer) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["answer"] = c.Answer
+
+	fields["confidence"] = c.Confidence
+
+	return baml.EncodeClass("StaticOptionalCheckedAnswer", fields, nil)
+}
+
+func (c StaticOptionalCheckedAnswer) BamlTypeName() string {
+	return "StaticOptionalCheckedAnswer"
+}
+
+type StaticReorderedAnswer struct {
+	Confidence *types.Checked[int64] `json:"confidence"`
+	Answer     *string               `json:"answer"`
+}
+
+func (c *StaticReorderedAnswer) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "StaticReorderedAnswer" {
+		panic(fmt.Sprintf("expected StaticReorderedAnswer, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "confidence":
+			c.Confidence = types.FromStockCheckedPtr(baml.Decode(valueHolder).Interface().(*types.StockChecked[int64]))
+
+		case "answer":
+			c.Answer = baml.Decode(valueHolder).Interface().(*string)
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class StaticReorderedAnswer", key))
+
+		}
+	}
+
+}
+
+func (c StaticReorderedAnswer) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["confidence"] = c.Confidence
+
+	fields["answer"] = c.Answer
+
+	return baml.EncodeClass("StaticReorderedAnswer", fields, nil)
+}
+
+func (c StaticReorderedAnswer) BamlTypeName() string {
+	return "StaticReorderedAnswer"
+}
+
+type StaticTwoCheckAnswer struct {
+	Answer     *string               `json:"answer"`
+	Confidence *types.Checked[int64] `json:"confidence"`
+}
+
+func (c *StaticTwoCheckAnswer) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "StaticTwoCheckAnswer" {
+		panic(fmt.Sprintf("expected StaticTwoCheckAnswer, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "answer":
+			c.Answer = baml.Decode(valueHolder).Interface().(*string)
+
+		case "confidence":
+			c.Confidence = types.FromStockCheckedPtr(baml.Decode(valueHolder).Interface().(*types.StockChecked[int64]))
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class StaticTwoCheckAnswer", key))
+
+		}
+	}
+
+}
+
+func (c StaticTwoCheckAnswer) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["answer"] = c.Answer
+
+	fields["confidence"] = c.Confidence
+
+	return baml.EncodeClass("StaticTwoCheckAnswer", fields, nil)
+}
+
+func (c StaticTwoCheckAnswer) BamlTypeName() string {
+	return "StaticTwoCheckAnswer"
+}
+
+type StaticUnionCheckedAnswer struct {
+	Answer     *string                                 `json:"answer"`
+	Confidence *types.Checked[types.Union2IntOrString] `json:"confidence"`
+}
+
+func (c *StaticUnionCheckedAnswer) Decode(holder *cffi.CFFIValueClass, typeMap baml.TypeMap) {
+	typeName := holder.Name
+	if typeName.Namespace != cffi.CFFITypeNamespace_STREAM_TYPES {
+		panic(fmt.Sprintf("expected cffi.CFFITypeNamespace_STREAM_TYPES, got %s", string(typeName.Namespace.String())))
+	}
+	if typeName.Name != "StaticUnionCheckedAnswer" {
+		panic(fmt.Sprintf("expected StaticUnionCheckedAnswer, got %s", typeName.Name))
+	}
+
+	for _, field := range holder.Fields {
+		key := field.Key
+		valueHolder := field.Value
+		switch key {
+
+		case "answer":
+			c.Answer = baml.Decode(valueHolder).Interface().(*string)
+
+		case "confidence":
+			c.Confidence = types.FromStockCheckedPtr(baml.Decode(valueHolder).Interface().(*types.StockChecked[types.Union2IntOrString]))
+
+		default:
+
+			panic(fmt.Sprintf("unexpected field: %s in class StaticUnionCheckedAnswer", key))
+
+		}
+	}
+
+}
+
+func (c StaticUnionCheckedAnswer) Encode() (*cffi.HostValue, error) {
+	fields := map[string]any{}
+
+	fields["answer"] = c.Answer
+
+	fields["confidence"] = c.Confidence
+
+	return baml.EncodeClass("StaticUnionCheckedAnswer", fields, nil)
+}
+
+func (c StaticUnionCheckedAnswer) BamlTypeName() string {
+	return "StaticUnionCheckedAnswer"
 }
 
 type Swatch struct {

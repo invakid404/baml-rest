@@ -20,7 +20,7 @@ import (
 // tests.
 
 // cwProjectSHA256 pins the rendered project. See TestCheckedWireProjectDrift.
-const cwProjectSHA256 = "a7962e0c18a6ca343e883c843fbe109392586cace3f855853485d98a760f3d8d"
+const cwProjectSHA256 = "7a458c8d20c02f83f95fe81b8f47cfbcee4a13fd69fbfe369bf30124c3ae5a8a"
 
 // The two cause-length probes. stock's validate_asserts measures the WHOLE cause —
 // `Failed: ` + label + ' ' + expression — with Rust's String::len(), i.e. in BYTES,
@@ -197,6 +197,30 @@ var cwFixtures = []cwFixture{{
 	Name:   "CauseExpr101Probe",
 	Doc:    "As above, for the one-byte-over expression.",
 	Target: `int @check(` + cwCauseLabel + `, {{ ` + cwExpr101 + ` }})`,
+	Raw:    "5",
+}, {
+	// De-BAML Slice 7.2b-3 — the EXPRESSION-TEXT normalisation probes.
+	//
+	// A `@check(l, {{ EXPR }})` attribute stores EXPR with the `{{`/`}}` delimiters
+	// stripped but the PADDING kept: the descriptor a generated static method carries
+	// for `{{ this > 0 }}` is literally " this > 0 " (one space each side). What stock
+	// puts in Check.Expression is a DIFFERENT string, and these three rows measure the
+	// relationship for zero, one and two spaces of padding instead of assuming it.
+	//
+	// The admitted fingerprint accepts only the paddings measured here.
+	Name:   "ExprPadNone",
+	Doc:    "EXPRESSION TEXT: `{{this > 0}}` — no padding at all.",
+	Target: `int @check(pad0, {{this > 0}})`,
+	Raw:    "5",
+}, {
+	Name:   "ExprPadOne",
+	Doc:    "EXPRESSION TEXT: `{{ this > 0 }}` — the ordinary one-space form every fixture writes.",
+	Target: `int @check(pad1, {{ this > 0 }})`,
+	Raw:    "5",
+}, {
+	Name:   "ExprPadTwo",
+	Doc:    "EXPRESSION TEXT: `{{  this > 0  }}` — two spaces each side, the padding the fingerprint DECLINES.",
+	Target: `int @check(pad2, {{  this > 0  }})`,
 	Raw:    "5",
 }, {
 	Name:   "EvaluatorError",
