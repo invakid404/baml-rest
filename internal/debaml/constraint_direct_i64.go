@@ -83,13 +83,16 @@ import (
 //
 // Recognising all six operators here does NOT admit them. Admission is decided by
 // [staticCheckedProfileOf], whose allowed-operator MANIFEST
-// ([staticCheckedManifestTokens]) is `>` and only `>`; the other five decline at
-// every schema gate exactly as they did before, and the served row count stays 4.
-// The evaluator has always parsed all six comparisons (constraint_operator.go's
-// grammar) — what changes here is that for the direct i64 form it now DECIDES them
-// exactly instead of refusing on a whitelist written for general arithmetic. 7.2c-3
-// is the slice that may widen the manifest, and it may do so only per-operator,
-// against 7.2c-1's captures.
+// ([staticCheckedManifestTokens]) is a separate statement about STOCK. When this
+// file landed (7.2c-2) that manifest was `>` and only `>`, and the other five
+// declined at every schema gate even though the code below could decide them
+// exactly — which is the whole point of keeping the two apart.
+//
+// SLICE 7.2c-3 widened the manifest to all six, per operator, against 7.2c-1's CFFI
+// captures plus a live one-socket serve proof. The separation still holds and still
+// matters: this table remains the EVALUATOR's answer, and adding a seventh entry
+// here would still admit nothing until the manifest named it — which is what
+// TestStaticCheckedManifestIsEvidenceGated pins.
 
 // directCompareOp is one direct comparison operator, as DATA.
 //

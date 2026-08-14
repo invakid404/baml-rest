@@ -1,4 +1,4 @@
-# de-BAML Slice 7.2c-1 — residual ledger
+# de-BAML Slice 7.2c — residual ledger (updated by 7.2c-3, the admission cutover)
 
 Every form the 7.2c scope defers, with its disposition and the authority behind it.
 
@@ -8,9 +8,18 @@ to have a row, requires every row to be `DECLINED`, and requires every authority
 names a test — in this package or in a sibling one — to name a test that really exists
 there.
 
-**Nothing in this table is admitted by 7.2c-1.** The only served predicate is still
-`this > I` on the two name-pinned families, which
-`TestPredicateWireAdmissionIsUnchanged` re-asserts through the production gates.
+**Nothing in this table is admitted.** Slice 7.2c-3 MOVED five rows OUT of it rather than
+changing their disposition: `operator_ge`, `operator_lt`, `operator_le`, `operator_eq`
+and `operator_ne` were deferrals under 7.2c-1/7.2c-2 and are now SERVED, so they are no
+longer residuals and the ledger guard REQUIRES their absence — an admitted form left
+sitting in a deferral table is exactly the kind of stale record this file exists to
+prevent. The served predicate is now `this OP I` for the six direct comparisons on the
+two name-pinned families, which `TestPredicateWireAdmissionMatchesTheCutover` re-asserts
+through the production gates and `TestPredicateWireManifestIsBackedByCaptures` re-joins
+to the captures that authorise it.
+
+What the operator axis keeps here instead is the row one step further out: the SEVENTH
+forms, which have no capture and stay declined.
 
 ## What "authority" means per row
 
@@ -51,11 +60,8 @@ partial matrix cannot read as a complete one.
 | two_asserts | two failing `@assert` on the pinned assert family | DECLINED | predicatewire:TestTwoAssertsOnThePinnedFamilyRecordCauseOrder |
 | noncanonical_literal | `+5`, `007`, `1_000`, `5.0`, i64 overflow | DECLINED | predicatewire:TestStockNonCanonicalLiteralDispositions |
 | padding_two_spaces | two ASCII spaces each side of the predicate | DECLINED | predicatewire:TestStockPaddingIsStrippedForEveryOperator |
-| operator_ge | `this >= I` | DECLINED | predicatewire:TestPredicateWireAdmissionIsUnchanged |
-| operator_lt | `this < I` | DECLINED | predicatewire:TestPredicateWireAdmissionIsUnchanged |
-| operator_le | `this <= I` | DECLINED | predicatewire:TestPredicateWireAdmissionIsUnchanged |
-| operator_eq | `this == I` | DECLINED | predicatewire:TestPredicateWireAdmissionIsUnchanged |
-| operator_ne | `this != I` | DECLINED | predicatewire:TestPredicateWireAdmissionIsUnchanged |
+| operator_seventh_form | a SEVENTH comparison spelling — `<>`, `===`, `!==`, `=>`, `=<`, `=`, `>==`, `! =` | DECLINED | debaml:TestStaticCheckedSeventhFormWideningIsProvenToBite |
+| operator_reversed_operands | `I OP this` — a well-formed comparison denoting an admitted relation, with `this` on the RIGHT | DECLINED | debaml:TestStaticCheckedSeventhFormWideningIsProvenToBite |
 | i64_beyond_exact | a VALUE at or past 2^53 in a GENERIC expression (a filter, arithmetic, a test) — the direct grammar itself is exact as of 7.2c-2 | DECLINED | predicatewire:TestGenericNumericProfileStillRefusesOutsideTheDirectGrammar |
 | i64_long_literal | a canonical literal longer than 15 digits in a GENERIC expression — including `9007199254740991`, which is 2^53-1 and therefore below the guard's own 2^53 threshold | DECLINED | predicatewire:TestGenericNumericProfileStillRefusesOutsideTheDirectGrammar |
 | i64_negative_literal | a negative canonical literal in a GENERIC expression, which the guard reads as arithmetic | DECLINED | predicatewire:TestGenericNumericProfileStillRefusesOutsideTheDirectGrammar |
@@ -87,7 +93,7 @@ partial matrix cannot read as a complete one.
 | label_empty_present | a present-but-empty label | DECLINED | debaml:TestStaticCheckedGatesShareOneFingerprint |
 | route_static_stream | the static STREAM lane | DECLINED | debaml:TestStaticCheckedRouteBoundaryKeepsTheDynamicAndStreamLanesClosed |
 | route_dynamic_final | the dynamic final lane | DECLINED | debaml:TestStaticCheckedRouteBoundaryKeepsTheDynamicAndStreamLanesClosed |
-| route_direct_parse | `ParseStaticBundle` without the static-unary claim | DECLINED | predicatewire:TestPredicateWireAdmissionIsUnchanged |
+| route_direct_parse | `ParseStaticBundle` without the static-unary claim | DECLINED | predicatewire:TestPredicateWireAdmissionMatchesTheCutover |
 | route_call_with_raw | `CallWithRaw` | DECLINED | debaml:TestStaticCheckedRouteBoundaryKeepsTheDynamicAndStreamLanesClosed |
 
 ## The two findings a later slice must act on
@@ -135,3 +141,24 @@ partial matrix cannot read as a complete one.
    guard was narrowed by a grammar, not loosened by a magnitude. The magnitude frontier the
    earlier measurement reported applied only on the non-negative side; the sign clause was
    absolute, and both are now facts about the generic profile alone.
+
+3. **The operator axis moved, and the ledger moved with it (Slice 7.2c-3).** The five
+   `operator_*` rows this table carried were deferrals backed by exactly the captures in
+   this package — 24 nested plus 24 top-level rows of stock wire and error bytes. 7.2c-3
+   spent that authority: it widened the production manifest to all six direct
+   comparisons, per operator, against those captures plus a live one-socket serve proof,
+   so the rows left this table entirely.
+
+   Two NEW rows took their place, one step further out. `operator_seventh_form` covers
+   the alternate spellings a matcher written from the operator LIST rather than from the
+   captures would grow into, and `operator_reversed_operands` covers `I OP this` — the
+   one that matters, because it is a WELL-FORMED comparison denoting the same relation as
+   an admitted row. Neither has a capture, so both decline; the grammar refuses them by
+   pinning `this` as the left operand rather than by failing to parse.
+
+   The cause-length bound moved with the widening and is recorded here because it
+   NARROWED a previously served form: `>=` and `<=` are one byte longer than `>`, so the
+   derived label ceiling went from 64 bytes to 63, and a 64-byte label — admissible since
+   7.2b-3 — is now a decline. That is an over-decline in the safe direction: at 64 the
+   rendered cause would be 101 bytes, one byte inside stock's truncation regime, which
+   native has no byte proof for.

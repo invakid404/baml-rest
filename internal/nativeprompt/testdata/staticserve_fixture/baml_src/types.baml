@@ -261,6 +261,18 @@ class StaticAliasedCheckedAnswer {
   confidence int @alias("score") @check(positive, {{ this > 0 }})
 }
 
+// De-BAML Slice 7.2c-3: this class is now the LIVE NAME-PIN witness.
+//
+// Until the cutover it declined for two reasons at once — the class name is not one of
+// the two pinned ones, and `this >= 0` was outside the admitted operator manifest. The
+// cutover ADMITS `>=`, so exactly one reason is left and this is a single-axis witness
+// for the NAME.
+//
+// It is deliberately NOT renamed to `StaticCheckedAnswer` to make it servable: the 7.2c
+// scope forbids unpinning the class names to make predicate variants coexist, and the
+// admitted `>=` family is served live from its own ISOLATED project
+// (internal/nativeprompt/testdata/staticserve_op_fixtures/ge), which declares the two
+// pinned names once. This route must keep opening ZERO native sockets.
 class StaticGtePredicateAnswer {
   answer string
   confidence int @check(positive, {{ this >= 0 }})

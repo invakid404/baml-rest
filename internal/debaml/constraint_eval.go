@@ -347,9 +347,11 @@ func renderOnce(this ConstraintValue, expression string, mode mappingMode) (stri
 // `|int| >= 2^53` numeric whitelist included. The exact path is a narrowing of the
 // grammar, not a loosening of the guard: it is consulted first, it answers only
 // for the closed direct form, and it declines to route anything else. It is also
-// not an admission — the static classifier's allowed-operator manifest is
-// independent of it and still names `>` alone
-// ([staticCheckedManifestTokens]).
+// not an admission — the static classifier's allowed-operator manifest
+// ([staticCheckedManifestTokens]) is an independent, evidence-gated statement about
+// STOCK. Slice 7.2c-3 widened that manifest to the same six operators this path
+// decides; widening it did not touch this file, and adding a seventh operator here
+// would still admit nothing.
 //
 // constraint_profile.go states what the rendered profile excludes and why; the
 // stock differential (internal/debaml/constraintoracle) enforces the contract case

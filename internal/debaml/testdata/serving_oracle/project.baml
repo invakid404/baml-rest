@@ -498,22 +498,22 @@ function SO_bare_string_quoted_text(topic: string) -> string {
   prompt #"{{ topic }} {{ ctx.output_format }}"#
 }
 
-function SO_static_answer_confidence_check_pass(topic: string) -> StaticCheckedAnswer {
+function SO_static_answer_confidence_gt_check_pass(topic: string) -> StaticCheckedAnswer {
   client ServingOracleClient
   prompt #"{{ topic }} {{ ctx.output_format }}"#
 }
 
-function SO_static_answer_confidence_check_fail(topic: string) -> StaticCheckedAnswer {
+function SO_static_answer_confidence_gt_check_fail(topic: string) -> StaticCheckedAnswer {
   client ServingOracleClient
   prompt #"{{ topic }} {{ ctx.output_format }}"#
 }
 
-function SO_static_answer_confidence_assert_pass(topic: string) -> StaticAssertAnswer {
+function SO_static_answer_confidence_gt_assert_pass(topic: string) -> StaticAssertAnswer {
   client ServingOracleClient
   prompt #"{{ topic }} {{ ctx.output_format }}"#
 }
 
-function SO_static_answer_confidence_assert_fail(topic: string) -> StaticAssertAnswer {
+function SO_static_answer_confidence_gt_assert_fail(topic: string) -> StaticAssertAnswer {
   client ServingOracleClient
   prompt #"{{ topic }} {{ ctx.output_format }}"#
 }

@@ -68,11 +68,23 @@ const (
 	soBAMLVersion   = "v0.223.0"
 )
 
-// soWantProjectHash pins the SHA-256 of the rendered project. It is compared only
-// after the golden byte-comparison succeeds, so it is not a second copy of the
-// same check: it is what makes regenerating the golden a deliberate, reviewable
-// act rather than a silent one.
-const soWantProjectHash = "8ec226ef989f47367b003554349bf9227ba77e75b1ffd33b0786b20ade4a9c44"
+// soWantProjectHashes pins the SHA-256 of EVERY rendered project, by project name.
+// Each is compared only after that project's golden byte-comparison succeeds, so it
+// is not a second copy of the same check: it is what makes regenerating a golden a
+// deliberate, reviewable act rather than a silent one.
+//
+// De-BAML Slice 7.2c-3 turned this from one constant into a table, because the
+// cutover's 24 served rows carry six predicate variants of the same two name-pinned
+// classes and one BAML project cannot declare a class twice. The main project keeps
+// its own hash; each isolated operator project has its own.
+var soWantProjectHashes = map[string]string{
+	"main": "19073da02e7086a33cac579b170b5e43f6a0a533cacfe5922d6251b53eae9533",
+	"ge":   "cdcf68875652d89a6c104badb1628fb42ff5ac97e3673321bacc48f1249d3b7c",
+	"lt":   "0ee4a8a7782c336d1e557902fbe837ddcb8a43a818a33bdac0296bd7d02c9510",
+	"le":   "9804c8ac3db8f36fb215c25df1c0a2ff08bd6d69c889b616be4e6c1eef107f95",
+	"eq":   "d69a4f9a8442e18c06760c8648584ae28ed6918082879c5d02c152dc8effaec7",
+	"ne":   "51a0dab2c8c78f12a75f2fdbbbdfafbcc8b030db3544c3306f3fcea88a748b68",
+}
 
 // soStockCache memoizes one stock parse per fixture. The CFFI runtime is
 // process-global and the suite deliberately does not parallelise over it, so no
@@ -353,39 +365,163 @@ func soContains(list []string, want string) bool {
 // the stock leg is actually driving.
 func TestServingOracleProjectDrift(t *testing.T) {
 	soEnsureRuntime(t)
+	projects := soProjectNames(servingOracleFixtures)
+	if len(projects) < 2 {
+		t.Fatal("the corpus renders a single project; after Slice 7.2c-3 it must render the main " +
+			"project plus one ISOLATED project per extra operator, because one BAML project cannot " +
+			"declare the name-pinned classes twice")
+	}
 	if os.Getenv(soWriteEnv) != "" {
-		if err := os.MkdirAll(filepath.Dir(soProjectGolden), 0o755); err != nil {
-			t.Fatalf("create %s: %v", filepath.Dir(soProjectGolden), err)
+		for _, project := range projects {
+			golden := soProjectGoldenFor(project)
+			if err := os.MkdirAll(filepath.Dir(golden), 0o755); err != nil {
+				t.Fatalf("create %s: %v", filepath.Dir(golden), err)
+			}
+			if err := os.WriteFile(golden, []byte(soRuntimeSources[project]), 0o644); err != nil {
+				t.Fatalf("write %s: %v", golden, err)
+			}
+			t.Logf("%s rewritten from the corpus; its SHA-256 is %s — update soWantProjectHashes[%q]",
+				golden, soProjectHash(soRuntimeSources[project]), project)
 		}
-		if err := os.WriteFile(soProjectGolden, []byte(soRuntimeSource), 0o644); err != nil {
-			t.Fatalf("write %s: %v", soProjectGolden, err)
-		}
-		t.Logf("%s rewritten from the corpus; its SHA-256 is %s — update soWantProjectHash",
-			soProjectGolden, soProjectHash(soRuntimeSource))
 		return
 	}
-	golden, err := os.ReadFile(soProjectGolden)
-	if err != nil {
-		t.Fatalf("read %s: %v (regenerate with %s=1)", soProjectGolden, err, soWriteEnv)
+	if len(soWantProjectHashes) != len(projects) {
+		t.Fatalf("%d project hashes are pinned but the corpus renders %d projects (%v); a project "+
+			"with no pinned hash could be regenerated silently", len(soWantProjectHashes), len(projects), projects)
 	}
-	if string(golden) != soRuntimeSource {
-		t.Fatalf("%s is stale: it is not what the corpus renders and not what the stock runtime compiled.\n"+
-			"Regenerate with %s=1 and update soWantProjectHash.\n  golden %d bytes, rendered %d bytes",
-			soProjectGolden, soWriteEnv, len(golden), len(soRuntimeSource))
+	for _, project := range projects {
+		t.Run(project, func(t *testing.T) {
+			src, ok := soRuntimeSources[project]
+			if !ok {
+				t.Fatalf("project %q has no rendered source", project)
+			}
+			goldenPath := soProjectGoldenFor(project)
+			golden, err := os.ReadFile(goldenPath)
+			if err != nil {
+				t.Fatalf("read %s: %v (regenerate with %s=1)", goldenPath, err, soWriteEnv)
+			}
+			if string(golden) != src {
+				t.Fatalf("%s is stale: it is not what the corpus renders and not what the stock runtime "+
+					"compiled.\nRegenerate with %s=1 and update soWantProjectHashes.\n  golden %d bytes, "+
+					"rendered %d bytes", goldenPath, soWriteEnv, len(golden), len(src))
+			}
+			want, ok := soWantProjectHashes[project]
+			if !ok {
+				t.Fatalf("project %q has no pinned SHA-256", project)
+			}
+			if got := soProjectHash(src); got != want {
+				t.Fatalf("the rendered project's SHA-256 is %s, want %s.\nThe golden and the corpus "+
+					"agree, so this is a deliberate change that has to be acknowledged here.", got, want)
+			}
+			// Every fixture's function must be present in ITS OWN project's text. A row
+			// whose method is missing would fail its parse with "function not found",
+			// which is a harness failure, not an observation.
+			for _, f := range soFixturesOfProject(servingOracleFixtures, project) {
+				if !strings.Contains(src, "function "+f.method()+"(") {
+					t.Errorf("%s declares no function %s in the compiled project", f.Name, f.method())
+				}
+			}
+		})
 	}
-	if got := soProjectHash(soRuntimeSource); got != soWantProjectHash {
-		t.Fatalf("the rendered project's SHA-256 is %s, want %s.\n"+
-			"The golden and the corpus agree, so this is a deliberate change that has to be acknowledged here.",
-			got, soWantProjectHash)
+	// EVERY fixture lands in exactly one project, so the per-project loops above cover
+	// the whole corpus rather than most of it.
+	covered := 0
+	for _, project := range projects {
+		covered += len(soFixturesOfProject(servingOracleFixtures, project))
 	}
-	// Every fixture's function must be present in the compiled text. A row whose
-	// method is missing would fail its parse with "function not found", which is a
-	// harness failure, not an observation.
-	for _, f := range servingOracleFixtures {
-		if !strings.Contains(soRuntimeSource, "function "+f.method()+"(") {
-			t.Errorf("%s declares no function %s in the compiled project", f.Name, f.method())
+	if covered != len(servingOracleFixtures) {
+		t.Fatalf("the projects cover %d of %d corpus rows", covered, len(servingOracleFixtures))
+	}
+	t.Logf("isolated projects: %d (%v) covering %d corpus rows", len(projects), projects, covered)
+}
+
+// TestServingOracleProjectsAreIsolatedAndNamePinned is the guard the 7.2c scope asks
+// for beside the isolated projects, and it is what keeps "isolated" from turning into
+// "renamed".
+//
+// Three things are asserted, and the second is the one the scope is worried about:
+//
+//  1. every isolated project declares the two PINNED class names and no other class —
+//     so a project cannot have been made to compile by inventing a third name;
+//  2. no project declares a pinned name twice, and no two projects share a predicate
+//     for it — so the six variants really are six, in six places;
+//  3. each project's own runtime reports ITS OWN predicate through the real CFFI,
+//     which is what makes "the runtimes coexist" a measurement rather than a hope.
+func TestServingOracleProjectsAreIsolatedAndNamePinned(t *testing.T) {
+	soEnsureRuntime(t)
+	pinned := map[string]bool{"StaticCheckedAnswer": true, "StaticAssertAnswer": true}
+	predicates := map[string]string{}
+	isolated := 0
+	for _, project := range soProjectNames(servingOracleFixtures) {
+		if project == soMainProject {
+			continue
+		}
+		isolated++
+		declared := map[string]int{}
+		exprs := map[string]bool{}
+		for _, f := range soFixturesOfProject(servingOracleFixtures, project) {
+			for _, c := range f.Bundle.Classes {
+				if !pinned[c.Name.Name] {
+					t.Errorf("isolated project %q declares class %q, which is NOT one of the two pinned "+
+						"names; the scope forbids renaming a class to make fixtures coexist",
+						project, c.Name.Name)
+				}
+				declared[c.Name.Name+"/"+soRenderClass(c)]++
+				for _, fld := range c.Fields {
+					for _, cs := range fld.Type.Meta.Constraints {
+						exprs[cs.Expression] = true
+					}
+				}
+			}
+		}
+		// One rendering per pinned name (several rows may share it), and exactly one
+		// predicate across the project.
+		names := map[string]int{}
+		for key := range declared {
+			names[strings.SplitN(key, "/", 2)[0]]++
+		}
+		for name, n := range names {
+			if n != 1 {
+				t.Errorf("isolated project %q renders class %q %d different ways", project, name, n)
+			}
+		}
+		if len(exprs) != 1 {
+			t.Errorf("isolated project %q carries %d distinct predicates %v, want exactly 1",
+				project, len(exprs), exprs)
+		}
+		for e := range exprs {
+			if prev, ok := predicates[e]; ok {
+				t.Errorf("projects %q and %q both carry the predicate %q; one of them is redundant",
+					prev, project, e)
+			}
+			predicates[e] = project
 		}
 	}
+	if isolated < 5 {
+		t.Fatalf("%d isolated projects; the cutover admits six operators and the main project can "+
+			"carry only one of them", isolated)
+	}
+	// (3) Each runtime reports ITS OWN predicate. Driven through the real CFFI over a
+	// row whose check FAILS, because a failed check carries the expression on the wire
+	// where it can be compared — a passing assert would emit nothing to look at.
+	measured := 0
+	for _, f := range servingOracleFixtures {
+		if !f.Served || !strings.HasSuffix(f.Name, "_check_fail") {
+			continue
+		}
+		env := soStockFor(t, f)
+		if !strings.Contains(env.render(), f.Bundle.Classes[0].Fields[1].Type.Meta.Constraints[0].Expression) {
+			t.Errorf("%s: project %q's runtime did not report its own predicate; got %s",
+				f.Name, f.project(), env.render())
+		}
+		measured++
+	}
+	if measured != 6 {
+		t.Fatalf("%d check_fail rows were driven, want 6 (one per operator)", measured)
+	}
+	t.Logf("project isolation: %d isolated projects, each declaring the two PINNED names once with "+
+		"one predicate; %d runtimes each reported their own predicate through the CFFI",
+		isolated, measured)
 }
 
 // ---------------------------------------------------------------------------
@@ -471,9 +607,17 @@ func TestServingOracleFailClosed(t *testing.T) {
 // closed direct grammar `this OP <canonical i64>` is now decided by an exact int64
 // comparison instead of refused by the generic numeric whitelist. Nothing turned from an
 // agreement into a decline, and nothing turned into a different boolean.
+//
+// SLICE 7.2c-3 moved NO row. It ADDED 20 — the five new operators x four outcomes,
+// which is the cutover's served manifest — so two buckets grew by exactly the number of
+// new rows that land in them: soAgreeValue 31 -> 46 (5 operators x the three
+// value-emitting outcomes) and soAgreeAssertFailure 4 -> 9 (5 operators x one false
+// assert). Every other bucket is byte-identical, which is the check worth having here:
+// a widening that had changed an EXISTING row's disposition would show up as a bucket
+// that shrank, and none did.
 var soWantAgreement = map[soAgreement]int{
-	soAgreeValue:               31,
-	soAgreeAssertFailure:       4,
+	soAgreeValue:               46,
+	soAgreeAssertFailure:       9,
 	soAgreeRefusal:             1,
 	soNativeDeclinesPredicate:  5,
 	soNativeDeclinesCoercion:   3,
@@ -561,10 +705,13 @@ func soRequireDivergenceNote(t *testing.T, f servingOracleFixture, bucket soAgre
 //
 //	Unconstrained (control)   ADMITTED by the constraint cut-line, and at least one
 //	                          actually SERVES bytes.
-//	Served (4 rows)           the ONE admitted fingerprint: ADMITTED by the native-final
-//	                          support predicate and SERVED by the static unary /call
-//	                          route — while still DECLINING on the direct parse endpoints
-//	                          and through the generic shape cut-line.
+//	Served (24 rows)          the admitted fingerprint, in all six of its predicates:
+//	                          ADMITTED by the native-final support predicate and SERVED
+//	                          by the static unary /call route — while still DECLINING on
+//	                          the direct parse endpoints and through the generic shape
+//	                          cut-line. It was FOUR until Slice 7.2c-3 widened the
+//	                          manifest; the number is derived from soCompanionRowNames
+//	                          rather than restated, so it cannot go stale again.
 //	Constrained (49 rows)     refused by every production entry point, with the refusal
 //	                          caused by the constraint rather than by the shape.
 //
@@ -656,8 +803,9 @@ func TestServingOracleBoundaryLock(t *testing.T) {
 		constrained, attributed, namedConstraint, served, controls, servedControls)
 }
 
-// soRequireServed is the per-row disposition for the FOUR rows the Slice 7.2b-3 cutover
-// admits, and it asserts BOTH halves of the boundary.
+// soRequireServed is the per-row disposition for the 24 rows the Slice 7.2c-3 cutover
+// admits (four until 7.2b-3 widened nothing and 7.2c-3 widened the predicate), and it
+// asserts BOTH halves of the boundary.
 //
 // ADMITTED: EVERY named schema gate says yes — the three generic ones
 // (checkSupported / checkSupportedFields / checkSupportedType, which since the cutover
@@ -818,10 +966,32 @@ func TestServingOracleSiblingsStillDeclineBeforeTransport(t *testing.T) {
 			f := b.Classes[0].Fields
 			f[0], f[1] = f[1], f[0]
 		})},
-		{"a different predicate", soBundle(soClassType("StaticCheckedAnswer"),
+		// De-BAML Slice 7.2c-3: this row used to carry `this >= 0`, which the cutover
+		// ADMITS — it is a served companion row now, not a sibling. It is re-pointed at
+		// a SEVENTH comparison form rather than deleted: `<>` is a real alternate
+		// spelling of the admitted `!=` in several template languages, so it is what a
+		// matcher written from the operator list rather than from the captures would
+		// grow into, and it has no stock capture at all.
+		{"a seventh comparison form", soBundle(soClassType("StaticCheckedAnswer"),
 			[]schema.ClassDef{soClassOf("StaticCheckedAnswer", []schema.ClassField{
 				soField("answer", stringType()),
-				soField("confidence", soWith(intType(), soCheck("positive", "this >= 0"))),
+				soField("confidence", soWith(intType(), soCheck("positive", "this <> 0"))),
+			})}, nil)},
+		// The REVERSED operand order. It denotes the same relation as the admitted
+		// `this > 0`, which is what makes it the most likely thing to be waved through,
+		// and stock would retain `0 < this` verbatim in Check.Expression — a string no
+		// capture covers.
+		{"the operands reversed", soBundle(soClassType("StaticCheckedAnswer"),
+			[]schema.ClassDef{soClassOf("StaticCheckedAnswer", []schema.ClassField{
+				soField("answer", stringType()),
+				soField("confidence", soWith(intType(), soCheck("positive", "0 < this"))),
+			})}, nil)},
+		// A COMPOUND built from two ADMITTED comparisons — the form the cutover makes
+		// most tempting, and one the 7.2c scope keeps in #583 outright.
+		{"a compound of two admitted comparisons", soBundle(soClassType("StaticCheckedAnswer"),
+			[]schema.ClassDef{soClassOf("StaticCheckedAnswer", []schema.ClassField{
+				soField("answer", stringType()),
+				soField("confidence", soWith(intType(), soCheck("positive", "this >= 0 and this <= 100"))),
 			})}, nil)},
 		{"a non-ASCII label", soBundle(soClassType("StaticCheckedAnswer"),
 			[]schema.ClassDef{soClassOf("StaticCheckedAnswer", []schema.ClassField{
@@ -866,16 +1036,38 @@ func TestServingOracleSiblingsStillDeclineBeforeTransport(t *testing.T) {
 	}
 }
 
-// soCompanionRowNames are the four Slice 7.2b-3 serving-shaped companion rows: the
-// exact two-field fingerprint native now SERVES, in all four outcomes.
+// soCompanionRowNames are the 24 Slice 7.2c-3 serving-shaped companion rows: the exact
+// two-field fingerprint native SERVES, in all six predicates x all four outcomes.
 //
-// They are listed EXPLICITLY rather than discovered by a name prefix, so a row that
-// was renamed or dropped fails the guard instead of silently emptying it.
+// They are listed EXPLICITLY rather than discovered by a name prefix, so a row that was
+// renamed or dropped fails the guard instead of silently emptying it — and the boundary
+// lock's SERVED count is compared against this list's length, so the tally and the named
+// set cannot part company.
 var soCompanionRowNames = []string{
-	"static_answer_confidence_check_pass",
-	"static_answer_confidence_check_fail",
-	"static_answer_confidence_assert_pass",
-	"static_answer_confidence_assert_fail",
+	"static_answer_confidence_gt_check_pass",
+	"static_answer_confidence_gt_check_fail",
+	"static_answer_confidence_gt_assert_pass",
+	"static_answer_confidence_gt_assert_fail",
+	"static_answer_confidence_ge_check_pass",
+	"static_answer_confidence_ge_check_fail",
+	"static_answer_confidence_ge_assert_pass",
+	"static_answer_confidence_ge_assert_fail",
+	"static_answer_confidence_lt_check_pass",
+	"static_answer_confidence_lt_check_fail",
+	"static_answer_confidence_lt_assert_pass",
+	"static_answer_confidence_lt_assert_fail",
+	"static_answer_confidence_le_check_pass",
+	"static_answer_confidence_le_check_fail",
+	"static_answer_confidence_le_assert_pass",
+	"static_answer_confidence_le_assert_fail",
+	"static_answer_confidence_eq_check_pass",
+	"static_answer_confidence_eq_check_fail",
+	"static_answer_confidence_eq_assert_pass",
+	"static_answer_confidence_eq_assert_fail",
+	"static_answer_confidence_ne_check_pass",
+	"static_answer_confidence_ne_check_fail",
+	"static_answer_confidence_ne_assert_pass",
+	"static_answer_confidence_ne_assert_fail",
 }
 
 // TestServingOracleCompanionRowsAreTheAdmittedFingerprint ties the corpus rows to the
@@ -1252,8 +1444,13 @@ func TestServingOracleCanonicalMatchesProductionServing(t *testing.T) {
 // can be compared against production serving, and how much cannot because the
 // stream cut-line declines the shape for a NON-constraint reason. Both are pinned
 // so a shape moving between them is acknowledged rather than absorbed.
+//
+// SLICE 7.2c-3: comparable 30 -> 50, exactly the 20 rows the cutover ADDED. The
+// not-servable count is UNCHANGED at 17, which is the load-bearing half — a widening
+// that had pulled an existing shape out of the comparable population would show up
+// here as a movement between the two numbers rather than as growth in one.
 const (
-	soWantServingComparable    = 30
+	soWantServingComparable    = 50
 	soWantServingNotComparable = 17
 )
 
@@ -1906,7 +2103,10 @@ func soDriveProbe(p servingOracleProbe) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return soRuntime.CallFunctionParse(context.Background(), p.method(), encoded)
+	// Probes live in the MAIN project only (soRenderProject renders them there), so
+	// they are driven through its runtime.
+	rt := soRuntimes[soMainProject]
+	return rt.CallFunctionParse(context.Background(), p.method(), encoded)
 }
 
 // TestServingOracleRootEnvelopeCertificationIsUnavailable states, as an assertion
