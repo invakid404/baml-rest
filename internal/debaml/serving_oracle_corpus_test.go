@@ -566,12 +566,16 @@ var servingOracleFixtures = []servingOracleFixture{
 	{
 		Name: "guard_int_above_2p53", Family: "guard",
 		Doc: "the exact i64 a float64 core cannot tell from its neighbour: 2^53+1 must survive coercion " +
-			"and be compared exactly",
-		Bundle:     soOneFieldBundle("SoBigInt", soWith(intType(), soCheck("gt", "this > 9007199254740992"))),
-		Raw:        `{"v":9007199254740993}`,
-		Divergence: "native's numeric whitelist refuses a comparison against an integer literal above 2^53",
-		Stock:      "value class:SoBigInt{v=int:9007199254740993} checks=[$.v|\"gt\"|this > 9007199254740992=succeeded]",
-		Native:     "evaluator-unsupported class:SoBigInt{v=int:9007199254740993} events=[$.v|type_meta/check/\"gt\"/this > 9007199254740992=unsupported]",
+			"and be compared exactly. Slice 7.2c-2 CLOSED this one: the predicate is the closed direct " +
+			"grammar `this OP <canonical i64>`, which is now decided by an exact int64 comparison " +
+			"(constraint_direct_i64.go) instead of refused by the generic numeric whitelist — so the row " +
+			"moved from native-declines-predicate to agree-value. Its guard-family siblings below " +
+			"(a numeric STRING, arithmetic, a float) are outside that grammar and still decline, which is " +
+			"what keeps the change a narrowing by grammar rather than a loosening by magnitude",
+		Bundle: soOneFieldBundle("SoBigInt", soWith(intType(), soCheck("gt", "this > 9007199254740992"))),
+		Raw:    `{"v":9007199254740993}`,
+		Stock:  "value class:SoBigInt{v=int:9007199254740993} checks=[$.v|\"gt\"|this > 9007199254740992=succeeded]",
+		Native: "value class:SoBigInt{v=int:9007199254740993} events=[$.v|type_meta/check/\"gt\"/this > 9007199254740992=true]",
 	},
 	{
 		Name: "guard_float_2p63", Family: "guard",

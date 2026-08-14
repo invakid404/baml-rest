@@ -466,11 +466,16 @@ func TestServingOracleFailClosed(t *testing.T) {
 // soWantAgreement pins the population of each agreement bucket, so a change that
 // quietly turned a decline into an answer — or an answer into a decline — has to
 // be acknowledged.
+// SLICE 7.2c-2 moved exactly ONE row, and in the safe direction: guard_int_above_2p53
+// went from soNativeDeclinesPredicate to soAgreeValue (6 -> 5 and 30 -> 31) because the
+// closed direct grammar `this OP <canonical i64>` is now decided by an exact int64
+// comparison instead of refused by the generic numeric whitelist. Nothing turned from an
+// agreement into a decline, and nothing turned into a different boolean.
 var soWantAgreement = map[soAgreement]int{
-	soAgreeValue:               30,
+	soAgreeValue:               31,
 	soAgreeAssertFailure:       4,
 	soAgreeRefusal:             1,
-	soNativeDeclinesPredicate:  6,
+	soNativeDeclinesPredicate:  5,
 	soNativeDeclinesCoercion:   3,
 	soNativeDeclinesExtraction: 2,
 	soCollectorRefuses:         1,

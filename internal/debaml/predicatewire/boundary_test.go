@@ -164,71 +164,338 @@ func TestDirectIntBoundaryMatrix(t *testing.T) {
 	// value an admitted direct-int schema could not be total over, and the whole 7.2c
 	// premise would need revisiting.
 	//
-	// The native split is then non-vacuous in BOTH directions. (An `answered + refused ==
-	// len(rows)` check would be arithmetic about a two-way branch, not a claim about the
-	// matrix, so it is deliberately not written.)
-	if refused == 0 {
-		t.Fatal("native refused NOTHING across the whole boundary matrix; the 2^53 guard this slice " +
-			"documents as 7.2c-2's blocker would then not exist, and the exact-int work would be " +
-			"unmotivated — that contradiction must be resolved rather than passed over")
+	// AND SO DOES NATIVE, AS OF SLICE 7.2c-2. When this matrix was first written it
+	// measured a 36-answered / 186-refused split across three named clauses, and that
+	// split WAS the totality blocker the scope handed to 7.2c-2. Every row here is the
+	// closed direct grammar `this OP <canonical i64>` over an integer `this`, which
+	// internal/debaml.EvaluateConstraint now decides with an exact int64 comparison
+	// (constraint_direct_i64.go) rather than routing through the generic numeric
+	// whitelist. So the residual is GONE, and the assertion is inverted: a refusal here
+	// would mean the totality repair had regressed on a value an admitted schema can
+	// reach.
+	//
+	// The three clauses are NOT gone — they are unchanged, and still refuse everything
+	// outside the direct grammar. [TestGenericNumericProfileStillRefusesOutsideTheDirectGrammar]
+	// is what keeps that a measurement rather than an assertion, by driving the same
+	// thresholds and values through expressions the direct grammar does not cover.
+	if refused != 0 {
+		t.Fatalf("native REFUSED %d of %d boundary rows. Every row is the closed direct grammar over "+
+			"an i64 the strict extractor can produce, and Slice 7.2c-2 made that path total — a "+
+			"refusal here is a post-claim unsupported an admitted direct-int schema could reach:\n  %s",
+			refused, len(rows), strings.Join(pwSortedKeys(refusedBy), "\n  "))
 	}
-	if answered == 0 {
-		t.Fatal("native refused EVERY row; the matrix would prove nothing about where the guard's " +
-			"edge actually is")
+	if answered != pwBoundaryRowCount {
+		t.Fatalf("native answered %d of the %d boundary rows; the matrix must be total", answered, pwBoundaryRowCount)
+	}
+	// NON-VACUITY of the agreement itself. Every row was compared against stock inline
+	// above, and both outcomes must actually occur — a matrix in which stock said `true`
+	// everywhere would be satisfied by a comparator that always answered true.
+	stockTrue, stockFalse := 0, 0
+	for _, r := range rows {
+		if r.stock {
+			stockTrue++
+		} else {
+			stockFalse++
+		}
+		if r.native != r.stock {
+			t.Fatalf("row %s/%s over this=%d: native %v vs stock %v after the totality repair",
+				r.threshold.ID, r.operator.ID, r.value, r.native, r.stock)
+		}
+	}
+	if stockTrue == 0 || stockFalse == 0 {
+		t.Fatalf("stock answered true on %d rows and false on %d; both outcomes must appear or the "+
+			"agreement proves only one direction", stockTrue, stockFalse)
+	}
+	t.Logf("  native now reproduces ALL %d rows exactly (%d true, %d false), including all %d "+
+		"negative-literal rows and every row past ±2^53 — the 36/186 split this matrix recorded "+
+		"before Slice 7.2c-2 is CLOSED, and the three refusal clauses it named survive only outside "+
+		"the direct grammar", answered, stockTrue, stockFalse, pwNegativeLiteralRows(rows))
+}
+
+// TestGenericNumericProfileStillRefusesOutsideTheDirectGrammar is the other half of
+// the closure recorded above, and the one that keeps it honest.
+//
+// Slice 7.2c-2 narrowed the numeric guard BY A GRAMMAR, not by a magnitude: the exact
+// path answers `this OP <canonical i64>` and nothing else, and every other expression
+// over the same oversized values keeps the existing fail-closed profile. If that were
+// not so, the all-answered matrix above would be recording a loosened guard rather
+// than a closed gap.
+//
+// It is split into TWO claims, because the two things that have to stay true are
+// different in kind and only one of them is about the clause table:
+//
+//  1. [TestGenericNumericProfileClauseAttributionIsExact] — the three MAGNITUDE /
+//     LITERAL / SIGN clauses still fire exactly where they always did. That is a claim
+//     about [pwRefusalClauses], and it is asserted as an IFF on the one expression
+//     shape those clauses were written to describe.
+//  2. this test — expressions that are outside the direct grammar for a SHAPE reason
+//     (arithmetic, an unproven filter, a compound, a stringify) are still refused, at
+//     every threshold and every value. No clause label is claimed here, and that is
+//     deliberate: `this + 0 == 0` is refused because `this` is not the closed numeric
+//     sublanguage, not because of any magnitude — labelling such a row
+//     `i64_beyond_exact` would be an attribution the profile never made.
+//
+// An earlier round of this file did exactly that: every probe advertised a clauseID
+// while selecting rows with "any documented clause applies", so a probe labelled
+// `i64_beyond_exact` could be satisfied entirely by rows where only
+// `i64_negative_literal` applied — and, worse, its refusals were caused by the
+// expression's shape rather than by either clause. The label was decoration. It is
+// gone from the shape sweep and made an exact claim in the sibling test.
+func TestGenericNumericProfileStillRefusesOutsideTheDirectGrammar(t *testing.T) {
+	// Every probe is refused for a SHAPE reason that holds at every magnitude, so each
+	// is driven over the WHOLE axis — no applicability predicate, and therefore no way
+	// for a shrinking row population to hide a regression.
+	probes := []struct {
+		name string
+		expr func(b pwBoundaryThreshold) string
+		why  string
+	}{{
+		name: "arithmetic on the value",
+		expr: func(b pwBoundaryThreshold) string { return "this + 0 == " + b.literal() },
+		why:  "`this` is not a numeric literal, so the whole expression cannot parse as the closed sublanguage",
+	}, {
+		name: "an UNPROVEN filter over the value",
+		expr: func(b pwBoundaryThreshold) string { return "this|round == " + b.literal() },
+		why: "`round` has no declared result kind, so the operator gate cannot prove the comparison " +
+			"is same-kind. (An ADMITTED filter such as `|abs` over a small value is legitimately " +
+			"ANSWERED — that is the generic profile working, not a regression, and it is covered by " +
+			"the answered direction of the clause test below. Driving it here would report a correct " +
+			"answer as a failure, which is how this probe was wrong in an earlier round.)",
+	}, {
+		name: "a compound predicate",
+		expr: func(b pwBoundaryThreshold) string { return "this > " + b.literal() + " and this < 0" },
+		why:  "`and` is outside the closed predicate grammar (#583)",
+	}, {
+		name: "a stringify comparison",
+		expr: func(b pwBoundaryThreshold) string { return `this|string == "` + b.literal() + `"` },
+		why:  "the two engines do not render numbers alike",
+	}}
+
+	drives, refusals := 0, 0
+	perProbe := map[string]int{}
+	for _, p := range probes {
+		for _, b := range pwBoundaryThresholds() {
+			for _, v := range pwBoundaryValues(b.N) {
+				drives++
+				_, err := debaml.EvaluateConstraint(debaml.IntValue(v), p.expr(b))
+				if err == nil {
+					t.Errorf("%s: %q over this=%d was ANSWERED; only the closed direct grammar is "+
+						"exact, and the generic profile must be unchanged (%s)", p.name, p.expr(b), v, p.why)
+					continue
+				}
+				if !errors.Is(err, debaml.ErrConstraintUnsupported) {
+					t.Errorf("%s: %q over this=%d returned an error that is not the decline sentinel: %v",
+						p.name, p.expr(b), v, err)
+					continue
+				}
+				refusals++
+				perProbe[p.name]++
+			}
+		}
+	}
+	if drives == 0 {
+		t.Fatal("the shape sweep drove no rows; it would be vacuous")
+	}
+	if refusals != drives {
+		t.Fatalf("%d of %d shape-sweep rows were answered; every one is outside the direct grammar "+
+			"and must keep the fail-closed profile", drives-refusals, drives)
+	}
+	for _, p := range probes {
+		if perProbe[p.name] != pwBoundaryValueDrives {
+			t.Errorf("probe %q drove %d rows, want the full axis of %d", p.name, perProbe[p.name],
+				pwBoundaryValueDrives)
+		}
+	}
+	t.Logf("the GENERIC profile is unchanged on SHAPE: %d probes x %d value-drives = %d rows outside "+
+		"the direct grammar, all refused", len(probes), pwBoundaryValueDrives, drives)
+}
+
+// TestGenericNumericProfileClauseAttributionIsExact is the CLAUSE half, and it is where
+// the ledger ids in [pwRefusalClauses] are a claim rather than a label.
+//
+// The probe is the direct comparison written UNSPACED — `this>I`. That one byte puts it
+// outside the exact path's closed grammar (which requires exactly one ASCII space on
+// each side), so it goes to the generic evaluator; but the guard reads the VALUE and the
+// LITERAL TEXT, neither of which the space changes. It is therefore the one expression
+// for which the three clauses describe the refusal exactly, and the assertion can be an
+// IFF instead of a one-way implication:
+//
+//	the generic evaluator refuses  <=>  at least one documented clause applies
+//	the reported attribution       ==   exactly the clauses that apply, in table order
+//
+// That is what a mislabelled clause cannot survive. Selecting rows by a clause and then
+// checking that the same clause applies would be self-satisfying; here the clause table
+// has to predict the evaluator's behaviour on every row of the axis, in both directions.
+func TestGenericNumericProfileClauseAttributionIsExact(t *testing.T) {
+	clauses := pwRefusalClauses()
+	if len(clauses) != 3 {
+		t.Fatalf("the clause table has %d entries; 7.2c-1 recorded three independent clauses", len(clauses))
+	}
+	seen := map[string]bool{}
+	for _, c := range clauses {
+		if c.ledgerID == "" || c.name == "" || c.applies == nil {
+			t.Fatalf("clause %q is incomplete", c.ledgerID)
+		}
+		if seen[c.ledgerID] {
+			t.Fatalf("clause id %q appears twice; per-clause counts would be merged", c.ledgerID)
+		}
+		seen[c.ledgerID] = true
+	}
+	// The ids the residual ledger records, written out independently of the table.
+	for _, id := range []string{"i64_beyond_exact", "i64_long_literal", "i64_negative_literal"} {
+		if !seen[id] {
+			t.Fatalf("the clause table omits %q, which residuals.md records as a row", id)
+		}
 	}
 
-	// THE FRONTIER — reported over NON-NEGATIVE literals only, and with the sign clause
-	// stated separately.
+	answered, refused := 0, 0
+	perClause, soleClause := map[string]int{}, map[string]int{}
+	for _, b := range pwBoundaryThresholds() {
+		for _, v := range pwBoundaryValues(b.N) {
+			expr := "this>" + b.literal() // one byte outside the exact path's grammar
+			var applying []pwRefusalClause
+			for _, c := range clauses {
+				if c.applies(b, v) {
+					applying = append(applying, c)
+				}
+			}
+			_, err := debaml.EvaluateConstraint(debaml.IntValue(v), expr)
+
+			if len(applying) == 0 {
+				// NO clause applies, so the generic profile must ANSWER. This is the
+				// direction a loosened guard could never fail and a mislabelled clause
+				// table always does.
+				if err != nil {
+					t.Errorf("%q over this=%d was REFUSED (%v) but no documented clause covers it; "+
+						"the clause table no longer describes the guard", expr, v, err)
+					continue
+				}
+				answered++
+				continue
+			}
+			if err == nil {
+				t.Errorf("%q over this=%d was ANSWERED, but %d documented clause(s) cover it (%s); "+
+					"the generic guard has been loosened", expr, v, len(applying), pwRefusalReason(b, v))
+				continue
+			}
+			if !errors.Is(err, debaml.ErrConstraintUnsupported) {
+				t.Errorf("%q over this=%d returned an error that is not the decline sentinel: %v", expr, v, err)
+				continue
+			}
+			// EXACT attribution: the reported reason must name exactly the clauses that
+			// apply, in table order — not merely "some documented reason".
+			var want []string
+			for _, c := range applying {
+				want = append(want, c.name)
+			}
+			if got, wantJoined := pwRefusalReason(b, v), strings.Join(want, " + "); got != wantJoined {
+				t.Errorf("%q over this=%d is attributed %q, want exactly %q", expr, v, got, wantJoined)
+				continue
+			}
+			refused++
+			for _, c := range applying {
+				perClause[c.ledgerID]++
+			}
+			if len(applying) == 1 {
+				soleClause[applying[0].ledgerID]++
+			}
+		}
+	}
+
+	if answered == 0 || refused == 0 {
+		t.Fatalf("the clause probe answered %d rows and refused %d; both directions must occur or the "+
+			"IFF is one-sided", answered, refused)
+	}
+	// NON-VACUITY PER CLAUSE on the axis: every clause must explain at least one refusal.
+	for _, c := range clauses {
+		if perClause[c.ledgerID] == 0 {
+			t.Errorf("clause %s (%s) explains no refusal; it is not proof material any more",
+				c.ledgerID, c.name)
+		}
+	}
+	for _, id := range pwSortedKeys(perClause) {
+		t.Logf("  clause %s: explains %d refusal(s) on the axis, %d of them alone", id, perClause[id], soleClause[id])
+	}
+	t.Logf("clause attribution is EXACT over the %d-row axis: %d refused / %d answered, and the "+
+		"reported reason equals the applying clause set on every refused row", answered+refused, refused, answered)
+
+	// ISOLATION — the strong form, and it needs drives the CFFI axis cannot supply.
 	//
-	// A single magnitude frontier over all thirteen thresholds would be a MISSTATEMENT,
-	// not just an imprecision: `-1` and `+1` have the same magnitude and opposite
-	// dispositions, because a negative literal is refused by the arithmetic-byte clause
-	// whatever its size. "Answers up to 1 and refuses from 1 upward" is therefore not a
-	// partition of anything. Restricting the frontier to non-negative literals makes the
-	// magnitude claim well-formed; the sign clause is reported beside it as its own fact.
-	var maxAnswered, minRefused uint64
-	var sawAnswered, sawRefused bool
-	negativeAnswered := 0
-	for _, r := range rows {
-		if r.threshold.N < 0 {
-			if r.nativeErr == nil {
-				negativeAnswered++
+	// A clause that only ever co-occurs with another is UNFALSIFIABLE: dropping it would
+	// change no outcome, which is exactly how the long-literal clause could have been
+	// folded into the 2^53 one and misdescribed the residual. The axis cannot settle that
+	// for `i64_beyond_exact` by itself — it drives each value near its own threshold, so
+	// a value past 2^53 only ever appears against a literal that is also >15 digits (the
+	// `%d of them alone` counts above show it directly). The isolating pair is a SMALL
+	// non-negative literal at a HUGE value, which the axis never forms.
+	//
+	// So each clause is isolated explicitly, and every isolating row must (a) have that
+	// clause as the ONLY one applying, (b) be refused, and (c) be attributed to that
+	// clause and nothing else.
+	for _, iso := range []struct {
+		clauseID string
+		n, value int64
+	}{
+		// A one-digit non-negative literal: neither the length nor the sign clause can
+		// apply, so only the VALUE magnitude can explain a refusal.
+		{clauseID: "i64_beyond_exact", n: 0, value: maxExactInt},
+		// 2^53-1 is BELOW the guard's magnitude threshold and non-negative, so only its
+		// sixteen digits can explain a refusal.
+		{clauseID: "i64_long_literal", n: maxExactInt - 1, value: 0},
+		// A small negative literal at a small value: neither magnitude nor length
+		// applies, so only the sign clause can.
+		{clauseID: "i64_negative_literal", n: -1, value: 0},
+	} {
+		clause := pwClauseByID(t, iso.clauseID)
+		b := pwBoundaryThreshold{ID: "isolate_" + iso.clauseID, N: iso.n}
+		var applying []string
+		for _, c := range clauses {
+			if c.applies(b, iso.value) {
+				applying = append(applying, c.ledgerID)
 			}
+		}
+		if len(applying) != 1 || applying[0] != iso.clauseID {
+			t.Errorf("the isolating drive for %s (literal %d, this=%d) has applying clauses %v; it must "+
+				"isolate exactly that clause or it proves nothing about it", iso.clauseID, iso.n, iso.value, applying)
 			continue
 		}
-		mag := absInt64(r.threshold.N)
-		if r.nativeErr == nil {
-			if !sawAnswered || mag > maxAnswered {
-				maxAnswered, sawAnswered = mag, true
-			}
+		expr := "this>" + b.literal()
+		if _, err := debaml.EvaluateConstraint(debaml.IntValue(iso.value), expr); err == nil {
+			t.Errorf("clause %s (%s) is UNFALSIFIABLE: %q over this=%d is the one row where it is the "+
+				"sole documented reason, and the generic profile ANSWERED it — so dropping the clause "+
+				"would change no outcome", iso.clauseID, clause.name, expr, iso.value)
+			continue
+		} else if !errors.Is(err, debaml.ErrConstraintUnsupported) {
+			t.Errorf("clause %s: %q over this=%d returned an error that is not the decline sentinel: %v",
+				iso.clauseID, expr, iso.value, err)
 			continue
 		}
-		if !sawRefused || mag < minRefused {
-			minRefused, sawRefused = mag, true
+		if got := pwRefusalReason(b, iso.value); got != clause.name {
+			t.Errorf("clause %s: the isolating row is attributed %q, want exactly %q",
+				iso.clauseID, got, clause.name)
+			continue
+		}
+		t.Logf("  clause %s ISOLATED: %q over this=%d is refused, and %s is the only reason",
+			iso.clauseID, expr, iso.value, clause.name)
+	}
+}
+
+// pwClauseByID resolves one documented refusal clause by its ledger id, FAILING if the
+// id is unknown.
+//
+// Failing is the point: a caller that named a renamed or deleted clause would otherwise
+// select nothing, count nothing, and pass — the exact shape of a proof that quietly
+// stops proving anything.
+func pwClauseByID(t *testing.T, id string) pwRefusalClause {
+	t.Helper()
+	for _, c := range pwRefusalClauses() {
+		if c.ledgerID == id {
+			return c
 		}
 	}
-	if !sawAnswered || !sawRefused {
-		t.Fatalf("the non-negative frontier is undefined: answered=%v refused=%v", sawAnswered, sawRefused)
-	}
-	if maxAnswered >= minRefused {
-		t.Fatalf("the non-negative frontier is not ordered: native answers at magnitude %d and refuses "+
-			"at %d, so the two clauses overlap and the log below would misstate the residual",
-			maxAnswered, minRefused)
-	}
-	// The SIGN clause, as its own measured statement rather than folded into the number
-	// above. Every negative threshold is refused at every value, so the magnitude frontier
-	// simply does not apply on that side.
-	if negativeAnswered != 0 {
-		t.Errorf("native answered %d row(s) on a NEGATIVE literal; the recorded sign clause says every "+
-			"negative literal is refused, so either the clause or this count is wrong", negativeAnswered)
-	}
-	t.Logf("  native's frontier over NON-NEGATIVE literals: it answers at threshold magnitudes up to "+
-		"%d and refuses from %d upward. The axis samples no threshold between those two, so the exact "+
-		"crossing is not measured here — the >15-digit clause places it at 10^15, BELOW 2^53.",
-		maxAnswered, minRefused)
-	t.Logf("  the SIGN clause is separate and absolute: all %d negative-literal rows are refused "+
-		"regardless of magnitude, because `-` makes the whole expression arithmetic and `this ...` "+
-		"never parses as the closed numeric sublanguage", pwNegativeLiteralRows(rows))
+	t.Fatalf("no documented refusal clause carries the ledger id %q; a caller names a clause the "+
+		"table no longer has", id)
+	return pwRefusalClause{}
 }
 
 // pwNegativeLiteralRows counts the matrix rows whose THRESHOLD is negative.
@@ -338,20 +605,23 @@ func TestDirectIntBoundaryMatrixShapeIsPinned(t *testing.T) {
 	}
 }
 
-// TestAdmittedGreaterThanReachesPostClaimUnsupported records a hazard the boundary matrix
-// exposes on the CURRENTLY ADMITTED predicate, not on a proposed one.
+// TestAdmittedGreaterThanNeverReachesPostClaimUnsupported is the row Slice 7.2c-1
+// wrote to be turned green, and Slice 7.2c-2 turned it.
 //
-// `staticCheckedThreshold` admits any literal that round-trips through
-// strconv.FormatInt — math.MinInt64 and math.MaxInt64 included — and the strict extractor
-// can produce any i64 value. But the generic evaluator refuses most of that range. So a
-// bundle the production gates admit TODAY can reach ErrConstraintUnsupported AFTER the
-// admission decision, which is exactly the "no postclaim unsupported" rule the scope
-// states and the totality blocker it hands to 7.2c-2.
+// WHAT IT USED TO RECORD. `staticCheckedThreshold` admits any literal that round-trips
+// through strconv.FormatInt — math.MinInt64 and math.MaxInt64 included — and the strict
+// extractor can produce any i64 value, while the generic evaluator refused most of that
+// range. So a bundle the production gates admitted could reach
+// ErrConstraintUnsupported AFTER the admission decision. Measured on the SHIPPED
+// `this > I` fingerprint, that was 31 of 37 (literal, value) pairs: not a proposed
+// hazard, a live one.
 //
-// This test CHANGES NOTHING. It records how wide the gap is on the one admitted operator,
-// so 7.2c-2 is sized against a measurement instead of an estimate, and so a later slice
-// that closes the gap has a row to turn green.
-func TestAdmittedGreaterThanReachesPostClaimUnsupported(t *testing.T) {
+// WHAT IT RECORDS NOW. The same drive, over the same admitted literals, with zero
+// post-claim refusals — because [debaml.EvaluateConstraint] decides the closed direct
+// grammar exactly. The admission side is asserted FIRST and unchanged: if the gates
+// stopped admitting the boundary literals, the zero below would be vacuous rather than
+// a repair, so a narrowed fingerprint fails here instead of passing quietly.
+func TestAdmittedGreaterThanNeverReachesPostClaimUnsupported(t *testing.T) {
 	admittedLiterals, reachable, total := 0, 0, 0
 	var examples []string
 	for _, b := range pwBoundaryThresholds() {
@@ -366,34 +636,45 @@ func TestAdmittedGreaterThanReachesPostClaimUnsupported(t *testing.T) {
 			if _, err := debaml.EvaluateConstraint(debaml.IntValue(v), expr); err != nil {
 				reachable++
 				if len(examples) < 3 {
-					examples = append(examples, fmt.Sprintf("%q over this=%d", expr, v))
+					examples = append(examples, fmt.Sprintf("%q over this=%d: %v", expr, v, err))
 				}
 			}
 		}
 	}
-	if admittedLiterals == 0 {
-		t.Fatal("the production gates admitted NONE of the boundary literals on `this > I`; the " +
-			"7.2b fingerprint is supposed to accept every canonical i64, so either the gates or this " +
-			"expectation has changed")
+	if admittedLiterals != len(pwBoundaryThresholds()) {
+		t.Fatalf("the production gates admit `this > I` for %d of %d boundary literals; the 7.2b "+
+			"fingerprint accepts every canonical i64, and a narrower one would make the zero below "+
+			"vacuous rather than a repair", admittedLiterals, len(pwBoundaryThresholds()))
 	}
-	t.Logf("RECORDED (7.2c-2 blocker, measured on the ADMITTED predicate): the gates admit "+
-		"`this > I` for %d of %d boundary literals; of the %d (literal, value) pairs that follow, "+
-		"the production evaluator REFUSES %d after the admission decision. Examples: %s",
-		admittedLiterals, len(pwBoundaryThresholds()), total, reachable, strings.Join(examples, "; "))
-	if reachable == 0 {
-		t.Fatal("no admitted row reached an unsupported evaluator result, which would mean the " +
-			"totality blocker the scope hands to 7.2c-2 does not exist; that contradiction must be " +
-			"resolved rather than passed over")
+	if total == 0 {
+		t.Fatal("no (literal, value) pair was driven; the claim below would be about nothing")
 	}
-	// The hazard is POST-CLAIM by construction: the gate said yes before the evaluator
-	// was ever consulted. Stating it as an assertion keeps the row from being read as a
-	// pre-socket decline.
-	worst := pwBundleFor(schema.ConstraintCheck, pwCheckedLabel, "this > "+strconv.FormatInt(math.MaxInt64, 10))
-	if !pwAdmits(t, "this > math.MaxInt64", worst) {
-		t.Fatal("`this > math.MaxInt64` is no longer admitted; the recorded hazard above is stale")
+	if reachable != 0 {
+		t.Fatalf("POST-CLAIM UNSUPPORTED: %d of %d (literal, value) pairs on the ADMITTED `this > I` "+
+			"predicate still refuse AFTER the admission decision. Slice 7.2c-2 closed this; examples:\n  %s",
+			reachable, total, strings.Join(examples, "\n  "))
 	}
-	if _, err := debaml.EvaluateConstraint(debaml.IntValue(math.MaxInt64), "this > "+strconv.FormatInt(math.MaxInt64, 10)); err == nil {
-		t.Fatal("the production evaluator now answers at math.MaxInt64; the recorded hazard above is stale")
+	t.Logf("RECORDED (7.2c-1's blocker, CLOSED by 7.2c-2): the gates admit `this > I` for %d of %d "+
+		"boundary literals; all %d (literal, value) pairs that follow are now decided by the exact "+
+		"direct-i64 path. 0 post-claim refusals, down from the 31 of 37 7.2c-1 measured",
+		admittedLiterals, len(pwBoundaryThresholds()), total)
+
+	// The two endpoints, named explicitly, because they are the values a float64 core
+	// loses and the ones a "mostly total" repair would still miss.
+	for _, v := range []int64{math.MaxInt64, math.MinInt64} {
+		expr := "this > " + strconv.FormatInt(v, 10)
+		if !pwAdmits(t, expr, pwBundleFor(schema.ConstraintCheck, pwCheckedLabel, expr)) {
+			t.Fatalf("%q is no longer admitted; the claim above is stale", expr)
+		}
+		for _, drive := range []int64{math.MinInt64, 0, math.MaxInt64} {
+			got, err := debaml.EvaluateConstraint(debaml.IntValue(drive), expr)
+			if err != nil {
+				t.Fatalf("the production evaluator refused %q at this=%d: %v", expr, drive, err)
+			}
+			if want := drive > v; got != want {
+				t.Errorf("%q at this=%d = %v, want %v", expr, drive, got, want)
+			}
+		}
 	}
 }
 
@@ -477,27 +758,42 @@ func pwSortedKeys(m map[string]int) []string {
 // to be explained by a NAMED clause of the documented profile.
 //
 // An unattributed refusal is the dangerous kind: it means native declines for a reason
-// nobody has written down, and 7.2c-2 would be closing a gap it had not located. This is
-// also the assertion that makes [pwRefusalReason] falsifiable rather than decorative.
+// nobody has written down. As of Slice 7.2c-2 the direct grammar produces no refusals at
+// all, so this now asserts the stronger form — none, attributed or otherwise — and the
+// attribution machinery it was written to police is exercised on expressions OUTSIDE the
+// direct grammar by
+// [TestGenericNumericProfileStillRefusesOutsideTheDirectGrammar]. Keeping both is what
+// stops "no refusals" from quietly meaning "nothing was checked".
 func TestDirectIntBoundaryRefusalsAreAttributed(t *testing.T) {
-	unattributed := 0
+	drives, refusals := 0, 0
 	for _, b := range pwBoundaryThresholds() {
 		for _, v := range pwBoundaryValues(b.N) {
 			for _, o := range pwOperators() {
+				drives++
 				expr := fmt.Sprintf("this %s %s", o.Op, b.literal())
 				_, err := debaml.EvaluateConstraint(debaml.IntValue(v), expr)
 				if err == nil {
 					continue
 				}
-				if reason := pwRefusalReason(b, v); strings.HasPrefix(reason, "UNATTRIBUTED") {
-					unattributed++
-					t.Errorf("native refused %q over this=%d for no documented reason: %v", expr, v, err)
-				}
+				refusals++
+				t.Errorf("native refused %q over this=%d (%s): the direct grammar is total after "+
+					"Slice 7.2c-2, so any refusal here is a post-claim unsupported an admitted "+
+					"schema could reach — %v", expr, v, pwRefusalReason(b, v), err)
 			}
 		}
 	}
-	if unattributed != 0 {
-		t.Errorf("%d refusal(s) are outside the documented numeric profile", unattributed)
+	if drives != pwBoundaryRowCount {
+		t.Fatalf("the attribution sweep drove %d rows, want the pinned %d", drives, pwBoundaryRowCount)
+	}
+	if refusals != 0 {
+		t.Errorf("%d refusal(s) remain inside the direct grammar", refusals)
+	}
+	// NON-VACUITY of the attribution machinery itself: the clause table still has to be
+	// able to name a reason, or the sibling test above would be reporting nothing.
+	big := pwBoundaryThreshold{ID: "probe", N: math.MinInt64}
+	if reason := pwRefusalReason(big, math.MinInt64); strings.HasPrefix(reason, "UNATTRIBUTED") {
+		t.Fatalf("the clause table can no longer attribute a refusal at math.MinInt64 (%s); the "+
+			"generic-profile probe would then report nothing", reason)
 	}
 }
 

@@ -533,9 +533,12 @@ func TestConstraintStateJSONEquivalentComparesNumbersExactly(t *testing.T) {
 // above: a class field holding an i64 beyond float64's exact range keeps its
 // EXACT value through the traversal, the leaf readback and the divergence check.
 //
-// The predicate over it is declined by the fail-closed numeric profile, which is
-// the documented behaviour and is asserted as such — an `unsupported` outcome,
-// not a fabricated boolean.
+// The predicate over it is the closed DIRECT grammar, which Slice 7.2c-2 decides
+// with an exact int64 comparison — so this leaf is now evaluated end to end rather
+// than declined, and the assertion says which. The generic companion below drives
+// the SAME oversized leaf through an expression outside that grammar and pins that
+// it is still `unsupported`, so the carve-out stays a grammar and does not become a
+// magnitude.
 func TestConstraintStateLargeIntegerLeafIsExact(t *testing.T) {
 	cls := constraintStateClass("Big",
 		constraintStateField("n", "", constraintStateCheck(constraintStateIntType(), "big", "this > 0")))
@@ -553,9 +556,25 @@ func TestConstraintStateLargeIntegerLeafIsExact(t *testing.T) {
 	if got, want := n.Canonical.i, int64(9007199254740993); got != want {
 		t.Errorf("$.n i64 = %d, want %d", got, want)
 	}
-	requireConstraintStateEvents(t, n, []string{`type_meta/check/"big"/this > 0=unsupported`})
-	if got, want := n.Disposition, constraintDispositionUnsupportedExpression; got != want {
+	// DECIDED, and decided EXACTLY: 2^53+1 > 0 is true, and it is reached without
+	// the value ever passing through a float64.
+	requireConstraintStateEvents(t, n, []string{`type_meta/check/"big"/this > 0=true`})
+	if got, want := n.Disposition, constraintDispositionEvaluated; got != want {
 		t.Errorf("$.n disposition = %s, want %s", got, want)
+	}
+
+	// THE COMPANION. The same oversized leaf under a GENERIC expression — a filter,
+	// not the direct grammar — is still refused by the fail-closed numeric profile.
+	// Without this arm the test above would read as "values past 2^53 are fine now",
+	// which is precisely what Slice 7.2c-2 did NOT do.
+	generic := constraintStateClass("Big",
+		constraintStateField("n", "", constraintStateCheck(constraintStateIntType(), "big", "this|abs == 9007199254740993")))
+	gb := constraintStateBundle(t, constraintStateClassType("Big"), []schema.ClassDef{generic}, nil)
+	grun := collectConstraintStateFixture(t, gb, `{"n":9007199254740993}`)
+	gn := requireConstraintStateNode(t, grun, "$.n")
+	requireConstraintStateEvents(t, gn, []string{`type_meta/check/"big"/this|abs == 9007199254740993=unsupported`})
+	if got, want := gn.Disposition, constraintDispositionUnsupportedExpression; got != want {
+		t.Errorf("$.n disposition under a generic expression = %s, want %s", got, want)
 	}
 }
 

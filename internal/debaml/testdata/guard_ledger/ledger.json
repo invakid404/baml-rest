@@ -101,13 +101,13 @@
         "BS_REGEX"
       ],
       "stockEnvelope": "pass for N1b, N2, N3, N4, N5, BS_REGEX; failed-check for N1, N6, N7. N1 is 2^53+1 against 2^53, which stock's exact integer core keeps apart; N6 is a fractional DIRECT subscript, which resolves to undefined rather than erroring; N7 is two integers manufactured past 2^53 by `|int`.",
-      "nativeEnvelope": "agreement — the same outcome stock recorded — for N5; native-unsupported for N1, N1b, N2, N3, N4, N6, N7, BS_REGEX (attributed to exceedsExactIntegerRange)",
+      "nativeEnvelope": "agreement — the same outcome stock recorded — for N1, N1b and N5; native-unsupported for N2, N3, N4, N6, N7, BS_REGEX (attributed to exceedsExactIntegerRange). N1 and N1b agree as of Slice 7.2c-2: their expression is the closed direct grammar `this OP <canonical i64>`, which EvaluateConstraint now decides with an exact int64 comparison (internal/debaml/constraint_direct_i64.go) instead of routing through this guard. Every other cited row is outside that grammar and still refuses, so the guard itself is unchanged.",
       "effect": "coverage-only",
       "subsumedBy": "",
       "rollback": "n/a — nothing removed. A per-family widening must land with the family's own rows and may not lean on the fork ledger alone.",
       "subprocessWitness": "",
       "deferralRecord": "https://github.com/invakid404/baml-rest/issues/583#issuecomment-5189834323",
-      "notes": "Signed `%` and `//` are euclidean in stock and truncated/floored in Go, so only non-negative integer literal operands are proven; `**` is bounded only for a manifest literal base and exponent. BS_REGEX additionally records that a backslash inside a string literal makes the bracket-region scan refuse to say where the literal ends, so the whole expression is declined before the filter is reached.",
+      "notes": "Signed `%` and `//` are euclidean in stock and truncated/floored in Go, so only non-negative integer literal operands are proven; `**` is bounded only for a manifest literal base and exponent. BS_REGEX additionally records that a backslash inside a string literal makes the bracket-region scan refuse to say where the literal ends, so the whole expression is declined before the filter is reached. SLICE 7.2c-2: the guard was NOT relaxed and no clause of it was removed — a closed direct-comparison path was added AHEAD of it in EvaluateConstraint for `this OP <canonical i64>` over an integer `this`, which is total across the whole i64 range and therefore closes the post-claim unsupported hazard on the already-served `this > I` fingerprint. N1/N1b are the two witnesses that moved to agreement; the guard's own refusals (N2, N3, N4, N6, N7, BS_REGEX) are byte-for-byte what they were.",
       "livenessProof": ""
     },
     {

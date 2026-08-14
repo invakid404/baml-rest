@@ -292,9 +292,56 @@ const (
 	staticCheckedAssertClass = "StaticAssertAnswer"
 )
 
-// staticCheckedExprPrefix is the ONLY predicate head the statically proven
-// expression profile accepts. See [staticCheckedThreshold].
-const staticCheckedExprPrefix = "this > "
+// staticCheckedManifestTokens is the PRODUCTION allowed-operator manifest: the
+// operators the static expression profile will classify, and therefore the only
+// ones any schema gate can admit.
+//
+// IT IS `>` AND ONLY `>`. Slice 7.2c-2 built the exact signed-i64 comparison
+// CAPABILITY for all six direct operators (constraint_direct_i64.go) and factored
+// this classifier onto that table — but it deliberately did NOT widen the
+// manifest. The capability is what 7.2c-3 will need; the manifest is what
+// production claims, and the two are separate on purpose:
+//
+//   - the capability is a statement about the EVALUATOR ("native can decide this
+//     form exactly, for every i64"), which is proven by arithmetic;
+//   - the manifest is a statement about STOCK ("native reproduces BAML's bytes for
+//     this schema"), which can only be proven by a CFFI capture of that operator's
+//     wire and error output on these two name-pinned classes, plus a live
+//     flag-on/flag-off socket proof.
+//
+// Slice 7.2c-1 banked the captures (internal/debaml/predicatewire). It did not
+// bank the mapper, route, decoder and socket proofs the second statement needs,
+// so the five other operators stay declined here and the served row count stays 4.
+// 7.2c-3 is the slice that may add a token, and it may add one only alongside that
+// operator's evidence.
+//
+// It is a FUNCTION returning a fresh slice, not a package variable, so nothing —
+// production or test — can widen the claim of a running binary by assigning to it.
+// A mutation proof builds its own wider manifest and drives a TWIN classifier;
+// TestStaticCheckedManifestMutationBites is that proof, and it fails if widening
+// the manifest does not make the decline assertions fail.
+func staticCheckedManifestTokens() []string { return []string{">"} }
+
+// staticCheckedManifest is the production manifest resolved against the exact-i64
+// capability table.
+//
+// Resolving it through [directCompareManifest] rather than restating the operator
+// records is what keeps the classifier and the evaluator from drifting: a token
+// here that the capability cannot decide yields NO manifest, so the profile
+// admits nothing at all rather than admitting a form the evaluator would refuse
+// after the claim. That is the same failure direction Slice 7.2c-2 exists to
+// close, expressed as a construction rule instead of a comment.
+func staticCheckedManifest() []directCompareOp {
+	ops, ok := directCompareManifest(staticCheckedManifestTokens())
+	if !ok {
+		// FAIL CLOSED. An unresolvable manifest is a programming error, and the
+		// safe answer to one is an empty classifier: every expression declines and
+		// nothing is served, rather than a partial manifest quietly claiming a
+		// subset nobody chose.
+		return nil
+	}
+	return ops
+}
 
 // staticCheckedProfile is the classification of a bundle that matches the one
 // admitted fingerprint:
@@ -525,18 +572,44 @@ func staticCheckedPlainField(f *schema.ClassField, name string, prim schema.Prim
 // AssertFailCause100 row is NOT truncated and AssertFailCause101 IS.
 const staticCheckedMaxCauseLen = 100
 
+// staticCheckedCausePrefix is the fixed head of every rendered assertion cause.
+// It is named so the length bound below is arithmetic over the SAME string
+// [staticCheckedAssertFailure] writes, not a number that agrees with it by luck.
+const staticCheckedCausePrefix = "Failed: "
+
 // staticCheckedMaxLabelLen bounds the admitted label so the rendered cause can never
 // reach [staticCheckedMaxCauseLen].
 //
-// The cause is `Failed: ` (8 bytes) + label + one separator space + the expression,
-// whose longest admitted form is `this > -9223372036854775808` (26 bytes). Bounding
-// the label in the FINGERPRINT — rather than teaching the renderer to truncate — is
-// the conservative choice the scope requires: truncation interacts with Rust's
-// UTF-8-boundary panic, which checkedwire records as an UNMEASURED hazard, so a
-// renderer that reproduced it would be claiming bytes nothing has measured. Declining
-// a longer label is safe over-decline; [staticCheckedAssertFailure] re-checks the
-// assembled cause as a backstop.
-const staticCheckedMaxLabelLen = staticCheckedMaxCauseLen - len("Failed: ") - 1 - len("this > -9223372036854775808")
+// The cause is [staticCheckedCausePrefix] + label + one separator space + the
+// expression. Bounding the label in the FINGERPRINT — rather than teaching the
+// renderer to truncate — is the conservative choice the scope requires: truncation
+// interacts with Rust's UTF-8-boundary panic, which checkedwire records as an
+// UNMEASURED hazard, so a renderer that reproduced it would be claiming bytes
+// nothing has measured. Declining a longer label is safe over-decline;
+// [staticCheckedAssertFailure] re-checks the assembled cause as a backstop.
+//
+// SLICE 7.2c-2: RECOMPUTED, AND FROM NOW ON DERIVED. The expression term used to be
+// the LITERAL string `this > -9223372036854775808` (27 bytes), which is correct only
+// while the manifest is `>`-shaped. `>=` and `<=` are one byte longer, so the moment
+// 7.2c-3 adds either token the same 64-byte label would render a 101-byte cause —
+// one byte INTO stock's truncation regime, producing an untruncated string where
+// stock truncates and appends `...`. The 7.2c scope names that hazard directly
+// ("A one-byte-longer expression can cross stock's 100-byte assert-cause boundary;
+// labels must be re-bounded, not inherited").
+//
+// So the bound is no longer a restatement: [directI64LongestExpression] derives the
+// longest canonical expression the CURRENT manifest can produce, and the bound
+// follows it automatically — 64 today, 63 the moment a two-byte operator is
+// admitted. A widened manifest cannot inherit a stale limit, because there is no
+// limit to inherit.
+//
+// It is a var only because Go const arithmetic cannot range over a table; it is
+// assigned once, at init, from a pure function of the manifest.
+// TestStaticCheckedCauseBoundIsDerivedFromTheManifest pins both the present value
+// and the value the six-operator manifest would produce, and proves the inherited
+// bound would have overrun.
+var staticCheckedMaxLabelLen = staticCheckedMaxCauseLen - len(staticCheckedCausePrefix) - 1 -
+	len(directI64LongestExpression(staticCheckedManifest()))
 
 // staticCheckedASCIILabel reports whether a constraint label is a non-empty ASCII
 // identifier — letters, digits and underscore, not starting with a digit — short
@@ -577,13 +650,22 @@ func staticCheckedASCIILabel(s string) bool {
 // this a bounded over-decline rather than an unmeasured edge.
 const staticCheckedExprMaxPad = 1
 
-// staticCheckedCanonicalExpression strips the admitted `{{ }}` padding from a source
-// predicate and proves what remains is the statically proven profile.
+// staticCheckedStripExprPadding removes the admitted `{{ }}` padding from a source
+// predicate, returning the canonical inner text.
 //
-// It returns the string stock puts in [bamlutils.Check.Expression] and quotes in the
-// assertion cause. Padding is ASCII SPACE only: a tab, newline or non-breaking space has
-// no capture behind it, and `strings.TrimSpace` would have silently accepted all three.
-func staticCheckedCanonicalExpression(src string) (string, bool) {
+// Padding is ASCII SPACE only: a tab, newline or non-breaking space has no capture
+// behind it, and `strings.TrimSpace` would have silently accepted all three. More
+// than [staticCheckedExprMaxPad] on either side is refused rather than trimmed, and
+// an all-padding source is refused outright.
+//
+// It is a NAMED helper rather than an inline loop because the operator-manifest
+// mutation proof (TestStaticCheckedManifestMutationBites) has to strip padding
+// exactly the way production does: that twin's ONLY intended semantic difference
+// from the production classifier is its operator manifest, so a second copy of this
+// scan could drift and make a mutation result ambiguous — a disagreement that came
+// from the padding rule would read as one that came from the manifest. One scan,
+// one rule, both callers.
+func staticCheckedStripExprPadding(src string) (string, bool) {
 	lead, trail := 0, 0
 	for lead < len(src) && src[lead] == ' ' {
 		lead++
@@ -597,7 +679,19 @@ func staticCheckedCanonicalExpression(src string) (string, bool) {
 	if lead > staticCheckedExprMaxPad || trail > staticCheckedExprMaxPad {
 		return "", false
 	}
-	canonical := src[lead : len(src)-trail]
+	return src[lead : len(src)-trail], true
+}
+
+// staticCheckedCanonicalExpression strips the admitted `{{ }}` padding from a source
+// predicate and proves what remains is the statically proven profile.
+//
+// It returns the string stock puts in [bamlutils.Check.Expression] and quotes in the
+// assertion cause.
+func staticCheckedCanonicalExpression(src string) (string, bool) {
+	canonical, ok := staticCheckedStripExprPadding(src)
+	if !ok {
+		return "", false
+	}
 	if _, ok := staticCheckedThreshold(canonical); !ok {
 		return "", false
 	}
@@ -605,7 +699,16 @@ func staticCheckedCanonicalExpression(src string) (string, bool) {
 }
 
 // staticCheckedThreshold is the STATICALLY PROVEN expression profile: exactly
-// `this > <ASCII decimal integer literal>`, and nothing else.
+// `this OP <ASCII decimal integer literal>` for an OP in the production manifest
+// ([staticCheckedManifestTokens], which is `>` alone), and nothing else.
+//
+// Slice 7.2c-2 turned it from a hand-written prefix match into a DATA-DRIVEN
+// classifier over [parseDirectI64Comparison] — the same parser the exact-i64
+// evaluator path uses. That is the point of the refactor rather than a tidy-up:
+// while the classifier had its own copy of the grammar, "the profile admits it"
+// and "the evaluator can decide it" were two separate claims that could disagree,
+// and they DID (7.2c-1 measured 31 of 37 admitted (literal, value) pairs reaching
+// a post-claim refusal). One parser, one grammar, one answer.
 //
 // The literal must round-trip through [strconv.FormatInt], which rejects `+5`,
 // `007`, `1_000`, a float, and anything that would not survive to an i64 — so the
@@ -614,15 +717,11 @@ func staticCheckedCanonicalExpression(src string) (string, bool) {
 // requirement 1); it exists so the classification is a proof about the EXPRESSION
 // rather than a guess that the evaluator will cope.
 func staticCheckedThreshold(expr string) (int64, bool) {
-	digits, ok := strings.CutPrefix(expr, staticCheckedExprPrefix)
-	if !ok || digits == "" {
+	cmp, ok := parseDirectI64Comparison(expr, staticCheckedManifest())
+	if !ok {
 		return 0, false
 	}
-	n, err := strconv.ParseInt(digits, 10, 64)
-	if err != nil || strconv.FormatInt(n, 10) != digits {
-		return 0, false
-	}
-	return n, true
+	return cmp.literal, true
 }
 
 // ---------------------------------------------------------------------------
@@ -929,7 +1028,7 @@ func (e *staticCheckedAssertError) Error() string { return e.msg }
 // A label-free assert renders `Failed: <expr>`; the separator space belongs to the
 // label, not to the prefix.
 func staticCheckedAssertFailure(field, label, expression string) (error, error) {
-	cause := "Failed: "
+	cause := staticCheckedCausePrefix
 	if label != "" {
 		cause += label + " "
 	}
