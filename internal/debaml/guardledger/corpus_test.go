@@ -23,19 +23,38 @@ var namedGuardRows = []guardRow{
 	// N1–N7 — the numeric/operator/subscript family (exceedsExactIntegerRange,
 	// numericParser, isProvablySmallNumber, bracket bounds, parsePow).
 	// -----------------------------------------------------------------------
+	// N1 / N1b were this guard's two DIRECT-COMPARISON witnesses, and Slice 7.2c-2
+	// moved both from a native refusal to an AGREEMENT. Their expression is the
+	// closed direct grammar `this OP <canonical i64>`, which is now decided by an
+	// exact int64 comparison inside EvaluateConstraint (constraint_direct_i64.go)
+	// rather than refused by the numeric whitelist — the totality repair the 7.2c
+	// scope requires before a direct-int schema may be admitted.
+	//
+	// They are RETAINED as witnesses rather than deleted, and that is the point:
+	// they are now the rows that record what the exact path decides, beside N2/N3/N4
+	// (signed `%`, signed `//`, a value-model `**` base) and N6/N7/BS_REGEX, which
+	// are outside the direct grammar and STILL refuse under the unchanged guard. A
+	// reader comparing the two halves can see that the guard was narrowed by a
+	// grammar rather than loosened by a magnitude.
+	//
+	// NativeGuard and Note are empty because the row no longer refuses; the harness
+	// requires both to be set exactly when it does.
 	{
 		ID: "N1", Guards: []string{"numericProfile"}, Group: "bigint",
+		// 2^53+1 against 2^53: two DISTINCT integers that are one float64. Stock's
+		// exact integer core keeps them apart and answers false; native's exact
+		// int64 comparison now reaches the same answer, where a float64 comparator
+		// would say true.
 		Expr:       "this == 9007199254740992",
 		StockCheck: envFailedCheck, StockAssert: envAssertError,
-		NativeGuard: "exceedsExactIntegerRange",
-		Note:        "2^53+1 vs 2^53: stock's exact integer core tells them apart; the numeric whitelist refuses the whole expression because the value model carries an integer at or past 2^53.",
 	},
 	{
 		ID: "N1b", Guards: []string{"numericProfile"}, Group: "bigint",
+		// The same value compared against ITSELF, so the pair is symmetric: the exact
+		// path has to answer true here and false at N1, which no single-sided fix
+		// could satisfy.
 		Expr:       "this == 9007199254740993",
 		StockCheck: envPass, StockAssert: envPass,
-		NativeGuard: "exceedsExactIntegerRange",
-		Note:        "the same value compared against itself; refused for the same reason, so the guard's cost is symmetric rather than answer-shaped.",
 	},
 	{
 		ID: "N2", Guards: []string{"numericProfile"}, Group: "intneg7",

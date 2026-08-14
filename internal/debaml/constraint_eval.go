@@ -333,10 +333,31 @@ func renderOnce(this ConstraintValue, expression string, mode mappingMode) (stri
 // guards alike), so errors.Is is a total test for "native could not decide" and
 // a caller can treat it uniformly as "decline to BAML".
 //
-// constraint_profile.go states what the profile excludes and why; the stock
-// differential (internal/debaml/constraintoracle) enforces the contract case by
-// case against real BAML, and fails on any result stock did not also produce.
+// TWO PATHS, ONE CONTRACT (Slice 7.2c-2).
+//
+// The direct signed-i64 comparison `this OP I` is decided EXACTLY, by
+// [evaluateDirectI64], without rendering anything. That path is TOTAL: for an
+// integer `this` and a canonical i64 literal it returns a boolean for every value
+// in the i64 range — the endpoints and both sides of ±2^53 included — so an
+// admitted direct-i64 node can never reach [ErrConstraintUnsupported] after its
+// schema was claimed. See constraint_direct_i64.go for why that hazard was live
+// on the ALREADY-SERVED `this > I` fingerprint and how the exactness is bounded.
+//
+// EVERYTHING ELSE renders, under the unchanged fail-closed profile — the
+// `|int| >= 2^53` numeric whitelist included. The exact path is a narrowing of the
+// grammar, not a loosening of the guard: it is consulted first, it answers only
+// for the closed direct form, and it declines to route anything else. It is also
+// not an admission — the static classifier's allowed-operator manifest is
+// independent of it and still names `>` alone
+// ([staticCheckedManifestTokens]).
+//
+// constraint_profile.go states what the rendered profile excludes and why; the
+// stock differential (internal/debaml/constraintoracle) enforces the contract case
+// by case against real BAML, and fails on any result stock did not also produce.
 func EvaluateConstraint(this ConstraintValue, expression string) (bool, error) {
+	if held, decided := evaluateDirectI64(this, expression); decided {
+		return held, nil
+	}
 	rendered, err := RenderConstraintExpression(this, expression)
 	if err != nil {
 		return false, err

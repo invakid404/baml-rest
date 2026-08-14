@@ -56,9 +56,9 @@ partial matrix cannot read as a complete one.
 | operator_le | `this <= I` | DECLINED | predicatewire:TestPredicateWireAdmissionIsUnchanged |
 | operator_eq | `this == I` | DECLINED | predicatewire:TestPredicateWireAdmissionIsUnchanged |
 | operator_ne | `this != I` | DECLINED | predicatewire:TestPredicateWireAdmissionIsUnchanged |
-| i64_beyond_exact | an admitted-family VALUE at or past 2^53 | DECLINED | predicatewire:TestDirectIntBoundaryMatrix |
-| i64_long_literal | a canonical literal longer than 15 digits — including `9007199254740991`, which is 2^53-1 and therefore below the guard's own 2^53 threshold | DECLINED | predicatewire:TestDirectIntBoundaryMatrix |
-| i64_negative_literal | a negative canonical literal, which the generic guard reads as arithmetic | DECLINED | predicatewire:TestDirectIntBoundaryMatrix |
+| i64_beyond_exact | a VALUE at or past 2^53 in a GENERIC expression (a filter, arithmetic, a test) — the direct grammar itself is exact as of 7.2c-2 | DECLINED | predicatewire:TestGenericNumericProfileStillRefusesOutsideTheDirectGrammar |
+| i64_long_literal | a canonical literal longer than 15 digits in a GENERIC expression — including `9007199254740991`, which is 2^53-1 and therefore below the guard's own 2^53 threshold | DECLINED | predicatewire:TestGenericNumericProfileStillRefusesOutsideTheDirectGrammar |
+| i64_negative_literal | a negative canonical literal in a GENERIC expression, which the guard reads as arithmetic | DECLINED | predicatewire:TestGenericNumericProfileStillRefusesOutsideTheDirectGrammar |
 | compound_predicate | `and`, `or`, `not`, `&&`, ternaries, membership, concatenation | DECLINED | scope:Verified broadening decisions 2 |
 | filters_and_arithmetic | filters, arithmetic, parentheses, alternate literal syntax | DECLINED | scope:Verified broadening decisions 2 |
 | type_float | `confidence float` | DECLINED | debaml:TestServingOracleBoundaryLock |
@@ -102,10 +102,10 @@ partial matrix cannot read as a complete one.
    observation about Go map iteration, not a stock contract.) Moving this row needs a newly
    approved stock ordering contract, not mapper work.
 
-2. **The direct-i64 totality gap is much wider than the 2^53 guard.** Of the 222 rows in
-   the boundary matrix, stock answers every one exactly; native's current generic profile
-   answers 36 and refuses 186. The refusals split three INDEPENDENT ways, each with its
-   own ledger row above:
+2. **The direct-i64 totality gap was much wider than the 2^53 guard — and Slice 7.2c-2
+   CLOSED it.** As first measured here: of the 222 rows in the boundary matrix, stock
+   answers every one exactly, while native's generic profile answered 36 and refused 186.
+   The refusals split three INDEPENDENT ways, each with its own ledger row above:
 
    - `i64_beyond_exact` — a VALUE at or past 2^53. Note this is the GUARD's threshold,
      not where float64 loses exactness: every integer up to and including 2^53 round-trips
@@ -120,6 +120,18 @@ partial matrix cannot read as a complete one.
      `-` is an arithmetic byte and `this ...` never parses as the closed numeric
      sublanguage. The scope did not call this one out at all.
 
-   7.2c-2 must close all three for the direct grammar, not only the first. The magnitude
-   frontier applies only on the non-negative side; the sign clause is absolute and is
-   reported separately rather than folded into a single number.
+   Slice 7.2c-2 closed all three **for the closed direct grammar** `this OP <canonical
+   i64>`, by deciding it with an exact native `int64` comparison inside
+   `EvaluateConstraint` (`internal/debaml/constraint_direct_i64.go`) instead of routing it
+   through the whitelist. `TestDirectIntBoundaryMatrix` now records **222 answered / 0
+   refused**, and `TestAdmittedGreaterThanNeverReachesPostClaimUnsupported` records **0 of
+   37** post-claim refusals on the already-served `this > I` fingerprint, down from 31.
+
+   The three clauses themselves were **not** removed, relaxed or re-thresholded. They still
+   refuse every GENERIC expression — which is why the three rows above remain DECLINED, with
+   their form narrowed to say so and their authority moved to
+   `TestGenericNumericProfileStillRefusesOutsideTheDirectGrammar`, the test that drives the
+   same thresholds and values through expressions the direct grammar does not cover. The
+   guard was narrowed by a grammar, not loosened by a magnitude. The magnitude frontier the
+   earlier measurement reported applied only on the non-negative side; the sign clause was
+   absolute, and both are now facts about the generic profile alone.

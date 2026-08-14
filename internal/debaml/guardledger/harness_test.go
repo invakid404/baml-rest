@@ -1038,10 +1038,20 @@ func TestGuardLedgerIsFailClosed(t *testing.T) {
 //	                   never in this binary), so no in-process instance carries it.
 //	wantSourceRejected BAML will not COMPILE the source spelling, so there is no
 //	                   stock leg to compare against at all.
+//
+// SLICE 7.2c-2 moved FOUR instances, and only in the safe direction:
+// N1 and N1b, at both levels, went from wantNativeDeclines to wantAgreeAnswer
+// (188 -> 184 and 46 -> 50). Their expression is the closed direct grammar
+// `this OP <canonical i64>`, which internal/debaml.EvaluateConstraint now decides
+// with an exact int64 comparison (constraint_direct_i64.go) instead of routing
+// through the numeric whitelist. Nothing turned from an agreement into a decline,
+// nothing turned into a different boolean, and no guard was removed or relaxed —
+// the numericProfile guard's other witnesses (N2, N3, N4, N6, N7, BS_REGEX) still
+// decline with the same attribution.
 const (
-	wantAgreeAnswer    = 46
+	wantAgreeAnswer    = 50
 	wantAgreeRefusal   = 34
-	wantNativeDeclines = 188
+	wantNativeDeclines = 184
 	wantStockFatal     = 0
 	wantSourceRejected = 1
 )

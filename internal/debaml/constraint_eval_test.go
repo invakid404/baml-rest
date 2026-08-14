@@ -664,12 +664,39 @@ func TestNumericBoundaryIsRefusedOnEveryArchitecture(t *testing.T) {
 	}
 
 	// A large integer arriving through the VALUE, not a literal, is equally
-	// unsafe and equally refused.
-	if _, err := EvaluateConstraint(IntValue(9007199254740993), "this > 0"); !errors.Is(err, ErrConstraintUnsupported) {
-		t.Errorf("a value-model integer past 2^53 must be refused; got err=%v", err)
+	// unsafe in a GENERIC expression and equally refused.
+	//
+	// SLICE 7.2c-2 CARVED ONE SHAPE OUT OF THIS, AND EXACTLY ONE. The closed direct
+	// grammar `this OP <canonical i64>` is now decided by an exact int64 comparison
+	// (constraint_direct_i64.go) and is total across the whole range, so the row
+	// that used to sit here — `this > 0` over 2^53+1 — is asserted as a DECIDED
+	// boolean in TestDirectI64CapabilityIsTotalAcrossTheWholeRange instead. Every
+	// other way the same oversized value can be reached is still refused, which is
+	// what these rows now pin: the guard was NARROWED by a grammar, not loosened by
+	// a magnitude.
+	big := IntValue(9007199254740993)
+	for _, expr := range []string{
+		"this|abs == 9007199254740993", // a filter over the oversized value
+		"this + 0 == 9007199254740993", // arithmetic on it
+		"this is odd",                  // a test over it
+		"this > 0 ",                    // ONE trailing byte outside the direct grammar
+		"this>0",                       // the same comparison, unspaced
+		"this >= 9007199254740992.0",   // a float literal is not a canonical i64
+	} {
+		if got, err := EvaluateConstraint(big, expr); !errors.Is(err, ErrConstraintUnsupported) {
+			t.Errorf("%q over a value-model integer past 2^53 answered %v (err=%v); "+
+				"only the closed direct grammar is exact, everything else must still be refused",
+				expr, got, err)
+		}
 	}
 	if _, err := EvaluateConstraint(ListValue([]ConstraintValue{IntValue(1), IntValue(1 << 60)}), "this|length == 2"); !errors.Is(err, ErrConstraintUnsupported) {
 		t.Errorf("a large integer nested in a list must be refused; got err=%v", err)
+	}
+	// A direct-SHAPED expression over a value that is not an i64 is not the direct
+	// grammar either: the exact path is keyed on BamlValue::Int, so a float `this`
+	// past the exact range keeps the generic refusal.
+	if got, err := EvaluateConstraint(FloatValue(9007199254740993), "this > 0"); !errors.Is(err, ErrConstraintUnsupported) {
+		t.Errorf("a FLOAT `this` past 2^53 answered %v (err=%v); the exact path is i64-only", got, err)
 	}
 
 	// Just inside the boundary, and arithmetic that provably cannot escape it,
