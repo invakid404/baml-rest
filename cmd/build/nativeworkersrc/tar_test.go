@@ -232,10 +232,15 @@ func TestGatedTestSupportPrefixesMatchTheLiveTree(t *testing.T) {
 			// Every non-test file under the excluded subtree must be gated out of an
 			// ordinary build. Without this, a file that genuinely belonged in the
 			// worker could be added here and silently stop shipping.
-			if !strings.Contains(string(b), "//go:build integration && nanollm_integration") {
-				t.Errorf("%s is under the excluded subtree %q but is NOT gated by "+
-					"`//go:build integration && nanollm_integration`; it would silently stop shipping",
-					path, prefix)
+			//
+			// The directive is looked for in the LEADING BUILD-COMMENT HEADER, not
+			// anywhere in the file: a `strings.Contains` scan would be satisfied by the
+			// same text sitting in an ordinary comment (this very test file contains it
+			// in prose), which is not a build constraint at all and would gate nothing.
+			if !hasLeadingBuildConstraint(string(b), "//go:build integration && nanollm_integration") {
+				t.Errorf("%s is under the excluded subtree %q but its LEADING build-comment header "+
+					"does not carry `//go:build integration && nanollm_integration`; it would silently "+
+					"stop shipping", path, prefix)
 			}
 			return nil
 		})
@@ -245,6 +250,56 @@ func TestGatedTestSupportPrefixesMatchTheLiveTree(t *testing.T) {
 		if nonTestGo == 0 {
 			t.Errorf("the excluded subtree %q contains no non-test Go file, so the exclusion is "+
 				"redundant with the `!_test.go` rule and should be removed", prefix)
+		}
+	}
+}
+
+// hasLeadingBuildConstraint reports whether src carries want as a real build
+// constraint: in the leading comment header, before the first blank line and before
+// any non-comment line.
+//
+// Go's own rule is that a `//go:build` line must precede the package clause and be
+// followed by a blank line, so scanning until the first blank or non-comment line is
+// what makes this a check on the CONSTRAINT rather than on the text.
+func hasLeadingBuildConstraint(src, want string) bool {
+	for _, line := range strings.Split(src, "\n") {
+		trimmed := strings.TrimRight(line, "\r")
+		if strings.TrimSpace(trimmed) == "" {
+			return false // the header ended without the directive
+		}
+		if !strings.HasPrefix(trimmed, "//") {
+			return false // a non-comment line ends the header
+		}
+		if trimmed == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestHasLeadingBuildConstraintIsPositional is the control for the check above: it must
+// accept the directive only where Go would treat it as a constraint.
+//
+// The negative that matters is the LAST one — the same text in an ordinary comment
+// after the package clause, which is exactly what a `strings.Contains` scan accepted.
+func TestHasLeadingBuildConstraintIsPositional(t *testing.T) {
+	const want = "//go:build integration && nanollm_integration"
+	for _, tc := range []struct {
+		name string
+		src  string
+		ok   bool
+	}{
+		{"first line", want + "\n\npackage p\n", true},
+		{"after a doc comment", "// doc\n" + want + "\n\npackage p\n", true},
+		{"absent", "// doc\n\npackage p\n", false},
+		{"a DIFFERENT constraint", "//go:build integration\n\npackage p\n", false},
+		{"after the header's blank line", "// doc\n\n" + want + "\npackage p\n", false},
+		{"after the package clause", "package p\n\n" + want + "\n", false},
+		{"inside a prose comment after code", "package p\n\n// we require " + want + " here\n", false},
+		{"empty file", "", false},
+	} {
+		if got := hasLeadingBuildConstraint(tc.src, want); got != tc.ok {
+			t.Errorf("%s: hasLeadingBuildConstraint = %v, want %v", tc.name, got, tc.ok)
 		}
 	}
 }

@@ -775,9 +775,11 @@ func TestServingOracleBoundaryLock(t *testing.T) {
 		t.Fatal("no row's decline message NAMED a constraint; the constraint cut-line itself would be " +
 			"unwitnessed even though every stripped twin is admitted")
 	}
-	// The SERVED population is exactly the four companion rows — declared as data in
-	// two places that have to agree, so a fifth row cannot acquire the flag quietly and
-	// the four cannot lose it.
+	// The SERVED population is exactly the companion rows — declared as data in two
+	// places that have to agree, so a further row cannot acquire the flag quietly and a
+	// named one cannot lose it. The count is DERIVED from soCompanionRowNames (24 since
+	// Slice 7.2c-3 widened the manifest, 4 before it), never restated here, so widening
+	// the manifest again cannot leave a stale cardinality behind.
 	if served != len(soCompanionRowNames) {
 		t.Fatalf("%d rows carry Served but %d companion rows are named; the per-row disposition and the "+
 			"named set have parted company", served, len(soCompanionRowNames))
@@ -792,8 +794,8 @@ func TestServingOracleBoundaryLock(t *testing.T) {
 			t.Fatalf("companion row %q is missing from the corpus", name)
 		}
 		if !f.Served {
-			t.Fatalf("companion row %q does not carry Served; the cutover's four-row flip would be "+
-				"unwitnessed for it", name)
+			t.Fatalf("companion row %q does not carry Served; the cutover's %d-row flip would be "+
+				"unwitnessed for it", name, len(soCompanionRowNames))
 		}
 	}
 	t.Logf("boundary lock: %d constraint-bearing bundles declined by all gates, all %d attributed to their "+
@@ -908,7 +910,9 @@ func soRequireServed(t *testing.T, f servingOracleFixture) {
 }
 
 // TestServingOracleSiblingsStillDeclineBeforeTransport is the guard the scope requires
-// beside the four-row flip, at the ORACLE's own boundary.
+// beside the served-row flip, at the ORACLE's own boundary. The flip was four rows under
+// 7.2b-3 and is 24 since Slice 7.2c-3 widened the predicate to the six direct
+// comparisons; this guard is about the rows NEXT to it, and is unchanged by that.
 //
 // Each row is ONE property away from an admitted companion row — a second check, a
 // duplicate label, an alias, a reordered pair, a different predicate, a non-ASCII
@@ -1073,12 +1077,13 @@ var soCompanionRowNames = []string{
 // TestServingOracleCompanionRowsAreTheAdmittedFingerprint ties the corpus rows to the
 // production classifier and to the mapper's byte proof.
 //
-// TestServingOracleBoundaryLock requires these four to be SERVED — but it would say the
-// same for four rows that happened to be admitted for some other reason. This proves
+// TestServingOracleBoundaryLock requires every companion row to be SERVED — but it would
+// say the same for rows that happened to be admitted for some other reason. This proves
 // they are the fingerprint staticCheckedProfileOf classifies, and drives the mapper over
 // each row's own raw text, so the corpus rows and the mapper's byte proof
-// (checked_static_test.go) are known to be about the same four shapes rather than two
-// similar-looking sets.
+// (checked_static_test.go) are known to be about the same shapes rather than two
+// similar-looking sets. Since Slice 7.2c-3 that is 24 rows — the six-operator manifest x
+// four outcomes — and the set is read from soCompanionRowNames rather than counted here.
 func TestServingOracleCompanionRowsAreTheAdmittedFingerprint(t *testing.T) {
 	byName := map[string]servingOracleFixture{}
 	for _, f := range servingOracleFixtures {

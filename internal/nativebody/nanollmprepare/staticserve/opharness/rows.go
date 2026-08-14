@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bytedance/sonic"
+
 	"github.com/invakid404/baml-rest/bamlutils"
 )
 
@@ -286,4 +288,48 @@ func RequireSeamEmitted(t *testing.T, opID string, routes []string, probe SeamPr
 	}
 	t.Logf("seam for %q: %d routes carry a V3 descriptor and a projector with no build-time decline, "+
 		"so admission alone decides them", opID, len(routes))
+}
+
+// Drain runs one generated /call (or /stream) to completion and returns the marshalled
+// final, the outcome tokens and any error.
+//
+// It lives here rather than in each operator package because it depends only on
+// `bamlutils` and `sonic` and names no fixture-specific type — the type-map isolation
+// that forces SEPARATE PACKAGES (see the package doc) does not force a separate copy of
+// this. Five copies could drift on any of the three things it gets right:
+//
+//   - the final is marshalled INSIDE the drain loop, BEFORE the result is released back
+//     to its pool, so the bytes compared later cannot be a view of a recycled struct;
+//   - it uses SONIC, the worker's serializer (worker/parse.go), so the bytes are the
+//     ones a caller receives and the ones internal/debaml/predicatewire's stock captures
+//     are in. encoding/json would HTML-escape the `<`, `>` and `=` inside the carrier's
+//     `expression` and silently compare a different string against the capture;
+//   - the outcome tokens are read only from the OUTCOME metadata phase.
+func Drain(t *testing.T, ch <-chan bamlutils.StreamResult, err error) Outcome {
+	t.Helper()
+	if err != nil {
+		return Outcome{Err: err}
+	}
+	out := Outcome{}
+	for r := range ch {
+		switch r.Kind() {
+		case bamlutils.StreamResultKindFinal:
+			if f := r.Final(); f != nil {
+				b, merr := sonic.Marshal(f)
+				if merr != nil {
+					t.Fatalf("marshal final: %v", merr)
+				}
+				out.FinalJSON = string(b)
+			}
+		case bamlutils.StreamResultKindError:
+			out.Err = r.Error()
+		case bamlutils.StreamResultKindMetadata:
+			if md := r.Metadata(); md != nil && md.Phase == bamlutils.MetadataPhaseOutcome {
+				out.Winner = md.WinnerEngine
+				out.Planned = md.PlannedEngine
+			}
+		}
+		r.Release()
+	}
+	return out
 }

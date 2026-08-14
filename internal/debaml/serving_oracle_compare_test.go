@@ -182,8 +182,11 @@ func soCompare(f servingOracleFixture, stock soStockEnvelope, native soNativeEnv
 	// green on it either way.
 	//
 	// De-BAML Slice 7.2b-3: checkSupported now answers the ONE canonical fingerprint
-	// like every other named schema gate, so the four Served rows are ADMITTED by it and
-	// an admitted verdict is a mismatch only for the 49 that are not.
+	// like every other named schema gate, so every Served row is ADMITTED by it and an
+	// admitted verdict is a mismatch only for the constraint-bearing rows that are not.
+	// Slice 7.2c-3 widened that population from 4 rows to 24 (the six-operator manifest
+	// x four outcomes) without changing this rule — which is why the branch below reads
+	// the row's own `Served` flag rather than a cardinality.
 	switch {
 	case f.Unconstrained || f.Served:
 		if native.Support != nil {

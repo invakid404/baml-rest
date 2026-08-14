@@ -159,7 +159,8 @@ func staticCheckedDirect() staticCheckedClaim { return staticCheckedClaim{} }
 // mutable test switch that can only re-open an already-open gate proves nothing and is
 // a way for a test to widen production's claim. The attribution it used to provide is
 // now carried by the one-property siblings, which decline against the same production
-// gates the four admitted rows pass.
+// gates the admitted rows pass — four of them under 7.2b-3, and since Slice 7.2c-3 the
+// whole six-operator manifest.
 func staticCheckedGrantStaticUnaryCall() staticCheckedClaim {
 	return staticCheckedClaim{staticUnaryCall: staticCheckedAdmitsConstraints}
 }

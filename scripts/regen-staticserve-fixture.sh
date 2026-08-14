@@ -51,6 +51,49 @@ SF="$TESTDATA/staticserve_fixture"
 
 STRAY_TB="github.com/boundaryml/baml/engine/generators/languages/go/generated_tests/enums/baml_client/type_builder"
 
+# rewrite_stray_type_builder <client_dir> <local_type_builder_import>
+#
+# The BAML generator emits a stray ABSOLUTE type_builder import
+# (…/generated_tests/enums/baml_client/type_builder) whose TypeBuilder is a DISTINCT
+# type from the fixture's own type_builder package — which makes the generated
+# adapter's baml_client<->introspected TypeBuilder bridge fail to compile. Rewrite it
+# to the fixture-local type_builder (what stock generation means).
+#
+# ERROR HANDLING, deliberately: `grep -rl` exits 1 when it matches NOTHING, which is a
+# legitimate outcome (a future BAML that stops emitting the stray import), and exits
+# >1 on a real error. Only status 1 is absorbed; a failing `sed`/`mv` propagates, so a
+# rewrite that silently did not happen cannot let introspection and adapter generation
+# continue over stale imports. (`|| true` on the whole pipeline, which this replaced,
+# treated both the same.)
+#
+# Portable in-place edit via a temp file: `sed -i ''` (empty backup suffix) is
+# BSD/macOS syntax that GNU sed (Linux CI, contributors) misparses — the `''` becomes
+# the sed SCRIPT and the real expression a FILENAME. Writing to a temp then mv works
+# on both.
+rewrite_stray_type_builder() {
+  local client_dir="$1" local_tb="$2"
+  local matches status
+  set +e
+  matches="$(grep -rl "$STRAY_TB" "$client_dir" 2>/dev/null)"
+  status=$?
+  set -e
+  if [ "$status" -eq 1 ]; then
+    return 0   # no match: nothing to rewrite
+  fi
+  if [ "$status" -ne 0 ]; then
+    echo "error: grep failed with status $status while scanning $client_dir" >&2
+    return "$status"
+  fi
+  local f tmp
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    tmp="$(mktemp)"
+    sed "s#$STRAY_TB#$local_tb#g" "$f" >"$tmp"
+    mv "$tmp" "$f"
+  done <<<"$matches"
+}
+
+
 # regen_client <project_dir> — run stock BAML generate then gofmt/goimports.
 # The generator's output_dir is "../" so it writes <project_dir>/baml_client.
 regen_client() {
@@ -106,22 +149,8 @@ BAML_HACKS_STOCK_STATIC_MAP_DECODE=1 BAML_HACKS_BAMLUTILS_CHECKED=1 \
   go run ./cmd/hacks --skip-baml-module-patch \
   --baml-client-dir "$SF/baml_client" --baml-version "$BAML_VERSION"
 
-# The BAML generator emits a stray absolute type_builder import
-# (…/generated_tests/enums/baml_client/type_builder) whose TypeBuilder is a
-# DISTINCT type from the fixture's own type_builder package — which makes the
-# generated adapter's baml_client<->introspected TypeBuilder bridge fail to
-# compile. Rewrite it to the fixture-local type_builder (what stock generation
-# means), then re-format.
-LOCAL_TB="github.com/invakid404/baml-rest/$SF/baml_client/type_builder"
-# Portable in-place edit via a temp file: `sed -i ''` (empty backup suffix) is BSD/macOS
-# syntax that GNU sed (Linux CI, contributors) misparses — the `''` becomes the sed
-# SCRIPT and the real expression a FILENAME. Writing to a temp then mv works on both.
-# `|| true` on grep: no match (a future BAML that stops emitting the stray import) is not
-# a failure — there is simply nothing to rewrite (pipefail would otherwise abort).
-grep -rl "$STRAY_TB" "$SF/baml_client" 2>/dev/null | while IFS= read -r f; do
-  tmp="$(mktemp)"
-  sed "s#$STRAY_TB#$LOCAL_TB#g" "$f" >"$tmp" && mv "$tmp" "$f"
-done || true
+rewrite_stray_type_builder "$SF/baml_client" \
+  "github.com/invakid404/baml-rest/$SF/baml_client/type_builder"
 goimports -w "$SF/baml_client"
 gofmt -w "$SF/baml_client"
 
@@ -162,11 +191,8 @@ for op in $OP_FIXTURES; do
     go run ./cmd/hacks --skip-baml-module-patch \
     --baml-client-dir "$OF/baml_client" --baml-version "$BAML_VERSION"
 
-  LOCAL_TB="github.com/invakid404/baml-rest/$OF/baml_client/type_builder"
-  grep -rl "$STRAY_TB" "$OF/baml_client" 2>/dev/null | while IFS= read -r f; do
-    tmp="$(mktemp)"
-    sed "s#$STRAY_TB#$LOCAL_TB#g" "$f" >"$tmp" && mv "$tmp" "$f"
-  done || true
+  rewrite_stray_type_builder "$OF/baml_client" \
+    "github.com/invakid404/baml-rest/$OF/baml_client/type_builder"
   goimports -w "$OF/baml_client"
   gofmt -w "$OF/baml_client"
 

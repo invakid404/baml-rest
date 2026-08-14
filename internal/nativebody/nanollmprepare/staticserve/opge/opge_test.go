@@ -23,8 +23,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/bytedance/sonic"
-
 	"github.com/invakid404/baml-rest/bamlutils"
 
 	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/staticserve/opharness"
@@ -42,44 +40,6 @@ const loopbackAddr = "127.0.0.1:17655"
 // it.
 const opID = "ge"
 
-// drain runs one generated /call to completion and returns the marshalled final, the
-// outcome tokens and any error.
-//
-// The final is marshalled INSIDE the drain loop, before the result is released back to
-// its pool, so the bytes compared later cannot be a view of a recycled struct — and it
-// uses sonic, the WORKER's serializer (worker/parse.go), so they are the bytes a caller
-// receives and the ones internal/debaml/predicatewire's stock captures are in.
-// encoding/json would HTML-escape the `<`, `>` and `=` inside the carrier's
-// `expression`, silently comparing a different string against the capture.
-func drain(t *testing.T, ch <-chan bamlutils.StreamResult, err error) opharness.Outcome {
-	t.Helper()
-	if err != nil {
-		return opharness.Outcome{Err: err}
-	}
-	out := opharness.Outcome{}
-	for r := range ch {
-		switch r.Kind() {
-		case bamlutils.StreamResultKindFinal:
-			if f := r.Final(); f != nil {
-				b, merr := sonic.Marshal(f)
-				if merr != nil {
-					t.Fatalf("marshal final: %v", merr)
-				}
-				out.FinalJSON = string(b)
-			}
-		case bamlutils.StreamResultKindError:
-			out.Err = r.Error()
-		case bamlutils.StreamResultKindMetadata:
-			if md := r.Metadata(); md != nil && md.Phase == bamlutils.MetadataPhaseOutcome {
-				out.Winner = md.WinnerEngine
-				out.Planned = md.PlannedEngine
-			}
-		}
-		r.Release()
-	}
-	return out
-}
-
 // project wires this fixture into the shared runner.
 func project() opharness.Project {
 	return opharness.Project{
@@ -89,11 +49,11 @@ func project() opharness.Project {
 		MakeAdapter: func(ctx context.Context) bamlutils.Adapter { return fixture.MakeAdapter(ctx) },
 		DriveCheck: func(t *testing.T, a bamlutils.Adapter) opharness.Outcome {
 			ch, err := fixture.StaticCheckedConfidence(a, &fixture.StaticCheckedConfidenceInput{Topic: "weather"})
-			return drain(t, ch, err)
+			return opharness.Drain(t, ch, err)
 		},
 		DriveAssert: func(t *testing.T, a bamlutils.Adapter) opharness.Outcome {
 			ch, err := fixture.StaticAssertConfidence(a, &fixture.StaticAssertConfidenceInput{Topic: "weather"})
-			return drain(t, ch, err)
+			return opharness.Drain(t, ch, err)
 		},
 	}
 }

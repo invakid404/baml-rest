@@ -165,50 +165,28 @@ func TestStaticCheckedManifestIsEvidenceGated(t *testing.T) {
 	if len(manifest) == 0 {
 		t.Fatal("the production manifest is empty; the evidence join would be vacuous")
 	}
+	// The join is [staticCheckedEvidenceViolations] — the SAME function
+	// TestStaticCheckedEvidenceGateIsProvenToBite drives its mutants through. Spelling
+	// the checks out again here would make the mutation proof guard a second
+	// implementation rather than this assertion, which is precisely how a bite test
+	// stops covering the thing it names.
+	//
+	// The per-operator t.Run survives for reporting: it drives ONE operator's manifest
+	// slice at a time, so a red run says which token lost its authority rather than
+	// only that something did.
 	for _, op := range manifest {
 		t.Run(op.ID, func(t *testing.T) {
-			c, ok := stockOperatorCaptures[op.ID]
-			if !ok {
-				t.Fatalf("operator %q (%s) is ADMITTED by the production manifest with NO stock capture; "+
-					"the 7.2c scope requires a missing row to leave the operator DECLINED, not to be "+
-					"masked by a grammar that happens to parse it", op.ID, op.Token)
-			}
-			// FOUR rows, all non-empty: wire bytes for check true/false, wire bytes for
-			// a passing assert, and the whole err.Error() for a failing one. A partial
-			// capture is not evidence for the operator, only for some of its outcomes.
-			for _, f := range []struct{ name, value string }{
-				{"checkTrue", c.checkTrue}, {"checkFalse", c.checkFalse},
-				{"assertTrue", c.assertTrue}, {"assertFail", c.assertFail},
-			} {
-				if f.value == "" {
-					t.Errorf("operator %q has an EMPTY %s capture; that outcome is unevidenced", op.ID, f.name)
-				}
-			}
-			// The capture is THIS operator's: stock retained the operator's own canonical
-			// text in the check expression and in the assertion cause.
-			want := directI64Expression(op, stockOperatorLiteral)
-			for _, f := range []struct{ name, value string }{
-				{"checkTrue", c.checkTrue}, {"checkFalse", c.checkFalse}, {"assertFail", c.assertFail},
-			} {
-				if !strings.Contains(f.value, want) {
-					t.Errorf("operator %q's %s capture does not quote %q; the manifest token and the "+
-						"capture that authorises it are mispaired", op.ID, f.name, want)
-				}
-			}
-			// The two outcomes are driven at DIFFERENT values, so "true" and "false"
-			// really are two measurements rather than one recorded twice.
-			if c.trueVal == c.falseVal {
-				t.Errorf("operator %q drives confidence=%d for both outcomes", op.ID, c.trueVal)
-			}
-			if got := op.Holds(c.trueVal, stockOperatorLiteral); !got {
-				t.Errorf("operator %q's capture claims %q holds at confidence=%d, but the exact "+
-					"comparison says it does not", op.ID, want, c.trueVal)
-			}
-			if got := op.Holds(c.falseVal, stockOperatorLiteral); got {
-				t.Errorf("operator %q's capture claims %q fails at confidence=%d, but the exact "+
-					"comparison says it holds", op.ID, want, c.falseVal)
+			for _, v := range staticCheckedEvidenceViolations([]directCompareOp{op}, stockOperatorCaptures) {
+				t.Errorf("operator %q (%s) is ADMITTED by the production manifest but %s; the 7.2c "+
+					"scope requires a missing or disagreeing row to leave the operator DECLINED, not "+
+					"to be masked by a grammar that happens to parse it", op.ID, op.Token, v)
 			}
 		})
+	}
+	// And the whole manifest at once, so a violation that only appears when several
+	// operators are resolved together cannot slip between the per-operator runs.
+	if got := staticCheckedEvidenceViolations(manifest, stockOperatorCaptures); len(got) != 0 {
+		t.Fatalf("the production manifest fails the evidence join:\n  %s", strings.Join(got, "\n  "))
 	}
 	t.Logf("evidence gate: %d manifest operators, each joined to 4 stock CFFI capture rows by "+
 		"directCompareOp.ID", len(manifest))

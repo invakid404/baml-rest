@@ -270,6 +270,9 @@ var (
 	soRuntimes       map[string]baml.BamlRuntime
 	soRuntimeSources map[string]string
 	soRuntimeErr     error
+	// soRuntimeFailedProject names the project whose CreateRuntime failed, so the
+	// setup diagnostic prints THAT project's source rather than the main one's.
+	soRuntimeFailedProject string
 	// soRuntimeSource is the EXACT project text the MAIN runtime was created from. The
 	// drift test compares this against the golden rather than re-rendering, so the
 	// bytes stock compiled are the bytes under review.
@@ -288,6 +291,7 @@ func soEnsureRuntime(t *testing.T) {
 			var src string
 			src, soRuntimeErr = soRenderProject(servingOracleFixtures, project)
 			if soRuntimeErr != nil {
+				soRuntimeErr = fmt.Errorf("project %q: %w", project, soRuntimeErr)
 				return
 			}
 			soRuntimeSources[project] = src
@@ -318,14 +322,31 @@ func soEnsureRuntime(t *testing.T) {
 				soProjectFiles(project, soRuntimeSources[project]), soRuntimeEnv)
 			if soRuntimeErr != nil {
 				soRuntimeErr = fmt.Errorf("project %q: %w", project, soRuntimeErr)
+				soRuntimeFailedProject = project
 				return
 			}
 			soRuntimes[project] = rt
 		}
 	})
 	if soRuntimeErr != nil {
+		// Print the FAILING project's text, not the main project's.
+		//
+		// Until Slice 7.2c-3 there was one project and `soRuntimeSource` was always the
+		// right thing to print. With six, printing it unconditionally is wrong in both
+		// directions: a RENDER failure returns before soRuntimeSource is assigned (so it
+		// would print nothing at all), and a CreateRuntime failure on an isolated project
+		// would print the main project's source beside an error naming a different one —
+		// a diagnostic that actively misleads.
+		project, src := soMainProject, soRuntimeSource
+		if soRuntimeFailedProject != "" {
+			project, src = soRuntimeFailedProject, soRuntimeSources[soRuntimeFailedProject]
+		}
+		if src == "" {
+			src = "(the project failed to RENDER, so there is no source to show)"
+		}
 		t.Fatalf("stock runtime for the in-memory serving-oracle project could not be created: %v\n"+
-			"the project the corpus renders is not a valid BAML v0.223.0 project:\n%s", soRuntimeErr, soRuntimeSource)
+			"the project %q the corpus renders is not a valid BAML v0.223.0 project:\n%s",
+			soRuntimeErr, project, src)
 	}
 }
 

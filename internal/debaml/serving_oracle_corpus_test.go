@@ -755,7 +755,7 @@ var servingOracleFixtures = []servingOracleFixture{
 	// the scope's `/call`-only boundary.
 	{
 		Name: "static_answer_confidence_gt_check_pass", Family: "class", Served: true,
-		Doc: "7.2c-3 COMPANION (>): the production two-field fingerprint with a HOLDING @check — the " +
+		Doc: "7.2b-2 COMPANION (>), renamed by 7.2c-3 when the set grew to 24: the production two-field fingerprint with a HOLDING @check — the " +
 			"outcome that becomes a Checked[int64] carrier on the `confidence` field",
 		Bundle: soBundle(soClassType("StaticCheckedAnswer"),
 			[]schema.ClassDef{soClassOf("StaticCheckedAnswer", []schema.ClassField{
@@ -768,7 +768,7 @@ var servingOracleFixtures = []servingOracleFixture{
 	},
 	{
 		Name: "static_answer_confidence_gt_check_fail", Family: "class", Served: true,
-		Doc: "7.2c-3 COMPANION (>): the same declaration with the predicate FALSE. A false @check is DATA " +
+		Doc: "7.2b-2 COMPANION (>), renamed by 7.2c-3 when the set grew to 24: the same declaration with the predicate FALSE. A false @check is DATA " +
 			"— the value is still emitted, with status failed",
 		Bundle: soBundle(soClassType("StaticCheckedAnswer"),
 			[]schema.ClassDef{soClassOf("StaticCheckedAnswer", []schema.ClassField{
@@ -781,7 +781,7 @@ var servingOracleFixtures = []servingOracleFixture{
 	},
 	{
 		Name: "static_answer_confidence_gt_assert_pass", Family: "class", Served: true,
-		Doc: "7.2c-3 COMPANION (>): the @assert twin with the predicate HOLDING — no check entry and no " +
+		Doc: "7.2b-2 COMPANION (>), renamed by 7.2c-3 when the set grew to 24: the @assert twin with the predicate HOLDING — no check entry and no " +
 			"wrapper, so the generated field stays an ordinary int64",
 		Bundle: soBundle(soClassType("StaticAssertAnswer"),
 			[]schema.ClassDef{soClassOf("StaticAssertAnswer", []schema.ClassField{
@@ -794,7 +794,7 @@ var servingOracleFixtures = []servingOracleFixture{
 	},
 	{
 		Name: "static_answer_confidence_gt_assert_fail", Family: "class", Served: true,
-		Doc: "7.2c-3 COMPANION (>): the @assert twin with the predicate FALSE — no value at all, and the " +
+		Doc: "7.2b-2 COMPANION (>), renamed by 7.2c-3 when the set grew to 24: the @assert twin with the predicate FALSE — no value at all, and the " +
 			"required-field wrapper chain internal/debaml/predicatewire pins byte-for-byte",
 		Bundle: soBundle(soClassType("StaticAssertAnswer"),
 			[]schema.ClassDef{soClassOf("StaticAssertAnswer", []schema.ClassField{

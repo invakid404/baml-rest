@@ -2197,8 +2197,10 @@ func staticCheckedReturnDescriptor(b *schema.Bundle) schemadescriptor.Bundle {
 }
 
 // TestStaticCheckedCutoverAdmitsThroughTheRealGates is the load-bearing invariant of
-// Slice 7.2b-3: the four companion rows move decline → admit through every SCHEMA gate,
-// and the ROUTE gates place them on exactly one route.
+// Slice 7.2b-3, re-driven over the widened manifest: every companion row moves
+// decline → admit through every SCHEMA gate, and the ROUTE gates place it on exactly one
+// route. It was four rows under 7.2b-3 and is 24 since Slice 7.2c-3 — the count is
+// asserted against [staticCheckedRows] rather than restated in prose.
 //
 // Every gate is the PRODUCTION function, driven exactly as it ships.
 func TestStaticCheckedCutoverAdmitsThroughTheRealGates(t *testing.T) {
@@ -2404,9 +2406,10 @@ func TestDynamicLoweringCannotExpressAConstraint(t *testing.T) {
 }
 
 // TestStaticCheckedOnePropertySiblingsDeclineEverywhere is the guard the scope requires
-// beside the four-row flip: a bundle that differs from the admitted fingerprint in
-// exactly ONE property still declines, BEFORE transport, at EVERY named gate — schema
-// gates and route gates alike, with no exemption.
+// beside the served-row flip (four rows under 7.2b-3, 24 since Slice 7.2c-3): a bundle
+// that differs from the admitted fingerprint in exactly ONE property still declines,
+// BEFORE transport, at EVERY named gate — schema gates and route gates alike, with no
+// exemption.
 func TestStaticCheckedOnePropertySiblingsDeclineEverywhere(t *testing.T) {
 	// A raw text every sibling's shape can coerce, so a decline is the GATE's decision
 	// rather than a coercion failure.
@@ -2464,9 +2467,10 @@ type staticCheckedCorpusEntry struct {
 	fingerprint bool
 }
 
-// staticCheckedAgreementCorpus is the four admitted rows plus every one-property
-// sibling — the smallest set over which "these gates share one fingerprint" is a claim
-// about both answers rather than about one.
+// staticCheckedAgreementCorpus is every admitted row ([staticCheckedRows] — four under
+// 7.2b-3, 24 since Slice 7.2c-3) plus every one-property sibling: the smallest set over
+// which "these gates share one fingerprint" is a claim about both answers rather than
+// about one.
 func staticCheckedAgreementCorpus() []staticCheckedCorpusEntry {
 	var out []staticCheckedCorpusEntry
 	for _, r := range staticCheckedRows() {
