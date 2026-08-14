@@ -136,6 +136,24 @@ internal/debaml/testdata/serving_oracle
 internal/debaml/checkedwire/asymmetries.md
 internal/debaml/checkedwire/testdata
 
+# de-BAML Slice 7.2c-1 PREDICATE-WIRE STOCK AUTHORITY proof material
+# (internal/debaml/predicatewire): the residual ledger the package's //go:build
+# integration tests parse and assert against, and the ISOLATED in-memory .baml fixture
+# projects the stock BAML v0.223.0 CFFI compiles at test time — one per operator, per
+# boundary literal and per residual form, each declaring the two name-pinned classes once
+# so six predicate variants of one class name can be captured without renaming any of
+# them. Both are read FROM DISK by those tests (os.ReadFile), never through the embedded
+# FS, and neither is a customer-build input — they are test-only proof material exactly
+# like checkedwire's two paths above.
+#
+# The package is integration-test-ONLY: it carries no non-_test .go file, so these two
+# paths are its entire contribution to the root manifest. They are named INDIVIDUALLY
+# rather than by excluding the directory, so that a production .go file added here later
+# still surfaces as regen drift and gets a decision instead of being silently swallowed
+# by a directory-wide exclusion — the same reasoning as checkedwire.
+internal/debaml/predicatewire/residuals.md
+internal/debaml/predicatewire/testdata
+
 # de-BAML Phase 4b + 5.1 gated nanollm Prepare validation: a SEPARATE, test-only
 # Go module (github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare)
 # excluded from go.work so the PUBLIC github.com/viktordanov/nanollm-ffi/go

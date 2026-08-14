@@ -815,9 +815,80 @@ func staticCheckedSiblings() []staticCheckedSibling {
 			b:    mutate(c.setEmpty),
 		})
 	}
+	// De-BAML Slice 7.2c-1 — the MIXED constraint forms, in BOTH declaration orders.
+	//
+	// internal/debaml/predicatewire captured what stock does with each of these against
+	// the v0.223.0 CFFI and found the two orders INDISTINGUISHABLE in stock's output, in
+	// both outcomes: a passing assert leaves only the check, and a false assert suppresses
+	// a check that would otherwise have been emitted. Neither is a form this mapper models
+	// — it evaluates exactly one constraint and knows one check OR one assert outcome — so
+	// both remain declines here, and their decline is now backed by a measurement rather
+	// than by the one-constraint clause alone.
+	for _, m := range []struct {
+		name  string
+		extra schema.Constraint
+		first schema.Constraint
+	}{{
+		name:  "a @check then a @assert",
+		first: schema.Constraint{Level: schema.ConstraintCheck, Expression: "this < 100", Label: label("c")},
+		extra: schema.Constraint{Level: schema.ConstraintAssert, Expression: "this > 0", Label: label("a")},
+	}, {
+		name:  "a @assert then a @check",
+		first: schema.Constraint{Level: schema.ConstraintAssert, Expression: "this > 0", Label: label("a")},
+		extra: schema.Constraint{Level: schema.ConstraintCheck, Expression: "this < 100", Label: label("c")},
+	}} {
+		m := m
+		siblings = append(siblings, staticCheckedSibling{
+			name: m.name,
+			b: mutate(func(b *schema.Bundle) {
+				b.Classes[0].Fields[1].Type.Meta.Constraints = []schema.Constraint{m.first, m.extra}
+			}),
+		})
+	}
+	// THREE unique checks. Distinct from the existing two-check sibling: stock's map fold
+	// loses declaration order at any count above one, and predicatewire recorded three
+	// DISTINCT sonic byte orderings for this shape — so the byte-parity rule the slice
+	// accepts on has nothing to compare against, whatever the mapper could build.
+	siblings = append(siblings, staticCheckedSibling{
+		name: "three unique checks",
+		b: mutate(func(b *schema.Bundle) {
+			b.Classes[0].Fields[1].Type.Meta.Constraints = []schema.Constraint{
+				{Level: schema.ConstraintCheck, Expression: "this > 0", Label: label("alpha")},
+				{Level: schema.ConstraintCheck, Expression: "this < 100", Label: label("beta")},
+				{Level: schema.ConstraintCheck, Expression: "this != 7", Label: label("gamma")},
+			}
+		}),
+	})
+
+	// De-BAML Slice 7.2c-1 — the five DIRECT COMPARISON operators 7.2c proposes and this
+	// slice does NOT admit.
+	//
+	// Each has a full stock v0.223.0 CFFI capture in internal/debaml/predicatewire — wire
+	// bytes for check true/false and assert true, and the exact err.Error() for a false
+	// assert, on both name-pinned families. Capturing an operator is what a later slice
+	// needs; it is not what admits one, and these rows are what keeps that distinction
+	// enforced. TestStaticCheckedOperatorWideningIsProvenToBite proves the assertion fires
+	// if the fingerprint starts accepting any of them.
+	//
+	// `>` is deliberately absent: it is the ADMITTED predicate, not a sibling.
+	for _, expr := range staticCheckedDeclinedDirectOperators() {
+		siblings = append(siblings, staticCheckedSibling{
+			name: "direct operator " + strconv.Quote(expr),
+			b:    accept(schema.ConstraintCheck, "positive", expr),
+		})
+		siblings = append(siblings, staticCheckedSibling{
+			name: "direct operator " + strconv.Quote(expr) + " (assert)",
+			b:    accept(schema.ConstraintAssert, "positive", expr),
+		})
+	}
+
 	for _, expr := range []string{
-		"this >= 0", "this>0", "this > 0.0", "this > +5", "this > 007",
-		"this > 1_000", "this != 0", "this|length > 0", "this > 9223372036854775808", "this > ",
+		"this>0", "this > 0.0", "this > +5", "this > 007",
+		"this > 1_000", "this|length > 0", "this > 9223372036854775808", "this > ",
+		// The TWO-BYTE operators in their non-canonical spacings. `>=` and `<=` are one
+		// byte longer than `>`, and the canonicaliser counts ASCII spaces rather than
+		// trimming, so each width needs its own rows.
+		"this>=0", "this <=0", "  this >= 0  ", " this <= 0 ", "this >  0", "this ==  0",
 		// PADDING past the admitted one ASCII space each side, and padding that is not
 		// an ASCII space at all. strings.TrimSpace would have accepted every one of
 		// these — including the NO-BREAK SPACE, which unicode.IsSpace reports true for —
@@ -2310,6 +2381,126 @@ func staticCheckedRenamedTwinAdmits(b *schema.Bundle) bool {
 		return false
 	}
 	return staticCheckedFingerprintAdmits(&renamed)
+}
+
+// staticCheckedDeclinedDirectOperators are the five direct comparisons 7.2c proposes and
+// 7.2c-1 does NOT admit, in their canonical spelling.
+//
+// `this > I` is deliberately absent: it is the one admitted predicate. Every expression
+// here has a full stock v0.223.0 CFFI capture in internal/debaml/predicatewire, which is
+// what a later slice needs and is not what admits one.
+func staticCheckedDeclinedDirectOperators() []string {
+	return []string{"this >= 0", "this < 0", "this <= 0", "this == 0", "this != 0"}
+}
+
+// staticCheckedWidenedOperatorTwinAdmits is the 7.2c-3 cutover, arriving early: the
+// production fingerprint with its expression clause replaced by one that accepts all six
+// direct comparisons.
+//
+// It is written as a SHAPE predicate over the same structure the real classifier walks —
+// one class, two ordered fields, one constraint on `confidence` — so the mutant really is
+// "the production fingerprint with a widened operator set" rather than a name match on
+// the corpus rows. Everything else about the fingerprint still has to hold.
+func staticCheckedWidenedOperatorTwinAdmits(b *schema.Bundle) bool {
+	if b == nil || len(b.Classes) != 1 || len(b.Classes[0].Fields) != 2 {
+		return false
+	}
+	cs := b.Classes[0].Fields[1].Type.Meta.Constraints
+	if len(cs) != 1 {
+		return false
+	}
+	canonical, ok := strings.CutPrefix(cs[0].Expression, "this ")
+	if !ok {
+		return false
+	}
+	op, digits, ok := strings.Cut(canonical, " ")
+	if !ok {
+		return false
+	}
+	switch op {
+	case ">", ">=", "<", "<=", "==", "!=":
+	default:
+		return false
+	}
+	n, err := strconv.ParseInt(digits, 10, 64)
+	if err != nil || strconv.FormatInt(n, 10) != digits {
+		return false
+	}
+	// Rewrite the expression to the one predicate the production fingerprint DOES admit
+	// and ask it about the rest of the shape. That way the mutant differs from production
+	// in exactly one clause — the operator — and in nothing else.
+	rewritten := *b
+	rewritten.Classes = []schema.ClassDef{b.Classes[0]}
+	rewritten.Classes[0].Fields = append([]schema.ClassField(nil), b.Classes[0].Fields...)
+	rewritten.Classes[0].Fields[1].Type.Meta.Constraints = []schema.Constraint{{
+		Level: cs[0].Level, Expression: "this > " + digits, Label: cs[0].Label,
+	}}
+	if err := rewritten.RebuildIndexes(); err != nil {
+		return false
+	}
+	return staticCheckedFingerprintAdmits(&rewritten)
+}
+
+// TestStaticCheckedOperatorWideningIsProvenToBite is the 7.2c-1 no-flip mutation proof:
+// the shared gate-agreement comparison, fed a fingerprint widened to the six direct
+// comparisons, must report EVERY declined operator sibling.
+//
+// This is the assertion that makes the new decline rows worth having. Without it, the
+// five operator siblings would be rows that pass because the comparison never fires, and
+// a 7.2c-3 cutover landing early would be invisible here.
+func TestStaticCheckedOperatorWideningIsProvenToBite(t *testing.T) {
+	corpus := staticCheckedAgreementCorpus()
+	gates := staticCheckedSchemaGates()
+
+	// The widened fingerprint must still admit the CURRENT one, or the mutant would be a
+	// different fingerprint rather than a broader one.
+	admitted := staticCheckedBundle(schema.ConstraintCheck, "positive", "this > 0")
+	if !staticCheckedWidenedOperatorTwinAdmits(admitted) {
+		t.Fatal("the widened-operator mutant does not admit the CURRENT fingerprint, so it is not a " +
+			"broadening of it and the disagreements below would prove nothing")
+	}
+	// And it must NOT admit a sibling that differs by something other than the operator,
+	// or "widened by one clause" would be false.
+	renamed := staticCheckedBundle(schema.ConstraintCheck, "positive", "this > 0")
+	renamed.Classes[0].Name.Name = "SomeOtherAnswer"
+	renamed.Target.Name = "SomeOtherAnswer"
+	if err := renamed.RebuildIndexes(); err != nil {
+		t.Fatalf("rebuild indexes: %v", err)
+	}
+	if staticCheckedWidenedOperatorTwinAdmits(renamed) {
+		t.Fatal("the widened-operator mutant admits a RENAMED class, so it drops more than the " +
+			"operator clause and its disagreements would not be attributable to the operator")
+	}
+
+	widened := func(b *schema.Bundle) bool {
+		return staticCheckedFingerprintAdmits(b) || staticCheckedWidenedOperatorTwinAdmits(b)
+	}
+	got := staticCheckedGateDisagreements(widened, gates, corpus)
+	if len(got) == 0 {
+		t.Fatal("a fingerprint widened to all six direct comparisons produced NO disagreement; the " +
+			"agreement assertion cannot detect the 7.2c-3 cutover landing early")
+	}
+	// Every declined operator, in BOTH levels, must be named.
+	for _, expr := range staticCheckedDeclinedDirectOperators() {
+		for _, suffix := range []string{"", " (assert)"} {
+			// The disagreement lines render the row name with %q, so the fragment
+			// searched for has to be quoted the same way — matching the bare name would
+			// silently find nothing and report every row as undriven.
+			row := fmt.Sprintf("%q", "direct operator "+strconv.Quote(expr)+suffix)
+			found := false
+			for _, line := range got {
+				if strings.Contains(line, row) {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("widening the operator set produced no disagreement naming %q; that row is "+
+					"not actually being driven through the gates", row)
+			}
+		}
+	}
+	t.Logf("no-flip proof: the six-operator widening is reported %d times across %d gates; all %d "+
+		"declined operator rows are named", len(got), len(gates), len(staticCheckedDeclinedDirectOperators())*2)
 }
 
 func staticCheckedExtraConstraintTwinAdmits(b *schema.Bundle) bool {
