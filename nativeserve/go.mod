@@ -76,8 +76,9 @@
 // the pins were moved here. Pin to a branch commit only if unavoidable, and re-pin to the
 // merged master commit as the immediate follow-up.
 //
-// NOTE (de-BAML Slice 7.2c-3): these pins are BRANCH-ONLY and the follow-up is tracked in
-// nativeserve/pin_followup.md (STATUS: OUTSTANDING). They move for a BEHAVIOUR change
+// NOTE (de-BAML Slice 7.2c-3): these pins were briefly BRANCH-ONLY; the tracked follow-up in
+// nativeserve/pin_followup.md has been performed and the pins now name the MASTER squash
+// commit of #672 (e3b8dc320705), so that record reads RESOLVED. They move for a BEHAVIOUR change
 // rather than a new symbol. nativeserve/admission's return-shape gate delegates to the root's
 // debaml.IsAdmittedStaticCheckedFamily (it spells no fingerprint of its own — see
 // admission/static.go), and 7.2c-3 widened the predicate that function answers from
@@ -101,9 +102,9 @@ go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260814142858-4168895ed76d
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260814142858-4168895ed76d
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260814142858-4168895ed76d
+	github.com/invakid404/baml-rest v0.0.0-20260817212126-e3b8dc320705
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260817212126-e3b8dc320705
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260817212126-e3b8dc320705
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/viktordanov/nanollm-ffi/go v0.4.3
