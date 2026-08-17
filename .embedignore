@@ -64,6 +64,20 @@ internal/nativeprompt/testdata/static_oracle
 # default) so the root embed manifest stays unchanged.
 internal/nativeprompt/testdata/staticserve_fixture
 
+# de-BAML Slice 7.2c-3 ISOLATED OPERATOR serve fixtures: one generated project per
+# direct comparison the admission cutover newly admits (`>=`, `<`, `<=`, `==`, `!=`),
+# each declaring the two PRODUCTION-PINNED class names `StaticCheckedAnswer` /
+# `StaticAssertAnswer` exactly once with its own predicate. One BAML project cannot
+# declare a class twice, and the 7.2c scope forbids renaming the classes to make six
+# predicate variants coexist — so they are separate projects rather than one.
+#
+# Same exclusion reason as staticserve_fixture above and not a weaker one: each carries
+# a full generated baml_client importing the stock github.com/boundaryml/baml runtime,
+# so embedding them would put FIVE more generated BAML clients in the root server
+# binary. They are driven solely by the //go:build integration && nanollm_integration
+# live-socket packages (internal/nativebody/nanollmprepare/staticserve/op*).
+internal/nativeprompt/testdata/staticserve_op_fixtures
+
 # de-BAML Slice 7.1a BAML PROFILE ORACLE (internal/bamlprofile/profileoracle):
 # the leaf profile's stock-BAML-v0.223 differential oracle and its guard fixture.
 #

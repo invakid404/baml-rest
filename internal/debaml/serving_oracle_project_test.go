@@ -52,15 +52,77 @@ const (
 	// one.
 	soClient = "ServingOracleClient"
 
-	// soProjectFile is the single .baml file of the in-memory project, and
+	// soProjectFile is the .baml file of the MAIN in-memory project, and
 	// soProjectGolden is the checked-in copy [TestServingOracleProjectDrift]
 	// byte-compares it against.
 	soProjectFile   = "serving_oracle.baml"
 	soProjectGolden = "testdata/serving_oracle/project.baml"
 
-	// soWriteEnv rewrites the golden instead of comparing (see the drift test).
+	// soMainProject is the name of the shared project every fixture belongs to
+	// unless it names another one ([servingOracleFixture.Project]).
+	soMainProject = "main"
+
+	// soWriteEnv rewrites the goldens instead of comparing (see the drift test).
 	soWriteEnv = "BAML_SERVING_ORACLE_FIXTURE_WRITE"
 )
+
+// soProjectFileFor is the .baml file name of one project.
+//
+// The main project keeps its historical name so the per-case `source()` report and
+// the checked-in golden are unchanged for every row that predates Slice 7.2c-3.
+func soProjectFileFor(project string) string {
+	if project == soMainProject {
+		return soProjectFile
+	}
+	return "serving_oracle_" + project + ".baml"
+}
+
+// soProjectGoldenFor is the checked-in golden of one project.
+func soProjectGoldenFor(project string) string {
+	if project == soMainProject {
+		return soProjectGolden
+	}
+	return "testdata/serving_oracle/project_" + project + ".baml"
+}
+
+// soProjectNames returns every project the corpus declares, in FIRST-APPEARANCE
+// order with the main project first.
+//
+// Ordering it deterministically is what lets the drift test compare a per-project
+// golden byte for byte and lets the hash pin be written as a table.
+func soProjectNames(fixtures []servingOracleFixture) []string {
+	out := []string{soMainProject}
+	seen := map[string]bool{soMainProject: true}
+	for _, f := range fixtures {
+		if p := f.project(); !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// soFixturesOfProject selects the corpus rows belonging to one project.
+func soFixturesOfProject(fixtures []servingOracleFixture, project string) []servingOracleFixture {
+	var out []servingOracleFixture
+	for _, f := range fixtures {
+		if f.project() == project {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// soPreludeFor is the fixed head of one project: the unroutable client, plus — for
+// an isolated project — a line naming which one it is, so a golden cannot be
+// mistaken for another project's.
+func soPreludeFor(project string) string {
+	if project == soMainProject {
+		return soPrelude
+	}
+	return soPrelude + "\n// ISOLATED PROJECT " + project + ": it declares the two name-pinned classes ONCE,\n" +
+		"// with this project's own predicate. See servingOracleFixture.Project.\n"
+}
 
 // soPrelude is the fixed head of the project: the unroutable client.
 const soPrelude = `// GENERATED at test time from the Slice 7.2a-3 serving-oracle corpus — do not edit.
@@ -260,16 +322,31 @@ type soDeclaration struct {
 	Fixture string
 }
 
-// soRenderProject renders the whole in-memory project from the corpus.
+// soRenderProject renders ONE in-memory project from the corpus rows that belong
+// to it.
 //
 // Declarations are emitted in FIRST-CONTRIBUTION order, then functions in corpus
 // order, so the output is a pure function of the corpus and the drift test can
 // byte-compare it. Two fixtures may share a declaration name only if they render
 // it identically; anything else is a corpus bug and returns an error rather than
 // producing a project whose meaning depends on which fixture was rendered last.
-func soRenderProject(fixtures []servingOracleFixture) (string, error) {
+//
+// SLICE 7.2c-3: the collision rule is why the corpus needed isolated projects at
+// all. The cutover's 24 served rows carry SIX predicate variants of the same two
+// name-pinned classes, so rendering them into one project makes `add` report a
+// collision — correctly. Splitting by [servingOracleFixture.Project] keeps that
+// rule intact (each project still refuses to render one name two ways) while
+// letting the six variants coexist, which is exactly the shape the 7.2c scope
+// prescribes: isolated projects, never renamed classes.
+//
+// PROBES are rendered into the MAIN project only; they are not per-operator.
+func soRenderProject(fixtures []servingOracleFixture, project string) (string, error) {
+	fixtures = soFixturesOfProject(fixtures, project)
+	if len(fixtures) == 0 {
+		return "", fmt.Errorf("project %q has no fixtures", project)
+	}
 	var b strings.Builder
-	b.WriteString(soPrelude)
+	b.WriteString(soPreludeFor(project))
 
 	seen := map[string]soDeclaration{}
 	var order []string
@@ -309,10 +386,13 @@ func soRenderProject(fixtures []servingOracleFixture) (string, error) {
 		b.WriteString("\n")
 		b.WriteString(soRenderFunction(f.Name, f.Bundle.Target))
 	}
-	// PROBES are rendered into the same project but are not corpus rows: they exist
+	// PROBES are rendered into the MAIN project but are not corpus rows: they exist
 	// so a named test can drive a shape the differential must NOT contain (a root
 	// duplicate label, whose folded readback is deliberately lossy). Keeping them in
 	// the project means the drift golden covers them too.
+	if project != soMainProject {
+		return b.String(), nil
+	}
 	for _, pr := range servingOracleProbes {
 		for _, c := range pr.Bundle.Classes {
 			if err := add(soDeclaration{Name: c.Name.Name, Source: soRenderClass(c), Fixture: "probe:" + pr.Name}); err != nil {
@@ -339,8 +419,8 @@ type servingOracleProbe struct {
 func (p servingOracleProbe) method() string { return soFunctionName(p.Name) }
 
 // soProjectFiles is the in-memory project handed to baml.CreateRuntime.
-func soProjectFiles(src string) map[string]string {
-	return map[string]string{soProjectFile: src}
+func soProjectFiles(project, src string) map[string]string {
+	return map[string]string{soProjectFileFor(project): src}
 }
 
 // soProjectHash is the SHA-256 of the rendered project, in hex. The drift test

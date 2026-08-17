@@ -59,12 +59,33 @@
 //
 // BUMP RULE. A bump must land on a commit whose root + bamlutils carry every symbol
 // nativeserve links, and it must be a MASTER commit: only that survives branch deletion
-// and is what an external consumer can resolve. Slice 7.1b briefly pinned its own
+// and is what an external consumer can resolve.
+//
+// WHETHER THE CURRENT PINS SATISFY THAT IS TRACKED, not left to this comment:
+// nativeserve/pin_followup.md records the commit they name, whether it is master-durable
+// yet, and — while it is not — the exact follow-up. cmd/build's
+// TestFirstPartyPinFollowupIsTracked parses both that record and these requires on every
+// ordinary `go test ./...`, and requires them to agree: all five selections must name ONE
+// commit, the record must name that same commit and enumerate all five, and wherever a
+// master ref is resolvable the record's STATUS must match actual master-reachability. So
+// a branch-only pin is a written-down, machine-checked state rather than something a
+// reader has to notice. Slice 7.1b briefly pinned its own
 // PRE-MERGE branch commit (cff53b244ffa) because the symbols were introduced by that
 // very change and no master commit carried them yet — then #655's squash-merge flattened
 // that SHA out of master, its branch was deleted, and nativeserve-goget went red until
 // the pins were moved here. Pin to a branch commit only if unavoidable, and re-pin to the
 // merged master commit as the immediate follow-up.
+//
+// NOTE (de-BAML Slice 7.2c-3): these pins are BRANCH-ONLY and the follow-up is tracked in
+// nativeserve/pin_followup.md (STATUS: OUTSTANDING). They move for a BEHAVIOUR change
+// rather than a new symbol. nativeserve/admission's return-shape gate delegates to the root's
+// debaml.IsAdmittedStaticCheckedFamily (it spells no fingerprint of its own — see
+// admission/static.go), and 7.2c-3 widened the predicate that function answers from
+// `this > I` to the six direct comparisons `this OP I`. The symbol is unchanged, so an
+// external consumer resolving the OLD pin still COMPILES — it would simply keep
+// declining five of the six operators, i.e. ship a serve core that silently under-claims
+// against the root it was released with. That is why this is a lockstep bump and not an
+// optional one: the pin is what carries the cutover to the released worker.
 //
 // A bump must ALSO move internal/nativebody/nanollmprepare/go.mod's recorded bamlutils +
 // worker selections in LOCKSTEP: nanollmprepare directory-replaces root / bamlutils /
@@ -80,9 +101,9 @@ go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260813140859-b8d4bb0861fa
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260813140859-b8d4bb0861fa
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260813140859-b8d4bb0861fa
+	github.com/invakid404/baml-rest v0.0.0-20260814142858-4168895ed76d
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260814142858-4168895ed76d
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260814142858-4168895ed76d
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/viktordanov/nanollm-ffi/go v0.4.3

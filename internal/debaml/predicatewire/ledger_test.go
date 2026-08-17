@@ -116,17 +116,22 @@ func TestResidualLedgerCoversEveryDeferral(t *testing.T) {
 			t.Errorf("residual %q is captured from stock but has no ledger row", res.ID)
 		}
 	}
-	// (3) And every operator this package captured but did NOT admit must have one too.
+	// (3) And NO operator this package captured may still have a row.
+	//
+	// Slice 7.2c-1 wrote this rule the other way round: every captured-but-declined
+	// operator HAD to have a row, and only `this > I` was forbidden one. 7.2c-3 spent
+	// that authority — all six are admitted now — so the rule inverts rather than
+	// relaxes. An admitted form left sitting in a deferral table is exactly the stale
+	// record this ledger exists to prevent, and it is the failure mode a widening
+	// produces: the manifest moves, the prose does not.
+	//
+	// The operator AXIS is not dropped; it moved one step out, to the seventh forms
+	// (checked by the scope list in (4)), which have no capture and stay declined.
 	for _, o := range pwOperators() {
-		if o.Op == ">" {
-			continue // the one admitted predicate; it is not a residual
+		if _, ok := byID["operator_"+o.ID]; ok {
+			t.Errorf("the ledger carries a row for operator %q, which Slice 7.2c-3 ADMITS; a served "+
+				"form is not a residual", o.Op)
 		}
-		if _, ok := byID["operator_"+o.ID]; !ok {
-			t.Errorf("operator %q is captured and still declined, but has no ledger row", o.Op)
-		}
-	}
-	if _, ok := byID["operator_gt"]; ok {
-		t.Error("the ledger carries a row for `this > I`, which is the ADMITTED predicate, not a residual")
 	}
 
 	// (4) The scope's own deferral list, written out here independently so the ledger
@@ -135,6 +140,11 @@ func TestResidualLedgerCoversEveryDeferral(t *testing.T) {
 	for _, want := range []string{
 		"two_checks", "duplicate_labels", "check_then_assert", "assert_then_check",
 		"compound_predicate", "filters_and_arithmetic",
+		// De-BAML Slice 7.2c-3: the operator axis after the cutover. The five admitted
+		// operators left this ledger; these two rows are what keeps the axis tracked,
+		// and requiring them here means dropping the axis is a red test rather than a
+		// quietly shorter table.
+		"operator_seventh_form", "operator_reversed_operands",
 		"type_float", "type_string", "type_bool", "type_enum", "type_nullable",
 		"type_list", "type_map", "type_union", "type_nested_class", "type_media",
 		"target_constraint", "class_constraint", "toplevel_constrained",

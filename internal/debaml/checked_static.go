@@ -46,8 +46,14 @@ import (
 // Splitting it that way is what keeps the cutover inside the scope's boundary
 // ("static unary /call final parsing only", direct parse endpoints left declined),
 // and it is why the boundary is a MEASURED fact rather than a comment: the same
-// production gates that serve the four companion rows on the /call route are driven
-// over the direct routes and over one-property siblings, and keep declining.
+// production gates that serve the companion rows on the /call route are driven over
+// the direct routes and over one-property siblings, and keep declining.
+//
+// SLICE 7.2c-3 widened WHAT is admitted and nothing else. The predicate went from
+// `this > I` to `this OP I` over the six direct comparisons — one edit, in
+// [staticCheckedManifestTokens] — so the companion set went from 4 rows to 24
+// (6 operators x check pass/fail x assert pass/fail). The route set, the structural
+// rules, the one-constraint rule and the one-assert renderer are all unchanged.
 //
 // # ONE fingerprint, shared by every named schema gate
 //
@@ -57,9 +63,13 @@ import (
 // [staticCheckedAdmittedConstraintNode]), [SupportsNativeFinalBundle], and — through
 // [IsAdmittedStaticCheckedFamily] — nativeserve's admission return-shape gate. They give
 // the SAME answer for the SAME schema, in both directions, which
-// TestStaticCheckedGatesShareOneFingerprint asserts symmetrically over the four admitted
+// TestStaticCheckedGatesShareOneFingerprint asserts symmetrically over the 24 admitted
 // rows plus every one-property sibling, and TestStaticCheckedGateAgreementIsProvenToBite
-// proves by mutating each gate in turn, both ways.
+// proves by mutating each gate in turn, both ways. Since Slice 7.2c-3 the manifest is
+// pinned from BOTH sides as well: widening it to a seventh operator form must produce a
+// disagreement (TestStaticCheckedSeventhFormWideningIsProvenToBite) and narrowing it back
+// must lose exactly the rows of the operators it dropped
+// (TestStaticCheckedManifestNarrowingIsProvenToBite).
 //
 // There is no codegen-side twin, and none can exist: adapters/common does not depend on
 // the root module and codegen's Introspection carries no static descriptors, so codegen
@@ -149,7 +159,8 @@ func staticCheckedDirect() staticCheckedClaim { return staticCheckedClaim{} }
 // mutable test switch that can only re-open an already-open gate proves nothing and is
 // a way for a test to widen production's claim. The attribution it used to provide is
 // now carried by the one-property siblings, which decline against the same production
-// gates the four admitted rows pass.
+// gates the admitted rows pass — four of them under 7.2b-3, and since Slice 7.2c-3 the
+// whole six-operator manifest.
 func staticCheckedGrantStaticUnaryCall() staticCheckedClaim {
 	return staticCheckedClaim{staticUnaryCall: staticCheckedAdmitsConstraints}
 }
@@ -258,7 +269,8 @@ func staticCheckedRouteBoundary(b *schema.Bundle, route string) error {
 //
 // It is deliberately NOT a general "constraints supported" switch: it answers only
 // "is this one of the two concrete generated fixture return types the byte differential
-// covers, with the cutover on".
+// covers, carrying one of the manifest's evidence-gated predicates, with the cutover
+// on".
 func IsAdmittedStaticCheckedFamily(b *schema.Bundle) bool {
 	return staticCheckedAdmittedFamily(b)
 }
@@ -296,31 +308,47 @@ const (
 // operators the static expression profile will classify, and therefore the only
 // ones any schema gate can admit.
 //
-// IT IS `>` AND ONLY `>`. Slice 7.2c-2 built the exact signed-i64 comparison
-// CAPABILITY for all six direct operators (constraint_direct_i64.go) and factored
-// this classifier onto that table — but it deliberately did NOT widen the
-// manifest. The capability is what 7.2c-3 will need; the manifest is what
-// production claims, and the two are separate on purpose:
+// SLICE 7.2c-3 — THE CUTOVER. It is the SIX direct comparisons, and it is the
+// first schema-admission widening since #668. Until this slice it was `>` alone;
+// widening it here is the ONLY semantic edit of the cutover, and every one of the
+// five named schema surfaces follows through delegation rather than through a
+// second grammar.
 //
-//   - the capability is a statement about the EVALUATOR ("native can decide this
-//     form exactly, for every i64"), which is proven by arithmetic;
-//   - the manifest is a statement about STOCK ("native reproduces BAML's bytes for
-//     this schema"), which can only be proven by a CFFI capture of that operator's
-//     wire and error output on these two name-pinned classes, plus a live
-//     flag-on/flag-off socket proof.
+// EVERY TOKEN IS EVIDENCE-GATED, PER OPERATOR. The capability and the manifest
+// stay separate for the reason Slice 7.2c-2 wrote them apart:
 //
-// Slice 7.2c-1 banked the captures (internal/debaml/predicatewire). It did not
-// bank the mapper, route, decoder and socket proofs the second statement needs,
-// so the five other operators stay declined here and the served row count stays 4.
-// 7.2c-3 is the slice that may add a token, and it may add one only alongside that
-// operator's evidence.
+//   - the CAPABILITY is a statement about the EVALUATOR ("native can decide this
+//     form exactly, for every i64"), proven by arithmetic in
+//     constraint_direct_i64.go — it recognised all six from the day it landed and
+//     that admitted nothing;
+//   - the MANIFEST is a statement about STOCK ("native reproduces BAML's bytes for
+//     this schema"), provable only by that operator's own CFFI wire AND error
+//     capture on these two name-pinned classes, plus a live pre-socket admission
+//     and one-socket serve proof.
 //
-// It is a FUNCTION returning a fresh slice, not a package variable, so nothing —
+// Each of the six tokens below carries the second kind of evidence, and it is
+// paired to it by NAME rather than by assertion: [directCompareOp.ID] is the same
+// key internal/debaml/predicatewire files its per-operator stock captures under
+// (`gt`, `ge`, `lt`, `le`, `eq`, `ne`), so a token and the capture that authorises
+// it can be joined mechanically. TestStaticCheckedManifestIsEvidenceGated does
+// exactly that join — over the untagged copies of the captures — and
+// TestPredicateWireManifestIsBackedByCaptures repeats it in the integration lane
+// against the tagged originals. A token whose capture set is missing or
+// disagreeing therefore fails a test rather than being admitted by a grammar that
+// happens to parse it: the operator stays DECLINED, which is the shape the 7.2c
+// scope requires ("a missing/absent/disagreeing row leaves that operator DECLINED
+// — it must NOT be masked by a broad grammar").
+//
+// It stays a FUNCTION returning a fresh slice, not a package variable, so nothing —
 // production or test — can widen the claim of a running binary by assigning to it.
-// A mutation proof builds its own wider manifest and drives a TWIN classifier;
-// TestStaticCheckedManifestMutationBites is that proof, and it fails if widening
-// the manifest does not make the decline assertions fail.
-func staticCheckedManifestTokens() []string { return []string{">"} }
+// The mutation proofs build their own manifests and drive a TWIN classifier:
+// TestStaticCheckedManifestMutationBites now widens to a SEVENTH form and requires
+// the decline assertions to fail, and TestStaticCheckedManifestNarrowingBites
+// removes one token at a time and requires the SERVED assertions to fail — so the
+// manifest is pinned from both sides.
+func staticCheckedManifestTokens() []string {
+	return []string{">", ">=", "<", "<=", "==", "!="}
+}
 
 // staticCheckedManifest is the production manifest resolved against the exact-i64
 // capability table.
@@ -346,8 +374,10 @@ func staticCheckedManifest() []directCompareOp {
 // staticCheckedProfile is the classification of a bundle that matches the one
 // admitted fingerprint:
 //
-//	class StaticCheckedAnswer { answer string; confidence int @check(<label>, {{ this > <int> }}) }
-//	class StaticAssertAnswer  { answer string; confidence int @assert(<label?>, {{ this > <int> }}) }
+//	class StaticCheckedAnswer { answer string; confidence int @check(<label>, {{ this OP <int> }}) }
+//	class StaticAssertAnswer  { answer string; confidence int @assert(<label?>, {{ this OP <int> }}) }
+//
+// where OP is one of the six direct comparisons in [staticCheckedManifestTokens].
 //
 // Exactly two fields in that order, no aliases and no other metadata, `confidence`
 // required / direct / non-nullable `int`, and EXACTLY ONE direct constraint on it —
@@ -599,9 +629,11 @@ const staticCheckedCausePrefix = "Failed: "
 //
 // So the bound is no longer a restatement: [directI64LongestExpression] derives the
 // longest canonical expression the CURRENT manifest can produce, and the bound
-// follows it automatically — 64 today, 63 the moment a two-byte operator is
-// admitted. A widened manifest cannot inherit a stale limit, because there is no
-// limit to inherit.
+// follows it automatically. SLICE 7.2c-3 IS WHERE THAT PAYS: admitting `>=` and
+// `<=` moved the longest canonical expression from 27 bytes to 28, so this bound
+// went 64 → 63 with no edit here at all. A 64-byte label is now DECLINED, which is
+// the safe direction — under the widened manifest it could have rendered a 101-byte
+// cause, one byte inside stock's truncation regime.
 //
 // It is a var only because Go const arithmetic cannot range over a table; it is
 // assigned once, at init, from a pure function of the manifest.
@@ -700,7 +732,8 @@ func staticCheckedCanonicalExpression(src string) (string, bool) {
 
 // staticCheckedThreshold is the STATICALLY PROVEN expression profile: exactly
 // `this OP <ASCII decimal integer literal>` for an OP in the production manifest
-// ([staticCheckedManifestTokens], which is `>` alone), and nothing else.
+// ([staticCheckedManifestTokens], which since Slice 7.2c-3 is the six direct
+// comparisons), and nothing else.
 //
 // Slice 7.2c-2 turned it from a hand-written prefix match into a DATA-DRIVEN
 // classifier over [parseDirectI64Comparison] — the same parser the exact-i64

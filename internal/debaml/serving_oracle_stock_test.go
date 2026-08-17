@@ -254,9 +254,26 @@ func soBuildTypeMap(fixtures []servingOracleFixture, extra []*schema.Bundle) map
 
 var (
 	soRuntimeOnce sync.Once
-	soRuntime     baml.BamlRuntime
-	soRuntimeErr  error
-	// soRuntimeSource is the EXACT project text the runtime was created from. The
+	// soRuntimes / soRuntimeSources are keyed by PROJECT.
+	//
+	// De-BAML Slice 7.2c-3 made this a map. Until the cutover the corpus rendered one
+	// project, because every fixture could share one; the cutover's 24 served rows
+	// carry six predicate variants of the SAME two name-pinned classes, and one BAML
+	// project cannot declare a class twice. Renaming the classes is what the 7.2c scope
+	// forbids, so each extra operator gets an isolated project instead — the same
+	// mechanism internal/debaml/predicatewire uses for its 32.
+	//
+	// The runtimes coexist in one process. That is measured rather than assumed:
+	// predicatewire creates 32 same-name runtimes in a single test binary, and
+	// TestServingOracleProjectsAreIsolated below re-measures it here by requiring each
+	// project's own runtime to report ITS OWN predicate.
+	soRuntimes       map[string]baml.BamlRuntime
+	soRuntimeSources map[string]string
+	soRuntimeErr     error
+	// soRuntimeFailedProject names the project whose CreateRuntime failed, so the
+	// setup diagnostic prints THAT project's source rather than the main one's.
+	soRuntimeFailedProject string
+	// soRuntimeSource is the EXACT project text the MAIN runtime was created from. The
 	// drift test compares this against the golden rather than re-rendering, so the
 	// bytes stock compiled are the bytes under review.
 	soRuntimeSource string
@@ -269,10 +286,17 @@ var (
 func soEnsureRuntime(t *testing.T) {
 	t.Helper()
 	soRuntimeOnce.Do(func() {
-		soRuntimeSource, soRuntimeErr = soRenderProject(servingOracleFixtures)
-		if soRuntimeErr != nil {
-			return
+		soRuntimeSources = map[string]string{}
+		for _, project := range soProjectNames(servingOracleFixtures) {
+			var src string
+			src, soRuntimeErr = soRenderProject(servingOracleFixtures, project)
+			if soRuntimeErr != nil {
+				soRuntimeErr = fmt.Errorf("project %q: %w", project, soRuntimeErr)
+				return
+			}
+			soRuntimeSources[project] = src
 		}
+		soRuntimeSource = soRuntimeSources[soMainProject]
 		// The 719-case bridge shares this process's global type map, so its generated
 		// units are registered here even though they are driven through their own
 		// runtime. Loading the artifact up front also means a missing or malformed one
@@ -288,11 +312,41 @@ func soEnsureRuntime(t *testing.T) {
 		soRuntimeTypes = soBuildTypeMap(servingOracleFixtures, extra)
 		baml.SetTypeMap(soRuntimeTypes)
 		soRuntimeEnv = soEnvSnapshot()
-		soRuntime, soRuntimeErr = baml.CreateRuntime("./baml_src", soProjectFiles(soRuntimeSource), soRuntimeEnv)
+		// One runtime per project. Each is created from ITS OWN rendered source, so a
+		// row is driven against the project that declares its predicate and nothing
+		// else — which is the whole point of the isolation.
+		soRuntimes = map[string]baml.BamlRuntime{}
+		for _, project := range soProjectNames(servingOracleFixtures) {
+			var rt baml.BamlRuntime
+			rt, soRuntimeErr = baml.CreateRuntime("./baml_src",
+				soProjectFiles(project, soRuntimeSources[project]), soRuntimeEnv)
+			if soRuntimeErr != nil {
+				soRuntimeErr = fmt.Errorf("project %q: %w", project, soRuntimeErr)
+				soRuntimeFailedProject = project
+				return
+			}
+			soRuntimes[project] = rt
+		}
 	})
 	if soRuntimeErr != nil {
+		// Print the FAILING project's text, not the main project's.
+		//
+		// Until Slice 7.2c-3 there was one project and `soRuntimeSource` was always the
+		// right thing to print. With six, printing it unconditionally is wrong in both
+		// directions: a RENDER failure returns before soRuntimeSource is assigned (so it
+		// would print nothing at all), and a CreateRuntime failure on an isolated project
+		// would print the main project's source beside an error naming a different one —
+		// a diagnostic that actively misleads.
+		project, src := soMainProject, soRuntimeSource
+		if soRuntimeFailedProject != "" {
+			project, src = soRuntimeFailedProject, soRuntimeSources[soRuntimeFailedProject]
+		}
+		if src == "" {
+			src = "(the project failed to RENDER, so there is no source to show)"
+		}
 		t.Fatalf("stock runtime for the in-memory serving-oracle project could not be created: %v\n"+
-			"the project the corpus renders is not a valid BAML v0.223.0 project:\n%s", soRuntimeErr, soRuntimeSource)
+			"the project %q the corpus renders is not a valid BAML v0.223.0 project:\n%s",
+			soRuntimeErr, project, src)
 	}
 }
 
@@ -311,7 +365,11 @@ func soDriveStock(f servingOracleFixture) (soStockEnvelope, error) {
 	if err != nil {
 		return soStockEnvelope{}, fmt.Errorf("encode arguments for %s: %w", f.method(), err)
 	}
-	res, callErr := soRuntime.CallFunctionParse(context.Background(), f.method(), encoded)
+	rt, ok := soRuntimes[f.project()]
+	if !ok {
+		return soStockEnvelope{}, fmt.Errorf("%s: no stock runtime for project %q", f.method(), f.project())
+	}
+	res, callErr := rt.CallFunctionParse(context.Background(), f.method(), encoded)
 	fmt.Fprintf(os.Stderr, "serving-oracle: stock END   %s\n", f.method())
 	if callErr != nil {
 		return soClassifyStockError(callErr), nil

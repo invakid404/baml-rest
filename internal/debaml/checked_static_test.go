@@ -131,15 +131,23 @@ func staticCheckedBundleLabelPtr(level schema.ConstraintLevel, label *string, ex
 
 // staticCheckedRow is one admitted-fingerprint row driven end to end.
 type staticCheckedRow struct {
-	name  string
+	name string
+	// opID is the [directCompareOp.ID] of the operator this row exercises, which is
+	// also the key its stock capture is filed under in both capture packages.
+	opID  string
 	level schema.ConstraintLevel
 	label string
 	expr  string
 	raw   string
-	// wantJSON is the exact canonical output; empty for the assert-failure row,
+	// wantValue is the `confidence` value the raw text carries, as an i64. It is a
+	// field rather than a constant because the six operators hold at DIFFERENT values
+	// (`this < 0` holds at -1, `this >= 0` at 0), so a decoded-value assertion cannot
+	// be written once for the whole corpus.
+	wantValue int64
+	// wantJSON is the exact canonical output; empty for the assert-failure rows,
 	// which must emit NO value.
 	wantJSON string
-	// wantErr is the exact err.Error() for the assert-failure row; empty otherwise.
+	// wantErr is the exact err.Error() for an assert-failure row; empty otherwise.
 	wantErr string
 	// wantStatus is the carrier status for a @check row; empty for @assert rows.
 	wantStatus string
@@ -148,32 +156,140 @@ type staticCheckedRow struct {
 	wantOutcome constraintStateOutcome
 }
 
-// staticCheckedRows are the four serving-shaped outcomes of the two narrow fixtures —
-// the same four the #665 companion rows name, and the same raw texts checkedwire
-// handed the real CFFI.
+// staticCheckedRows is the SERVED MANIFEST of Slice 7.2c-3: the six direct
+// comparisons × (check pass, check fail, assert pass, assert fail) = 24 rows.
+//
+// Until this slice it was FOUR hand-written `this > 0` rows. It is now DERIVED from
+// two things that already had to agree — the production operator table
+// ([directCompareOperators], which is what the manifest is resolved against) and the
+// stock CFFI corpus ([stockOperatorCaptures], 7.2c-1's captures, guarded byte-for-byte
+// against the tagged originals by
+// [TestStaticCheckedOperatorCapturesAgreeWithPredicatewire]).
+//
+// Deriving it is what keeps the tally honest. A hand-written list would have to be
+// edited in lockstep with the manifest, and the failure mode of forgetting is a
+// SILENTLY SMALLER proof: rows that quietly stop being driven while every assertion
+// stays green. [TestStaticCheckedRowsAreTheWholeServedManifest] closes the loop from
+// the other side by requiring one row per (manifest operator × outcome) and exactly 24
+// in total.
+//
+// The raw texts are the ones stock itself was given — the capture records the value
+// that produced its bytes, so `raw` and `wantJSON` cannot drift apart.
 func staticCheckedRows() []staticCheckedRow {
-	return []staticCheckedRow{{
-		name: "check_pass", level: schema.ConstraintCheck, label: "positive", expr: "this > 0",
-		raw:      `{"answer": "sunny", "confidence": 9}`,
-		wantJSON: staticCheckedWireNestedPass, wantStatus: bamlutils.CheckSucceeded,
-		wantOutcome: constraintOutcomeTrue,
-	}, {
-		name: "check_fail", level: schema.ConstraintCheck, label: "positive", expr: "this > 0",
-		raw:      `{"answer": "sunny", "confidence": -1}`,
-		wantJSON: staticCheckedWireNestedFail, wantStatus: bamlutils.CheckFailed,
-		wantOutcome: constraintOutcomeFalse,
-	}, {
-		name: "assert_pass", level: schema.ConstraintAssert, label: "positive", expr: "this > 0",
-		raw:      `{"answer": "sunny", "confidence": 9}`,
-		wantJSON: staticCheckedWireAssertPass,
-		// A HOLDING assert leaves no trace in the value, so there is no status.
-		wantOutcome: constraintOutcomeTrue,
-	}, {
-		name: "assert_fail", level: schema.ConstraintAssert, label: "positive", expr: "this > 0",
-		raw:         `{"answer": "sunny", "confidence": -1}`,
-		wantErr:     staticCheckedAssertFailBytes,
-		wantOutcome: constraintOutcomeFalse,
-	}}
+	var out []staticCheckedRow
+	for _, op := range directCompareOperators() {
+		c, ok := stockOperatorCaptures[op.ID]
+		if !ok {
+			// A capability entry with no stock capture must not silently produce a
+			// smaller corpus. It cannot happen today (the evidence gate pins the
+			// pairing), and if it ever does it is a corpus bug, not a row to skip.
+			panic("static checked corpus: operator " + op.ID + " has no stock capture")
+		}
+		expr := directI64Expression(op, stockOperatorLiteral)
+		out = append(out, staticCheckedRow{
+			name: op.ID + "_check_pass", opID: op.ID, level: schema.ConstraintCheck,
+			label: stockOperatorLabel, expr: expr,
+			raw: stockOperatorRaw(c.trueVal), wantValue: c.trueVal,
+			wantJSON: c.checkTrue, wantStatus: bamlutils.CheckSucceeded,
+			wantOutcome: constraintOutcomeTrue,
+		}, staticCheckedRow{
+			name: op.ID + "_check_fail", opID: op.ID, level: schema.ConstraintCheck,
+			label: stockOperatorLabel, expr: expr,
+			raw: stockOperatorRaw(c.falseVal), wantValue: c.falseVal,
+			wantJSON: c.checkFalse, wantStatus: bamlutils.CheckFailed,
+			wantOutcome: constraintOutcomeFalse,
+		}, staticCheckedRow{
+			name: op.ID + "_assert_pass", opID: op.ID, level: schema.ConstraintAssert,
+			label: stockOperatorLabel, expr: expr,
+			raw: stockOperatorRaw(c.trueVal), wantValue: c.trueVal,
+			wantJSON: c.assertTrue,
+			// A HOLDING assert leaves no trace in the value, so there is no status.
+			wantOutcome: constraintOutcomeTrue,
+		}, staticCheckedRow{
+			name: op.ID + "_assert_fail", opID: op.ID, level: schema.ConstraintAssert,
+			label: stockOperatorLabel, expr: expr,
+			raw: stockOperatorRaw(c.falseVal), wantValue: c.falseVal,
+			wantErr:     c.assertFail,
+			wantOutcome: constraintOutcomeFalse,
+		})
+	}
+	return out
+}
+
+// TestStaticCheckedRowsAreTheWholeServedManifest closes the loop the derivation opens:
+// the served corpus must be EXACTLY the production manifest × the four outcomes.
+//
+// Deriving the rows from [directCompareOperators] alone would prove the corpus follows
+// the CAPABILITY, which is a different set from the MANIFEST — the capability is what
+// the evaluator can decide, the manifest is what production claims, and 7.2c-2 built
+// them apart on purpose. This asserts the corpus against the MANIFEST, so a token
+// removed from production without its rows being removed (or the reverse) is red.
+func TestStaticCheckedRowsAreTheWholeServedManifest(t *testing.T) {
+	manifest := staticCheckedManifest()
+	if len(manifest) != 6 {
+		t.Fatalf("the production manifest carries %d operators; Slice 7.2c-3 admits the six direct "+
+			"comparisons", len(manifest))
+	}
+	wantOutcomes := []string{"check_pass", "check_fail", "assert_pass", "assert_fail"}
+	seen := map[string]bool{}
+	for _, r := range staticCheckedRows() {
+		if seen[r.name] {
+			t.Fatalf("row %q appears twice", r.name)
+		}
+		seen[r.name] = true
+		// Every row's expression must be one the PRODUCTION classifier admits, and its
+		// operator must be in the manifest.
+		if _, ok := staticCheckedThreshold(r.expr); !ok {
+			t.Errorf("row %q carries %q, which production does NOT admit", r.name, r.expr)
+		}
+	}
+	for _, op := range manifest {
+		for _, outcome := range wantOutcomes {
+			if !seen[op.ID+"_"+outcome] {
+				t.Errorf("manifest operator %q (%s) has no %s row; the served corpus is smaller than "+
+					"the claim", op.ID, op.Token, outcome)
+			}
+		}
+	}
+	if got, want := len(staticCheckedRows()), len(manifest)*len(wantOutcomes); got != want {
+		t.Fatalf("the served corpus has %d rows, want %d (%d manifest operators x %d outcomes)",
+			got, want, len(manifest), len(wantOutcomes))
+	}
+	t.Logf("served manifest: %d operators x %d outcomes = %d rows",
+		len(manifest), len(wantOutcomes), len(staticCheckedRows()))
+}
+
+// TestStaticCheckedTwoCaptureOraclesAgreeOnGreaterThan is the cross-authority control
+// for the corpus derivation.
+//
+// The 24 rows now come from internal/debaml/predicatewire's captures, while the four
+// original `>` rows were pinned against internal/debaml/checkedwire's — two separate
+// CFFI capture packages, taken in separate slices from separate projects. Requiring
+// them to agree on the operator they share is what keeps the widening from silently
+// REPLACING the older authority with the newer one: if the two ever disagreed, the
+// change would be a byte regression on a shape that has been served since 7.2b-3, and
+// this test is where it surfaces.
+func TestStaticCheckedTwoCaptureOraclesAgreeOnGreaterThan(t *testing.T) {
+	gt, ok := stockOperatorCaptures["gt"]
+	if !ok {
+		t.Fatal("the `>` capture is missing; the shared-operator control has nothing to compare")
+	}
+	for _, tc := range []struct{ name, predicatewire, checkedwire string }{
+		{"check_pass", gt.checkTrue, staticCheckedWireNestedPass},
+		{"check_fail", gt.checkFalse, staticCheckedWireNestedFail},
+		{"assert_pass", gt.assertTrue, staticCheckedWireAssertPass},
+		{"assert_fail", gt.assertFail, staticCheckedAssertFailBytes},
+	} {
+		if tc.predicatewire != tc.checkedwire {
+			t.Errorf("the two CFFI capture packages disagree on `>` %s:\n predicatewire %s\n checkedwire   %s",
+				tc.name, strconv.Quote(tc.predicatewire), strconv.Quote(tc.checkedwire))
+		}
+	}
+	// NON-VACUITY: the comparison can tell two operators apart, so agreement above is
+	// a fact about `>` rather than a comparison that never discriminates.
+	if gt.checkTrue == stockOperatorCaptures["ge"].checkTrue {
+		t.Fatal("the `>` and `>=` captures are identical; this control discriminates nothing")
+	}
 }
 
 func (r staticCheckedRow) bundle() *schema.Bundle {
@@ -278,8 +394,10 @@ func TestStaticCheckedMapperDecodesStrictlyIntoTheGeneratedType(t *testing.T) {
 				if derr != nil {
 					t.Fatalf("DecodeStaticFinal[int64 field](%s): %v", res.JSON, derr)
 				}
-				if decoded.Answer != "sunny" || decoded.Confidence != 9 {
-					t.Fatalf("decoded = %+v, want {sunny 9}", decoded)
+				// The value is the ROW's, not a constant: the six operators hold at
+				// different values, so `9` would only be right for `>` and `!=`.
+				if decoded.Answer != "sunny" || decoded.Confidence != r.wantValue {
+					t.Fatalf("decoded = %+v, want {sunny %d}", decoded, r.wantValue)
 				}
 				round, err = sonic.Marshal(decoded)
 			}
@@ -308,6 +426,11 @@ func TestStaticCheckedDecodeIsStrict(t *testing.T) {
 		{"unknown field inside a check", `{"answer":"sunny","confidence":{"value":9,"checks":{"positive":{"name":"positive","expression":"this > 0","status":"succeeded","extra":1}}}}`},
 		{"trailing second value", staticCheckedWireNestedPass + `{"answer":"x","confidence":{"value":1,"checks":{}}}`},
 		{"carrier value of the wrong type", `{"answer":"sunny","confidence":{"value":"9","checks":{}}}`},
+		// A MALFORMED carrier map: `checks` is not an object at all. The carrier is a
+		// json.Unmarshaler, so it owns its whole subtree and the outer strictness
+		// cannot catch this for it.
+		{"carrier checks of the wrong type", `{"answer":"sunny","confidence":{"value":9,"checks":[]}}`},
+		{"a check with the wrong status key", `{"answer":"sunny","confidence":{"value":9,"checks":{"positive":{"name":"positive","expression":"this > 0","state":"succeeded"}}}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := bamlutils.DecodeStaticFinal[staticCheckedNativeAnswer]([]byte(tc.doc)); err == nil {
@@ -315,10 +438,56 @@ func TestStaticCheckedDecodeIsStrict(t *testing.T) {
 			}
 		})
 	}
-	// CONTROL: the mapper's own bytes decode cleanly, so the rejections above are
-	// about the mutations rather than about the decoder refusing everything.
-	if _, err := bamlutils.DecodeStaticFinal[staticCheckedNativeAnswer]([]byte(staticCheckedWireNestedPass)); err != nil {
-		t.Fatalf("the strict decoder rejected the stock bytes: %v", err)
+	// RECORDED, not asserted as a rejection: an OMITTED key is NOT a decoder error.
+	// `DisallowUnknownFields` rejects a key the type does not have; it says nothing
+	// about one the document leaves out, so `{"confidence":{"checks":{}}}` decodes to
+	// the zero value rather than failing. Writing it down here rather than quietly
+	// dropping the case is the point — what catches an omitted key in this suite is the
+	// BYTE comparison against stock's capture and the decoded-value assertions below,
+	// not the decoder, and a reader has to be able to see which mechanism covers which.
+	if got, err := bamlutils.DecodeStaticFinal[staticCheckedNativeAnswer](
+		[]byte(`{"answer":"sunny","confidence":{"checks":{}}}`)); err != nil {
+		t.Fatalf("an omitted carrier `value` key errored (%v); the note above describes the "+
+			"opposite behaviour and would be stale", err)
+	} else if got.Confidence.Value != 0 {
+		t.Fatalf("an omitted carrier `value` key decoded to %d, want the zero value", got.Confidence.Value)
+	}
+
+	// CONTROL: the mapper's own bytes decode cleanly for EVERY ADMITTED OPERATOR, so
+	// the rejections above are about the mutations rather than about the decoder
+	// refusing everything — and so the strict decoder is shown to accept all 24 served
+	// rows rather than only the one shape the mutants were written against.
+	decoded := 0
+	for _, r := range staticCheckedRows() {
+		if r.wantJSON == "" {
+			continue // the assert-failure rows emit no value to decode
+		}
+		if r.level == schema.ConstraintCheck {
+			got, err := bamlutils.DecodeStaticFinal[staticCheckedNativeAnswer]([]byte(r.wantJSON))
+			if err != nil {
+				t.Fatalf("%s: the strict decoder rejected stock's bytes: %v", r.name, err)
+			}
+			if got.Confidence.Value != r.wantValue {
+				t.Errorf("%s: decoded value %d, want %d", r.name, got.Confidence.Value, r.wantValue)
+			}
+			if c := got.Confidence.Checks[r.label]; c.Expression != r.expr || c.Status != r.wantStatus {
+				t.Errorf("%s: decoded check %+v, want expression %q status %q",
+					r.name, c, r.expr, r.wantStatus)
+			}
+		} else {
+			got, err := bamlutils.DecodeStaticFinal[staticCheckedNativeAssertAnswer]([]byte(r.wantJSON))
+			if err != nil {
+				t.Fatalf("%s: the strict decoder rejected stock's bytes: %v", r.name, err)
+			}
+			if got.Confidence != r.wantValue {
+				t.Errorf("%s: decoded value %d, want %d", r.name, got.Confidence, r.wantValue)
+			}
+		}
+		decoded++
+	}
+	if decoded != 18 {
+		t.Fatalf("%d value-bearing served rows were decoded, want 18 (6 operators x 3 value outcomes)",
+			decoded)
 	}
 }
 
@@ -860,24 +1029,46 @@ func staticCheckedSiblings() []staticCheckedSibling {
 		}),
 	})
 
-	// De-BAML Slice 7.2c-1 — the five DIRECT COMPARISON operators 7.2c proposes and this
-	// slice does NOT admit.
+	// De-BAML Slice 7.2c-3 — the SEVENTH-FORM operators: comparison-shaped spellings the
+	// widened manifest still does NOT admit.
 	//
-	// Each has a full stock v0.223.0 CFFI capture in internal/debaml/predicatewire — wire
-	// bytes for check true/false and assert true, and the exact err.Error() for a false
-	// assert, on both name-pinned families. Capturing an operator is what a later slice
-	// needs; it is not what admits one, and these rows are what keeps that distinction
-	// enforced. TestStaticCheckedOperatorWideningIsProvenToBite proves the assertion fires
-	// if the fingerprint starts accepting any of them.
+	// The ten rows that used to sit here were the five direct comparisons this slice
+	// ADMITS, on both levels; they moved into [staticCheckedRows] and are now driven as
+	// SERVED rows. Deleting them without replacement would have left the sibling corpus
+	// with nothing at all on the operator axis — so the axis is kept, one step further
+	// out, with the spellings a seventh manifest entry would most plausibly be.
 	//
-	// `>` is deliberately absent: it is the ADMITTED predicate, not a sibling.
-	for _, expr := range staticCheckedDeclinedDirectOperators() {
+	// None of these has a stock CFFI capture, and BAML's own parser rejects some of them
+	// outright. That is exactly the point: whether or not BAML would compile the source,
+	// native must refuse the form ITSELF rather than lean on an upstream error, and
+	// admitting one would be a claim resting on nothing.
+	// TestStaticCheckedSeventhFormWideningIsProvenToBite proves the assertion fires if
+	// the fingerprint starts accepting any of them.
+	for _, expr := range staticCheckedDeclinedSeventhForms() {
 		siblings = append(siblings, staticCheckedSibling{
-			name: "direct operator " + strconv.Quote(expr),
+			name: "seventh form " + strconv.Quote(expr),
 			b:    accept(schema.ConstraintCheck, "positive", expr),
 		})
 		siblings = append(siblings, staticCheckedSibling{
-			name: "direct operator " + strconv.Quote(expr) + " (assert)",
+			name: "seventh form " + strconv.Quote(expr) + " (assert)",
+			b:    accept(schema.ConstraintAssert, "positive", expr),
+		})
+	}
+
+	// COMPOUND predicates built from operators this slice ADMITS, in both levels.
+	//
+	// The 7.2c scope is explicit that `this > N && this < M` is not an accepted
+	// shortcut, that BAML's documented boolean spelling is `and` rather than `&&`, and
+	// that `and`/`or`/`not` stay out because truthiness differs across engines. A
+	// compound whose two halves are both admitted is the form the cutover makes most
+	// tempting, so it is driven here rather than left to the one-constraint clause.
+	for _, expr := range staticCheckedDeclinedCompounds() {
+		siblings = append(siblings, staticCheckedSibling{
+			name: "compound " + strconv.Quote(expr),
+			b:    accept(schema.ConstraintCheck, "positive", expr),
+		})
+		siblings = append(siblings, staticCheckedSibling{
+			name: "compound " + strconv.Quote(expr) + " (assert)",
 			b:    accept(schema.ConstraintAssert, "positive", expr),
 		})
 	}
@@ -885,17 +1076,27 @@ func staticCheckedSiblings() []staticCheckedSibling {
 	for _, expr := range []string{
 		"this>0", "this > 0.0", "this > +5", "this > 007",
 		"this > 1_000", "this|length > 0", "this > 9223372036854775808", "this > ",
+		// The NON-CANONICAL LITERAL spellings, now driven on the NEWLY ADMITTED
+		// operators too. 7.2c-1 measured four of the five COMPILING under stock (`007`
+		// reads as 7, `1_000` as 1000, `5.0` as a float, and `9223372036854775808` does
+		// not wrap to i64), so the grammar cannot lean on BAML rejecting them upstream —
+		// and it has to reject them per operator rather than once for `>`.
+		"this >= 007", "this <= 5.0", "this == 1_000", "this != 9223372036854775808",
+		"this < +5", "this >= -0", "this <= 0x10", "this == 1e3",
 		// The TWO-BYTE operators in their non-canonical spacings. `>=` and `<=` are one
 		// byte longer than `>`, and the canonicaliser counts ASCII spaces rather than
 		// trimming, so each width needs its own rows.
-		"this>=0", "this <=0", "  this >= 0  ", " this <= 0 ", "this >  0", "this ==  0",
+		"this>=0", "this <=0", "  this >= 0  ", "this >  0", "this ==  0",
+		"this  != 0", "this<0", "this <0", "this>= 0", "this !=0",
 		// PADDING past the admitted one ASCII space each side, and padding that is not
 		// an ASCII space at all. strings.TrimSpace would have accepted every one of
 		// these — including the NO-BREAK SPACE, which unicode.IsSpace reports true for —
-		// so the canonicaliser counts 0x20 bytes itself rather than calling it.
+		// so the canonicaliser counts 0x20 bytes itself rather than calling it. The
+		// two-byte operators get their own rows for the same reason.
 		"  this > 0", "this > 0  ", "  this > 0  ",
 		"\tthis > 0", "this > 0\t", "\nthis > 0", "this > 0\n",
-		"\u00a0this > 0", "this > 0\u00a0",
+		" this > 0", "this > 0 ",
+		"\tthis <= 0", "this != 0\n", "  this == 0", "this < 0  ",
 		// All padding and no expression.
 		" ", "  ",
 	} {
@@ -904,6 +1105,14 @@ func staticCheckedSiblings() []staticCheckedSibling {
 			b:    accept(schema.ConstraintCheck, "positive", expr),
 		})
 	}
+	// THE ONE-BYTE-OVER LABEL. Admitting `>=`/`<=` moved the DERIVED cause bound from 64
+	// bytes to 63 ([staticCheckedMaxLabelLen]), so a 64-byte label — a length 7.2b-3
+	// SERVED — is now a decline. It is a sibling rather than a silent narrowing: the row
+	// states that the boundary moved, and that every schema gate moved with it.
+	siblings = append(siblings, staticCheckedSibling{
+		name: "a label one byte past the recomputed cause bound",
+		b:    accept(schema.ConstraintAssert, strings.Repeat("z", staticCheckedMaxLabelLen+1), "this >= 0"),
+	})
 	return siblings
 }
 
@@ -1036,49 +1245,63 @@ func TestStaticCheckedProfileAdmitsOnlyTheFingerprint(t *testing.T) {
 // route whose descriptor carries the padded text serves exactly what the byte authority
 // captured, and the mapper cannot be leaking a padded string into the wire or the cause.
 func TestStaticCheckedProductionPaddingIsCanonicalised(t *testing.T) {
-	const raw = `{"answer": "sunny", "confidence": 9}`
-	for _, src := range []string{"this > 0", " this > 0", "this > 0 ", " this > 0 "} {
-		t.Run(strconv.Quote(src), func(t *testing.T) {
-			b := staticCheckedBundle(schema.ConstraintCheck, "positive", src)
-			prof, ok := staticCheckedProfileOf(b)
-			if !ok {
-				t.Fatalf("the fingerprint rejected the padded production form %s", strconv.Quote(src))
-			}
-			// The CANONICAL text, not the source: this is what reaches the carrier.
-			if prof.expression != "this > 0" {
-				t.Fatalf("profile expression = %s, want %s (stock's unpadded text)",
-					strconv.Quote(prof.expression), strconv.Quote("this > 0"))
-			}
-			// The bundle itself still carries the SOURCE text, so this is a real
-			// normalisation rather than a fixture that was never padded.
-			if got := b.Classes[0].Fields[1].Type.Meta.Constraints[0].Expression; got != src {
-				t.Fatalf("the fixture bundle carries %s, not the source %s", strconv.Quote(got), strconv.Quote(src))
-			}
-			res, err := staticCheckedMap(b, prof, raw)
-			if err != nil {
-				t.Fatalf("mapper: %v", err)
-			}
-			if got := string(res.JSON); got != staticCheckedWireNestedPass {
-				t.Fatalf("padded source produced different bytes:\n got %s\nwant %s",
-					got, staticCheckedWireNestedPass)
-			}
+	// SLICE 7.2c-3: every ADMITTED operator, not only `>`. The padding rule counts
+	// ASCII spaces on the OUTSIDE, so it ought to be independent of the operator's
+	// width — but that is a claim about the implementation, and the cutover admits both
+	// widths, so it is measured on both. 7.2c-1 did the same on the capture side: it
+	// drove pad-0 and pad-1 for all six and pad-2 on the two-byte `>=`, and found stock
+	// reports the same unpadded canonical text every time.
+	rows := 0
+	for _, op := range directCompareOperators() {
+		cap := stockOperatorCaptureOf(t, op)
+		canonical := directI64Expression(op, stockOperatorLiteral)
+		for _, src := range []string{canonical, " " + canonical, canonical + " ", " " + canonical + " "} {
+			t.Run(op.ID+"/"+strconv.Quote(src), func(t *testing.T) {
+				b := staticCheckedBundle(schema.ConstraintCheck, "positive", src)
+				prof, ok := staticCheckedProfileOf(b)
+				if !ok {
+					t.Fatalf("the fingerprint rejected the padded production form %s", strconv.Quote(src))
+				}
+				// The CANONICAL text, not the source: this is what reaches the carrier.
+				if prof.expression != canonical {
+					t.Fatalf("profile expression = %s, want %s (stock's unpadded text)",
+						strconv.Quote(prof.expression), strconv.Quote(canonical))
+				}
+				// The bundle itself still carries the SOURCE text, so this is a real
+				// normalisation rather than a fixture that was never padded.
+				if got := b.Classes[0].Fields[1].Type.Meta.Constraints[0].Expression; got != src {
+					t.Fatalf("the fixture bundle carries %s, not the source %s", strconv.Quote(got), strconv.Quote(src))
+				}
+				res, err := staticCheckedMap(b, prof, stockOperatorRaw(cap.trueVal))
+				if err != nil {
+					t.Fatalf("mapper: %v", err)
+				}
+				if got := string(res.JSON); got != cap.checkTrue {
+					t.Fatalf("padded source produced different bytes:\n got %s\nwant %s",
+						got, cap.checkTrue)
+				}
 
-			// The ASSERT twin's rendered cause must be the unpadded one too — the
-			// error bytes are where a leaked space would be hardest to notice.
-			ab := staticCheckedBundle(schema.ConstraintAssert, "positive", src)
-			aprof, aok := staticCheckedProfileOf(ab)
-			if !aok {
-				t.Fatalf("the assert twin rejected the padded production form %s", strconv.Quote(src))
-			}
-			_, aerr := staticCheckedMap(ab, aprof, `{"answer": "sunny", "confidence": -1}`)
-			if !staticCheckedIsAssertFailure(aerr) {
-				t.Fatalf("the assert twin returned %v, want the rendered stock assertion failure", aerr)
-			}
-			if got := aerr.Error(); got != staticCheckedAssertFailBytes {
-				t.Fatalf("assertion error bytes for a padded source:\n got %s\nwant %s",
-					strconv.Quote(got), strconv.Quote(staticCheckedAssertFailBytes))
-			}
-		})
+				// The ASSERT twin's rendered cause must be the unpadded one too — the
+				// error bytes are where a leaked space would be hardest to notice.
+				ab := staticCheckedBundle(schema.ConstraintAssert, "positive", src)
+				aprof, aok := staticCheckedProfileOf(ab)
+				if !aok {
+					t.Fatalf("the assert twin rejected the padded production form %s", strconv.Quote(src))
+				}
+				_, aerr := staticCheckedMap(ab, aprof, stockOperatorRaw(cap.falseVal))
+				if !staticCheckedIsAssertFailure(aerr) {
+					t.Fatalf("the assert twin returned %v, want the rendered stock assertion failure", aerr)
+				}
+				if got := aerr.Error(); got != cap.assertFail {
+					t.Fatalf("assertion error bytes for a padded source:\n got %s\nwant %s",
+						strconv.Quote(got), strconv.Quote(cap.assertFail))
+				}
+				rows++
+			})
+		}
+	}
+	if rows != 24 {
+		t.Fatalf("the padding drive covered %d rows, want 24 (6 operators x 4 paddings)", rows)
 	}
 	// The canonicaliser directly, so its boundary is asserted rather than inferred from
 	// the four bundles above.
@@ -1099,6 +1322,21 @@ func TestStaticCheckedProductionPaddingIsCanonicalised(t *testing.T) {
 		{"this > 0 ", "this > 0", true},
 		{" ", "", false},
 		{"", "", false},
+		// The TWO-BYTE operators. The pad boundary is the same, and so is the
+		// INTERNAL-respacing refusal — a space that moved inside the expression is not
+		// padding and cannot be trimmed away.
+		{"this >= 0", "this >= 0", true},
+		{" this >= 0 ", "this >= 0", true},
+		{" this <= -9223372036854775808 ", "this <= -9223372036854775808", true},
+		{"  this >= 0  ", "", false},
+		{"this>= 0", "", false},
+		{"this >=0", "", false},
+		{"this  >= 0", "", false},
+		{"this >=  0", "", false},
+		{"\tthis <= 0", "", false},
+		{"this != 0\n", "", false},
+		{" this == 0", "this == 0", true},
+		{"this != 0 ", "this != 0", true},
 	} {
 		got, ok := staticCheckedCanonicalExpression(tc.src)
 		if ok != tc.ok || got != tc.want {
@@ -1465,27 +1703,58 @@ func soSameExceptLabel(a, b schemadescriptor.Bundle) bool {
 
 // TestStaticCheckedThresholdIsAProof pins the statically proven expression profile
 // directly, including the round-trip rule that rejects a non-canonical literal.
+//
+// SLICE 7.2c-3: the literal rules are driven on EVERY admitted operator, not only on
+// `>`. That is not padding — the widening moved the operator from a fixed prefix to a
+// table lookup, and a literal rule that happened to be applied only on the path the
+// old prefix match took would be invisible in a `>`-only drive.
 func TestStaticCheckedThresholdIsAProof(t *testing.T) {
-	for expr, want := range map[string]int64{
-		"this > 0": 0, "this > 100": 100, "this > -5": -5,
-		"this > 9223372036854775807":  9223372036854775807,
-		"this > -9223372036854775808": -9223372036854775808,
-	} {
-		got, ok := staticCheckedThreshold(expr)
-		if !ok {
-			t.Errorf("%q was rejected by the proven expression profile", expr)
-			continue
+	literals := map[string]int64{
+		"0": 0, "100": 100, "-5": -5,
+		"9223372036854775807":  9223372036854775807,
+		"-9223372036854775808": -9223372036854775808,
+	}
+	// Non-canonical literals, per operator. Four of these five spellings COMPILE under
+	// stock (7.2c-1 measured it), so the grammar has to reject them itself.
+	bad := []string{"", "x", "0x10", "1e3", "+1", "01", "-0", "9223372036854775808", "0.0", "1_000"}
+
+	admitted, refused := 0, 0
+	for _, op := range directCompareOperators() {
+		for text, want := range literals {
+			expr := directI64Subject + " " + op.Token + " " + text
+			got, ok := staticCheckedThreshold(expr)
+			if !ok {
+				t.Errorf("%q was rejected by the proven expression profile", expr)
+				continue
+			}
+			if got != want {
+				t.Errorf("%q parsed to %d, want %d", expr, got, want)
+			}
+			admitted++
 		}
-		if got != want {
-			t.Errorf("%q parsed to %d, want %d", expr, got, want)
+		for _, text := range bad {
+			expr := directI64Subject + " " + op.Token + " " + text
+			if n, ok := staticCheckedThreshold(expr); ok {
+				t.Errorf("the proven expression profile ADMITTED %q (as %d)", expr, n)
+				continue
+			}
+			refused++
 		}
 	}
-	for _, expr := range []string{"", "this", "this > ", "this > x", "this > 0x10", "this > 1e3",
-		"this > +1", "this > 01", "this > -0", "this > 9223372036854775808", "this < 0"} {
+	// The non-expression shapes, and the SEVENTH operator forms: neither is per-literal.
+	for _, expr := range append([]string{"", "this", "this ", "this >"},
+		staticCheckedDeclinedSeventhForms()...) {
 		if n, ok := staticCheckedThreshold(expr); ok {
 			t.Errorf("the proven expression profile ADMITTED %q (as %d)", expr, n)
+			continue
 		}
+		refused++
 	}
+	if admitted != 6*len(literals) {
+		t.Fatalf("%d canonical (operator, literal) pairs were admitted, want %d", admitted, 6*len(literals))
+	}
+	t.Logf("expression profile: %d canonical (operator, literal) pairs admitted, %d refused",
+		admitted, refused)
 }
 
 // TestStaticCheckedCauseStaysInsideTheTruncationBoundary pins the one length rule the
@@ -1499,9 +1768,11 @@ func TestStaticCheckedThresholdIsAProof(t *testing.T) {
 // decline if one reaches it anyway.
 func TestStaticCheckedCauseStaysInsideTheTruncationBoundary(t *testing.T) {
 	// The longest cause the fingerprint can admit is exactly at the boundary, never past
-	// it. Stated as arithmetic over the same constants the code uses, so a change to
-	// either side is caught here rather than in a fixture nobody re-derives.
-	const longestExpr = "this > -9223372036854775808"
+	// it. The expression is DERIVED from the production manifest rather than written out:
+	// Slice 7.2c-3 admitted the two-character operators, so the longest admissible
+	// expression is now `this >= -9223372036854775808` and a hard-coded `>`-shaped one
+	// would leave this test measuring a boundary the renderer can no longer reach.
+	longestExpr := directI64LongestExpression(staticCheckedManifest())
 	if _, ok := staticCheckedThreshold(longestExpr); !ok {
 		t.Fatalf("%q is not admitted, so the bound below is derived from the wrong expression", longestExpr)
 	}
@@ -1926,8 +2197,10 @@ func staticCheckedReturnDescriptor(b *schema.Bundle) schemadescriptor.Bundle {
 }
 
 // TestStaticCheckedCutoverAdmitsThroughTheRealGates is the load-bearing invariant of
-// Slice 7.2b-3: the four companion rows move decline → admit through every SCHEMA gate,
-// and the ROUTE gates place them on exactly one route.
+// Slice 7.2b-3, re-driven over the widened manifest: every companion row moves
+// decline → admit through every SCHEMA gate, and the ROUTE gates place it on exactly one
+// route. It was four rows under 7.2b-3 and is 24 since Slice 7.2c-3 — the count is
+// asserted against [staticCheckedRows] rather than restated in prose.
 //
 // Every gate is the PRODUCTION function, driven exactly as it ships.
 func TestStaticCheckedCutoverAdmitsThroughTheRealGates(t *testing.T) {
@@ -1944,8 +2217,8 @@ func TestStaticCheckedCutoverAdmitsThroughTheRealGates(t *testing.T) {
 	}
 
 	rows := staticCheckedRows()
-	if len(rows) != 4 {
-		t.Fatalf("%d companion rows, want the 4 named by the scope", len(rows))
+	if len(rows) != 24 {
+		t.Fatalf("%d companion rows, want the 24 the 7.2c scope names (6 operators x 4 outcomes)", len(rows))
 	}
 	admittedGates, declinedGates := 0, 0
 	for _, r := range rows {
@@ -2133,9 +2406,10 @@ func TestDynamicLoweringCannotExpressAConstraint(t *testing.T) {
 }
 
 // TestStaticCheckedOnePropertySiblingsDeclineEverywhere is the guard the scope requires
-// beside the four-row flip: a bundle that differs from the admitted fingerprint in
-// exactly ONE property still declines, BEFORE transport, at EVERY named gate — schema
-// gates and route gates alike, with no exemption.
+// beside the served-row flip (four rows under 7.2b-3, 24 since Slice 7.2c-3): a bundle
+// that differs from the admitted fingerprint in exactly ONE property still declines,
+// BEFORE transport, at EVERY named gate — schema gates and route gates alike, with no
+// exemption.
 func TestStaticCheckedOnePropertySiblingsDeclineEverywhere(t *testing.T) {
 	// A raw text every sibling's shape can coerce, so a decline is the GATE's decision
 	// rather than a coercion failure.
@@ -2193,9 +2467,10 @@ type staticCheckedCorpusEntry struct {
 	fingerprint bool
 }
 
-// staticCheckedAgreementCorpus is the four admitted rows plus every one-property
-// sibling — the smallest set over which "these gates share one fingerprint" is a claim
-// about both answers rather than about one.
+// staticCheckedAgreementCorpus is every admitted row ([staticCheckedRows] — four under
+// 7.2b-3, 24 since Slice 7.2c-3) plus every one-property sibling: the smallest set over
+// which "these gates share one fingerprint" is a claim about both answers rather than
+// about one.
 func staticCheckedAgreementCorpus() []staticCheckedCorpusEntry {
 	var out []staticCheckedCorpusEntry
 	for _, r := range staticCheckedRows() {
@@ -2256,9 +2531,9 @@ func TestStaticCheckedGatesShareOneFingerprint(t *testing.T) {
 			admitted++
 		}
 	}
-	if admitted != 4 || len(corpus) < 24 {
-		t.Fatalf("the corpus has %d admitted rows in %d entries, want the 4 companion rows and a "+
-			"substantial sibling set", admitted, len(corpus))
+	if admitted != 24 || len(corpus) < 120 {
+		t.Fatalf("the corpus has %d admitted rows in %d entries, want the 24 companion rows (6 "+
+			"operators x 4 outcomes) and a substantial sibling set", admitted, len(corpus))
 	}
 	gates := staticCheckedSchemaGates()
 	if len(gates) < 5 {
@@ -2383,25 +2658,63 @@ func staticCheckedRenamedTwinAdmits(b *schema.Bundle) bool {
 	return staticCheckedFingerprintAdmits(&renamed)
 }
 
-// staticCheckedDeclinedDirectOperators are the five direct comparisons 7.2c proposes and
-// 7.2c-1 does NOT admit, in their canonical spelling.
+// staticCheckedDeclinedSeventhForms are comparison-shaped expressions the WIDENED
+// manifest still refuses — the shapes a seventh manifest entry would most plausibly be.
 //
-// `this > I` is deliberately absent: it is the one admitted predicate. Every expression
-// here has a full stock v0.223.0 CFFI capture in internal/debaml/predicatewire, which is
-// what a later slice needs and is not what admits one.
-func staticCheckedDeclinedDirectOperators() []string {
-	return []string{"this >= 0", "this < 0", "this <= 0", "this == 0", "this != 0"}
+// They are alternate spellings of an admitted operator (`<>` for `!=`, `=<`/`=>` for
+// `<=`/`>=`), stricter/looser relatives (`===`, `!==`), a bare assignment (`=`), a
+// mis-typed compound (`>==`, `! =`), and the REVERSED operand order (`0 < this`,
+// `0 == this`).
+//
+// The reversed rows are the ones that matter. Every other entry fails to parse as any
+// comparison at all, so even a careless matcher would refuse it; `0 < this` is a
+// WELL-FORMED comparison denoting the same relation as an admitted row, whose canonical
+// text stock would retain verbatim — and there is no capture for it, so it must decline
+// on the grounds that nothing has measured it rather than on the grounds that it looks
+// wrong. [directI64Subject] is why it does: the grammar pins `this` as the LEFT operand.
+func staticCheckedDeclinedSeventhForms() []string {
+	return []string{
+		"this <> 0", "this === 0", "this !== 0", "this => 0", "this =< 0",
+		"this = 0", "this >== 0", "this ! = 0", "0 < this", "0 == this",
+	}
 }
 
-// staticCheckedWidenedOperatorTwinAdmits is the 7.2c-3 cutover, arriving early: the
-// production fingerprint with its expression clause replaced by one that accepts all six
-// direct comparisons.
+// staticCheckedDeclinedCompounds are the compound predicates the 7.2c scope keeps in
+// #583, written over the operators this slice ADMITS.
+//
+// The scope is explicit that `this > N && this < M` is not an accepted shortcut, that
+// BAML's documented boolean spelling is `and` rather than `&&`, and that `and`/`or`/
+// `not` stay out because truthiness differs across engines. A compound whose two halves
+// are BOTH admitted is the form the cutover makes most tempting — "it is only two of
+// the six" — so it is driven as its own axis rather than left to the one-constraint
+// clause to catch by accident.
+func staticCheckedDeclinedCompounds() []string {
+	return []string{
+		"this > 0 and this < 100",
+		"this >= 0 && this <= 100",
+		"this == 0 or this != 1",
+		"not this > 0",
+		"(this >= 0)",
+		"this >= 0 if true else this < 0",
+	}
+}
+
+// staticCheckedSeventhFormTwinAdmits is the SEVENTH-FORM mutant: the production
+// fingerprint with its expression clause widened by exactly one more operator spelling.
+//
+// It is the 7.2c-3 successor to 7.2c-2's widened-operator twin, and it exists for the
+// same reason that one did — except that the direction has flipped. Before the cutover
+// the danger was a fingerprint that admitted MORE than `>`; after it, the six admitted
+// operators are correct and the danger is a fingerprint that admits a SEVENTH form
+// nothing has captured. `<>` is chosen because it is a real alternate spelling of an
+// admitted operator in several template languages, so a matcher written from the
+// operator LIST rather than from the captures is exactly how it would appear.
 //
 // It is written as a SHAPE predicate over the same structure the real classifier walks —
-// one class, two ordered fields, one constraint on `confidence` — so the mutant really is
-// "the production fingerprint with a widened operator set" rather than a name match on
-// the corpus rows. Everything else about the fingerprint still has to hold.
-func staticCheckedWidenedOperatorTwinAdmits(b *schema.Bundle) bool {
+// one class, two ordered fields, one constraint on `confidence` — so the mutant really
+// is "the production fingerprint plus one operator" rather than a name match on the
+// corpus rows. Everything else about the fingerprint still has to hold.
+func staticCheckedSeventhFormTwinAdmits(b *schema.Bundle) bool {
 	if b == nil || len(b.Classes) != 1 || len(b.Classes[0].Fields) != 2 {
 		return false
 	}
@@ -2417,23 +2730,24 @@ func staticCheckedWidenedOperatorTwinAdmits(b *schema.Bundle) bool {
 	if !ok {
 		return false
 	}
-	switch op {
-	case ">", ">=", "<", "<=", "==", "!=":
-	default:
+	// The SEVENTH form, and only it: the six admitted ones already reach production, so
+	// including them here would make every admitted row a "disagreement" and drown the
+	// signal this mutant exists to produce.
+	if op != "<>" {
 		return false
 	}
 	n, err := strconv.ParseInt(digits, 10, 64)
 	if err != nil || strconv.FormatInt(n, 10) != digits {
 		return false
 	}
-	// Rewrite the expression to the one predicate the production fingerprint DOES admit
-	// and ask it about the rest of the shape. That way the mutant differs from production
-	// in exactly one clause — the operator — and in nothing else.
+	// Rewrite the expression to one the production fingerprint DOES admit and ask it
+	// about the rest of the shape. That way the mutant differs from production in exactly
+	// one clause — the operator spelling — and in nothing else.
 	rewritten := *b
 	rewritten.Classes = []schema.ClassDef{b.Classes[0]}
 	rewritten.Classes[0].Fields = append([]schema.ClassField(nil), b.Classes[0].Fields...)
 	rewritten.Classes[0].Fields[1].Type.Meta.Constraints = []schema.Constraint{{
-		Level: cs[0].Level, Expression: "this > " + digits, Label: cs[0].Label,
+		Level: cs[0].Level, Expression: "this != " + digits, Label: cs[0].Label,
 	}}
 	if err := rewritten.RebuildIndexes(); err != nil {
 		return false
@@ -2441,66 +2755,164 @@ func staticCheckedWidenedOperatorTwinAdmits(b *schema.Bundle) bool {
 	return staticCheckedFingerprintAdmits(&rewritten)
 }
 
-// TestStaticCheckedOperatorWideningIsProvenToBite is the 7.2c-1 no-flip mutation proof:
-// the shared gate-agreement comparison, fed a fingerprint widened to the six direct
-// comparisons, must report EVERY declined operator sibling.
+// TestStaticCheckedSeventhFormWideningIsProvenToBite is the cutover's OVER-CLAIM
+// mutation proof: the shared gate-agreement comparison, fed a fingerprint widened by one
+// more operator spelling, must report that spelling's sibling rows.
 //
-// This is the assertion that makes the new decline rows worth having. Without it, the
-// five operator siblings would be rows that pass because the comparison never fires, and
-// a 7.2c-3 cutover landing early would be invisible here.
-func TestStaticCheckedOperatorWideningIsProvenToBite(t *testing.T) {
+// This is what makes the widening safe to have done. The five operator-sibling rows that
+// used to carry this proof are served rows now, so without a replacement the corpus
+// would have lost its only witness that the operator clause is load-bearing at all —
+// and a genuinely broad grammar (one that parsed "any comparison-shaped text") would
+// pass every remaining assertion in this file.
+func TestStaticCheckedSeventhFormWideningIsProvenToBite(t *testing.T) {
 	corpus := staticCheckedAgreementCorpus()
 	gates := staticCheckedSchemaGates()
 
-	// The widened fingerprint must still admit the CURRENT one, or the mutant would be a
-	// different fingerprint rather than a broader one.
-	admitted := staticCheckedBundle(schema.ConstraintCheck, "positive", "this > 0")
-	if !staticCheckedWidenedOperatorTwinAdmits(admitted) {
-		t.Fatal("the widened-operator mutant does not admit the CURRENT fingerprint, so it is not a " +
-			"broadening of it and the disagreements below would prove nothing")
+	// The widened fingerprint must still admit the CURRENT ones, or the mutant would be
+	// a different fingerprint rather than a broader one.
+	for _, op := range directCompareOperators() {
+		admitted := staticCheckedBundle(schema.ConstraintCheck, "positive", directI64Expression(op, 0))
+		widened := func(b *schema.Bundle) bool {
+			return staticCheckedFingerprintAdmits(b) || staticCheckedSeventhFormTwinAdmits(b)
+		}
+		if !widened(admitted) {
+			t.Fatalf("the seventh-form mutant does not admit the ADMITTED %q, so it is not a broadening "+
+				"of the production fingerprint", directI64Expression(op, 0))
+		}
 	}
 	// And it must NOT admit a sibling that differs by something other than the operator,
 	// or "widened by one clause" would be false.
-	renamed := staticCheckedBundle(schema.ConstraintCheck, "positive", "this > 0")
+	renamed := staticCheckedBundle(schema.ConstraintCheck, "positive", "this <> 0")
 	renamed.Classes[0].Name.Name = "SomeOtherAnswer"
 	renamed.Target.Name = "SomeOtherAnswer"
 	if err := renamed.RebuildIndexes(); err != nil {
 		t.Fatalf("rebuild indexes: %v", err)
 	}
-	if staticCheckedWidenedOperatorTwinAdmits(renamed) {
-		t.Fatal("the widened-operator mutant admits a RENAMED class, so it drops more than the " +
-			"operator clause and its disagreements would not be attributable to the operator")
+	if staticCheckedSeventhFormTwinAdmits(renamed) {
+		t.Fatal("the seventh-form mutant admits a RENAMED class, so it drops more than the operator " +
+			"clause and its disagreements would not be attributable to the operator")
 	}
 
 	widened := func(b *schema.Bundle) bool {
-		return staticCheckedFingerprintAdmits(b) || staticCheckedWidenedOperatorTwinAdmits(b)
+		return staticCheckedFingerprintAdmits(b) || staticCheckedSeventhFormTwinAdmits(b)
 	}
 	got := staticCheckedGateDisagreements(widened, gates, corpus)
 	if len(got) == 0 {
-		t.Fatal("a fingerprint widened to all six direct comparisons produced NO disagreement; the " +
-			"agreement assertion cannot detect the 7.2c-3 cutover landing early")
+		t.Fatal("a fingerprint widened by a SEVENTH operator form produced NO disagreement; the " +
+			"agreement assertion cannot detect an over-claim past the admitted manifest")
 	}
-	// Every declined operator, in BOTH levels, must be named.
-	for _, expr := range staticCheckedDeclinedDirectOperators() {
-		for _, suffix := range []string{"", " (assert)"} {
-			// The disagreement lines render the row name with %q, so the fragment
-			// searched for has to be quoted the same way — matching the bare name would
-			// silently find nothing and report every row as undriven.
-			row := fmt.Sprintf("%q", "direct operator "+strconv.Quote(expr)+suffix)
-			found := false
-			for _, line := range got {
-				if strings.Contains(line, row) {
-					found = true
-				}
+	// The `<>` rows, in BOTH levels, must be named.
+	for _, suffix := range []string{"", " (assert)"} {
+		// The disagreement lines render the row name with %q, so the fragment searched
+		// for has to be quoted the same way — matching the bare name would silently find
+		// nothing and report every row as undriven.
+		row := fmt.Sprintf("%q", "seventh form "+strconv.Quote("this <> 0")+suffix)
+		found := false
+		for _, line := range got {
+			if strings.Contains(line, row) {
+				found = true
 			}
-			if !found {
-				t.Errorf("widening the operator set produced no disagreement naming %q; that row is "+
-					"not actually being driven through the gates", row)
+		}
+		if !found {
+			t.Errorf("widening by a seventh operator produced no disagreement naming %s; that row is "+
+				"not actually being driven through the gates", row)
+		}
+	}
+	t.Logf("over-claim proof: a SEVENTH operator form is reported %d times across %d gates",
+		len(got), len(gates))
+}
+
+// TestStaticCheckedManifestNarrowingIsProvenToBite is the cutover's UNDER-CLAIM
+// mutation proof, and the direction that did not exist before this slice.
+//
+// While the manifest was `>` alone there was nothing to under-claim: every other
+// operator was already declined, so a narrowed classifier agreed with the corpus
+// vacuously. Now that 24 rows are SERVED, dropping a token has to be as loud as adding
+// one — otherwise a manifest that quietly lost `<=` would leave four served rows on
+// BAML with every remaining assertion in this file still green.
+//
+// It asserts the narrowing in BOTH the places it would show up:
+//
+//   - against the corpus's DECLARED served set, which is the honest tally the boundary
+//     manifest is written from: narrowing to `>` must refuse exactly the 20 rows of the
+//     five removed operators, and none of the four `>` rows;
+//   - against the production GATES, through the shared agreement comparison, so the
+//     rows are shown to be really driven through them rather than only present in a
+//     table.
+func TestStaticCheckedManifestNarrowingIsProvenToBite(t *testing.T) {
+	corpus := staticCheckedAgreementCorpus()
+	gates := staticCheckedSchemaGates()
+
+	// CONTROL FIRST: the twin built from the PRODUCTION manifest agrees with the gates,
+	// so every disagreement below comes from the narrowing rather than from the twin.
+	control := staticCheckedManifestTwinAdmits(staticCheckedManifestTokens())
+	if got := staticCheckedGateDisagreements(control, gates, corpus); len(got) != 0 {
+		t.Fatalf("the twin built from the PRODUCTION manifest already disagrees with the gates, so a "+
+			"narrowed one would prove nothing:\n  %s", strings.Join(got, "\n  "))
+	}
+
+	narrowed := staticCheckedManifestTwinAdmits([]string{">"})
+
+	// (a) Against the DECLARED served set. Every corpus entry marked as a companion row
+	// is one the boundary manifest counts; the narrowed classifier must lose exactly the
+	// twenty that belong to the five removed operators.
+	lost, kept := map[string]bool{}, 0
+	for _, e := range corpus {
+		if !e.fingerprint {
+			// A narrowed manifest must not START admitting a sibling — narrowing is a
+			// narrowing, and a mutant that also broadened would muddy the count below.
+			if narrowed(e.b) {
+				t.Errorf("the narrowed twin ADMITTED the sibling %q", e.name)
+			}
+			continue
+		}
+		if narrowed(e.b) {
+			kept++
+			continue
+		}
+		lost[e.name] = true
+	}
+	if kept != 4 {
+		t.Errorf("the narrowed twin kept %d served rows, want the 4 `>` rows", kept)
+	}
+	if len(lost) != 20 {
+		t.Fatalf("narrowing the manifest to [>] lost %d of the 24 served rows, want 20 (the five "+
+			"removed operators x 4 outcomes)", len(lost))
+	}
+	for _, op := range directCompareOperators() {
+		if op.Token == ">" {
+			continue
+		}
+		for _, outcome := range []string{"check_pass", "check_fail", "assert_pass", "assert_fail"} {
+			if name := op.ID + "_" + outcome; !lost[name] {
+				t.Errorf("narrowing the manifest did NOT lose the served row %q; that row is not in "+
+					"the corpus, so the tally it feeds is larger than what is driven", name)
 			}
 		}
 	}
-	t.Logf("no-flip proof: the six-operator widening is reported %d times across %d gates; all %d "+
-		"declined operator rows are named", len(got), len(gates), len(staticCheckedDeclinedDirectOperators())*2)
+
+	// (b) Against the production GATES. The comparison is stated from the MUTANT's point
+	// of view, so a gate that still admits what the narrowed classifier rejects is
+	// reported as a CLAIM — which is exactly the shape a manifest/gate divergence takes.
+	got := staticCheckedGateDisagreements(narrowed, gates, corpus)
+	if len(got) == 0 {
+		t.Fatal("narrowing the manifest back to `>` alone produced NO disagreement with the production " +
+			"gates; the served rows are not actually being driven through them")
+	}
+	for name := range lost {
+		row := fmt.Sprintf("%q", name)
+		found := false
+		for _, line := range got {
+			if strings.Contains(line, row) && strings.Contains(line, "CLAIMED") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("narrowing the manifest produced no gate disagreement naming %s", row)
+		}
+	}
+	t.Logf("under-claim proof: narrowing the manifest to [>] loses exactly %d of the %d served rows "+
+		"and is reported %d times across %d gates", len(lost), len(lost)+kept, len(got), len(gates))
 }
 
 func staticCheckedExtraConstraintTwinAdmits(b *schema.Bundle) bool {

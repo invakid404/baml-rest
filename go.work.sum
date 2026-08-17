@@ -889,8 +889,6 @@ github.com/intel/goresctrl v0.8.0/go.mod h1:T3ZZnuHSNouwELB5wvOoUJaB7l/4Rm23rJy/
 github.com/intel/goresctrl v0.10.0 h1:Q94PBhLtQM/aVxVTKzB1j/ooMuV+9XleTN1fq2OGsSo=
 github.com/intel/goresctrl v0.10.0/go.mod h1:1S8GDqL46GuKb525bxNhIEEkhf4rhVcbSf9DuKhp7mw=
 github.com/intel/goresctrl v0.12.0/go.mod h1:5GWtmPY4BWl/a9rU8apGED9Xul5b5WoLtg/qOWaghWU=
-github.com/invakid404/minijinja-go/v2 v2.16.0-baml.6 h1:riIcfB9KTsMrsCBoYpCYVVJ/2volxyrtt4O1t8UN848=
-github.com/invakid404/minijinja-go/v2 v2.16.0-baml.6/go.mod h1:fUA188XOlFd80c0fWCItPtc4QC0y0onlbyBgJTYUrJs=
 github.com/jessevdk/go-flags v1.6.1 h1:Cvu5U8UGrLay1rZfv/zP7iLpSHGUZ/Ou68T0iX1bBK4=
 github.com/jessevdk/go-flags v1.6.1/go.mod h1:Mk8T1hIAWpOiJiHa9rJASDK2UGWji0EuPGBnNLMooyc=
 github.com/jmespath/go-jmespath v0.4.0 h1:BEgLn5cpjn8UN1mAw4NjwDrS35OdebyEtFe+9YPoQUg=
@@ -1388,6 +1386,7 @@ golang.org/x/tools v0.42.0/go.mod h1:Ma6lCIwGZvHK6XtgbswSoWroEkhugApmsXyrUmBhfr0
 golang.org/x/tools v0.43.0/go.mod h1:uHkMso649BX2cZK6+RpuIPXS3ho2hZo4FVwfoy1vIk0=
 golang.org/x/tools v0.44.0/go.mod h1:KA0AfVErSdxRZIsOVipbv3rQhVXTnlU6UhKxHd1seDI=
 golang.org/x/tools v0.45.0/go.mod h1:LuUGqqaXcXMEFEruIVJVm5mgDD8vww/z/SR1gQ4uE/0=
+golang.org/x/tools v0.47.0/go.mod h1:dFHnyTvFWY212G+h7ZY4Vsp/K3U4/7W9TyVaAul8uCA=
 golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 h1:go1bK/D/BFZV2I8cIQd1NKEZ+0owSTG1fDTci4IqFcE=
 golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1/go.mod h1:I/5z698sn9Ka8TeJc9MKroUUfqBBauWjQqLJ2OPfmY0=
 gonum.org/v1/plot v0.15.2/go.mod h1:DX+x+DWso3LTha+AdkJEv5Txvi+Tql3KAGkehP0/Ubg=

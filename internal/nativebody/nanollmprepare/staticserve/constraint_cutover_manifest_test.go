@@ -122,7 +122,27 @@ func constraintSiblings() []constraintSibling {
 		{route: "StaticCheckedRenamedClass", property: "a DIFFERENT class name", body: answer("9")},
 		{route: "StaticCheckedAliasedField", property: "an @alias on the constrained field",
 			body: openAIContent(`{"answer":"sunny","score":9}`)},
-		{route: "StaticCheckedGtePredicate", property: "a DIFFERENT predicate (this >= 0)", body: answer("9")},
+		// De-BAML Slice 7.2c-3 SHARPENED this row rather than removing it, and the
+		// change of label is the finding.
+		//
+		// It used to read "a DIFFERENT predicate (this >= 0)", and until the cutover it
+		// declined for TWO reasons at once: the class is `StaticGtePredicateAnswer`
+		// (not one of the two pinned names) AND `>=` was outside the manifest. The
+		// cutover ADMITS `>=` — internal/nativebody/nanollmprepare/staticserve/opge
+		// serves all four of its rows live, with one native socket each — so exactly
+		// one reason is left, and this row is now a SINGLE-AXIS witness for the class
+		// NAME.
+		//
+		// That is the 7.2c scope's risk 7 made measurable: "Fixture identity must not
+		// become an accidental schema broadening. The existing live `>=` sibling has a
+		// different class name, so a monolithic fixture project tempts an
+		// implementation to unpin names rather than create isolated same-name
+		// fixtures." The names were not unpinned; the isolated projects were built; and
+		// this route still opens ZERO sockets while the identical predicate under the
+		// pinned name serves.
+		{route: "StaticCheckedGtePredicate",
+			property: "a DIFFERENT class name carrying an ADMITTED predicate (StaticGtePredicateAnswer, this >= 0)",
+			body:     answer("9")},
 		{route: "StaticCheckedFloat", property: "a FLOAT constrained field", body: answer("9.5")},
 		{route: "StaticCheckedList", property: "a LIST constrained field", body: answer("[1,2]")},
 		{route: "StaticCheckedOptional", property: "an OPTIONAL constrained field", body: answer("9")},
@@ -497,7 +517,8 @@ func TestConstraintRoutes_SiblingsDeclinePreSocket(t *testing.T) {
 	// the guard.
 	wantCategories := []string{
 		"a SECOND @check", "the two fields REORDERED", "a DIFFERENT class name",
-		"an @alias on the constrained field", "a DIFFERENT predicate (this >= 0)",
+		"an @alias on the constrained field",
+		"a DIFFERENT class name carrying an ADMITTED predicate (StaticGtePredicateAnswer, this >= 0)",
 		"a FLOAT constrained field", "a LIST constrained field",
 		"an OPTIONAL constrained field", "a NON-ASCII constraint label",
 		"a UNION constrained field",

@@ -67,6 +67,34 @@ var ModuleRelPaths = []string{
 // archive is byte-reproducible regardless of the checkout's file mtimes.
 var fixedModTime = time.Unix(0, 0).UTC()
 
+// gatedTestSupportPrefixes are module-relative directory prefixes whose NON-test
+// Go files are still test-only support code, and are therefore excluded from the
+// packaged worker source.
+//
+// De-BAML Slice 7.2c-3 added the first one. `staticserve` had contained only
+// `_test.go` files — so the allowlist's `!_test.go` rule already kept the whole
+// subtree out — until the cutover's live proof had to be split across SIX test
+// binaries (one per admitted direct comparison, because `baml_go`'s type map is
+// process-global and keyed by class name, so two generated clients declaring
+// `StaticCheckedAnswer` cannot share a binary). Five of those binaries import one
+// shared harness, and Go cannot import another package's test files, so the
+// harness has to live in ordinary `.go` files.
+//
+// It is still test-only in every sense that matters here: every file carries
+// `//go:build integration && nanollm_integration`, it imports `testing` and
+// `net/http/httptest`, and `go build ./cmd/worker` never reaches it. Shipping it
+// in the customer bundle would be exactly the "stray fixture" the allowlist exists
+// to keep out, so the rule that used to exclude the subtree by accident now
+// excludes it on purpose.
+//
+// The prefix is deliberately narrow (one named subtree, matched at a path
+// boundary) rather than a build-tag scan: an allowlist that tried to interpret
+// build constraints could drop a file the worker really needs. If this exclusion
+// were ever wrong, the isolated `GOWORK=off go build ./cmd/worker` over the
+// extracted tar — which build.sh runs — fails outright rather than shipping a
+// broken bundle.
+var gatedTestSupportPrefixes = []string{"staticserve/"}
+
 // includeFile reports whether a module-relative file path belongs in the
 // packaged worker source. It is an explicit ALLOWLIST — NOT a deny-only filter —
 // because the resulting tar is an opaque, embedded artifact later extracted into
@@ -74,8 +102,14 @@ var fixedModTime = time.Unix(0, 0).UTC()
 // so a stray secret/.env/editor-artifact/fixture/non-Go file cannot ride along.
 // The allowed set is exactly the module manifests (go.mod, go.sum) and non-test
 // Go sources (*.go except *_test.go — the gated Phase-5/6 oracle + boot smoke
-// tests are not part of the customer build).
+// tests are not part of the customer build), minus the gated test-support
+// subtrees named above.
 func includeFile(relPath string) bool {
+	for _, prefix := range gatedTestSupportPrefixes {
+		if strings.HasPrefix(relPath, prefix) {
+			return false
+		}
+	}
 	base := relPath
 	if i := strings.LastIndexByte(relPath, '/'); i >= 0 {
 		base = relPath[i+1:]

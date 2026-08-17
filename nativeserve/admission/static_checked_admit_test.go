@@ -4,17 +4,19 @@ package admission
 //
 // internal/debaml's own tests drive the three checkSupported* cut-line functions,
 // SupportsNativeFinalBundle, ParseStaticBundle, ParseStaticBundleUnaryCall and root
-// Parse over the four companion rows. They cannot drive THESE gates: nativeserve imports
-// internal/debaml, so the dependency only runs one way and both admission gates have to
-// be asserted here.
+// Parse over every companion row (four under 7.2b-3, 24 since Slice 7.2c-3 widened the
+// predicate to the six direct comparisons). They cannot drive THESE gates: nativeserve
+// imports internal/debaml, so the dependency only runs one way and both admission gates
+// have to be asserted here.
 //
-// The two shapes are the exact concrete generated fixture return types the 7.2b scope
+// The two CLASSES are the exact concrete generated fixture return types the 7.2b scope
 // admits as the first production-admission fingerprint — the same two the staticserve
 // fixture project declares and the same two internal/debaml/checkedwire captured stock
-// bytes for:
+// bytes for. Slice 7.2c-3 widened the PREDICATE on them, not the class set, so this file
+// now drives both levels x all six operators ([checkedAdmittedOperators]):
 //
-//	class StaticCheckedAnswer { answer string; confidence int @check(positive, {{ this > 0 }}) }
-//	class StaticAssertAnswer  { answer string; confidence int @assert(positive, {{ this > 0 }}) }
+//	class StaticCheckedAnswer { answer string; confidence int @check(positive, {{ this OP 0 }}) }
+//	class StaticAssertAnswer  { answer string; confidence int @assert(positive, {{ this OP 0 }}) }
 //
 // BOTH admission gates must now ADMIT them — the native-final SUPPORT predicate
 // (checkStaticReturnBundle) and the RETURN-SHAPE gate (admittedStaticReturnShape) — and
@@ -94,20 +96,48 @@ func checkedFixtureDescriptorLabelPtr(class string, level schemadescriptor.Const
 	}
 }
 
-// checkedFixtureRows are the two admitted fixtures.
+// checkedAdmittedOperators are the direct comparisons the root-owned fingerprint
+// admits, written out INDEPENDENTLY of the root package.
+//
+// De-BAML Slice 7.2c-3 widened the fingerprint from `this > I` to all six, and this
+// module is where the widening has to be re-measured rather than inherited: the
+// return-shape gate delegates to debaml.IsAdmittedStaticCheckedFamily, so a delegate
+// that had drifted — or a root predicate that moved without this module noticing —
+// would show up as a gate disagreement on these rows.
+//
+// They are spelled out here, not imported, precisely so this is a second statement of
+// the manifest rather than a restatement of the same variable.
+func checkedAdmittedOperators() []string {
+	return []string{">", ">=", "<", "<=", "==", "!="}
+}
+
+// checkedFixtureRows are the admitted fixtures: both levels x every admitted operator.
+//
+// It was TWO rows until Slice 7.2c-3 (the `>` check and assert fixtures) and is now
+// twelve, which is the same widening the root package's served manifest records as
+// 6 operators x 4 outcomes = 24 (admission is outcome-blind, so it sees 6 x 2).
 func checkedFixtureRows() []struct {
 	name string
 	desc schemadescriptor.Bundle
 } {
-	return []struct {
+	var out []struct {
 		name string
 		desc schemadescriptor.Bundle
-	}{
-		{"checked fixture", checkedFixtureDescriptor(
-			"StaticCheckedAnswer", schemadescriptor.ConstraintCheck, "positive", "this > 0")},
-		{"assert fixture", checkedFixtureDescriptor(
-			"StaticAssertAnswer", schemadescriptor.ConstraintAssert, "positive", "this > 0")},
 	}
+	for _, op := range checkedAdmittedOperators() {
+		expr := "this " + op + " 0"
+		out = append(out, struct {
+			name string
+			desc schemadescriptor.Bundle
+		}{"checked fixture " + expr, checkedFixtureDescriptor(
+			"StaticCheckedAnswer", schemadescriptor.ConstraintCheck, "positive", expr)},
+			struct {
+				name string
+				desc schemadescriptor.Bundle
+			}{"assert fixture " + expr, checkedFixtureDescriptor(
+				"StaticAssertAnswer", schemadescriptor.ConstraintAssert, "positive", expr)})
+	}
+	return out
 }
 
 // TestStaticCheckedFingerprintIsAdmittedAtAdmission drives BOTH admission gates over the
@@ -234,8 +264,24 @@ func TestStaticCheckedAdmissionIsAttributedToTheFingerprint(t *testing.T) {
 			d.Target.Meta.Constraints = []schemadescriptor.Constraint{{
 				Level: schemadescriptor.ConstraintCheck, Expression: "this.confidence > 0", Label: label("t")}}
 		})},
-		{"an unproven predicate", checkedFixtureDescriptor(
-			"StaticCheckedAnswer", schemadescriptor.ConstraintCheck, "positive", "this >= 0")},
+		// De-BAML Slice 7.2c-3 RE-POINTED this row. It used to carry `this >= 0`, which
+		// the cutover ADMITS — it is a served fixture row above now. The unproven
+		// predicate axis is kept, one step further out: `<>` is a real alternate
+		// spelling of the admitted `!=` in several template languages, so it is what a
+		// gate written from the operator LIST rather than from the stock captures would
+		// grow into, and it has no capture at all.
+		{"an unproven predicate (a seventh comparison form)", checkedFixtureDescriptor(
+			"StaticCheckedAnswer", schemadescriptor.ConstraintCheck, "positive", "this <> 0")},
+		// The REVERSED operand order: a well-formed comparison denoting an ADMITTED
+		// relation, with `this` on the right. It is the likeliest thing to be waved
+		// through as obviously equivalent, and stock would retain `0 < this` verbatim —
+		// a string no capture covers.
+		{"an unproven predicate (operands reversed)", checkedFixtureDescriptor(
+			"StaticCheckedAnswer", schemadescriptor.ConstraintCheck, "positive", "0 < this")},
+		// A COMPOUND of two ADMITTED comparisons — #583, and the form the widening makes
+		// most tempting.
+		{"an unproven predicate (a compound of two admitted comparisons)", checkedFixtureDescriptor(
+			"StaticCheckedAnswer", schemadescriptor.ConstraintCheck, "positive", "this >= 0 and this <= 100")},
 		{"a non-canonical literal", checkedFixtureDescriptor(
 			"StaticCheckedAnswer", schemadescriptor.ConstraintCheck, "positive", "this > 007")},
 		{"a non-ASCII label", checkedFixtureDescriptor(

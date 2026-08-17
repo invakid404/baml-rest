@@ -477,23 +477,32 @@ func pwAdmissionDisagreements(t *testing.T, admits func(o pwOperator) bool) []st
 	return out
 }
 
-// pwOnlyGreaterThan is the CURRENT admitted predicate, and the only one 7.2c-1 leaves
-// admitted: `this > I`.
-func pwOnlyGreaterThan(o pwOperator) bool { return o.Op == ">" }
-
-// TestPredicateWireAdmissionIsUnchanged is the NO-FLIP invariant, stated where the
-// captures are.
+// pwAllSixOperators is the admitted predicate set after the Slice 7.2c-3 CUTOVER: all
+// six direct comparisons, on both name-pinned families.
 //
-// Slice 7.2c-1 banks authority for six operators and admits ONE. Every other operator —
-// on both families, in both levels — must still be refused by the production gates, and
-// the two gates driven here must agree with each other on every row.
-func TestPredicateWireAdmissionIsUnchanged(t *testing.T) {
-	if got := pwAdmissionDisagreements(t, pwOnlyGreaterThan); len(got) != 0 {
-		t.Fatalf("the admitted predicate is no longer exactly `this > I`:\n  %s", strings.Join(got, "\n  "))
+// It replaced `pwOnlyGreaterThan`, which said `o.Op == ">"`. Inverting the expectation
+// rather than deleting the assertion is the point: this package is the AUTHORITY the
+// cutover was made against, so the row that used to say "captured but declined" is
+// exactly the row that must now say "captured and served" — and it is checked against
+// the same production gates, in the same place, so the two statements cannot be made in
+// different harnesses with different bundles.
+func pwAllSixOperators(pwOperator) bool { return true }
+
+// TestPredicateWireAdmissionMatchesTheCutover is the ADMISSION invariant, stated where
+// the captures are.
+//
+// Slice 7.2c-1 banked authority for six operators and admitted ONE. 7.2c-3 admits all
+// six — each against the very captures in this file — so every operator, on both
+// families and in both levels, must now be ADMITTED by the production gates, and the two
+// gates driven here must still agree with each other on every row.
+//
+// The route boundary is unchanged and is asserted beside it: even an admitted operator
+// declines on the DIRECT parse endpoint, which is the scope's `/call`-only rule. The
+// cutover widened the SHAPE, never the route set.
+func TestPredicateWireAdmissionMatchesTheCutover(t *testing.T) {
+	if got := pwAdmissionDisagreements(t, pwAllSixOperators); len(got) != 0 {
+		t.Fatalf("the admitted predicate is not the six direct comparisons:\n  %s", strings.Join(got, "\n  "))
 	}
-	// And the route boundary: even the ADMITTED operator declines on the direct parse
-	// endpoint, which is the scope's /call-only rule. A capture package that let this
-	// slip would be evidence for a route it never measured.
 	for _, o := range pwOperators() {
 		b := pwBundleFor(schema.ConstraintCheck, pwCheckedLabel, o.expr())
 		if _, err := debaml.ParseStaticBundle(context.Background(), b, pwNestedRaw(o.TrueVal)); !errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
@@ -501,53 +510,103 @@ func TestPredicateWireAdmissionIsUnchanged(t *testing.T) {
 				o.expr(), err)
 		}
 	}
-	t.Logf("admission unchanged: 1 admitted predicate (`this > I`), %d captured-but-declined operator "+
-		"rows across both families", (len(pwOperators())-1)*2)
+	t.Logf("admission after the cutover: %d admitted operator rows across both families, all still "+
+		"declined on the direct parse route", len(pwOperators())*2)
 }
 
-// TestPredicateWireAdmissionIsProvenToBite feeds the SAME comparison two deliberately
-// wrong expectations and requires each to be REPORTED.
+// TestPredicateWireManifestIsBackedByCaptures is the EVIDENCE GATE, run in the
+// integration lane against the TAGGED originals.
 //
-// Without it, [TestPredicateWireAdmissionIsUnchanged] could be green because the
-// comparison never fires — the classic false green for a suite of declines. The mutants
-// are stand-in EXPECTATIONS; the production gates are untouched.
-func TestPredicateWireAdmissionIsProvenToBite(t *testing.T) {
-	// (1) An expectation that every operator is admitted — the 7.2c-3 cutover, arriving
-	// early. It must be reported for the five that are not.
-	all := func(pwOperator) bool { return true }
-	got := pwAdmissionDisagreements(t, all)
-	if len(got) == 0 {
-		t.Error("an expectation that ALL six operators are admitted produced no disagreement; this " +
-			"file cannot detect a widened fingerprint")
+// internal/debaml runs the same join against untagged copies of these captures (its
+// TestStaticCheckedManifestIsEvidenceGated), because the join has to be available in the
+// ordinary CGO-free lane that gates production admission. This is the other end of that
+// arrangement: here the captures are the real ones, produced by driving stock v0.223.0's
+// CFFI, so "every admitted operator has stock evidence" is asserted once against a copy
+// and once against the source of truth.
+//
+// It also closes the loop the other way — every operator this package CAPTURED is now
+// admitted — so a capture that quietly stopped backing a production claim, or a
+// production claim that outran its captures, is red either way.
+func TestPredicateWireManifestIsBackedByCaptures(t *testing.T) {
+	captured, admitted := 0, 0
+	for _, o := range pwOperators() {
+		c := pwCaptureOf(t, o) // fails loudly if the operator has no capture at all
+		for _, f := range []struct{ name, value string }{
+			{"checkTrue", c.checkTrue}, {"checkFalse", c.checkFalse},
+			{"assertTrue", c.assertTrue}, {"assertFail", c.assertFail},
+		} {
+			if f.value == "" {
+				t.Errorf("operator %q has an EMPTY %s capture, so that outcome is unevidenced", o.ID, f.name)
+			}
+		}
+		// The capture really is this operator's: stock retained its canonical text.
+		for _, f := range []struct{ name, value string }{
+			{"checkTrue", c.checkTrue}, {"checkFalse", c.checkFalse}, {"assertFail", c.assertFail},
+		} {
+			if !strings.Contains(f.value, o.expr()) {
+				t.Errorf("operator %q's %s capture does not quote %q; the token and the capture that "+
+					"authorises it are mispaired", o.ID, f.name, o.expr())
+			}
+		}
+		captured++
+		if pwAdmits(t, "check "+o.expr(), pwBundleFor(schema.ConstraintCheck, pwCheckedLabel, o.expr())) {
+			admitted++
+		}
 	}
-	if want := (len(pwOperators()) - 1) * 2; len(got) != want {
-		t.Errorf("the widened expectation was reported %d times, want %d (five operators x two "+
+	if captured != admitted {
+		t.Fatalf("%d operators are captured here but %d are admitted by production; an admitted "+
+			"operator with no capture would be a claim resting on nothing, and a captured one that is "+
+			"declined is authority the cutover left unused", captured, admitted)
+	}
+	t.Logf("evidence gate (tagged originals): %d operators, each with 4 stock capture rows, all "+
+		"admitted by the production gates", captured)
+}
+
+// TestPredicateWireAdmissionIsProvenToBite feeds the SAME comparison deliberately wrong
+// expectations and requires each to be REPORTED.
+//
+// Without it, [TestPredicateWireAdmissionMatchesTheCutover] could be green because the
+// comparison never fires. The mutants are stand-in EXPECTATIONS; the production gates are
+// untouched.
+//
+// The DIRECTIONS have swapped with the cutover, and both are kept. Before it, the danger
+// was a fingerprint that admitted more than `>`; now the six are correct, so the mutants
+// that matter are (1) a NARROWING that drops operators back out — the shape a silent
+// regression takes — and (2) a per-operator narrowing, which is the realistic version of
+// the same mistake.
+func TestPredicateWireAdmissionIsProvenToBite(t *testing.T) {
+	// (1) An expectation that NOTHING is admitted. It must be reported for all six, on
+	// both families, so every row is shown to be driven.
+	none := func(pwOperator) bool { return false }
+	got := pwAdmissionDisagreements(t, none)
+	if len(got) == 0 {
+		t.Error("an expectation that NOTHING is admitted produced no disagreement; this file cannot " +
+			"detect a fingerprint that stopped admitting")
+	}
+	if want := len(pwOperators()) * 2; len(got) != want {
+		t.Errorf("the none-admitted expectation was reported %d times, want %d (six operators x two "+
 			"families); the comparison is not covering every row", len(got), want)
 	}
-	// (2) An expectation that NOTHING is admitted. It must be reported for `>`, so a
-	// gate that stopped admitting the 7.2b fingerprint is caught too — an under-claim is
-	// a failure in its own right.
-	none := func(pwOperator) bool { return false }
-	if got := pwAdmissionDisagreements(t, none); len(got) != 2 {
-		t.Errorf("an expectation that NOTHING is admitted was reported %d times, want exactly 2 "+
-			"(the `this > I` check and assert families); the admitted row is not being driven", len(got))
+	// (2) The PRE-CUTOVER expectation — `>` alone — must be reported for the five that
+	// the cutover added, and for nothing else.
+	onlyGT := func(o pwOperator) bool { return o.Op == ">" }
+	if got := pwAdmissionDisagreements(t, onlyGT); len(got) != (len(pwOperators())-1)*2 {
+		t.Errorf("the pre-cutover expectation was reported %d times, want %d (five operators x two "+
+			"families)", len(got), (len(pwOperators())-1)*2)
 	}
-	// (3) A per-operator mutant: admitting exactly ONE new operator must be reported for
-	// exactly that operator's two families and nothing else. This is the realistic
-	// mistake — a fingerprint widened one token at a time.
+	// (3) A per-operator mutant: expecting exactly ONE operator to be declined must be
+	// reported for exactly that operator's two families and nothing else. This is the
+	// realistic mistake — a manifest that loses one token.
 	for _, mutant := range pwOperators() {
-		if mutant.Op == ">" {
-			continue
-		}
-		admits := func(o pwOperator) bool { return o.Op == ">" || o.Op == mutant.Op }
+		admits := func(o pwOperator) bool { return o.Op != mutant.Op }
 		got := pwAdmissionDisagreements(t, admits)
 		if len(got) != 2 {
-			t.Errorf("admitting %q alone was reported %d times, want exactly 2:\n  %s",
+			t.Errorf("declining %q alone was reported %d times, want exactly 2:\n  %s",
 				mutant.Op, len(got), strings.Join(got, "\n  "))
 		}
 		for _, line := range got {
 			if !strings.Contains(line, mutant.expr()) {
-				t.Errorf("admitting %q alone was reported against a different row: %s", mutant.Op, line)
+				t.Errorf("declining %q alone was reported against a different row: %s", mutant.Op, line)
 			}
 		}
 	}

@@ -89,10 +89,11 @@ type servingOracleFixture struct {
 	// ADMITS: the one production fingerprint, on the static unary /call route.
 	//
 	// It is the per-row expected disposition the scope replaced the blanket
-	// "every constraint-bearing fixture declines" lock with. Exactly the four #665
-	// companion rows carry it (TestServingOracleBoundaryLock cross-checks that
-	// against soCompanionRowNames, so a fifth row cannot acquire it quietly), and
-	// every other constraint-bearing row keeps its existing decline.
+	// "every constraint-bearing fixture declines" lock with. Exactly the companion
+	// rows carry it — four under 7.2b-3, and 24 since the Slice 7.2c-3 predicate
+	// widening (TestServingOracleBoundaryLock cross-checks the count against
+	// soCompanionRowNames, so a further row cannot acquire it quietly) — and every
+	// other constraint-bearing row keeps its existing decline.
 	//
 	// Served does NOT mean "admitted everywhere". EVERY named SCHEMA gate admits these
 	// rows — the three generic ones included, since the cutover they consult the same
@@ -112,13 +113,41 @@ type servingOracleFixture struct {
 	// caller — which TestServingOracleBoundaryLock asserts for every row
 	// independently of this field.
 	Divergence string
+	// Project names the ISOLATED in-memory .baml project this fixture belongs to.
+	// Empty is the shared main project, which is where all but a handful of rows sit.
+	//
+	// De-BAML Slice 7.2c-3 introduced it, and for a reason the 7.2c scope names
+	// directly: the cutover admits SIX predicate variants of the SAME two name-pinned
+	// classes, and one BAML project cannot declare `StaticCheckedAnswer` six times.
+	// The scope forbids the obvious workaround — renaming the classes — because a
+	// renamed class is a different family with no capture behind it, and the live
+	// fixture already carries a `StaticGtePredicateAnswer` sibling that must stay
+	// DECLINED precisely so the name pin means something.
+	//
+	// So each extra operator gets its own project, each declaring the two pinned names
+	// ONCE, exactly as internal/debaml/predicatewire's 32 isolated projects do. The
+	// runtimes coexist in one process (7.2c-1 measured that first, with a throwaway
+	// prototype, before any fixture was written) and every project is rendered,
+	// golden-pinned and hashed independently.
+	Project string
 }
 
 // method is the generated BAML function this fixture is driven through.
 func (f servingOracleFixture) method() string { return soFunctionName(f.Name) }
 
+// project is the isolated project this fixture belongs to, with the empty default
+// resolved to the shared main project's name.
+func (f servingOracleFixture) project() string {
+	if f.Project == "" {
+		return soMainProject
+	}
+	return f.Project
+}
+
 // source names the .baml the method lives in, for the per-case report.
-func (f servingOracleFixture) source() string { return soProjectFile + ":" + f.method() }
+func (f servingOracleFixture) source() string {
+	return soProjectFileFor(f.project()) + ":" + f.method()
+}
 
 // ---------------------------------------------------------------------------
 // Stock envelope
