@@ -2,7 +2,8 @@
 
 This file is the TRACKED record of whether the five first-party pseudo-version
 selections below point at a **master** commit, and — while they do not — exactly what
-has to be done about it.
+has to be done about it. They do: the Slice 7.2c-3 branch pin was re-pinned to the
+master squash commit of PR #672, so this record is `RESOLVED`.
 
 It is proof material, not documentation. `TestFirstPartyPinFollowupIsTracked`
 (`cmd/build/nativeworker_pins_test.go`) parses it on every ordinary `go test ./...`,
@@ -16,15 +17,20 @@ it goes red immediately.
 CONCRETE, per-change instance of it, which is what the generic comment cannot be.
 
 ```
-STATUS: OUTSTANDING
-PINNED-COMMIT: 4168895ed76d
-PINNED-STAMP: 20260814142858
-REACHABLE-FROM: feat/debaml-slice72c3-admission-cutover
+STATUS: RESOLVED
+PINNED-COMMIT: e3b8dc320705
+PINNED-STAMP: 20260817212126
+REACHABLE-FROM: master
 SLICE: de-BAML 7.2c-3 — six-operator direct-comparison admission cutover
 PR: 672
 ```
 
-## Why the pins are branch-only right now
+## Why the pins were branch-only, and what closed it
+
+**RESOLVED.** PR #672 squash-merged as master `e3b8dc3207052f7369ecb2fd594f0074f0675535`
+(committer date `2026-08-17T21:21:26Z`), and all five selections were re-pinned to it in the
+immediate follow-up change. What follows is the record of the state that made the branch pin
+necessary, kept because the BUMP RULE cites it.
 
 `nativeserve/admission`'s return-shape gate delegates to the root module's
 `debaml.IsAdmittedStaticCheckedFamily` and spells no fingerprint of its own. Slice
@@ -34,18 +40,19 @@ still COMPILES — it simply keeps declining five of the six operators, i.e. shi
 core that silently under-claims against the root it was released with. The pin is what
 carries the cutover to a released worker, which is why it had to move in the same change.
 
-It cannot yet point at master: the master commit that will carry the widening is the
-squash-merge of PR #672, and it does not exist until the merge happens. `4168895ed76d`
-is the branch commit that carries the change; it is reachable only from
-`feat/debaml-slice72c3-admission-cutover` and will be flattened out of history by the
+It could not yet point at master: the master commit that would carry the widening was the
+squash-merge of PR #672, and it did not exist until the merge happened. `4168895ed76d`
+was the branch commit that carried the change; it was reachable only from
+`feat/debaml-slice72c3-admission-cutover` and was flattened out of history by the
 squash. This is the exact failure mode `nativeserve/go.mod`'s BUMP RULE records from
 Slice 7.1b (#655): the branch pin went red on `nativeserve-goget` once the branch was
 deleted.
 
-**What the current green `nativeserve-goget` proves, and what it does not.** It proves an
-external consumer can resolve, build and run `nativeserve.New` against the branch tip
-today — the module graph and every transitive requirement are correct. It does **not**
+**What the green `nativeserve-goget` proved then, and what it did not.** It proved an
+external consumer could resolve, build and run `nativeserve.New` against the branch tip —
+the module graph and every transitive requirement were correct. It did **not**
 prove master-durable release, because branch reachability disappears with the branch.
+The probe has since been re-run against the master SHA above, which is what closes that gap.
 
 ## The five pinned selections
 
@@ -56,17 +63,19 @@ bump is invisible until the out-of-work packaging build fails with
 
 | # | file | module | current selection |
 | --- | --- | --- | --- |
-| 1 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest` | `v0.0.0-20260814142858-4168895ed76d` |
-| 2 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260814142858-4168895ed76d` |
-| 3 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260814142858-4168895ed76d` |
-| 4 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260814142858-4168895ed76d` |
-| 5 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260814142858-4168895ed76d` |
+| 1 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest` | `v0.0.0-20260817212126-e3b8dc320705` |
+| 2 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260817212126-e3b8dc320705` |
+| 3 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260817212126-e3b8dc320705` |
+| 4 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260817212126-e3b8dc320705` |
+| 5 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260817212126-e3b8dc320705` |
 
 `internal/nativebody/nanollmprepare/go.mod`'s `github.com/invakid404/baml-rest v0.0.48`
 is deliberately NOT in this list: it is a released tag, not a pseudo-version tracking a
 commit, and the module directory-replaces it.
 
-## The follow-up, to be performed IMMEDIATELY after the squash-merge
+## The follow-up, performed immediately after the squash-merge
+
+Every step below was carried out against master `e3b8dc320705`; the record above is its result.
 
 1. Take the master SHA of the squash-merge commit and its committer timestamp in UTC
    (`git log -1 --format='%H %cd' --date=format-local:%Y%m%d%H%M%S master`, with
@@ -89,5 +98,7 @@ commit, and the module directory-replaces it.
      github.com/invakid404/baml-rest/nativeserve@<master-sha>` then `go build ./...` then
      `go run ./...`.
 
-Until step 3 is done, `STATUS` stays `OUTSTANDING` and this record is the tracked
-statement that the released serve core is not yet pinned to a durable commit.
+Until step 3 was done, the status stayed `OUTSTANDING` and this record was the tracked
+statement that the released serve core was not yet pinned to a durable commit. It is now
+`RESOLVED`: the five selections name a master commit, so the guard's ANCESTRY clause — wherever a
+`master` ref is resolvable — requires it to stay that way.
