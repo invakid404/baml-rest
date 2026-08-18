@@ -2,8 +2,9 @@
 
 This file is the TRACKED record of whether the five first-party pseudo-version
 selections below point at a **master** commit, and — while they do not — exactly what
-has to be done about it. They do: the Slice 7.2c-3 branch pin was re-pinned to the
-master squash commit of PR #672, so this record is `RESOLVED`.
+has to be done about it. **Right now they do not.** The serving-cutover S1 change moved
+all five to its own branch commit, so this record is `OUTSTANDING` and the follow-up in
+the last section has **not** been performed yet.
 
 It is proof material, not documentation. `TestFirstPartyPinFollowupIsTracked`
 (`cmd/build/nativeworker_pins_test.go`) parses it on every ordinary `go test ./...`,
@@ -17,42 +18,48 @@ it goes red immediately.
 CONCRETE, per-change instance of it, which is what the generic comment cannot be.
 
 ```
-STATUS: RESOLVED
-PINNED-COMMIT: e3b8dc320705
-PINNED-STAMP: 20260817212126
-REACHABLE-FROM: master
-SLICE: de-BAML 7.2c-3 — six-operator direct-comparison admission cutover
-PR: 672
+STATUS: OUTSTANDING
+PINNED-COMMIT: 7cb69af02b36
+PINNED-STAMP: 20260819085842
+REACHABLE-FROM: feat/debaml-s1-cohort-admission
+SLICE: de-BAML serving cutover S1 — default-deny cohort admission + privacy-safe inventory + bounded telemetry
+PR: 675 (branch pin; re-pin to the master squash commit immediately after merge)
 ```
 
-## Why the pins were branch-only, and what closed it
+## Why the pins are branch-only
 
-**RESOLVED.** PR #672 squash-merged as master `e3b8dc3207052f7369ecb2fd594f0074f0675535`
-(committer date `2026-08-17T21:21:26Z`), and all five selections were re-pinned to it in the
-immediate follow-up change. What follows is the record of the state that made the branch pin
-necessary, kept because the BUMP RULE cites it.
+`7cb69af02b36` is the S1 cutover commit. It installs the DEFAULT-DENY surface/cohort
+gate in `nativeserve/admission`, folds every exported telemetry recorder's label
+arguments onto their closed sets, adds the config-load configuration inventory, and adds
+the direct-parse observation seam.
 
-`nativeserve/admission`'s return-shape gate delegates to the root module's
-`debaml.IsAdmittedStaticCheckedFamily` and spells no fingerprint of its own. Slice
-7.2c-3 widened the predicate that function answers from `this > I` to the six direct
-comparisons `this OP I`. **No symbol changed**, so a consumer resolving an older pin
-still COMPILES — it simply keeps declining five of the six operators, i.e. ships a serve
-core that silently under-claims against the root it was released with. The pin is what
-carries the cutover to a released worker, which is why it had to move in the same change.
+**This bump carries real cross-module wiring, not just a version string.** S1 changes
+BOTH sides of the graph:
 
-It could not yet point at master: the master commit that would carry the widening was the
-squash-merge of PR #672, and it did not exist until the merge happened. `4168895ed76d`
-was the branch commit that carried the change; it was reachable only from
-`feat/debaml-slice72c3-admission-cutover` and was flattened out of history by the
-squash. This is the exact failure mode `nativeserve/go.mod`'s BUMP RULE records from
-Slice 7.1b (#655): the branch pin went red on `nativeserve-goget` once the branch was
-deleted.
+- the root/worker side gains the neutral seam — `bamlutils.NativeDirectParseObserveFunc`,
+  the `worker/parse.go` call site, and the `workerboot` factory option;
+- `nativeserve` supplies the implementation that consumes it
+  (`nativeserve.NewDirectParseObserve`), and the packaged worker installs it.
 
-**What the green `nativeserve-goget` proved then, and what it did not.** It proved an
-external consumer could resolve, build and run `nativeserve.New` against the branch tip —
-the module graph and every transitive requirement were correct. It did **not**
-prove master-durable release, because branch reachability disappears with the branch.
-The probe has since been re-run against the master SHA above, which is what closes that gap.
+So a consumer resolving the OLD pin gets a `nativeserve` written against a root that
+does not have the seam, plus — more quietly — a serve core with **no cohort gate at
+all** (admission WIDER than the one reviewed) whose exported recorders still accept
+unbounded, secret-shaped label values. Earlier slices' bumps were about a behaviour that
+would silently under-claim; this one is about a released worker missing an entire
+admission gate.
+
+It cannot yet point at master: the master commit that will carry all of this is the
+squash-merge of this change, and it does not exist until the merge happens.
+`7cb69af02b36` is reachable only from `feat/debaml-s1-cohort-admission` and will be
+flattened out of history by the squash — the exact failure mode the BUMP RULE records
+from Slice 7.1b (#655), where a branch pin went red on `nativeserve-goget` once the
+branch was deleted.
+
+**What a green `nativeserve-goget` proves now, and what it does not.** It proves an
+external consumer can resolve, build and run `nativeserve.New` against the branch tip —
+the module graph and every transitive requirement are correct. It does **not** prove
+master-durable release, because branch reachability disappears with the branch. Closing
+that gap is the follow-up below, and it is mandatory.
 
 ## The five pinned selections
 
@@ -63,19 +70,22 @@ bump is invisible until the out-of-work packaging build fails with
 
 | # | file | module | current selection |
 | --- | --- | --- | --- |
-| 1 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest` | `v0.0.0-20260817212126-e3b8dc320705` |
-| 2 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260817212126-e3b8dc320705` |
-| 3 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260817212126-e3b8dc320705` |
-| 4 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260817212126-e3b8dc320705` |
-| 5 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260817212126-e3b8dc320705` |
+| 1 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest` | `v0.0.0-20260819085842-7cb69af02b36` |
+| 2 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260819085842-7cb69af02b36` |
+| 3 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260819085842-7cb69af02b36` |
+| 4 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260819085842-7cb69af02b36` |
+| 5 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260819085842-7cb69af02b36` |
 
 `internal/nativebody/nanollmprepare/go.mod`'s `github.com/invakid404/baml-rest v0.0.48`
 is deliberately NOT in this list: it is a released tag, not a pseudo-version tracking a
 commit, and the module directory-replaces it.
 
-## The follow-up, performed immediately after the squash-merge
+## The follow-up — REQUIRED, NOT YET PERFORMED
 
-Every step below was carried out against master `e3b8dc320705`; the record above is its result.
+Every step below is still outstanding. It must be carried out against the master
+squash-merge commit of this change, immediately after that merge happens. The
+#672 → #673 sequence is the required precedent; a branch-only pseudo-version is not a
+durable release.
 
 1. Take the master SHA of the squash-merge commit and its committer timestamp in UTC
    (`git log -1 --format='%H %cd' --date=format-local:%Y%m%d%H%M%S master`, with
@@ -84,7 +94,8 @@ Every step below was carried out against master `e3b8dc320705`; the record above
    unchanged — `v0.0.0-<stamp>-<sha12>` for the root module, `v0.0.49-0.<stamp>-<sha12>`
    for `bamlutils` and `worker`.
 3. Update this file: set `PINNED-COMMIT`/`PINNED-STAMP` to the new values, set
-   `REACHABLE-FROM: master`, and set `STATUS: RESOLVED`.
+   `REACHABLE-FROM: master`, set `STATUS: RESOLVED`, and rewrite this section's heading
+   and tense to record that it has been performed.
 4. Regenerate the packaged worker source, which embeds both manifests:
    `go run ./cmd/build/gen-nativeworker-src`.
 5. Re-run the gates, all of which must be green:
@@ -98,7 +109,8 @@ Every step below was carried out against master `e3b8dc320705`; the record above
      github.com/invakid404/baml-rest/nativeserve@<master-sha>` then `go build ./...` then
      `go run ./...`.
 
-Until step 3 was done, the status stayed `OUTSTANDING` and this record was the tracked
-statement that the released serve core was not yet pinned to a durable commit. It is now
-`RESOLVED`: the five selections name a master commit, so the guard's ANCESTRY clause — wherever a
-`master` ref is resolvable — requires it to stay that way.
+Until step 3 is done this record stays `OUTSTANDING` and is the tracked statement that
+the released serve core is not yet pinned to a durable commit — and, for this change
+specifically, that a consumer resolving the previous pin gets a serve core WITHOUT the
+default-deny cohort gate, WITHOUT the exported-recorder label folds, and written against
+a root that lacks the direct-parse observation seam.

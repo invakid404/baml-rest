@@ -76,17 +76,22 @@
 // the pins were moved here. Pin to a branch commit only if unavoidable, and re-pin to the
 // merged master commit as the immediate follow-up.
 //
-// NOTE (de-BAML Slice 7.2c-3): these pins were briefly BRANCH-ONLY; the tracked follow-up in
-// nativeserve/pin_followup.md has been performed and the pins now name the MASTER squash
-// commit of #672 (e3b8dc320705), so that record reads RESOLVED. They move for a BEHAVIOUR change
-// rather than a new symbol. nativeserve/admission's return-shape gate delegates to the root's
-// debaml.IsAdmittedStaticCheckedFamily (it spells no fingerprint of its own — see
-// admission/static.go), and 7.2c-3 widened the predicate that function answers from
-// `this > I` to the six direct comparisons `this OP I`. The symbol is unchanged, so an
-// external consumer resolving the OLD pin still COMPILES — it would simply keep
-// declining five of the six operators, i.e. ship a serve core that silently under-claims
-// against the root it was released with. That is why this is a lockstep bump and not an
-// optional one: the pin is what carries the cutover to the released worker.
+// NOTE (de-BAML serving cutover S1): these pins are BRANCH-ONLY again and the follow-up
+// is tracked in nativeserve/pin_followup.md (STATUS: OUTSTANDING). They name the S1
+// cutover commit 7cb69af02b36, which is not on master until this change squash-merges.
+//
+// This bump is the most load-bearing one the rule has carried so far, because S1
+// changes BOTH sides of the graph. The root/worker side gains the neutral direct-parse
+// observation seam (bamlutils.NativeDirectParseObserveFunc, the worker/parse.go call
+// site, and the workerboot factory option); this module's serve core supplies the
+// implementation that consumes it. A consumer resolving the OLD pin therefore gets a
+// nativeserve written against a root that does not have the seam — and, more quietly,
+// a serve core with NO cohort gate (admission wider than the one reviewed) whose
+// exported telemetry recorders still accept unbounded, secret-shaped label values.
+//
+// The precedent for the follow-up is #672 -> #673: pin to the branch commit only
+// because no master commit carries the change yet, then re-pin all five to the master
+// squash commit and regenerate the tar immediately after the merge.
 //
 // A bump must ALSO move internal/nativebody/nanollmprepare/go.mod's recorded bamlutils +
 // worker selections in LOCKSTEP: nanollmprepare directory-replaces root / bamlutils /
@@ -102,9 +107,9 @@ go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260817212126-e3b8dc320705
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260817212126-e3b8dc320705
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260817212126-e3b8dc320705
+	github.com/invakid404/baml-rest v0.0.0-20260819085842-7cb69af02b36
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260819085842-7cb69af02b36
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260819085842-7cb69af02b36
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/viktordanov/nanollm-ffi/go v0.4.3
