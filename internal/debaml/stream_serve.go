@@ -135,19 +135,24 @@ func SupportsNativeStreamBundle(bundle *schema.Bundle) error {
 // an extra key, exactly as jsonish coerce_class does. A field @description, class/enum
 // @alias/@description, and non-ASCII names/values are ADMITTED too — no key-matching divergence.)
 //
-// NOTE (§5.9 owed debt, ledger #583): for these admitted schemas, five NON-conforming /
-// BAML-jsonish greedy-recovery INPUT classes — a bare unquoted scalar in a string field, an
-// embedded quote in a string, an invalid enum member, a transient extra non-schema field,
-// and a lone incomplete comment marker `/` — still make BAML emit transient greedy-recovery
-// partials that native under-emits/skips (final-consistent, never an over-claim). This is an
-// EXPLICITLY DEFERRED must-close teardown-blocker, NOT a lowered contract: §5.9's exact
-// per-boundary partial parity stays the target.
+// NOTE (§5.9 owed debt, ledger #583): for these admitted schemas, the canonical inventory of
+// residual greedy-recovery INPUT classes is the STRICT/DEFERRED split in
+// integration/stream_typespace_differential_test.go — that executable test is the authority;
+// keep this comment pointed there rather than re-enumerating a count that drifts. §5.9.1
+// collapsed most of the old over-decline leg into STRICT: an invalid enum member, a transient
+// extra non-schema field, a lone incomplete comment marker, and a bare unquoted scalar in a
+// list<string> ELEMENT are now reproduced BYTE-EXACT. TWO genuine residuals remain, each a PURE
+// UNDER-approximation (native SKIPS rather than emit a byte-different value): (1) a bare unquoted
+// scalar in a DIRECT string field — specifically the nested-brace cascade (20 pinned prefixes);
+// (2) the embedded-quote close (measured ~12587 skips). Both are EXPLICITLY DEFERRED must-close
+// teardown-blockers, NOT a lowered contract: §5.9's exact per-boundary partial parity stays the
+// target.
 //
 // After this returns nil, the FINAL for the admitted schema is reproduced byte-exact, and
-// every BAML-success partial boundary is reproduced EXCEPT the five #583 owed-debt triggers
+// every BAML-success partial boundary is reproduced EXCEPT the two #583 owed-debt residuals
 // above (for which native purely UNDER-emits / skips — never a divergent or over-claim emit;
 // proven by the rigorous type-space differential's strict + deferred-byte-check legs and the
-// corpus acceptance probe). The five-trigger exception is deferred debt, NOT a lowered §5.9
+// corpus acceptance probe). The two-residual exception is deferred debt, NOT a lowered §5.9
 // bar — exact per-boundary parity for them stays the target (ledger #583).
 // checkStreamRootSupported applies the root-class stream cut-line. prof is nil for
 // the stream lane and every non-recursive final bundle — the blanket cycle/union
