@@ -76,7 +76,10 @@ func newServeSpy(t *testing.T) *serveSpy {
 	if err != nil {
 		t.Fatalf("admission.NewMetrics: %v", err)
 	}
-	srv := canary.NewServer(m, llmhttp.NewExactExecutor(nil))
+	// Serving-cutover S1: enrolled proof identity, so this end-to-end proof exercises
+	// the serve pipeline BEHIND the default-deny gate (which cohort_serve_test.go
+	// proves refuses everything under the shipped policy).
+	srv := canary.NewServerWithCohortIdentity(m, llmhttp.NewExactExecutor(nil), admission.ProofCohortInputForTest())
 	return &serveSpy{fn: srv.Serve, reg: reg}
 }
 
@@ -259,7 +262,7 @@ func TestNativeServe_ExecutorPanicCountsSocketNoResend(t *testing.T) {
 		t.Fatalf("admission.NewMetrics: %v", err)
 	}
 	// Serve over an executor whose transport panics inside RoundTrip.
-	srv := canary.NewServer(m, llmhttp.NewExactExecutor(panicRoundTripper{}))
+	srv := canary.NewServerWithCohortIdentity(m, llmhttp.NewExactExecutor(panicRoundTripper{}), admission.ProofCohortInputForTest())
 	spy := &serveSpy{fn: srv.Serve, reg: reg}
 
 	fx := dynFixtureByName(t, "single_user_message")

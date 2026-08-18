@@ -159,7 +159,11 @@ func referenceNativePlan(t *testing.T, req bamlutils.NativeShadowRequest) *llmht
 	t.Helper()
 	ct := &countingTransport{}
 	a := admission.NewAdmitter(nil, llmhttp.NewExactExecutor(ct))
-	ad, err := a.Admit(context.Background(), toAdmissionInput(req))
+	// The PROOF identity: production presents the zero one and declines at the
+	// serving-cutover cohort gate (TestComparator_DeclinesAtTheCohortGate below), so
+	// the reference plan this helper needs has to come from behind the gate.
+	in := (&Comparator{}).withCohortIdentity(admission.ProofCohortInputForTest()).toAdmissionInput(req)
+	ad, err := a.Admit(context.Background(), in)
 	if err != nil {
 		t.Fatalf("reference admission declined a well-formed request: %v", err)
 	}
@@ -344,7 +348,7 @@ func TestRecordComparison_HeaderFailClosedOnlyMarksHeadersAndMeta(t *testing.T) 
 	if err != nil {
 		t.Fatalf("NewMetrics: %v", err)
 	}
-	c := NewComparator(m, llmhttp.NewExactExecutor(&countingTransport{}))
+	c := proofComparator(m, llmhttp.NewExactExecutor(&countingTransport{}))
 
 	const body = `{"model":"m"}`
 	native := nativeExact(body, llmhttp.HeaderField{Name: "Content-Type", Value: "application/json"})
@@ -378,7 +382,7 @@ func TestComparator_AdmitMatchRecordsAndDeclines(t *testing.T) {
 		t.Fatalf("NewMetrics: %v", err)
 	}
 	ct := &countingTransport{}
-	c := NewComparator(m, llmhttp.NewExactExecutor(ct))
+	c := proofComparator(m, llmhttp.NewExactExecutor(ct))
 
 	req := shadowRequest(nil)
 	ref := referenceNativePlan(t, req)
@@ -413,7 +417,7 @@ func TestComparator_PlanDriftRecordsMismatch(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m, _ := admission.NewMetrics(reg)
 	ct := &countingTransport{}
-	c := NewComparator(m, llmhttp.NewExactExecutor(ct))
+	c := proofComparator(m, llmhttp.NewExactExecutor(ct))
 
 	req := shadowRequest(nil)
 	ref := referenceNativePlan(t, req)
@@ -446,7 +450,7 @@ func TestComparator_PanickingBAMLBuilderDeclines(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m, _ := admission.NewMetrics(reg)
 	ct := &countingTransport{}
-	c := NewComparator(m, llmhttp.NewExactExecutor(ct))
+	c := proofComparator(m, llmhttp.NewExactExecutor(ct))
 
 	req := shadowRequest(func(context.Context) (*llmhttp.Request, error) {
 		panic("synthetic no-send builder panic")
@@ -471,7 +475,7 @@ func TestComparator_AdmissionDeclineSkipsComparison(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m, _ := admission.NewMetrics(reg)
 	ct := &countingTransport{}
-	c := NewComparator(m, llmhttp.NewExactExecutor(ct))
+	c := proofComparator(m, llmhttp.NewExactExecutor(ct))
 
 	// A trusted provider (resolved + client agree on anthropic) whose config is
 	// incomplete mapping-declines before any plan is built. Under de-BAML mprov S2
@@ -510,7 +514,7 @@ func TestComparator_ProductionRegistryMapping(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m, _ := admission.NewMetrics(reg)
 	ct := &countingTransport{}
-	c := NewComparator(m, llmhttp.NewExactExecutor(ct))
+	c := proofComparator(m, llmhttp.NewExactExecutor(ct))
 
 	req := shadowRequest(nil)
 	// A realistic dynamic registry: primary names the sole openai client, values
@@ -642,7 +646,7 @@ func TestComparator_RetryOverrideDeclinesBeforeBuild(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m, _ := admission.NewMetrics(reg)
 	ct := &countingTransport{}
-	c := NewComparator(m, llmhttp.NewExactExecutor(ct))
+	c := proofComparator(m, llmhttp.NewExactExecutor(ct))
 
 	req := shadowRequest(func(context.Context) (*llmhttp.Request, error) {
 		t.Fatal("BuildBAMLRequest must not run for a request-retry-override decline")
@@ -675,7 +679,7 @@ func TestComparator_URLRewriteOrProxyDeclinesBeforeBuild(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m, _ := admission.NewMetrics(reg)
 	ct := &countingTransport{}
-	c := NewComparator(m, llmhttp.NewExactExecutor(ct))
+	c := proofComparator(m, llmhttp.NewExactExecutor(ct))
 
 	req := shadowRequest(func(context.Context) (*llmhttp.Request, error) {
 		t.Fatal("BuildBAMLRequest must not run for a url-rewrite/proxy decline")
@@ -710,4 +714,38 @@ func hasFamily(fams []*dto.MetricFamily, name string) bool {
 		}
 	}
 	return false
+}
+
+// proofComparator is the comparator the mechanics tests drive: it presents the
+// enrolled PROOF identity so the comparison behind the serving-cutover default-deny
+// gate is reachable at all. The comparator a shadow worker installs presents the
+// production (zero) identity — see TestComparator_ProductionIdentityDeclinesAtTheCohortGate.
+func proofComparator(m *admission.Metrics, exec *llmhttp.ExactExecutor) *Comparator {
+	return NewComparator(m, exec).withCohortIdentity(admission.ProofCohortInputForTest())
+}
+
+// TestComparator_ProductionIdentityDeclinesAtTheCohortGate pins what the SHIPPED
+// shadow profile does after serving-cutover S1: it presents no configuration
+// identity, so the default-deny gate refuses it before any native work and the
+// comparison never runs.
+//
+// The first draft gave the no-send profiles their own all-surface enrolled gate so
+// they could keep measuring. A cold review called that a second non-empty admission
+// policy inside S1 — which is exactly what the slice forbids — so the exception is
+// gone and this is the honest, tested consequence: while nothing is enrolled, the
+// shadow artifact reports cohort_not_enrolled rather than a per-layer decline
+// distribution. Restoring deeper no-send observation needs its own approved design.
+func TestComparator_ProductionIdentityDeclinesAtTheCohortGate(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m, err := admission.NewMetrics(reg)
+	if err != nil {
+		t.Fatalf("NewMetrics: %v", err)
+	}
+	ct := &countingTransport{}
+	c := NewComparator(m, llmhttp.NewExactExecutor(ct))
+	out := c.Compare(context.Background(), shadowRequest(nil))
+	if out.Stage != "cohort" || out.Reason != "cohort_not_enrolled" {
+		t.Fatalf("shipped shadow decline = (%s, %s), want (cohort, cohort_not_enrolled)", out.Stage, out.Reason)
+	}
+	assertNoSocket(t, ct)
 }

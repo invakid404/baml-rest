@@ -16,6 +16,7 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/internal/debaml"
 	"github.com/invakid404/baml-rest/nativeserve"
+	"github.com/invakid404/baml-rest/nativeserve/admission"
 )
 
 // The /stream half of the route boundary, live, per operator.
@@ -66,7 +67,8 @@ func (s *StreamSpy) NativeSocketsZero() bool {
 // NewStreamSpy builds a stream spy around a fresh serve func.
 func NewStreamSpy(t *testing.T) *StreamSpy {
 	t.Helper()
-	fn, err := nativeserve.NewStaticStream(prometheus.NewRegistry())
+	// Serving-cutover S1: enrolled proof identity — see harness.go.
+	fn, err := nativeserve.NewStaticStreamWithCohortIdentity(prometheus.NewRegistry(), admission.ProofCohortInputForTest())
 	if err != nil {
 		t.Fatalf("nativeserve.NewStaticStream: %v", err)
 	}

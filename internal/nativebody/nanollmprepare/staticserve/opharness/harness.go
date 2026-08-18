@@ -44,6 +44,7 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/nativeserve"
+	"github.com/invakid404/baml-rest/nativeserve/admission"
 )
 
 // Spy wraps the serve func from the PUBLIC nativeserve.NewStaticServe, counting
@@ -87,7 +88,11 @@ func (s *Spy) LastDecline() (int64, string, string) {
 func NewSpy(t *testing.T) *Spy {
 	t.Helper()
 	reg := prometheus.NewRegistry()
-	fn, err := nativeserve.NewStaticServe(reg)
+	// Serving-cutover S1: the shipped cohort policy enrolls nothing, so the plain
+	// NewStaticServe factory declines every call pre-socket. These operator-route
+	// proofs are about the SERVE pipeline behind that gate, so the harness presents
+	// the enrolled proof identity.
+	fn, err := nativeserve.NewStaticServeWithCohortIdentity(reg, admission.ProofCohortInputForTest())
 	if err != nil {
 		t.Fatalf("nativeserve.NewStaticServe: %v", err)
 	}

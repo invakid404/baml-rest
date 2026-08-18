@@ -35,6 +35,12 @@ type StaticClaim struct {
 	// Alias is the fixed internal nanollm alias the plan was prepared under and
 	// TranslateResponse is called with (never a target model / selected client).
 	Alias string
+	// Surface is the closed serving surface this LANE derived (always
+	// SurfaceStaticCall here), and Cohort is the bounded configuration bucket the
+	// layer-1b gate resolved. Both are secret-free bounded tokens the serve boundary
+	// attributes its phase/winner telemetry with.
+	Surface Surface
+	Cohort  CohortID
 }
 
 // Client returns the request-scoped nanollm engine (nil after Close).

@@ -129,6 +129,11 @@ func argOrderOf(fn promptdescriptor.Function) []string {
 // generated args + declared order, and the BAML Request.<Method> no-send plan closure.
 func staticInputFor(t *testing.T, fn promptdescriptor.Function, c staticCase) admission.StaticInput {
 	return admission.StaticInput{
+		// The enrolled PROOF identity, so this manifest still measures the whole
+		// predicate. Production presents the zero identity — the static observer gets
+		// no exception for being no-send — and therefore declines at the
+		// serving-cutover cohort gate; that is proven in nativeserve/admission.
+		Cohort:              admission.ProofCohortInputForTest(),
 		WorkerCapable:       true,
 		RequestAPIPresent:   true,
 		OnBuildRequestRoute: true,

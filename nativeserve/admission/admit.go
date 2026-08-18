@@ -77,6 +77,14 @@ type Input struct {
 	Alias        string
 	Messages     []bamlutils.DynamicMessage
 	OutputSchema *bamlutils.DynamicOutputSchema
+
+	// Cohort is the serving-cutover S1 configuration identity + the default-deny
+	// cohort gate it is evaluated against (layer 1b). Production leaves BOTH halves
+	// zero: no config-load path assigns a fingerprint yet, and a nil gate selects the
+	// shipped EMPTY [ProductionCohortGate] — so every production request resolves to
+	// CohortNone and declines with cohort_not_enrolled before any native work. See
+	// cohort.go for the whole contract.
+	Cohort CohortInput
 }
 
 // Admitted is a native plan proven up to — but NOT including — the exact
@@ -98,6 +106,13 @@ type Admitted struct {
 	Alias        string
 	Target       string
 	Provider     string
+	// Surface is the closed serving surface the admitting LANE derived (never a
+	// caller-supplied value), and Cohort is the bounded configuration bucket the
+	// request's opaque fingerprint resolved to. Both are secret-free bounded tokens
+	// carried out so the serve boundary can attribute its phase/winner telemetry to
+	// the same identity admission gated on.
+	Surface Surface
+	Cohort  CohortID
 	// Verification is the post-Prepare verification policy the mapper assigned
 	// (§6): PolicyStrictOpenAI runs the byte-exact OpenAI oracles + BAML plan/
 	// response comparisons; PolicyTrustedProvider runs only provider-neutral
@@ -287,6 +302,24 @@ func (a *Admitter) admitCore(ctx context.Context, in Input, recordAdmitted, stre
 			return decline(d)
 		}
 	}
+
+	// --- Layer 1b: DEFAULT-DENY cohort admission (serving cutover S1) ------
+	// Layer 1 has just established the SURFACE (route kind + method + mode), so this
+	// is the first point at which the closed surface/cohort identity can be checked
+	// — and it is checked BEFORE every remaining layer, so no native work (no
+	// nanollm New, no render, no Prepare, no claim, hence no socket) happens for a
+	// configuration class that is not enrolled. The surface is DERIVED from the lane
+	// (unary vs stream), never read from the Input, so a caller cannot claim a
+	// surface it is not on. With S1's EMPTY production policy this declines every
+	// request that reaches it; it can only NARROW — no existing predicate moved or
+	// relaxed, and a flag-off / wrong-route / wrong-mode request still reports its
+	// own layer-1 reason above.
+	surface := dynamicSurface(stream)
+	cohort, cd := admitCohort(surface, in.Cohort)
+	if cd != nil {
+		return decline(cd)
+	}
+
 	// Output schema present (layer 1). The bounds check follows once the message
 	// surface is validated, but an absent schema declines up front.
 	if in.OutputSchema == nil {
@@ -576,6 +609,8 @@ func (a *Admitter) admitCore(ctx context.Context, in Input, recordAdmitted, stre
 		Alias:        in.Alias,
 		Target:       facts.target,
 		Provider:     facts.provider,
+		Surface:      surface,
+		Cohort:       cohort,
 		Verification: policy,
 	}, client, nreq, nil
 }

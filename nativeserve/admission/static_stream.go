@@ -87,6 +87,13 @@ type StaticStreamInput struct {
 	// BuildBAMLRequest builds BAML's **StreamRequest** plan WITHOUT sending, for the
 	// strict plan compare. A nil closure records a decline (no plan to compare).
 	BuildBAMLRequest func(ctx context.Context) (*llmhttp.Request, error)
+
+	// Cohort is the serving-cutover S1 configuration identity + the default-deny
+	// cohort gate it is evaluated against (layer 1b), exactly as on the dynamic
+	// [Input] and the unary [StaticInput]. Production leaves both halves zero, so
+	// every static stream resolves to CohortNone and declines with
+	// cohort_not_enrolled before any native work.
+	Cohort CohortInput
 }
 
 // StaticStreamClaim is the static-stream serve token AdmitStaticStreamClaim returns on a
@@ -108,6 +115,11 @@ type StaticStreamClaim struct {
 	ExactRequest *llmhttp.ExactAttemptRequest
 	// Alias is the fixed internal nanollm alias the plan was prepared under.
 	Alias string
+	// Surface is the closed serving surface this LANE derived (always
+	// SurfaceStaticStream here), and Cohort is the bounded configuration bucket the
+	// layer-1b gate resolved. Both are secret-free bounded tokens.
+	Surface Surface
+	Cohort  CohortID
 	// request is the OpenAI-format streaming nanollm.Request the executor hands DoStream.
 	request nanollm.Request
 }
@@ -173,7 +185,7 @@ func admittedStaticStreamReturnShape(b *schema.Bundle) bool {
 // socket occurred. The caller MUST Close the returned claim on every path.
 func AdmitStaticStreamClaim(ctx context.Context, in StaticStreamInput) (*StaticStreamClaim, error) {
 	// --- Layers 1-3b: build/flag/route, mode, strategy, descriptor, Return bundle ---
-	bundle, fn, dec := admitStaticStreamThroughBundle(ctx, in)
+	bundle, fn, cohort, dec := admitStaticStreamThroughBundle(ctx, in)
 	if dec != nil {
 		return nil, staticDeclineFromObs(*dec)
 	}
@@ -210,6 +222,8 @@ func AdmitStaticStreamClaim(ctx context.Context, in StaticStreamInput) (*StaticS
 		ExactRequest: prep.exactRequest,
 		Alias:        prep.alias,
 		request:      req,
+		Surface:      SurfaceStaticStream,
+		Cohort:       cohort,
 	}, nil
 }
 
@@ -217,10 +231,10 @@ func AdmitStaticStreamClaim(ctx context.Context, in StaticStreamInput) (*StaticS
 // the STREAM mode gate, the orchestration-plan gate, descriptor envelope + arg binder,
 // and Return-Bundle lower/support) and returns the lowered Return Bundle + descriptor on
 // success, or a bounded decline. It opens NO socket and does NO nanollm work.
-func admitStaticStreamThroughBundle(ctx context.Context, in StaticStreamInput) (*schema.Bundle, promptdescriptor.Function, *StaticObservation) {
-	decline := func(family bamlutils.NativeStaticObserveFamily, stage Stage, reason Reason) (*schema.Bundle, promptdescriptor.Function, *StaticObservation) {
+func admitStaticStreamThroughBundle(ctx context.Context, in StaticStreamInput) (*schema.Bundle, promptdescriptor.Function, CohortID, *StaticObservation) {
+	decline := func(family bamlutils.NativeStaticObserveFamily, stage Stage, reason Reason) (*schema.Bundle, promptdescriptor.Function, CohortID, *StaticObservation) {
 		o := declineStatic(family, stage, reason)
-		return nil, promptdescriptor.Function{}, &o
+		return nil, promptdescriptor.Function{}, CohortNone, &o
 	}
 
 	// --- Layer 1: build / flag / route --------------------------------------
@@ -248,6 +262,17 @@ func admitStaticStreamThroughBundle(ctx context.Context, in StaticStreamInput) (
 		return decline(bamlutils.NativeStaticFamilyClient, StageMode, reasonModeUnsupported)
 	}
 
+	// --- Layer 1b: DEFAULT-DENY cohort admission (serving cutover S1) -------
+	// The static-STREAM twin of the layer-1b gate, in this lane's shared core and
+	// before the orchestration-plan, descriptor, return-shape, render and nanollm
+	// New/Prepare work below — so a non-enrolled static stream costs ZERO native work
+	// and opens no socket. The surface is this LANE's constant (static_stream), so a
+	// cohort enrolled only for static_call can never claim a stream.
+	cohort, cd := admitCohort(SurfaceStaticStream, in.Cohort)
+	if cd != nil {
+		return decline(bamlutils.NativeStaticFamilyCapability, cd.Stage, cd.Reason)
+	}
+
 	// --- Layer 2: whole orchestration plan + selected-child facts -----------
 	if !in.SingleLeaf {
 		return decline(bamlutils.NativeStaticFamilyClient, StageStrategy, ReasonNotSingleLeaf)
@@ -268,7 +293,7 @@ func admitStaticStreamThroughBundle(ctx context.Context, in StaticStreamInput) (
 	// --- Layer 3: descriptor envelope + arg binder --------------------------
 	fn := in.Descriptor
 	if d := checkStaticEnvelope(fn, in.Method); d != nil {
-		return nil, promptdescriptor.Function{}, d
+		return nil, promptdescriptor.Function{}, CohortNone, d
 	}
 	if d := checkArgBinder(fn.Args, in.ArgOrder, in.Args); d != "" {
 		return decline(bamlutils.NativeStaticFamilyDescriptorEnvelope, StageMethod, d)
@@ -277,9 +302,9 @@ func admitStaticStreamThroughBundle(ctx context.Context, in StaticStreamInput) (
 	// --- Layer 3b: Return Bundle lower / validate / native final support ----
 	bundle, d := checkStaticReturnBundle(fn)
 	if d != nil {
-		return nil, promptdescriptor.Function{}, d
+		return nil, promptdescriptor.Function{}, CohortNone, d
 	}
-	return bundle, fn, nil
+	return bundle, fn, cohort, nil
 }
 
 // admitStaticStreamPrepare runs the static-stream layers 4-6 (static prompt render, the

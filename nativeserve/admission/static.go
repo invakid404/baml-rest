@@ -17,17 +17,32 @@ import (
 	nanollm "github.com/viktordanov/nanollm-ffi/go"
 )
 
-// De-BAML Slice 8B — static unary no-send admission (OBSERVE-ONLY).
+// De-BAML — the STATIC native admission route, alongside the existing dynamic one.
 //
-// This file adds the STATIC native admission route alongside the existing dynamic
-// one. It is deliberately OBSERVE-ONLY: AdmitStatic runs the full pre-socket
-// predicate (envelope validation, arg-binder match, Return-Bundle lower/support,
-// RenderStatic, canonical body, nanollm New/Prepare, and the strict BAML
-// `Request.<Method>` no-send plan compare) and then ALWAYS records an observation
-// and forces a decline. It NEVER claims a native attempt, NEVER opens a socket, and
-// NEVER RoundTrips — the generated `Request.<Method>` / `Parse.<Method>` (BAML)
-// serve every request exactly as today. It proves ATTACHMENT with zero behavior
-// change.
+// TWO ENTRY POINTS, ONE PREDICATE. This file's history describes an observe-only
+// slice (8B), which is no longer the whole picture: Slice 8C added the SERVING
+// entry point next to the observing one, and both run the SAME predicate through
+// admitStaticThroughPrepare + staticPlanCompareObservation:
+//
+//   - [AdmitStatic] is the OBSERVER. It runs the full pre-socket predicate
+//     (envelope validation, arg-binder match, Return-Bundle lower/support,
+//     RenderStatic, canonical body, nanollm New/Prepare, and the strict BAML
+//     `Request.<Method>` no-send plan compare), records the tri-state observation,
+//     and ALWAYS forces a decline. It never claims, never opens a socket, never
+//     RoundTrips.
+//   - [AdmitStaticClaim] is the SERVE path. On a full would-admit — every gate
+//     passed AND the native plan byte-matched BAML's — it additionally applies the
+//     serve-only proven-return-shape gate and CLAIMS the attempt, keeping the
+//     request-scoped engine alive so the serve core can perform exactly ONE
+//     RoundTrip. Every pre-claim decline still guarantees no socket occurred.
+//
+// So "this route never serves" is FALSE as a property of the file; what is true —
+// and what the executable gates enforce — is that a static request is served
+// natively only when it is admitted through AdmitStaticClaim by a serve-profile
+// worker. The serving-cutover S1 slice narrowed that further: admission now also
+// requires an ENROLLED surface/cohort pair (layer 1b below), and the shipped policy
+// enrolls nothing, so every static request declines pre-socket today and BAML
+// serves it.
 //
 // SENSITIVE: every value the predicate touches (descriptor, args, rendered prompt,
 // canonical body, prepared plan, BAML plan) carries secret material — never log,
@@ -170,6 +185,12 @@ type StaticInput struct {
 	// BuildBAMLRequest builds BAML's `Request.<Method>` plan WITHOUT sending, for
 	// the strict plan compare. A nil closure records a decline (no plan to compare).
 	BuildBAMLRequest func(ctx context.Context) (*llmhttp.Request, error)
+
+	// Cohort is the serving-cutover S1 configuration identity + the default-deny
+	// cohort gate it is evaluated against (layer 1b), exactly as on the dynamic
+	// [Input]. Production leaves both halves zero, so every static request resolves
+	// to CohortNone and declines with cohort_not_enrolled before any native work.
+	Cohort CohortInput
 }
 
 // StaticObservation is the tri-state observation AdmitStatic records before forcing
@@ -199,6 +220,10 @@ type staticPrepared struct {
 	bundle       *schema.Bundle
 	exactRequest *llmhttp.ExactAttemptRequest
 	alias        string
+	// cohort is the bounded configuration bucket the layer-1b gate resolved for this
+	// request. It is carried out to the claim so the serve boundary attributes its
+	// phase/winner telemetry to the identity admission actually gated on.
+	cohort CohortID
 }
 
 func (p *staticPrepared) close() {
@@ -276,6 +301,8 @@ func AdmitStaticClaim(ctx context.Context, in StaticInput) (*StaticClaim, error)
 		Bundle:       prep.bundle,
 		ExactRequest: prep.exactRequest,
 		Alias:        prep.alias,
+		Surface:      SurfaceStaticCall,
+		Cohort:       prep.cohort,
 	}, nil
 }
 
@@ -325,6 +352,24 @@ func admitStaticThroughPrepare(ctx context.Context, in StaticInput) (*staticPrep
 	// gate (truthful — the generated seam forwards adapter.StreamMode().NeedsRaw()).
 	if in.Raw {
 		return decline(bamlutils.NativeStaticFamilyClient, StageMode, reasonCallWithRawUnprove)
+	}
+
+	// --- Layer 1b: DEFAULT-DENY cohort admission (serving cutover S1) -------
+	// The static twin of admitCore's layer-1b gate, in the SHARED static core so
+	// both the observe path (AdmitStatic) and the serve path (AdmitStaticClaim) —
+	// and the Stage-1 static shadow, which also enters through AdmitStaticClaim —
+	// evaluate it. It runs before the orchestration-plan, descriptor, render,
+	// client-normalize and nanollm New/Prepare work below, so a non-enrolled static
+	// configuration costs ZERO native work and provably opens no socket. The surface
+	// is the LANE's constant, never a caller field. It only NARROWS.
+	//
+	// The bounded observe FAMILY is `capability`: like the flag/route/build rows just
+	// above, this is a deployment-level refusal, and the precision lives in the
+	// (cohort, cohort_not_enrolled) stage/reason pair rather than in a new
+	// cross-module enum value.
+	cohort, cd := admitCohort(SurfaceStaticCall, in.Cohort)
+	if cd != nil {
+		return decline(bamlutils.NativeStaticFamilyCapability, cd.Stage, cd.Reason)
 	}
 
 	// --- Layer 2: whole orchestration plan + selected-child facts -----------
@@ -446,6 +491,7 @@ func admitStaticThroughPrepare(ctx context.Context, in StaticInput) (*staticPrep
 		bundle:       bundle,
 		exactRequest: exactRequestFromPlan(prep),
 		alias:        alias,
+		cohort:       cohort,
 	}, nil
 }
 
@@ -524,6 +570,16 @@ func AdmitStaticParse(ctx context.Context, in StaticInput) StaticObservation {
 	}
 	if !in.FlagEnabled {
 		return declineStatic(bamlutils.NativeStaticFamilyCapability, StageFlag, ReasonFlagDisabled)
+	}
+	// Layer 1b: the DEFAULT-DENY cohort gate, on the parse-only leg too. This
+	// predicate does no native work at all (no bind, no render, no body, no nanollm)
+	// and ALWAYS declines, so gating it changes no serving behaviour — it is here so
+	// the rule has NO exceptions: every exported admission entry point evaluates the
+	// gate the moment its surface is established. The parse-only leg belongs to the
+	// static CALL surface; the direct `/parse/{method}` endpoint is a different
+	// surface with no native seam at all (see SurfaceDirectParse).
+	if _, cd := admitCohort(SurfaceStaticCall, in.Cohort); cd != nil {
+		return declineStatic(bamlutils.NativeStaticFamilyCapability, cd.Stage, cd.Reason)
 	}
 
 	fn := in.Descriptor

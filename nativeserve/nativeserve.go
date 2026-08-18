@@ -76,9 +76,12 @@ func New(reg prometheus.Registerer) (bamlutils.NativeServeFunc, error) {
 // with zero native FFI / socket / plan build.
 //
 // It is a thin, stable pass-through to the relocated serve core so the subprocess
-// serve worker drives byte-identical native streaming. reg is retained for
-// signature symmetry with [New]; the stream lane records no de-BAML counters this
-// phase (the rollout observability is owner-trimmed), so it never errors on reg.
+// serve worker drives byte-identical native streaming. reg is USED, not decorative:
+// the factory reuses the worker's collectors so this lane records the serving-cutover
+// surface/cohort/phase/winner series AND its own admission decline/attempt counters,
+// and it therefore returns an error if the collectors cannot be resolved. (An earlier
+// revision retained reg for signature symmetry only; two review rounds caught the
+// consequence — a shipped dynamic_stream profile that emitted nothing.)
 func NewStream(reg prometheus.Registerer) (bamlutils.NativeStreamServeFunc, error) {
 	return canary.NewStreamServeFunc(reg)
 }
@@ -96,8 +99,10 @@ func NewStream(reg prometheus.Registerer) (bamlutils.NativeStreamServeFunc, erro
 // socket, RoundTrips NOTHING, and serves NO native result — it proves ATTACHMENT
 // with zero behavior change.
 //
-// reg is retained for signature symmetry with [New]; 8B records no de-BAML counters
-// (observe-only), so it never errors on reg. With the umbrella flag off the generated
+// reg is retained for signature symmetry with [New]: the observer always declines and
+// records no de-BAML counters of its own, so it never errors on reg. (The bounded
+// observation it reports flows through the caller's static-observe family, not through
+// these collectors.) With the umbrella flag off the generated
 // static seam never installs the callback, so the static path stays byte-identical
 // BAML with zero native FFI / socket / plan build.
 //
@@ -144,9 +149,12 @@ func NewStaticServe(reg prometheus.Registerer) (bamlutils.NativeStaticServeFunc,
 //
 // It is a thin pass-through to the relocated serve core (canary). With the umbrella flag
 // off the generated static stream seam never installs the callback, so the static stream
-// path stays byte-identical BAML with zero native FFI / socket / plan build. reg is
-// retained for signature symmetry with [NewStaticServe]; the static stream lane records no
-// per-lane counters this phase.
+// path stays byte-identical BAML with zero native FFI / socket / plan build. reg is USED:
+// the factory reuses the worker's collectors so this lane records the serving-cutover
+// surface/cohort/phase/winner series, and it returns an error if they cannot be resolved.
+// Its own per-lane STREAM decline/attempt counters remain owner-trimmed — the static
+// stream claim runs through package-level admission functions that carry no metrics
+// receiver — so the cutover accounting is what this registry buys.
 func NewStaticStream(reg prometheus.Registerer) (bamlutils.NativeStaticStreamServeFunc, error) {
 	return canary.NewStaticStreamServeFunc(reg)
 }
@@ -167,8 +175,21 @@ func NewStaticShadow(reg prometheus.Registerer) (bamlutils.NativeStaticShadowFun
 }
 
 func NewStaticObserve(reg prometheus.Registerer) (bamlutils.NativeStaticObserveFunc, error) {
+	return newStaticObserve(reg, admission.CohortInput{})
+}
+
+// newStaticObserve is NewStaticObserve with the configuration identity as a
+// parameter. Production passes the zero identity; only the gated identity variant
+// passes anything else.
+func newStaticObserve(reg prometheus.Registerer, identity admission.CohortInput) (bamlutils.NativeStaticObserveFunc, error) {
 	return func(ctx context.Context, inv bamlutils.NativeStaticInvocation) bamlutils.NativeStaticResult {
 		si := admission.StaticInput{
+			// Serving-cutover S1: production passes the zero configuration identity here,
+			// exactly like the serve lanes, so the observer declines at the default-deny
+			// gate while nothing is enrolled. It gets no exception for being no-send: an
+			// "observe" gate that enrolled every surface would be a second non-empty
+			// admission policy inside S1, which is precisely what the slice forbids.
+			Cohort:                  identity,
 			WorkerCapable:           true,
 			RequestAPIPresent:       true,
 			OnBuildRequestRoute:     true,
@@ -211,5 +232,50 @@ func NewStaticObserve(reg prometheus.Registerer) (bamlutils.NativeStaticObserveF
 			Stage:       obs.Stage,
 			Reason:      obs.Reason,
 		}
+	}, nil
+}
+
+// NewDirectParseObserve constructs the DIRECT-PARSE observation sink (de-BAML
+// serving cutover S1) and returns it as the neutral
+// [bamlutils.NativeDirectParseObserveFunc] a native-capable worker installs via
+// workerboot.Options.NativeDirectParseObserveFactory (only while the umbrella flag
+// is on).
+//
+// `/parse/{method}` is the fifth declared serving surface and the only one that never
+// reaches native admission: worker/parse.go invokes BAML's method.Impl /
+// method.StreamImpl directly. Without this sink that endpoint class would be the one
+// hole in the cutover's per-request accounting — its rollout-stop series would exist
+// but nothing would ever confirm that BAML actually owned the traffic.
+//
+// For each direct-parse request it runs admission.AdmitDirectParse — the SAME
+// default-deny cohort gate the other four surfaces run, followed by an unconditional
+// refusal, because there is no native parse to claim — and records the resulting
+// pre-claim decline plus the baml_transport winner on the worker's registry. It
+// serves nothing, claims nothing and returns nothing the parse route acts on; BAML
+// parses the request exactly as it did before.
+//
+// With the umbrella flag off no worker installs it, so the surface reports nothing —
+// the same zero-native-observation property the other four lanes have.
+func NewDirectParseObserve(reg prometheus.Registerer) (bamlutils.NativeDirectParseObserveFunc, error) {
+	m, err := admission.NewMetricsReusing(reg)
+	if err != nil {
+		return nil, err
+	}
+	return func(ctx context.Context, obs bamlutils.NativeDirectParseObservation) {
+		// The production configuration identity: zero, exactly like the serve lanes,
+		// so the gate resolves CohortNone and refuses.
+		cohort, decline := admission.AdmitDirectParse(ctx, admission.DirectParseInput{
+			Stream: obs.Stream,
+			Cohort: admission.CohortInput{},
+		})
+		if decline == nil {
+			// UNREACHABLE: AdmitDirectParse always declines. Recording a claim here
+			// would be a rollout-stop event, so if the impossible happens it must be
+			// visible in the series that alert watches rather than swallowed.
+			m.RecordAdmissionPhase(admission.SurfaceDirectParse, cohort, admission.PhaseClaimed)
+			m.RecordWinner(admission.SurfaceDirectParse, cohort, admission.WinnerNative)
+			return
+		}
+		m.RecordPreclaimDecline(admission.SurfaceDirectParse, cohort)
 	}, nil
 }

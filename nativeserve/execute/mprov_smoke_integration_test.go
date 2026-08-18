@@ -54,6 +54,10 @@ const (
 // provider registry.
 func smokeInput(reg *bamlutils.ClientRegistry, provider string) admission.Input {
 	return admission.Input{
+		// The proof cohort identity: this suite drives the real AdmitClaim, so without
+		// an enrolled identity it would decline at the serving-cutover default-deny
+		// gate before any mapping/Prepare work (which is exactly what that gate is for).
+		Cohort:              admission.ProofCohortInputForTest(),
 		WorkerCapable:       true,
 		RequestAPIPresent:   true,
 		OnBuildRequestRoute: true,

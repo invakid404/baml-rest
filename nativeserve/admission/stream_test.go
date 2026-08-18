@@ -34,6 +34,10 @@ import (
 // (allow_as_string diverges), so the stream fixture uses a >=2-field class with a
 // last unquoted-scalar field — the admitted §11 matrix shape.
 func streamInput() Input {
+	// validInput already presents the PROOF cohort identity, which the proof gate
+	// enrolls on every surface — including dynamic_stream, the surface this lane
+	// derives — so the stream CLAIM below reaches the layers behind the
+	// serving-cutover default-deny gate.
 	in := validInput()
 	in.Mode = ModeStream
 	in.OutputSchema = admittedStreamSchema()

@@ -57,6 +57,7 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
 	"github.com/invakid404/baml-rest/nativeserve"
+	"github.com/invakid404/baml-rest/nativeserve/admission"
 )
 
 // staticInvocationLikeGenerated builds the NativeStaticInvocation the generated
@@ -89,7 +90,10 @@ func staticInvocationLikeGenerated(
 
 func TestStaticObserveEndToEnd(t *testing.T) {
 	descriptors := buildDescriptors(t)
-	observe, err := nativeserve.NewStaticObserve(prometheus.NewRegistry())
+	// Serving-cutover S1: the shipped observer presents no configuration identity and
+	// declines at the default-deny gate, so this ATTACHMENT proof presents the
+	// enrolled proof identity to reach the predicate behind it.
+	observe, err := nativeserve.NewStaticObserveWithCohortIdentity(prometheus.NewRegistry(), admission.ProofCohortInputForTest())
 	if err != nil {
 		t.Fatalf("NewStaticObserve: %v", err)
 	}

@@ -86,6 +86,18 @@ type Server struct {
 	// unreachable through Serve. Production never rebinds it.
 	admitClaim func(ctx context.Context, in admission.Input) (*admission.Claim, error)
 
+	// cohort is the serving-cutover configuration identity THIS server presents to
+	// admission, for both the dynamic and the static unary lane. Production leaves it
+	// ZERO — no config-load path assigns an opaque configuration fingerprint yet — so
+	// every request resolves to admission.CohortNone and the default-deny gate declines
+	// it before any native work. It is set to a non-zero identity ONLY by
+	// [NewServerWithCohortIdentity], which the gated end-to-end proofs use to exercise
+	// the serving pipeline the shipped policy does not enable yet. It is NOT a rollout
+	// control: the factories a worker installs (NewServeFunc / NewStaticServeFunc)
+	// present the zero identity, and enrolling a cohort is a change to the shipped
+	// policy, not to this field.
+	cohort admission.CohortInput
+
 	// staticAdmitClaim is the static admission step ServeStatic runs (de-BAML Slice
 	// 8C). It defaults to admission.AdmitStaticClaim (the real production predicate)
 	// and is OVERRIDDEN ONLY by same-package tests to inject a SYNTHETIC static claim
@@ -118,8 +130,7 @@ func NewServeFunc(reg prometheus.Registerer) (bamlutils.NativeServeFunc, error) 
 	if err != nil {
 		return nil, err
 	}
-	s := NewServer(m, llmhttp.NewExactExecutor(nil))
-	return s.Serve, nil
+	return NewServer(m, llmhttp.NewExactExecutor(nil)).Serve, nil
 }
 
 // Serve is the bamlutils.NativeServeFunc. It runs S3 admission (keeping the
@@ -131,6 +142,19 @@ func NewServeFunc(reg prometheus.Registerer) (bamlutils.NativeServeFunc, error) 
 // only SUCCEEDS or FAILS.
 func (s *Server) Serve(ctx context.Context, req bamlutils.NativeServeRequest) (result bamlutils.NativeServeResult) {
 	claimed := false
+	// Serving-cutover S1 identity: the surface is this LANE's constant (the callback
+	// is installed only on the dynamic unary Request path) and the cohort is what the
+	// default-deny gate resolves for the request's configuration identity — the SAME
+	// bounded bucket admission gates on, so a decline recorded here and a decline
+	// recorded by admission carry identical labels. Production resolves CohortNone.
+	in := s.toAdmissionInput(req)
+	surface, cohort := admission.SurfaceDynamicCall, admission.ResolveCohort(s.serveCohortInput(req))
+	// Registered FIRST so it runs LAST: it observes the final named result, including
+	// the one the panic guard below substitutes. It records EXACTLY ONE phase+winner
+	// pair per request (pre-claim decline, or the post-claim terminal), which is what
+	// makes "sockets == claimed" and "every request has exactly one winner" provable
+	// rather than asserted.
+	defer func() { s.recordServeTerminal(surface, cohort, claimed, result.Disposition, result.WinnerEngine) }()
 	defer func() {
 		if r := recover(); r != nil {
 			if claimed {
@@ -171,7 +195,7 @@ func (s *Server) Serve(ctx context.Context, req bamlutils.NativeServeRequest) (r
 		return declineResult(stageServe, reasonNilOutputSchema)
 	}
 
-	claim, err := s.admitClaim(ctx, toAdmissionInput(req))
+	claim, err := s.admitClaim(ctx, in)
 	if err != nil {
 		var d *admission.Decline
 		if errors.As(err, &d) {
@@ -232,6 +256,11 @@ func (s *Server) Serve(ctx context.Context, req bamlutils.NativeServeRequest) (r
 	// CLAIM the native attempt (ownership boundary). From here every terminal
 	// condition is SUCCESS or FAILURE — never a decline, never a hidden resend.
 	claimed = true
+	// The claimed phase is recorded HERE, at the true claim boundary — not when
+	// admission returned a Claim, because the plan-compare / plan-expiry / ctx gates
+	// above can still decline PRE-SOCKET after admission succeeded. Recording it here
+	// keeps claimed == native_sockets exactly (operational invariant 2).
+	s.metrics.RecordAdmissionPhase(surface, cohort, admission.PhaseClaimed)
 
 	// native_sockets_total is recorded EXACTLY ONCE per claimed attempt — including
 	// a panic in the executor/translation/parser (which the panic guard turns into
@@ -364,6 +393,13 @@ func (s *Server) serveStructured(ctx context.Context, req bamlutils.NativeServeR
 	// gating) so the reasoning facet compares apples-to-apples for the served
 	// envelope — a plain `call` (reasoning off) compares two empty channels, not a
 	// forced-on native-vs-off drift.
+	//
+	// The strict same-response oracle runs from here, so record its own phase: BAML
+	// extracts + parses the SAME bytes the ONE native provider request returned. A
+	// separate phase is what keeps "BAML parsed these bytes" from ever reading as
+	// "BAML transported this request".
+	s.metrics.RecordAdmissionPhase(admission.SurfaceDynamicCall, admission.ResolveCohort(s.serveCohortInput(req)), admission.PhaseSameResponseOracle)
+
 	bamlParseable, bamlRaw, bamlReasoning, xerr := buildrequest.ExtractResponseContentBytes("openai", res.ProviderBody, req.IncludeReasoning)
 	if xerr != nil {
 		// BAML extraction errors on bytes native claims -> return the extraction
@@ -625,7 +661,7 @@ func responseResult(match bool) admission.ResponseCompareResult {
 // non-streaming Request path only), so those layer-1 facts are fixed true; the
 // TRUTHFUL request-retry-override fact, the WouldRewriteOrProxy predicate, and
 // provider/registry/messages/schema come from the request.
-func toAdmissionInput(req bamlutils.NativeServeRequest) admission.Input {
+func (s *Server) toAdmissionInput(req bamlutils.NativeServeRequest) admission.Input {
 	return admission.Input{
 		WorkerCapable:           true,
 		RequestAPIPresent:       true,
@@ -644,7 +680,56 @@ func toAdmissionInput(req bamlutils.NativeServeRequest) admission.Input {
 		Alias:                   canaryInternalAlias,
 		Messages:                req.Messages,
 		OutputSchema:            req.OutputSchema,
+		Cohort:                  s.serveCohortInput(req),
 	}
+}
+
+// serveCohortInput is the SINGLE definition of a served request's serving-cutover
+// configuration identity, so admission's gate and the serve boundary's telemetry
+// can never disagree about which cohort a request belongs to.
+//
+// S1 assigns NONE. The opaque configuration fingerprint is a CONFIG-LOAD /
+// control-plane assignment (see admission.ConfigFingerprint), and no config-load
+// path plumbs one to the serve seam yet — deliberately, because S1 enrolls nothing.
+// So this returns the zero identity, every request resolves to admission.CohortNone,
+// and the default-deny gate declines it before any native work. The slice that
+// enrolls a cohort populates Fingerprint here from the loaded configuration record;
+// nothing else in this file changes.
+func (s *Server) serveCohortInput(req bamlutils.NativeServeRequest) admission.CohortInput {
+	_ = req
+	return s.cohort
+}
+
+// recordServeTerminal records EXACTLY ONE serving-cutover phase+winner pair for a
+// finished request, from the disposition the serve path actually returned.
+//
+// Pre-claim (claimed == false) the only possible disposition is Declined, and it is
+// always the safe BAML-transport winner: no socket opened, BAML serves the same
+// request. Post-claim there is no decline — the ownership boundary forbids it — so
+// the terminal is a success (native, or BAML's parse of the SAME response bytes) or
+// a typed failure. A post-claim Declined would be an ownership-boundary violation;
+// it is recorded as a post-claim FAILURE rather than as a safe pre-claim decline, so
+// the anomaly shows up in the winner series instead of hiding inside the normal
+// baml_transport bucket.
+//
+// An unrecognized winner-engine token also records failure rather than native: the
+// reporting side fails closed, so a future engine token cannot silently inflate the
+// native-win count that gates cohort promotion.
+func (s *Server) recordServeTerminal(surface admission.Surface, cohort admission.CohortID, claimed bool, disposition bamlutils.NativeServeDisposition, engine string) {
+	if !claimed {
+		s.metrics.RecordPreclaimDecline(surface, cohort)
+		return
+	}
+	winner := admission.WinnerFailure
+	if disposition == bamlutils.NativeServeSucceeded {
+		switch engine {
+		case bamlutils.NativeServeEngineNative:
+			winner = admission.WinnerNative
+		case bamlutils.NativeServeEngineBAMLParse:
+			winner = admission.WinnerBAMLParseSameResponse
+		}
+	}
+	s.metrics.RecordPostclaimTerminal(surface, cohort, winner)
 }
 
 func toAdmissionMode(m bamlutils.NativeServeMode) admission.Mode {

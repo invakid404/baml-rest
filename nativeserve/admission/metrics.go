@@ -2,6 +2,9 @@ package admission
 
 import (
 	"errors"
+	"fmt"
+	"regexp"
+	"sync/atomic"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -106,7 +109,71 @@ type Metrics struct {
 	nativeSockets   *prometheus.CounterVec
 	fallback        *prometheus.CounterVec
 	bedrockCredSrc  *prometheus.CounterVec
+	// Serving-cutover S1 families. They EXTEND the set above (nothing was replaced
+	// or relabelled): the seven collectors above keep recording exactly what they
+	// recorded before, and these four add the surface/cohort/phase/winner view plus
+	// the operator-visible configuration inventory.
+	admissionPhase *prometheus.CounterVec
+	winner         *prometheus.CounterVec
+	configInv      *prometheus.GaugeVec
+	policyInfo     *prometheus.GaugeVec
+	// knownCohorts is the set of cohort IDs the published inventory declares. It is
+	// the STRUCTURAL bound on the cohort label: normalizeCohort folds anything that
+	// is not a declared cohort or a reserved resolution outcome onto
+	// CohortUnrecognized, so no caller — however mis-wired — can widen the cohort
+	// label beyond |inventory| + 2. Stored as an atomic pointer so the per-request
+	// read is lock-free and a config-load publish is race-free.
+	knownCohorts atomic.Pointer[map[CohortID]struct{}]
 }
+
+// Phase is the bounded admission-phase label for the serving-cutover S1 phase
+// metric. It makes the no-resend ownership boundary auditable: a request either
+// declined BEFORE the claim (BAML owns it, zero native sockets), or it was CLAIMED
+// (exactly one native provider attempt, no BAML provider attempt afterwards) and
+// reached a post-claim terminal; the same-response BAML oracle is its own phase so
+// a parse-only compatibility win is never read as a native transport win.
+type Phase string
+
+const (
+	// PhasePreclaimDecline: the request declined to BAML before any claim. Provably
+	// zero native sockets (the decline happens before the executor is ever entered).
+	PhasePreclaimDecline Phase = "preclaim_decline"
+	// PhaseClaimed: the serve boundary CLAIMED the attempt — recorded exactly once,
+	// at the claim point, immediately before the one native provider RoundTrip.
+	PhaseClaimed Phase = "claimed"
+	// PhasePostclaimTerminal: a claimed attempt reached its terminal disposition.
+	// From the claim onward the terminal is a success or a typed failure — never a
+	// decline and never a hidden BAML provider resend.
+	PhasePostclaimTerminal Phase = "postclaim_terminal"
+	// PhaseSameResponseOracle: the strict same-response BAML oracle ran over the
+	// bytes the ONE native provider request returned. It is a phase of its own so
+	// "BAML parsed the same bytes" is never conflated with "BAML transported".
+	PhaseSameResponseOracle Phase = "same_response_oracle"
+)
+
+// Winner is the bounded winner label for the serving-cutover S1 winner metric. It
+// separates the safe pre-claim BAML path from the parse-only compatibility path
+// from a real native win, which is what makes the fe-v1 success criterion
+// ("winner is native, parse-only fallback is zero") expressible as a query.
+type Winner string
+
+const (
+	// WinnerBAMLTransport: BAML transported and served the request. Every pre-claim
+	// decline lands here — it is the SAFE, expected outcome while no cohort is
+	// enrolled, and in S1 it is the only outcome production can produce.
+	WinnerBAMLTransport Winner = "baml_transport"
+	// WinnerNative: native owned the provider request AND the final structured
+	// value. The only outcome that counts as a native v1 cohort success.
+	WinnerNative Winner = "native"
+	// WinnerBAMLParseSameResponse: native owned the ONE provider request but BAML's
+	// parse of those SAME response bytes produced the final. Safe, and NOT a
+	// transport fallback (no second provider request happened) — but it is not a
+	// native v1 win either, so it is labelled separately.
+	WinnerBAMLParseSameResponse Winner = "baml_parse_same_response"
+	// WinnerFailure: a claimed attempt terminated in a typed failure handed to the
+	// outer policy. Post-claim, so it is never a BAML resend.
+	WinnerFailure Winner = "failure"
+)
 
 // NativeSocketFlag is the bounded flag label for the native_sockets metric. It
 // records whether the umbrella flag was resolved on or off when a socket was
@@ -288,6 +355,22 @@ func newMetrics(reg prometheus.Registerer, reuse bool) (*Metrics, error) {
 			Name: "baml_rest_debaml_bedrock_credential_source_total",
 			Help: "de-BAML aws-bedrock admissions by the documented credential source they resolved through (explicit/env/profile/default_chain/unknown). NO client/profile/region names, NO credential values.",
 		}, []string{"source"}),
+		admissionPhase: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "baml_rest_debaml_admission_phase_total",
+			Help: "de-BAML serving admission phases by bounded surface/cohort/phase (preclaim_decline|claimed|postclaim_terminal|same_response_oracle). Bounded enums only: NO route/method/client/model/URL/alias/header/schema labels.",
+		}, []string{"surface", "cohort", "phase"}),
+		winner: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "baml_rest_debaml_winner_total",
+			Help: "de-BAML serving winners by bounded surface/cohort/winner (baml_transport|native|baml_parse_same_response|failure). Bounded enums only: NO content, NO identifiers.",
+		}, []string{"surface", "cohort", "winner"}),
+		configInv: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "baml_rest_debaml_config_inventory_info",
+			Help: "de-BAML privacy-safe configuration inventory: one series per (declared opaque configuration fingerprint, surface), value 1. Labels are PREDECLARED buckets only — an opaque fingerprint, a cohort bucket, a surface, a provider CLASS and an offline approval reference. NO client/model names, URLs, prompts, bodies, headers or secrets.",
+		}, []string{"fingerprint", "cohort", "surface", "provider", "approval"}),
+		policyInfo: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "baml_rest_debaml_cohort_policy_info",
+			Help: "de-BAML cohort policy: the number of (surface, cohort) enrollments the named policy version permits. 0 means DEFAULT-DENY with nothing enrolled, which is what serving-cutover S1 ships.",
+		}, []string{"version"}),
 	}
 	// Register every collector in a fixed order, rolling back the ones already
 	// registered by THIS call if a later Register fails, so a partial-registration
@@ -296,18 +379,46 @@ func newMetrics(reg prometheus.Registerer, reuse bool) (*Metrics, error) {
 	// S2 bedrock credential-source family appended last). When reuse is set, an
 	// AlreadyRegisteredError rebinds the field to the existing collector (a second
 	// de-BAML serve on the same registry) instead of failing.
+	//
+	// The spec's rebind takes a prometheus.Collector (rather than a *CounterVec)
+	// because the S1 inventory/policy families are GAUGE vectors: rebind performs
+	// the type assertion for its own field and reports whether it matched, so a
+	// same-named collector of the WRONG type still falls through to the rollback +
+	// error path exactly as before instead of being silently accepted.
 	type collectorSpec struct {
-		col *prometheus.CounterVec
-		set func(*prometheus.CounterVec)
+		col    prometheus.Collector
+		rebind func(prometheus.Collector) bool
+	}
+	counterSpec := func(c *prometheus.CounterVec, set func(*prometheus.CounterVec)) collectorSpec {
+		return collectorSpec{col: c, rebind: func(existing prometheus.Collector) bool {
+			v, ok := existing.(*prometheus.CounterVec)
+			if ok {
+				set(v)
+			}
+			return ok
+		}}
+	}
+	gaugeSpec := func(g *prometheus.GaugeVec, set func(*prometheus.GaugeVec)) collectorSpec {
+		return collectorSpec{col: g, rebind: func(existing prometheus.Collector) bool {
+			v, ok := existing.(*prometheus.GaugeVec)
+			if ok {
+				set(v)
+			}
+			return ok
+		}}
 	}
 	specs := []collectorSpec{
-		{m.declines, func(c *prometheus.CounterVec) { m.declines = c }},
-		{m.attempts, func(c *prometheus.CounterVec) { m.attempts = c }},
-		{m.planCompare, func(c *prometheus.CounterVec) { m.planCompare = c }},
-		{m.responseCompare, func(c *prometheus.CounterVec) { m.responseCompare = c }},
-		{m.nativeSockets, func(c *prometheus.CounterVec) { m.nativeSockets = c }},
-		{m.fallback, func(c *prometheus.CounterVec) { m.fallback = c }},
-		{m.bedrockCredSrc, func(c *prometheus.CounterVec) { m.bedrockCredSrc = c }},
+		counterSpec(m.declines, func(c *prometheus.CounterVec) { m.declines = c }),
+		counterSpec(m.attempts, func(c *prometheus.CounterVec) { m.attempts = c }),
+		counterSpec(m.planCompare, func(c *prometheus.CounterVec) { m.planCompare = c }),
+		counterSpec(m.responseCompare, func(c *prometheus.CounterVec) { m.responseCompare = c }),
+		counterSpec(m.nativeSockets, func(c *prometheus.CounterVec) { m.nativeSockets = c }),
+		counterSpec(m.fallback, func(c *prometheus.CounterVec) { m.fallback = c }),
+		counterSpec(m.bedrockCredSrc, func(c *prometheus.CounterVec) { m.bedrockCredSrc = c }),
+		counterSpec(m.admissionPhase, func(c *prometheus.CounterVec) { m.admissionPhase = c }),
+		counterSpec(m.winner, func(c *prometheus.CounterVec) { m.winner = c }),
+		gaugeSpec(m.configInv, func(g *prometheus.GaugeVec) { m.configInv = g }),
+		gaugeSpec(m.policyInfo, func(g *prometheus.GaugeVec) { m.policyInfo = g }),
 	}
 	registered := make([]prometheus.Collector, 0, len(specs))
 	for _, s := range specs {
@@ -317,8 +428,7 @@ func newMetrics(reg prometheus.Registerer, reuse bool) (*Metrics, error) {
 				// Rebind this field to the already-registered collector so both serve
 				// implementations write the SAME series; do NOT track it for rollback
 				// (this call did not register it).
-				if existing, ok := are.ExistingCollector.(*prometheus.CounterVec); ok {
-					s.set(existing)
+				if s.rebind(are.ExistingCollector) {
 					continue
 				}
 			}
@@ -335,6 +445,37 @@ func newMetrics(reg prometheus.Registerer, reuse bool) (*Metrics, error) {
 	// only increment site (RecordNativeSocket) hardcodes flag="on".
 	m.nativeSockets.WithLabelValues(string(SocketFlagOff), string(NativeSocketResponded))
 	m.nativeSockets.WithLabelValues(string(SocketFlagOff), string(NativeSocketTransportError))
+	// Pre-initialize the ROLLOUT-STOP series to zero for the same reason: operational
+	// invariant 4 says a NON-ENROLLED surface reporting a native claim (or a native
+	// win) is a rollout-stop event, and an alert on `increase(...) > 0` must be
+	// well-defined from the first scrape rather than only after the violation it is
+	// meant to catch. Every (surface, reserved-cohort) pair is pre-initialized for
+	// phase=claimed and winner=native. No code path can increment them while the
+	// policy is empty — that is exactly what the alert watches for.
+	for _, surface := range AllSurfaces() {
+		for _, cohort := range reservedCohortIDs() {
+			m.admissionPhase.WithLabelValues(surface.Label(), string(cohort), string(PhaseClaimed))
+			m.winner.WithLabelValues(surface.Label(), string(cohort), string(WinnerNative))
+		}
+	}
+	// Publish the SHIPPED production gate: the deployment's DECLARED configuration
+	// inventory (one operator-visible row per declared record × surface) and the
+	// versioned policy's enrollment count. An operator scraping a native-capable
+	// worker sees both halves — which classes are declared, and that
+	// "policy s1-default-deny-empty enrolls 0" — rather than inferring default-deny
+	// from the absence of data.
+	//
+	// A config-load failure is surfaced HERE, as the constructor's error, because
+	// this is the first production call that needs the gate and its caller is a
+	// factory workerboot turns into a boot failure. Publishing an empty dashboard
+	// because a declaration failed to decode would be the quiet kind of wrong.
+	if err := ProductionCohortGateError(); err != nil {
+		for _, done := range registered {
+			reg.Unregister(done)
+		}
+		return nil, fmt.Errorf("nativeserve/admission: declared configuration inventory: %w", err)
+	}
+	m.publishCohortGate(ProductionCohortGate())
 	return m, nil
 }
 
@@ -345,8 +486,8 @@ func (m *Metrics) recordDecline(mode Mode, provider providerLabel, d *Decline) {
 	if m == nil || d == nil {
 		return
 	}
-	m.declines.WithLabelValues(string(d.Stage), string(d.Reason)).Inc()
-	m.attempts.WithLabelValues(string(normalizeMode(mode)), engineNative, string(provider), string(OutcomeDecline)).Inc()
+	m.declines.WithLabelValues(normalizeStage(d.Stage), normalizeReason(d.Reason)).Inc()
+	m.attempts.WithLabelValues(string(normalizeMode(mode)), engineNative, string(provider), normalizeOutcome(OutcomeDecline)).Inc()
 }
 
 // recordAttempt increments only the attempts family — for a full admit
@@ -356,7 +497,7 @@ func (m *Metrics) recordAttempt(mode Mode, provider providerLabel, outcome Outco
 	if m == nil {
 		return
 	}
-	m.attempts.WithLabelValues(string(normalizeMode(mode)), engineNative, string(provider), string(outcome)).Inc()
+	m.attempts.WithLabelValues(string(normalizeMode(mode)), engineNative, string(provider), normalizeOutcome(outcome)).Inc()
 }
 
 // RecordPlanCompare increments the plan_compare family for one field's
@@ -367,7 +508,7 @@ func (m *Metrics) RecordPlanCompare(result PlanCompareResult, field PlanCompareF
 	if m == nil {
 		return
 	}
-	m.planCompare.WithLabelValues(string(result), string(field)).Inc()
+	m.planCompare.WithLabelValues(normalizePlanCompareResult(result), normalizePlanCompareField(field)).Inc()
 }
 
 // RecordResponseCompare increments the response_compare family for one field's
@@ -379,7 +520,7 @@ func (m *Metrics) RecordResponseCompare(result ResponseCompareResult, field Resp
 	if m == nil {
 		return
 	}
-	m.responseCompare.WithLabelValues(string(result), string(field)).Inc()
+	m.responseCompare.WithLabelValues(normalizeResponseCompareResult(result), normalizeResponseCompareField(field)).Inc()
 }
 
 // RecordServeOutcome records ONE terminal serving outcome on the attempts family
@@ -393,7 +534,7 @@ func (m *Metrics) RecordServeOutcome(mode Mode, resolvedProvider string, outcome
 	if m == nil {
 		return
 	}
-	m.attempts.WithLabelValues(string(normalizeMode(mode)), engineNative, string(providerFromResolved(resolvedProvider)), string(outcome)).Inc()
+	m.attempts.WithLabelValues(string(normalizeMode(mode)), engineNative, string(providerFromResolved(resolvedProvider)), normalizeOutcome(outcome)).Inc()
 }
 
 // RecordNativeSocket increments the native_sockets family EXACTLY ONCE per
@@ -406,7 +547,7 @@ func (m *Metrics) RecordNativeSocket(outcome NativeSocketOutcome) {
 	if m == nil {
 		return
 	}
-	m.nativeSockets.WithLabelValues(string(SocketFlagOn), string(outcome)).Inc()
+	m.nativeSockets.WithLabelValues(string(SocketFlagOn), normalizeSocketOutcome(outcome)).Inc()
 }
 
 // RecordFallback increments the fallback family for one native-served request
@@ -416,7 +557,7 @@ func (m *Metrics) RecordFallback(kind FallbackKind) {
 	if m == nil {
 		return
 	}
-	m.fallback.WithLabelValues(string(kind)).Inc()
+	m.fallback.WithLabelValues(normalizeFallbackKind(kind)).Inc()
 }
 
 // recordBedrockCredentialSource increments the bedrock credential-source family
@@ -427,5 +568,330 @@ func (m *Metrics) recordBedrockCredentialSource(source BedrockCredentialSource) 
 	if m == nil {
 		return
 	}
-	m.bedrockCredSrc.WithLabelValues(string(source)).Inc()
+	m.bedrockCredSrc.WithLabelValues(normalizeBedrockCredentialSource(source)).Inc()
+}
+
+// --- Serving-cutover S1 recorders -------------------------------------------
+//
+// THE LABEL CONTRACT (binding for every recorder in this file, old and new).
+// A de-BAML metric label may ONLY be a value from a fixed enum declared in this
+// package, or a PREDECLARED bucket from the configuration inventory. The following
+// are PROHIBITED as labels, without exception:
+//
+//   - raw request or response content (bodies, assistant text, partials, deltas);
+//   - client aliases and client/registry names;
+//   - model names and target models;
+//   - target URLs, hosts, paths or any endpoint fragment;
+//   - API keys, Authorization values, or any other credential material;
+//   - header names or header values;
+//   - BAML method names (dynamic or static) and route templates;
+//   - arbitrary or per-request schema fingerprints and content hashes.
+//
+// Where a stable identifier is genuinely needed it is a small predeclared cohort /
+// configuration bucket — never a per-request hash. TestMetricLabelsAreBounded and
+// TestNoForbiddenLabelValueEscapes enforce this over the real gathered registry.
+
+// phaseLabelInvalid / winnerLabelInvalid are the out-of-band buckets an
+// unrecognized Phase/Winner folds onto. Phase and Winner are exported string types,
+// so `admission.Phase(anythingAtAll)` compiles — a cold review demonstrated exactly
+// that by driving `phase="gpt-4o-acme-tuned-2026"` and
+// `winner="Authorization_Bearer_sk-live-example"` into a live registry through these
+// recorders. Folding at the recorder (the same thing normalizeMode has always done
+// for the mode label) makes the families bounded no matter what a caller passes, and
+// makes a leak impossible rather than merely discouraged.
+const (
+	phaseLabelInvalid  = "invalid"
+	winnerLabelInvalid = "invalid"
+)
+
+// normalizePhase folds an arbitrary Phase onto the closed set.
+func normalizePhase(p Phase) string {
+	switch p {
+	case PhasePreclaimDecline, PhaseClaimed, PhasePostclaimTerminal, PhaseSameResponseOracle:
+		return string(p)
+	default:
+		return phaseLabelInvalid
+	}
+}
+
+// normalizeWinner folds an arbitrary Winner onto the closed set.
+func normalizeWinner(w Winner) string {
+	switch w {
+	case WinnerBAMLTransport, WinnerNative, WinnerBAMLParseSameResponse, WinnerFailure:
+		return string(w)
+	default:
+		return winnerLabelInvalid
+	}
+}
+
+// normalizeSurface folds an arbitrary Surface onto the closed set. Surface is
+// lane-derived so an out-of-set value is unreachable today, but the recorders are
+// exported and a bounded family must not depend on that staying true.
+func normalizeSurface(s Surface) string { return s.Label() }
+
+// labelInvalid is the single out-of-band bucket every fold below uses.
+const labelInvalid = "invalid"
+
+// EVERY exported recorder folds EVERY label argument. This is not defence in depth,
+// it is the contract: `Metrics`, `NewMetrics` and the recorder methods are part of a
+// PUBLIC Go module, and every label type below is an exported string alias, so
+// `admission.PlanCompareField("gpt-4o-acme-tuned-2026")` compiles for any consumer.
+//
+// A second cold review demonstrated precisely that, resolving the published module
+// from a fresh external consumer and emitting
+//
+//	field=gpt-4o-acme-tuned-2026
+//	result=Authorization_Bearer_sk-live-example
+//
+// through RecordPlanCompare / RecordResponseCompare. The first round folded only the
+// NEW serving-cutover recorders and left these — which is exactly the gap that
+// review found. They all fold now, and TestEveryPublicRecorderFoldsHostileInput
+// drives every one of them with that material.
+
+// stageReasonForm is the shape every declared Stage/Reason constant takes:
+// lowercase ASCII words joined by underscores, ≤64 bytes.
+//
+// Stage and Reason are folded by SHAPE rather than by membership, and that is a
+// deliberate, narrower guarantee than the other folds make. There are ~100 declared
+// constants across decline.go and static.go, and a hand-maintained membership switch
+// would rot the moment one is added — the failure mode being a silently-dropped
+// legitimate reason, which is worse than the thing it guards. What the shape fence
+// buys is the property the label contract actually needs: no URL, no header value,
+// no key, no model name, no prompt and nothing unbounded can be spelled this way.
+//
+// Exact membership IS enforced, but by the bounded-label check, which PARSES the
+// declared constants out of this package (go/ast, not a text scan) and rejects any
+// gathered stage/reason outside them — a check that cannot rot because it derives its
+// expectation from the same declarations the constants live in. And the only writer of
+// these two labels is the UNEXPORTED recordDecline, reached solely from admission's own
+// predicates, which build Declines from those constants.
+//
+// Because the allow-list is derived from the source, one thing must never be able to
+// widen it: PROSE. A token that appears only in a comment is documentation, not a
+// declaration, and it must not become an accepted label value.
+//
+/*
+	Worked example, written in a BLOCK comment on purpose:
+
+		ReasonProseWidened Reason = "prose_widened_reason_example"
+
+	That line is not a const spec, so the AST-based extraction never sees it and the
+	token never enters the bounded-label allow-list. A text scan over this file WOULD
+	see it, which is what the extraction used to be and why it changed.
+
+	TestBlockCommentOnlyReasonIsUnallowedThroughThePublicPath is the end-to-end proof:
+	it drives this exact token through every exported recorder and requires it to fold
+	away, then emits it as a decline reason and requires the bounded-label check to
+	REJECT the resulting series — and to ACCEPT it under a prose-widened allow-list,
+	which is what makes the rejection load-bearing rather than incidental.
+*/
+var stageReasonForm = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+// normalizeStage folds the decline stage label.
+func normalizeStage(st Stage) string {
+	if stageReasonForm.MatchString(string(st)) {
+		return string(st)
+	}
+	return labelInvalid
+}
+
+// normalizeReason folds the decline reason label.
+func normalizeReason(r Reason) string {
+	if stageReasonForm.MatchString(string(r)) {
+		return string(r)
+	}
+	return labelInvalid
+}
+
+// normalizePlanCompareResult folds the plan-compare result label.
+func normalizePlanCompareResult(r PlanCompareResult) string {
+	switch r {
+	case PlanCompareMatch, PlanCompareMismatch:
+		return string(r)
+	default:
+		return labelInvalid
+	}
+}
+
+// normalizePlanCompareField folds the plan-compare field label.
+func normalizePlanCompareField(f PlanCompareField) string {
+	switch f {
+	case PlanCompareFieldMethod, PlanCompareFieldTarget, PlanCompareFieldHost,
+		PlanCompareFieldHeaders, PlanCompareFieldBody, PlanCompareFieldMeta:
+		return string(f)
+	default:
+		return labelInvalid
+	}
+}
+
+// normalizeResponseCompareResult folds the response-compare result label.
+func normalizeResponseCompareResult(r ResponseCompareResult) string {
+	switch r {
+	case ResponseCompareMatch, ResponseCompareMismatch:
+		return string(r)
+	default:
+		return labelInvalid
+	}
+}
+
+// normalizeResponseCompareField folds the response-compare field label.
+func normalizeResponseCompareField(f ResponseCompareField) string {
+	switch f {
+	case ResponseCompareFieldTranslate, ResponseCompareFieldAssistant, ResponseCompareFieldStructured,
+		ResponseCompareFieldOrder, ResponseCompareFieldRaw, ResponseCompareFieldReasoning,
+		ResponseCompareFieldError, ResponseCompareFieldTyped:
+		return string(f)
+	default:
+		return labelInvalid
+	}
+}
+
+// normalizeOutcome folds the attempts family's outcome label.
+func normalizeOutcome(o Outcome) string {
+	switch o {
+	case OutcomeAdmitted, OutcomeDecline, OutcomePlannerError, OutcomeSuccess,
+		OutcomeTransportError, OutcomeProviderError, OutcomeTranslateError,
+		OutcomeParseDecline, OutcomeParseError, OutcomeInternalError:
+		return string(o)
+	default:
+		return labelInvalid
+	}
+}
+
+// normalizeSocketOutcome folds the native-socket outcome label.
+func normalizeSocketOutcome(o NativeSocketOutcome) string {
+	switch o {
+	case NativeSocketResponded, NativeSocketTransportError:
+		return string(o)
+	default:
+		return labelInvalid
+	}
+}
+
+// normalizeFallbackKind folds the fallback kind label.
+func normalizeFallbackKind(k FallbackKind) string {
+	switch k {
+	case FallbackParseOnly:
+		return string(k)
+	default:
+		return labelInvalid
+	}
+}
+
+// normalizeBedrockCredentialSource folds the bedrock credential-source label. The
+// recorder is unexported, but the enum is not, and one unfolded call site is all it
+// takes — so it folds like the rest.
+func normalizeBedrockCredentialSource(src BedrockCredentialSource) string {
+	switch src {
+	case BedrockCredentialExplicit, BedrockCredentialEnv, BedrockCredentialProfile,
+		BedrockCredentialDefaultChain, BedrockCredentialUnknown:
+		return string(src)
+	default:
+		return labelInvalid
+	}
+}
+
+// normalizeCohort folds a cohort ID onto the bounded label set: the two reserved
+// resolution outcomes, plus exactly the cohorts the PUBLISHED inventory declares.
+// Anything else — a caller that invented a cohort, a stale value after a config
+// reload — becomes CohortUnrecognized, so the cohort label's cardinality is
+// structurally |inventory| + 2 and cannot be widened from a call site.
+func (m *Metrics) normalizeCohort(c CohortID) string {
+	for _, r := range reservedCohortIDs() {
+		if c == r {
+			return string(c)
+		}
+	}
+	if known := m.knownCohorts.Load(); known != nil {
+		if _, ok := (*known)[c]; ok {
+			return string(c)
+		}
+	}
+	return string(CohortUnrecognized)
+}
+
+// publishCohortGate publishes the operator-visible control-plane view of a cohort
+// gate: one config_inventory_info series per (declared configuration fingerprint,
+// declared surface) and the policy's enrollment count under its version. It also
+// (re)binds the cohort-label allow-list used by normalizeCohort.
+//
+// It REPLACES any previously published view (both gauges are reset first), so a
+// config reload cannot leave a stale record advertised as current. It is called at
+// metrics construction with the shipped production gate; it is UNEXPORTED because a
+// gate is the one thing no caller outside this package may supply. A nil *Metrics is
+// a valid no-op receiver.
+//
+// Everything it publishes is a predeclared bucket — the constructors in cohort.go
+// already rejected anything else — so there is no redaction step here to forget.
+func (m *Metrics) publishCohortGate(g *CohortGate) {
+	if m == nil {
+		return
+	}
+	known := make(map[CohortID]struct{}, g.Inventory().Len())
+	m.configInv.Reset()
+	for _, r := range g.Inventory().Records() {
+		known[r.Cohort] = struct{}{}
+		for _, s := range r.Surfaces {
+			m.configInv.WithLabelValues(
+				string(r.Fingerprint),
+				string(r.Cohort),
+				s.Label(),
+				string(r.Provider),
+				string(r.Approval),
+			).Set(1)
+		}
+	}
+	m.knownCohorts.Store(&known)
+	m.policyInfo.Reset()
+	m.policyInfo.WithLabelValues(g.Policy().Version()).Set(float64(g.Policy().Len()))
+}
+
+// RecordAdmissionPhase increments the admission-phase family for ONE phase
+// observation, labelled with the bounded surface + cohort. Callers record exactly
+// one phase per disposition: preclaim_decline OR (claimed then postclaim_terminal),
+// plus same_response_oracle when the strict BAML oracle ran over the native
+// response bytes. A nil *Metrics is a valid no-op receiver.
+func (m *Metrics) RecordAdmissionPhase(surface Surface, cohort CohortID, phase Phase) {
+	if m == nil {
+		return
+	}
+	m.admissionPhase.WithLabelValues(normalizeSurface(surface), m.normalizeCohort(cohort), normalizePhase(phase)).Inc()
+}
+
+// RecordWinner increments the winner family for ONE request's terminal ownership,
+// labelled with the bounded surface + cohort. Exactly one winner is recorded per
+// request that reaches a disposition: baml_transport for every pre-claim decline,
+// and native / baml_parse_same_response / failure for a claimed attempt. A nil
+// *Metrics is a valid no-op receiver.
+func (m *Metrics) RecordWinner(surface Surface, cohort CohortID, winner Winner) {
+	if m == nil {
+		return
+	}
+	m.winner.WithLabelValues(normalizeSurface(surface), m.normalizeCohort(cohort), normalizeWinner(winner)).Inc()
+}
+
+// RecordPreclaimDecline records the pair every pre-claim decline produces: the
+// preclaim_decline phase and the baml_transport winner. It exists so the two can
+// never drift apart at a call site — a decline that recorded a phase but no winner
+// (or vice versa) would make the "every request has exactly one winner" invariant
+// unprovable. A nil *Metrics is a valid no-op receiver.
+func (m *Metrics) RecordPreclaimDecline(surface Surface, cohort CohortID) {
+	if m == nil {
+		return
+	}
+	m.RecordAdmissionPhase(surface, cohort, PhasePreclaimDecline)
+	m.RecordWinner(surface, cohort, WinnerBAMLTransport)
+}
+
+// RecordPostclaimTerminal records the pair every CLAIMED attempt's terminal
+// produces: the postclaim_terminal phase and the given winner (native /
+// baml_parse_same_response / failure). Like RecordPreclaimDecline it keeps the
+// phase and the winner in lockstep at one call site. A nil *Metrics is a valid
+// no-op receiver.
+func (m *Metrics) RecordPostclaimTerminal(surface Surface, cohort CohortID, winner Winner) {
+	if m == nil {
+		return
+	}
+	m.RecordAdmissionPhase(surface, cohort, PhasePostclaimTerminal)
+	m.RecordWinner(surface, cohort, winner)
 }

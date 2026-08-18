@@ -79,6 +79,15 @@ const (
 	// StageExactTransport: the exact-transport header validation succeeds before
 	// any RoundTrip (layer 5).
 	StageExactTransport Stage = "exact_transport"
+	// StageCohort: the serving-cutover S1 DEFAULT-DENY cohort gate — the request's
+	// surface is one of the closed five and its configuration identity resolves to a
+	// cohort the versioned policy has ENROLLED for that surface (layer 1b). It is
+	// evaluated immediately after the layer-1 build/flag/route/mode facts establish
+	// the surface and BEFORE any native work (no nanollm New, no render, no Prepare,
+	// no claim, therefore no socket). It is admission EVIDENCE, not a second kill
+	// switch: BAML_REST_USE_DEBAML (StageFlag) remains the one global revert, and
+	// this gate can only NARROW — it never widens an existing predicate.
+	StageCohort Stage = "cohort"
 	// StageContext: the request context was cancelled/expired mid-admission,
 	// around a non-context FFI boundary (New / render / Prepare). It is a
 	// PRE-SOCKET decline to BAML — no native plan is sent — so the ordinary BAML
@@ -259,6 +268,19 @@ const (
 	ReasonDuplicateHost             Reason = "duplicate_host"
 	ReasonInvalidHeaderName         Reason = "invalid_header_name"
 	ReasonInvalidHeaderValue        Reason = "invalid_header_value"
+	// cohort — the ONE bounded reason the S1 default-deny gate emits. The scope pins
+	// a single actionable bucket for all three refusal shapes it names (identity
+	// absent, identity unrecognized, identity known but not enrolled for this
+	// surface); the structural difference lives in the secret-free Decline detail,
+	// never in a label. With S1's EMPTY production policy this is the terminal
+	// disposition of every request that clears layer 1 on every surface.
+	ReasonCohortNotEnrolled Reason = "cohort_not_enrolled"
+	// mode — the direct-parse surface's terminal refusal. It fires only when a cohort
+	// IS enrolled for direct_parse (otherwise cohort_not_enrolled wins first), and it
+	// says the honest thing: the policy would permit this class, but `/parse/{method}`
+	// has no native implementation to permit it into. Enrollment can never conjure a
+	// native parse path, and this is the metric that proves it.
+	ReasonDirectParseUnproven Reason = "direct_parse_unproven"
 	// context
 	ReasonContextCancelled Reason = "context_cancelled"
 )

@@ -1,11 +1,28 @@
-// Command worker is the BAML+nanollm subprocess worker and, as of de-BAML cutover
-// Slice 6, the native SERVE deploy profile: on a native-capable worker with the
-// umbrella flag ON it actually SERVES an admitted unary OpenAI `_dynamic` call
-// natively — one exact provider RoundTrip, native translate/extract/parse, the S4
-// plan-compare pre-socket precondition + the S5 same-response BAML-parse safety
-// compare, and the native final returned through the merged Slice-1 tryOneChild
-// seam. Unsupported traffic (streaming, non-openai, fallback/RR, call-with-raw,
-// static, …) declines PRE-SOCKET and BAML serves it on the same instance.
+// Command worker is the BAML+nanollm subprocess worker and the native SERVE deploy
+// profile: with the umbrella flag ON it installs the native serve factories the
+// generated seams use and can actually SERVE an admitted request natively — one
+// exact provider RoundTrip, native translate/extract/parse, the pre-socket BAML
+// plan-compare precondition + (on the unary lanes) the same-response BAML-parse
+// safety compare, and the native final returned through the merged Slice-1
+// tryOneChild seam. Unsupported traffic declines PRE-SOCKET and BAML serves it on
+// the same instance.
+//
+// WHICH SURFACES IT WIRES. This header once described a unary-only profile, and the
+// Options literal below has since grown the dynamic STREAM, static unary SERVE and
+// static STREAM factories alongside the original dynamic unary one (plus the static
+// no-send observer). The factory wiring below — not this paragraph — is the
+// authority; it now installs, under the flag: dynamic unary serve, dynamic stream
+// serve, static observe, static unary serve, static stream serve, and the
+// direct-parse observation sink (a telemetry sink, not a serving callback — /parse
+// stays BAML-served).
+//
+// WHAT IT SERVES TODAY. Installing a factory is CAPABILITY, not enrollment. Since
+// the serving-cutover S1 slice, admission additionally requires an ENROLLED
+// surface/cohort pair before any native work, and the shipped policy
+// (admission.ProductionCohortGate) enrolls NOTHING — so every one of the surfaces
+// above declines pre-socket with `cohort_not_enrolled` and BAML serves 100% of
+// traffic on this binary. Enrollment is a separate, reviewed change to that policy;
+// the umbrella flag below remains the one global revert.
 //
 // It is built FROM the out-of-go.work nanollmprepare module with GOWORK=off + CGO
 // so the nanollm static archive links into it (via the nativeworker/canary
@@ -39,17 +56,40 @@ func main() {
 	// FFI, no serve factory, no native runtime init — so the serve-capable binary
 	// behaves exactly like cmd/worker (BAML-only) even though the archive is linked.
 	if !bamlutils.DeBAMLConfigFromEnv().Enabled {
-		workerboot.Run(workerboot.Options{
-			// Static build fact (no FFI): report the linked engine so the startup
-			// diagnostic shows native_build_capable=true, runtime uninitialized,
-			// rollout_mode=off, native_serving=off.
-			NativeBuildCapable: true,
-			NativeEngineName:   nativeworker.EngineName,
-		})
+		workerboot.Run(flagOffProfileOptions())
 		return
 	}
 
-	workerboot.Run(workerboot.Options{
+	workerboot.Run(serveProfileOptions())
+}
+
+// flagOffProfileOptions is the FLAG-OFF options literal: a static build-capability
+// advertisement and NOTHING else — no FFI, no serve factory, no observer, no native
+// runtime init. Extracted alongside serveProfileOptions so a test can assert the
+// zero-native property by inspecting the options themselves rather than inferring it
+// from a boot log.
+func flagOffProfileOptions() workerboot.Options {
+	return workerboot.Options{
+		// Static build fact (no FFI): report the linked engine so the startup
+		// diagnostic shows native_build_capable=true, runtime uninitialized,
+		// rollout_mode=off, native_serving=off.
+		NativeBuildCapable: true,
+		NativeEngineName:   nativeworker.EngineName,
+	}
+}
+
+// serveProfileOptions is the FLAG-ON options literal: every native factory this
+// binary installs, in one place.
+//
+// It is a function rather than an inline literal so the wiring is reachable from a
+// test. A cold review demonstrated why that matters: it deleted the direct-parse
+// factory line from this literal and every committed test stayed green, because the
+// only proofs were of the factory and of the parse route SEPARATELY. The literal is
+// the join between them, so the join needs to be something a test can hold —
+// direct_parse_route_e2e_test.go asserts this function supplies the factory and then
+// drives the resulting observer through the real parse handler.
+func serveProfileOptions() workerboot.Options {
+	return workerboot.Options{
 		// Native capability + startup init: a present capability is reported at
 		// startup and the nanollm runtime is proven to come up alongside BAML
 		// before the handler serves.
@@ -99,5 +139,13 @@ func main() {
 		// static serve factory (both live in the serve profile) and mirrors the
 		// dynamic serve/stream factory pair. Skipped when the flag is off.
 		NativeStaticStreamServeFactory: nativeserve.NewStaticStream,
-	})
+		// The DIRECT-PARSE observation sink (de-BAML serving cutover S1): returns the
+		// neutral bamlutils.NativeDirectParseObserveFunc the worker's /parse route
+		// reports each request to. It is NOT a serving callback — it observes and
+		// records, and BAML parses the request exactly as before — but it is what
+		// makes `direct_parse`, the one surface that never reaches native admission,
+		// emit the same per-request "BAML owns this" evidence the other four do.
+		// Skipped when the flag is off, like everything else in this branch.
+		NativeDirectParseObserveFactory: nativeserve.NewDirectParseObserve,
+	}
 }
