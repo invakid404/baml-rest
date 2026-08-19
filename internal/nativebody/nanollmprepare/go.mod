@@ -21,9 +21,9 @@ go 1.26.5
 require (
 	github.com/boundaryml/baml v0.223.0
 	github.com/invakid404/baml-rest v0.0.48
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260819085842-7cb69af02b36
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260819100300-de1eefa68ed8
 	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260819085842-7cb69af02b36
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260819100300-de1eefa68ed8
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
@@ -112,9 +112,9 @@ require (
 // without recording it here fails the native-worker PACKAGING build (-mod=readonly)
 // with "updates to go.mod needed". De-BAML Slice 7.2c-3 moved them to the cutover
 // commit, which was BRANCH-ONLY until #672 squash-merged. The serving-cutover S1
-// change moved all five again, to its own BRANCH commit 7cb69af02b36, so
-// nativeserve/pin_followup.md reads OUTSTANDING until that change squash-merges and
-// the five are re-pinned to the master commit. S1 changes this module's worker main
+// change moved all five again, first to its own branch commit 7cb69af02b36 and now —
+// post-merge — to the MASTER squash commit de1eefa68ed8 (#675), so
+// nativeserve/pin_followup.md reads RESOLVED. S1 changes this module's worker main
 // (it installs the direct-parse observation factory) AND the root/worker seam that
 // factory plugs into, so the lockstep is carrying real cross-module wiring rather than
 // a version string. cmd/build's TestFirstPartyPinFollowupIsTracked requires these two
