@@ -76,9 +76,11 @@
 // the pins were moved here. Pin to a branch commit only if unavoidable, and re-pin to the
 // merged master commit as the immediate follow-up.
 //
-// NOTE (de-BAML serving cutover S1): these pins are BRANCH-ONLY again and the follow-up
-// is tracked in nativeserve/pin_followup.md (STATUS: OUTSTANDING). They name the S1
-// cutover commit 7cb69af02b36, which is not on master until this change squash-merges.
+// NOTE (de-BAML serving cutover S1): these pins are MASTER-durable. They name
+// de1eefa68ed8, the squash-merge of the S1 cutover change (#675), and the follow-up
+// tracked in nativeserve/pin_followup.md is therefore STATUS: RESOLVED. They briefly
+// named the pre-merge branch commit 7cb69af02b36, which the squash flattened out of
+// history; this is the immediate post-merge re-pin the BUMP RULE requires.
 //
 // This bump is the most load-bearing one the rule has carried so far, because S1
 // changes BOTH sides of the graph. The root/worker side gains the neutral direct-parse
@@ -89,9 +91,10 @@
 // a serve core with NO cohort gate (admission wider than the one reviewed) whose
 // exported telemetry recorders still accept unbounded, secret-shaped label values.
 //
-// The precedent for the follow-up is #672 -> #673: pin to the branch commit only
+// The precedent for the follow-up was #672 -> #673: pin to the branch commit only
 // because no master commit carries the change yet, then re-pin all five to the master
-// squash commit and regenerate the tar immediately after the merge.
+// squash commit and regenerate the tar immediately after the merge. That follow-up has
+// been performed here.
 //
 // A bump must ALSO move internal/nativebody/nanollmprepare/go.mod's recorded bamlutils +
 // worker selections in LOCKSTEP: nanollmprepare directory-replaces root / bamlutils /
@@ -107,9 +110,9 @@ go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260819085842-7cb69af02b36
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260819085842-7cb69af02b36
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260819085842-7cb69af02b36
+	github.com/invakid404/baml-rest v0.0.0-20260819100300-de1eefa68ed8
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260819100300-de1eefa68ed8
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260819100300-de1eefa68ed8
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/viktordanov/nanollm-ffi/go v0.4.3
