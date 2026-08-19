@@ -72,7 +72,18 @@ func (s *Server) ShadowStatic(ctx context.Context, inv bamlutils.NativeStaticInv
 		return bamlutils.NativeStaticShadowResult{Stage: stageShadowStatic, Reason: reasonServedBAMLCtx}
 	}
 
-	claim, err := s.staticAdmitClaim(ctx, toStaticAdmissionInput(inv))
+	// Serving-cutover S1: the Stage-1 static shadow enters through the CLAIM entry
+	// point (it needs the live engine to translate BAML's own response bytes), so it
+	// evaluates the SAME default-deny gate every other lane does and declines with
+	// cohort_not_enrolled while nothing is enrolled.
+	//
+	// An earlier draft gave the no-send profiles a separate, all-surface enrolled
+	// "observe" gate so they could keep measuring the full predicate. A cold review
+	// called that correctly: it is a second non-empty admission policy inside S1 that
+	// performs native Prepare, and S1's contract is that an empty policy yields
+	// cohort_not_enrolled before native Prepare for EVERY request. Deeper no-send
+	// observation needs its own approved design; it does not get an exception here.
+	claim, err := s.staticAdmitClaim(ctx, s.toStaticAdmissionInput(inv))
 	if err != nil {
 		var d *admission.StaticDecline
 		if errors.As(err, &d) {

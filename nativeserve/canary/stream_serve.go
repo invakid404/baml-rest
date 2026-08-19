@@ -50,6 +50,7 @@ var errNativeStreamServePanic = errors.New("nativeserve/canary: native stream se
 // progress deadlines threaded into the exact stream client.
 type StreamServer struct {
 	admitter         *admission.Admitter
+	metrics          *admission.Metrics
 	exec             *llmhttp.ExactExecutor
 	firstBodyTimeout time.Duration
 	idleTimeout      time.Duration
@@ -57,6 +58,13 @@ type StreamServer struct {
 	// admitter.AdmitStreamClaim (the real production predicate); same-package tests
 	// may override it. Production never rebinds it.
 	admitStreamClaim func(ctx context.Context, in admission.Input) (*admission.StreamClaim, error)
+
+	// cohort is the serving-cutover configuration identity this stream server presents.
+	// Production leaves it ZERO (the default-deny gate then declines every stream before
+	// any native work); the gated end-to-end stream proofs pass an enrolled proof
+	// identity through NewStreamServerWithCohortIdentity. Not a rollout control — see
+	// canary.NewServerWithCohortIdentity.
+	cohort admission.CohortInput
 }
 
 // NewStreamServer builds a StreamServer. A nil exec defaults to a hardened
@@ -70,6 +78,7 @@ func NewStreamServer(m *admission.Metrics, exec *llmhttp.ExactExecutor, firstBod
 	}
 	s := &StreamServer{
 		admitter:         admission.NewAdmitter(m, exec),
+		metrics:          m,
 		exec:             exec,
 		firstBodyTimeout: firstBodyTimeout,
 		idleTimeout:      idleTimeout,
@@ -84,16 +93,32 @@ func NewStreamServer(m *admission.Metrics, exec *llmhttp.ExactExecutor, firstBod
 // SEPARATELY-named first-body bound — scope §5.10/§11) and returns the neutral
 // bamlutils.NativeStreamServeFunc that drives native streaming.
 //
-// Per-lane de-BAML STREAM metrics are deferred with the owner-trimmed rollout
-// observability (scope §8 is release-time ops): the admitter is built with nil
-// metrics (nil-safe), so it records no counters. The reg parameter is retained for
-// signature symmetry with NewServeFunc and a future stream metrics family; sharing
-// the unary serve's collectors on the same registry would double-register the
-// de-BAML families, so the stream lane deliberately records none here.
+// It retains the supplied registry and hands the SHARED collectors to the server —
+// which means to its ADMITTER as well, not merely to the serving-cutover phase/winner
+// recorders.
+//
+// This took two rounds of review to get right, and the distinction is the whole
+// point. The first revision discarded `reg` entirely, so the lane emitted nothing.
+// The second created the collectors but still constructed the server with a nil
+// admitter metric and patched `s.metrics` afterwards: a production probe then saw
+// the phase/winner series appear while
+// `declines_total{stage="cohort",reason="cohort_not_enrolled"}` stayed ABSENT,
+// because the admission boundary — where that counter is written — still held nil.
+// Passing `m` to the constructor is what makes the lane's admission declines
+// visible, and it retires the older "this lane deliberately records no counters"
+// trimming note along with it: the stream lane now records the same admission
+// families every other lane does.
+//
+// NewMetricsReusing (not NewMetrics) because a serve-profile worker installs this
+// factory alongside the unary serve factory on ONE registry; the collectors are
+// shared, never registered twice.
 func NewStreamServeFunc(reg prometheus.Registerer) (bamlutils.NativeStreamServeFunc, error) {
-	_ = reg
+	m, err := admission.NewMetricsReusing(reg)
+	if err != nil {
+		return nil, err
+	}
 	s := NewStreamServer(
-		nil,
+		m,
 		llmhttp.NewExactExecutor(nil),
 		llmhttp.StreamFirstBodyTimeoutFromEnv(),
 		llmhttp.StreamIdleTimeoutFromEnv(),
@@ -110,6 +135,14 @@ func NewStreamServeFunc(reg prometheus.Registerer) (bamlutils.NativeStreamServeF
 // COMPLETES or FAILS-AFTER-CLAIM.
 func (s *StreamServer) Serve(ctx context.Context, req bamlutils.NativeStreamServeRequest) (result bamlutils.NativeStreamServeResult) {
 	entered := false
+	// Serving-cutover S1 identity — the dynamic STREAM lane's constant surface plus
+	// the cohort the default-deny gate resolves. Registered FIRST so it runs LAST and
+	// observes the final named result. The shipped factory now supplies the shared
+	// collectors, so this lane produces the same exactly-once phase/winner accounting
+	// as the unary lane; a server constructed without metrics (a focused unit test)
+	// still works, because the recorders are nil-safe.
+	surface, cohort := admission.SurfaceDynamicStream, admission.ResolveCohort(s.streamCohortInput(req))
+	defer func() { s.recordStreamTerminal(surface, cohort, entered, result.Disposition, result.WinnerEngine) }()
 	defer func() {
 		if r := recover(); r != nil {
 			if entered {
@@ -130,7 +163,7 @@ func (s *StreamServer) Serve(ctx context.Context, req bamlutils.NativeStreamServ
 		return declineStreamResult(stageServe, reasonServedBAMLCtx)
 	}
 
-	claim, err := s.admitStreamClaim(ctx, toStreamAdmissionInput(req))
+	claim, err := s.admitStreamClaim(ctx, s.toStreamAdmissionInput(req))
 	if err != nil {
 		var d *admission.Decline
 		if errors.As(err, &d) {
@@ -183,6 +216,10 @@ func (s *StreamServer) Serve(ctx context.Context, req bamlutils.NativeStreamServ
 	// failure, so there is no hidden BAML fallback after entry. This is a safe
 	// false-negative before a socket that can never cause a duplicate request.
 	entered = true
+	// The claim boundary for this lane is executor ENTRY (the exact stream client
+	// fires its one RoundTrip immediately after), so the claimed phase is recorded
+	// here — after every pre-transport decline gate above.
+	s.metrics.RecordAdmissionPhase(surface, cohort, admission.PhaseClaimed)
 
 	res, aerr := execute.RunStream(ctx, execute.StreamConfig{
 		Client:           claim.Client(),
@@ -229,8 +266,9 @@ func (s *StreamServer) Serve(ctx context.Context, req bamlutils.NativeStreamServ
 // those layer-1 facts are fixed true; the TRUTHFUL strategy/retry facts, the
 // rewrite/proxy predicate, and provider/registry/messages/schema come from the
 // request.
-func toStreamAdmissionInput(req bamlutils.NativeStreamServeRequest) admission.Input {
+func (s *StreamServer) toStreamAdmissionInput(req bamlutils.NativeStreamServeRequest) admission.Input {
 	return admission.Input{
+		Cohort:                  s.streamCohortInput(req),
 		WorkerCapable:           true,
 		RequestAPIPresent:       true,
 		OnBuildRequestRoute:     true,
@@ -296,4 +334,33 @@ func completedStreamResult(res *execute.StreamResult) bamlutils.NativeStreamServ
 		}
 	}
 	return out
+}
+
+// streamCohortInput is the SINGLE definition of a stream request's serving-cutover
+// configuration identity — the stream twin of serveCohortInput. S1 assigns NONE
+// (the opaque configuration fingerprint is a config-load assignment that is
+// deliberately not plumbed yet), so every stream resolves to admission.CohortNone
+// and the default-deny gate declines it before any native work.
+func (s *StreamServer) streamCohortInput(req bamlutils.NativeStreamServeRequest) admission.CohortInput {
+	_ = req
+	return s.cohort
+}
+
+// recordStreamTerminal records EXACTLY ONE phase+winner pair for a finished stream.
+// Pre-entry (entered == false) the only disposition is Declined and the winner is
+// the safe baml_transport. After entry there is no decline: the terminal is a
+// completed native stream or a typed failure-after-claim. A post-entry Declined —
+// an ownership-boundary violation — and an unrecognized winner-engine token both
+// record failure rather than a safe decline or a native win, so the reporting side
+// fails closed exactly as the unary lane's does.
+func (s *StreamServer) recordStreamTerminal(surface admission.Surface, cohort admission.CohortID, entered bool, disposition bamlutils.NativeStreamDisposition, engine string) {
+	if !entered {
+		s.metrics.RecordPreclaimDecline(surface, cohort)
+		return
+	}
+	winner := admission.WinnerFailure
+	if disposition == bamlutils.NativeStreamCompleted && engine == bamlutils.NativeServeEngineNative {
+		winner = admission.WinnerNative
+	}
+	s.metrics.RecordPostclaimTerminal(surface, cohort, winner)
 }

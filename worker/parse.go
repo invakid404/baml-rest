@@ -52,6 +52,18 @@ func (h *Handler) Parse(ctx context.Context, methodName string, inputJSON []byte
 		}
 	}
 
+	// De-BAML serving cutover S1: report this request to the DIRECT-PARSE observer,
+	// if a native-capable worker installed one. Reported here — after the input is
+	// decoded, before BAML runs — so the observation corresponds to a real, well-formed
+	// parse request rather than to a malformed one that never reached a parser.
+	//
+	// This is a telemetry sink and nothing else: it returns nothing, its result is not
+	// consulted, and the BAML call below is byte-identical whether or not it is
+	// installed. A panic inside it is contained rather than allowed to fail a parse the
+	// observer has no business failing — an observability seam must never be able to
+	// break the request it observes.
+	h.observeDirectParse(ctx, input.Stream)
+
 	// Select the final or parse-stream implementation. Stream=true drives
 	// BAML's ParseStream over the accumulated prefix (the parse-stream
 	// oracle); a method with no StreamImpl cannot service a Stream request.
@@ -90,4 +102,23 @@ func (h *Handler) Parse(ctx context.Context, methodName string, inputJSON []byte
 	}
 
 	return &workerplugin.ParseResult{Data: data}, nil
+}
+
+// observeDirectParse reports one direct `/parse/{method}` request to the installed
+// observer, or does nothing when none is installed (every default and flag-off
+// build). It contains a panic from the observer: the sink is advisory, so a bug in
+// it must not turn a working BAML parse into a failed request.
+func (h *Handler) observeDirectParse(ctx context.Context, stream bool) {
+	obs := h.nativeDirectParseObserver
+	if obs == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil && h.logger != nil {
+			// Bounded, secret-free: the observation carries no method name, input or
+			// output, so there is nothing here to redact.
+			h.logger.Error("de-BAML direct-parse observer panicked; the parse itself is unaffected")
+		}
+	}()
+	obs(ctx, bamlutils.NativeDirectParseObservation{Stream: stream})
 }

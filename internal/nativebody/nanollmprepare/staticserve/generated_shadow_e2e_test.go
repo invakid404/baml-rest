@@ -24,6 +24,7 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/nativeserve"
+	"github.com/invakid404/baml-rest/nativeserve/admission"
 
 	fixture "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/staticserve_fixture/generated"
 	fwadapter "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/staticserve_fixture/generated/adapter"
@@ -46,7 +47,9 @@ func (s *staticShadowSpy) Shadow(ctx context.Context, inv bamlutils.NativeStatic
 func newStaticShadowSpy(t *testing.T) *staticShadowSpy {
 	t.Helper()
 	reg := prometheus.NewRegistry()
-	fn, err := nativeserve.NewStaticShadow(reg)
+	// Serving-cutover S1: enrolled proof identity — the shipped static shadow presents
+	// none and declines at the default-deny gate.
+	fn, err := nativeserve.NewStaticShadowWithCohortIdentity(reg, admission.ProofCohortInputForTest())
 	if err != nil {
 		t.Fatalf("nativeserve.NewStaticShadow: %v", err)
 	}

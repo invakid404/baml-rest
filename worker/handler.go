@@ -157,6 +157,18 @@ type Config struct {
 	// NativeStaticServeComparator.
 	NativeStaticStreamServeComparator bamlutils.NativeStaticStreamServeFunc
 
+	// NativeDirectParseObserver is the neutral DIRECT-PARSE observation sink (de-BAML
+	// serving cutover S1). Non-nil ONLY in a native-capable worker with the umbrella
+	// flag on; every default/flag-off build leaves it nil and Parse calls nothing.
+	//
+	// It is a telemetry sink, not a serving seam: Parse reports each `/parse/{method}`
+	// request to it and then runs BAML exactly as before, ignoring anything the
+	// observer does. It exists because `direct_parse` is one of the cutover's five
+	// declared surfaces and is the only one that never reaches native admission, so
+	// without it that endpoint class would have no per-request evidence of who owns
+	// it. See bamlutils.NativeDirectParseObserveFunc.
+	NativeDirectParseObserver bamlutils.NativeDirectParseObserveFunc
+
 	// NativeStaticShadowComparator is the neutral native STATIC Stage-1 SHADOW
 	// comparator (de-BAML Slice 8C). Non-nil ONLY in a SHADOW-profile worker with the
 	// umbrella flag on; every default/serve/flag-off build leaves it nil. It runs the
@@ -334,6 +346,12 @@ type Handler struct {
 	// DeBAMLConfig().Enabled + serve-absent, otherwise leaving it nil/hard-off.
 	nativeStaticShadow bamlutils.NativeStaticShadowFunc
 
+	// nativeDirectParseObserver is the neutral DIRECT-PARSE observation sink, injected
+	// only in a native-capable worker with the umbrella flag on (nil in every
+	// default/flag-off build). Parse reports to it and ignores the result; it can
+	// never change what BAML parses. See bamlutils.NativeDirectParseObserveFunc.
+	nativeDirectParseObserver bamlutils.NativeDirectParseObserveFunc
+
 	sharedStateHook hookStorage
 
 	noSharedStateWarnOnce    sync.Once
@@ -378,6 +396,8 @@ func New(cfg Config) (*Handler, error) {
 		nativeStaticServe:       cfg.NativeStaticServeComparator,
 		nativeStaticStreamServe: cfg.NativeStaticStreamServeComparator,
 		nativeStaticShadow:      cfg.NativeStaticShadowComparator,
+
+		nativeDirectParseObserver: cfg.NativeDirectParseObserver,
 	}
 	if cfg.SharedState != nil {
 		h.SetSharedStateHook(cfg.SharedState)

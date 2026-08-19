@@ -127,8 +127,15 @@ func validRegistry() *bamlutils.ClientRegistry {
 
 // validInput is the fully-formed admitted unary `_dynamic` call. Negative cases
 // mutate one field of it so exactly one stage fails.
+//
+// It presents the PROOF cohort identity (serving-cutover S1): the shipped policy is
+// default-deny and empty, so without an enrolled identity every case below would
+// decline at the layer-1b cohort gate instead of at the stage it is testing. The
+// gate's own behaviour — including that this suite fails closed without it — is
+// proven separately in cohort_test.go and cohort_gate_test.go.
 func validInput() Input {
 	return Input{
+		Cohort:              ProofCohortInputForTest(),
 		WorkerCapable:       true,
 		RequestAPIPresent:   true,
 		OnBuildRequestRoute: true,

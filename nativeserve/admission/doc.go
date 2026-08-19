@@ -11,10 +11,18 @@
 // What it does, and deliberately does NOT do:
 //
 //   - [Admitter.Admit] evaluates the whole native serving predicate — build/flag/
-//     route, whole-orchestration-plan, effective dynamic client, prompt+canonical
-//     body, and the prepared plan revalidated immediately after nanollm Prepare —
-//     and either returns an [Admitted] plan proven up to (but NOT including) the
-//     exact-transport RoundTrip, or a stable, secret-free [Decline] to BAML.
+//     route, the DEFAULT-DENY surface/cohort gate, whole-orchestration-plan,
+//     effective dynamic client, prompt+canonical body, and the prepared plan
+//     revalidated immediately after nanollm Prepare — and either returns an
+//     [Admitted] plan proven up to (but NOT including) the exact-transport
+//     RoundTrip, or a stable, secret-free [Decline] to BAML.
+//   - The surface/cohort gate (cohort.go) is the serving-cutover S1 layer: every
+//     lane evaluates it the moment layer 1 establishes the SURFACE and before any
+//     native work, and the shipped policy ([ProductionCohortGate]) enrolls NOTHING —
+//     so every request declines with (StageCohort, ReasonCohortNotEnrolled) before a
+//     socket, and a native-capable artifact is externally equivalent to BAML
+//     transport. It is admission EVIDENCE, not a second kill switch:
+//     BAML_REST_USE_DEBAML (StageFlag, checked first) remains the complete revert.
 //   - It maps the effective one-client dynamic registry into a request-scoped
 //     nanollm config with a SEPARATE internal alias and NO ambient/process env,
 //     creates the engine, and safely Closes it before returning — the plan is

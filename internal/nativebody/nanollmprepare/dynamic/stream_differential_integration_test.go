@@ -552,6 +552,10 @@ func nativeAdmissionInput(base string, f streamDiffFixture, withRaw bool) admiss
 		WorkerCapable: true, RequestAPIPresent: true, OnBuildRequestRoute: true, FlagEnabled: true,
 		Method: "Baml_Rest_Dynamic", Mode: mode, SingleLeaf: true, ResolvedProvider: nativebody.ProviderOpenAI,
 		Registry: liveOracleRegistry(base), Alias: fenceAlias, Messages: msgs, OutputSchema: f.schema,
+		// The proof cohort identity: this differential drives the real
+		// AdmitStreamClaim, which the serving-cutover default-deny gate would otherwise
+		// decline before any native work.
+		Cohort: admission.ProofCohortInputForTest(),
 	}
 }
 

@@ -38,6 +38,12 @@ const (
 type Comparator struct {
 	admitter *admission.Admitter
 	metrics  *admission.Metrics
+	// cohort is the serving-cutover configuration identity this comparator presents.
+	// Production leaves it ZERO — the shadow gets no exception for being no-send —
+	// so the default-deny gate declines every comparison with cohort_not_enrolled
+	// while nothing is enrolled. Only this package's gated tests set it, through
+	// withCohortIdentity, to reach the plan-compare mechanics behind the gate.
+	cohort admission.CohortInput
 }
 
 // NewComparator builds a Comparator recording on m and preflighting through exec.
@@ -47,6 +53,18 @@ type Comparator struct {
 // to observe that the whole comparison stays at zero sockets.
 func NewComparator(m *admission.Metrics, exec *llmhttp.ExactExecutor) *Comparator {
 	return &Comparator{admitter: admission.NewAdmitter(m, exec), metrics: m}
+}
+
+// withCohortIdentity returns a copy of c that presents an explicit serving-cutover
+// configuration identity instead of the production (zero) one. The shadow profile a
+// worker installs goes through NewShadowFunc and therefore always presents the zero
+// identity, declining with cohort_not_enrolled while nothing is enrolled; only the
+// gated proofs — which need to reach the plan-compare mechanics behind the gate —
+// select an identity, through NewComparatorWithCohortIdentity.
+func (c *Comparator) withCohortIdentity(identity admission.CohortInput) *Comparator {
+	out := *c
+	out.cohort = identity
+	return &out
 }
 
 // NewShadowFunc is the factory a shadow-profile worker injects via
@@ -84,7 +102,7 @@ func (c *Comparator) Compare(ctx context.Context, req bamlutils.NativeShadowRequ
 		}
 	}()
 
-	admitted, err := c.admitter.Admit(ctx, toAdmissionInput(req))
+	admitted, err := c.admitter.Admit(ctx, c.toAdmissionInput(req))
 	if err != nil {
 		var d *admission.Decline
 		if errors.As(err, &d) {
@@ -163,7 +181,7 @@ func planResult(match bool) admission.PlanCompareResult {
 // proxied effective target declines immediately after the effective client is
 // mapped — both BEFORE BAML's plan is obtained and BEFORE any plan_compare is
 // recorded, so an unproven shape never records a (possibly false) match.
-func toAdmissionInput(req bamlutils.NativeShadowRequest) admission.Input {
+func (c *Comparator) toAdmissionInput(req bamlutils.NativeShadowRequest) admission.Input {
 	return admission.Input{
 		WorkerCapable:           true,
 		RequestAPIPresent:       true,
@@ -182,6 +200,12 @@ func toAdmissionInput(req bamlutils.NativeShadowRequest) admission.Input {
 		Alias:                   shadowInternalAlias,
 		Messages:                req.Messages,
 		OutputSchema:            req.OutputSchema,
+		// Serving-cutover S1: the shadow comparator presents the production (zero)
+		// configuration identity, so it evaluates the same default-deny gate as every
+		// serving lane and declines with cohort_not_enrolled while nothing is enrolled.
+		// It is a no-send path, but "no-send" does not buy an exception: an enrolled
+		// observe cohort would be a second non-empty admission policy inside S1.
+		Cohort: c.cohort,
 	}
 }
 

@@ -91,8 +91,10 @@ type Options struct {
 	// implementation (de-BAML Phase 7D) the SERVE deploy profile's worker injects
 	// alongside NativeServeFactory while the umbrella flag is on. It is called ONCE
 	// at startup with the worker's private Prometheus registry (for signature
-	// symmetry with NativeServeFactory; the stream lane records no de-BAML counters
-	// this phase — the rollout observability is owner-trimmed); the returned
+	// symmetry with NativeServeFactory: the stream factory now REUSES those collectors,
+	// so the lane records the serving-cutover surface/cohort/phase/winner series and
+	// its own admission decline/attempt counters, and can fail if they cannot be
+	// resolved); the returned
 	// NativeStreamServeFunc is installed on every adapter. The generated dynamic
 	// StreamRequest seam turns it into StreamConfig.NativeAttempt only when it is
 	// non-nil AND the umbrella flag is enabled, and that callback actually SERVES an
@@ -108,8 +110,9 @@ type Options struct {
 	// NativeStaticObserveFactory, when non-nil, builds the native STATIC no-send
 	// admission OBSERVER (de-BAML Slice 8B) a native worker injects while the umbrella
 	// flag is on. Like the other native factories it is called ONCE at startup with
-	// the worker's private Prometheus registry (retained for signature symmetry; 8B
-	// records no de-BAML counters — it is observe-only); the returned
+	// the worker's private Prometheus registry (retained for signature symmetry: the
+	// observer always declines and records no de-BAML counters of its own, reporting
+	// through the caller's bounded static-observe family instead); the returned
 	// NativeStaticObserveFunc is installed on every adapter. The generated static
 	// observe seam turns it into an observer callback only when it is non-nil AND the
 	// umbrella flag is enabled, and that callback ALWAYS declines to BAML after a
@@ -144,6 +147,17 @@ type Options struct {
 	// it. A returned error exits the process non-zero (fails the go-plugin handshake).
 	// nil in every non-serve build. It is the streaming twin of NativeStaticServeFactory.
 	NativeStaticStreamServeFactory func(reg prometheus.Registerer) (bamlutils.NativeStaticStreamServeFunc, error)
+
+	// NativeDirectParseObserveFactory, when non-nil, builds the DIRECT-PARSE
+	// observation sink and is called ONCE at boot with the worker's private registry.
+	// Supplied only by a native-capable worker with the umbrella flag on; nil in every
+	// default and flag-off build, so the parse route calls nothing there.
+	//
+	// It is NOT a serving callback. The parse route reports each request to it and
+	// then runs BAML unchanged; it cannot claim, decline, substitute a result or fail
+	// a request. It exists so `direct_parse` — the one cutover surface that never
+	// reaches native admission — still emits per-request evidence that BAML owns it.
+	NativeDirectParseObserveFactory func(reg prometheus.Registerer) (bamlutils.NativeDirectParseObserveFunc, error)
 
 	// NativeStaticShadowFactory, when non-nil, builds the native STATIC Stage-1 SHADOW
 	// comparator (de-BAML Slice 8C) a SHADOW-profile worker injects while the umbrella
@@ -483,6 +497,25 @@ func Run(opts Options) {
 		nativeStaticStreamServe = fn
 	}
 
+	// Build the DIRECT-PARSE observation sink (de-BAML serving cutover S1; nil except
+	// in a native-capable worker with the flag on). A non-nil factory returning an
+	// error or a nil func without an error is fatal: a native worker that reported a
+	// five-surface build while silently observing four would make the rollout
+	// dashboard quietly incomplete, which is the failure this seam exists to prevent.
+	var nativeDirectParseObserver bamlutils.NativeDirectParseObserveFunc
+	if opts.NativeDirectParseObserveFactory != nil {
+		fn, err := opts.NativeDirectParseObserveFactory(metricsReg)
+		if err != nil {
+			logger.Error("failed to build native direct-parse observer", "err", err.Error())
+			os.Exit(1)
+		}
+		if fn == nil {
+			logger.Error("native direct-parse observer factory returned a nil observer without an error; the direct_parse surface would report nothing")
+			os.Exit(1)
+		}
+		nativeDirectParseObserver = fn
+	}
+
 	// Build the native STATIC Stage-1 SHADOW comparator (de-BAML Slice 8C; nil except
 	// in a SHADOW-profile worker with the flag on). A non-nil factory returning an
 	// error or a nil func without an error is fatal.
@@ -550,6 +583,7 @@ func Run(opts Options) {
 		// admitted static stream natively (one exact DoStream RoundTrip); unsupported
 		// traffic declines pre-transport to BAML.
 		NativeStaticStreamServeComparator: nativeStaticStreamServe,
+		NativeDirectParseObserver:         nativeDirectParseObserver,
 	})
 	if err != nil {
 		logger.Error("failed to construct worker handler", "err", err.Error())

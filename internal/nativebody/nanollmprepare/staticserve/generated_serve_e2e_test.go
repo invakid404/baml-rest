@@ -39,6 +39,7 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/nativeserve"
+	"github.com/invakid404/baml-rest/nativeserve/admission"
 
 	fixturebaml "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/staticserve_fixture/baml_client"
 	fixture "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/staticserve_fixture/generated"
@@ -80,7 +81,11 @@ func (s *staticServeSpy) lastDecline() (int64, string, string) {
 func newStaticServeSpy(t *testing.T) *staticServeSpy {
 	t.Helper()
 	reg := prometheus.NewRegistry()
-	fn, err := nativeserve.NewStaticServe(reg)
+	// Serving-cutover S1: the shipped policy enrolls nothing, so the plain
+	// NewStaticServe factory declines every call pre-socket (that is the point of the
+	// slice, and cohort_serve_test.go proves it). This end-to-end proof is about the
+	// SERVE pipeline behind the gate, so it presents the enrolled proof identity.
+	fn, err := nativeserve.NewStaticServeWithCohortIdentity(reg, admission.ProofCohortInputForTest())
 	if err != nil {
 		t.Fatalf("nativeserve.NewStaticServe: %v", err)
 	}

@@ -87,7 +87,10 @@ func newShadowSpy(t *testing.T) *shadowSpy {
 		t.Fatalf("admission.NewMetrics: %v", err)
 	}
 	exec := &shadowExecCounter{}
-	c := shadow.NewComparator(m, llmhttp.NewExactExecutor(exec))
+	// Serving-cutover S1: the shipped shadow presents no configuration identity and
+	// declines at the default-deny gate, so this proof — which is about the
+	// comparison mechanics — presents the enrolled proof identity.
+	c := shadow.NewComparatorWithCohortIdentity(m, llmhttp.NewExactExecutor(exec), admission.ProofCohortInputForTest())
 	return &shadowSpy{fn: c.Compare, reg: reg, exec: exec}
 }
 

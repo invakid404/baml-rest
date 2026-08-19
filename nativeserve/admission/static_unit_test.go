@@ -101,9 +101,13 @@ func TestStaticTransport(t *testing.T) {
 // nanollm.New, so the observation is always a bounded decline with the right family.
 func TestAdmitStaticEarlyDeclines(t *testing.T) {
 	ctx := context.Background()
+	// An ENROLLED identity, so these pre-FFI gate cases stillreach the gates they
+	// are about. Production presents the zero identity and declines at the
+	// serving-cutover cohort gate instead — proven in cohort_test.go.
 	staticOK := StaticInput{
 		WorkerCapable: true, RequestAPIPresent: true, OnBuildRequestRoute: true, FlagEnabled: true,
 		RouteKind: RouteKindStatic, Mode: bamlutils.NativeStaticModeFinal, SingleLeaf: true, Method: "M",
+		Cohort: testIdentity(t),
 	}
 	cases := []struct {
 		name       string
@@ -151,6 +155,7 @@ func TestAdmitStaticParseEarlyDeclines(t *testing.T) {
 	base := StaticInput{
 		WorkerCapable: true, RequestAPIPresent: true, OnBuildRequestRoute: true, FlagEnabled: true,
 		RouteKind: RouteKindStatic, Method: "M", Mode: bamlutils.NativeStaticModeParseOnly,
+		Cohort: testIdentity(t),
 	}
 
 	dyn := base

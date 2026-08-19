@@ -42,6 +42,7 @@ import (
 	"github.com/invakid404/baml-rest/internal/debaml"
 	"github.com/invakid404/baml-rest/internal/nativeprompt"
 	"github.com/invakid404/baml-rest/nativeserve"
+	"github.com/invakid404/baml-rest/nativeserve/admission"
 )
 
 // publicServeSpy wraps the serve func obtained from the PUBLIC nativeserve.New
@@ -64,7 +65,9 @@ func (s *publicServeSpy) Serve(ctx context.Context, req bamlutils.NativeServeReq
 func newPublicServeSpy(t *testing.T) *publicServeSpy {
 	t.Helper()
 	reg := prometheus.NewRegistry()
-	fn, err := nativeserve.New(reg)
+	// Serving-cutover S1: presents the enrolled proof identity so this parity proof
+	// exercises the dynamic serve pipeline BEHIND the default-deny gate.
+	fn, err := nativeserve.NewWithCohortIdentity(reg, admission.ProofCohortInputForTest())
 	if err != nil {
 		t.Fatalf("nativeserve.New: %v", err)
 	}

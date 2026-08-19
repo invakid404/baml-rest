@@ -69,6 +69,12 @@ func NewStaticServeFunc(reg prometheus.Registerer) (bamlutils.NativeStaticServeF
 // it only SUCCEEDS or FAILS.
 func (s *Server) ServeStatic(ctx context.Context, inv bamlutils.NativeStaticInvocation) (result bamlutils.NativeStaticServeResult) {
 	claimed := false
+	// Serving-cutover S1 identity — the static unary twin of Serve's: the surface is
+	// this LANE's constant and the cohort is what the default-deny gate resolves.
+	// Registered FIRST so it runs LAST and observes the final named result (including
+	// the panic guard's substitution), recording exactly one phase+winner pair.
+	surface, cohort := admission.SurfaceStaticCall, admission.ResolveCohort(s.staticCohortInput(inv))
+	defer func() { s.recordStaticServeTerminal(surface, cohort, claimed, result.Disposition, result.WinnerEngine) }()
 	defer func() {
 		if r := recover(); r != nil {
 			if claimed {
@@ -91,7 +97,7 @@ func (s *Server) ServeStatic(ctx context.Context, inv bamlutils.NativeStaticInvo
 		return declineStaticResult(stageServe, reasonServedBAMLCtx)
 	}
 
-	claim, err := s.staticAdmitClaim(ctx, toStaticAdmissionInput(inv))
+	claim, err := s.staticAdmitClaim(ctx, s.toStaticAdmissionInput(inv))
 	if err != nil {
 		var d *admission.StaticDecline
 		if errors.As(err, &d) {
@@ -119,6 +125,9 @@ func (s *Server) ServeStatic(ctx context.Context, inv bamlutils.NativeStaticInvo
 	// CLAIM the native attempt (ownership boundary). From here every terminal
 	// condition is SUCCESS or FAILURE — never a decline, never a hidden resend.
 	claimed = true
+	// Recorded at the TRUE claim boundary (after the plan-expiry / ctx pre-socket
+	// gates above), so claimed == native_sockets exactly.
+	s.metrics.RecordAdmissionPhase(surface, cohort, admission.PhaseClaimed)
 
 	// native_sockets_total is recorded EXACTLY ONCE per claimed attempt (mirroring
 	// the dynamic path): a post-claim once-only defer records the conservative
@@ -236,6 +245,11 @@ func (s *Server) mapStaticAttempt(ctx context.Context, inv bamlutils.NativeStati
 // compatibility wins — the corresponding error is returned (never a native final
 // BAML would have rejected).
 func (s *Server) serveStaticStructured(ctx context.Context, inv bamlutils.NativeStaticInvocation, bundle *schema.Bundle, res *execute.AttemptResult) bamlutils.NativeStaticServeResult {
+	// The strict same-response oracle runs from here: BAML's `Parse.<Method>` over the
+	// SAME bytes the ONE native provider request returned. Its own phase, so a BAML
+	// parse win is never conflated with a BAML transport win.
+	s.metrics.RecordAdmissionPhase(admission.SurfaceStaticCall, admission.ResolveCohort(s.staticCohortInput(inv)), admission.PhaseSameResponseOracle)
+
 	if inv.BAMLOnlyParse == nil {
 		s.metrics.RecordResponseCompare(admission.ResponseCompareMismatch, admission.ResponseCompareFieldError)
 		s.metrics.RecordServeOutcome(admission.ModeCall, inv.Provider, admission.OutcomeParseError)
@@ -370,7 +384,7 @@ func successStaticResult(finalJSON []byte, res *execute.AttemptResult, engine st
 // WouldRewriteOrProxy predicate, and provider/descriptor/args/mode come from the
 // invocation. It mirrors nativeserve.NewStaticObserve's mapping exactly, but targets
 // the SERVING claim rather than the observe-only path.
-func toStaticAdmissionInput(inv bamlutils.NativeStaticInvocation) admission.StaticInput {
+func (s *Server) toStaticAdmissionInput(inv bamlutils.NativeStaticInvocation) admission.StaticInput {
 	return admission.StaticInput{
 		WorkerCapable:           true,
 		RequestAPIPresent:       true,
@@ -392,5 +406,37 @@ func toStaticAdmissionInput(inv bamlutils.NativeStaticInvocation) admission.Stat
 		Provider:                inv.Provider,
 		WouldRewriteOrProxy:     inv.WouldRewriteOrProxy,
 		BuildBAMLRequest:        inv.BuildBAMLRequest,
+		Cohort:                  s.staticCohortInput(inv),
 	}
+}
+
+// staticCohortInput is the SINGLE definition of a static invocation's
+// serving-cutover configuration identity — the static twin of serveCohortInput, and
+// like it S1 assigns NONE: the opaque configuration fingerprint is a config-load
+// assignment that is deliberately not plumbed yet, so every static request resolves
+// to admission.CohortNone and declines before native work.
+func (s *Server) staticCohortInput(inv bamlutils.NativeStaticInvocation) admission.CohortInput {
+	_ = inv
+	return s.cohort
+}
+
+// recordStaticServeTerminal is the static twin of recordServeTerminal: exactly one
+// phase+winner pair per finished static request, with the same fail-closed mapping
+// (a post-claim decline or an unrecognized winner-engine token records failure, not
+// a safe decline and not a native win).
+func (s *Server) recordStaticServeTerminal(surface admission.Surface, cohort admission.CohortID, claimed bool, disposition bamlutils.NativeStaticServeDisposition, engine string) {
+	if !claimed {
+		s.metrics.RecordPreclaimDecline(surface, cohort)
+		return
+	}
+	winner := admission.WinnerFailure
+	if disposition == bamlutils.NativeStaticServeSucceeded {
+		switch engine {
+		case bamlutils.NativeStaticServeEngineNative:
+			winner = admission.WinnerNative
+		case bamlutils.NativeStaticServeEngineBAMLParse:
+			winner = admission.WinnerBAMLParseSameResponse
+		}
+	}
+	s.metrics.RecordPostclaimTerminal(surface, cohort, winner)
 }

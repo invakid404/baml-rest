@@ -67,6 +67,23 @@ type StaticStreamServer struct {
 	// admission.AdmitStaticStreamClaim (the real production predicate); same-package tests
 	// may override it to force a claim over a loopback SSE server. Production never rebinds it.
 	admitStaticStreamClaim func(ctx context.Context, in admission.StaticStreamInput) (*admission.StaticStreamClaim, error)
+
+	// cohort is the serving-cutover configuration identity this static-stream server
+	// presents. Production leaves it ZERO, so the default-deny gate declines every
+	// static stream before any native work; the gated end-to-end proof passes an
+	// enrolled proof identity through NewStaticStreamServerWithCohortIdentity. Not a
+	// rollout control — see canary.NewServerWithCohortIdentity.
+	cohort admission.CohortInput
+	// metrics carries the bounded de-BAML collectors so this lane records the SAME
+	// surface/cohort/phase/winner series the other three do.
+	//
+	// It was deliberately absent until a cold review pointed out the consequence:
+	// with no recorder, `static_stream` had no series at all, so operational
+	// invariant 4 ("a non-enrolled surface reporting a native claim is a
+	// rollout-stop") could not alert for that surface — the one place where a silent
+	// claim would be least visible. The lane's per-lane STREAM counters stay
+	// owner-trimmed; what it now records is the cutover's five-surface accounting.
+	metrics *admission.Metrics
 }
 
 // NewStaticStreamServer builds a StaticStreamServer. firstBodyTimeout / idleTimeout are the
@@ -85,15 +102,21 @@ func NewStaticStreamServer(firstBodyTimeout, idleTimeout time.Duration) *StaticS
 // workerboot.Options.NativeStaticStreamServeFactory. It resolves the two byte-progress
 // deadlines from the environment (reusing the shared stream-idle value + the
 // separately-named first-body bound) and returns the neutral
-// bamlutils.NativeStaticStreamServeFunc that drives native static streaming. Like the
-// dynamic stream lane it records no per-lane metrics this phase (reg is retained for
-// signature symmetry).
+// bamlutils.NativeStaticStreamServeFunc that drives native static streaming. It REUSES
+// the worker's collectors so the lane records the serving-cutover surface/cohort/phase/
+// winner series; its own per-lane STREAM decline/attempt counters remain owner-trimmed
+// because static-stream admission runs through package-level functions with no metrics
+// receiver.
 func NewStaticStreamServeFunc(reg prometheus.Registerer) (bamlutils.NativeStaticStreamServeFunc, error) {
-	_ = reg
+	m, err := admission.NewMetricsReusing(reg)
+	if err != nil {
+		return nil, err
+	}
 	s := NewStaticStreamServer(
 		llmhttp.StreamFirstBodyTimeoutFromEnv(),
 		llmhttp.StreamIdleTimeoutFromEnv(),
 	)
+	s.metrics = m
 	return s.ServeStaticStream, nil
 }
 
@@ -106,6 +129,12 @@ func NewStaticStreamServeFunc(reg prometheus.Registerer) (bamlutils.NativeStatic
 // DECLINE (no socket); from entry onward it only COMPLETES or FAILS-AFTER-CLAIM.
 func (s *StaticStreamServer) ServeStaticStream(ctx context.Context, inv bamlutils.NativeStaticStreamInvocation) (result bamlutils.NativeStreamServeResult) {
 	entered := false
+	// Serving-cutover S1 identity + exactly-once phase/winner accounting, registered
+	// FIRST so it runs LAST and observes the final named result.
+	surface, cohort := admission.SurfaceStaticStream, admission.ResolveCohort(s.toStaticStreamAdmissionInput(inv).Cohort)
+	defer func() {
+		s.recordStaticStreamTerminal(surface, cohort, entered, result.Disposition, result.WinnerEngine)
+	}()
 	defer func() {
 		if r := recover(); r != nil {
 			if entered {
@@ -134,7 +163,7 @@ func (s *StaticStreamServer) ServeStaticStream(ctx context.Context, inv bamlutil
 		return declineStreamResult(stageServe, reasonNilEmitDelta)
 	}
 
-	claim, err := s.admitStaticStreamClaim(ctx, toStaticStreamAdmissionInput(inv))
+	claim, err := s.admitStaticStreamClaim(ctx, s.toStaticStreamAdmissionInput(inv))
 	if err != nil {
 		var d *admission.StaticDecline
 		if errors.As(err, &d) {
@@ -158,6 +187,10 @@ func (s *StaticStreamServer) ServeStaticStream(ctx context.Context, inv bamlutil
 
 	// --- ENTER THE EXACT EXECUTOR: POINT OF NO RETURN for a decline (I2/I4) ---
 	entered = true
+	// The claim boundary for this lane is executor ENTRY (the exact stream client
+	// fires its one RoundTrip immediately after), so the claimed phase is recorded
+	// here — after every pre-transport decline gate above.
+	s.metrics.RecordAdmissionPhase(surface, cohort, admission.PhaseClaimed)
 
 	res, aerr := execute.RunStream(ctx, execute.StreamConfig{
 		Client:           claim.Client(),
@@ -192,8 +225,15 @@ func (s *StaticStreamServer) ServeStaticStream(ctx context.Context, inv bamlutil
 // those layer-1 facts are fixed true; the TRUTHFUL selected-child facts, the
 // WouldRewriteOrProxy predicate, and provider/descriptor/args/mode come from the
 // invocation. It mirrors toStaticAdmissionInput exactly, targeting the streaming claim.
-func toStaticStreamAdmissionInput(inv bamlutils.NativeStaticStreamInvocation) admission.StaticStreamInput {
+func (s *StaticStreamServer) toStaticStreamAdmissionInput(inv bamlutils.NativeStaticStreamInvocation) admission.StaticStreamInput {
 	return admission.StaticStreamInput{
+		// Serving-cutover S1: the server's configuration identity — ZERO in production
+		// (no config-load fingerprint is plumbed yet), so the default-deny gate inside
+		// admission resolves CohortNone and declines this lane before any native work.
+		// This lane's own per-lane STREAM counters stay owner-trimmed, but it DOES record
+		// the cutover's surface/cohort/phase/winner series (the factory supplies the
+		// shared collectors), so static_stream is accounted for like every other surface.
+		Cohort:                  s.cohort,
 		WorkerCapable:           true,
 		RequestAPIPresent:       true,
 		OnBuildRequestRoute:     true,
@@ -215,4 +255,22 @@ func toStaticStreamAdmissionInput(inv bamlutils.NativeStaticStreamInvocation) ad
 		WouldRewriteOrProxy:     inv.WouldRewriteOrProxy,
 		BuildBAMLRequest:        inv.BuildBAMLRequest,
 	}
+}
+
+// recordStaticStreamTerminal records EXACTLY ONE phase+winner pair for a finished
+// static stream, with the same fail-closed mapping the other three lanes use: before
+// executor entry the only disposition is a safe pre-claim decline; after it, a
+// completed native stream or a typed failure — and a post-entry decline (an
+// ownership-boundary violation) or an unrecognized winner-engine token records
+// failure rather than a safe decline or a native win.
+func (s *StaticStreamServer) recordStaticStreamTerminal(surface admission.Surface, cohort admission.CohortID, entered bool, disposition bamlutils.NativeStreamDisposition, engine string) {
+	if !entered {
+		s.metrics.RecordPreclaimDecline(surface, cohort)
+		return
+	}
+	winner := admission.WinnerFailure
+	if disposition == bamlutils.NativeStreamCompleted && engine == bamlutils.NativeServeEngineNative {
+		winner = admission.WinnerNative
+	}
+	s.metrics.RecordPostclaimTerminal(surface, cohort, winner)
 }

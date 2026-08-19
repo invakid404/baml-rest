@@ -30,6 +30,7 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/internal/debaml"
 	"github.com/invakid404/baml-rest/nativeserve"
+	"github.com/invakid404/baml-rest/nativeserve/admission"
 
 	fixture "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/staticserve_fixture/generated"
 	fwadapter "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/staticserve_fixture/generated/adapter"
@@ -76,7 +77,9 @@ func (s *streamServeSpy) nativeSocketsZero() bool {
 
 func newStreamServeSpy(t *testing.T) *streamServeSpy {
 	t.Helper()
-	fn, err := nativeserve.NewStaticStream(prometheus.NewRegistry())
+	// Serving-cutover S1: presents the enrolled proof identity so this end-to-end
+	// proof exercises the static-stream serve pipeline BEHIND the default-deny gate.
+	fn, err := nativeserve.NewStaticStreamWithCohortIdentity(prometheus.NewRegistry(), admission.ProofCohortInputForTest())
 	if err != nil {
 		t.Fatalf("nativeserve.NewStaticStream: %v", err)
 	}

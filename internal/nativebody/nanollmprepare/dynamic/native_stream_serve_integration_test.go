@@ -33,6 +33,7 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/dynclient"
 	"github.com/invakid404/baml-rest/internal/debaml"
+	"github.com/invakid404/baml-rest/nativeserve/admission"
 	"github.com/invakid404/baml-rest/nativeserve/canary"
 )
 
@@ -53,7 +54,8 @@ func (s *streamServeSpy) Serve(ctx context.Context, req bamlutils.NativeStreamSe
 }
 
 func newStreamServeSpy() *streamServeSpy {
-	srv := canary.NewStreamServer(nil, liveExactExecutor(), 30*time.Second, 30*time.Second)
+	// Serving-cutover S1: enrolled proof identity — see the dynamic serve proof.
+	srv := canary.NewStreamServerWithCohortIdentity(nil, liveExactExecutor(), 30*time.Second, 30*time.Second, admission.ProofCohortInputForTest())
 	return &streamServeSpy{fn: srv.Serve}
 }
 
