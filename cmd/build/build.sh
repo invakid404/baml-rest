@@ -163,28 +163,85 @@ if [ "${SUBPROCESS:-true}" = "true" ]; then
 else
     echo "In-process Build: enabled"
 fi
-if [ "${SHADOW_WORKER:-false}" = "true" ]; then
-    echo "Shadow Worker (BAML+nanollm + one-send shadow comparator, from isolated module): enabled"
-elif [ "${NATIVE_WORKER:-false}" = "true" ]; then
-    echo "Native Worker (BAML+nanollm, serve-capable behind BAML_REST_USE_DEBAML, from isolated module): enabled"
-else
-    echo "Native Worker: disabled (BAML-only worker; immediate-reversal default)"
-fi
-echo "============================================"
+# ============================================================================
+# de-BAML serving cutover S2 — ARTIFACT PROFILE RESOLUTION
+# ============================================================================
+#
+# S2 makes the native-capable worker (built from the isolated nanollmprepare
+# module) the STANDARD deployable artifact: for a SUBPROCESS build, NATIVE_WORKER
+# now defaults to TRUE. The zero-options BAML-only root cmd/worker stays fully
+# buildable as the explicit ROLLBACK artifact, selected with NATIVE_WORKER=false.
+#
+# This changes which artifact SHIPS, not what it serves. The S1 cohort policy is
+# empty, so the standard artifact declines every request pre-socket and BAML
+# serves 100% of traffic on it; BAML_REST_USE_DEBAML=false additionally makes it
+# do no native work at all.
+#
+# The request is read from NATIVE_WORKER before the default is applied, because
+# "unset" and "explicitly false" must stay distinguishable: an in-process build
+# that never asked for a native worker must not be rejected merely because the
+# default flipped (that would hard-break every existing SUBPROCESS=false
+# invocation), while one that DID ask is still a contradiction and is rejected.
+NATIVE_WORKER_REQUEST="${NATIVE_WORKER:-}"
+SHADOW_WORKER="${SHADOW_WORKER:-false}"
+
+# Strict decoding: these select what ships, so a typo must fail the build rather
+# than fall through to a falsy default and silently produce the other artifact.
+case "${NATIVE_WORKER_REQUEST}" in
+    ""|true|false) ;;
+    *)
+        echo "ERROR: NATIVE_WORKER must be exactly \"true\" or \"false\" (got \"${NATIVE_WORKER_REQUEST}\")" >&2
+        exit 1
+        ;;
+esac
+case "${SHADOW_WORKER}" in
+    true|false) ;;
+    *)
+        echo "ERROR: SHADOW_WORKER must be exactly \"true\" or \"false\" (got \"${SHADOW_WORKER}\")" >&2
+        exit 1
+        ;;
+esac
 
 # The native worker is a SUBPROCESS-only capability by construction: nanollm
-# links only into the worker subprocess, never the host. An in-process build
-# has no separate worker process, so honouring NATIVE_WORKER there would mean
-# linking nanollm into the host — exactly the invariant this slice preserves.
-# Fail loudly rather than silently producing a BAML-only in-process host. The
+# links only into the worker subprocess, never the host. An in-process build has
+# no separate worker process, so honouring NATIVE_WORKER there would mean linking
+# nanollm into the host — exactly the invariant this arc preserves. The
 # SHADOW_WORKER profile (de-BAML cutover Slice 4) is a native worker too, so it
 # carries the same subprocess-only requirement.
-if { [ "${NATIVE_WORKER:-false}" = "true" ] || [ "${SHADOW_WORKER:-false}" = "true" ]; } && [ "${SUBPROCESS:-true}" != "true" ]; then
-    echo "ERROR: NATIVE_WORKER/SHADOW_WORKER=true requires SUBPROCESS=true — the native" >&2
-    echo "       (nanollm) runtime links only into the worker subprocess and must never" >&2
-    echo "       enter the in-process host link graph." >&2
-    exit 1
+if [ "${SUBPROCESS:-true}" != "true" ]; then
+    if [ "${NATIVE_WORKER_REQUEST}" = "true" ] || [ "${SHADOW_WORKER}" = "true" ]; then
+        echo "ERROR: NATIVE_WORKER/SHADOW_WORKER=true requires SUBPROCESS=true — the native" >&2
+        echo "       (nanollm) runtime links only into the worker subprocess and must never" >&2
+        echo "       enter the in-process host link graph." >&2
+        exit 1
+    fi
+    # An in-process build has no worker subprocess to make native-capable, so it
+    # is the BAML-only profile by construction, not by choice.
+    NATIVE_WORKER=false
+else
+    NATIVE_WORKER="${NATIVE_WORKER_REQUEST:-true}"
 fi
+
+# ARTIFACT_PROFILE is the single source of truth for the rest of this script and
+# for the -ldflags stamp: native_capable means the embedded worker is built from
+# the isolated module and links the native engine (the S2 standard artifact, and
+# also the shadow profile, whose worker links the engine too); baml_only means
+# the zero-options root cmd/worker, which links no native engine at all.
+if [ "${NATIVE_WORKER}" = "true" ] || [ "${SHADOW_WORKER}" = "true" ]; then
+    ARTIFACT_PROFILE="native_capable"
+else
+    ARTIFACT_PROFILE="baml_only"
+fi
+
+if [ "${SHADOW_WORKER}" = "true" ]; then
+    echo "Shadow Worker (BAML+nanollm + one-send shadow comparator, from isolated module): enabled"
+elif [ "${NATIVE_WORKER}" = "true" ]; then
+    echo "Native Worker (BAML+nanollm, serve-capable behind BAML_REST_USE_DEBAML, from isolated module): enabled"
+else
+    echo "Native Worker: disabled (BAML-only ROLLBACK artifact)"
+fi
+echo "Artifact Profile (de-BAML cutover S2): ${ARTIFACT_PROFILE}"
+echo "============================================"
 
 # Set up Go build tags
 BUILD_TAGS=""
@@ -206,12 +263,148 @@ fi
 # explicit compile/deployment capability the pool threads through
 # configureWorkerMode; it never infers native-stream capability from the umbrella
 # flag alone (scope §7D pool rule).
-if [ "${NATIVE_WORKER:-false}" = "true" ]; then
+#
+# The "NOT the shadow profile" half used to hold IMPLICITLY, because a shadow
+# build left NATIVE_WORKER unset and unset meant false. S2 made unset mean the
+# standard artifact, so the exclusion is now written out: a shadow worker still
+# installs no stream serve factory, and tagging its host would arm the pool's
+# stream-retry suppression against a worker that cannot serve a stream.
+if [ "${NATIVE_WORKER}" = "true" ] && [ "${SHADOW_WORKER}" != "true" ]; then
     BUILD_TAGS="${BUILD_TAGS:+${BUILD_TAGS},}nativestreamserve"
+fi
+# De-BAML serving cutover S2: tag the HOST build with the ARTIFACT PROFILE, so
+# cmd/serve knows at compile time whether the worker bytes it embeds link a
+# native engine. Distinct from nativestreamserve above because the profile also
+# covers the shadow build (natively linked, no stream serve factory) — deriving
+# the profile from the stream tag would mislabel a shadow artifact as BAML-only.
+# cmd/serve cross-checks this constant against the -ldflags profile stamp below
+# at startup, so the tag and the stamp cannot drift apart silently.
+if [ "${ARTIFACT_PROFILE}" = "native_capable" ]; then
+    BUILD_TAGS="${BUILD_TAGS:+${BUILD_TAGS},}nativeworkerartifact"
 fi
 GO_BUILD_TAGS=""
 if [ -n "${BUILD_TAGS}" ]; then
     GO_BUILD_TAGS="-tags=${BUILD_TAGS}"
+fi
+
+# ============================================================================
+# de-BAML serving cutover S2 — ARTIFACT-ID PROVENANCE
+# ============================================================================
+#
+# cmd/build supplies both of these when it drives this script; the integration
+# harness supplies them when it renders the same Dockerfile template; a hand-run
+# build.sh has neither and records that HONESTLY as the explicit "unset" sentinel
+# rather than silently producing an ID that cannot tell two releases apart. The
+# native-worker tar digest is not passed at all — artifactattest computes it from
+# this very build context, so it describes the tar that is about to be extracted
+# and compiled.
+#
+# Resolved and VALIDATED HERE, before any build work: a bad provenance input is a
+# caller/renderer bug, and finding out after the Node client generation and the
+# BAML codegen wastes the entire build to report it.
+# UNSET-ONLY expansion — `${VAR-unset}`, deliberately NOT `${VAR:-unset}`.
+#
+# `:-` substitutes for an unset variable AND for one set to the empty string, so
+# the colon form cannot tell the deliberate `unset` SENTINEL from a renderer that
+# supplied nothing. `ENV ARTIFACT_SOURCE_BUNDLE_DIGEST=""` would then be defaulted
+# to `unset`, artifactattest would accept it (it accepts an explicit sentinel by
+# design), and the build would mint a perfectly valid artifact ID whose provenance
+# is absent by accident rather than by declaration. That is the same
+# silently-accept-a-bad-input shape the `<no value>` regression had, one character
+# away.
+#
+# So an explicitly EMPTY value is NOT substituted: it falls through to the
+# validators below and is rejected loudly. `unset` stays the ONE accepted absence,
+# and it is a token a caller writes on purpose.
+ARTIFACT_SOURCE_REVISION="${ARTIFACT_SOURCE_REVISION-unset}"
+ARTIFACT_SOURCE_BUNDLE_DIGEST="${ARTIFACT_SOURCE_BUNDLE_DIGEST-unset}"
+
+# Validate the provenance inputs HERE, where the cause is still visible.
+#
+# Both values arrive from an ENV line the Dockerfile template interpolates, and
+# Go's text/template renders a MISSING map key as the literal string `<no value>`.
+# That is not a value this build can use, and it is not a value artifactattest can
+# diagnose: from there it is just a malformed digest, and the message names the
+# digest rather than the renderer that failed to supply one. The whole integration
+# matrix went red exactly that way.
+#
+# So a bad value fails RIGHT HERE with a message that names the template key and
+# what to do about it. Note what this does NOT do: it does not default, coerce or
+# tolerate the bad value.
+artifact_provenance_reject() {
+    local name="$1" value="$2" template_key="$3" shape="$4"
+    echo "ERROR: ${name}=\"${value}\" is not usable artifact provenance (want ${shape}, or the explicit \"unset\" sentinel)." >&2
+    if [ -z "${value}" ]; then
+        echo "       The variable is SET but EMPTY. An empty value is not the \"unset\" sentinel: the sentinel is" >&2
+        echo "       a token a caller writes on purpose, whereas an empty value is what a renderer that supplied" >&2
+        echo "       nothing produces. Defaulting it would mint a valid artifact ID with absent provenance." >&2
+    fi
+    if [ "${value}" = "<no value>" ]; then
+        echo "       \"<no value>\" is Go text/template rendering a MISSING map key: whoever rendered" >&2
+        echo "       cmd/build/Dockerfile.tmpl did not supply \"${template_key}\". Every renderer of that" >&2
+        echo "       template must provide it — see cmd/build/main.go and integration/testutil/container.go." >&2
+    fi
+    exit 1
+}
+
+# The digest must be EXACTLY 16 lowercase hex characters — the same shape
+# artifactprofile.ValidateArtifactID enforces at startup. Sixteen explicit classes
+# anchor the whole string, because `case` globs match the entire word.
+validate_artifact_digest() {
+    local name="$1" value="$2" template_key="$3"
+    if [ "${value}" = "unset" ]; then
+        return 0
+    fi
+    case "${value}" in
+        [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f])
+            return 0
+            ;;
+    esac
+    artifact_provenance_reject "${name}" "${value}" "${template_key}" "16 lowercase hex characters"
+}
+
+# The revision must be non-empty and contain ONLY the bounded character class
+# artifactprofile.isBoundedRevision accepts.
+#
+# Checked with a NEGATED class — "does any forbidden character appear?" — rather
+# than with an allowed-class glob. An allowed-class glob of the form
+# `[A-Za-z0-9._/+-]*[A-Za-z0-9._/+-]` reads as if it constrains the whole string,
+# but the `*` in the middle matches ARBITRARY characters, so `abc<def` sailed
+# through it. The negated form has no such hole: one forbidden character anywhere
+# matches, and the check cannot be satisfied by a compliant prefix and suffix.
+validate_artifact_revision() {
+    local name="$1" value="$2" template_key="$3"
+    if [ "${value}" = "unset" ]; then
+        return 0
+    fi
+    case "${value}" in
+        "" | *[!A-Za-z0-9._/+-]*)
+            artifact_provenance_reject "${name}" "${value}" "${template_key}" \
+                "a bounded revision token (letters, digits, . _ / + -)"
+            ;;
+    esac
+    return 0
+}
+
+validate_artifact_digest ARTIFACT_SOURCE_BUNDLE_DIGEST "${ARTIFACT_SOURCE_BUNDLE_DIGEST}" artifactSourceBundleDigest
+validate_artifact_revision ARTIFACT_SOURCE_REVISION "${ARTIFACT_SOURCE_REVISION}" artifactSourceRevision
+
+# de-BAML serving cutover S2 proof hook: print the resolved artifact selection
+# and exit before the build itself starts — no toolchain, no network, no
+# generated sources, nothing written outside the cache directories the env
+# already points at. It exists so the artifact-selection contract (standard
+# default, named rollback, in-process downgrade, shadow profile, tag coupling) is
+# tested against THIS script rather than against a second copy of the rules in a
+# test file — the copy that would be the one to drift.
+if [ "${ARTIFACT_PROFILE_DRY_RUN:-false}" = "true" ]; then
+    echo "artifact_profile=${ARTIFACT_PROFILE}"
+    echo "artifact_source_revision=${ARTIFACT_SOURCE_REVISION}"
+    echo "artifact_source_bundle_digest=${ARTIFACT_SOURCE_BUNDLE_DIGEST}"
+    echo "native_worker=${NATIVE_WORKER}"
+    echo "shadow_worker=${SHADOW_WORKER}"
+    echo "subprocess=${SUBPROCESS:-true}"
+    echo "build_tags=${BUILD_TAGS}"
+    exit 0
 fi
 
 # Create working directory structure
@@ -595,6 +788,63 @@ go run "${ADAPTER_VERSION}/cmd/main.go"
 # built at all.
 WORKER_LDFLAGS="-s -w"
 SERVE_LDFLAGS="-s -w"
+
+# ============================================================================
+# de-BAML serving cutover S2 — ARTIFACT ATTESTATION STAMP
+# ============================================================================
+#
+# Stamp the resolved artifact profile and a reproducible release artifact ID
+# into BOTH binaries. At startup each one cross-checks the stamp against what it
+# demonstrably IS — the worker against its linked native capability, the host
+# against its `nativeworkerartifact` build tag — and refuses to serve on a
+# contradiction. So this stamp is not a decoration: it is the claim that makes a
+# mislabelled artifact a startup failure instead of a wrong dashboard label.
+#
+# The worker package is resolved HERE (and reused by the build below) so the
+# thing that is stamped and the thing that is built cannot drift.
+NATIVE_WORKER_PKG=""
+ARTIFACT_WORKER_PKG=""
+if [ "${SUBPROCESS:-true}" = "true" ]; then
+    if [ "${ARTIFACT_PROFILE}" = "native_capable" ]; then
+        # Two isolated-module worker profiles; SHADOW takes precedence (it is the
+        # no-send comparator build, not the serve build).
+        NATIVE_WORKER_PKG="./cmd/worker/"
+        if [ "${SHADOW_WORKER}" = "true" ]; then
+            NATIVE_WORKER_PKG="./cmd/worker-shadow/"
+        fi
+        ARTIFACT_WORKER_PKG="nanollmprepare:${NATIVE_WORKER_PKG}"
+    else
+        ARTIFACT_WORKER_PKG="root:./cmd/worker/"
+    fi
+fi
+
+ARTIFACT_PROFILE_PKG="github.com/invakid404/baml-rest/internal/artifactprofile"
+echo "Computing de-BAML S2 release artifact ID..."
+# artifactattest prints `artifact_id=` and `artifact_inputs=`. BOTH are stamped:
+# the inputs are the evidence the startup attestation re-derives the ID from, so a
+# well-formed but wrong ID cannot serve.
+ARTIFACT_ATTEST_OUT="$(go run ./cmd/build/artifactattest \
+    --profile "${ARTIFACT_PROFILE}" \
+    --worker-package "${ARTIFACT_WORKER_PKG}" \
+    --build-tags "${BUILD_TAGS}" \
+    --subprocess "${SUBPROCESS:-true}" \
+    --baml-version "${BAML_VERSION}" \
+    --adapter-version "${ADAPTER_VERSION}" \
+    --source-revision "${ARTIFACT_SOURCE_REVISION}" \
+    --source-bundle-digest "${ARTIFACT_SOURCE_BUNDLE_DIGEST}")"
+ARTIFACT_ID="$(printf '%s\n' "${ARTIFACT_ATTEST_OUT}" | sed -n 's/^artifact_id=//p')"
+ARTIFACT_INPUTS="$(printf '%s\n' "${ARTIFACT_ATTEST_OUT}" | sed -n 's/^artifact_inputs=//p')"
+if [ -z "${ARTIFACT_ID}" ] || [ -z "${ARTIFACT_INPUTS}" ]; then
+    echo "ERROR: artifactattest did not emit both artifact_id and artifact_inputs" >&2
+    printf '%s\n' "${ARTIFACT_ATTEST_OUT}" >&2
+    exit 1
+fi
+echo "Artifact Profile: ${ARTIFACT_PROFILE}  Artifact ID: ${ARTIFACT_ID}"
+echo "Artifact Provenance: source_revision=${ARTIFACT_SOURCE_REVISION} source_bundle_digest=${ARTIFACT_SOURCE_BUNDLE_DIGEST}"
+ARTIFACT_STAMP_LDFLAGS="-X '${ARTIFACT_PROFILE_PKG}.stampedProfile=${ARTIFACT_PROFILE}' -X '${ARTIFACT_PROFILE_PKG}.stampedArtifactID=${ARTIFACT_ID}' -X '${ARTIFACT_PROFILE_PKG}.stampedArtifactInputs=${ARTIFACT_INPUTS}'"
+WORKER_LDFLAGS="${WORKER_LDFLAGS} ${ARTIFACT_STAMP_LDFLAGS}"
+SERVE_LDFLAGS="${SERVE_LDFLAGS} ${ARTIFACT_STAMP_LDFLAGS}"
+
 if [ -n "${BAML_REST_BASE_URL_REWRITES:-}" ]; then
     echo "Baking in base URL rewrites: ${BAML_REST_BASE_URL_REWRITES}"
     if [ "${SUBPROCESS:-true}" = "true" ]; then
@@ -609,7 +859,7 @@ if [ "${SUBPROCESS:-true}" = "true" ]; then
     # The host embeds these bytes at cmd/serve/worker below; whichever variant
     # we build here becomes the embedded worker payload. The host link graph is
     # identical either way — it only embeds an opaque byte slice.
-    if [ "${NATIVE_WORKER:-false}" = "true" ] || [ "${SHADOW_WORKER:-false}" = "true" ]; then
+    if [ "${ARTIFACT_PROFILE}" = "native_capable" ]; then
         # de-BAML cutover Slice 2 (option b): build the BAML+nanollm worker FROM
         # the isolated, out-of-go.work internal/nativebody/nanollmprepare module
         # with GOWORK=off + CGO so the nanollm static archive links ONLY into the
@@ -630,10 +880,9 @@ if [ "${SUBPROCESS:-true}" = "true" ]; then
         #     while the umbrella flag is enabled) compares native vs BAML request
         #     plans with NO socket and then declines, so BAML still serves every
         #     request byte-identically. SHADOW_WORKER takes precedence.
-        NATIVE_WORKER_PKG="./cmd/worker/"
-        if [ "${SHADOW_WORKER:-false}" = "true" ]; then
-            NATIVE_WORKER_PKG="./cmd/worker-shadow/"
-        fi
+        # NATIVE_WORKER_PKG was resolved next to the S2 artifact stamp above, so
+        # the package named in the attested artifact ID is exactly the package
+        # built here.
         # The isolated module is EXCLUDED from the embed source bundle
         # (.embedignore) so cmd/embed never imports it into the root link graph;
         # it rides along as the opaque tar cmd/build/nativeworker_module.tar
@@ -646,7 +895,8 @@ if [ "${SUBPROCESS:-true}" = "true" ]; then
         # directories; extracting over them is a no-op on content because the tar is
         # the authoritative committed snapshot.
         if [ ! -f cmd/build/nativeworker_module.tar ]; then
-            echo "ERROR: NATIVE_WORKER=true but cmd/build/nativeworker_module.tar is missing from the build context" >&2
+            echo "ERROR: artifact profile is native_capable but cmd/build/nativeworker_module.tar is missing from the build context" >&2
+            echo "       (build the BAML-only ROLLBACK artifact with NATIVE_WORKER=false if that is what you want)" >&2
             exit 1
         fi
         echo "Restoring isolated nanollm worker + nativeserve modules from opaque asset (cmd/build/nativeworker_module.tar)..."
@@ -685,10 +935,15 @@ if [ "${SUBPROCESS:-true}" = "true" ]; then
             GOWORK=off GOFLAGS=-mod=mod CGO_ENABLED=1 go build ${GO_BUILD_TAGS} ${WORKER_LDFLAGS:+-ldflags "${WORKER_LDFLAGS}"} -o "${WORKER_OUT}" "${NATIVE_WORKER_PKG}"
         )
     else
-        # Default / immediate-reversal build: the BAML-only worker from the root
+        # The explicit ROLLBACK artifact: the BAML-only worker from the root
         # module (imports baml, loads its shared library; no nanollm). This is
         # what keeps "BAML-only worker = 100% BAML" a build-level kill switch.
-        echo "Building worker binary (BAML-only)..."
+        # Since S2 it is no longer the default — it is selected on purpose with
+        # NATIVE_WORKER=false (cmd/build: --baml-only-rollback-worker) — but it
+        # remains a first-class, fully buildable artifact, because
+        # BAML_REST_USE_DEBAML=false only promises a total BAML revert for as long
+        # as a BAML-capable artifact still exists to revert to.
+        echo "Building worker binary (BAML-only ROLLBACK artifact)..."
         go build ${GO_BUILD_TAGS} ${WORKER_LDFLAGS:+-ldflags "${WORKER_LDFLAGS}"} -o cmd/serve/worker ./cmd/worker/
     fi
 else

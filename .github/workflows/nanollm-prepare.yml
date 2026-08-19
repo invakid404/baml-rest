@@ -252,3 +252,40 @@ jobs:
           BAML_LIBRARY_DISABLE_DOWNLOAD=true GOWORK=off go test \
             -tags "integration nanollm_integration" \
             -count=1 -v ./...
+
+      - name: de-BAML S2 native-capable artifact proof (non-skippable)
+        run: |
+          set -euo pipefail
+          # Boot the artifacts the de-BAML serving cutover S2 actually promotes.
+          #
+          # This lane is the only place they can be built: they come from the
+          # out-of-go.work nanollmprepare module with CGO and a linked nanollm
+          # archive, and the ordinary unit lane deliberately keeps nanollm out. The
+          # script builds EVERY entrypoint cmd/build/build.sh can ship as a
+          # native_capable artifact — cmd/worker AND cmd/worker-shadow — with the
+          # same tags and the same -ldflags attestation stamp build.sh applies, then
+          # exports each binary and the release artifact ID the build computed for
+          # it.
+          #
+          # The test then asserts, per artifact: the startup profile signal and that
+          # exact release ID; flag-on with the shipped EMPTY cohort policy (nothing
+          # enrolled, nothing claimed, so BAML owns all traffic); and flag-off zero
+          # native runtime init / zero native factories.
+          #
+          # It CANNOT skip. The tests fail when the artifacts are not supplied,
+          # because an earlier arrangement made them optional, this step did not
+          # supply them, and the whole native-artifact proof ran green while a real
+          # flag-off kill-switch failure shipped in cmd/worker-shadow underneath it.
+          #
+          # BAML CFFIs are pre-provisioned above (BAML_CACHE_DIR is exported into
+          # the job env), so downloads stay disabled here too.
+          artifacts="$RUNNER_TEMP/s2-native-artifacts"
+          envfile="$RUNNER_TEMP/s2-native-artifacts.env"
+          : > "$envfile"
+          ARTIFACT_SOURCE_REVISION="${GITHUB_SHA}" \
+            ./scripts/build-s2-native-artifacts.sh "$artifacts" "$envfile"
+          set -a
+          . "$envfile"
+          set +a
+          BAML_LIBRARY_DISABLE_DOWNLOAD=true go test \
+            -tags=nativeartifactproof -count=1 -timeout 10m -v ./internal/workerboot/

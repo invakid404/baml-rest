@@ -89,13 +89,29 @@ var (
 			Help: "Number of HTTP requests currently being processed",
 		},
 	)
+	// workerMetricsBridgeFailures counts worker->host metrics-bridge decode
+	// failures, by bounded reason. de-BAML serving cutover S2 makes the worker's
+	// artifact-profile series part of its wrong-artifact alert, and that series
+	// only reaches Prometheus through this bridge — so a bridge that dropped a
+	// worker's metric families silently would present a scrape that LOOKS healthy
+	// while the alert's input is missing. The scrape now fails instead (see
+	// combinedMetricsGatherer.Gather); this counter is the durable record of how
+	// often it happened, readable on the next successful scrape.
+	workerMetricsBridgeFailures = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "worker_metrics_bridge_failures_total",
+			Help: "Worker->host metrics bridge failures, by bounded reason (rpc: a healthy worker's metrics RPC failed; decode: its metric families could not be decoded). Non-zero means at least one worker could not be observed, so a scrape was failed rather than served incomplete.",
+		},
+		[]string{"reason"},
+	)
+
 	registerHTTPMetricsOnce sync.Once
 	registerHTTPMetricsErr  error
 )
 
 func registerHTTPMetrics() error {
 	registerHTTPMetricsOnce.Do(func() {
-		for _, collector := range []prometheus.Collector{httpRequestsTotal, httpRequestDuration, httpRequestsInflight} {
+		for _, collector := range []prometheus.Collector{httpRequestsTotal, httpRequestDuration, httpRequestsInflight, workerMetricsBridgeFailures} {
 			if err := prometheus.Register(collector); err != nil {
 				if _, ok := err.(prometheus.AlreadyRegisteredError); ok {
 					continue
@@ -149,6 +165,12 @@ var serveCmd = &cobra.Command{
 			output = zerolog.ConsoleWriter{Out: os.Stdout}
 		}
 		logger := zerolog.New(output).With().Timestamp().Logger()
+
+		// De-BAML serving-cutover S2: attest this artifact's profile (standard
+		// native-capable vs BAML-only rollback) + release artifact ID before
+		// anything else starts, so the identity is on the first lines of the log
+		// and an unproven identity never reaches the worker pool.
+		attestArtifactProfileAtStartup(logger)
 
 		// Mirror the SharedStateSeeds gate's availability predicate
 		// below: the BuildRequest path is exercisable as long as
@@ -343,6 +365,7 @@ var serveCmd = &cobra.Command{
 			prefix:       "bamlrest_",
 			mainGatherer: prometheus.DefaultGatherer,
 			pool:         workerPool,
+			logger:       logger,
 		}
 
 		// Add /metrics endpoint for Prometheus scraping (no HTTP logging to reduce noise)
@@ -837,10 +860,22 @@ type CallWithRawResponse struct {
 }
 
 // combinedMetricsGatherer gathers metrics from the main process and all workers
+// workerMetricsSource is the worker half of the combined gatherer: the pool, as
+// the gatherer actually uses it. Narrowed to an interface so the bridge's failure
+// handling is testable with a worker that returns malformed metrics — the case
+// that used to be dropped silently and had no test at all.
+type workerMetricsSource interface {
+	GatherWorkerMetrics(ctx context.Context) []pool.WorkerMetrics
+}
+
 type combinedMetricsGatherer struct {
 	prefix       string
 	mainGatherer prometheus.Gatherer
-	pool         *pool.Pool
+	pool         workerMetricsSource
+	// logger reports a metrics-bridge failure. It must be set: a bridge failure is
+	// an alertable event, and a gatherer that could not report one would be the
+	// silent drop this field exists to end.
+	logger zerolog.Logger
 }
 
 func (g *combinedMetricsGatherer) Gather() ([]*dto.MetricFamily, error) {
@@ -870,12 +905,40 @@ func (g *combinedMetricsGatherer) Gather() ([]*dto.MetricFamily, error) {
 
 	// Deserialize and merge worker metrics
 	for _, wm := range workerMetrics {
+		if wm.Err != nil {
+			// A healthy worker we could not ask. FAIL the scrape: an aggregate that
+			// silently omits a worker is indistinguishable from one where that
+			// worker had nothing to report, and S2's wrong-artifact alert reads its
+			// only input — the worker's artifact-profile series — out of exactly
+			// this path. A 200 OK without it would hide a wrong-profile worker that
+			// is still happily serving requests.
+			workerMetricsBridgeFailures.WithLabelValues("rpc").Inc()
+			g.logger.Error().
+				Int("worker", wm.WorkerID).
+				Err(wm.Err).
+				Msg("worker metrics bridge: a healthy worker's metrics RPC failed; failing the scrape rather than serving an aggregate that silently omits it")
+			return nil, fmt.Errorf("worker %d metrics bridge: metrics RPC failed: %w", wm.WorkerID, wm.Err)
+		}
+
 		workerLabel := fmt.Sprintf("worker_%d", wm.WorkerID)
 
 		for _, mfBytes := range wm.MetricFamilies {
 			var mf dto.MetricFamily
 			if err := proto.Unmarshal(mfBytes, &mf); err != nil {
-				continue // Skip malformed metrics
+				// FAIL the scrape rather than serving a silently incomplete
+				// aggregate. This used to `continue`, which is fine for a metric
+				// nobody alerts on and wrong for one that is an alert's only
+				// input: de-BAML serving cutover S2 exports the worker's artifact
+				// profile and its expected-profile violation through this bridge,
+				// so dropping a worker's families here could hide a worker running
+				// the wrong artifact behind a 200 OK. A failed scrape is a visible,
+				// alertable state; a 200 with a missing series is not.
+				workerMetricsBridgeFailures.WithLabelValues("decode").Inc()
+				g.logger.Error().
+					Int("worker", wm.WorkerID).
+					Err(err).
+					Msg("worker metrics bridge: could not decode a worker metric family; failing the scrape rather than serving an incomplete aggregate")
+				return nil, fmt.Errorf("worker %d metrics bridge: decoding metric family: %w", wm.WorkerID, err)
 			}
 
 			// Add prefix and process label
