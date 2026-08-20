@@ -86,6 +86,12 @@
 // reasonably conclude the pins are stale when they are not. Read the marker, not
 // the paragraphs.
 //
+// The COMPLETE post-squash re-pin runbook — every ordered step, including the two
+// that are easiest to leave implicit (flipping BOTH mirrored manifest narratives,
+// and materializing the external probe's module + main package before its
+// go get/build/run) — is nativeserve/pin_followup.md, section "The follow-up —
+// OWED". Follow it there; do not reconstruct it from these paragraphs.
+//
 // NOTE (de-BAML serving cutover S2): these pins are MASTER-durable. They name
 // c676a4dacc90, the squash-merge of the S2 cutover change (#677), and the follow-up
 // tracked in nativeserve/pin_followup.md is therefore STATUS: RESOLVED. They briefly

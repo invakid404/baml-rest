@@ -80,5 +80,15 @@ func ProofCohortGateForTest() *CohortGate { return proofGate }
 // reaches the layers behind the default-deny gate. It is the ONLY way to build a
 // gate-bearing CohortInput, and it exists only under the opt-in tag.
 func ProofCohortInputForTest() CohortInput {
-	return CohortInput{Fingerprint: proofConfigFingerprint, gate: ProofCohortGateForTest()}
+	// Provider is part of the identity since serving cutover S3a: the gate binds a
+	// fingerprint to its INVENTORY RECORD, and the proof record declares openai on
+	// every surface. An identity that omitted the class would resolve
+	// CohortUnrecognized and the gated suites would stop reaching the layers behind
+	// the gate — which is the correct failure, and the reason this is stated here
+	// rather than special-cased in the gate.
+	return CohortInput{
+		Fingerprint: proofConfigFingerprint,
+		Provider:    ConfigProviderOpenAI,
+		gate:        ProofCohortGateForTest(),
+	}
 }

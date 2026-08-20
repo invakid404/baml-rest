@@ -120,6 +120,12 @@ require (
 // Read the marker, not the paragraphs: the history below names SHAs that are NOT
 // the current pins, and a token-level grep cannot tell the two apart.
 //
+// The COMPLETE post-squash re-pin runbook — every ordered step, including the two
+// that are easiest to leave implicit (flipping BOTH mirrored manifest narratives,
+// and materializing the external probe's module + main package before its
+// go get/build/run) — is nativeserve/pin_followup.md, section "The follow-up —
+// OWED". Follow it there; do not reconstruct it from these paragraphs.
+//
 // HISTORICAL, SUPERSEDED — the SHAs in this paragraph are not the current pins:
 // de-BAML Slice 7.2c-3 moved them to the cutover commit, which was BRANCH-ONLY
 // until #672 squash-merged; the serving-cutover S1 change moved all five again,

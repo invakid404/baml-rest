@@ -125,6 +125,19 @@ func nativeInjectionFields(t *testing.T) map[string]bool {
 	typ := reflect.TypeOf(Options{})
 	for i := 0; i < typ.NumField(); i++ {
 		f := typ.Field(i)
+		// Runtime is the BAML METHOD TABLE this worker dispatches through, not native
+		// wiring: it decides which BAML methods exist, never what may be claimed
+		// natively (that is the immutable cohort enrollment's answer). It is nil on
+		// every shipped entrypoint and non-nil only under the `debamlworkerfixture`
+		// build tag, which exists so the booted-artifact proof has a method to send a
+		// request to; the entrypoint's own
+		// TestShippedEntrypointsInstallNoRuntimeOverride pins that nil.
+		//
+		// The exemption is NAMED rather than shape-derived, so a future interface
+		// field still trips the fail-closed classification below.
+		if f.Name == "Runtime" {
+			continue
+		}
 		switch f.Type.Kind() {
 		case reflect.Func, reflect.Interface:
 			fields[f.Name] = true

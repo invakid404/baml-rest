@@ -5,6 +5,7 @@ import (
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/clientdefaults"
+	"github.com/invakid404/baml-rest/bamlutils/trustedclients"
 	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
 )
 
@@ -14,11 +15,12 @@ type workerBamlOptions struct {
 }
 
 // apply installs the request-level option overrides on adapter. The
-// deployment-wide client defaults and base-URL rewrites are passed in
-// so the handler owns the merged config rather than reaching into
-// package globals. Nil defaults is fine — clientdefaults.Config.Apply
-// is nil-safe; nil baseURLRewrites skips the rewrite pass.
-func (o *workerBamlOptions) apply(adapter bamlutils.Adapter, defaults *clientdefaults.Config, baseURLRewrites []urlrewrite.Rule) error {
+// deployment-wide client defaults, base-URL rewrites and approved
+// configuration classes are passed in so the handler owns the merged
+// config rather than reaching into package globals. Nil defaults is
+// fine — clientdefaults.Config.Apply is nil-safe; nil baseURLRewrites
+// skips the rewrite pass; a nil trusted set seals nothing.
+func (o *workerBamlOptions) apply(adapter bamlutils.Adapter, defaults *clientdefaults.Config, baseURLRewrites []urlrewrite.Rule, trusted *trustedclients.Set) error {
 	if o.Options == nil {
 		return nil
 	}
@@ -32,6 +34,21 @@ func (o *workerBamlOptions) apply(adapter bamlutils.Adapter, defaults *clientdef
 		// values aren't accidentally URL-rewritten) and *before*
 		// SetClientRegistry (so BAML sees the merged options).
 		defaults.Apply(o.Options.ClientRegistry)
+		// De-BAML serving cutover S3a — the TRUSTED-CONFIGURATION SEAL, applied
+		// LAST so what it seals is what BAML is actually handed.
+		//
+		// This is the ONE place a request registry becomes the adapter's
+		// registry, which makes it the only place that can honestly answer "did
+		// the DEPLOYMENT configure this client, or did the caller?". Seal walks
+		// the registry and, for a client the request did no more than NAME,
+		// installs the deployment's approved provider/options and marks it. Every
+		// other client — including one whose caller-supplied values happen to
+		// match an approved class byte for byte — is left exactly as it arrived
+		// and carries no identity.
+		//
+		// With nothing declared (the shipped default) this is a no-op and no
+		// request is altered in any way.
+		trusted.Seal(o.Options.ClientRegistry)
 		if err := adapter.SetClientRegistry(o.Options.ClientRegistry); err != nil {
 			return fmt.Errorf("failed to set client registry: %w", err)
 		}

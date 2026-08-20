@@ -47,7 +47,7 @@ func (h *Handler) Parse(ctx context.Context, methodName string, inputJSON []byte
 	adapter.SetLogger(h.logger)
 	if input.Options != nil {
 		opts := workerBamlOptions{Options: input.Options}
-		if err := opts.apply(adapter, h.clientDefaults, h.baseURLRewrites); err != nil {
+		if err := opts.apply(adapter, h.clientDefaults, h.baseURLRewrites, h.trustedClients); err != nil {
 			return nil, fmt.Errorf("failed to apply options: %w", err)
 		}
 	}

@@ -882,8 +882,8 @@ func TestDeclaredButUnenrolledRecordIsVisibleAndStillDeclines(t *testing.T) {
 	// The admission half: traffic carrying that exact declared identity resolves to
 	// the record's cohort — the join works — and is STILL refused, on every surface,
 	// because declaring a class is not enrolling it.
-	in := CohortInput{Fingerprint: proofConfigFingerprint, gate: gate}
-	if got := ResolveCohort(in); got != "candidate" {
+	in := CohortInput{Fingerprint: proofConfigFingerprint, Provider: ConfigProviderOpenAI, gate: gate}
+	if got := ResolveCohort(SurfaceDynamicCall, in); got != "candidate" {
 		t.Fatalf("declared identity resolved to %q, want the record's cohort", got)
 	}
 	for _, s := range AllSurfaces() {
@@ -891,8 +891,16 @@ func TestDeclaredButUnenrolledRecordIsVisibleAndStillDeclines(t *testing.T) {
 		if d == nil {
 			t.Errorf("%s: a DECLARED but UNENROLLED class was admitted", s.Label())
 		}
-		if cohort != "candidate" {
-			t.Errorf("%s: cohort = %q, want the declared bucket (the decline must still be attributable)", s.Label(), cohort)
+		// Since serving cutover S3a the identity is bound to its RECORD, not to the
+		// opaque bucket alone: it is the declared cohort exactly on the surface the
+		// record declares, and the bounded unrecognized bucket everywhere else. Both
+		// are attributable; neither is enrolled.
+		want := CohortUnrecognized
+		if s == SurfaceDynamicCall {
+			want = "candidate"
+		}
+		if cohort != want {
+			t.Errorf("%s: cohort = %q, want %q (the decline must still be attributable)", s.Label(), cohort, want)
 		}
 	}
 }

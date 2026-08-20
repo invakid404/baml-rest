@@ -81,7 +81,9 @@ func testGate(t *testing.T, cohort CohortID, surfaces ...Surface) *CohortGate {
 // testIdentity is the enrolled identity the untagged in-package tests present.
 func testIdentity(t *testing.T) CohortInput {
 	t.Helper()
-	return CohortInput{Fingerprint: proofConfigFingerprint, gate: testGate(t, "proof")}
+	// Provider is part of the identity since serving cutover S3a: the gate binds a
+	// fingerprint to its inventory record, and testGate's record declares openai.
+	return CohortInput{Fingerprint: proofConfigFingerprint, Provider: ConfigProviderOpenAI, gate: testGate(t, "proof")}
 }
 
 // mutantAdmittingGate is the MUTANT the bite tests use: it declares an inventory
@@ -110,7 +112,7 @@ func identityShapes(gate *CohortGate) []struct {
 		cohort CohortID
 	}{
 		{"absent identity", CohortInput{gate: gate}, CohortNone},
-		{"declared but not inventoried", CohortInput{Fingerprint: proofConfigFingerprint, gate: gate}, CohortUnrecognized},
+		{"declared but not inventoried", CohortInput{Fingerprint: proofConfigFingerprint, Provider: ConfigProviderOpenAI, gate: gate}, CohortUnrecognized},
 		{"well-formed but undeclared", CohortInput{Fingerprint: ConfigFingerprint("cfg123"), gate: gate}, CohortUnrecognized},
 		{"malformed fingerprint", CohortInput{Fingerprint: ConfigFingerprint("https://evil.example/v1?k=sk-secret"), gate: gate}, CohortUnrecognized},
 	}
@@ -188,7 +190,7 @@ func TestEmptyPolicyMutationBitesTheEquivalenceAssertions(t *testing.T) {
 // SAME cohort on any other surface still declines.
 func TestEnrolledPairAdmitsExactlyItsOwnSurface(t *testing.T) {
 	gate := testGate(t, "unary_only", SurfaceDynamicCall)
-	in := CohortInput{Fingerprint: proofConfigFingerprint, gate: gate}
+	in := CohortInput{Fingerprint: proofConfigFingerprint, Provider: ConfigProviderOpenAI, gate: gate}
 
 	cohort, d := admitCohort(SurfaceDynamicCall, in)
 	if d != nil {

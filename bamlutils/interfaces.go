@@ -340,6 +340,23 @@ type ClientProperty struct {
 	// wiring. To simulate "present-empty" in a struct literal, set
 	// {Provider: "", ProviderSet: true}.
 	ProviderSet bool `json:"-"`
+
+	// seal is the TRUSTED-CONFIGURATION SEAL: the statement that this client's
+	// provider and options were installed from the DEPLOYMENT's own approved
+	// configuration, not supplied by the request.
+	//
+	// It is UNEXPORTED on purpose, and that is the whole provenance boundary. A
+	// request body is decoded into this struct by encoding/json + sonic, neither
+	// of which can reach an unexported field; UnmarshalJSON above rebuilds the
+	// value through `ClientProperty(aux)`, whose alias carries a ZERO seal, so a
+	// decode always CLEARS it; and MarshalJSON emits only exported fields, so it
+	// never crosses a wire in either direction. The only way to set it is
+	// [ClientProperty.SealTrustedConfig], called by the worker's config-load path
+	// with a configuration the deployment declared.
+	//
+	// See trustedconfig.go for the full contract and TestTrustedConfigSealIsWireUnreachable
+	// for the standing guard.
+	seal *trustedConfigSeal
 }
 
 // IsProviderPresent reports whether the runtime client_registry entry

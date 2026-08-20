@@ -23,6 +23,20 @@
 //     socket, and a native-capable artifact is externally equivalent to BAML
 //     transport. It is admission EVIDENCE, not a second kill switch:
 //     BAML_REST_USE_DEBAML (StageFlag, checked first) remains the complete revert.
+//   - The gate's REQUEST-side half is [ResolveConfigIdentity] (identity.go), the
+//     serving-cutover S3a layer: it binds a request's EFFECTIVE selected BAML
+//     configuration to one bounded opaque fingerprint. The dynamic surface takes its
+//     client_registry from the PUBLIC REQUEST BODY, so nothing derived from that
+//     registry can establish which configuration a request is running — not even a
+//     byte-exact match against the approved shape. Identity therefore comes from the
+//     TRUSTED-CONFIGURATION SEAL (bamlutils/trustedconfig.go), which the worker's
+//     config load applies to a client the DEPLOYMENT configured and which has no wire
+//     representation to forge; the registry facts this resolver checks are narrowing
+//     conditions on top of it, never a substitute for it. So it is never a
+//     caller-supplied value and never a worker-wide "this process hosts configuration
+//     X" assumption. It only NARROWS: a configuration that cannot be proven to be one
+//     the deployment sealed gets no identity, and no identity is a cohort-stage
+//     decline. With nothing declared (the shipped default) that is every request.
 //   - It maps the effective one-client dynamic registry into a request-scoped
 //     nanollm config with a SEPARATE internal alias and NO ambient/process env,
 //     creates the engine, and safely Closes it before returning — the plan is

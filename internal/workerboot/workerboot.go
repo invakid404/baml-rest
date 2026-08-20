@@ -42,6 +42,25 @@ import (
 // binary injects into the shared bootstrap. The zero value is the BAML-only
 // worker (no native engine); the nanollm worker supplies the two native fields.
 type Options struct {
+	// Runtime overrides the BAML runtime this worker dispatches through. NIL on
+	// every shipped entrypoint, which is what selects the root generated package —
+	// the deployment's own BAML project, written into it by the container build.
+	//
+	// It is non-nil in exactly one place: the tag-gated build fixture
+	// (`debamlworkerfixture`) that links dynclient's committed generated dynamic
+	// client so a native-capable worker binary has a real `Baml_Rest_Dynamic`
+	// method table without a container build. That fixture exists because the de-BAML
+	// serving cutover has to prove "flag on, empty policy, ZERO native claims" by
+	// actually sending a request to a booted artifact, and an artifact built from a
+	// checkout otherwise knows no methods at all.
+	//
+	// It is not a rollout control and confers no authority: it selects which BAML
+	// methods exist, not what may be claimed natively. That remains the immutable
+	// cohort enrollment's answer, and it is empty.
+	// TestShippedEntrypointsInstallNoRuntimeOverride is the standing guard that no
+	// shipped entrypoint sets it.
+	Runtime worker.Runtime
+
 	// NativeCapability, when non-nil, is the neutral native-send capability
 	// linked into this worker binary. It is stored on the handler and reported
 	// at startup as a build capability. It is NOT routed in this slice: the
@@ -190,7 +209,16 @@ func Run(opts Options) {
 	// Initialize BAML runtime via the rootruntime wrapper — the worker
 	// package no longer imports the root generated package directly, so
 	// the runtime touch point lives here at the binary entry point.
-	rt := rootruntime.Runtime{}
+	// The BAML runtime this worker dispatches through. Production leaves
+	// Options.Runtime nil and gets the root generated package — the deployment's
+	// own BAML project, generated into it by the container build. The ONLY thing
+	// that supplies a different one is the tag-gated build fixture that gives a
+	// native-capable worker a real Baml_Rest_Dynamic method table outside a
+	// container, so the deployed-route proof has something to send a request to.
+	var rt worker.Runtime = rootruntime.Runtime{}
+	if opts.Runtime != nil {
+		rt = opts.Runtime
+	}
 	rt.InitRuntime()
 
 	// Create hclog logger for go-plugin communication.
@@ -303,6 +331,22 @@ func Run(opts Options) {
 		opts.NativeStaticShadowFactory != nil,
 		deBAMLConfig.Enabled,
 	)
+	// The deployment's APPROVED-CONFIGURATION declaration (de-BAML serving cutover
+	// S3a), resolved BEFORE the startup diagnostic so the signal can report how many
+	// configuration classes this worker will seal. It is the only thing that can seal
+	// a request's client as deployment-owned, and therefore the only thing that can
+	// give a request a configuration identity at the native admission seam.
+	//
+	// A declaration nobody can read must FAIL BOOT rather than degrade to "nothing is
+	// approved": an operator who wrote one is entitled to find out it did not parse,
+	// instead of watching every request quietly decline for a reason no dashboard
+	// distinguishes from the default.
+	trustedClients, err := worker.LoadTrustedClients()
+	if err != nil {
+		logger.Error("invalid BAML_REST_DEBAML_TRUSTED_CLIENTS", "err", err.Error())
+		os.Exit(1)
+	}
+
 	nativeEngine := opts.NativeEngineName
 	nativeEngineVersion := ""
 	if nc := opts.NativeCapability; nc != nil {
@@ -331,6 +375,13 @@ func Run(opts Options) {
 			"artifact_source_bundle_digest", artifactAttestation.SourceBundleDigest(),
 			"artifact_native_worker_tar_digest", artifactAttestation.NativeWorkerTarDigest(),
 			"expected_artifact_profile", artifactAttestation.ExpectationLabel(),
+			// How many approved configuration classes this worker will seal. A COUNT,
+			// never a name, a fingerprint, a URL, a model or a credential — the same
+			// bounded-observability rule the cutover's labels follow. It exists so an
+			// operator can confirm their declaration LOADED without reading anything
+			// about it, and so the artifact proof can assert the declaration reached
+			// the deployed binary's config load.
+			"trusted_config_classes", trustedClients.Len(),
 			"config_source", "worker_env")
 	} else {
 		logger.Info("de-BAML worker startup: no native capability (BAML-only worker)",
@@ -346,6 +397,7 @@ func Run(opts Options) {
 			"artifact_source_bundle_digest", artifactAttestation.SourceBundleDigest(),
 			"artifact_native_worker_tar_digest", artifactAttestation.NativeWorkerTarDigest(),
 			"expected_artifact_profile", artifactAttestation.ExpectationLabel(),
+			"trusted_config_classes", trustedClients.Len(),
 			"config_source", "worker_env")
 	}
 
@@ -613,6 +665,7 @@ func Run(opts Options) {
 		Logger:          logger,
 		Metrics:         metricsReg,
 		ClientDefaults:  clientDefaults,
+		TrustedClients:  trustedClients,
 		BaseURLRewrites: baseURLRewrites,
 		HTTPClient:      httpClient,
 		DeBAML:          deBAMLConfig,

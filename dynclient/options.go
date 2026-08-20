@@ -10,6 +10,7 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/clientdefaults"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
+	"github.com/invakid404/baml-rest/bamlutils/trustedclients"
 	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
 	"github.com/invakid404/baml-rest/workerplugin"
 )
@@ -42,6 +43,7 @@ type config struct {
 	logger               bamlutils.Logger
 	metrics              *prometheus.Registry
 	clientDefaults       *clientdefaults.Config
+	trustedClients       *trustedclients.Set
 	sharedState          *workerplugin.SharedStateStore
 
 	clientMode    llmhttp.ClientMode
@@ -217,6 +219,34 @@ func WithMetricsRegistry(reg *prometheus.Registry) Option {
 func WithClientDefaults(cfg *clientdefaults.Config) Option {
 	return func(c *config) error {
 		c.clientDefaults = cfg
+		return nil
+	}
+}
+
+// WithTrustedClients installs the deployment's APPROVED-CONFIGURATION
+// declaration (de-BAML serving cutover S3a): the configuration classes
+// this embedder owns, each with the opaque fingerprint it assigned.
+//
+// It is the in-process twin of the subprocess worker's
+// BAML_REST_DEBAML_TRUSTED_CLIENTS load, and it does exactly what that
+// one does: a request that merely NAMES one of these clients gets the
+// declared provider and options installed and is SEALED as
+// deployment-owned; a request that supplies any part of the
+// configuration itself is left untouched and unsealed. Only a sealed
+// client can carry a configuration identity at the native admission
+// seam.
+//
+// It is explicit rather than read from the environment because an
+// embedder's trust domain is its own: nil (the default) declares
+// nothing, seals nothing, and alters no request. Callers wanting env
+// parity can pass trustedclients.Load() explicitly.
+//
+// It is NOT a rollout control. Sealing assigns an opaque bucket; whether
+// anything may CLAIM natively remains the immutable cohort enrollment's
+// answer.
+func WithTrustedClients(set *trustedclients.Set) Option {
+	return func(c *config) error {
+		c.trustedClients = set
 		return nil
 	}
 }

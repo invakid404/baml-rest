@@ -153,9 +153,9 @@ func TestEverySurfaceDeclinesPreSocketWithNoEnrollment(t *testing.T) {
 	if got := admission.ProductionCohortGate().Inventory().Len(); got != 0 {
 		t.Fatalf("the shipped configuration inventory declares %d record(s), want 0", got)
 	}
-	for _, in := range productionServeIdentities() {
-		if got := admission.ResolveCohort(in); got != admission.CohortNone {
-			t.Fatalf("a serving lane presents an identity resolving to %q, want none", got)
+	for surface, in := range productionServeIdentities() {
+		if got := admission.ResolveCohort(surface, in); got != admission.CohortNone {
+			t.Fatalf("%s presents an identity resolving to %q, want none", surface.Label(), got)
 		}
 	}
 
@@ -340,15 +340,15 @@ func TestNoSocketOnAnyDeclineWithACountingTransport(t *testing.T) {
 // Building the servers through the production constructors (rather than reading the
 // field) is deliberate: it is the constructor a deploy profile uses that has to be
 // safe, not the struct.
-func productionServeIdentities() []admission.CohortInput {
+func productionServeIdentities() map[admission.Surface]admission.CohortInput {
 	unary := NewServer(nil, nil)
 	stream := NewStreamServer(nil, nil, time.Second, time.Second)
 	staticStream := NewStaticStreamServer(time.Second, time.Second)
-	return []admission.CohortInput{
-		unary.serveCohortInput(bamlutils.NativeServeRequest{}),
-		unary.staticCohortInput(bamlutils.NativeStaticInvocation{}),
-		stream.streamCohortInput(bamlutils.NativeStreamServeRequest{}),
-		staticStream.toStaticStreamAdmissionInput(bamlutils.NativeStaticStreamInvocation{}).Cohort,
+	return map[admission.Surface]admission.CohortInput{
+		admission.SurfaceDynamicCall:   unary.serveCohortInput(bamlutils.NativeServeRequest{}),
+		admission.SurfaceStaticCall:    unary.staticCohortInput(bamlutils.NativeStaticInvocation{}),
+		admission.SurfaceDynamicStream: stream.streamCohortInput(bamlutils.NativeStreamServeRequest{}),
+		admission.SurfaceStaticStream:  staticStream.toStaticStreamAdmissionInput(bamlutils.NativeStaticStreamInvocation{}).Cohort,
 	}
 }
 

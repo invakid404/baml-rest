@@ -79,7 +79,12 @@ env:
 jobs:
   nanollm-prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Raised from 15 when the S3a booted-artifact /call proof was added: the lane now
+    # performs THREE CGO artifact builds (two S2 entrypoints + the S3a fixture) and runs
+    # two boot proofs. Both proofs use -timeout 10m, which only means anything if the
+    # job can outlive it — a test timeout at or above the job budget can never fire, and
+    # the hang surfaces as an unexplained runner kill instead of a goroutine dump.
+    timeout-minutes: 25
     env:
       # cgo is a hard prerequisite of the public nanollm-ffi package (it links a
       # prebuilt Rust static archive). Assert it explicitly — this is the default
@@ -289,3 +294,58 @@ jobs:
           set +a
           BAML_LIBRARY_DISABLE_DOWNLOAD=true go test \
             -tags=nativeartifactproof -count=1 -timeout 10m -v ./internal/workerboot/
+
+
+      - name: de-BAML S3a booted-artifact public /call proof (non-skippable)
+        run: |
+          set -euo pipefail
+          # De-BAML serving cutover S3a — the BOOTED-ARTIFACT PUBLIC `/call` PROOF.
+          #
+          # Its own step, not a tail on the S2 one: they build different artifacts and
+          # prove different things, and a failure in either has to be readable as
+          # itself. (The two also have different runtimes, so sharing a step made the
+          # combined duration attributable to neither.)
+          #
+          # The S2 step boots both shipped native-capable binaries and asserts their
+          # startup state; it sends them no request, because an artifact built from a
+          # checkout has an EMPTY BAML method table (the root adapter.go is the
+          # "overwritten during build" stub — the real one is generated inside the
+          # container build from the deployment's own project). That left the cutover's
+          # central claim — flag on, empty policy, ZERO native claims on the DEPLOYED
+          # /call route — with nothing to send a request to.
+          #
+          # scripts/build-s3a-fixture-artifact.sh closes that: it builds the SAME
+          # serve-profile entrypoint, with the same tags, the same -ldflags attestation
+          # stamp and the same GOWORK=off + CGO isolated-module build, plus ONE extra
+          # tag (debamlworkerfixture) that links dynclient's committed generated dynamic
+          # client so Baml_Rest_Dynamic exists. One tag changes one thing: which BAML
+          # methods are present. The admission predicate, the native factories and the
+          # flag branch are the shipped ones, and the test asserts the booted binary
+          # publishes the SHIPPED artifact's profile and ID before claiming anything on
+          # its behalf.
+          #
+          # The test then boots it through the REAL pool and POSTs the public
+          # /call/_dynamic body over a REAL HTTP listener into the production chi
+          # handler, and reads the booted worker's OWN de-BAML collectors: the identity
+          # resolves (cohort=unrecognized), zero claims/winners/sockets, one BAML
+          # provider send — with a no-declaration control (cohort=none), a
+          # caller-defined-configuration control (cohort=none) and a flag-off arm.
+          #
+          # `subprocess` selects the pool's exec-a-worker-binary path, which is what
+          # makes booting the artifact from a test possible at all. It cannot skip: the
+          # artifact env is REQUIRED, for the same reason it is required above.
+          #
+          # -timeout 10m sits BELOW the job's timeout-minutes so a hung boot reports its
+          # own Go test timeout — with the goroutine dump that makes it diagnosable —
+          # instead of being killed by the runner with no output. A test timeout equal
+          # to (or above) the job budget can never fire, which is how a hang becomes an
+          # unexplained red job.
+          fixture_env="$RUNNER_TEMP/s3a-fixture-artifact.env"
+          : > "$fixture_env"
+          ARTIFACT_SOURCE_REVISION="${GITHUB_SHA}" \
+            ./scripts/build-s3a-fixture-artifact.sh "$RUNNER_TEMP/s3a-fixture-artifact" "$fixture_env"
+          set -a
+          . "$fixture_env"
+          set +a
+          BAML_LIBRARY_DISABLE_DOWNLOAD=true go test \
+            -tags=subprocess,nativeartifactproof -count=1 -timeout 10m -v ./cmd/serve/

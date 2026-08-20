@@ -73,7 +73,7 @@ func (s *Server) ServeStatic(ctx context.Context, inv bamlutils.NativeStaticInvo
 	// this LANE's constant and the cohort is what the default-deny gate resolves.
 	// Registered FIRST so it runs LAST and observes the final named result (including
 	// the panic guard's substitution), recording exactly one phase+winner pair.
-	surface, cohort := admission.SurfaceStaticCall, admission.ResolveCohort(s.staticCohortInput(inv))
+	surface, cohort := admission.SurfaceStaticCall, admission.ResolveCohort(admission.SurfaceStaticCall, s.staticCohortInput(inv))
 	defer func() { s.recordStaticServeTerminal(surface, cohort, claimed, result.Disposition, result.WinnerEngine) }()
 	defer func() {
 		if r := recover(); r != nil {
@@ -248,7 +248,7 @@ func (s *Server) serveStaticStructured(ctx context.Context, inv bamlutils.Native
 	// The strict same-response oracle runs from here: BAML's `Parse.<Method>` over the
 	// SAME bytes the ONE native provider request returned. Its own phase, so a BAML
 	// parse win is never conflated with a BAML transport win.
-	s.metrics.RecordAdmissionPhase(admission.SurfaceStaticCall, admission.ResolveCohort(s.staticCohortInput(inv)), admission.PhaseSameResponseOracle)
+	s.metrics.RecordAdmissionPhase(admission.SurfaceStaticCall, admission.ResolveCohort(admission.SurfaceStaticCall, s.staticCohortInput(inv)), admission.PhaseSameResponseOracle)
 
 	if inv.BAMLOnlyParse == nil {
 		s.metrics.RecordResponseCompare(admission.ResponseCompareMismatch, admission.ResponseCompareFieldError)
@@ -411,10 +411,17 @@ func (s *Server) toStaticAdmissionInput(inv bamlutils.NativeStaticInvocation) ad
 }
 
 // staticCohortInput is the SINGLE definition of a static invocation's
-// serving-cutover configuration identity — the static twin of serveCohortInput, and
-// like it S1 assigns NONE: the opaque configuration fingerprint is a config-load
-// assignment that is deliberately not plumbed yet, so every static request resolves
-// to admission.CohortNone and declines before native work.
+// serving-cutover configuration identity — the static twin of serveCohortInput. It
+// assigns NONE, so every static request resolves to admission.CohortNone and declines
+// before native work.
+//
+// Serving cutover S3a deliberately does NOT wire the effective-configuration identity
+// resolver here. The identity work exists to make ONE surface enrollable — the dynamic
+// unary `/call` surface — and resolving an identity on a surface no policy will enroll
+// would widen what carries a configuration identity without widening what may claim.
+// The narrow direction is the safe one, and it is the direction the scope asks for:
+// this lane presents no identity and therefore cannot be admitted by any policy,
+// enrolled or not.
 func (s *Server) staticCohortInput(inv bamlutils.NativeStaticInvocation) admission.CohortInput {
 	_ = inv
 	return s.cohort

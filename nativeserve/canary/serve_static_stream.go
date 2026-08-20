@@ -131,7 +131,7 @@ func (s *StaticStreamServer) ServeStaticStream(ctx context.Context, inv bamlutil
 	entered := false
 	// Serving-cutover S1 identity + exactly-once phase/winner accounting, registered
 	// FIRST so it runs LAST and observes the final named result.
-	surface, cohort := admission.SurfaceStaticStream, admission.ResolveCohort(s.toStaticStreamAdmissionInput(inv).Cohort)
+	surface, cohort := admission.SurfaceStaticStream, admission.ResolveCohort(admission.SurfaceStaticStream, s.toStaticStreamAdmissionInput(inv).Cohort)
 	defer func() {
 		s.recordStaticStreamTerminal(surface, cohort, entered, result.Disposition, result.WinnerEngine)
 	}()
