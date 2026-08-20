@@ -4,11 +4,11 @@ import (
 	"archive/tar"
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"testing"
 
 	"golang.org/x/mod/modfile"
@@ -176,17 +176,60 @@ func TestPackagedManifestsMatchTheTrackedPins(t *testing.T) {
 
 // TestPackagedManifestGuardBitesOnAStaleManifest is the control. The guard above
 // asserts agreement, and an agreement check is worth exactly as much as its
-// ability to notice disagreement — so drive its comparisons with a manifest that
-// carries the previous slice's commit and the opposite status.
+// ability to notice disagreement — so drive its two comparisons with a manifest
+// that DISAGREES with the tracked record on BOTH axes it checks: a commit that is
+// not the record's PINNED-COMMIT and the status OPPOSITE the record's STATUS.
+//
+// The fixture is built RELATIVE TO THE RECORD, read here via [readPinFollowup],
+// rather than from a hard-coded snapshot. A snapshot silently stops discriminating
+// the moment a re-pin flips the record to match it — which is exactly what a
+// hard-coded `RESOLVED` did once the post-#677 re-pin flipped the tracked STATUS
+// from OUTSTANDING to RESOLVED: the fixture status then EQUALLED the tracked one
+// and the control no longer proved the guard notices a status disagreement.
+//
+// Mutation bite: each comparison below FAILS if the fixture ever agrees with the
+// record on that axis, and the status is DERIVED as the record's opposite, so a
+// mutation that made the fixture agree (e.g. `staleStatus := trackedStatus`) is
+// caught here instead of leaving a control that "notices" a disagreement it never
+// actually constructed.
 func TestPackagedManifestGuardBitesOnAStaleManifest(t *testing.T) {
-	const stale = `module example.com/stale
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolving repo root: %v", err)
+	}
+	record := readPinFollowup(t, repoRoot)
+	trackedStatus := record.fields["STATUS"]
+	trackedCommit := record.fields["PINNED-COMMIT"]
+	if trackedStatus == "" || trackedCommit == "" {
+		t.Fatalf("the tracked record carries STATUS=%q PINNED-COMMIT=%q; the control builds its disagreeing fixture from both", trackedStatus, trackedCommit)
+	}
 
-// PIN-STATUS: RESOLVED
+	// The fixture status is the OPPOSITE of the tracked one, so the status axis
+	// stays discriminating whichever way the last re-pin flipped the record.
+	staleStatus := "RESOLVED"
+	if trackedStatus == "RESOLVED" {
+		staleStatus = "OUTSTANDING"
+	}
+	// A commit GUARANTEED to differ from the tracked one, DERIVED from it (like the
+	// status above) so the control never needs a manual bump and no future re-pin can
+	// make the fixture accidentally name the tracked commit. Flip the leading hex
+	// digit, keeping it a valid 12-char lowercase-hex short SHA that pseudoVersionRe
+	// accepts; the record comparison below is the mutation bite that a derivation
+	// which stopped differing would trip.
+	staleCommit := "0" + trackedCommit[1:]
+	if trackedCommit[0] == '0' {
+		staleCommit = "1" + trackedCommit[1:]
+	}
+
+	stale := fmt.Sprintf(`module example.com/stale
+
+// PIN-STATUS: %s
 
 require (
-	github.com/invakid404/baml-rest v0.0.0-20260819100300-de1eefa68ed8
+	github.com/invakid404/baml-rest v0.0.0-20260819100300-%s
 )
-`
+`, staleStatus, staleCommit)
+
 	mf, err := modfile.Parse("stale/go.mod", []byte(stale), nil)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -201,18 +244,20 @@ require (
 	if m == nil {
 		t.Fatalf("the control's own pseudo-version did not parse: %q", version)
 	}
-	if m[2] == "e38f7effd633" {
-		t.Fatal("the control names the current commit; it would prove nothing")
+	// COMMIT axis, RECORD-relative — the same comparison the production guard makes
+	// (packaged commit vs trackedCommit). The fixture must carry a different commit,
+	// or the guard's comparison could not fire.
+	if m[2] == trackedCommit {
+		t.Fatalf("the control's commit %s equals the tracked PINNED-COMMIT; the guard's commit comparison could not fire, so this would prove nothing", m[2])
 	}
 
 	markers := pinStatusRe.FindAllStringSubmatch(stale, -1)
-	if len(markers) != 1 || markers[0][1] != "RESOLVED" {
+	if len(markers) != 1 || markers[0][1] != staleStatus {
 		t.Fatalf("the marker regexp did not read the control's status: %v", markers)
 	}
-	if markers[0][1] == "OUTSTANDING" {
-		t.Fatal("the control's status matches the tracked one; it would prove nothing")
-	}
-	if !strings.Contains(stale, "de1eefa68ed8") {
-		t.Fatal("the control lost its stale commit")
+	// STATUS axis, RECORD-relative — the same comparison the production guard makes
+	// (packaged marker vs trackedStatus).
+	if markers[0][1] == trackedStatus {
+		t.Fatalf("the control's status %s equals the tracked STATUS; the guard's status comparison could not fire, so this would prove nothing", markers[0][1])
 	}
 }
