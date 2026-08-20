@@ -22,11 +22,15 @@ jobs:
     # adapters/common/codegen/internal/testharness/stress.go.
     env:
       BAML_HEAVY_TEST_RUNS: "5"
-    # The -race -count=100 all-module suite runs ~33-34 min on master
-    # (bamlutils/llmhttp alone ~15 min, ~43% of the budget), so 35 left
-    # near-zero headroom and any substantial PR tipped it over. 50 is an
-    # INTERIM stopgap, not a target: the durable fix is sharding this job
-    # into a balanced parallel matrix, tracked in #656.
+    # The serial -race -count=100 sweep ran ~33-34 min on master, with
+    # bamlutils/llmhttp alone ~15 min (~43%) pinning the job against its
+    # ceiling — it timed out repeatedly even on runtime-inert PRs (#679).
+    # The bamlutils dominator now runs in the parallel `bamlutils-race`
+    # job below (the first, cheapest slice of the balanced-matrix shard
+    # tracked in #656), cutting this job's serial loop to ~18-19 min. 50
+    # min is now comfortable headroom over the remaining loop plus the
+    # once-only sanity / codegen / fresh-tree gate steps, not a ceiling
+    # being chased.
     timeout-minutes: 50
 
     steps:
@@ -91,7 +95,17 @@ jobs:
           # nanollmprepare it requires the cgo nanollm-ffi module and is excluded
           # from go.work, so `./...` here would fail the same way; its cgo gated
           # coverage runs in nanollm-send.yml (GOWORK=off).
-          find . -name go.mod -not -path '*/adapters/adapter_*' -not -path '*/dynclient/baml-patched/*' -not -path '*/internal/nativebody/nanollmprepare/*' -not -path '*/nativeserve/*' -exec dirname {} \; | while read dir; do
+          #
+          # bamlutils is skipped here for a SCHEDULING reason, not a
+          # workspace-membership one: its bamlutils/llmhttp package alone was
+          # ~15 min of the ~33-34 min serial -race -count=100 sweep (~43%),
+          # which pinned this job against its timeout even on runtime-inert
+          # PRs (#679). It now runs in the dedicated `bamlutils-race` job
+          # below — same workspace mode, same -race -count=100 -timeout 20m
+          # flags, so coverage is byte-for-byte identical; only the lane
+          # changed. This is the first slice of the balanced-matrix shard
+          # tracked in #656.
+          find . -name go.mod -not -path '*/adapters/adapter_*' -not -path '*/dynclient/baml-patched/*' -not -path '*/internal/nativebody/nanollmprepare/*' -not -path '*/nativeserve/*' -not -path './bamlutils/*' -exec dirname {} \; | while read -r dir; do
             echo "=== Testing $dir ==="
             if [ "$dir" = "./adapters/common" ]; then
               (cd "$dir" && GOWORK=off go test -race -count=100 -timeout 20m ./...)
@@ -240,6 +254,55 @@ jobs:
             git ls-files --others --exclude-standard
             exit 1
           fi
+
+  # Dedicated parallel lane for the bamlutils module — specifically its
+  # bamlutils/llmhttp package, the single heaviest unit in the
+  # -race -count=100 sweep (~15 min, ~43% of the old serial budget). Pulling
+  # it out of the unit-tests serial loop above is the cheapest real slice of
+  # the balanced-matrix shard tracked in #656 and the direct remediation for
+  # the chronic 50-min timeout (#679). This lane runs bamlutils in the SAME
+  # workspace mode with the SAME flags the serial loop used for it, so
+  # coverage is byte-for-byte identical — only the scheduling changed. The
+  # GOWORK=off -count=1 standalone sanity for bamlutils still runs in the
+  # standalone-modules matrix below. No Node/goimports setup: nothing under
+  # bamlutils shells out to them (unlike the codegen/adapter paths that keep
+  # them in the main job).
+  bamlutils-race:
+    runs-on: ubuntu-latest
+    # Mirror the unit-tests job's CapStress knob for envelope parity. No
+    # bamlutils test consults BAML_HEAVY_TEST_RUNS today, but keeping the two
+    # lanes identical avoids a surprise if a heavy codegen-style test ever
+    # lands under bamlutils.
+    env:
+      BAML_HEAVY_TEST_RUNS: "5"
+    # ~15 min actual. 25 leaves margin above the 20 min per-invocation
+    # -timeout so the Go test timeout fires first with a useful goroutine
+    # dump instead of the job being hard-killed.
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.0
+        with:
+          # This lane only fetches the tree and runs `go test`; it never
+          # pushes and needs no persisted git token, so drop it from
+          # .git/config (defense-in-depth for a job that executes PR code).
+          # Matches the hardening nanollm-*/bamlfuzz/unicode-parity already
+          # apply; the pre-existing checkouts in this file are left as-is
+          # (out of scope for this timeout fix — see PR thread).
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Run bamlutils Unit Tests (-race -count=100)
+        run: |
+          # Workspace mode (go.work active), matching exactly how the
+          # unit-tests serial loop invoked bamlutils before the split.
+          cd bamlutils
+          go test -race -count=100 -timeout 20m ./...
 
   # Per-module GOWORK=off sanity matrix for the modules we publish
   # release tags for. The job above runs everything under the
