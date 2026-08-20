@@ -21,9 +21,9 @@ go 1.26.5
 require (
 	github.com/boundaryml/baml v0.223.0
 	github.com/invakid404/baml-rest v0.0.48
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260820081904-e38f7effd633
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260820091105-c676a4dacc90
 	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260820081904-e38f7effd633
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260820091105-c676a4dacc90
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
@@ -112,7 +112,7 @@ require (
 // without recording it here fails the native-worker PACKAGING build (-mod=readonly)
 // with "updates to go.mod needed".
 //
-// PIN-STATUS: OUTSTANDING
+// PIN-STATUS: RESOLVED
 //
 // That marker is the MACHINE-READABLE statement of where these pins stand, and
 // cmd/build's TestPackagedManifestsMatchTheTrackedPins requires it to equal the
@@ -126,16 +126,15 @@ require (
 // first to its own branch commit and then post-merge to the master squash commit
 // de1eefa68ed8 (#675).
 //
-// RIGHT NOW they are BRANCH-ONLY again: the serving-cutover S2 change moved all five to
-// e38f7effd633 on feat/debaml-s2-standard-artifact, and nativeserve/pin_followup.md
-// therefore reads STATUS: OUTSTANDING. The master commit carrying S2 does
-// not exist until that change squash-merges, and re-pinning all five to it — plus
-// regenerating cmd/build/nativeworker_module.tar — is a MANDATORY post-merge follow-up.
-// Do not treat this comment as the authority: the tracked record is, and cmd/build's
-// TestFirstPartyPinFollowupIsTracked parses that record and these requires on every
-// ordinary `go test ./...` and requires them to agree. This paragraph exists only so a
-// reader of this manifest is not told the opposite of what the record says — which is
-// exactly what happened when the S1 text was left here after the S2 bump.
+// RIGHT NOW they are MASTER-durable: the serving-cutover S2 change moved all five, first
+// to its own branch commit e38f7effd633 on feat/debaml-s2-standard-artifact and now —
+// post-merge — to the MASTER squash commit c676a4dacc90 (#677), so
+// nativeserve/pin_followup.md reads STATUS: RESOLVED. Do not treat this comment as the
+// authority: the tracked record is, and cmd/build's TestFirstPartyPinFollowupIsTracked
+// parses that record and these requires on every ordinary `go test ./...` and requires
+// them to agree. This paragraph exists only so a reader of this manifest is not told the
+// opposite of what the record says — which is exactly what happened when the S1 text was
+// left here after the S2 bump.
 //
 // S2 changes this module's worker entrypoints (the flag-off branch of cmd/worker-shadow
 // now advertises its static build capability, so a native-capable artifact stops
