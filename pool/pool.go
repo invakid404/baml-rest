@@ -2405,10 +2405,30 @@ func (p *Pool) Stats() Stats {
 type WorkerMetrics struct {
 	WorkerID       int
 	MetricFamilies [][]byte
+
+	// Err is non-nil when this worker's metrics RPC failed. The record is still
+	// returned, so the caller learns that a healthy worker CONTRIBUTED NOTHING
+	// rather than silently receiving a shorter slice.
+	//
+	// This used to be a warning plus a `continue`. That made a failed metrics RPC
+	// invisible to the host: the combined /metrics scrape returned 200 with the
+	// worker's series simply missing, which reads as "that worker has nothing to
+	// report" — indistinguishable from "we could not ask it". The de-BAML
+	// serving-cutover S2 artifact-profile and expected-profile-violation series
+	// travel this exact path, so a wrong-profile worker whose metrics RPC happened
+	// to fail could stay hidden behind a successful scrape while still serving
+	// requests. A dropped error in an alert's only data path is a false green, so
+	// the failure is now the caller's to handle.
+	//
+	// When Err is non-nil, MetricFamilies is nil.
+	Err error
 }
 
 // GatherWorkerMetrics collects Prometheus metrics from all healthy workers.
-// Returns a slice of worker metrics, one per worker.
+// Returns one record per healthy worker, INCLUDING workers whose metrics RPC
+// failed — those carry a non-nil Err and no families. Callers must treat an
+// Err-bearing record as a failure to observe that worker, not as an empty
+// observation.
 func (p *Pool) GatherWorkerMetrics(ctx context.Context) []WorkerMetrics {
 	var results []WorkerMetrics
 
@@ -2424,6 +2444,7 @@ func (p *Pool) GatherWorkerMetrics(ctx context.Context) []WorkerMetrics {
 
 		if err != nil {
 			p.logger.Warn().Int("worker", handle.id).Err(err).Msg("Failed to collect metrics from worker")
+			results = append(results, WorkerMetrics{WorkerID: handle.id, Err: err})
 			continue
 		}
 

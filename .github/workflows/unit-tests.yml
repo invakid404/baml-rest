@@ -119,6 +119,38 @@ jobs:
           go test -tags=subprocess -count=1 ./pool ./worker ./cmd/serve
           go test -race -tags=subprocess -count=1 ./pool ./worker
 
+      - name: de-BAML S2 artifact profile proofs
+        # Two tag-gated proofs for the serving-cutover S2 artifact contract that
+        # the default loop above cannot run:
+        #
+        #  - `nativeworkerartifact` is the build tag cmd/build/build.sh sets when
+        #    it embeds an isolated-module (natively linked) worker. The tagged
+        #    half of the tag-split host constant only compiles under it, so
+        #    without this step the "this build is the native-capable artifact"
+        #    assertion would be dead code and the tag could silently invert.
+        #
+        #  - `artifactrehearsal` is the LIVE rollback rehearsal: it builds the
+        #    BAML-only rollback worker, boots it through the real go-plugin
+        #    handshake, serves RPCs on it, and requires that a MISLABELLED profile
+        #    stamp — and a well-formed but WRONG release artifact ID — refuse to
+        #    serve. It is tag-gated because the default loop runs every test with
+        #    -race -count=100, and rebuilding and rebooting a worker binary a
+        #    hundred times would dominate that lane.
+        #
+        # The NATIVE-capable artifacts are proved separately, in nanollm-prepare.yml
+        # (`-tags=nativeartifactproof`), because only that lane can build them: they
+        # need CGO and a linked nanollm archive, which this lane deliberately keeps
+        # out. That proof fails rather than skips when the artifacts are missing.
+        #
+        # Both write their build output outside the repo (RUNNER_TEMP / the
+        # test's own temp dir) so the fresh-tree gates below stay clean.
+        run: |
+          go vet -tags=nativeworkerartifact ./cmd/serve
+          go build -tags=subprocess,nativeworkerartifact -o "$RUNNER_TEMP/serve-native-artifact-sanity" ./cmd/serve
+          go test -tags=subprocess,nativeworkerartifact -count=1 ./cmd/serve
+          go vet -tags=artifactrehearsal ./internal/workerboot
+          go test -tags=artifactrehearsal -count=1 -timeout 10m ./internal/workerboot
+
       - name: Verify framework adapter codegen-emit
         # Two independent checks per adapter: deterministic emission
         # (run the emitter twice, byte-compare) and behavioural test

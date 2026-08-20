@@ -129,6 +129,65 @@ baml-rest reads the following environment variables at startup:
   unset/false keeps the alphabetical ordering introduced for deterministic
   prompts.
 - `BAML_LOG` — BAML internal log level (`debug`, `info`, `warn`, `error`).
+- `BAML_REST_EXPECTED_ARTIFACT_PROFILE` — the worker artifact profile this
+  deployment slot expects, `native_capable` or `baml_only` (see
+  [Deployable worker artifact profiles](#deployable-worker-artifact-profiles)).
+  Unset or empty means "no expectation" and is the default. When set, an
+  artifact whose profile differs logs an error-level alert at startup and sets
+  `baml_rest_debaml_artifact_profile_expectation_violation` to 1 — it does
+  **not** refuse to boot, because rolling back to the BAML-only artifact must
+  work even in a slot still configured to expect the standard one. An
+  unrecognized value is a configuration error and fails startup.
+
+## Deployable worker artifact profiles
+
+A subprocess build ships a host binary with a worker binary embedded in it. Two
+worker artifacts exist, and which one is embedded is a build-time choice:
+
+- **`native_capable` — the standard artifact.** The worker built from the
+  isolated `internal/nativebody/nanollmprepare` module, which links the native
+  engine and *can* serve a request natively. This is what
+  `baml-rest build` produces by default (`--native-worker`, default true).
+  Being able to serve natively is not the same as doing so: the enrollment
+  policy ships empty, so every request declines before a socket and BAML serves
+  100% of traffic, and `BAML_REST_USE_DEBAML=false` additionally suppresses all
+  native capability initialization, factories, `Prepare` and native sockets.
+- **`baml_only` — the rollback artifact.** The zero-options root `cmd/worker`,
+  which links no native engine at all and therefore cannot serve natively under
+  any flag or policy. Select it with `--baml-only-rollback-worker` (or
+  `--native-worker=false`). It stays fully supported: `BAML_REST_USE_DEBAML=false`
+  only promises a total BAML revert for as long as a BAML-capable artifact
+  exists to revert to.
+
+An in-process build (`--inprocess`) has no worker subprocess, so it is always
+`baml_only`; asking for both explicitly is rejected.
+
+Every binary attests its own profile at startup. The build stamps the profile,
+a reproducible release artifact ID, and the inputs that ID was derived from; at
+startup the binary cross-checks all three against what it demonstrably is — the
+worker against its linked native capability, the host against its build tag —
+and re-derives the ID from its own stamped inputs. A contradicted profile, or an
+artifact ID those inputs do not produce, fails startup rather than producing a
+wrong label. Binaries built without the stamp (a plain `go build`) make no claim
+and boot normally, with `artifact_id` reported as `unstamped`.
+
+The release artifact ID covers the build's **provenance**, not just its
+selection axes: the release revision, a content digest over the embedded source
+bundle the build was laid down from, and the content digest of the packaged
+native-worker module tar. Two releases that select the same axes therefore still
+get distinct IDs. Pass `--source-revision` (or `BAML_REST_SOURCE_REVISION`) to
+`baml-rest build` to record the release revision; the two content digests are
+always computed.
+
+The startup log line carries `artifact_profile`, `artifact_id`,
+`artifact_stamped`, `expected_artifact_profile` and the three provenance fields
+(`artifact_source_revision`, `artifact_source_bundle_digest`,
+`artifact_native_worker_tar_digest`). The bounded identity is exported on
+`/metrics` as `baml_rest_debaml_artifact_profile_info` alongside
+`baml_rest_debaml_artifact_profile_expectation_violation`. If a worker's metric
+families cannot be decoded at the host bridge, the scrape FAILS (and
+`bamlrest_worker_metrics_bridge_failures_total` records it) rather than serving
+an aggregate that silently omits the profile signal.
 
 ## In-process build mode
 

@@ -38,15 +38,49 @@ func main() {
 	//
 	// NewCapability() (nanollm.Version) and ProbeRuntime (nanollm.New) are the two
 	// boot-time FFI touch points, so they are constructed ONLY inside the enabled
-	// branch. With the flag off we hand workerboot a zero Options — the shadow
-	// binary then behaves exactly like cmd/worker (BAML-only), executing no nanollm
-	// FFI even though the archive is linked.
+	// branch.
 	if !bamlutils.DeBAMLConfigFromEnv().Enabled {
-		workerboot.Run(workerboot.Options{})
+		workerboot.Run(flagOffProfileOptions())
 		return
 	}
 
-	workerboot.Run(workerboot.Options{
+	workerboot.Run(shadowProfileOptions())
+}
+
+// flagOffProfileOptions is the FLAG-OFF options literal: a STATIC build-capability
+// advertisement and NOTHING else — no FFI, no comparator, no native runtime init.
+//
+// The static advertisement is not cosmetic. This binary IS a native-capable
+// artifact: it links the nanollm archive, and the de-BAML serving-cutover S2 build
+// stamps it `native_capable`. workerboot derives the running artifact's profile
+// from exactly these two fields (plus a live NativeCapability), and refuses to
+// serve when the derived profile contradicts the build stamp. Handing it a ZERO
+// Options here — which is what this branch used to do — made it derive
+// `baml_only`, contradict its own `native_capable` stamp, and exit BEFORE serving
+// any BAML at all. That turned BAML_REST_USE_DEBAML=false, the one global kill
+// switch, into a hard failure on this artifact. The advertisement is what keeps
+// flag-off a total BAML revert rather than an outage.
+//
+// It still executes ZERO nanollm FFI: NativeBuildCapable/NativeEngineName are a
+// compile-time bool and a compile-time constant string, whereas resolving a
+// NativeCapability would call the engine's Version FFI. Extracted alongside
+// shadowProfileOptions so the zero-native property is assertable from the options
+// themselves rather than inferred from a boot log — the entrypoint guard in the
+// root module reads BOTH functions.
+func flagOffProfileOptions() workerboot.Options {
+	return workerboot.Options{
+		NativeBuildCapable: true,
+		NativeEngineName:   nativeworker.EngineName,
+	}
+}
+
+// shadowProfileOptions is the FLAG-ON options literal: every native factory this
+// binary installs, in one place. A function rather than an inline literal for the
+// same reason as the sibling serve worker's: the literal is the join between "a
+// factory exists" and "this binary wires it", and a join needs to be something a
+// test can hold.
+func shadowProfileOptions() workerboot.Options {
+	return workerboot.Options{
 		// Native capability + startup init, exactly like the S2 native worker: a
 		// present capability is reported at startup and the nanollm runtime is
 		// proven to come up alongside BAML before the handler serves.
@@ -65,5 +99,5 @@ func main() {
 		// sends — then declines so BAML serves. Installed ALONGSIDE the dynamic shadow in
 		// the shadow profile; skipped entirely when the umbrella flag is off.
 		NativeStaticShadowFactory: nativeserve.NewStaticShadow,
-	})
+	}
 }

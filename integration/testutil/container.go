@@ -20,6 +20,7 @@ import (
 
 	bamlrest "github.com/invakid404/baml-rest"
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/internal/artifactprofile"
 	"github.com/moby/moby/api/types/container"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/network"
@@ -729,6 +730,25 @@ type dockerfileTemplateData struct {
 	protocGenGoVersion string // protoc-gen-go version for BAML source builds
 	unaryServer        bool   // Build with unaryserver tag for chi unary server
 	inProcess          bool   // Build single-process server+worker (drops subprocess tag)
+
+	// de-BAML serving cutover S2 artifact-ID provenance. The Dockerfile template
+	// interpolates BOTH of these into ENV lines that build.sh feeds to
+	// cmd/build/artifactattest, and text/template renders a MISSING map key as the
+	// literal string `<no value>` — which artifactattest correctly rejects as a
+	// malformed digest, failing the image build and therefore every integration
+	// job. They are not optional for any renderer of that template.
+	artifactSourceRevision     string // release revision, or the explicit "unset" sentinel
+	artifactSourceBundleDigest string // digest of the baml_rest sources copied into the image
+
+	// NOTE: there is deliberately no nativeWorker field. de-BAML serving cutover
+	// S2 made the native-capable worker the STANDARD artifact for a production
+	// build (cmd/build --native-worker now defaults to true), but the isolated
+	// nanollmprepare worker needs CGO and a linked nanollm archive, which these
+	// containers do not carry. The Dockerfile template writes NATIVE_WORKER
+	// explicitly in BOTH directions, so omitting the key here renders
+	// NATIVE_WORKER="false" and this harness keeps building the BAML-only worker,
+	// exactly as it did before S2. The isolated worker's own build/boot coverage
+	// is the gated nanollm-prepare / nanollm-send lanes.
 }
 
 // MarshalMap converts the template data to a map for template execution
@@ -746,7 +766,87 @@ func (d dockerfileTemplateData) toMap() map[string]any {
 		"protocGenGoVersion": d.protocGenGoVersion,
 		"unaryServer":        d.unaryServer,
 		"inProcess":          d.inProcess,
+
+		"artifactSourceRevision":     d.artifactSourceRevision,
+		"artifactSourceBundleDigest": d.artifactSourceBundleDigest,
 	}
+}
+
+// artifactProvenanceForImage returns the de-BAML S2 artifact-ID provenance for a
+// container built by this harness.
+//
+// The bundle digest is computed over `bamlrest.Sources` — the SAME embedded trees
+// createBAMLRestBuildContext copies into the image as `baml_rest/` — with the same
+// helper cmd/build uses, so both renderers of the Dockerfile template describe the
+// same bytes with the same value rather than two implementations that could drift.
+//
+// The revision is the explicit "unset" sentinel: this harness builds from embedded
+// sources and has no release revision to declare. That is a DECLARED absence which
+// artifactattest accepts, not a missing input — unlike an absent template key,
+// which renders `<no value>` and is rejected.
+func artifactProvenanceForImage() (revision, bundleDigest string, err error) {
+	trees := make(map[string]fs.FS, len(bamlrest.Sources))
+	for prefix, tree := range bamlrest.Sources {
+		trees[prefix] = tree
+	}
+	digest, err := artifactprofile.ComputeBundleDigest(trees)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to digest the embedded baml_rest sources for artifact provenance: %w", err)
+	}
+	return artifactprofile.ProvenanceUnset, digest, nil
+}
+
+// dockerfileTemplateDataFor builds the template data this harness renders
+// cmd/build/Dockerfile.tmpl with.
+//
+// Extracted so the provenance gate in dockerfile_provenance_test.go can render
+// through the REAL production construction path instead of rebuilding this struct
+// by hand. That is not a tidiness point: Go's text/template renders a missing map
+// key as the literal `<no value>`, silently, and a de-BAML serving cutover S2
+// provenance key missing from THIS struct is exactly what once made every
+// integration image build with
+// `ENV ARTIFACT_SOURCE_BUNDLE_DIGEST="<no value>"` and fail the whole matrix at
+// container setup. A gate that constructs its own copy of the struct would stay
+// green through a repeat of that, because the field it is missing would be a
+// field the gate never had — which is the one failure mode the gate exists to
+// prevent. One constructor, one place to forget a field, and the gate notices.
+func dockerfileTemplateDataFor(opts SetupOptions) (dockerfileTemplateData, error) {
+	// de-BAML serving cutover S2: the artifact-ID provenance the Dockerfile
+	// template interpolates. Resolved BEFORE the template data is built so a
+	// failure here surfaces as a clear provenance error rather than as a
+	// `<no value>` string that only fails later, inside the image build.
+	artifactRevision, artifactBundleDigest, err := artifactProvenanceForImage()
+	if err != nil {
+		return dockerfileTemplateData{}, err
+	}
+
+	// Template data with integration test specific flags.
+	data := dockerfileTemplateData{
+		bamlVersion:       opts.BAMLVersion,
+		adapterVersion:    opts.AdapterVersion,
+		keepSource:        opts.KeepSource,
+		debugBuild:        true,            // Enable debug endpoints for testing (/_debug/*)
+		defaultTargetArch: getDockerArch(), // Use native architecture
+		noCacheMount:      true,            // testcontainers doesn't reliably support BuildKit
+		noCustomBamlLib:   true,            // Integration tests don't use custom BAML lib
+		unaryServer:       opts.UnaryServer,
+		inProcess:         opts.InProcess,
+
+		artifactSourceRevision:     artifactRevision,
+		artifactSourceBundleDigest: artifactBundleDigest,
+	}
+
+	if opts.BAMLSource != "" {
+		data.bamlSource = true
+		data.prebuiltCffi = opts.PrebuiltCffiDir != ""
+		protocGenGoVersion, err := detectProtocGenGoVersion(opts.BAMLSource)
+		if err != nil {
+			return dockerfileTemplateData{}, fmt.Errorf("failed to detect protoc-gen-go version: %w", err)
+		}
+		data.protocGenGoVersion = protocGenGoVersion
+	}
+
+	return data, nil
 }
 
 func createBAMLRestBuildContext(opts SetupOptions) (io.ReadSeeker, error) {
@@ -765,27 +865,9 @@ func createBAMLRestBuildContext(opts SetupOptions) (io.ReadSeeker, error) {
 		return nil, fmt.Errorf("failed to parse Dockerfile template: %w", err)
 	}
 
-	// Create template data with integration test specific flags
-	tmplData := dockerfileTemplateData{
-		bamlVersion:       opts.BAMLVersion,
-		adapterVersion:    opts.AdapterVersion,
-		keepSource:        opts.KeepSource,
-		debugBuild:        true,            // Enable debug endpoints for testing (/_debug/*)
-		defaultTargetArch: getDockerArch(), // Use native architecture
-		noCacheMount:      true,            // testcontainers doesn't reliably support BuildKit
-		noCustomBamlLib:   true,            // Integration tests don't use custom BAML lib
-		unaryServer:       opts.UnaryServer,
-		inProcess:         opts.InProcess,
-	}
-
-	if opts.BAMLSource != "" {
-		tmplData.bamlSource = true
-		tmplData.prebuiltCffi = opts.PrebuiltCffiDir != ""
-		protocGenGoVersion, err := detectProtocGenGoVersion(opts.BAMLSource)
-		if err != nil {
-			return nil, fmt.Errorf("failed to detect protoc-gen-go version: %w", err)
-		}
-		tmplData.protocGenGoVersion = protocGenGoVersion
+	tmplData, err := dockerfileTemplateDataFor(opts)
+	if err != nil {
+		return nil, err
 	}
 
 	var dockerfileBuf bytes.Buffer

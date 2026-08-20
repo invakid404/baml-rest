@@ -28,6 +28,7 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
+	"github.com/invakid404/baml-rest/internal/artifactprofile"
 	"github.com/invakid404/baml-rest/internal/debaml"
 	"github.com/invakid404/baml-rest/internal/memlimit"
 	"github.com/invakid404/baml-rest/internal/rootruntime"
@@ -218,6 +219,46 @@ func Run(opts Options) {
 		os.Exit(1)
 	}
 
+	// native_build_capable is a STATIC build fact: true when the binary linked a
+	// native engine, reported even while the flag is off. A live NativeCapability
+	// carries the engine identity/version (resolved via FFI); a flag-off
+	// serve/shadow profile supplies the static NativeBuildCapable/NativeEngineName
+	// instead so the diagnostic never calls nanollm on the flag-off path.
+	nativeBuildCapable := opts.NativeCapability != nil || opts.NativeBuildCapable
+
+	// De-BAML serving cutover S2 — the ARTIFACT ATTESTATION.
+	//
+	// rollout_mode/native_serving below describe what this worker DOES; they say
+	// nothing about WHICH ARTIFACT is running, and after S2 that is the question
+	// operators cannot answer from traffic: the standard native-capable artifact
+	// with the S1 policy empty and the BAML-only rollback artifact are externally
+	// identical (both serve 100% BAML). So attest the artifact here.
+	//
+	// The DERIVED profile is nativeBuildCapable — a fact about this binary's link
+	// graph, not a label it chose. Attest cross-checks it against the builder's
+	// -ldflags stamp and FAILS CLOSED on a contradiction: a binary that
+	// mislabels its own profile must never serve, because every downstream
+	// rollout decision reads that label. An UNSTAMPED build (a plain
+	// `go build ./cmd/worker`, or a deploy path this repo does not know about)
+	// makes no claim and is attested as-is — S2 must not hard-break an entrypoint
+	// it cannot see.
+	//
+	// IT RUNS BEFORE NativeInit, DELIBERATELY. Both of its inputs are static —
+	// the Options this entry point passed and the linker stamp — so nothing is
+	// gained by waiting, and waiting costs something real: an artifact that
+	// mislabels itself would first initialize the native runtime (nanollm.New, and
+	// whatever that allocates and links) and only then refuse to serve. Failing
+	// closed is worth more the earlier it happens, so the refusal now precedes any
+	// native runtime work. internal/workerboot's attestation-order rehearsal pins
+	// this with an init sentinel.
+	artifactAttestation, attErr := artifactprofile.Attest(
+		artifactprofile.DeriveProfile(nativeBuildCapable), os.LookupEnv)
+	if attErr != nil {
+		logger.Error("de-BAML worker startup: artifact profile attestation failed; refusing to serve under an unproven artifact identity",
+			"err", attErr.Error())
+		os.Exit(1)
+	}
+
 	nativeRuntimeInitialized := false
 	if opts.NativeInit != nil {
 		if err := opts.NativeInit(); err != nil {
@@ -262,12 +303,6 @@ func Run(opts Options) {
 		opts.NativeStaticShadowFactory != nil,
 		deBAMLConfig.Enabled,
 	)
-	// native_build_capable is a STATIC build fact: true when the binary linked a
-	// native engine, reported even while the flag is off. A live NativeCapability
-	// carries the engine identity/version (resolved via FFI); a flag-off
-	// serve/shadow profile supplies the static NativeBuildCapable/NativeEngineName
-	// instead so the diagnostic never calls nanollm on the flag-off path.
-	nativeBuildCapable := opts.NativeCapability != nil || opts.NativeBuildCapable
 	nativeEngine := opts.NativeEngineName
 	nativeEngineVersion := ""
 	if nc := opts.NativeCapability; nc != nil {
@@ -278,6 +313,8 @@ func Run(opts Options) {
 	// NativeCapability): a flag-off serve/shadow-capable profile advertises the
 	// build capability WITHOUT any FFI. native_build_capable + native_runtime_
 	// initialized disambiguate "linked but not initialized" from "not linked".
+	// Both forms carry the S2 artifact identity, so the profile/mode signal is on
+	// the SAME startup line as the flag and the rollout mode.
 	if nativeBuildCapable {
 		logger.Info("de-BAML worker startup: native capability + resolved flag + rollout mode",
 			"native_engine", nativeEngine,
@@ -287,6 +324,13 @@ func Run(opts Options) {
 			"native_runtime_initialized", nativeRuntimeInitialized,
 			"rollout_mode", rolloutMode,
 			"native_serving", nativeServing,
+			"artifact_profile", string(artifactAttestation.Profile),
+			"artifact_id", artifactAttestation.ArtifactID,
+			"artifact_stamped", artifactAttestation.Stamped,
+			"artifact_source_revision", artifactAttestation.SourceRevision(),
+			"artifact_source_bundle_digest", artifactAttestation.SourceBundleDigest(),
+			"artifact_native_worker_tar_digest", artifactAttestation.NativeWorkerTarDigest(),
+			"expected_artifact_profile", artifactAttestation.ExpectationLabel(),
 			"config_source", "worker_env")
 	} else {
 		logger.Info("de-BAML worker startup: no native capability (BAML-only worker)",
@@ -295,7 +339,27 @@ func Run(opts Options) {
 			"native_runtime_initialized", false,
 			"rollout_mode", rolloutMode,
 			"native_serving", nativeServing,
+			"artifact_profile", string(artifactAttestation.Profile),
+			"artifact_id", artifactAttestation.ArtifactID,
+			"artifact_stamped", artifactAttestation.Stamped,
+			"artifact_source_revision", artifactAttestation.SourceRevision(),
+			"artifact_source_bundle_digest", artifactAttestation.SourceBundleDigest(),
+			"artifact_native_worker_tar_digest", artifactAttestation.NativeWorkerTarDigest(),
+			"expected_artifact_profile", artifactAttestation.ExpectationLabel(),
 			"config_source", "worker_env")
+	}
+
+	// The expectation ALERT (scope §S2: "alert if a BAML-only ordinary artifact
+	// is selected where the standard profile is expected"). Deliberately NOT
+	// fatal: the BAML-only artifact is the rollback lane, and a rollback into a
+	// slot still configured to expect the standard profile MUST boot and serve.
+	// Logged at Error so it pages, and mirrored on the expectation metric below.
+	if artifactAttestation.ExpectationViolated() {
+		logger.Error("de-BAML worker startup: artifact profile does not match the expected deployment profile",
+			"artifact_profile", string(artifactAttestation.Profile),
+			"expected_artifact_profile", artifactAttestation.ExpectationLabel(),
+			"artifact_id", artifactAttestation.ArtifactID,
+			"alert_reason", artifactAttestation.AlertReason)
 	}
 
 	// Resolve env-driven config once at startup. The resulting values
@@ -380,6 +444,17 @@ func Run(opts Options) {
 	// Build the worker's private metrics registry once so a shadow comparator can
 	// register its de-BAML collectors on the SAME registry the host gathers.
 	metricsReg := worker.NewMetricsRegistry()
+
+	// Publish the S2 artifact identity on the SAME registry the S1 de-BAML
+	// collectors use. That shared registry is the join the scope asks for: one
+	// scrape carries both "which artifact is this" and "what did admission do",
+	// so a surface/cohort decline can be attributed to an artifact without any
+	// offline correlation. A registration failure is fatal rather than ignored —
+	// a rollout signal that silently failed to register is a false green.
+	if err := artifactprofile.Register(metricsReg, artifactAttestation); err != nil {
+		logger.Error("failed to register de-BAML artifact profile collectors", "err", err.Error())
+		os.Exit(1)
+	}
 
 	// Build the native one-send SHADOW comparator (nil except in the shadow deploy
 	// profile). The factory registers the bounded de-BAML collectors on the

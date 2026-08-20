@@ -32,6 +32,7 @@ import (
 	bamlrest "github.com/invakid404/baml-rest"
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
+	"github.com/invakid404/baml-rest/internal/artifactprofile"
 	"github.com/moby/buildkit/frontend/dockerfile/parser"
 	"github.com/moby/moby/api/types/build"
 	"github.com/moby/moby/api/types/registry"
@@ -175,8 +176,15 @@ var (
 	unaryServer     bool
 	inProcess       bool
 	nativeWorker    bool
-	prettyLogs      bool
-	baseURLRewrites []string
+	bamlOnlyWorker  bool
+	sourceRevision  string
+	// artifactProvenance is resolved once per invocation and threaded to build.sh
+	// as the de-BAML S2 artifact-ID provenance. Package-level (like the flags
+	// above) so both build modes read the same resolved values rather than
+	// recomputing — the bundle digest walks every embedded source tree.
+	artifactProvenance artifactProvenanceRecord
+	prettyLogs         bool
+	baseURLRewrites    []string
 )
 
 func init() {
@@ -211,7 +219,9 @@ func init() {
 	rootCmd.Flags().BoolVar(&debugBuild, "debug", false, "Enable debug endpoints in the built binary (/_debug/gc)")
 	rootCmd.Flags().BoolVar(&unaryServer, "unary-server", false, "Enable the chi-based unary HTTP server for client-disconnect cancellation")
 	rootCmd.Flags().BoolVar(&inProcess, "inprocess", false, "Build a single-process server with the BAML worker linked in (no go-plugin subprocess)")
-	rootCmd.Flags().BoolVar(&nativeWorker, "native-worker", false, "Build the subprocess worker with nanollm linked (BAML+nanollm) from the isolated nanollmprepare module. Subprocess only; the host stays zero-nanollm/CGO-free. de-BAML cutover Slice 2: still UNROUTED (native routing hard-off)")
+	rootCmd.Flags().BoolVar(&nativeWorker, "native-worker", true, "Build the subprocess worker with nanollm linked (BAML+nanollm) from the isolated nanollmprepare module. This is the STANDARD deployable artifact (de-BAML serving cutover S2). Subprocess only; the host stays zero-nanollm/CGO-free. It serves nothing natively until a cohort is enrolled, and BAML_REST_USE_DEBAML=false makes it a total BAML revert. Use --baml-only-rollback-worker to select the rollback artifact instead")
+	rootCmd.Flags().BoolVar(&bamlOnlyWorker, "baml-only-rollback-worker", false, "Select the explicit ROLLBACK artifact: the zero-options BAML-only root cmd/worker, which links no native engine at all. Equivalent to --native-worker=false; named separately so a rollback build is an explicit, greppable choice rather than a negated default (de-BAML serving cutover S2)")
+	rootCmd.Flags().StringVar(&sourceRevision, "source-revision", "", "Release revision (commit SHA or tag) this build is of. Recorded in the artifact attestation and folded into the release artifact ID, so two releases are distinguishable. Also reads BAML_REST_SOURCE_REVISION; when neither is set the attestation records the revision as \"unset\" (the source-bundle and native-worker-tar content digests still identify the build)")
 	rootCmd.Flags().StringVar(&bamlSource, "baml-source", "", "Path to local BAML source repository for building from unreleased versions")
 	rootCmd.Flags().BoolVar(&prettyLogs, "pretty", false, "Use pretty console logging instead of structured JSON")
 	rootCmd.Flags().StringArrayVar(&baseURLRewrites, "base-url-rewrite", nil, "Rewrite base URLs in .baml files (format: from=to, repeatable). Also reads BAML_REST_BASE_URL_REWRITES env var (semicolon-separated)")
@@ -228,6 +238,8 @@ func init() {
 	_ = viper.BindPFlag("unary-server", rootCmd.Flags().Lookup("unary-server"))
 	_ = viper.BindPFlag("inprocess", rootCmd.Flags().Lookup("inprocess"))
 	_ = viper.BindPFlag("native-worker", rootCmd.Flags().Lookup("native-worker"))
+	_ = viper.BindPFlag("baml-only-rollback-worker", rootCmd.Flags().Lookup("baml-only-rollback-worker"))
+	_ = viper.BindPFlag("source-revision", rootCmd.Flags().Lookup("source-revision"))
 	_ = viper.BindPFlag("baml-source", rootCmd.Flags().Lookup("baml-source"))
 }
 
@@ -248,8 +260,62 @@ var rootCmd = &cobra.Command{
 		debugBuild = viper.GetBool("debug")
 		unaryServer = viper.GetBool("unary-server")
 		inProcess = viper.GetBool("inprocess")
-		nativeWorker = viper.GetBool("native-worker")
+		// The two artifact selectors are decoded STRICTLY rather than through
+		// viper.GetBool — see resolveBoolSelector for why a silent cast here would
+		// let a typo pick the other artifact.
+		var nativeWorkerExplicit bool
+		var selErr error
+		nativeWorker, nativeWorkerExplicit, selErr = resolveBoolSelector(boolSelectorInputs{
+			Name:          "native-worker",
+			EnvKey:        "BAML_REST_NATIVE_WORKER",
+			FlagChanged:   cmd.Flags().Changed("native-worker"),
+			FlagValue:     nativeWorker,
+			ConfigValue:   viper.Get("native-worker"),
+			ConfigPresent: viper.InConfig("native-worker"),
+			Default:       true,
+		})
+		if selErr != nil {
+			return selErr
+		}
+		bamlOnlyWorker, _, selErr = resolveBoolSelector(boolSelectorInputs{
+			Name:          "baml-only-rollback-worker",
+			EnvKey:        "BAML_REST_BAML_ONLY_ROLLBACK_WORKER",
+			FlagChanged:   cmd.Flags().Changed("baml-only-rollback-worker"),
+			FlagValue:     bamlOnlyWorker,
+			ConfigValue:   viper.Get("baml-only-rollback-worker"),
+			ConfigPresent: viper.InConfig("baml-only-rollback-worker"),
+			Default:       false,
+		})
+		if selErr != nil {
+			return selErr
+		}
+		sourceRevision = viper.GetString("source-revision")
 		bamlSource = viper.GetString("baml-source")
+
+		// de-BAML serving cutover S2: resolve the artifact provenance BEFORE any
+		// build work, so a build that cannot describe what it is building fails
+		// before it produces anything.
+		var provErr error
+		artifactProvenance, provErr = resolveArtifactProvenance(sourceRevision)
+		if provErr != nil {
+			return provErr
+		}
+
+		// De-BAML serving cutover S2 — ARTIFACT SELECTION.
+		//
+		// --native-worker now DEFAULTS TO TRUE: the native-capable worker built
+		// from the isolated nanollmprepare module is the standard deployable
+		// artifact. --baml-only-rollback-worker is the named way back to the
+		// zero-options BAML-only worker. Both spellings of the same axis exist so
+		// a rollback is explicit in a command line and in a CI log, so they must
+		// not contradict each other: asking for both at once is a build-config
+		// error, not a coin flip.
+		if bamlOnlyWorker {
+			if nativeWorkerExplicit && nativeWorker {
+				return fmt.Errorf("--baml-only-rollback-worker conflicts with an explicit --native-worker=true: pick exactly one artifact profile (the standard native-capable worker, or the BAML-only rollback worker)")
+			}
+			nativeWorker = false
+		}
 
 		// Validate mode
 		if buildMode != "docker" && buildMode != "native" {
@@ -265,9 +331,24 @@ var rootCmd = &cobra.Command{
 		// links only into the worker subprocess, never the host. An in-process
 		// build has no separate worker, so honouring --native-worker there would
 		// mean linking nanollm into the host — exactly the invariant Slice 2
-		// preserves. Reject the combination up front.
-		if nativeWorker && inProcess {
-			return fmt.Errorf("--native-worker is incompatible with --inprocess: nanollm links only into the worker subprocess and must never enter the host link graph")
+		// preserves.
+		//
+		// Since S2 flipped --native-worker's DEFAULT to true, "in-process" and
+		// "native worker" now collide by default rather than only on request, and
+		// erroring on that would break every existing `--inprocess` invocation —
+		// a hard entrypoint break this slice must not cause. So the rule is keyed
+		// on INTENT: an EXPLICIT --native-worker=true with --inprocess is still a
+		// contradiction and is rejected, while a plain --inprocess simply resolves
+		// to the BAML-only artifact (which is what an in-process build has always
+		// been: there is no worker subprocess to make native-capable).
+		if inProcess {
+			if nativeWorkerExplicit && nativeWorker {
+				return fmt.Errorf("--native-worker is incompatible with --inprocess: nanollm links only into the worker subprocess and must never enter the host link graph")
+			}
+			if nativeWorker {
+				fmt.Println("Note: --inprocess builds have no worker subprocess, so this build uses the BAML-only artifact profile (the standard native-capable worker applies to subprocess builds only)")
+			}
+			nativeWorker = false
 		}
 
 		// Set default output path for native mode
@@ -519,24 +600,20 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 	dockerfileTemplate := template.Must(template.New("dockerfile").Parse(dockerfileDockerTemplateInput))
 	var dockerfileOut bytes.Buffer
 
-	dockerfileTemplateArgs := map[string]interface{}{
-		"bamlVersion":     bamlVersion,
-		"adapterVersion":  adapterVersion,
-		"keepSource":      keepSource,
-		"debugBuild":      debugBuild,
-		"unaryServer":     unaryServer,
-		"inProcess":       inProcess,
-		"nativeWorker":    nativeWorker,
-		"bamlSource":      bamlSource != "",
-		"baseURLRewrites": formatRewriteRulesForEnv(rewriteRules),
-	}
+	// The protoc-gen-go version is only interpolated on the BAML-source branch, so
+	// it is detected only there — but it is threaded through the SAME helper as
+	// everything else, so the helper is the whole map and a test can render it.
+	var protocGenGoVersion string
 	if bamlSource != "" {
-		protocGenGoVersion, err := detectProtocGenGoVersion(bamlSource)
+		protocGenGoVersion, err = detectProtocGenGoVersion(bamlSource)
 		if err != nil {
 			return fmt.Errorf("failed to detect protoc-gen-go version from BAML source: %w", err)
 		}
-		dockerfileTemplateArgs["protocGenGoVersion"] = protocGenGoVersion
 	}
+
+	dockerfileTemplateArgs := dockerfileTemplateArgsFor(
+		bamlVersion, adapterVersion, keepSource, formatRewriteRulesForEnv(rewriteRules), protocGenGoVersion,
+		debugBuild, unaryServer, inProcess, nativeWorker, bamlSource != "", artifactProvenance)
 	if err = dockerfileTemplate.Execute(&dockerfileOut, dockerfileTemplateArgs); err != nil {
 		return fmt.Errorf("failed to render Dockerfile template: %w", err)
 	}
@@ -981,11 +1058,24 @@ func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 	} else {
 		env = append(env, "SUBPROCESS=true")
 	}
+	// Pass the artifact selection EXPLICITLY in both directions (never by
+	// omission). build.sh's own default is the S2 standard (native-capable) for a
+	// subprocess build, so leaving NATIVE_WORKER unset for a rollback build would
+	// silently produce the standard artifact. An explicit value also makes the
+	// selected profile visible in the build log and in any captured environment.
 	if nativeWorker {
 		// build.sh extracts the embedded nanollmprepare source (nativeworker_module.tar)
 		// into the context and builds the worker from it with GOWORK=off + CGO.
 		env = append(env, "NATIVE_WORKER=true")
+	} else {
+		env = append(env, "NATIVE_WORKER=false")
 	}
+	// de-BAML serving cutover S2 artifact-ID provenance, threaded so the stamped
+	// release artifact ID identifies THIS source rather than only the build axes.
+	env = append(env,
+		fmt.Sprintf("ARTIFACT_SOURCE_REVISION=%s", artifactProvenance.Revision),
+		fmt.Sprintf("ARTIFACT_SOURCE_BUNDLE_DIGEST=%s", artifactProvenance.BundleDigest),
+	)
 	if bamlLibraryPath != "" {
 		env = append(env, fmt.Sprintf("BAML_LIBRARY_PATH=%s", bamlLibraryPath))
 	}
@@ -1712,4 +1802,205 @@ func copyBamlDirToTar(srcPath string, tw *tar.Writer, rules []urlrewrite.Rule) e
 		}
 		return nil
 	})
+}
+
+// artifactProvenanceRecord is the de-BAML serving-cutover S2 provenance this
+// builder can attest about the artifact it is about to produce.
+type artifactProvenanceRecord struct {
+	// Revision is the release revision the operator declared, or
+	// artifactprofile.ProvenanceUnset.
+	Revision string
+	// BundleDigest is a content digest over every embedded source tree this
+	// builder lays into the build context — the actual root-module bytes that
+	// become the artifact.
+	BundleDigest string
+}
+
+// resolveArtifactProvenance resolves the declared revision and computes the
+// embedded-source-bundle digest.
+//
+// The bundle digest is the component that makes a release artifact ID identify a
+// RELEASE: two source releases that select the same build axes (same BAML and
+// adapter versions, same profile, same tags) are otherwise indistinguishable, and
+// most consecutive releases are exactly that. It is computed from the SAME
+// embedded trees copied into the build context below, so it describes the bytes
+// that are actually compiled.
+//
+// A missing revision is recorded as the explicit "unset" sentinel rather than an
+// empty string: it stays a declared value inside the digest, and it is visibly
+// absent on the startup log instead of quietly looking like a real revision.
+func resolveArtifactProvenance(declaredRevision string) (artifactProvenanceRecord, error) {
+	revision := strings.TrimSpace(declaredRevision)
+	if revision == "" {
+		revision = os.Getenv("BAML_REST_SOURCE_REVISION")
+		revision = strings.TrimSpace(revision)
+	}
+	if revision == "" {
+		revision = artifactprofile.ProvenanceUnset
+	}
+
+	trees := make(map[string]fs.FS, len(bamlrest.Sources))
+	for prefix, tree := range bamlrest.Sources {
+		trees[prefix] = tree
+	}
+	digest, err := artifactprofile.ComputeBundleDigest(trees)
+	if err != nil {
+		return artifactProvenanceRecord{}, fmt.Errorf("failed to digest the embedded source bundle: %w", err)
+	}
+
+	record := artifactProvenanceRecord{Revision: revision, BundleDigest: digest}
+	// Validate through the same checker the startup attestation uses, so a
+	// rejected token fails the build rather than producing a binary that refuses
+	// to boot.
+	if err := (artifactprofile.Inputs{
+		Profile:               artifactprofile.ProfileBAMLOnly,
+		SourceRevision:        record.Revision,
+		SourceBundleDigest:    record.BundleDigest,
+		NativeWorkerTarDigest: artifactprofile.TarDigestAbsent,
+	}).Validate(); err != nil {
+		return artifactProvenanceRecord{}, fmt.Errorf("invalid artifact provenance: %w", err)
+	}
+	return record, nil
+}
+
+// boolSelectorInputs is one boolean BUILD SELECTOR, with every source that can
+// set it, so resolution is a pure function of its inputs and therefore testable
+// without a live viper/cobra/environment.
+type boolSelectorInputs struct {
+	// Name is the flag name, used in error messages.
+	Name string
+	// EnvKey is the environment variable viper binds this flag to.
+	EnvKey string
+	// FlagChanged reports whether the flag was set on the command line, and
+	// FlagValue is what cobra parsed for it. Cobra's own bool parser is already
+	// strict, so a command-line typo fails before we get here.
+	FlagChanged bool
+	FlagValue   bool
+	// ConfigValue / ConfigPresent are the value from baml-rest.toml, if any.
+	ConfigValue   any
+	ConfigPresent bool
+	// Default is the value when nothing set it.
+	Default bool
+}
+
+// resolveBoolSelector strictly resolves one artifact selector, returning its
+// value and whether it was set EXPLICITLY by anyone (flag, env or config).
+//
+// WHY THIS EXISTS INSTEAD OF viper.GetBool. viper casts, and its cast turns any
+// unrecognised non-empty string into false without complaint. That is exactly
+// wrong for these two flags, because they choose WHICH ARTIFACT SHIPS:
+// `BAML_REST_NATIVE_WORKER=yes` would silently resolve to false and ship the
+// BAML-only ROLLBACK artifact from a build that plainly meant to ask for the
+// standard one — and, worse, it would slip past the explicit-selection conflict
+// check, because the value it produced (false) does not contradict anything.
+// The same cast on the rollback selector silently ships the STANDARD artifact
+// from a build that asked to roll back. Neither is acceptable for a value whose
+// only job is to name the deployable artifact.
+//
+// cmd/build/build.sh already decodes its own NATIVE_WORKER/SHADOW_WORKER
+// strictly (empty, "true" or "false", anything else fails the build). This makes
+// the front end agree with it exactly, so the same typo fails at the same place
+// whichever entry point an operator uses.
+//
+// PRECEDENCE is viper's, preserved: an explicitly-set FLAG wins, then the
+// environment, then the config file, then the default. EMPTY environment means
+// UNSET — the ${VAR:-default} convention build.sh uses, and the shape a deploy
+// system that unconditionally exports a variable produces.
+func resolveBoolSelector(in boolSelectorInputs) (value bool, explicit bool, err error) {
+	if in.FlagChanged {
+		return in.FlagValue, true, nil
+	}
+
+	if raw, ok := os.LookupEnv(in.EnvKey); ok {
+		// RAW, not trimmed. build.sh matches the value against `""|true|false`
+		// with no normalisation at all, so trimming here would make the front end
+		// accept spellings the build script rejects: `" false "` would select the
+		// rollback artifact in cmd/build and fail the build in build.sh, and a
+		// whitespace-only value would silently become "unset" here (the STANDARD
+		// artifact) while build.sh rejected it. Either way the two entry points
+		// disagree about the same string, which is the whole defect this decoder
+		// exists to close.
+		if raw != "" {
+			parsed, perr := parseStrictBool(raw)
+			if perr != nil {
+				return false, false, fmt.Errorf("%s=%q is not a valid --%s selector: %w; this flag chooses which ARTIFACT ships, so an unrecognised value fails the build instead of silently selecting the other one", in.EnvKey, raw, in.Name, perr)
+			}
+			return parsed, true, nil
+		}
+	}
+
+	if in.ConfigPresent {
+		switch cv := in.ConfigValue.(type) {
+		case bool:
+			return cv, true, nil
+		case string:
+			// Raw, for the same reason as the environment above: one strictness,
+			// shared with build.sh, whichever source set the value.
+			parsed, perr := parseStrictBool(cv)
+			if perr != nil {
+				return false, false, fmt.Errorf("%s in %s.toml is not a valid --%s selector: %w", in.Name, bamlRestName, in.Name, perr)
+			}
+			return parsed, true, nil
+		default:
+			return false, false, fmt.Errorf("%s in %s.toml must be a boolean, got %T; --%s chooses which ARTIFACT ships and is not inferred from another type", in.Name, bamlRestName, in.ConfigValue, in.Name)
+		}
+	}
+
+	return in.Default, false, nil
+}
+
+// parseStrictBool accepts exactly "true" or "false" — the same two spellings
+// cmd/build/build.sh accepts, matched with the same RAW equality it uses — so the
+// front end and the build script can never disagree about what an operator wrote.
+// No trimming, no case folding, no aliases: every normalisation is a spelling one
+// side would accept and the other would reject.
+func parseStrictBool(s string) (bool, error) {
+	switch s {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("want exactly \"true\" or \"false\", got %q", s)
+	}
+}
+
+// dockerfileTemplateArgsFor builds the value map cmd/build renders
+// cmd/build/Dockerfile.tmpl with.
+//
+// Extracted from buildDocker so a test can render the REAL map. That matters
+// because Go's text/template renders a MISSING map key as the literal string
+// `<no value>`, silently: the de-BAML S2 artifact-ID provenance keys were added
+// here and NOT to the integration harness's own renderer of the same template, so
+// every integration container built with `ENV ARTIFACT_SOURCE_BUNDLE_DIGEST="<no
+// value>"`, artifactattest correctly rejected it as a malformed digest, and the
+// entire integration matrix went red. A map nobody can render in a test is a map
+// whose completeness nobody can check.
+func dockerfileTemplateArgsFor(
+	bamlVersion, adapterVersion, keepSource, baseURLRewrites, protocGenGoVersion string,
+	debugBuild, unaryServer, inProcess, nativeWorker, bamlSource bool,
+	provenance artifactProvenanceRecord,
+) map[string]interface{} {
+	args := map[string]interface{}{
+		"bamlVersion":     bamlVersion,
+		"adapterVersion":  adapterVersion,
+		"keepSource":      keepSource,
+		"debugBuild":      debugBuild,
+		"unaryServer":     unaryServer,
+		"inProcess":       inProcess,
+		"nativeWorker":    nativeWorker,
+		"bamlSource":      bamlSource,
+		"baseURLRewrites": baseURLRewrites,
+		// de-BAML serving cutover S2 artifact-ID provenance. Every renderer of
+		// this template must supply both; see the doc comment above.
+		"artifactSourceRevision":     provenance.Revision,
+		"artifactSourceBundleDigest": provenance.BundleDigest,
+	}
+	// The template interpolates protocGenGoVersion bare, on the BAML-source
+	// branch only. Supplying it exactly on that branch keeps the map minimal AND
+	// keeps the branch renderable: an absent key there renders `<no value>`.
+	if bamlSource {
+		args["protocGenGoVersion"] = protocGenGoVersion
+	}
+	return args
 }

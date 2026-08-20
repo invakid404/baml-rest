@@ -28,6 +28,7 @@ type mockWorker struct {
 	parseFn      func(ctx context.Context, methodName string, inputJSON []byte) (*workerplugin.ParseResult, error)
 	callStreamFn func(ctx context.Context, methodName string, inputJSON []byte, streamMode bamlutils.StreamMode) (<-chan *workerplugin.StreamResult, error)
 	healthFn     func(ctx context.Context) (bool, error)
+	getMetricsFn func(ctx context.Context) ([][]byte, error)
 	closeFn      func() error
 
 	closeMu sync.Mutex
@@ -91,7 +92,12 @@ func (m *mockWorker) Health(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-func (m *mockWorker) GetMetrics(context.Context) ([][]byte, error) { return nil, nil }
+func (m *mockWorker) GetMetrics(ctx context.Context) ([][]byte, error) {
+	if m.getMetricsFn != nil {
+		return m.getMetricsFn(ctx)
+	}
+	return nil, nil
+}
 func (m *mockWorker) TriggerGC(context.Context) (*workerplugin.GCResult, error) {
 	return &workerplugin.GCResult{}, nil
 }
@@ -4332,5 +4338,89 @@ func TestCallStreamRealContentTriggersResetOnRetry(t *testing.T) {
 	}
 	if leftoverReset.Load() {
 		t.Fatal("post-retry recovery frame never arrived; Reset injection point was missed")
+	}
+}
+
+// TestGatherWorkerMetricsReportsAFailedRPCInsteadOfDroppingTheWorker pins the
+// contract the host's /metrics bridge depends on: a HEALTHY worker whose metrics
+// RPC fails must come back as an Err-bearing record, not be silently omitted.
+//
+// It used to be omitted (a warning, then `continue`). The host therefore received
+// a shorter slice with no way to tell "that worker reported nothing" from "we
+// could not ask that worker", and served a 200 OK scrape either way. The de-BAML
+// serving-cutover S2 artifact-profile and expected-profile-violation series
+// travel this path and are the only input to the wrong-artifact alert, so a
+// wrong-profile worker that stayed healthy for requests while its metrics RPC
+// failed could be hidden behind a successful scrape. Dropping an error in an
+// alert's only data path is a false green.
+func TestGatherWorkerMetricsReportsAFailedRPCInsteadOfDroppingTheWorker(t *testing.T) {
+	rpcErr := errors.New("rpc error: code = Unavailable desc = worker metrics unreachable")
+	familyBytes := []byte("marshalled-metric-family")
+
+	// Worker 0 answers; worker 1 is healthy but its metrics RPC fails.
+	p := newTestPool(t, 2, func(id int) (*workerHandle, error) {
+		w := newMockWorker()
+		if id == 1 {
+			w.getMetricsFn = func(context.Context) ([][]byte, error) { return nil, rpcErr }
+		} else {
+			w.getMetricsFn = func(context.Context) ([][]byte, error) { return [][]byte{familyBytes}, nil }
+		}
+		return newMockHandle(id, w), nil
+	})
+	t.Cleanup(func() { _ = p.Shutdown(context.Background()) })
+
+	results := p.GatherWorkerMetrics(context.Background())
+	if len(results) != 2 {
+		t.Fatalf("GatherWorkerMetrics returned %d records for 2 healthy workers, want 2; a worker whose "+
+			"metrics RPC failed must still be reported, not dropped", len(results))
+	}
+
+	byID := map[int]WorkerMetrics{}
+	for _, r := range results {
+		byID[r.WorkerID] = r
+	}
+
+	ok, present := byID[0]
+	if !present {
+		t.Fatalf("no record for the worker that answered; got %+v", results)
+	}
+	if ok.Err != nil {
+		t.Errorf("worker 0 record carries Err %v; its RPC succeeded", ok.Err)
+	}
+	if len(ok.MetricFamilies) != 1 || string(ok.MetricFamilies[0]) != string(familyBytes) {
+		t.Errorf("worker 0 families = %v, want the single family it returned", ok.MetricFamilies)
+	}
+
+	failed, present := byID[1]
+	if !present {
+		t.Fatalf("the worker whose metrics RPC failed was DROPPED; the host cannot distinguish that from " +
+			"a worker with nothing to report, and would serve a successful scrape without its series")
+	}
+	if failed.Err == nil {
+		t.Fatalf("worker 1 record carries no Err despite its metrics RPC failing")
+	}
+	if !errors.Is(failed.Err, rpcErr) {
+		t.Errorf("worker 1 Err = %v, want the underlying RPC error", failed.Err)
+	}
+	if failed.MetricFamilies != nil {
+		t.Errorf("worker 1 record carries families alongside its error: %v", failed.MetricFamilies)
+	}
+}
+
+// TestGatherWorkerMetricsSkipsUnhealthyWorkers keeps the test above honest: the
+// pool reports every HEALTHY worker, and an unhealthy one is a deliberate,
+// separate omission (it is not serving requests either), not the silent drop the
+// fix removed.
+func TestGatherWorkerMetricsSkipsUnhealthyWorkers(t *testing.T) {
+	p := newTestPool(t, 2, func(id int) (*workerHandle, error) {
+		return newMockHandle(id, newMockWorker()), nil
+	})
+	t.Cleanup(func() { _ = p.Shutdown(context.Background()) })
+
+	p.workers[1].healthy.Store(false)
+
+	results := p.GatherWorkerMetrics(context.Background())
+	if len(results) != 1 || results[0].WorkerID != 0 {
+		t.Fatalf("GatherWorkerMetrics returned %+v, want only the healthy worker 0", results)
 	}
 }
