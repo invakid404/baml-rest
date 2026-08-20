@@ -76,25 +76,46 @@
 // the pins were moved here. Pin to a branch commit only if unavoidable, and re-pin to the
 // merged master commit as the immediate follow-up.
 //
-// NOTE (de-BAML serving cutover S1): these pins are MASTER-durable. They name
-// de1eefa68ed8, the squash-merge of the S1 cutover change (#675), and the follow-up
-// tracked in nativeserve/pin_followup.md is therefore STATUS: RESOLVED. They briefly
-// named the pre-merge branch commit 7cb69af02b36, which the squash flattened out of
-// history; this is the immediate post-merge re-pin the BUMP RULE requires.
+// PIN-STATUS: OUTSTANDING
 //
-// This bump is the most load-bearing one the rule has carried so far, because S1
-// changes BOTH sides of the graph. The root/worker side gains the neutral direct-parse
-// observation seam (bamlutils.NativeDirectParseObserveFunc, the worker/parse.go call
-// site, and the workerboot factory option); this module's serve core supplies the
-// implementation that consumes it. A consumer resolving the OLD pin therefore gets a
-// nativeserve written against a root that does not have the seam — and, more quietly,
-// a serve core with NO cohort gate (admission wider than the one reviewed) whose
-// exported telemetry recorders still accept unbounded, secret-shaped label values.
+// That marker is the MACHINE-READABLE statement of where these pins stand, and
+// cmd/build's TestPackagedManifestsMatchTheTrackedPins requires it to equal the
+// STATUS in nativeserve/pin_followup.md — inside the packaged tar as well as
+// here. It exists because prose is not auditable: a reviewer grepping this file
+// for `de1eefa68ed8` or `RESOLVED` hits the HISTORICAL sentences below and can
+// reasonably conclude the pins are stale when they are not. Read the marker, not
+// the paragraphs.
 //
-// The precedent for the follow-up was #672 -> #673: pin to the branch commit only
-// because no master commit carries the change yet, then re-pin all five to the master
-// squash commit and regenerate the tar immediately after the merge. That follow-up has
-// been performed here.
+// NOTE (de-BAML serving cutover S2): these pins are BRANCH-ONLY right now, and the
+// follow-up tracked in nativeserve/pin_followup.md is STATUS: OUTSTANDING. They name
+// e38f7effd633 on feat/debaml-s2-standard-artifact — NOT a master commit — because the
+// master commit that will carry S2 does not exist until that change squash-merges. Do
+// not read this note as a durability claim; the tracked record is the authority, and
+// this paragraph exists to stop a reader concluding from silence that the pins are
+// master-durable. (It says the opposite of what the S1 note here used to say, which was
+// true then and became false the moment the S2 bump landed — a cold review caught that
+// contradiction, since the pin guard parses the follow-up record and not this comment.)
+//
+// HISTORICAL, SUPERSEDED — the SHAs in this paragraph are not the current pins:
+// the previous instance of this note recorded S1's pins at de1eefa68ed8 (#675), the
+// master squash-merge of the S1 cutover, after its own branch-only pin at 7cb69af02b36
+// was re-pinned post-merge. That is the precedent this bump must repeat.
+//
+// This bump carries real cross-module behaviour, not a version string. S2 changes BOTH
+// sides of the graph. The root side gains internal/artifactprofile and the
+// internal/workerboot artifact ATTESTATION: a worker derives its artifact profile from
+// its own linked capability, cross-checks it against the build's -ldflags stamp,
+// re-derives the release artifact ID from the stamped inputs, and REFUSES TO SERVE on a
+// contradiction. The packaged side supplies what that attestation reads — including the
+// repair that makes a flag-off native-capable worker advertise its static build
+// capability instead of deriving baml_only, contradicting its own stamp and exiting
+// before serving any BAML. A consumer resolving the OLD pin therefore gets a root with
+// no attestation at all underneath a packaged worker written for one.
+//
+// The precedent for the follow-up is #672 -> #673 and #675 -> #676: pin to the branch
+// commit only because no master commit carries the change yet, then re-pin all five to
+// the master squash commit and regenerate the tar IMMEDIATELY after the merge. That
+// follow-up is still OWED here — see pin_followup.md for the exact steps.
 //
 // A bump must ALSO move internal/nativebody/nanollmprepare/go.mod's recorded bamlutils +
 // worker selections in LOCKSTEP: nanollmprepare directory-replaces root / bamlutils /
@@ -110,9 +131,9 @@ go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260819100300-de1eefa68ed8
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260819100300-de1eefa68ed8
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260819100300-de1eefa68ed8
+	github.com/invakid404/baml-rest v0.0.0-20260820081904-e38f7effd633
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260820081904-e38f7effd633
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260820081904-e38f7effd633
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/viktordanov/nanollm-ffi/go v0.4.3
