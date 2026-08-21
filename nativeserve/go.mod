@@ -76,7 +76,7 @@
 // the pins were moved here. Pin to a branch commit only if unavoidable, and re-pin to the
 // merged master commit as the immediate follow-up.
 //
-// PIN-STATUS: RESOLVED
+// PIN-STATUS: OUTSTANDING
 //
 // That marker is the MACHINE-READABLE statement of where these pins stand, and
 // cmd/build's TestPackagedManifestsMatchTheTrackedPins requires it to equal the
@@ -86,17 +86,26 @@
 // reasonably conclude the pins are stale when they are not. Read the marker, not
 // the paragraphs.
 //
-// NOTE (de-BAML serving cutover S2): these pins are MASTER-durable. They name
-// c676a4dacc90, the squash-merge of the S2 cutover change (#677), and the follow-up
-// tracked in nativeserve/pin_followup.md is therefore STATUS: RESOLVED. They briefly
-// named the pre-merge branch commit e38f7effd633 on feat/debaml-s2-standard-artifact,
-// which the squash flattened out of history; this is the immediate post-merge re-pin the
-// BUMP RULE requires, performed here.
+// The COMPLETE post-squash re-pin runbook — every ordered step, including the two
+// that are easiest to leave implicit (flipping BOTH mirrored manifest narratives,
+// and materializing the external probe's module + main package before its
+// go get/build/run) — is nativeserve/pin_followup.md, section "The follow-up —
+// OWED". Follow it there; do not reconstruct it from these paragraphs.
+//
+// NOTE (de-BAML serving cutover S3a): these pins are BRANCH-ONLY and the tracked
+// follow-up in nativeserve/pin_followup.md is therefore STATUS: OUTSTANDING. They name
+// 9f4cfe14e878 on feat/debaml-s3a-identity, the commit that introduces the trusted
+// effective-configuration identity resolver this module's serve path now runs. It has to
+// be a branch commit for exactly the reason the BUMP RULE above names: the symbols are
+// introduced by this very change, so no master commit carries them until the squash
+// lands. The IMMEDIATE follow-up — the runbook named above — is mandatory, not optional
+// cleanup.
 //
 // HISTORICAL, SUPERSEDED — the SHAs in this paragraph are not the current pins:
-// the previous instance of this note recorded S1's pins at de1eefa68ed8 (#675), the
-// master squash-merge of the S1 cutover, after its own branch-only pin at 7cb69af02b36
-// was re-pinned post-merge. That is the precedent this bump repeated.
+// the previous instance of this note recorded S2's pins at c676a4dacc90 (#677), the
+// master squash-merge of the S2 cutover, after its own branch-only pin at e38f7effd633
+// was re-pinned post-merge; S1's were at de1eefa68ed8 (#675) after 7cb69af02b36. That
+// branch-pin-then-re-pin sequence is the precedent this bump repeats.
 //
 // This bump carries real cross-module behaviour, not a version string. S2 changes BOTH
 // sides of the graph. The root side gains internal/artifactprofile and the
@@ -128,9 +137,9 @@ go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260820091105-c676a4dacc90
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260820091105-c676a4dacc90
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260820091105-c676a4dacc90
+	github.com/invakid404/baml-rest v0.0.0-20260820173806-9f4cfe14e878
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260820173806-9f4cfe14e878
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260820173806-9f4cfe14e878
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/viktordanov/nanollm-ffi/go v0.4.3

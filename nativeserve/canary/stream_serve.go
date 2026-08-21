@@ -141,7 +141,7 @@ func (s *StreamServer) Serve(ctx context.Context, req bamlutils.NativeStreamServ
 	// collectors, so this lane produces the same exactly-once phase/winner accounting
 	// as the unary lane; a server constructed without metrics (a focused unit test)
 	// still works, because the recorders are nil-safe.
-	surface, cohort := admission.SurfaceDynamicStream, admission.ResolveCohort(s.streamCohortInput(req))
+	surface, cohort := admission.SurfaceDynamicStream, admission.ResolveCohort(admission.SurfaceDynamicStream, s.streamCohortInput(req))
 	defer func() { s.recordStreamTerminal(surface, cohort, entered, result.Disposition, result.WinnerEngine) }()
 	defer func() {
 		if r := recover(); r != nil {
@@ -337,10 +337,15 @@ func completedStreamResult(res *execute.StreamResult) bamlutils.NativeStreamServ
 }
 
 // streamCohortInput is the SINGLE definition of a stream request's serving-cutover
-// configuration identity — the stream twin of serveCohortInput. S1 assigns NONE
-// (the opaque configuration fingerprint is a config-load assignment that is
-// deliberately not plumbed yet), so every stream resolves to admission.CohortNone
-// and the default-deny gate declines it before any native work.
+// configuration identity — the stream twin of serveCohortInput. It assigns NONE, so
+// every stream resolves to admission.CohortNone and the default-deny gate declines it
+// before any native work.
+//
+// Serving cutover S3a deliberately does NOT wire the effective-configuration identity
+// resolver here, for the same reason the static lane does not: the identity work exists
+// to make the dynamic unary `/call` surface enrollable, and resolving an identity on a
+// surface no policy will enroll would widen what carries an identity without widening
+// what may claim. A lane that presents no identity cannot be admitted by any policy.
 func (s *StreamServer) streamCohortInput(req bamlutils.NativeStreamServeRequest) admission.CohortInput {
 	_ = req
 	return s.cohort

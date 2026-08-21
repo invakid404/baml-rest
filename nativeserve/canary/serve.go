@@ -86,11 +86,14 @@ type Server struct {
 	// unreachable through Serve. Production never rebinds it.
 	admitClaim func(ctx context.Context, in admission.Input) (*admission.Claim, error)
 
-	// cohort is the serving-cutover configuration identity THIS server presents to
-	// admission, for both the dynamic and the static unary lane. Production leaves it
-	// ZERO — no config-load path assigns an opaque configuration fingerprint yet — so
-	// every request resolves to admission.CohortNone and the default-deny gate declines
-	// it before any native work. It is set to a non-zero identity ONLY by
+	// cohort is a FIXED serving-cutover configuration identity this server presents to
+	// admission instead of resolving one per request. Production leaves it ZERO — the
+	// dynamic unary lane resolves its identity from the request through
+	// [Server.serveCohortInput]
+	// (serving cutover S3a), and the static unary lane presents none at all — so every
+	// request resolves to a cohort the shipped EMPTY policy does not enroll and the
+	// default-deny gate declines it before any native work. It is set to a non-zero
+	// identity ONLY by
 	// [NewServerWithCohortIdentity], which the gated end-to-end proofs use to exercise
 	// the serving pipeline the shipped policy does not enable yet. It is NOT a rollout
 	// control: the factories a worker installs (NewServeFunc / NewStaticServeFunc)
@@ -148,7 +151,7 @@ func (s *Server) Serve(ctx context.Context, req bamlutils.NativeServeRequest) (r
 	// bounded bucket admission gates on, so a decline recorded here and a decline
 	// recorded by admission carry identical labels. Production resolves CohortNone.
 	in := s.toAdmissionInput(req)
-	surface, cohort := admission.SurfaceDynamicCall, admission.ResolveCohort(s.serveCohortInput(req))
+	surface, cohort := admission.SurfaceDynamicCall, admission.ResolveCohort(admission.SurfaceDynamicCall, s.serveCohortInput(req))
 	// Registered FIRST so it runs LAST: it observes the final named result, including
 	// the one the panic guard below substitutes. It records EXACTLY ONE phase+winner
 	// pair per request (pre-claim decline, or the post-claim terminal), which is what
@@ -398,7 +401,7 @@ func (s *Server) serveStructured(ctx context.Context, req bamlutils.NativeServeR
 	// extracts + parses the SAME bytes the ONE native provider request returned. A
 	// separate phase is what keeps "BAML parsed these bytes" from ever reading as
 	// "BAML transported this request".
-	s.metrics.RecordAdmissionPhase(admission.SurfaceDynamicCall, admission.ResolveCohort(s.serveCohortInput(req)), admission.PhaseSameResponseOracle)
+	s.metrics.RecordAdmissionPhase(admission.SurfaceDynamicCall, admission.ResolveCohort(admission.SurfaceDynamicCall, s.serveCohortInput(req)), admission.PhaseSameResponseOracle)
 
 	bamlParseable, bamlRaw, bamlReasoning, xerr := buildrequest.ExtractResponseContentBytes("openai", res.ProviderBody, req.IncludeReasoning)
 	if xerr != nil {
@@ -688,16 +691,50 @@ func (s *Server) toAdmissionInput(req bamlutils.NativeServeRequest) admission.In
 // configuration identity, so admission's gate and the serve boundary's telemetry
 // can never disagree about which cohort a request belongs to.
 //
-// S1 assigns NONE. The opaque configuration fingerprint is a CONFIG-LOAD /
-// control-plane assignment (see admission.ConfigFingerprint), and no config-load
-// path plumbs one to the serve seam yet — deliberately, because S1 enrolls nothing.
-// So this returns the zero identity, every request resolves to admission.CohortNone,
-// and the default-deny gate declines it before any native work. The slice that
-// enrolls a cohort populates Fingerprint here from the loaded configuration record;
-// nothing else in this file changes.
+// Serving cutover S3a makes it PER REQUEST, and sources it from a fact the request
+// cannot manufacture. The registry reaching this seam is the CALLER'S document — the
+// dynamic surface takes `client_registry` from the public request body — so nothing
+// derived from it can establish that a request is running the deployment's approved
+// configuration, not even a byte-exact match against the approved shape. What can is
+// the TRUSTED-CONFIGURATION SEAL the worker's config load applies to a client the
+// deployment itself configured; admission.ResolveConfigIdentity reads that seal and
+// nothing else for identity, with the request facts below as narrowing conditions on
+// top of it.
+//
+// So neither the caller nor the process decides: a worker that happens to host an
+// approved configuration gives no identity to a request that did not select the
+// sealed client, and a caller that describes the approved configuration perfectly
+// gets none either. If the effective selected configuration cannot be PROVEN to be
+// one the deployment sealed, the resolver returns no identity, the gate resolves
+// admission.CohortNone, and the request declines at the cohort stage before any
+// native work. With nothing sealed — the shipped default — that is EVERY request.
+//
+// s.cohort is the one exception and it is not a production path: the gated proof
+// suites build their server through the `nanollm_integration`-tagged constructor with
+// a fixed enrolled identity, so they can exercise the pipeline BEHIND the default-deny
+// gate. A released consumer cannot link that constructor, and every untagged factory
+// leaves s.cohort zero.
 func (s *Server) serveCohortInput(req bamlutils.NativeServeRequest) admission.CohortInput {
-	_ = req
-	return s.cohort
+	if s.cohort.Assigned() {
+		return s.cohort
+	}
+	id := admission.ResolveConfigIdentity(admission.ConfigSelection{
+		Registry:         req.Registry,
+		ResolvedProvider: req.Provider,
+		SelectedLeaf:     req.ClientOverride,
+		SingleLeaf:       req.SingleLeaf,
+		HasFallbackChain: req.HasFallbackChain,
+		HasRoundRobin:    req.HasRoundRobin,
+		// The truthful request-retry-override fact the seam threads: a retry override
+		// means the single-attempt exact lane is not what would run, so the effective
+		// selected leaf is not a single proven answer.
+		HasRequestRetryOverride: req.HasRequestRetryOverride,
+		// The direct-legacy native-first probe route carries no BAML plan builder, so
+		// the strict plan equality fe-v1 requires could not run for it at all. A
+		// request that could never be a valid claim never gets an identity.
+		HasBAMLPlanOracle: req.BuildBAMLRequest != nil,
+	})
+	return admission.CohortInput{Fingerprint: id.Fingerprint, Provider: id.Provider}
 }
 
 // recordServeTerminal records EXACTLY ONE serving-cutover phase+winner pair for a

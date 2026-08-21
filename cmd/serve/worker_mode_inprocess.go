@@ -38,6 +38,14 @@ func configureWorkerMode(logger zerolog.Logger, cfg *pool.Config, runtimeCfg wor
 	if err != nil {
 		return fmt.Errorf("invalid BAML_REST_CLIENT_DEFAULTS: %w", err)
 	}
+	// The deployment's APPROVED-CONFIGURATION declaration (de-BAML serving cutover
+	// S3a). A malformed declaration fails startup rather than degrading to
+	// "nothing is approved" — see workerboot for the same rule on the subprocess
+	// worker.
+	trustedClients, err := worker.LoadTrustedClients()
+	if err != nil {
+		return fmt.Errorf("invalid BAML_REST_DEBAML_TRUSTED_CLIENTS: %w", err)
+	}
 	// Gate on the effective BuildRequest route: the advisory only applies
 	// when a BuildRequest serializer is actually in the request path. A
 	// BuildRequest surface — StreamRequest (streaming, plus the /call
@@ -67,6 +75,7 @@ func configureWorkerMode(logger zerolog.Logger, cfg *pool.Config, runtimeCfg wor
 			Logger:          wcfg.Logger,
 			Metrics:         worker.NewMetricsRegistry(),
 			ClientDefaults:  clientDefaults,
+			TrustedClients:  trustedClients,
 			SharedState:     hook,
 			DeBAML:          runtimeCfg.DeBAML,
 			DeBAMLRender:    runtimeCfg.DeBAMLRender,

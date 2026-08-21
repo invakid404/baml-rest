@@ -135,7 +135,7 @@ func TestClaimedRequestAccountsExactlyOnce(t *testing.T) {
 func TestCohortIdentityConstructorsActuallyEnroll(t *testing.T) {
 	identity := admission.ProofCohortInputForTest()
 	s := NewServerWithCohortIdentity(nil, llmhttp.NewExactExecutor(&dialCountingTransport{}), identity)
-	if got := admission.ResolveCohort(s.serveCohortInput(bamlutils.NativeServeRequest{})); got != admission.ProofCohort {
+	if got := admission.ResolveCohort(admission.SurfaceDynamicCall, s.serveCohortInput(bamlutils.NativeServeRequest{})); got != admission.ProofCohort {
 		t.Fatalf("the constructed server presents cohort %q, want %q", got, admission.ProofCohort)
 	}
 	out := s.Serve(context.Background(), bamlutils.NativeServeRequest{

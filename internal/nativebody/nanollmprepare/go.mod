@@ -21,9 +21,9 @@ go 1.26.5
 require (
 	github.com/boundaryml/baml v0.223.0
 	github.com/invakid404/baml-rest v0.0.48
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260820091105-c676a4dacc90
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260820173806-9f4cfe14e878
 	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260820091105-c676a4dacc90
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260820173806-9f4cfe14e878
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
@@ -112,7 +112,7 @@ require (
 // without recording it here fails the native-worker PACKAGING build (-mod=readonly)
 // with "updates to go.mod needed".
 //
-// PIN-STATUS: RESOLVED
+// PIN-STATUS: OUTSTANDING
 //
 // That marker is the MACHINE-READABLE statement of where these pins stand, and
 // cmd/build's TestPackagedManifestsMatchTheTrackedPins requires it to equal the
@@ -120,26 +120,36 @@ require (
 // Read the marker, not the paragraphs: the history below names SHAs that are NOT
 // the current pins, and a token-level grep cannot tell the two apart.
 //
+// The COMPLETE post-squash re-pin runbook — every ordered step, including the two
+// that are easiest to leave implicit (flipping BOTH mirrored manifest narratives,
+// and materializing the external probe's module + main package before its
+// go get/build/run) — is nativeserve/pin_followup.md, section "The follow-up —
+// OWED". Follow it there; do not reconstruct it from these paragraphs.
+//
 // HISTORICAL, SUPERSEDED — the SHAs in this paragraph are not the current pins:
 // de-BAML Slice 7.2c-3 moved them to the cutover commit, which was BRANCH-ONLY
 // until #672 squash-merged; the serving-cutover S1 change moved all five again,
-// first to its own branch commit and then post-merge to the master squash commit
-// de1eefa68ed8 (#675).
+// first to its own branch commit and then post-merge to de1eefa68ed8 (#675); S2 did
+// the same, ending at the master squash commit c676a4dacc90 (#677).
 //
-// RIGHT NOW they are MASTER-durable: the serving-cutover S2 change moved all five, first
-// to its own branch commit e38f7effd633 on feat/debaml-s2-standard-artifact and now —
-// post-merge — to the MASTER squash commit c676a4dacc90 (#677), so
-// nativeserve/pin_followup.md reads STATUS: RESOLVED. Do not treat this comment as the
-// authority: the tracked record is, and cmd/build's TestFirstPartyPinFollowupIsTracked
-// parses that record and these requires on every ordinary `go test ./...` and requires
-// them to agree. This paragraph exists only so a reader of this manifest is not told the
-// opposite of what the record says — which is exactly what happened when the S1 text was
-// left here after the S2 bump.
+// RIGHT NOW they are BRANCH-ONLY: the serving-cutover S3a change moved all five to
+// 9f4cfe14e878 on feat/debaml-s3a-identity, so nativeserve/pin_followup.md reads
+// STATUS: OUTSTANDING and the post-squash re-pin runbook is owed. Do not treat this
+// comment as the authority: the tracked record is, and cmd/build's
+// TestFirstPartyPinFollowupIsTracked parses that record and these requires on every
+// ordinary `go test ./...` and requires them to agree. This paragraph exists only so a
+// reader of this manifest is not told the opposite of what the record says — which is
+// exactly what happened when the S1 text was left here after the S2 bump, and which is
+// why the runbook makes flipping BOTH narratives its own numbered step.
 //
-// S2 changes this module's worker entrypoints (the flag-off branch of cmd/worker-shadow
-// now advertises its static build capability, so a native-capable artifact stops
-// contradicting its own build stamp and refusing to serve) AND the root-side attestation
-// that reads it, so the lockstep is carrying real cross-module behaviour rather than a
+// S3a changes BOTH sides of the graph. The root side gains the TRUSTED-CONFIGURATION
+// SEAL (bamlutils/trustedconfig.go + bamlutils/trustedclients), the worker config-load
+// pass that applies it, and the workerboot runtime seam the booted-artifact proof builds
+// its fixture through. The packaged side is what READS that seal: the serve core's
+// admission seam resolves a request's configuration identity from it and from nothing
+// else, and THIS module's cmd/worker entrypoint is the binary that proof boots. A
+// consumer resolving the OLD pin gets a serve core with no seal to read under a manifest
+// that claims one, so the lockstep is carrying real cross-module behaviour rather than a
 // version string.
 //
 // Resolve the root module and every locally-replaced sibling from the checkout

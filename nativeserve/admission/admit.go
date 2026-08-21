@@ -78,12 +78,14 @@ type Input struct {
 	Messages     []bamlutils.DynamicMessage
 	OutputSchema *bamlutils.DynamicOutputSchema
 
-	// Cohort is the serving-cutover S1 configuration identity + the default-deny
-	// cohort gate it is evaluated against (layer 1b). Production leaves BOTH halves
-	// zero: no config-load path assigns a fingerprint yet, and a nil gate selects the
-	// shipped EMPTY [ProductionCohortGate] — so every production request resolves to
-	// CohortNone and declines with cohort_not_enrolled before any native work. See
-	// cohort.go for the whole contract.
+	// Cohort is the serving-cutover configuration identity + the default-deny cohort
+	// gate it is evaluated against (layer 1b). The fingerprint is what
+	// [ConfigIdentityResolver] resolved for this request's effective selected
+	// configuration, or none; the gate half is always zero in production, and a nil
+	// gate selects the shipped EMPTY [ProductionCohortGate] — so every production
+	// request resolves to a cohort that policy does not enroll and declines with
+	// cohort_not_enrolled before any native work. See cohort.go for the whole
+	// contract.
 	Cohort CohortInput
 }
 

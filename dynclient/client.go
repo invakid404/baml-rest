@@ -124,6 +124,7 @@ func newWithRuntime(rt worker.Runtime, init func(), opts ...Option) (*Client, er
 		Logger:                      cfg.logger,
 		Metrics:                     cfg.metrics,
 		ClientDefaults:              cfg.clientDefaults,
+		TrustedClients:              cfg.trustedClients,
 		DeBAML:                      cfg.deBAML,
 		DeBAMLRender:                cfg.deBAMLRender,
 		DeBAMLParse:                 cfg.deBAMLParse,

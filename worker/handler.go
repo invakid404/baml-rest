@@ -12,6 +12,7 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/clientdefaults"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
+	"github.com/invakid404/baml-rest/bamlutils/trustedclients"
 	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
 	"github.com/invakid404/baml-rest/workerplugin"
 )
@@ -46,6 +47,17 @@ type Config struct {
 	Metrics        *prometheus.Registry
 	ClientDefaults *clientdefaults.Config
 	SharedState    SharedStateHook
+
+	// TrustedClients is the deployment's APPROVED-CONFIGURATION declaration
+	// (BAML_REST_DEBAML_TRUSTED_CLIENTS, de-BAML serving cutover S3a). It is the
+	// only thing that can seal a request's client as deployment-owned, which is
+	// the only thing that can give it a configuration identity at the native
+	// admission seam.
+	//
+	// Nil (or empty) is the shipped default: nothing is sealed, no request is
+	// altered, and no request obtains an identity. A MALFORMED declaration is a
+	// boot failure at the entrypoint that loads it, never a silent empty set.
+	TrustedClients *trustedclients.Set
 
 	BaseURLRewrites []urlrewrite.Rule
 	HTTPClient      *llmhttp.Client
@@ -284,6 +296,10 @@ type Handler struct {
 	logger         bamlutils.Logger
 	metricsReg     *prometheus.Registry
 	clientDefaults *clientdefaults.Config
+	// trustedClients is the deployment's approved-configuration declaration
+	// (de-BAML serving cutover S3a). Nil / empty on every deployment that
+	// declared none, which seals nothing and alters no request.
+	trustedClients *trustedclients.Set
 
 	baseURLRewrites []urlrewrite.Rule
 	httpClient      *llmhttp.Client
@@ -383,6 +399,7 @@ func New(cfg Config) (*Handler, error) {
 		logger:                  cfg.Logger,
 		metricsReg:              metricsReg,
 		clientDefaults:          cfg.ClientDefaults,
+		trustedClients:          cfg.TrustedClients,
 		baseURLRewrites:         cfg.BaseURLRewrites,
 		httpClient:              cfg.HTTPClient,
 		deBAML:                  cfg.DeBAML,
@@ -523,7 +540,7 @@ func (h *Handler) CallStream(ctx context.Context, methodName string, inputJSON [
 	// nil when no shared-state hook is attached, and the adapter treats
 	// nil as "fall back to the introspected default Coordinator".
 	adapter.SetRoundRobinAdvancer(h.roundRobinAdvancerFor(ctx))
-	if err := options.apply(adapter, h.clientDefaults, h.baseURLRewrites); err != nil {
+	if err := options.apply(adapter, h.clientDefaults, h.baseURLRewrites, h.trustedClients); err != nil {
 		return nil, fmt.Errorf("failed to apply options: %w", err)
 	}
 

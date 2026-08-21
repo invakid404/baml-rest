@@ -121,10 +121,11 @@ func TestConfigLoadCanDeclareButNeverEnroll(t *testing.T) {
 	}
 
 	for _, r := range inv.Records() {
-		in := CohortInput{Fingerprint: r.Fingerprint, gate: gate}
-		// The declaration WORKS — the identity resolves to its declared cohort, so the
-		// decline stays attributable and the offline join is real.
-		if got := ResolveCohort(in); got != r.Cohort {
+		in := CohortInput{Fingerprint: r.Fingerprint, Provider: r.Provider, gate: gate}
+		// The declaration WORKS — the identity resolves to its declared cohort on a
+		// surface the record declares, so the decline stays attributable and the
+		// offline join is real.
+		if got := ResolveCohort(r.Surfaces[0], in); got != r.Cohort {
 			t.Errorf("%s resolved to %q, want its declared cohort %q", r.Fingerprint, got, r.Cohort)
 		}
 		// And it is refused everywhere, because declaring is not enrolling.

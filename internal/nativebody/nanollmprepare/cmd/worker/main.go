@@ -70,6 +70,12 @@ func main() {
 // from a boot log.
 func flagOffProfileOptions() workerboot.Options {
 	return workerboot.Options{
+		// NIL in every shipped build: the method table is the root generated package
+		// the container build wrote. Non-nil only under the `debamlworkerfixture`
+		// build tag, which links a real Baml_Rest_Dynamic so the booted-artifact
+		// proof has something to send a request to. It selects METHODS, never native
+		// wiring — see fixture_runtime.go.
+		Runtime: fixtureRuntime(),
 		// Static build fact (no FFI): report the linked engine so the startup
 		// diagnostic shows native_build_capable=true, runtime uninitialized,
 		// rollout_mode=off, native_serving=off.
@@ -90,6 +96,9 @@ func flagOffProfileOptions() workerboot.Options {
 // drives the resulting observer through the real parse handler.
 func serveProfileOptions() workerboot.Options {
 	return workerboot.Options{
+		// NIL in every shipped build (see the flag-off literal above): the method
+		// table is the root generated package the container build wrote.
+		Runtime: fixtureRuntime(),
 		// Native capability + startup init: a present capability is reported at
 		// startup and the nanollm runtime is proven to come up alongside BAML
 		// before the handler serves.

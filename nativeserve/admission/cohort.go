@@ -228,9 +228,11 @@ func rejectCredentialShaped(kind, s string) error {
 // configuration up in their own approved-configuration record, offline; it carries
 // no information about the configuration itself.
 //
-// S1 assigns none: no config-load path populates [CohortInput.Fingerprint], so
-// every production request resolves to CohortNone. Populating it is part of the
-// slice that enrolls a cohort.
+// The config-load assignment is [ResolveConfigIdentity]: it reads the bucket the
+// DEPLOYMENT sealed onto the request's effective selected configuration, and
+// returns none unless that configuration is provably one the deployment itself
+// configured. A deployment that sealed nothing — the shipped default — resolves
+// CohortNone for every request.
 type ConfigFingerprint string
 
 // proofConfigFingerprint is the opaque ID reserved for the gated proof suite. The ID
@@ -691,32 +693,66 @@ func (g *CohortGate) Inventory() *ConfigInventory {
 	return g.inventory
 }
 
-// Resolve maps an opaque configuration fingerprint onto its bounded cohort bucket.
-// It NEVER returns an unbounded value: an absent fingerprint is CohortNone, and any
-// fingerprint the inventory does not declare — including a syntactically invalid
-// one — is CohortUnrecognized. That is what keeps the cohort label bounded by the
-// declared inventory no matter what reaches the seam.
-func (g *CohortGate) Resolve(fp ConfigFingerprint) CohortID {
-	if fp == "" {
+// Resolve maps an identity onto its bounded cohort bucket FOR ONE SURFACE.
+//
+// It NEVER returns an unbounded value: an absent fingerprint is CohortNone, and
+// anything the inventory does not substantiate — an undeclared fingerprint, a
+// record declaring a different provider CLASS, or a record that does not declare
+// this surface — is CohortUnrecognized. That is what keeps the cohort label
+// bounded by the declared inventory no matter what reaches the seam.
+//
+// The provider/surface cross-check is why the identity carries a class at all.
+// Binding on the opaque bucket alone would let an approved class be claimed on a
+// surface it was never approved for, or by a request whose configuration resolved
+// to a different provider than the record describes; both are strictly narrower
+// here, and both are things an inventory record exists to state.
+func (g *CohortGate) Resolve(surface Surface, in CohortInput) CohortID {
+	if in.Fingerprint == "" {
 		return CohortNone
 	}
-	r, ok := g.Inventory().Lookup(fp)
+	r, ok := g.Inventory().Lookup(in.Fingerprint)
 	if !ok {
 		return CohortUnrecognized
 	}
-	return r.Cohort
+	if r.Provider != in.Provider {
+		return CohortUnrecognized
+	}
+	for _, s := range r.Surfaces {
+		if s == surface {
+			return r.Cohort
+		}
+	}
+	return CohortUnrecognized
 }
 
 // CohortInput is the request-side half of the gate: the configuration identity the
 // control plane assigned, plus the gate to evaluate it against. It is embedded in
 // every admission input struct.
 type CohortInput struct {
-	// Fingerprint is the opaque configuration ID assigned at CONFIG LOAD. S1's
-	// production wiring assigns NONE — no config-load path populates it yet — so
-	// every production request resolves to CohortNone and declines. It is a
-	// PREDECLARED bucket, never a per-request hash: nothing in admission computes
-	// it from the request.
+	// Fingerprint is the opaque configuration ID the CONFIG-LOAD identity resolver
+	// assigned to this request's EFFECTIVE selected configuration (see
+	// [ConfigIdentityResolver]). It is a PREDECLARED bucket, never a per-request
+	// hash and never a caller-supplied value: the resolver returns only fingerprints
+	// the deployment declared, and returns none at all unless the effective selected
+	// leaf PROVES to be a declared configuration.
+	//
+	// Serving cutover S3a wires that resolver on the dynamic unary lane. It changes
+	// nothing about what may CLAIM: the shipped policy still enrolls nothing, so a
+	// resolved fingerprint resolves to a bounded cohort that is not enrolled and the
+	// request declines pre-claim exactly as an unidentified one does.
 	Fingerprint ConfigFingerprint
+	// Provider is the bounded provider CLASS the identity resolver derived for the
+	// same effective configuration. It is carried alongside the fingerprint so the
+	// gate can bind an identity to its INVENTORY RECORD rather than to the opaque
+	// bucket alone: a record declares which provider class and which surfaces the
+	// class was approved for, and a request presenting a different class — or
+	// arriving on a surface the record does not declare — resolves
+	// CohortUnrecognized instead of the record's cohort.
+	//
+	// The zero value is not a declared class, so an input that carries a
+	// fingerprint without one can never match a record. That is the safe
+	// direction: it declines.
+	Provider ConfigProviderClass
 	// gate is UNEXPORTED on purpose, and it is the whole answer to "can a released
 	// consumer select its own admission policy?". It cannot: no exported field,
 	// constructor or function outside this package can populate it, so every
@@ -728,6 +764,17 @@ type CohortInput struct {
 	// TestNoUntaggedExportedGateInjection is the standing guard on that property.
 	gate *CohortGate
 }
+
+// Assigned reports whether this input carries an EXPLICITLY configured identity
+// rather than the zero one. It exists so the serve seam can tell "a gated proof
+// suite installed a fixed identity on this server" apart from "production, resolve
+// the identity from the request", without either side comparing struct literals
+// across the package boundary.
+//
+// It is deliberately not a way IN: an input a caller can build carries no gate
+// whatever this reports, so an "assigned" identity still resolves against the
+// shipped default-deny gate.
+func (c CohortInput) Assigned() bool { return c != CohortInput{} }
 
 // gate returns the gate this input is evaluated against: the explicit one, or the
 // production default-deny gate.
@@ -874,7 +921,7 @@ func ProductionCohortGate() *CohortGate {
 // actionable bucket while the (non-label) detail stays diagnosable.
 func admitCohort(surface Surface, in CohortInput) (CohortID, *Decline) {
 	g := in.resolvedGate()
-	cohort := g.Resolve(in.Fingerprint)
+	cohort := g.Resolve(surface, in)
 	if g.Policy().Enrolled(surface, cohort) {
 		return cohort, nil
 	}
@@ -908,10 +955,15 @@ func dynamicSurface(stream bool) Surface {
 }
 
 // ResolveCohort maps a request's configuration identity onto its bounded cohort
-// bucket, for telemetry attribution on the paths that decline OUTSIDE admission
-// (the serve boundary's own pre-claim declines: no output schema, cancelled
-// context, plan mismatch, expired plan). It is pure — no FFI, no socket, no
-// recording — and it returns exactly what the gate itself resolved, so a decline
-// recorded by the serve boundary carries the same cohort label admission would
-// have used.
-func ResolveCohort(c CohortInput) CohortID { return c.resolvedGate().Resolve(c.Fingerprint) }
+// bucket for the surface it is being served on, for telemetry attribution on the
+// paths that decline OUTSIDE admission (the serve boundary's own pre-claim
+// declines: no output schema, cancelled context, plan mismatch, expired plan). It
+// is pure — no FFI, no socket, no recording — and it returns exactly what the gate
+// itself resolved, so a decline recorded by the serve boundary carries the same
+// cohort label admission would have used.
+//
+// The surface is a parameter for the same reason the gate takes one: an identity is
+// only that cohort on the surfaces its inventory record declares.
+func ResolveCohort(surface Surface, c CohortInput) CohortID {
+	return c.resolvedGate().Resolve(surface, c)
+}
