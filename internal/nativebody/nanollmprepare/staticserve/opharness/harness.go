@@ -88,7 +88,8 @@ func (s *Spy) LastDecline() (int64, string, string) {
 func NewSpy(t *testing.T) *Spy {
 	t.Helper()
 	reg := prometheus.NewRegistry()
-	// Serving-cutover S1: the shipped cohort policy enrolls nothing, so the plain
+	// Serving-cutover S1: the shipped cohort policy enrolls no STATIC surface — S3b
+	// enrolls the dynamic unary call surface only — so the plain
 	// NewStaticServe factory declines every call pre-socket. These operator-route
 	// proofs are about the SERVE pipeline behind that gate, so the harness presents
 	// the enrolled proof identity.

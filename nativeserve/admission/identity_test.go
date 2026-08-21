@@ -486,10 +486,14 @@ func TestAnUndeclaredFingerprintIsRefused(t *testing.T) {
 	}
 }
 
-// TestSealedIdentityStillDeclinesUnderTheEmptyPolicy is the S3a serving guarantee in
-// the gate's own terms: a request that DOES resolve a sealed identity still
-// declines, because sealing is not enrolling and the shipped policy enrolls nothing.
-func TestSealedIdentityStillDeclinesUnderTheEmptyPolicy(t *testing.T) {
+// TestSealedButUnenrolledIdentityStillDeclines is the S3a serving guarantee in the
+// gate's own terms, and after serving cutover S3b it is a sharper statement rather
+// than a weaker one: a request that DOES resolve a sealed identity still declines,
+// because SEALING IS NOT ENROLLING. The class sealed here is `cfg001`, a declared
+// but UNENROLLED slot, so the shipped policy — which now permits exactly one tuple —
+// refuses it on every surface, and it folds onto the bounded `unrecognized` bucket
+// rather than inheriting the approved cohort.
+func TestSealedButUnenrolledIdentityStillDeclines(t *testing.T) {
 	id := ResolveConfigIdentity(selectionOver(sealedRegistry(t)))
 	if id.Fingerprint != approvedFingerprint {
 		t.Fatalf("the sealed configuration resolved %+v; the rest of this test would be vacuous", id)

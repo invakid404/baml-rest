@@ -411,20 +411,54 @@ func (s *Server) toStaticAdmissionInput(inv bamlutils.NativeStaticInvocation) ad
 }
 
 // staticCohortInput is the SINGLE definition of a static invocation's
-// serving-cutover configuration identity — the static twin of serveCohortInput. It
-// assigns NONE, so every static request resolves to admission.CohortNone and declines
-// before native work.
+// serving-cutover configuration identity — the static twin of serveCohortInput, and
+// it resolves the SAME way, from the SAME resolver, over the SAME trusted seal.
 //
-// Serving cutover S3a deliberately does NOT wire the effective-configuration identity
-// resolver here. The identity work exists to make ONE surface enrollable — the dynamic
-// unary `/call` surface — and resolving an identity on a surface no policy will enroll
-// would widen what carries a configuration identity without widening what may claim.
-// The narrow direction is the safe one, and it is the direction the scope asks for:
-// this lane presents no identity and therefore cannot be admitted by any policy,
-// enrolled or not.
+// # Why it resolves an identity on a surface nothing enrolls
+//
+// S3a left this returning the zero identity, on the argument that resolving an
+// identity for a surface no policy will enroll widens what carries an identity
+// without widening what may claim. The first half of that is true and the second
+// half is what makes it safe — but it costs ATTRIBUTION, and attribution is what a
+// rollout is read from. With no identity, every static decline is the generic
+// "presented no configuration identity" one, so an operator (and a proof) cannot
+// tell "the deployment's approved configuration reached the static surface and the
+// gate refused it there" from "nothing identifiable ever arrived".
+//
+// So the identity is resolved here too, and it is resolved from exactly one fact
+// the request cannot manufacture: the TRUSTED-CONFIGURATION SEAL the worker's config
+// load applied to a client the DEPLOYMENT configured. This CANNOT widen what may
+// claim, and the reason is structural rather than a promise: an inventory record
+// declares the surfaces its class is approved for, and CohortGate.Resolve returns
+// that record's cohort ONLY on those surfaces. The shipped fe-v1 record declares
+// dynamic_call and nothing else, so a sealed fe-v1 configuration arriving here
+// resolves the reserved, NON-ENROLLABLE `unrecognized` bucket — a bucket
+// CohortPolicy refuses to enroll at construction — and still declines at the cohort
+// stage before any native work. What changes is only which of the three refusal
+// shapes the metric records, which is the point.
+//
+// s.cohort remains the one exception and is not a production path: the gated proof
+// suites build their server through the `nanollm_integration`-tagged constructor
+// with a fixed enrolled identity. Every untagged factory leaves it zero.
 func (s *Server) staticCohortInput(inv bamlutils.NativeStaticInvocation) admission.CohortInput {
-	_ = inv
-	return s.cohort
+	if s.cohort.Assigned() {
+		return s.cohort
+	}
+	id := admission.ResolveConfigIdentity(admission.ConfigSelection{
+		Registry:         inv.Registry,
+		ResolvedProvider: inv.Provider,
+		SelectedLeaf:     inv.ClientOverride,
+		SingleLeaf:       inv.SingleLeaf,
+		HasFallbackChain: inv.HasFallbackChain,
+		HasRoundRobin:    inv.HasRoundRobin,
+		// The same truthful narrowing conditions the dynamic seam threads: a retry
+		// override means the effective selected leaf is not one proven answer, and a
+		// seam carrying no BAML no-send plan builder could never satisfy the strict
+		// plan equality an enrolled class requires, so it is never given an identity.
+		HasRequestRetryOverride: inv.HasRequestRetryOverride,
+		HasBAMLPlanOracle:       inv.BuildBAMLRequest != nil,
+	})
+	return admission.CohortInput{Fingerprint: id.Fingerprint, Provider: id.Provider}
 }
 
 // recordStaticServeTerminal is the static twin of recordServeTerminal: exactly one

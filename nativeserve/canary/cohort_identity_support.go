@@ -6,10 +6,13 @@ package canary
 //
 // # Why these are behind a build tag
 //
-// The shipped policy enrolls nothing, so a server built by the ordinary constructors
-// declines every request pre-socket. The gated end-to-end proofs still have to
-// exercise the SERVE pipeline behind that gate, so they build their server with an
-// enrolled proof identity instead of weakening the gate.
+// The shipped policy enrolls exactly ONE tuple — the fe-v1 class on the dynamic
+// unary call surface (serving cutover S3b) — reachable only by a request whose
+// effective configuration the DEPLOYMENT sealed. So a server built by the ordinary
+// constructors declines every other request pre-socket, and the static/stream lanes
+// decline unconditionally. The gated end-to-end proofs still have to exercise the
+// SERVE pipeline behind that gate on those surfaces, so they build their server with
+// an enrolled proof identity instead of weakening the gate.
 //
 // A cold review of the first draft found these constructors shipping UNTAGGED in the
 // public module, alongside an exported gate-override field. Together they were a

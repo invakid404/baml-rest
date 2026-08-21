@@ -185,10 +185,11 @@ func newStaticObserve(reg prometheus.Registerer, identity admission.CohortInput)
 	return func(ctx context.Context, inv bamlutils.NativeStaticInvocation) bamlutils.NativeStaticResult {
 		si := admission.StaticInput{
 			// Serving-cutover S1: production passes the zero configuration identity here,
-			// exactly like the serve lanes, so the observer declines at the default-deny
-			// gate while nothing is enrolled. It gets no exception for being no-send: an
-			// "observe" gate that enrolled every surface would be a second non-empty
-			// admission policy inside S1, which is precisely what the slice forbids.
+			// exactly like the static serve lanes, so the observer declines at the
+			// default-deny gate — and nothing is enrolled on a static surface anyway. It
+			// gets no exception for being no-send: an "observe" gate that enrolled every
+			// surface would be a second admission policy alongside the shipped one, which
+			// is precisely what the cutover forbids.
 			Cohort:                  identity,
 			WorkerCapable:           true,
 			RequestAPIPresent:       true,

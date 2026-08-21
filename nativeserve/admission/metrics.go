@@ -369,7 +369,7 @@ func newMetrics(reg prometheus.Registerer, reuse bool) (*Metrics, error) {
 		}, []string{"fingerprint", "cohort", "surface", "provider", "approval"}),
 		policyInfo: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "baml_rest_debaml_cohort_policy_info",
-			Help: "de-BAML cohort policy: the number of (surface, cohort) enrollments the named policy version permits. 0 means DEFAULT-DENY with nothing enrolled, which is what serving-cutover S1 ships.",
+			Help: "de-BAML cohort policy: the number of (surface, cohort) enrollments the named policy version permits. 0 means DEFAULT-DENY with nothing enrolled (what serving-cutover S1 shipped); serving-cutover S3b ships 1 — the fe-v1 strict-OpenAI class on the dynamic unary call surface.",
 		}, []string{"version"}),
 	}
 	// Register every collector in a fixed order, rolling back the ones already
@@ -446,24 +446,50 @@ func newMetrics(reg prometheus.Registerer, reuse bool) (*Metrics, error) {
 	m.nativeSockets.WithLabelValues(string(SocketFlagOff), string(NativeSocketResponded))
 	m.nativeSockets.WithLabelValues(string(SocketFlagOff), string(NativeSocketTransportError))
 	// Pre-initialize the ROLLOUT-STOP series to zero for the same reason: operational
-	// invariant 4 says a NON-ENROLLED surface reporting a native claim (or a native
-	// win) is a rollout-stop event, and an alert on `increase(...) > 0` must be
-	// well-defined from the first scrape rather than only after the violation it is
-	// meant to catch. Every (surface, reserved-cohort) pair is pre-initialized for
-	// phase=claimed and winner=native. No code path can increment them while the
-	// policy is empty — that is exactly what the alert watches for.
+	// invariant 4 says a NON-ENROLLED (surface, cohort) pair reporting a native claim
+	// (or a native win) is a rollout-stop event, and an alert on `increase(...) > 0`
+	// must be well-defined from the first scrape rather than only after the violation
+	// it is meant to catch.
+	//
+	// Two families of pair are pre-initialized, and between them they cover every
+	// rollout-stop shape the shipped policy makes possible:
+	//
+	//   - every (surface, RESERVED cohort) pair. The reserved outcomes `none` and
+	//     `unrecognized` can never be enrolled at all, so a claim under either is a
+	//     violation on any surface, on any policy, forever.
+	//   - every (surface, ENROLLED cohort) pair the policy does NOT enroll. Serving
+	//     cutover S3b enrolls fe_v1 on dynamic_call only, so a claim by fe_v1 on
+	//     dynamic_stream / static call or stream / direct parse is exactly the
+	//     "enrollment leaked onto another surface" event invariant 4 names — and
+	//     before S3b there was no enrolled cohort for that series to exist under.
+	//
+	// The pair that IS enrolled is deliberately NOT pre-initialized here: it is a
+	// legitimate series that the first served request creates, and seeding it to zero
+	// would make "this worker has served nothing yet" and "this worker serves this
+	// cohort" indistinguishable on a dashboard.
+	rolloutStop := func(surface Surface, cohort CohortID) {
+		m.admissionPhase.WithLabelValues(surface.Label(), string(cohort), string(PhaseClaimed))
+		m.winner.WithLabelValues(surface.Label(), string(cohort), string(WinnerNative))
+	}
 	for _, surface := range AllSurfaces() {
 		for _, cohort := range reservedCohortIDs() {
-			m.admissionPhase.WithLabelValues(surface.Label(), string(cohort), string(PhaseClaimed))
-			m.winner.WithLabelValues(surface.Label(), string(cohort), string(WinnerNative))
+			rolloutStop(surface, cohort)
+		}
+	}
+	for _, e := range ProductionCohortGate().Policy().Enrollments() {
+		for _, surface := range AllSurfaces() {
+			if surface == e.Surface {
+				continue
+			}
+			rolloutStop(surface, e.Cohort)
 		}
 	}
 	// Publish the SHIPPED production gate: the deployment's DECLARED configuration
 	// inventory (one operator-visible row per declared record × surface) and the
 	// versioned policy's enrollment count. An operator scraping a native-capable
 	// worker sees both halves — which classes are declared, and that
-	// "policy s1-default-deny-empty enrolls 0" — rather than inferring default-deny
-	// from the absence of data.
+	// "policy s3b-fe-v1-dynamic-call enrolls 1" — rather than inferring the rollout
+	// state from the absence of data.
 	//
 	// A config-load failure is surfaced HERE, as the constructor's error, because
 	// this is the first production call that needs the gate and its caller is a
