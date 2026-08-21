@@ -76,7 +76,7 @@
 // the pins were moved here. Pin to a branch commit only if unavoidable, and re-pin to the
 // merged master commit as the immediate follow-up.
 //
-// PIN-STATUS: RESOLVED
+// PIN-STATUS: OUTSTANDING
 //
 // That marker is the MACHINE-READABLE statement of where these pins stand, and
 // cmd/build's TestPackagedManifestsMatchTheTrackedPins requires it to equal the
@@ -92,22 +92,22 @@
 // go get/build/run) — is nativeserve/pin_followup.md, section "The follow-up —
 // OWED". Follow it there; do not reconstruct it from these paragraphs.
 //
-// NOTE (de-BAML serving cutover S3a): these pins are now MASTER-DURABLE and the tracked
-// follow-up in nativeserve/pin_followup.md is therefore STATUS: RESOLVED. They name
-// 2f2e13c6dadb, the master squash-merge of #681, the commit that introduces the trusted
-// effective-configuration identity resolver this module's serve path now runs. They were
-// BRANCH-ONLY only until that squash landed — the symbols are introduced by this very
-// change, so no master commit carried them until the merge — and the IMMEDIATE post-squash
-// re-pin runbook named above has been performed, moving all five selections off the branch
-// commit onto the master squash commit and regenerating the tar.
+// NOTE (de-BAML serving cutover S3b): these pins are BRANCH-ONLY and the tracked
+// follow-up in nativeserve/pin_followup.md is therefore STATUS: OUTSTANDING. They name
+// 4a6c8f1ee571 on feat/debaml-s3b-enroll, the S3b source commit — the commit that
+// enrolls the one fe-v1 strict-OpenAI class on the dynamic unary call surface and adds
+// the approved-verification-regime check this module's serve path now runs. They cannot
+// name master yet: the symbols and the enrollment are introduced by this very change, so
+// no master commit carries them until the squash-merge. RE-PINNING ALL FIVE TO THE MASTER
+// SQUASH COMMIT IS THE MANDATORY IMMEDIATE FOLLOW-UP — a pre-squash pseudo-version is not
+// the final delivery state, and the squash flattens this SHA out of history.
 //
 // HISTORICAL, SUPERSEDED — the SHAs in this paragraph are not the current pins:
-// S3a's pins were briefly BRANCH-ONLY at 9f4cfe14e878 on feat/debaml-s3a-identity before
-// #681 squash-merged them to master as 2f2e13c6dadb; the previous instance of this note
-// recorded S2's pins at c676a4dacc90 (#677), the master squash-merge of the S2 cutover,
-// after its own branch-only pin at e38f7effd633 was re-pinned post-merge; S1's were at
-// de1eefa68ed8 (#675) after 7cb69af02b36. That branch-pin-then-re-pin sequence is the
-// precedent this bump repeats.
+// the previous instance of this note recorded S3a's pins at 2f2e13c6dadb (#681), the
+// master squash-merge of the S3a identity resolver, after its own branch-only pin at
+// 9f4cfe14e878 was re-pinned post-merge; before that S2's were at c676a4dacc90 (#677)
+// after e38f7effd633, and S1's at de1eefa68ed8 (#675) after 7cb69af02b36. That
+// branch-pin-then-re-pin sequence is the precedent this bump repeats.
 //
 // This bump carries real cross-module behaviour, not a version string. S2 changes BOTH
 // sides of the graph. The root side gains internal/artifactprofile and the
@@ -139,9 +139,9 @@ go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260821064630-2f2e13c6dadb
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260821064630-2f2e13c6dadb
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260821064630-2f2e13c6dadb
+	github.com/invakid404/baml-rest v0.0.0-20260821153139-4a6c8f1ee571
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260821153139-4a6c8f1ee571
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260821153139-4a6c8f1ee571
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/viktordanov/nanollm-ffi/go v0.4.3
