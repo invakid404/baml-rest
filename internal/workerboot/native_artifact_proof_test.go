@@ -24,8 +24,14 @@ import (
 //
 //   - the startup profile signal and the RELEASE ARTIFACT ID the build computed
 //     (not merely a well-formed one — the exact expected value);
-//   - flag-ON with the shipped empty cohort policy: the artifact boots, serves,
-//     and has enrolled NOTHING and claimed NOTHING, so BAML owns all traffic;
+//   - flag-ON with the shipped cohort policy: the artifact boots, serves, and has
+//     claimed NOTHING — an artifact built from a checkout has an EMPTY BAML method
+//     table, so it is sent no request and nothing can have claimed. Serving cutover
+//     S3b enrolled ONE tuple, so the enrollment COUNT is asserted against the
+//     shipped manifest rather than against zero; the deployed-route proof that a
+//     request in that cohort is actually served natively is
+//     cmd/serve/native_artifact_route_proof_test.go, which boots a fixture with a
+//     real method table and POSTs to `/call`;
 //   - flag-OFF: zero native runtime init and zero native factories — observable
 //     as the total absence of every de-BAML admission collector, because each of
 //     them is registered by a factory that only exists in the flag-on branch.
@@ -41,6 +47,18 @@ import (
 // the whole native-artifact proof ran as a green skip, and a real flag-off
 // kill-switch failure on cmd/worker-shadow shipped underneath it. Missing env is
 // now a FAILURE: this file cannot report success without having booted something.
+
+// wantShippedEnrollments is the number of (surface, cohort) pairs the SHIPPED
+// cohort policy permits. Serving cutover S1/S2 shipped 0; S3b enrolls exactly one
+// — the fe-v1 strict-OpenAI class on the dynamic unary call surface.
+//
+// It is a literal rather than an import because this module is pure Go and
+// nativeserve is a separate, cgo-linked, out-of-go.work module. Keeping it exact
+// (rather than ">= 0") is the point: this proof is where a packaged artifact that
+// quietly gained a second enrollment is caught, and the shipped manifest's own
+// exactness is pinned next to the manifest itself, by
+// nativeserve/admission's TestProductionManifestsAreTheOneFeV1TupleAndTheBuilderIsTheOnlyPath.
+const wantShippedEnrollments = 1
 
 // The artifacts under proof, and where the lane hands them over.
 const (
@@ -175,12 +193,19 @@ func TestNativeCapableArtifactAttestsItselfAndServesNothingNatively(t *testing.T
 				t.Errorf("metric profile = %q, want native_capable", got)
 			}
 
-			// THE NO-ENROLLMENT PROOF. The shipped cohort policy permits zero
-			// (surface, cohort) pairs, so nothing can claim; and nothing HAS
-			// claimed, which is what the counters below show.
+			// THE ENROLLMENT the artifact actually ships, read off its own gauge.
+			// Serving cutover S3b enrolls exactly ONE (surface, cohort) pair, so this
+			// is count-exact rather than zero: an artifact publishing two would be
+			// carrying an enrollment nobody reviewed, and one publishing zero would
+			// mean the shipped policy did not reach the packaged binary at all.
+			//
+			// Enrolling is not claiming. This artifact is sent NO request — its BAML
+			// method table is empty until a container build generates a client — so
+			// nothing can have claimed, which is what the counters below show.
 			policy := gatheredMetric(t, booted, "baml_rest_debaml_cohort_policy_info")
-			if got := policy.GetGauge().GetValue(); got != 0 {
-				t.Errorf("shipped cohort policy enrolls %v (surface, cohort) pairs, want 0; S2 must not enroll anything", got)
+			if got := policy.GetGauge().GetValue(); got != wantShippedEnrollments {
+				t.Errorf("shipped cohort policy enrolls %v (surface, cohort) pair(s), want %v — the packaged artifact does not carry the reviewed enrollment",
+					got, wantShippedEnrollments)
 			}
 			assertNoNativeClaims(t, booted)
 		})
@@ -317,7 +342,7 @@ func assertNoNativeClaims(t *testing.T, b *bootedWorker) {
 		for _, m := range mf.Metric {
 			checked++
 			if v := m.GetCounter().GetValue(); v != 0 {
-				t.Errorf("de-BAML counter %s is %v on a freshly booted artifact; nothing may be claimed while the cohort policy is empty", mf.GetName(), v)
+				t.Errorf("de-BAML counter %s is %v on a freshly booted artifact that was sent no request; nothing may be claimed before a request arrives", mf.GetName(), v)
 			}
 		}
 	}

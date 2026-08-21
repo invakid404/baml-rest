@@ -98,29 +98,40 @@ func TestConfigLoadCanDeclareButNeverEnroll(t *testing.T) {
 		surfaces = append(surfaces, s.Label())
 	}
 	all := strings.Join(surfaces, "|")
+	declaredByConfig := 0
 	for i, fp := range declaredConfigFingerprints() {
+		// The one ASSIGNED slot is skipped: the compile-time manifest already declares
+		// it, and a spec that re-declared it would be refused as a duplicate
+		// fingerprint rather than exercising this path. That refusal is a property in
+		// its own right, proved by
+		// TestConfigurationCannotRedeclareOrShadowTheEnrolledSlot below.
+		if fp == FeV1ConfigFingerprint {
+			continue
+		}
 		spec = append(spec, string(fp)+":declared_"+string(rune('a'+i))+":"+all+":openai:DEBAML-1")
+		declaredByConfig++
 	}
 
-	inv, err := LoadDeclaredInventory(strings.Join(spec, ","))
+	loaded, err := LoadDeclaredInventory(strings.Join(spec, ","))
 	if err != nil {
 		t.Fatalf("LoadDeclaredInventory: %v", err)
 	}
-	if inv.Len() != len(declaredConfigFingerprints()) {
-		t.Fatalf("declared %d records, want %d", inv.Len(), len(declaredConfigFingerprints()))
+	if loaded.Len() != declaredByConfig {
+		t.Fatalf("declared %d records, want %d", loaded.Len(), declaredByConfig)
 	}
 
-	// Bound to the SHIPPED enrollment manifest, exactly as the production gate is.
-	pol, err := newCohortPolicy(ProductionCohortPolicyVersion, productionEnrollments()...)
-	if err != nil {
-		t.Fatalf("policy: %v", err)
-	}
-	gate, err := newCohortGate(pol, inv)
+	// Bound to the SHIPPED manifests, exactly as the production gate is: the
+	// compile-time inventory (which substantiates the one enrollment) PLUS everything
+	// configuration declared. This mirrors loadProductionInventory, so what is proved
+	// below is proved about the real composition rather than about a config-only gate.
+	gate, err := buildCohortGate(ProductionCohortPolicyVersion,
+		append(append([]ConfigRecord(nil), productionInventoryRecords()...), loaded.Records()...),
+		productionEnrollments())
 	if err != nil {
 		t.Fatalf("gate: %v", err)
 	}
 
-	for _, r := range inv.Records() {
+	for _, r := range loaded.Records() {
 		in := CohortInput{Fingerprint: r.Fingerprint, Provider: r.Provider, gate: gate}
 		// The declaration WORKS — the identity resolves to its declared cohort on a
 		// surface the record declares, so the decline stays attributable and the
@@ -134,6 +145,49 @@ func TestConfigLoadCanDeclareButNeverEnroll(t *testing.T) {
 				t.Fatalf("%s on %s was ADMITTED by a config-declared record: configuration must never enroll", r.Fingerprint, s.Label())
 			}
 		}
+	}
+
+	// The control that makes the sweep above mean something now that the policy is
+	// NOT empty: the compile-time fe-v1 tuple IS admitted through this very gate. A
+	// gate that refused everything would satisfy the loop without proving that
+	// CONFIGURATION is the thing that cannot enroll.
+	feV1 := CohortInput{Fingerprint: FeV1ConfigFingerprint, Provider: ConfigProviderOpenAI, gate: gate}
+	if _, d := admitCohort(SurfaceDynamicCall, feV1); d != nil {
+		t.Fatalf("the compile-time fe-v1 tuple was declined through the config-load gate (%v); the sweep above proves nothing if nothing can be admitted", d)
+	}
+}
+
+// TestConfigurationCannotRedeclareOrShadowTheEnrolledSlot is the other half of "a
+// deployment cannot enroll itself": now that ONE slot is enrolled by the compile-time
+// manifest, configuration must not be able to REDESCRIBE it either — pointing the
+// enrolled slot at a different cohort, a different provider class or extra surfaces
+// through the environment would be an enrollment change made from configuration.
+//
+// The composition fails LOUDLY rather than resolving a winner, and fail-loud is the
+// correct behaviour rather than merely the convenient one: a silent "compiled record
+// wins" would leave an operator reading a declaration that does nothing, and a silent
+// "declared record wins" would be the second rollout switch the cutover forbids.
+func TestConfigurationCannotRedeclareOrShadowTheEnrolledSlot(t *testing.T) {
+	for _, spec := range []struct {
+		name string
+		row  string
+	}{
+		{"same slot, different cohort", string(FeV1ConfigFingerprint) + ":other_cohort:dynamic_call:openai:DEBAML-1"},
+		{"same slot, same cohort", string(FeV1ConfigFingerprint) + ":" + string(FeV1Cohort) + ":dynamic_call:openai:DEBAML-1"},
+		{"same slot, more surfaces", string(FeV1ConfigFingerprint) + ":" + string(FeV1Cohort) + ":dynamic_call|dynamic_stream:openai:DEBAML-1"},
+		{"different slot, the ENROLLED cohort", "cfg001:" + string(FeV1Cohort) + ":dynamic_call:openai:DEBAML-1"},
+	} {
+		t.Run(spec.name, func(t *testing.T) {
+			loaded, err := parseInventorySpec(spec.row)
+			if err != nil {
+				t.Fatalf("parseInventorySpec: %v", err)
+			}
+			if _, err := buildCohortGate(ProductionCohortPolicyVersion,
+				append(append([]ConfigRecord(nil), productionInventoryRecords()...), loaded...),
+				productionEnrollments()); err == nil {
+				t.Fatal("a declaration that redescribes the ENROLLED slot was accepted; configuration must not be able to change an enrollment")
+			}
+		})
 	}
 }
 
@@ -193,8 +247,9 @@ func TestDeclaredInventoryIsPublishedAndStaysBounded(t *testing.T) {
 }
 
 // TestProductionGateReflectsTheConfigLoadPath pins that the shipped gate really is
-// the product of the config-load path rather than a hardcoded empty value, and that
-// the ambient (undeclared) deployment therefore publishes nothing.
+// the product of the config-load path rather than a hardcoded value, and that the
+// ambient (undeclared) deployment therefore publishes exactly the compile-time fe-v1
+// record and nothing else.
 func TestProductionGateReflectsTheConfigLoadPath(t *testing.T) {
 	if err := ProductionCohortGateError(); err != nil {
 		t.Fatalf("the ambient config load failed: %v", err)
@@ -206,18 +261,20 @@ func TestProductionGateReflectsTheConfigLoadPath(t *testing.T) {
 	if got, want := ProductionCohortGate().Inventory().Len(), loaded.Len(); got != want {
 		t.Fatalf("the shipped gate declares %d records, the config-load path yields %d; the gate is not built from it", got, want)
 	}
-	// This build declares nothing (no ConfigInventoryEnv, empty compile-time manifest),
-	// which is the shipped S1 state.
-	if got := ProductionCohortGate().Inventory().Len(); got != 0 {
-		t.Errorf("the ambient deployment declares %d records, want 0", got)
+	// This build sets no ConfigInventoryEnv, so the ambient inventory is exactly the
+	// compile-time manifest: the one fe-v1 record, and one enrollment.
+	if got := ProductionCohortGate().Inventory().Len(); got != len(productionInventoryRecords()) {
+		t.Errorf("the ambient deployment declares %d records, want %d (the compile-time manifest alone)", got, len(productionInventoryRecords()))
 	}
-	if got := ProductionCohortGate().Policy().Len(); got != 0 {
-		t.Errorf("the shipped policy enrolls %d, want 0", got)
+	if got := ProductionCohortGate().Policy().Len(); got != len(productionEnrollments()) {
+		t.Errorf("the shipped policy enrolls %d, want %d", got, len(productionEnrollments()))
 	}
-	// And nothing it can declare is enrollable anyway.
+	// A request presenting NO identity — which is what every request on a deployment
+	// that sealed nothing presents — is still refused on every surface. Enrollment
+	// changed WHICH identity may claim, never whether an identity is needed.
 	for _, s := range AllSurfaces() {
 		if _, d := admitCohort(s, CohortInput{}); d == nil {
-			t.Errorf("%s: the shipped gate admitted the production identity", s.Label())
+			t.Errorf("%s: the shipped gate admitted a request carrying no configuration identity", s.Label())
 		}
 	}
 	_ = context.Background()

@@ -12,6 +12,7 @@ package admission
 import (
 	"context"
 	"go/ast"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -131,6 +132,13 @@ func driveEveryLaneOnce(t *testing.T, m *Metrics, reg *bamlutils.ClientRegistry)
 // carry, derived from the declared enums plus the published inventory buckets. It is
 // built from the SAME sources the recorders use, so adding an enum value updates
 // both sides; adding a free-form label updates neither and fails the check.
+//
+// The SHIPPED gate's buckets are always included, on top of whichever gate the caller
+// is publishing. That is not a loophole — it is what NewMetrics actually does: it
+// publishes ProductionCohortGate() and pre-initializes the rollout-stop series for
+// the shipped policy's enrolled cohorts, so every registry carries those buckets
+// whatever a test publishes afterwards. Before serving cutover S3b the shipped gate
+// was empty and the distinction did not arise.
 func allowedLabelValues(gate *CohortGate) map[string]bool {
 	allow := map[string]bool{}
 	add := func(vs ...string) {
@@ -138,15 +146,19 @@ func allowedLabelValues(gate *CohortGate) map[string]bool {
 			allow[v] = true
 		}
 	}
+	addGate := func(g *CohortGate) {
+		for _, r := range g.Inventory().Records() {
+			add(string(r.Fingerprint), string(r.Cohort), string(r.Provider), string(r.Approval))
+		}
+		add(g.Policy().Version())
+	}
 	for _, s := range AllSurfaces() {
 		add(s.Label())
 	}
 	add(surfaceLabelInvalid)
 	add(string(CohortNone), string(CohortUnrecognized))
-	for _, r := range gate.Inventory().Records() {
-		add(string(r.Fingerprint), string(r.Cohort), string(r.Provider), string(r.Approval))
-	}
-	add(gate.Policy().Version())
+	addGate(gate)
+	addGate(ProductionCohortGate())
 	add(string(PhasePreclaimDecline), string(PhaseClaimed), string(PhasePostclaimTerminal), string(PhaseSameResponseOracle))
 	add(string(WinnerBAMLTransport), string(WinnerNative), string(WinnerBAMLParseSameResponse), string(WinnerFailure))
 	add(string(ModeCall), string(ModeCallWithRaw), string(ModeStream), string(ModeStreamWithRaw), string(ModeUnknown))
@@ -386,14 +398,27 @@ func TestFreshMetricsAdvertiseDefaultDeny(t *testing.T) {
 	if policy == nil || len(policy.GetMetric()) != 1 {
 		t.Fatalf("cohort_policy_info: want exactly one series, got %v", policy)
 	}
-	if got := policy.GetMetric()[0].GetGauge().GetValue(); got != 0 {
-		t.Fatalf("cohort_policy_info = %v, want 0 enrollments", got)
+	// Serving cutover S3b: the shipped policy enrolls EXACTLY the one fe-v1 tuple, so
+	// a fresh scrape advertises 1 — not 0, and not "however many". The count is read
+	// from the manifest rather than hardcoded, so this stays a statement about "the
+	// gauge publishes what the policy says" while the exactness of the policy itself
+	// is pinned by TestProductionManifestsAreTheOneFeV1TupleAndTheBuilderIsTheOnlyPath.
+	if got, want := policy.GetMetric()[0].GetGauge().GetValue(), float64(len(productionEnrollments())); got != want {
+		t.Fatalf("cohort_policy_info = %v, want %v enrollment(s)", got, want)
 	}
 	if got := policy.GetMetric()[0].GetLabel()[0].GetValue(); got != ProductionCohortPolicyVersion {
 		t.Fatalf("cohort_policy_info version = %q, want %q", got, ProductionCohortPolicyVersion)
 	}
-	if inv := families["baml_rest_debaml_config_inventory_info"]; inv != nil && len(inv.GetMetric()) != 0 {
-		t.Fatalf("config_inventory_info has %d series, want none for the empty S1 inventory", len(inv.GetMetric()))
+	// One operator-visible row per declared record × declared surface. The fe-v1
+	// record declares ONE surface, so a second row here would mean the shipped record
+	// quietly gained a surface — which is half of an unreviewed enrollment.
+	inv := families["baml_rest_debaml_config_inventory_info"]
+	wantRows := 0
+	for _, r := range productionInventoryRecords() {
+		wantRows += len(r.Surfaces)
+	}
+	if inv == nil || len(inv.GetMetric()) != wantRows {
+		t.Fatalf("config_inventory_info has %d series, want %d (one per declared record × surface)", len(inv.GetMetric()), wantRows)
 	}
 
 	phase := families["baml_rest_debaml_admission_phase_total"]
@@ -401,6 +426,7 @@ func TestFreshMetricsAdvertiseDefaultDeny(t *testing.T) {
 		t.Fatal("admission_phase_total was not pre-initialized")
 	}
 	claimedSeries := 0
+	enrolledPairSeeded := false
 	for _, m := range phase.GetMetric() {
 		labels := map[string]string{}
 		for _, lp := range m.GetLabel() {
@@ -413,9 +439,25 @@ func TestFreshMetricsAdvertiseDefaultDeny(t *testing.T) {
 		if got := m.GetCounter().GetValue(); got != 0 {
 			t.Errorf("pre-initialized claimed series %v = %v, want 0", labels, got)
 		}
+		for _, e := range productionEnrollments() {
+			if labels["surface"] == e.Surface.Label() && labels["cohort"] == string(e.Cohort) {
+				enrolledPairSeeded = true
+			}
+		}
 	}
-	if want := len(AllSurfaces()) * len(reservedCohortIDs()); claimedSeries != want {
-		t.Fatalf("pre-initialized claimed series = %d, want %d (surface × reserved cohort)", claimedSeries, want)
+	// Every (surface × reserved cohort) pair, plus every surface an ENROLLED cohort
+	// is NOT enrolled on — the two rollout-stop shapes an `increase(...) > 0` alert
+	// has to be well-defined over from the first scrape.
+	want := len(AllSurfaces()) * len(reservedCohortIDs())
+	want += len(productionEnrollments()) * (len(AllSurfaces()) - 1)
+	if claimedSeries != want {
+		t.Fatalf("pre-initialized claimed series = %d, want %d (surface × reserved cohort, plus each enrolled cohort's non-enrolled surfaces)", claimedSeries, want)
+	}
+	// The ENROLLED pair must NOT be seeded: it is a legitimate series a served
+	// request creates, and seeding it would make "served nothing yet" and "serves
+	// this cohort" read identically on a dashboard.
+	if enrolledPairSeeded {
+		t.Error("the ENROLLED (surface, cohort) pair was pre-initialized; a rollout-stop seed must cover only pairs that may never claim")
 	}
 }
 
@@ -905,15 +947,58 @@ func TestDeclaredButUnenrolledRecordIsVisibleAndStillDeclines(t *testing.T) {
 	}
 }
 
-// TestProductionManifestsAreEmptyAndTheBuilderIsTheOnlyPath pins the S1 shipped state
-// at its source — the two manifests — rather than at the gate they produce, and pins
-// that the gate really is built from them.
-func TestProductionManifestsAreEmptyAndTheBuilderIsTheOnlyPath(t *testing.T) {
-	if got := len(productionInventoryRecords()); got != 0 {
-		t.Errorf("the production inventory manifest declares %d record(s); S1 declares none", got)
+// TestProductionManifestsAreTheOneFeV1TupleAndTheBuilderIsTheOnlyPath pins the
+// SHIPPED enrollment at its source — the two manifests — rather than at the gate they
+// produce, and pins that the gate really is built from them.
+//
+// It is written field-by-field and count-exact on purpose. This is the diff that
+// permits native traffic to exist at all, so "one record, one enrollment, these exact
+// values" has to be a test rather than a review promise: adding a second record,
+// widening the record's surfaces, switching the provider class, dropping the strict
+// verification regime, or enrolling a second pair each fail here.
+func TestProductionManifestsAreTheOneFeV1TupleAndTheBuilderIsTheOnlyPath(t *testing.T) {
+	records := productionInventoryRecords()
+	if len(records) != 1 {
+		t.Fatalf("the production inventory manifest declares %d record(s); the cutover declares exactly 1 (fe-v1)", len(records))
 	}
-	if got := len(productionEnrollments()); got != 0 {
-		t.Errorf("the production enrollment manifest has %d entr(ies); S1 enrolls none", got)
+	got := records[0]
+	want := ConfigRecord{
+		Fingerprint:  FeV1ConfigFingerprint,
+		Cohort:       FeV1Cohort,
+		Surfaces:     []Surface{SurfaceDynamicCall},
+		Provider:     ConfigProviderOpenAI,
+		Verification: VerificationStrictOpenAI,
+		Approval:     FeV1Approval,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("the fe-v1 record is %+v, want %+v", got, want)
+	}
+	// Spelled out again as the values a reviewer reads, so a future edit to the
+	// constants themselves cannot silently satisfy the DeepEqual above.
+	if got.Fingerprint != "cfg100" || got.Cohort != "fe_v1" || got.Provider != "openai" {
+		t.Errorf("the fe-v1 record's opaque identity drifted: fingerprint=%q cohort=%q provider=%q", got.Fingerprint, got.Cohort, got.Provider)
+	}
+	if got.Verification != VerificationStrictOpenAI {
+		t.Errorf("the fe-v1 record declares the %s verification regime; fe-v1 is enrolled under strict_openai, which is what runs BOTH retained BAML oracles", got.Verification.Label())
+	}
+
+	enrollments := productionEnrollments()
+	if len(enrollments) != 1 {
+		t.Fatalf("the production enrollment manifest has %d entr(ies); the cutover enrolls exactly 1", len(enrollments))
+	}
+	if enrollments[0] != (CohortEnrollment{Surface: SurfaceDynamicCall, Cohort: FeV1Cohort}) {
+		t.Fatalf("the enrollment is %+v, want (dynamic_call, fe_v1)", enrollments[0])
+	}
+	// Nothing else is enrolled, surface by surface — the assertion an operator
+	// actually cares about, stated over the closed set rather than over a count.
+	pol, err := newCohortPolicy(ProductionCohortPolicyVersion, enrollments...)
+	if err != nil {
+		t.Fatalf("production policy: %v", err)
+	}
+	for _, s := range AllSurfaces() {
+		if enrolled := pol.Enrolled(s, FeV1Cohort); enrolled != (s == SurfaceDynamicCall) {
+			t.Errorf("%s: fe_v1 enrolled = %v, want %v", s.Label(), enrolled, s == SurfaceDynamicCall)
+		}
 	}
 	// The shipped gate is exactly what the builder makes of those manifests.
 	rebuilt, err := buildCohortGate(ProductionCohortPolicyVersion, productionInventoryRecords(), productionEnrollments())

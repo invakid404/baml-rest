@@ -40,8 +40,10 @@ type Comparator struct {
 	metrics  *admission.Metrics
 	// cohort is the serving-cutover configuration identity this comparator presents.
 	// Production leaves it ZERO — the shadow gets no exception for being no-send —
-	// so the default-deny gate declines every comparison with cohort_not_enrolled
-	// while nothing is enrolled. Only this package's gated tests set it, through
+	// so the default-deny gate declines every comparison with cohort_not_enrolled.
+	// A zero identity resolves the RESERVED cohort `none`, which is non-enrollable by
+	// construction, so that holds against any policy including the shipped one, which
+	// since serving cutover S3b is no longer empty. Only this package's gated tests set it, through
 	// withCohortIdentity, to reach the plan-compare mechanics behind the gate.
 	cohort admission.CohortInput
 }
@@ -58,7 +60,8 @@ func NewComparator(m *admission.Metrics, exec *llmhttp.ExactExecutor) *Comparato
 // withCohortIdentity returns a copy of c that presents an explicit serving-cutover
 // configuration identity instead of the production (zero) one. The shadow profile a
 // worker installs goes through NewShadowFunc and therefore always presents the zero
-// identity, declining with cohort_not_enrolled while nothing is enrolled; only the
+// identity, which resolves the reserved, non-enrollable cohort `none` and declines
+// with cohort_not_enrolled whatever the policy enrolls; only the
 // gated proofs — which need to reach the plan-compare mechanics behind the gate —
 // select an identity, through NewComparatorWithCohortIdentity.
 func (c *Comparator) withCohortIdentity(identity admission.CohortInput) *Comparator {
@@ -202,9 +205,11 @@ func (c *Comparator) toAdmissionInput(req bamlutils.NativeShadowRequest) admissi
 		OutputSchema:            req.OutputSchema,
 		// Serving-cutover S1: the shadow comparator presents the production (zero)
 		// configuration identity, so it evaluates the same default-deny gate as every
-		// serving lane and declines with cohort_not_enrolled while nothing is enrolled.
-		// It is a no-send path, but "no-send" does not buy an exception: an enrolled
-		// observe cohort would be a second non-empty admission policy inside S1.
+		// serving lane and declines with cohort_not_enrolled — the zero identity
+		// resolves the reserved, non-enrollable cohort `none`, so that holds whatever
+		// the policy enrolls. It is a no-send path, but "no-send" does not buy an
+		// exception: an enrolled observe cohort would be a second admission policy
+		// alongside the shipped one.
 		Cohort: c.cohort,
 	}
 }

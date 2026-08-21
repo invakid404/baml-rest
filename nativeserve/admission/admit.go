@@ -82,10 +82,11 @@ type Input struct {
 	// gate it is evaluated against (layer 1b). The fingerprint is what
 	// [ConfigIdentityResolver] resolved for this request's effective selected
 	// configuration, or none; the gate half is always zero in production, and a nil
-	// gate selects the shipped EMPTY [ProductionCohortGate] — so every production
-	// request resolves to a cohort that policy does not enroll and declines with
-	// cohort_not_enrolled before any native work. See cohort.go for the whole
-	// contract.
+	// gate selects the shipped [ProductionCohortGate] — which enrolls exactly one
+	// (surface, cohort) tuple, so every production request except a proven fe-v1
+	// dynamic unary call resolves to a cohort that policy does not enroll and
+	// declines with cohort_not_enrolled before any native work. See cohort.go for
+	// the whole contract.
 	Cohort CohortInput
 }
 
@@ -312,9 +313,11 @@ func (a *Admitter) admitCore(ctx context.Context, in Input, recordAdmitted, stre
 	// nanollm New, no render, no Prepare, no claim, hence no socket) happens for a
 	// configuration class that is not enrolled. The surface is DERIVED from the lane
 	// (unary vs stream), never read from the Input, so a caller cannot claim a
-	// surface it is not on. With S1's EMPTY production policy this declines every
-	// request that reaches it; it can only NARROW — no existing predicate moved or
-	// relaxed, and a flag-off / wrong-route / wrong-mode request still reports its
+	// surface it is not on. Under the shipped policy it admits exactly one tuple —
+	// the fe-v1 class on the dynamic unary call surface (serving cutover S3b) — and
+	// declines everything else that reaches it. It can only NARROW: no existing
+	// predicate moved or relaxed, every layer below still runs for an admitted
+	// cohort, and a flag-off / wrong-route / wrong-mode request still reports its
 	// own layer-1 reason above.
 	surface := dynamicSurface(stream)
 	cohort, cd := admitCohort(surface, in.Cohort)
@@ -386,6 +389,16 @@ func (a *Admitter) admitCore(ctx context.Context, in Input, recordAdmitted, stre
 	if facts.bedrockSource != "" {
 		a.m.recordBedrockCredentialSource(facts.bedrockSource)
 	}
+	// --- Layer 3b: the ENROLLED class's approved verification REGIME (S3b) -------
+	// The cohort gate at layer 1b said this class may be considered on this surface;
+	// this says the regime the mapper just assigned is the one it was approved under.
+	// It is the earliest point the regime exists, and it is still BEFORE the canonical
+	// body, the Prepare FFI, the plan compare and the claim — so a mismatch declines
+	// pre-socket to BAML like every other refusal. It only narrows.
+	if d := admitVerification(in.Cohort, policy); d != nil {
+		return decline(d)
+	}
+
 	// Streaming stays out of scope for a TRUSTED provider in this slice: the S2
 	// mappers activate the unary surface only, so a trusted provider that reached
 	// the streaming lane declines (the strict OpenAI stream anchor is unchanged).

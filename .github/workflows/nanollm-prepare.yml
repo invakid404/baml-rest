@@ -340,12 +340,25 @@ jobs:
           # instead of being killed by the runner with no output. A test timeout equal
           # to (or above) the job budget can never fire, which is how a hang becomes an
           # unexplained red job.
+          #
+          # The STATIC fixture (serving cutover S3b) is the second artifact this lane
+          # builds, and it exists because the dynamic one cannot prove the static
+          # claim: an artifact whose only method is Baml_Rest_Dynamic rejects a static
+          # call by NAME, before any route, adapter, generated seam, native factory or
+          # admission gate is reached, so a static arm written against it passes with
+          # nothing exercised. build-s3b-static-fixture-artifact.sh builds the SAME
+          # entrypoint with the SAME shipped tags and the SAME attestation stamp, plus
+          # one more tag that selects a REAL static BAML project's method table, so the
+          # proof can POST /call/StaticCompletion at a genuine static route. Both
+          # fixture builds must succeed: the tests fail (never skip) without them.
           fixture_env="$RUNNER_TEMP/s3a-fixture-artifact.env"
           : > "$fixture_env"
           ARTIFACT_SOURCE_REVISION="${GITHUB_SHA}" \
             ./scripts/build-s3a-fixture-artifact.sh "$RUNNER_TEMP/s3a-fixture-artifact" "$fixture_env"
+          ARTIFACT_SOURCE_REVISION="${GITHUB_SHA}" \
+            ./scripts/build-s3b-static-fixture-artifact.sh "$RUNNER_TEMP/s3b-static-fixture-artifact" "$fixture_env"
           set -a
-          # shellcheck disable=SC1090  # $fixture_env is a runtime $RUNNER_TEMP env file emitted by build-s3a-fixture-artifact.sh above; its path is not statically known
+          # shellcheck disable=SC1090  # $fixture_env is a runtime $RUNNER_TEMP env file emitted by the two fixture build scripts above; its path is not statically known
           . "$fixture_env"
           set +a
           BAML_LIBRARY_DISABLE_DOWNLOAD=true go test \

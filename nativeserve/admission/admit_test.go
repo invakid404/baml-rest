@@ -587,3 +587,95 @@ func TestModeNormalization(t *testing.T) {
 		t.Errorf("normalizeMode(unknown) = %q, want %q", got, ModeUnknown)
 	}
 }
+
+// --- serving cutover S3b: the enrolled class's approved verification REGIME ---
+
+// s3bRegimeGate builds a gate that ENROLLS a class on every surface and declares
+// the given approved verification regime for it. It is the only way to reach the
+// regime check through the REAL admission lane: the shipped fe-v1 record declares
+// the openai class, and the openai mapper always assigns the strict regime, so the
+// production composition can never present a mismatch to compare (which is the
+// point — the check is defence in depth behind the record's provider class).
+func s3bRegimeGate(t *testing.T, provider ConfigProviderClass, required RequiredVerification) *CohortGate {
+	t.Helper()
+	g, err := buildCohortGate("s3b-regime-probe",
+		[]ConfigRecord{{
+			Fingerprint:  proofConfigFingerprint,
+			Cohort:       "regime_probe",
+			Surfaces:     AllSurfaces(),
+			Provider:     provider,
+			Verification: required,
+			Approval:     "DEBAML-602",
+		}},
+		[]CohortEnrollment{{Surface: SurfaceDynamicCall, Cohort: "regime_probe"}})
+	if err != nil {
+		t.Fatalf("regime probe gate: %v", err)
+	}
+	return g
+}
+
+// TestEnrolledRegimeIsCheckedInsideTheRealAdmissionLane proves the S3b regime check
+// is WIRED — that it runs inside admitCore, after the mapper has assigned a policy
+// and BEFORE the canonical body, the Prepare FFI, the plan compare and the claim.
+//
+// The pair of arms is what makes it a wiring proof rather than a restatement of the
+// unit test: the ONLY difference between them is the regime the enrolled record
+// declares, and one admits while the other declines with the bounded verification
+// reason. A check that was never called would admit both.
+func TestEnrolledRegimeIsCheckedInsideTheRealAdmissionLane(t *testing.T) {
+	registry := &bamlutils.ClientRegistry{
+		Primary: sp("Trusted"),
+		Clients: []*bamlutils.ClientProperty{{
+			Name:     "Trusted",
+			Provider: "anthropic",
+			Options: map[string]any{
+				"model":    "claude-sonnet-4-5",
+				"base_url": "https://anthropic.invalid",
+				"api_key":  "sk-fake-do-not-use",
+			},
+		}},
+	}
+	input := func(gate *CohortGate) Input {
+		return Input{
+			Cohort:              CohortInput{Fingerprint: proofConfigFingerprint, Provider: ConfigProviderAnthropic, gate: gate},
+			WorkerCapable:       true,
+			RequestAPIPresent:   true,
+			OnBuildRequestRoute: true,
+			FlagEnabled:         true,
+			Method:              bamlutils.DynamicMethodName,
+			Mode:                ModeCall,
+			SingleLeaf:          true,
+			ResolvedProvider:    "anthropic",
+			Registry:            registry,
+			Alias:               "__s3b_regime_alias__",
+			Messages:            []bamlutils.DynamicMessage{{Role: "user", TextContent: sp("hi")}},
+			OutputSchema:        simpleSchema(),
+		}
+	}
+
+	// APPROVED for the trusted regime -> the class the mapper assigns matches, so
+	// the regime check passes and admission proceeds past it.
+	admitter := NewAdmitter(nil, nil)
+	ctx := context.Background()
+	permitted := s3bRegimeGate(t, ConfigProviderAnthropic, VerificationTrustedProvider)
+	if _, err := admitter.Admit(ctx, input(permitted)); err != nil {
+		var d *Decline
+		if errors.As(err, &d) && d.Stage == StageVerification {
+			t.Fatalf("a class approved for the trusted regime was refused by the regime check: %v", d)
+		}
+		// Any OTHER decline is fine here: this arm exists to show the regime check
+		// did not fire, not that the whole trusted-provider lane admits.
+	}
+
+	// APPROVED for the strict regime only -> the mapper assigns trusted, so the
+	// record refuses it, PRE-CLAIM and with the bounded reason.
+	refused := s3bRegimeGate(t, ConfigProviderAnthropic, VerificationStrictOpenAI)
+	_, err := admitter.Admit(ctx, input(refused))
+	var d *Decline
+	if !errors.As(err, &d) {
+		t.Fatalf("a class approved ONLY for strict_openai was admitted under the trusted regime (err=%v)", err)
+	}
+	if d.Stage != StageVerification || d.Reason != ReasonVerificationUnapproved {
+		t.Fatalf("decline = (%s, %s), want (verification, verification_regime_unapproved) — the regime check is not wired into the lane", d.Stage, d.Reason)
+	}
+}

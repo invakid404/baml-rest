@@ -75,7 +75,8 @@ func (s *Server) ShadowStatic(ctx context.Context, inv bamlutils.NativeStaticInv
 	// Serving-cutover S1: the Stage-1 static shadow enters through the CLAIM entry
 	// point (it needs the live engine to translate BAML's own response bytes), so it
 	// evaluates the SAME default-deny gate every other lane does and declines with
-	// cohort_not_enrolled while nothing is enrolled.
+	// cohort_not_enrolled: it presents the zero identity, which resolves the reserved,
+	// non-enrollable cohort `none`, and no static surface is enrolled either.
 	//
 	// An earlier draft gave the no-send profiles a separate, all-surface enrolled
 	// "observe" gate so they could keep measuring the full predicate. A cold review

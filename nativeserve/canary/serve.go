@@ -85,20 +85,34 @@ type Server struct {
 	// production non-openai mapping, so the trusted verification path is otherwise
 	// unreachable through Serve. Production never rebinds it.
 	admitClaim func(ctx context.Context, in admission.Input) (*admission.Claim, error)
+	// bamlExtract is the BAML leg of the S5 same-response oracle: the
+	// assistant/raw/reasoning extraction the BAML serving path performs over the
+	// RAW provider bytes. It defaults to buildrequest.ExtractResponseContentBytes
+	// (the production extractor) and is OVERRIDDEN ONLY by same-package tests, for
+	// one reason: on the enrolled OpenAI surface both legs run that SAME extractor
+	// over the SAME bytes (nanollm's openai TranslateResponse is byte-verbatim —
+	// TestOpenAITranslateResponseIsByteVerbatim in nativeserve/execute pins it), so
+	// no upstream response can make the assistant, raw or reasoning facet disagree
+	// on its own, and the terminal predicate's per-facet gating would otherwise be
+	// untestable. Production never rebinds it.
+	bamlExtract func(provider string, body []byte, includeReasoning bool) (parseable, raw, reasoning string, err error)
 
 	// cohort is a FIXED serving-cutover configuration identity this server presents to
-	// admission instead of resolving one per request. Production leaves it ZERO — the
-	// dynamic unary lane resolves its identity from the request through
-	// [Server.serveCohortInput]
-	// (serving cutover S3a), and the static unary lane presents none at all — so every
-	// request resolves to a cohort the shipped EMPTY policy does not enroll and the
-	// default-deny gate declines it before any native work. It is set to a non-zero
-	// identity ONLY by
-	// [NewServerWithCohortIdentity], which the gated end-to-end proofs use to exercise
-	// the serving pipeline the shipped policy does not enable yet. It is NOT a rollout
-	// control: the factories a worker installs (NewServeFunc / NewStaticServeFunc)
-	// present the zero identity, and enrolling a cohort is a change to the shipped
-	// policy, not to this field.
+	// admission instead of resolving one per request. Production leaves it ZERO — both
+	// unary lanes resolve their identity from the request through
+	// [Server.serveCohortInput] and [Server.staticCohortInput] — so a request resolves
+	// to the enrolled fe-v1 cohort only when the DEPLOYMENT sealed its effective
+	// selected configuration with the enrolled slot, and anything else declines at the
+	// default-deny gate before any native work. It is set to a non-zero identity ONLY
+	// by [NewServerWithCohortIdentity], which the gated end-to-end proofs use to
+	// exercise the serving pipeline on the (surface, cohort) pairs the shipped policy
+	// does NOT enable. The shipped policy enables exactly ONE pair — fe_v1 on the
+	// dynamic unary call surface (serving cutover S3b) — and every other surface,
+	// cohort and slot still declines pre-socket, including a sealed fe-v1
+	// configuration arriving on a surface its inventory record does not declare. It is
+	// NOT a rollout control: the factories a worker installs (NewServeFunc /
+	// NewStaticServeFunc) present the zero identity, and enrolling a cohort is a
+	// change to the shipped policy, not to this field.
 	cohort admission.CohortInput
 
 	// staticAdmitClaim is the static admission step ServeStatic runs (de-BAML Slice
@@ -120,6 +134,7 @@ func NewServer(m *admission.Metrics, exec *llmhttp.ExactExecutor) *Server {
 	}
 	s := &Server{admitter: admission.NewAdmitter(m, exec), metrics: m, exec: exec}
 	s.admitClaim = s.admitter.AdmitClaim
+	s.bamlExtract = buildrequest.ExtractResponseContentBytes
 	s.staticAdmitClaim = admission.AdmitStaticClaim
 	return s
 }
@@ -387,8 +402,9 @@ func (s *Server) mapAttempt(ctx context.Context, req bamlutils.NativeServeReques
 // runs the S5 same-response BAML-parse safety compare over the SAME bytes and
 // records response_compare per facet. If BAML's extraction/parse ERRORS on those
 // bytes, compatibility wins — the corresponding parse/extraction error is
-// returned (never a native final BAML would have rejected). On a structured/order
-// MATCH it serves native; on drift it serves the BAML parse of the same bytes.
+// returned (never a native final BAML would have rejected). It serves native ONLY
+// when ALL FIVE compared facets agree — assistant text, raw, reasoning, structured
+// value and ordering; on ANY drift it serves BAML's reading of the same bytes.
 func (s *Server) serveStructured(ctx context.Context, req bamlutils.NativeServeRequest, res *execute.AttemptResult) bamlutils.NativeServeResult {
 	// BAML leg — extract assistant/raw/reasoning the BAML serving path would, from
 	// the SAME raw provider body, then run the BAML-ONLY parse closure. Reasoning
@@ -403,7 +419,7 @@ func (s *Server) serveStructured(ctx context.Context, req bamlutils.NativeServeR
 	// "BAML transported this request".
 	s.metrics.RecordAdmissionPhase(admission.SurfaceDynamicCall, admission.ResolveCohort(admission.SurfaceDynamicCall, s.serveCohortInput(req)), admission.PhaseSameResponseOracle)
 
-	bamlParseable, bamlRaw, bamlReasoning, xerr := buildrequest.ExtractResponseContentBytes("openai", res.ProviderBody, req.IncludeReasoning)
+	bamlParseable, bamlRaw, bamlReasoning, xerr := s.bamlExtract("openai", res.ProviderBody, req.IncludeReasoning)
 	if xerr != nil {
 		// BAML extraction errors on bytes native claims -> return the extraction
 		// error (BAML would have rejected), never serve a divergent native final.
@@ -445,25 +461,40 @@ func (s *Server) serveStructured(ctx context.Context, req bamlutils.NativeServeR
 	s.metrics.RecordResponseCompare(admission.ResponseCompareMatch, admission.ResponseCompareFieldError)
 
 	// Per-facet response parity — translate always OK on OutcomeStructured.
+	//
+	// EVERY facet below is BOTH recorded AND gated on (S3 admission gate 9): the
+	// assistant channel, the two /call-with-raw channels, the structured value and
+	// its ordering must ALL agree before native may own the served envelope. A
+	// facet that were only RECORDED would be an out-claim: the drift would be
+	// visible as a metric while the caller still received native's answer for a
+	// response the two engines read differently.
 	s.recordResponse(true, admission.ResponseCompareFieldTranslate)
-	s.recordResponse(res.AssistantText == bamlParseable, admission.ResponseCompareFieldAssistant)
-	s.recordResponse(res.Raw == bamlRaw, admission.ResponseCompareFieldRaw)
-	s.recordResponse(res.Reasoning == bamlReasoning, admission.ResponseCompareFieldReasoning)
+	assistantMatch := res.AssistantText == bamlParseable
+	s.recordResponse(assistantMatch, admission.ResponseCompareFieldAssistant)
+	rawMatch := res.Raw == bamlRaw
+	s.recordResponse(rawMatch, admission.ResponseCompareFieldRaw)
+	reasoningMatch := res.Reasoning == bamlReasoning
+	s.recordResponse(reasoningMatch, admission.ResponseCompareFieldReasoning)
 	structuredMatch, orderMatch := parity.CompareStructured(res.Structured, bamlStructured, req.OutputSchema)
 	s.recordResponse(structuredMatch, admission.ResponseCompareFieldStructured)
 	s.recordResponse(orderMatch, admission.ResponseCompareFieldOrder)
 
-	if structuredMatch && orderMatch {
-		// MATCH -> serve the native flattened JSON with native-owned raw/reasoning.
+	if assistantMatch && rawMatch && reasoningMatch && structuredMatch && orderMatch {
+		// FULL MATCH on every compared facet -> serve the native flattened JSON
+		// with native-owned raw/reasoning.
 		s.metrics.RecordServeOutcome(toAdmissionMode(req.Mode), req.Provider, admission.OutcomeSuccess)
 		return successResult(res.Structured, res, bamlutils.NativeServeEngineNative)
 	}
-	// Structured/order drift -> serve the BAML parse of the SAME bytes for safety
-	// (still one native provider request). The response_compare mismatch is the
+	// ANY same-response facet drift -> serve BAML's reading of the SAME bytes for
+	// safety (still one native provider request, never a resend). The whole
+	// envelope comes from BAML's leg — its parse AND its raw/reasoning channels —
+	// because a raw/reasoning drift is exactly the case where returning native's
+	// channels alongside BAML's structured value would ship a THIRD answer neither
+	// engine would have produced. The response_compare mismatch is the
 	// zero-tolerance signal; winner_engine records that BAML's parse produced it.
 	s.metrics.RecordFallback(admission.FallbackParseOnly)
 	s.metrics.RecordServeOutcome(toAdmissionMode(req.Mode), req.Provider, admission.OutcomeSuccess)
-	return successResult(bamlStructured, res, bamlutils.NativeServeEngineBAMLParse)
+	return bamlSameResponseResult(bamlStructured, bamlRaw, bamlReasoning)
 }
 
 // serveParseOnly handles a native SAP decline (OutcomeParseDeclined): native
@@ -641,6 +672,23 @@ func successResult(finalJSON []byte, res *execute.AttemptResult, engine string) 
 		Raw:          res.Raw,
 		Reasoning:    res.Reasoning,
 		WinnerEngine: engine,
+	}
+}
+
+// bamlSameResponseResult wraps the BAML same-response terminal: BAML's parse of
+// the SAME bytes the ONE native provider request returned, together with BAML's
+// OWN raw/reasoning channels extracted from those bytes. It is deliberately NOT
+// successResult with the native AttemptResult — on this path a facet the two
+// engines read differently is exactly what brought us here, so every channel the
+// caller sees must come from the single engine whose reading is being served.
+// Still one native provider request; never a resend.
+func bamlSameResponseResult(finalJSON []byte, bamlRaw, bamlReasoning string) bamlutils.NativeServeResult {
+	return bamlutils.NativeServeResult{
+		Disposition:  bamlutils.NativeServeSucceeded,
+		FinalJSON:    finalJSON,
+		Raw:          bamlRaw,
+		Reasoning:    bamlReasoning,
+		WinnerEngine: bamlutils.NativeServeEngineBAMLParse,
 	}
 }
 

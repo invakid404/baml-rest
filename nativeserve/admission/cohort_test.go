@@ -142,15 +142,21 @@ func assertGateDeclinesEverySurface(tb testing.TB, gate *CohortGate) {
 	}
 }
 
-// TestProductionGateDeclinesEverySurface is the S1 headline: the shipped gate
-// enrolls nothing, so every surface × every identity shape declines with the one
-// bounded reason.
-func TestProductionGateDeclinesEverySurface(t *testing.T) {
-	if got := ProductionCohortGate().Policy().Len(); got != 0 {
-		t.Fatalf("production policy enrolls %d cohorts, want 0 — S1 must flip nothing native", got)
+// TestProductionGateDeclinesEveryUnenrolledIdentity is the default-deny headline as
+// serving cutover S3b leaves it: the shipped gate enrolls exactly ONE tuple, and
+// every OTHER identity shape — absent, unrecognized, undeclared, hostile — still
+// declines on every surface with the one bounded reason.
+//
+// The identity shapes below deliberately do NOT include the fe-v1 identity; that one
+// has its own exactness proof (TestShippedGateAdmitsOnlyTheFeV1Tuple). What this pins
+// is that adding an enrollment did not turn the gate into a pass-through for
+// everything else, which is the failure mode a first enrollment actually risks.
+func TestProductionGateDeclinesEveryUnenrolledIdentity(t *testing.T) {
+	if got := ProductionCohortGate().Policy().Len(); got != 1 {
+		t.Fatalf("production policy enrolls %d cohorts, want exactly 1 (the fe-v1 tuple)", got)
 	}
-	if got := ProductionCohortGate().Inventory().Len(); got != 0 {
-		t.Fatalf("production inventory declares %d records, want 0", got)
+	if got := ProductionCohortGate().Inventory().Len(); got != 1 {
+		t.Fatalf("production inventory declares %d records, want exactly 1 (the fe-v1 record)", got)
 	}
 	if got := ProductionCohortGate().Policy().Version(); got != ProductionCohortPolicyVersion {
 		t.Fatalf("production policy version = %q, want %q", got, ProductionCohortPolicyVersion)
@@ -158,6 +164,100 @@ func TestProductionGateDeclinesEverySurface(t *testing.T) {
 	assertGateDeclinesEverySurface(t, ProductionCohortGate())
 	// A nil gate — the shape a forgotten wiring produces — must fail closed the same way.
 	assertGateDeclinesEverySurface(t, nil)
+}
+
+// TestShippedGateAdmitsOnlyTheFeV1Tuple is the positive half, and it is exact: the
+// fe-v1 identity is admitted on dynamic_call and REFUSED on every other surface, and
+// every near-miss on the identity itself — a different provider class, a neighbouring
+// slot, no class at all — resolves to a bounded non-enrolled bucket instead.
+//
+// It runs against ProductionCohortGate(), i.e. the gate the shipped binary uses, not
+// a hand-built one.
+func TestShippedGateAdmitsOnlyTheFeV1Tuple(t *testing.T) {
+	feV1 := CohortInput{Fingerprint: FeV1ConfigFingerprint, Provider: ConfigProviderOpenAI}
+
+	cohort, d := admitCohort(SurfaceDynamicCall, feV1)
+	if d != nil {
+		t.Fatalf("the fe-v1 identity was declined on dynamic_call: %v", d)
+	}
+	if cohort != FeV1Cohort {
+		t.Fatalf("the fe-v1 identity resolved to cohort %q, want %q", cohort, FeV1Cohort)
+	}
+	for _, s := range AllSurfaces() {
+		if s == SurfaceDynamicCall {
+			continue
+		}
+		got, d := admitCohort(s, feV1)
+		if d == nil {
+			t.Errorf("%s: the fe-v1 identity was ADMITTED on a surface its record does not declare", s.Label())
+		}
+		// The record declares dynamic_call only, so on any other surface the identity
+		// is not "fe_v1 but unenrolled" — it folds onto the bounded unrecognized
+		// bucket, which is what keeps a wrong-surface claim unattributable to the
+		// approved cohort.
+		if got != CohortUnrecognized {
+			t.Errorf("%s: the fe-v1 identity resolved to %q, want %q", s.Label(), got, CohortUnrecognized)
+		}
+	}
+
+	// Near-misses on the identity itself.
+	for _, near := range []struct {
+		name string
+		in   CohortInput
+	}{
+		{"wrong provider class", CohortInput{Fingerprint: FeV1ConfigFingerprint, Provider: ConfigProviderAnthropic}},
+		{"no provider class", CohortInput{Fingerprint: FeV1ConfigFingerprint}},
+		{"neighbouring declared slot", CohortInput{Fingerprint: "cfg001", Provider: ConfigProviderOpenAI}},
+		{"undeclared slot", CohortInput{Fingerprint: "cfg101", Provider: ConfigProviderOpenAI}},
+	} {
+		got, d := admitCohort(SurfaceDynamicCall, near.in)
+		if d == nil {
+			t.Errorf("%s: admitted on dynamic_call; only the exact fe-v1 identity may be", near.name)
+		}
+		if got == FeV1Cohort {
+			t.Errorf("%s: resolved to the approved cohort %q; a near-miss must never inherit it", near.name, FeV1Cohort)
+		}
+	}
+}
+
+// TestEveryEnrolledProductionRecordDeclaresTheStrictOpenAIRegime is the standing
+// guard behind the S3b verification check: the cutover enrolls fe-v1 to serve WITH
+// both retained BAML oracles, and only [PolicyStrictOpenAI] runs them (the trusted
+// regime runs neither the pre-claim plan equality nor the same-response compare).
+//
+// So every record the shipped policy ENROLLS must declare the strict regime, and it
+// must declare one at all — an unconstrained record would permit a claim under any
+// regime the mapper happened to assign, which is precisely the silent widening
+// admitVerification exists to refuse.
+func TestEveryEnrolledProductionRecordDeclaresTheStrictOpenAIRegime(t *testing.T) {
+	inv := ProductionCohortGate().Inventory()
+	for _, e := range productionEnrollments() {
+		found := false
+		for _, r := range inv.Records() {
+			if r.Cohort != e.Cohort {
+				continue
+			}
+			found = true
+			if r.Verification == VerificationUnconstrained {
+				t.Errorf("the enrolled record for cohort %q declares no verification regime; an enrolled class must name the one it was approved for", e.Cohort)
+			}
+			if r.Verification != VerificationStrictOpenAI {
+				t.Errorf("the enrolled record for cohort %q declares the %s regime; the cutover enrolls only classes approved for strict_openai, which is what runs both retained BAML oracles",
+					e.Cohort, r.Verification.Label())
+			}
+			// The regime is a REQUIREMENT, not a description: it must refuse the
+			// trusted policy outright.
+			if r.Verification.Permits(PolicyTrustedProvider) {
+				t.Errorf("the enrolled record for cohort %q permits the trusted-provider policy; that regime runs neither retained BAML oracle", e.Cohort)
+			}
+			if !r.Verification.Permits(PolicyStrictOpenAI) {
+				t.Errorf("the enrolled record for cohort %q refuses the strict-OpenAI policy it is enrolled under", e.Cohort)
+			}
+		}
+		if !found {
+			t.Errorf("the policy enrolls cohort %q with no inventory record; the gate constructor should have refused this", e.Cohort)
+		}
+	}
 }
 
 // recordingTB captures whether the assertion body reported a failure, so a mutation
@@ -771,9 +871,24 @@ func TestDeclaredFingerprintVocabularyIsOpaqueAndTiny(t *testing.T) {
 		}
 		seen[fp] = true
 	}
-	// S1 declares no PRODUCTION id: the shipped inventory is empty.
-	if ProductionCohortGate().Inventory().Len() != 0 {
-		t.Fatal("the shipped inventory is not empty")
+	// The vocabulary is a namespace of SLOTS; the shipped inventory assigns exactly
+	// one of them (fe-v1). A second assigned slot is a second declared class, which
+	// is a reviewed enrollment decision and not something a vocabulary edit may make.
+	shipped := ProductionCohortGate().Inventory()
+	if shipped.Len() != 1 {
+		t.Fatalf("the shipped inventory declares %d records, want exactly 1 (fe-v1)", shipped.Len())
+	}
+	if _, ok := shipped.Lookup(FeV1ConfigFingerprint); !ok {
+		t.Fatalf("the shipped inventory does not declare %q", FeV1ConfigFingerprint)
+	}
+	if !seen[FeV1ConfigFingerprint] {
+		t.Fatalf("the assigned fe-v1 slot %q is not in the declared vocabulary", FeV1ConfigFingerprint)
+	}
+	if !seen[proofConfigFingerprint] {
+		t.Fatalf("the proof slot %q is not in the declared vocabulary", proofConfigFingerprint)
+	}
+	if FeV1ConfigFingerprint == proofConfigFingerprint {
+		t.Fatal("the fe-v1 slot is the test-only proof slot; the enrolled identity must not be the proof value")
 	}
 }
 

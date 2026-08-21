@@ -4,10 +4,14 @@ package nativeserve
 
 // De-BAML serving cutover S1 — the gated cohort-identity factories.
 //
-// The shipped policy enrolls nothing, so a serve func built by [New] /
-// [NewStaticServe] / [NewStaticStream] declines every request pre-socket. The gated
-// end-to-end proofs still have to exercise the serve pipeline BEHIND that gate, so
-// they build their serve func here with an enrolled proof identity.
+// The shipped policy enrolls exactly ONE tuple — the fe-v1 class on the dynamic
+// unary call surface (serving cutover S3b) — and a request reaches it only by
+// presenting an identity the DEPLOYMENT sealed. So a serve func built by [New] /
+// [NewStaticServe] / [NewStaticStream] declines every request pre-socket unless the
+// deployment approved that exact configuration, and the static lanes decline
+// unconditionally. The gated end-to-end proofs still have to exercise the serve
+// pipeline BEHIND that gate on surfaces nothing is enrolled on, so they build their
+// serve func here with an enrolled proof identity.
 //
 // These are behind the `nanollm_integration` opt-in tag, and the only thing that can
 // produce a gate-bearing identity (admission.ProofCohortInputForTest) is behind the

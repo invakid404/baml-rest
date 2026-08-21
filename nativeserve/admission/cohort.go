@@ -8,8 +8,8 @@ import (
 	"sync"
 )
 
-// De-BAML serving cutover S1 — DEFAULT-DENY cohort admission + the privacy-safe
-// configuration inventory.
+// De-BAML serving cutover S1/S3b — DEFAULT-DENY cohort admission, the privacy-safe
+// configuration inventory, and the ONE fe-v1 enrollment.
 //
 // # What this is, and what it deliberately is NOT
 //
@@ -24,17 +24,31 @@ import (
 // flag off a native-capable worker installs no capability, no runtime, no factory,
 // runs no Prepare and opens no socket, so the flag remains the complete reversal.
 // The cohort policy answers a different question — "has THIS configuration class
-// been proven and approved to claim a native request on THIS surface?" — and its
-// initial answer is NO for everything.
+// been proven and approved to claim a native request on THIS surface?" — and it
+// answers NO for everything except one reviewed tuple.
 //
-// # S1 ships the policy EMPTY
+// # What the shipped policy enrolls (serving cutover S3b)
 //
-// [ProductionCohortGate] returns a versioned policy with ZERO enrollments and an
-// EMPTY inventory, so every request resolves to cohort `none` and declines with
-// (StageCohort, ReasonCohortNotEnrolled) before native work. S1 therefore flips
-// NOTHING into native serving: a native-capable artifact running this code is
-// externally equivalent to BAML transport. Enrollment is S3's slice, and it is a
-// change to [ProductionCohortGate]'s two manifests — not to any gate below.
+// S1 shipped BOTH manifests empty, so every request resolved to cohort `none` and
+// declined with (StageCohort, ReasonCohortNotEnrolled) before native work. S3b makes
+// the smallest change that permits native traffic at all: ONE inventory record and
+// ONE enrollment, both below, and NOT ONE LINE of gate logic. Concretely,
+// [ProductionCohortGate] now enrolls exactly
+//
+//	(SurfaceDynamicCall, FeV1Cohort)
+//
+// substantiated by exactly one record — [FeV1ConfigFingerprint] / [FeV1Cohort] /
+// dynamic_call / openai / strict-OpenAI verification / [FeV1Approval]. Every other
+// fingerprint, cohort and surface stays ABSENT, so dynamic stream, static call and
+// stream, direct parse, a second OpenAI class and any broader provider predicate all
+// still decline pre-claim exactly as they did under S1.
+//
+// Enrollment is NECESSARY, never sufficient. A request in this cohort still has to
+// clear every layer below — one resolved leaf, a DEPLOYMENT-sealed effective
+// configuration, the strict OpenAI mapper, native render + schema + Prepare, BAML's
+// no-send plan equality — before it may claim, and it still has to survive the
+// post-response same-bytes BAML oracle before native is the winner. What this policy
+// grants is permission to be considered, not permission to serve.
 //
 // # Where the gate is evaluated (one rule, no exceptions)
 //
@@ -242,6 +256,27 @@ type ConfigFingerprint string
 // released build. A declared ID with no enrollment admits nothing.
 const proofConfigFingerprint ConfigFingerprint = "cfg900"
 
+// FeV1ConfigFingerprint is the opaque bounded ID this repository ASSIGNS to the one
+// reviewed strict-OpenAI configuration class the serving cutover enrolls on the
+// dynamic unary `/call` surface (fe-v1).
+//
+// It is a REVIEWED CONSTANT, not a derivation: it is not a hash of a request, a
+// prompt, a schema or a configuration; it is not a client name, alias, model, URL or
+// credential; and it is not the test-only proof ID above. It is deliberately a
+// separate slot from the sixteen still-unassigned ones, so "the slot fe-v1 was
+// enrolled on" and "a slot a deployment happened to pick" can never be confused.
+//
+// Assigning a slot is not conferring an identity. A request obtains this fingerprint
+// only when the DEPLOYMENT sealed its effective selected configuration with it
+// (bamlutils/trustedclients + [ResolveConfigIdentity]); a deployment that seals
+// nothing has no fe-v1 traffic, whatever this build enrolls.
+//
+// It is exported because the served-path proofs live in three other modules and must
+// name the exact enrolled slot rather than re-spell it. Exporting it opens no door:
+// there is no exported way to seal a client or to select a gate, so naming the slot
+// admits nothing.
+const FeV1ConfigFingerprint ConfigFingerprint = "cfg100"
+
 // declaredConfigFingerprints is the FINITE, REVIEWED vocabulary of opaque
 // configuration IDs this build knows. It is not a grammar and not a runtime string
 // space: an ID that is not on this list cannot enter an inventory, cannot resolve to
@@ -258,12 +293,21 @@ const proofConfigFingerprint ConfigFingerprint = "cfg900"
 // knows only the opaque slot, and the operator holds the slot -> real-configuration
 // record in their own approved-configuration document.
 //
+// [FeV1ConfigFingerprint] is the ONE assigned slot (serving cutover S3b). The binary
+// attaches a cohort, a surface, a provider class, a verification regime and an
+// approval reference to it — see productionInventoryRecords — and still attaches no
+// name, model, URL or credential, because the join to the real configuration stays in
+// the deployment's own declaration.
+//
 // Sixteen slots is a cap, not a target. It bounds the label space a config reload can
 // reach, on top of the per-load maxInventoryRecords cap.
 func declaredConfigFingerprints() []ConfigFingerprint {
 	return []ConfigFingerprint{
 		"cfg001", "cfg002", "cfg003", "cfg004", "cfg005", "cfg006", "cfg007", "cfg008",
 		"cfg009", "cfg010", "cfg011", "cfg012", "cfg013", "cfg014", "cfg015", "cfg016",
+		// The ONE slot this build assigns: the fe-v1 strict-OpenAI dynamic-call class
+		// the shipped policy enrolls (serving cutover S3b).
+		FeV1ConfigFingerprint,
 		// Reserved for the gated proof suite (the proof gate exists only under the
 		// `nanollm_integration` build tag). A declared ID with no production
 		// enrollment admits nothing.
@@ -378,6 +422,85 @@ func parseApprovalRef(s string) (ApprovalRef, error) {
 	return ApprovalRef(s), nil
 }
 
+// RequiredVerification is the post-Prepare VERIFICATION REGIME an inventory record
+// declares its configuration class is approved to claim under (§"Strict-OpenAI BAML
+// oracle to retain"). It is a bounded declared bucket like every other record field
+// — it names a regime, never a provider, an endpoint or an option.
+//
+// The distinction it exists to keep is the one the cutover scope is explicit about:
+// [PolicyStrictOpenAI] runs BOTH retained BAML oracles (the pre-claim no-send plan
+// equality and the post-response same-bytes parse/order compare), while
+// [PolicyTrustedProvider] runs NEITHER. An enrollment that ran under the trusted
+// policy would therefore serve natively with no BAML comparison at all, which is a
+// different and much weaker thing than what fe-v1 was approved for — so the approved
+// regime is DATA on the record, checked pre-claim, rather than an assumption about
+// which mapper a provider class happens to select.
+type RequiredVerification uint8
+
+const (
+	// VerificationUnconstrained is the zero value: the record states no approved
+	// regime. It is what every CONFIG-DECLARED record carries, because the
+	// deployment-facing inventory spec has no field for one — and it is harmless
+	// there precisely because declaring is not enrolling: a config-declared record
+	// can never be enrolled by the compile-time policy, so its regime is never
+	// consulted. A PRODUCTION record must NOT carry it; see
+	// TestEnrolledProductionRecordsDeclareTheStrictOpenAIRegime.
+	VerificationUnconstrained RequiredVerification = iota
+	// VerificationStrictOpenAI approves the class for [PolicyStrictOpenAI] ONLY —
+	// the byte-exact anchor that runs both retained BAML comparisons. It is what
+	// fe-v1 is enrolled under.
+	VerificationStrictOpenAI
+	// VerificationTrustedProvider approves the class for [PolicyTrustedProvider]
+	// only. Nothing in this build enrolls it; it exists so the field names a real
+	// closed choice rather than a boolean, and so the biting mutation that WEAKENS
+	// fe-v1 to the trusted regime is expressible.
+	VerificationTrustedProvider
+)
+
+// Valid reports whether v is one of the declared regimes (including the
+// unconstrained zero value, which is a legitimate record state).
+func (v RequiredVerification) Valid() bool {
+	switch v {
+	case VerificationUnconstrained, VerificationStrictOpenAI, VerificationTrustedProvider:
+		return true
+	default:
+		return false
+	}
+}
+
+// Label returns the bounded, secret-free name of the regime. It is diagnostic text
+// for a decline detail, never a metric label.
+func (v RequiredVerification) Label() string {
+	switch v {
+	case VerificationStrictOpenAI:
+		return "strict_openai"
+	case VerificationTrustedProvider:
+		return "trusted_provider"
+	default:
+		return "unconstrained"
+	}
+}
+
+// Permits reports whether a class declaring this regime may claim under the policy
+// the mapper actually assigned.
+//
+// The unconstrained zero value permits everything, which is safe ONLY because it is
+// unreachable for an enrolled class: admitCohort has already refused any cohort the
+// compile-time policy does not enroll, and every enrolled production record declares
+// a real regime. Fail-open would be wrong for a gate; this is not a gate, it is the
+// record answering "which regime was this approved for?", and "no answer" is exactly
+// what a row that was never approved to claim carries.
+func (v RequiredVerification) Permits(p VerificationPolicy) bool {
+	switch v {
+	case VerificationStrictOpenAI:
+		return p == PolicyStrictOpenAI
+	case VerificationTrustedProvider:
+		return p == PolicyTrustedProvider
+	default:
+		return true
+	}
+}
+
 // ConfigRecord is the OPERATOR-VISIBLE configuration record an opaque fingerprint
 // maps to. It is the whole privacy-safe inventory row: every field is a bounded
 // predeclared bucket, so the complete record can be published to a control-plane
@@ -400,6 +523,10 @@ type ConfigRecord struct {
 	Surfaces []Surface
 	// Provider is the bounded provider CLASS (never a client name or endpoint).
 	Provider ConfigProviderClass
+	// Verification is the post-Prepare verification REGIME this class is approved to
+	// claim under. The zero value is [VerificationUnconstrained], which is what a
+	// config-declared row carries and what a row that may never claim needs.
+	Verification RequiredVerification
 	// Approval is the bounded reference to the offline approval record.
 	Approval ApprovalRef
 }
@@ -425,9 +552,10 @@ type ConfigInventory struct {
 
 // NewConfigInventory validates and freezes the declared configuration records. It
 // FAILS (rather than dropping a row) on: an unparseable fingerprint, cohort or
-// approval reference; a reserved cohort ID; an unknown provider class; an empty,
-// duplicated or invalid surface set; a duplicate fingerprint; two records claiming
-// the same (cohort, surface) pair; or more than maxInventoryRecords rows.
+// approval reference; a reserved cohort ID; an unknown provider class; a
+// verification regime outside the declared set; an empty, duplicated or invalid
+// surface set; a duplicate fingerprint; two records claiming the same (cohort,
+// surface) pair; or more than maxInventoryRecords rows.
 //
 // Rejecting an entire malformed manifest is deliberate: a partially-loaded
 // inventory would silently change which traffic is enrolled, which is exactly the
@@ -451,6 +579,9 @@ func newConfigInventory(records []ConfigRecord) (*ConfigInventory, error) {
 		}
 		if !r.Provider.Valid() {
 			return nil, fmt.Errorf("nativeserve/admission: inventory record %d: provider class is not one of the declared classes", i)
+		}
+		if !r.Verification.Valid() {
+			return nil, fmt.Errorf("nativeserve/admission: inventory record %d: verification regime is outside the declared set", i)
 		}
 		if _, err := parseApprovalRef(string(r.Approval)); err != nil {
 			return nil, fmt.Errorf("nativeserve/admission: inventory record %d: %w", i, err)
@@ -736,10 +867,11 @@ type CohortInput struct {
 	// the deployment declared, and returns none at all unless the effective selected
 	// leaf PROVES to be a declared configuration.
 	//
-	// Serving cutover S3a wires that resolver on the dynamic unary lane. It changes
-	// nothing about what may CLAIM: the shipped policy still enrolls nothing, so a
-	// resolved fingerprint resolves to a bounded cohort that is not enrolled and the
-	// request declines pre-claim exactly as an unidentified one does.
+	// Serving cutover S3a wired that resolver on the dynamic unary lane; S3b enrolled
+	// exactly one of the fingerprints it can resolve. Every OTHER resolved fingerprint
+	// — every slot a deployment sealed but this build does not enroll — resolves to a
+	// bounded cohort that is not enrolled, and the request declines pre-claim exactly
+	// as an unidentified one does.
 	Fingerprint ConfigFingerprint
 	// Provider is the bounded provider CLASS the identity resolver derived for the
 	// same effective configuration. It is carried alongside the fingerprint so the
@@ -757,7 +889,8 @@ type CohortInput struct {
 	// consumer select its own admission policy?". It cannot: no exported field,
 	// constructor or function outside this package can populate it, so every
 	// CohortInput an external caller can build resolves against
-	// [ProductionCohortGate] — the shipped EMPTY, default-deny gate. The gated proof
+	// [ProductionCohortGate] — the shipped default-deny gate, whose one enrollment
+	// still requires a DEPLOYMENT-sealed identity no caller can manufacture. The gated proof
 	// suite sets it from INSIDE this package, behind the `nanollm_integration` build
 	// tag, so it cannot be linked into a released consumer's binary at all.
 	//
@@ -785,9 +918,31 @@ func (c CohortInput) resolvedGate() *CohortGate {
 	return ProductionCohortGate()
 }
 
+// FeV1Cohort is the opaque bounded cohort bucket the serving cutover enrolls: the
+// ONE approved strict-OpenAI configuration class on the dynamic unary `/call`
+// surface. Like the fingerprint it is an ASSIGNED reviewed constant — not derived
+// from a request, a client, a model or a URL — and unlike the fingerprint it is the
+// value that becomes a per-request METRIC LABEL, which is why it is a lowercase word
+// from the tiny cohort-ID grammar rather than anything an operator might be tempted
+// to make descriptive.
+const FeV1Cohort CohortID = "fe_v1"
+
+// FeV1Approval is the offline approval reference for the fe-v1 enrollment: the
+// owner's approval of THIS enrollment, recorded as the record's join key into the
+// approved-configuration document. It is a bounded <TAG>-<number> reference and
+// carries nothing else — see [ApprovalRef].
+const FeV1Approval ApprovalRef = "DEBAML-683"
+
 // ProductionCohortPolicyVersion is the version of the shipped production policy. It
-// is the operator-visible name of "S1: nothing is enrolled".
-const ProductionCohortPolicyVersion = "s1-default-deny-empty"
+// is the operator-visible name of what this build enrolls.
+//
+// S1 shipped `s1-default-deny-empty` — the honest name of "nothing is enrolled".
+// Serving cutover S3b replaces it with the reviewed fe-v1 version below, because the
+// policy is no longer empty and a version string that still said `empty` would be the
+// single most misleading thing on an operator's dashboard. The version names WHAT is
+// enrolled (one fe-v1 cohort on the dynamic unary call surface), so a scrape answers
+// "which enrollment is this worker running?" without a join.
+const ProductionCohortPolicyVersion = "s3b-fe-v1-dynamic-call"
 
 // productionInventoryRecords is the CONFIG-LOAD MANIFEST: the declared,
 // operator-visible configuration classes this deployment knows about. It is the one
@@ -800,20 +955,52 @@ const ProductionCohortPolicyVersion = "s1-default-deny-empty"
 // point of having two manifests, and TestDeclaredButUnenrolledRecordIsVisibleAndStillDeclines
 // exercises it through this very builder.
 //
-// S1 declares NONE. Not because the mechanism is unfinished, but because the class
-// to declare is operator input: the cutover scope is explicit that "the exact
-// production client/configuration identity must not be guessed from repository
-// code", and inventing an approval reference for a class nobody approved would be
-// false evidence on an operator-facing dashboard. The enrolling slice supplies the
-// real record — a fingerprint from the declared vocabulary plus its offline approval
-// reference — by adding it here.
-func productionInventoryRecords() []ConfigRecord { return nil }
+// S1 declared NONE, because the class to declare was operator input and inventing an
+// approval reference for a class nobody approved would be false evidence on an
+// operator-facing dashboard.
+//
+// Serving cutover S3b declares EXACTLY ONE: the reviewed fe-v1 strict-OpenAI class,
+// on the dynamic unary call surface only. Every field is a bounded reviewed bucket,
+// and the row still says nothing about the real configuration — no client name, no
+// model, no URL, no credential. What makes the row TRUE rather than a guess is that
+// it names an opaque SLOT plus the properties the slot was approved for; which real
+// configuration occupies the slot is stated by the deployment, in its own
+// approved-configuration declaration (bamlutils/trustedclients), and a deployment
+// that declares nothing has no traffic in this cohort at all.
+//
+// It declares ONE surface on purpose. Declaring is what makes a wrong-surface request
+// a decline rather than an admission (see [CohortGate.Resolve]), so a row that
+// declared dynamic_stream "for later" would already be half of a stream enrollment.
+func productionInventoryRecords() []ConfigRecord {
+	return []ConfigRecord{{
+		Fingerprint: FeV1ConfigFingerprint,
+		Cohort:      FeV1Cohort,
+		Surfaces:    []Surface{SurfaceDynamicCall},
+		Provider:    ConfigProviderOpenAI,
+		// The STRICT anchor, explicitly. fe-v1 exists to serve natively WITH both
+		// retained BAML oracles; the trusted-provider regime runs neither, so it is
+		// not what this class was approved for and admission refuses it pre-claim.
+		Verification: VerificationStrictOpenAI,
+		Approval:     FeV1Approval,
+	}}
+}
 
-// productionEnrollments is the (surface, cohort) permission manifest. S1 enrolls
-// NOTHING; that is the slice's entire serving guarantee, expressed as data rather
-// than as a code path. The enrolling slice adds exactly one entry here, and no gate
-// logic changes.
-func productionEnrollments() []CohortEnrollment { return nil }
+// productionEnrollments is the (surface, cohort) permission manifest — the answer to
+// "may this class CLAIM a native request on this surface?".
+//
+// Serving cutover S3b adds EXACTLY ONE entry, and no gate logic changed to accept it:
+// the whole enrollment is this line plus the record above. That is the property the
+// two-manifest split was built for — the first change that permits native traffic is
+// a data diff a reviewer can read in full, and reverting it is deleting a line.
+//
+// Everything else stays ABSENT: no dynamic stream, no static call or stream, no
+// direct parse, no `ModeCallWithRaw` (which is a MODE the dynamic-call surface
+// refuses at layer 1, not a surface to enroll), no second OpenAI class, and no
+// provider-wide predicate. The one global revert remains BAML_REST_USE_DEBAML; this
+// manifest is admission EVIDENCE, not a second switch.
+func productionEnrollments() []CohortEnrollment {
+	return []CohortEnrollment{{Surface: SurfaceDynamicCall, Cohort: FeV1Cohort}}
+}
 
 // productionGate is the process-wide production gate, resolved ONCE on first use
 // from the compile-time enrollment manifest plus the deployment's config-loaded
@@ -844,6 +1031,13 @@ var loadProductionGate = sync.OnceValues(func() (*CohortGate, error) {
 
 // emptyFallbackGate is the gate a failed config load falls back to: no records, no
 // enrollments, the shipped policy version.
+//
+// It is EMPTY on purpose, and deliberately does NOT carry the fe-v1 enrollment. A
+// config load that failed is a worker whose declared inventory could not be trusted,
+// and the safe reading of that is "enroll nothing", not "enroll what the compiled
+// manifest says and hope the declaration was irrelevant". Boot fails anyway (the
+// error is surfaced through NewMetrics), so this is what runs in the window before
+// it does.
 //
 // Its two constructor errors are deliberately not propagated, and that is not a
 // dropped error: the inputs are a nil record slice and a compile-time version
@@ -890,16 +1084,19 @@ func buildCohortGate(version string, records []ConfigRecord, enrollments []Cohor
 	return newCohortGate(pol, inv)
 }
 
-// ProductionCohortGate returns the shipped default-deny gate: the deployment's
-// DECLARED configuration inventory (empty unless it set ConfigInventoryEnv) bound to
-// an EMPTY versioned enrollment policy. Declaring is not enrolling, so every request
-// evaluated against it — whatever it declares — resolves to a bounded cohort and
-// declines with (StageCohort, ReasonCohortNotEnrolled) before any native work, and a
-// native-capable artifact running S1 serves 100% BAML.
+// ProductionCohortGate returns the shipped default-deny gate: the compiled fe-v1
+// record plus the deployment's DECLARED configuration inventory (nothing extra unless
+// it set ConfigInventoryEnv), bound to the versioned enrollment policy above.
 //
-// If the config load failed, this is the EMPTY gate and ProductionCohortGateError
-// reports why; the failure is surfaced at boot through NewMetrics rather than being
-// absorbed here.
+// Exactly one (surface, cohort) pair is enrolled. Every other identity evaluated
+// against it — whatever a deployment declares — resolves to a bounded cohort and
+// declines with (StageCohort, ReasonCohortNotEnrolled) before any native work, because
+// DECLARING IS NOT ENROLLING: the enrollment manifest is compile-time and unreachable
+// from configuration, so a config-declared row can never claim.
+//
+// If the config load failed, this is the EMPTY gate — no records, NO enrollment — and
+// ProductionCohortGateError reports why; the failure is surfaced at boot through
+// NewMetrics rather than being absorbed here.
 func ProductionCohortGate() *CohortGate {
 	g, _ := loadProductionGate()
 	return g
@@ -939,6 +1136,46 @@ func admitCohort(surface Surface, in CohortInput) (CohortID, *Decline) {
 			"cohort is not enrolled on surface %s (policy %q enrolls %d)",
 			surface.Label(), g.Policy().Version(), g.Policy().Len())
 	}
+}
+
+// admitVerification is the SECOND half of the enrollment check, and the only one
+// that cannot run at the cohort stage: it compares the verification REGIME the
+// mapper just assigned against the regime the enrolled class's inventory record
+// approves.
+//
+// It runs after mapping (the regime is not knowable before one) and BEFORE the
+// canonical body, the Prepare FFI, the BAML plan compare and the claim — so a
+// mismatch is a pre-claim, pre-socket decline to BAML exactly like every other
+// admission refusal. It can only NARROW: a record that approves the regime in front
+// of it changes nothing, and an unconstrained record (which no enrolled production
+// class may be) is exactly as permissive as before this check existed.
+//
+// Why it is needed at all, given the record already pins a provider CLASS: the class
+// -> regime mapping is a property of the MAPPER, not of the policy. `openai` selects
+// the strict anchor today, and the record's job is to state what was approved rather
+// than to inherit whatever the mapper currently does. If a future mapper change made
+// an approved class map to the trusted regime, fe-v1 would silently start serving
+// natively with NEITHER retained BAML oracle running — the strict plan equality and
+// the same-response compare are both strict-only. This check turns that into a
+// bounded decline instead.
+//
+// The detail is structural and secret-free: two bounded regime names.
+func admitVerification(in CohortInput, got VerificationPolicy) *Decline {
+	r, ok := in.resolvedGate().Inventory().Lookup(in.Fingerprint)
+	if !ok {
+		// Unreachable behind an admitted cohort — admitCohort resolved this identity
+		// to an ENROLLED cohort, which requires an inventory record for exactly this
+		// fingerprint. Fail closed rather than assume: a claim whose approving record
+		// cannot be found is not an approved claim.
+		return declinef(StageVerification, ReasonVerificationUnapproved,
+			"the admitted identity has no inventory record to approve a verification regime")
+	}
+	if r.Verification.Permits(got) {
+		return nil
+	}
+	return declinef(StageVerification, ReasonVerificationUnapproved,
+		"the class is approved for the %s verification regime, the mapper assigned %s",
+		r.Verification.Label(), got.String())
 }
 
 // dynamicSurface derives the closed surface for the dynamic admission core from

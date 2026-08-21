@@ -135,23 +135,35 @@ func labelsMatch(m *dto.Metric, want map[string]string) bool {
 // Everything below now comes from NewServeFunc / NewStreamServeFunc /
 // NewStaticServeFunc / NewStaticStreamServeFunc on ONE registry, exactly as
 // workerboot wires them.
-func TestEverySurfaceDeclinesPreSocketWithNoEnrollment(t *testing.T) {
+func TestEverySurfaceDeclinesPreSocketWithoutAnIdentity(t *testing.T) {
 	ctx := context.Background()
 	// TWO INDEPENDENT LOCKS hold this property, and both are asserted here so a
 	// mutation to EITHER one fails this test rather than only the unit test next to
 	// the thing mutated:
 	//
-	//  1. the shipped policy enrolls nothing, so no (surface, cohort) pair is
-	//     permitted; and
-	//  2. the serving lanes present NO configuration identity, which resolves to the
-	//     reserved cohort `none` — and a reserved cohort is non-enrollable by
-	//     construction, so it stays refused even against a policy that enrolled
-	//     everything.
-	if got := admission.ProductionCohortGate().Policy().Len(); got != 0 {
-		t.Fatalf("the shipped serving policy enrolls %d cohort(s), want 0: S1 must flip nothing native", got)
+	//  1. the shipped policy enrolls exactly ONE (surface, cohort) pair — the fe-v1
+	//     tuple on dynamic_call — and nothing else, so no other pair is permitted on
+	//     any lane; and
+	//  2. the requests below present NO configuration identity (no registry, hence
+	//     nothing the deployment could have sealed), which resolves to the reserved
+	//     cohort `none` — and a reserved cohort is non-enrollable BY CONSTRUCTION, so
+	//     it stays refused even against a policy that enrolled everything.
+	//
+	// Lock 2 is what actually carries this test after serving cutover S3b: the point
+	// is no longer "nothing is enrolled" but "an enrollment is not a licence for
+	// requests that prove no identity". A worker hosting the fe-v1 configuration
+	// still declines every request that does not present it.
+	pol := admission.ProductionCohortGate().Policy()
+	if got := pol.Len(); got != 1 {
+		t.Fatalf("the shipped serving policy enrolls %d cohort(s), want exactly 1 (the fe-v1 tuple)", got)
 	}
-	if got := admission.ProductionCohortGate().Inventory().Len(); got != 0 {
-		t.Fatalf("the shipped configuration inventory declares %d record(s), want 0", got)
+	if got := admission.ProductionCohortGate().Inventory().Len(); got != 1 {
+		t.Fatalf("the shipped configuration inventory declares %d record(s), want exactly 1", got)
+	}
+	for _, surface := range admission.AllSurfaces() {
+		if enrolled := pol.Enrolled(surface, admission.FeV1Cohort); enrolled != (surface == admission.SurfaceDynamicCall) {
+			t.Fatalf("%s: fe_v1 enrolled = %v, want %v", surface.Label(), enrolled, surface == admission.SurfaceDynamicCall)
+		}
 	}
 	for surface, in := range productionServeIdentities() {
 		if got := admission.ResolveCohort(surface, in); got != admission.CohortNone {
@@ -286,11 +298,12 @@ func TestEverySurfaceDeclinesPreSocketWithNoEnrollment(t *testing.T) {
 
 	// The rollout-stop series stayed flat on every surface, including direct_parse,
 	// which is driven through its own production route in
-	// TestDirectParseRouteEmitsRealPerRequestTelemetry.
+	// TestDirectParseRouteEmitsRealPerRequestTelemetry. Requests that present no
+	// identity may never claim, whatever the policy enrolls.
 	for _, surface := range admission.AllSurfaces() {
 		claimed := map[string]string{"surface": surface.Label(), "phase": string(admission.PhaseClaimed)}
 		if got := counterValue(t, reg, "baml_rest_debaml_admission_phase_total", claimed); got != 0 {
-			t.Errorf("%s: %v native claim(s) with nothing enrolled — rollout-stop", surface.Label(), got)
+			t.Errorf("%s: %v native claim(s) from requests presenting no identity — rollout-stop", surface.Label(), got)
 		}
 	}
 }

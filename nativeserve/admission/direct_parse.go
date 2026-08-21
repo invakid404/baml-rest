@@ -18,8 +18,9 @@ import "context"
 //   - it then declines unconditionally, because no native parse exists to admit.
 //
 // Both refusals are recorded, and the ORDER matters for what the numbers mean. While
-// nothing is enrolled the decline reads `cohort_not_enrolled`, exactly like the other
-// four surfaces, so the dashboard shows one uniform reason across the whole cutover.
+// nothing is enrolled ON THIS SURFACE — which the shipped policy still is, since S3b
+// enrolls the dynamic unary call surface only — the decline reads
+// `cohort_not_enrolled`, exactly like the other unenrolled surfaces.
 // If a cohort were ever enrolled for this surface, the second gate would take over
 // and report `direct_parse_unproven` — a distinct, honest reason meaning "the policy
 // would permit this class, but there is nothing here to permit it into". That is the

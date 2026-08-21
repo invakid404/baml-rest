@@ -1,4 +1,4 @@
-//go:build debamlworkerfixture
+//go:build debamlworkerfixture && !debamlworkerstaticfixture
 
 package main
 
@@ -11,9 +11,11 @@ import (
 //
 // # What this is for
 //
-// The cutover's central claim is that a native-capable artifact, with the umbrella
-// flag ON and the shipped EMPTY cohort policy, makes ZERO native claims on the
-// DEPLOYED `/call` route. Proving that requires sending a request to a booted
+// The cutover's central claims are about what a native-capable artifact does on the
+// DEPLOYED `/call` route: with the umbrella flag ON it makes ZERO native claims for
+// every configuration the shipped policy does not enroll (S3a), and serves the ONE
+// it does enroll natively, with one upstream request and both retained BAML oracles
+// running (S3b). Proving either requires sending a request to a booted
 // artifact — and an artifact built from a checkout cannot receive one: baml-rest's
 // root `adapter.go` is the "overwritten during build" stub, so `Methods` is empty
 // until the CONTAINER build generates a client from the deployment's BAML project.

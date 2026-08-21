@@ -21,9 +21,9 @@ go 1.26.5
 require (
 	github.com/boundaryml/baml v0.223.0
 	github.com/invakid404/baml-rest v0.0.48
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260821064630-2f2e13c6dadb
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260821153139-4a6c8f1ee571
 	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260821064630-2f2e13c6dadb
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260821153139-4a6c8f1ee571
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
@@ -112,7 +112,7 @@ require (
 // without recording it here fails the native-worker PACKAGING build (-mod=readonly)
 // with "updates to go.mod needed".
 //
-// PIN-STATUS: RESOLVED
+// PIN-STATUS: OUTSTANDING
 //
 // That marker is the MACHINE-READABLE statement of where these pins stand, and
 // cmd/build's TestPackagedManifestsMatchTheTrackedPins requires it to equal the
@@ -134,24 +134,26 @@ require (
 // briefly BRANCH-ONLY at 9f4cfe14e878 on feat/debaml-s3a-identity before #681
 // squash-merged it to master as 2f2e13c6dadb.
 //
-// RIGHT NOW they are MASTER-DURABLE: the serving-cutover S3a change moved all five to
-// 2f2e13c6dadb, the master squash-merge of #681, so nativeserve/pin_followup.md reads
-// STATUS: RESOLVED and the post-squash re-pin runbook has been performed. Do not treat this
-// comment as the authority: the tracked record is, and cmd/build's
-// TestFirstPartyPinFollowupIsTracked parses that record and these requires on every
+// RIGHT NOW they are BRANCH-ONLY: the serving-cutover S3b change moved all five to
+// 4a6c8f1ee571 on feat/debaml-s3b-enroll, its own source commit, so
+// nativeserve/pin_followup.md reads STATUS: OUTSTANDING and the post-squash re-pin
+// runbook is OWED. Do not treat this comment as the authority: the tracked record is,
+// and cmd/build's
+// TestFirstPartyPinFollowupIsTracked parses that record and the require directives on every
 // ordinary `go test ./...` and requires them to agree. This paragraph exists only so a
 // reader of this manifest is not told the opposite of what the record says — which is
 // exactly what happened when the S1 text was left here after the S2 bump, and which is
 // why the runbook makes flipping BOTH narratives its own numbered step.
 //
-// S3a changes BOTH sides of the graph. The root side gains the TRUSTED-CONFIGURATION
-// SEAL (bamlutils/trustedconfig.go + bamlutils/trustedclients), the worker config-load
-// pass that applies it, and the workerboot runtime seam the booted-artifact proof builds
-// its fixture through. The packaged side is what READS that seal: the serve core's
-// admission seam resolves a request's configuration identity from it and from nothing
-// else, and THIS module's cmd/worker entrypoint is the binary that proof boots. A
-// consumer resolving the OLD pin gets a serve core with no seal to read under a manifest
-// that claims one, so the lockstep is carrying real cross-module behaviour rather than a
+// S3b changes BOTH sides of the graph, even though its functional diff is small. The
+// serve-core side gains the ENROLLMENT itself — the one fe-v1 inventory record and the
+// one (dynamic_call, fe_v1) policy tuple that first permit a native provider request —
+// plus the approved-verification-regime check that keeps that enrollment on the strict
+// OpenAI anchor, where BOTH retained BAML oracles run. THIS module's cmd/worker
+// entrypoint is the binary the booted-artifact `/call` proof boots to demonstrate it,
+// and its packaged serve core is what actually claims. A consumer resolving the OLD pin
+// gets a serve core that enrolls nothing under a manifest that describes a worker which
+// serves a cohort, so the lockstep is carrying real cross-module behaviour rather than a
 // version string.
 //
 // Resolve the root module and every locally-replaced sibling from the checkout
