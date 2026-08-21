@@ -345,6 +345,7 @@ jobs:
           ARTIFACT_SOURCE_REVISION="${GITHUB_SHA}" \
             ./scripts/build-s3a-fixture-artifact.sh "$RUNNER_TEMP/s3a-fixture-artifact" "$fixture_env"
           set -a
+          # shellcheck disable=SC1090  # $fixture_env is a runtime $RUNNER_TEMP env file emitted by build-s3a-fixture-artifact.sh above; its path is not statically known
           . "$fixture_env"
           set +a
           BAML_LIBRARY_DISABLE_DOWNLOAD=true go test \
