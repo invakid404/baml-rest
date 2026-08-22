@@ -220,12 +220,17 @@ func installNativeStaticCall(
 	cfg.NativeAttemptEnabled = true
 	cfg.NativeAttempt = func(ctx context.Context, att buildrequest.NativeCallAttempt) buildrequest.NativeCallOutcome {
 		inv := bamlutils.NativeStaticInvocation{
-			Method:                  fn.Method,
-			Descriptor:              fn,
-			Args:                    args,
-			ArgOrder:                argOrder,
-			Values:                  values,
-			Mode:                    bamlutils.NativeStaticModeFinal,
+			Method:     fn.Method,
+			Descriptor: fn,
+			Args:       args,
+			ArgOrder:   argOrder,
+			Values:     values,
+			Mode:       bamlutils.NativeStaticModeFinal,
+			// The adapter's registry, AFTER the worker's config load applied the
+			// trusted-configuration seal. Carried for identity resolution only, so a
+			// static decline is attributable to the configuration in front of it
+			// instead of collapsing to the generic no-identity one.
+			Registry:                adapter.OriginalClientRegistry(),
 			Provider:                att.Provider,
 			ClientOverride:          att.ClientOverride,
 			SingleLeaf:              singleLeaf,

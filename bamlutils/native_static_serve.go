@@ -119,6 +119,20 @@ type NativeStaticInvocation struct {
 	// Mode is the bounded observation mode (final / parse-only / stream).
 	Mode NativeStaticMode
 
+	// Registry is the request's EFFECTIVE client registry as the adapter holds it —
+	// the worker's config load has already run its TRUSTED-CONFIGURATION SEAL over
+	// it, so a client the DEPLOYMENT configured carries that seal and a client the
+	// caller described does not. It is the ONLY input from which a static
+	// invocation's serving-cutover configuration identity can be resolved, and it
+	// is read for identity ONLY (never for routing, rendering or the plan).
+	//
+	// It mirrors NativeServeRequest.Registry on the dynamic seam, and for the same
+	// reason: without it a static request presents no identity at all, so every
+	// static decline is the generic no-identity one and cannot be attributed to the
+	// configuration in front of it. Nil in lightweight callers, which resolve no
+	// identity — the safe direction, since no identity declines.
+	Registry *ClientRegistry
+
 	// Provider is the resolved leaf provider (e.g. "openai").
 	Provider string
 	// ClientOverride is the concrete selected child/leaf client name, or empty for

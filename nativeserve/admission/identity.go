@@ -17,8 +17,10 @@ import (
 // one cohort is enrolled, a process-level identity stamps that cohort onto EVERY
 // request the worker hosts — every registry, every client, every model — which is
 // an out-claim of BAML by construction rather than by accident. Closing the gap is
-// a PREREQUISITE for enrollment, and it lands on its own, with the policy still
-// empty, so the highest-risk piece is reviewable while it still serves nothing.
+// a PREREQUISITE for enrollment, and it landed on its own, with the policy still
+// empty, so the highest-risk piece was reviewable while it still served nothing.
+// Serving cutover S3b then enrolled ONE tuple on top of it; every guarantee below is
+// what makes that enrollment safe rather than a worker-wide stamp.
 //
 // # Why the request's own registry can never be the identity
 //
@@ -92,9 +94,11 @@ import (
 //
 // A seal assigns an opaque bucket to a configuration the deployment owns. It does
 // NOT permit a claim: that remains the compile-time enrollment manifest's answer,
-// and it is still empty. A deployment may seal every class it likes and every
-// request still declines — which TestSealedIdentityStillDeclinesUnderTheEmptyPolicy
-// drives.
+// and that manifest names exactly ONE slot (serving cutover S3b). A deployment may
+// seal every class it likes; every one sealed under any OTHER slot still declines —
+// which TestSealedButUnenrolledIdentityStillDeclines drives, and which
+// TestAnUnenrolledSlotNeverInheritsTheEnrolledCohort drives across the whole
+// declared vocabulary.
 
 // ConfigSelection is the per-request set of facts the identity resolver reads. All
 // of them are produced by BAML's own resolution and threaded through the native

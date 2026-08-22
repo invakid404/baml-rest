@@ -41,8 +41,8 @@ import (
 // natively only when it is admitted through AdmitStaticClaim by a serve-profile
 // worker. The serving-cutover S1 slice narrowed that further: admission now also
 // requires an ENROLLED surface/cohort pair (layer 1b below), and the shipped policy
-// enrolls nothing, so every static request declines pre-socket today and BAML
-// serves it.
+// enrolls NO static surface — S3b enrolls the dynamic unary call surface only — so
+// every static request declines pre-socket today and BAML serves it.
 //
 // SENSITIVE: every value the predicate touches (descriptor, args, rendered prompt,
 // canonical body, prepared plan, BAML plan) carries secret material — never log,

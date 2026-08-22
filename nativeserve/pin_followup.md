@@ -1,12 +1,14 @@
 # Out-of-`go.work` first-party pin follow-up
 
 This file is the TRACKED record of whether the five first-party pseudo-version
-selections below point at a **master** commit. **Right now they do.** The serving-cutover
-S3a change first moved all five to its own BRANCH commit `9f4cfe14e878` on
-`feat/debaml-s3a-identity`, because the symbols the packaged worker now links were
-introduced by that very change and no master commit carried them yet; PR #681 then
-squash-merged that change to master as `2f2e13c6dadb`, and the post-squash re-pin runbook
-in the last section has been **performed** — all five now name the master squash commit.
+selections below point at a **master** commit. **Right now they do not.** The
+serving-cutover S3b change moved all five to its own BRANCH commit `4a6c8f1ee571` on
+`feat/debaml-s3b-enroll`, because the enrollment and the symbols the packaged worker now
+links are introduced by that very change and no master commit carries them yet. The
+post-squash re-pin runbook in the last section is therefore **OWED**: immediately after
+this change is squash-merged, all five must be re-pinned to the master squash commit, the
+tar regenerated, and the probes re-run. A pre-squash pseudo-version is not the final
+delivery state.
 
 It is proof material, not documentation. `TestFirstPartyPinFollowupIsTracked`
 (`cmd/build/nativeworker_pins_test.go`) parses it on every ordinary `go test ./...`,
@@ -20,64 +22,60 @@ it goes red immediately.
 CONCRETE, per-change instance of it, which is what the generic comment cannot be.
 
 ```
-STATUS: RESOLVED
-PINNED-COMMIT: 2f2e13c6dadb
-PINNED-STAMP: 20260821064630
-REACHABLE-FROM: master
-SLICE: de-BAML serving cutover S3a — trusted effective-config identity resolver at the native admission seam (default-deny)
-PR: 681 (master squash-merge 2f2e13c6dadbb198f52b32e52c4c6de86514aeeb; re-pinned to the master squash commit post-merge)
+STATUS: OUTSTANDING
+PINNED-COMMIT: 4a6c8f1ee571
+PINNED-STAMP: 20260821153139
+REACHABLE-FROM: feat/debaml-s3b-enroll
+SLICE: de-BAML serving cutover S3b — enroll fe-v1 (strict-OpenAI dynamic unary /call), first native-served cohort
+PR: 683 (pre-squash; re-pin to the master squash commit is the mandatory immediate follow-up)
 ```
 
-## Why the pins were branch-only (now re-pinned to master)
+## Why the pins are branch-only
 
-`9f4cfe14e878` is the S3a source commit. It closes the production-wiring gap that would
-otherwise make the FIRST enrollment an over-claim: before it, `NewServeFunc` built the
-serve `Server` with a ZERO cohort identity and `serveCohortInput` returned that
-process-level value, so an enrolled fingerprint would have been stamped onto **every**
-request the worker hosts. After it, the dynamic unary serve seam RESOLVES a request's
-configuration identity — and resolves it only for a configuration the DEPLOYMENT
-configured, never one the caller described.
+`4a6c8f1ee571` is the S3b source commit. It is the FIRST change in this repository that
+permits an actual native provider request: it adds one production `ConfigRecord`
+(`cfg100` / `fe_v1` / `dynamic_call` / `openai` / strict-OpenAI regime / `DEBAML-683`),
+one `CohortEnrollment` `(SurfaceDynamicCall, fe_v1)`, and the reviewed policy version
+`s3b-fe-v1-dynamic-call` that names them.
 
-**This bump carries real cross-module behaviour, not just a version string.** S3a splits
-across both sides of the graph:
+**This bump carries real cross-module behaviour, not just a version string.** The
+functional diff is deliberately two data literals, but what those literals change is what
+the packaged worker DOES:
 
-- the ROOT side gains the TRUSTED-CONFIGURATION SEAL — `bamlutils/trustedconfig.go`
-  (the wire-unreachable seal on `ClientProperty` plus the canonical selector digest) and
-  `bamlutils/trustedclients` (the deployment's approved-configuration declaration, its
-  strict end-of-input parsing, its bounded value-free rejection errors, and the sealing
-  pass) — plus the worker config-load pass in `worker/options.go` that applies it, and the
-  `workerboot` runtime seam the booted-artifact proof builds its fixture through. That is
-  the ONLY thing that can mark a client as deployment-owned;
-- the `nativeserve` side gains `admission.ResolveConfigIdentity`, which READS that seal
-  and nothing else for identity, and rewires `canary`'s dynamic unary `serveCohortInput`
-  onto it. The cohort gate additionally binds an identity to its inventory record's
-  provider CLASS and declared surfaces rather than to the opaque bucket alone;
-- the packaged side (`internal/nativebody/nanollmprepare`) is what RUNS that seam. Its
-  `cmd/worker` entrypoint is also the binary the booted-artifact `/call` proof boots.
+- the `nativeserve` side gains the ENROLLMENT — the shipped `ProductionCohortGate` now
+  admits exactly one (surface, cohort) tuple instead of none — plus the approved
+  verification-REGIME check (`StageVerification` /
+  `verification_regime_unapproved`) that keeps that enrollment on the strict OpenAI
+  anchor, and the `RequiredVerification` field on `ConfigRecord` that the check reads.
+  Only the strict regime runs BOTH retained BAML oracles (the pre-claim no-send plan
+  equality and the post-response same-bytes parse/order compare), so an enrollment that
+  ran under the trusted regime would serve natively with no comparison at all;
+- the packaged side (`internal/nativebody/nanollmprepare`) is what RUNS that gate. Its
+  `cmd/worker` entrypoint is the binary the booted-artifact `/call` proof boots — and
+  under S3b that proof no longer asserts zero claims for the enrolled slot: it asserts
+  the deployed route SERVES it natively, with one upstream request and both oracles
+  green.
 
-A consumer resolving the OLD pin gets a serve core with no seal to read, under a manifest
-that claims one: its admission seam could not distinguish the deployment's approved
-configuration from any caller-supplied configuration that resembled it. That is the
-specific hazard S3a exists to remove, so the lockstep here is carrying behaviour, not a
-string.
+A consumer resolving the OLD pin gets a serve core that enrolls NOTHING under a manifest
+describing a worker that serves a cohort. That is not a cosmetic disagreement: it is the
+difference between a build that can produce native traffic and one that cannot, which is
+exactly the fact an operator reads this manifest to establish.
 
-The pins could not point at master until this change was squash-merged: the master commit that
-carries all of this IS that squash-merge (`2f2e13c6dadb`, #681), and it did not exist until
-the merge happened. The branch was rebased onto master `5a1459ae291a` (#680), so
-`9f4cfe14e878` was a descendant of the then-current master — but a descendant is not
-master, and the squash flattened it out of history just the same, which is why re-pinning
-to `2f2e13c6dadb` was the mandatory immediate follow-up. The Slice 7.1b (#655) incident is
-the precedent for what happens if that re-pin is skipped — a branch pin went red on
-`nativeserve-goget` once the branch was deleted — and #675 → #676, #677 → #678 and now #681
-are the most recent instances of doing it correctly.
+The pins cannot point at master until this change is squash-merged: no master commit
+carries the enrollment. The branch is based on master `21933457` (#682), so
+`4a6c8f1ee571` is a descendant of the current master — but a descendant is not master,
+and the squash will flatten it out of history just the same, which is why re-pinning to
+the master squash commit is the mandatory immediate follow-up. The Slice 7.1b (#655)
+incident is the precedent for what happens if that re-pin is skipped — a branch pin went
+red on `nativeserve-goget` once the branch was deleted — and #675 → #676, #677 → #678 and
+#681 → #682 are the three most recent instances of doing it correctly.
 
-**What a green `nativeserve-goget` proves now.** With the selections on the master squash
-commit `2f2e13c6dadb` it proves an external consumer can resolve, build and run
-`nativeserve.New` against a MASTER commit — the module graph and every transitive
-requirement are correct AND master-durable, so it keeps proving that after the
-`feat/debaml-s3a-identity` branch is deleted. While the selections were on the branch
-commit `9f4cfe14e878` a green probe proved only branch-resolvability, which is the whole
-reason the re-pin runbook below was mandatory.
+**What a green `nativeserve-goget` proves right now.** With the selections on the branch
+commit `4a6c8f1ee571` it proves an external consumer can resolve, build and run
+`nativeserve.New` against THIS BRANCH — the module graph and every transitive requirement
+are correct. It does NOT prove master-durability, and it stops proving anything at all
+once `feat/debaml-s3b-enroll` is deleted, which is the whole reason the re-pin runbook
+below is mandatory rather than tidy-up.
 
 ## The five pinned selections
 
@@ -88,11 +86,11 @@ bump is invisible until the out-of-work packaging build fails with
 
 | # | file | module | current selection |
 | --- | --- | --- | --- |
-| 1 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest` | `v0.0.0-20260821064630-2f2e13c6dadb` |
-| 2 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260821064630-2f2e13c6dadb` |
-| 3 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260821064630-2f2e13c6dadb` |
-| 4 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260821064630-2f2e13c6dadb` |
-| 5 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260821064630-2f2e13c6dadb` |
+| 1 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest` | `v0.0.0-20260821153139-4a6c8f1ee571` |
+| 2 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260821153139-4a6c8f1ee571` |
+| 3 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260821153139-4a6c8f1ee571` |
+| 4 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260821153139-4a6c8f1ee571` |
+| 5 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260821153139-4a6c8f1ee571` |
 
 `internal/nativebody/nanollmprepare/go.mod`'s `github.com/invakid404/baml-rest v0.0.48`
 is deliberately NOT in this list: it is a released tag, not a pseudo-version tracking a
@@ -100,35 +98,30 @@ commit, and the module directory-replaces it.
 
 ## What was done for THIS bump
 
-1. Took the branch SHA of the S3a source commit and its committer timestamp in UTC —
-   `9f4cfe14e878` / `20260820173806`. The stamp was not hand-trusted: `GOWORK=off
-   GOPRIVATE=github.com/invakid404/baml-rest go mod download -json <mod>@9f4cfe14e878`
+1. Took the branch SHA of the S3b source commit and its committer timestamp in UTC —
+   `4a6c8f1ee571` / `20260821153139`. The stamp was not hand-trusted: `GOWORK=off
+   GOPRIVATE=github.com/invakid404/baml-rest go mod download -json <mod>@4a6c8f1ee571`
    was run for the root, `bamlutils` and `worker` off the origin, and Go's own
    stamp↔SHA computation returned exactly the pseudo-versions recorded above.
 2. Moved **all five** selections above to that commit, each keeping its base version
    — `v0.0.0-<stamp>-<sha12>` for the root module, `v0.0.49-0.<stamp>-<sha12>` for
    `bamlutils` and `worker`.
 3. Updated this file and BOTH `// PIN-STATUS` markers (`nativeserve/go.mod`,
-   `internal/nativebody/nanollmprepare/go.mod`) to `OUTSTANDING`, so the machine-readable
-   pin state and this record agree. (The five moved together on every revision of this
-   change and never separately. The source SHA moved five times: twice because a cold
-   review rewrote the change, once because the branch was REBASED onto master
-   `5a1459ae291a` (#680), and twice for bounded bot-feedback cleanups (the second of
-   which is the completed re-pin runbook below). A rebase and an
-   edit both rewrite the source commit, so either re-opens this record — the pins name a
-   commit, not a change.)
+   `internal/nativebody/nanollmprepare/go.mod`) to `OUTSTANDING`, plus BOTH mirrored
+   manifest NARRATIVES, so the machine-readable pin state, the prose and this record all
+   agree. (The five move together on every revision of this change and never separately.
+   A rebase and an edit both rewrite the source commit, so either re-opens this record —
+   the pins name a commit, not a change.)
 4. Regenerated the packaged worker source, which embeds both manifests:
    `go run ./cmd/build/gen-nativeworker-src`.
 5. Re-ran the gates.
 
-## The follow-up — PERFORMED (the post-squash re-pin RUNBOOK)
+## The follow-up — OWED (the post-squash re-pin RUNBOOK)
 
-**This has been done for #681's squash-merge `2f2e13c6dadb`.** The ordered steps below are
-the runbook that was executed, retained verbatim as the record of exactly what was carried
-out and as the template for the next slice. Immediately after the change was squash-merged,
-all of the following were done, in this order. A pre-squash pseudo-version is not the final
-delivery state. Nothing here is optional and nothing here is inferable — an earlier
-instance of this runbook left two steps implicit (flipping the mirrored manifest
+**This is NOT yet done.** The ordered steps below must be carried out immediately after
+this change is squash-merged to master, in this order. A pre-squash pseudo-version is not
+the final delivery state. Nothing here is optional and nothing here is inferable — an
+earlier instance of this runbook left two steps implicit (flipping the mirrored manifest
 NARRATIVES, and materializing the external probe's module and program), which is why they
 are numbered steps below.
 
@@ -270,20 +263,20 @@ database yet. Confirm the probe's own `go.mod` resolved the NEW pseudo-versions 
 
 ### Definition of done
 
-- [x] all five selections name the master squash commit, each with its correct base version
-- [x] both `// PIN-STATUS` markers say `RESOLVED`
-- [x] both mirrored manifest narratives say master-durable, with the branch-only text
+- [ ] all five selections name the master squash commit, each with its correct base version
+- [ ] both `// PIN-STATUS` markers say `RESOLVED`
+- [ ] both mirrored manifest narratives say master-durable, with the branch-only text
       demoted to `HISTORICAL, SUPERSEDED`
-- [x] this file says `STATUS: RESOLVED`, `REACHABLE-FROM: master`, with the new
+- [ ] this file says `STATUS: RESOLVED`, `REACHABLE-FROM: master`, with the new
       commit/stamp and an updated selections table
-- [x] `cmd/build/nativeworker_module.tar` regenerated
-- [x] tar freshness, `./cmd/build/...`, dynclient regen-idempotence and `nativeserve-goget`
+- [ ] `cmd/build/nativeworker_module.tar` regenerated
+- [ ] tar freshness, `./cmd/build/...`, dynclient regen-idempotence and `nativeserve-goget`
       all green
 
-Precedent: #675 -> #676 and #677 -> #678 are the two most recent instances of this runbook
-being executed correctly, and #681 (this one) is the latest; Slice 7.1b (#655) is what
-skipping it costs — a branch pin went red on `nativeserve-goget` the moment the branch was
-deleted.
+Precedent: #675 -> #676, #677 -> #678 and #681 -> #682 are the three most recent instances
+of this runbook being executed correctly; Slice 7.1b (#655) is what skipping it costs — a
+branch pin went red on `nativeserve-goget` the moment the branch was deleted.
 
-Step 4 is now done: this record is the tracked statement that the released serve core IS
-pinned to the durable master commit `2f2e13c6dadb`.
+Until every box above is ticked, this record is the tracked statement that the released
+serve core is pinned to a BRANCH commit (`4a6c8f1ee571`) that the squash-merge will
+flatten out of history.

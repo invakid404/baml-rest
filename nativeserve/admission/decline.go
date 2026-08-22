@@ -88,6 +88,15 @@ const (
 	// switch: BAML_REST_USE_DEBAML (StageFlag) remains the one global revert, and
 	// this gate can only NARROW — it never widens an existing predicate.
 	StageCohort Stage = "cohort"
+	// StageVerification is the serving-cutover S3b post-mapping check that the
+	// ENROLLED configuration class is claiming under the verification REGIME its
+	// inventory record approves. It is its own stage rather than a second cohort
+	// reason because it answers a different question at a different layer: the
+	// cohort gate asks "is this class permitted on this surface?" (before any
+	// mapping), and this asks "is the regime the mapper just assigned the one this
+	// class was approved for?" (after mapping, still before any claim or socket).
+	// Folding the two would make one bucket mean two unrelated rollout problems.
+	StageVerification Stage = "verification"
 	// StageContext: the request context was cancelled/expired mid-admission,
 	// around a non-context FFI boundary (New / render / Prepare). It is a
 	// PRE-SOCKET decline to BAML — no native plan is sent — so the ordinary BAML
@@ -268,13 +277,20 @@ const (
 	ReasonDuplicateHost             Reason = "duplicate_host"
 	ReasonInvalidHeaderName         Reason = "invalid_header_name"
 	ReasonInvalidHeaderValue        Reason = "invalid_header_value"
-	// cohort — the ONE bounded reason the S1 default-deny gate emits. The scope pins
-	// a single actionable bucket for all three refusal shapes it names (identity
+	// cohort — the ONE bounded reason the default-deny gate emits. The scope pins a
+	// single actionable bucket for all three refusal shapes it names (identity
 	// absent, identity unrecognized, identity known but not enrolled for this
 	// surface); the structural difference lives in the secret-free Decline detail,
-	// never in a label. With S1's EMPTY production policy this is the terminal
-	// disposition of every request that clears layer 1 on every surface.
+	// never in a label. Under the shipped policy it is the terminal disposition of
+	// every request that clears layer 1 except the one enrolled fe-v1 tuple on the
+	// dynamic unary call surface (serving cutover S3b).
 	ReasonCohortNotEnrolled Reason = "cohort_not_enrolled"
+	// verification — the bounded reason the S3b regime check emits. A non-zero count
+	// is a ROLLOUT-STOP signal, not ordinary unsupported traffic: it means an
+	// enrolled class reached the mapper and came back under a regime nobody approved
+	// it for, which is the exact shape "fe-v1 quietly widened to trusted-provider"
+	// would take. It declines pre-claim and pre-socket, so BAML serves the request.
+	ReasonVerificationUnapproved Reason = "verification_regime_unapproved"
 	// mode — the direct-parse surface's terminal refusal. It fires only when a cohort
 	// IS enrolled for direct_parse (otherwise cohort_not_enrolled wins first), and it
 	// says the honest thing: the policy would permit this class, but `/parse/{method}`

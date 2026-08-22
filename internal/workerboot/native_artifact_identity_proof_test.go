@@ -72,10 +72,15 @@ func TestNativeCapableArtifactCarriesTheDeploymentDeclaration(t *testing.T) {
 					t.Errorf("the boot log carries %q; the declaration must be reported as a bounded count only", forbidden)
 				}
 			}
-			// Sealing is not enrolling: the policy is still empty and nothing claimed.
+			// SEALING IS NOT ENROLLING, and after serving cutover S3b that is a real
+			// distinction rather than a vacuous one: the shipped policy now enrolls one
+			// tuple, and the class declared above is sealed under `cfg001` — a declared
+			// but UNENROLLED slot — so it still resolves a bounded, non-enrolled cohort.
+			// The count is asserted against the shipped manifest so an artifact that
+			// gained an unreviewed second enrollment fails here.
 			policy := gatheredMetric(t, booted, "baml_rest_debaml_cohort_policy_info")
-			if got := policy.GetGauge().GetValue(); got != 0 {
-				t.Errorf("the shipped cohort policy enrolls %v pair(s) with a declaration present, want 0", got)
+			if got := policy.GetGauge().GetValue(); got != wantShippedEnrollments {
+				t.Errorf("the shipped cohort policy enrolls %v pair(s) with a declaration present, want %v", got, wantShippedEnrollments)
 			}
 			assertNoNativeClaims(t, booted)
 		})
