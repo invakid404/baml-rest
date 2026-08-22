@@ -21,9 +21,9 @@ go 1.26.5
 require (
 	github.com/boundaryml/baml v0.223.0
 	github.com/invakid404/baml-rest v0.0.48
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260821153139-4a6c8f1ee571
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260822230654-ba813ad3564d
 	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260821153139-4a6c8f1ee571
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260822230654-ba813ad3564d
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
@@ -112,7 +112,7 @@ require (
 // without recording it here fails the native-worker PACKAGING build (-mod=readonly)
 // with "updates to go.mod needed".
 //
-// PIN-STATUS: OUTSTANDING
+// PIN-STATUS: RESOLVED
 //
 // That marker is the MACHINE-READABLE statement of where these pins stand, and
 // cmd/build's TestPackagedManifestsMatchTheTrackedPins requires it to equal the
@@ -132,12 +132,15 @@ require (
 // first to its own branch commit and then post-merge to de1eefa68ed8 (#675); S2 did
 // the same, ending at the master squash commit c676a4dacc90 (#677); S3a did the same,
 // briefly BRANCH-ONLY at 9f4cfe14e878 on feat/debaml-s3a-identity before #681
-// squash-merged it to master as 2f2e13c6dadb.
+// squash-merged it to master as 2f2e13c6dadb; S3b did the same, briefly BRANCH-ONLY at
+// 4a6c8f1ee571 on feat/debaml-s3b-enroll before #683 squash-merged it to master as
+// ba813ad3564d.
 //
-// RIGHT NOW they are BRANCH-ONLY: the serving-cutover S3b change moved all five to
-// 4a6c8f1ee571 on feat/debaml-s3b-enroll, its own source commit, so
-// nativeserve/pin_followup.md reads STATUS: OUTSTANDING and the post-squash re-pin
-// runbook is OWED. Do not treat this comment as the authority: the tracked record is,
+// RIGHT NOW they are MASTER-durable: the serving-cutover S3b change moved all five to
+// 4a6c8f1ee571 on feat/debaml-s3b-enroll, its own source commit, and #683 then
+// squash-merged that to master as ba813ad3564d, where these five are now re-pinned — so
+// nativeserve/pin_followup.md reads STATUS: RESOLVED and the post-squash re-pin runbook
+// has been PERFORMED. Do not treat this comment as the authority: the tracked record is,
 // and cmd/build's
 // TestFirstPartyPinFollowupIsTracked parses that record and the require directives on every
 // ordinary `go test ./...` and requires them to agree. This paragraph exists only so a
