@@ -628,14 +628,37 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"list_int_bool_union_now_claimed":   true,
 	"list_string_int_union_now_claimed": true,
 	// NEW fallback-boundary guards this slice adds, both live-captured:
-	//   - a JSON null against a NON-nullable union with a COMPOSITE arm: BAML's list
-	//     arm absorbs the null as [] (map -> {}, all-defaultable class -> defaults),
-	//     so native may not claim "non-nullable union rejects null" and DECLINES;
+	//   - a JSON null against a NON-nullable union with a null-SURVIVING arm: BAML's
+	//     LIST arm wraps the null (SingleToArray) and still succeeds as [], and a
+	//     CLASS arm may implied-key / default-fill it, so native may not claim
+	//     "non-nullable union rejects null" and DECLINES;
 	//   - a class union arm with an OPTIONAL field: BAML's Class::try_cast fills a
 	//     missing optional (OptionalDefaultFromNoValue) and succeeds at a NON-zero
 	//     score, which tryCastClass does not model.
 	"union_null_composite_arm_stays_fallback":       false,
 	"class_union_optional_field_arm_stays_fallback": false,
+	// COLD-REVIEW FIX — the MAP arm's null behaviour, pinned live in BOTH directions.
+	// A map arm does NOT absorb a null (coerce_map's catch-all is
+	// error_unexpected_type for every non-object; try_cast_map returns None), so a
+	// string|map union over null provably ERRORS — and the enclosing REQUIRED class
+	// field then default-fills it from the union's TypeIR::default_value (the map
+	// arm's {}) with DefaultButHadUnparseableValue, which native now reproduces:
+	//   - CLAIMED at a class field: {"u":{}} (not an error, and not a map that ate
+	//     the null);
+	//   - FALLBACK as a list ELEMENT, where nothing can rescue the union error and
+	//     BAML SKIPS the item ([]) — the discriminator that proves the arm rejected
+	//     the null rather than absorbing it. Native cannot prove a failing UNION
+	//     element is a BAML parse error, so it declines.
+	"class_field_union_map_arm_null_default_claimed": true,
+	"list_union_map_arm_rejects_null_stays_fallback": false,
+	// COLD-REVIEW FIX — the class-union arm's OPTIONAL-field boundary, one level DOWN.
+	// checkSupportedType stops at a class REFERENCE (class definitions are validated
+	// once over the bundle's class slice, under the ORDINARY field rules), so a
+	// class-valued collection field would otherwise smuggle a class the union-arm
+	// rules reject. checkUnionCollectionClasses holds every class reachable through a
+	// union arm's collection to those rules; a collection of an IN-SCOPE class still
+	// claims.
+	"class_union_arm_collection_class_field_stays_fallback": false,
 	// #555 Slice 2 — Unicode match_string CLAIMS. match_string now folds through
 	// internal/debaml/bamlunicode (byte-for-byte Rust 1.93.0 str::to_lowercase /
 	// unicode-normalization 0.1.24), so every non-ASCII case/normalization fold the

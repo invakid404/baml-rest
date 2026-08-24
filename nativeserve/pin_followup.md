@@ -145,9 +145,27 @@ commit, and the module directory-replaces it.
 REPEATED against the new tip so the pins always name the LATEST source: a pin naming an
 earlier branch commit describes a serve core the tree no longer ships. (The pin/tar commit
 itself is not a source commit — it changes only `go.mod` manifests and the tar — so it does
-not require re-bumping onto itself.) This has already happened ONCE on this branch: the
-cold-review map/null fix landed as a second source commit, and all five selections were
-re-bumped from `d43120c9de32` to `83dde65a20f1` with a freshly-resolved stamp.
+not require re-bumping onto itself.) This has already happened TWICE on this branch: the
+cold-review map/null fix landed as a second source commit and the collection-class
+restriction as a third, so all five selections were re-bumped `d43120c9de32` ->
+`939f5d7ff1f6` -> `83dde65a20f1`, each time with a freshly-resolved stamp.
+
+**What counts as a SOURCE commit, precisely.** "Source" here means content the PACKAGED
+serve core resolves through these pins — the root module's non-test packages, `bamlutils`
+and `worker`. A commit that touches only files the packaged build can never compile is NOT
+one, and re-bumping onto it would be pin churn that proves nothing. The branch has exactly
+one such commit, sitting on top of the pins: the parse-recovery disposition-table
+registration, which edits only `integration/bamlfuzz_parse_recovery_test.go` (plus this
+file) — a `//go:build integration` file in package `integration`, which the tar does not
+carry (zero `integration/` entries) and which no packaged module imports. Two checks
+establish that rather than asserting it: `go run ./cmd/build/gen-nativeworker-src`
+reproduces `cmd/build/nativeworker_module.tar` BYTE-IDENTICALLY (sha256
+`30fb5759...4b8b6f94` before and after), and the whole diff from the pinned commit
+`83dde65a20f1` to the branch tip is the pin/tar manifest set itself — already carved out
+above — plus that one integration test file and this record. NOTHING a packaged module
+compiles changed, so the five selections stay on `83dde65a20f1` and the serve core a
+consumer resolves is bit-identical to the one this tree ships. Anything touching a
+packaged-reachable package re-bumps as usual.
 
 ## The follow-up — OWED (the post-squash re-pin RUNBOOK)
 
