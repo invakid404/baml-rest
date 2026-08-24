@@ -964,29 +964,80 @@ func TestParse_ClassUnionCollectionFieldClaimed(t *testing.T) {
 	requireUnsupported(t, optArm, `{"u":{"title":"Go"}}`)
 }
 
-// TestParse_NullIntoNonNullableUnionDeclinesWithCompositeArm pins the over-claim
-// guard the collection-field broadening made load-bearing: BAML has no null fast
-// path for a NON-nullable union, so it coerces the null through every arm — and a
-// LIST arm succeeds as [], a MAP arm as {}, and a class whose fields are all
-// defaultable default-fills. Native must DECLINE those rather than claim
-// "expected non-nullable union, got null". An all-NON-COMPOSITE-leaf union (where
-// every arm provably errors on a null) still CLAIMS the error.
-func TestParse_NullIntoNonNullableUnionDeclinesWithCompositeArm(t *testing.T) {
-	// string | list<int> — BAML yields []. Native declines.
+// TestParse_NullIntoNonNullableUnion pins what a JSON null against a NON-nullable
+// union actually is — per ARM KIND, because they differ, and a uniform rule is
+// wrong in both directions. Every expectation here is the live BAML v0.223 answer
+// (the same schemas are live-captured as corpus fixtures
+// union_null_composite_arm_stays_fallback, class_field_union_map_arm_null_default_claimed
+// and list_union_map_arm_rejects_null_stays_fallback, which the parse-recovery
+// differential drives against the real CFFI).
+//
+//   - LIST arm: SURVIVES (coerce_array wraps the null as one implied element,
+//     the element fails as ArrayItemParseError, the arm succeeds as []). BAML
+//     returns a value, so native must NOT claim an error — it declines.
+//   - MAP arm: REJECTS (coerce_map's catch-all is error_unexpected_type for every
+//     non-object). The union therefore ERRORS — but the enclosing REQUIRED class
+//     field default-fills it from the union's TypeIR::default_value (the map arm's
+//     {}), so BAML returns {"u":{}} and native CLAIMS exactly that.
+//   - all NON-COMPOSITE leaves: every arm errors AND the union has no
+//     default_value, so the class error propagates and native claims the error.
+//   - CLASS arm: may survive; native declines rather than guess.
+func TestParse_NullIntoNonNullableUnion(t *testing.T) {
+	// string | list<int> — the list arm survives, BAML yields []. Native declines.
 	listArm := unionSchema(
 		&bamlutils.DynamicTypeSpec{Type: "string"},
 		&bamlutils.DynamicTypeSpec{Type: "list", Items: &bamlutils.DynamicTypeSpec{Type: "int"}},
 	)
 	requireUnsupported(t, listArm, `{"u":null}`)
-	// string | map<string,int> — BAML yields {}. Native declines.
+
+	// string | map<string,int> — BOTH arms error, and the class default-fills the
+	// union's map default. This is the case the cold review flagged: it is neither a
+	// map that ate the null nor a claimed parse error.
 	mapArm := unionSchema(
 		&bamlutils.DynamicTypeSpec{Type: "string"},
 		&bamlutils.DynamicTypeSpec{Type: "map",
 			Keys:   &bamlutils.DynamicTypeSpec{Type: "string"},
 			Values: &bamlutils.DynamicTypeSpec{Type: "int"}},
 	)
-	requireUnsupported(t, mapArm, `{"u":null}`)
-	// A | B where A{items string[]} default-fills — BAML yields {"items":[]}.
+	mustParse(t, mapArm, `{"u":null}`, `{"u":{}}`)
+	// Arm ORDER does not matter (the default_value scan is over all arms), and a
+	// union with no string arm at all resolves the same way.
+	mapArmFirst := unionSchema(
+		&bamlutils.DynamicTypeSpec{Type: "map",
+			Keys:   &bamlutils.DynamicTypeSpec{Type: "string"},
+			Values: &bamlutils.DynamicTypeSpec{Type: "int"}},
+		&bamlutils.DynamicTypeSpec{Type: "string"},
+	)
+	mustParse(t, mapArmFirst, `{"u":null}`, `{"u":{}}`)
+	mapArmNoString := unionSchema(
+		&bamlutils.DynamicTypeSpec{Type: "int"},
+		&bamlutils.DynamicTypeSpec{Type: "map",
+			Keys:   &bamlutils.DynamicTypeSpec{Type: "string"},
+			Values: &bamlutils.DynamicTypeSpec{Type: "int"}},
+	)
+	mustParse(t, mapArmNoString, `{"u":null}`, `{"u":{}}`)
+
+	// The same string|map union as a LIST ELEMENT: nothing default-fills there, BAML
+	// SKIPS the element ([]) — which is only possible because the map arm REJECTED
+	// the null. Native cannot prove a failing union element is a BAML parse error,
+	// so it declines. This is the discriminator: if the map arm had absorbed the
+	// null, BAML would emit [{}] instead.
+	listOfMapUnion := oneField(&bamlutils.DynamicProperty{
+		Type: "list",
+		Items: &bamlutils.DynamicTypeSpec{
+			Type: "union",
+			OneOf: []*bamlutils.DynamicTypeSpec{
+				{Type: "string"},
+				{Type: "map",
+					Keys:   &bamlutils.DynamicTypeSpec{Type: "string"},
+					Values: &bamlutils.DynamicTypeSpec{Type: "int"}},
+			},
+		},
+	})
+	requireUnsupported(t, listOfMapUnion, `{"u":[null]}`)
+
+	// A | B where A{items string[]} may default-fill — BAML yields {"items":[]}.
+	// Native treats a class arm as possibly-surviving and declines.
 	classArm := &bamlutils.DynamicOutputSchema{
 		Properties: props(kv("u", &bamlutils.DynamicProperty{
 			Type:  "union",
@@ -1004,12 +1055,12 @@ func TestParse_NullIntoNonNullableUnionDeclinesWithCompositeArm(t *testing.T) {
 		),
 	}
 	requireUnsupported(t, classArm, `{"u":null}`)
-	// All arms are non-composite leaves: BAML merges the per-arm errors and fails,
-	// so native keeps CLAIMING the error (both legs error — parity, not a fallback).
+
+	// All arms are non-composite leaves: every arm errors AND the union has no
+	// default_value, so BAML errors the whole parse and native claims that error.
 	leaves := unionSchema(&bamlutils.DynamicTypeSpec{Type: "int"}, &bamlutils.DynamicTypeSpec{Type: "string"})
 	requireClaimedError(t, leaves, `{"u":null}`)
 }
-
 func TestParse_NullableScalarMultiUnionScored(t *testing.T) {
 	// M3b: a nullable scalar-leaf multi-union (string | int | null) is now claimed
 	// for non-null input too. The variants flatten to [string, int] (null hoisted

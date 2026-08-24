@@ -694,10 +694,14 @@ var parseRecoveryNativeClaim = map[string]bool{
 // ErrDeBAMLParseUnsupported) rather than through this differential.
 var parseRecoveryBoundaryFamily = map[string]string{
 	// UNION SLICE: a JSON null into a NON-nullable union whose arm set contains a
-	// COMPOSITE (list / map / all-defaultable class) arm — BAML absorbs the null on
-	// that arm, so native's claimed "non-nullable union rejects null" error would be
-	// an out-claim and it declines instead.
-	"union_null_composite_arm_stays_fallback": "union_null_composite_arm",
+	// null-SURVIVING (list / possibly-absorbing class) arm — BAML still produces a
+	// value on that arm, so native's claimed "non-nullable union rejects null" error
+	// would be an out-claim and it declines instead. The MAP-arm sibling joins the
+	// family from the other side: that arm REJECTS the null, and the fixture pins the
+	// position (a list ELEMENT) where nothing default-fills the resulting union
+	// error, so native declines there too.
+	"union_null_composite_arm_stays_fallback":        "union_null_composite_arm",
+	"list_union_map_arm_rejects_null_stays_fallback": "union_null_composite_arm",
 	// UNION SLICE: a class union arm with an OPTIONAL field — BAML's Class::try_cast
 	// succeeds at a NON-zero score (OptionalDefaultFromNoValue) where tryCastClass
 	// fails the strict cast, so the arm stays out of the admitted class family.

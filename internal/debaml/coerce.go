@@ -1421,9 +1421,32 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 			// the same error (the differential checks status parity).
 			return err
 		}
+		if d, ok := defaultValue(cls.Fields[i].Type); ok && isProvenBamlError(err) {
+			// coerce_class's `Some(Err(e)) => t.default_value(Some(e))`: a REQUIRED
+			// field whose coercion PROVABLY failed and whose TYPE has a
+			// TypeIR::default_value is DEFAULT-FILLED (DefaultButHadUnparseableValue,
+			// cost 2), not errored — which is why provenClassFieldError refuses to
+			// call a defaultable field a proven CLASS error. The proof is the error
+			// itself: a provenErr means BAML errors this field for this value (a
+			// claimed mismatchError was already propagated above). The canonical case
+			// is a JSON null against a non-nullable `string|map<string,int>` field:
+			// every arm errors, and the union's default_value is the map arm's `{}`.
+			out[i] = d
+			filled[i] = true
+			// DefaultButHadUnparseableValue is NOT one of the flags pick_best's
+			// all-default devalue looks for (OptionalDefaultFromNoValue /
+			// DefaultFromNoValue), so this field does NOT make the class all-default.
+			hasRealField = true
+			cf.add(2) // DefaultButHadUnparseableValue (cost 2)
+			return nil
+		}
 		if cls.Fields[i].Type.Kind == schema.TypeMap && v.kind != valObject {
 			// coerce_map on a non-object is error_unexpected_type (coerce_map.rs),
 			// so BAML fills the map default {} with DefaultButHadUnparseableValue.
+			// Kept alongside the general rule above because coerceMap reports a
+			// non-object as a plain DECLINE, not a provenErr (BAML's own scoring can
+			// still shape a partial map from some non-objects), so the proof here is
+			// the INPUT KIND rather than the error.
 			out[i] = json.RawMessage("{}")
 			filled[i] = true
 			hasRealField = true
@@ -3005,28 +3028,71 @@ func coerceUnionSafe(b *schema.Bundle, u *schema.UnionType, input value, cf *coe
 // nullIntoNonNullableUnion decides what a JSON null against a NON-nullable union
 // is. BAML has no null fast path here (try_cast_union's optional exit does not
 // apply), so coerce_union coerces the null through EVERY arm and pick_bests the
-// survivors — and some arms SURVIVE a null:
+// survivors. Which arms survive is NOT uniform across composites, and getting it
+// wrong is an out-claim in one direction and an under-claim in the other:
 //
-//   - a LIST arm wraps it (SingleToArray) and the failed element becomes
-//     ArrayItemParseError, so the arm succeeds as `[]`;
-//   - a MAP arm succeeds as `{}`;
-//   - a CLASS arm whose fields are all defaultable (list/map) default-fills them,
-//     and a SINGLE-field class absorbs the null through its implied key.
+//   - a LIST arm SURVIVES: coerce_array's non-array branch wraps the null as one
+//     implied element (SingleToArray), the element fails as ArrayItemParseError,
+//     and the arm still succeeds as `[]` (coerce_array.rs — a list coercion never
+//     errors). LIVE-CAPTURED: list<string|list<int>> over [null] keeps the element
+//     as [[]] rather than skipping it.
+//   - a MAP arm does NOT survive: coerce_map's `Some(value)` match falls to the
+//     catch-all `_ => Err(ctx.error_unexpected_type(...))` for every non-object,
+//     and try_cast_map likewise returns None (coerce_map.rs). LIVE-CAPTURED: a
+//     list<string|map<string,int>> over [null] SKIPS the element ([]), which only
+//     happens when the union genuinely errored — and so does a bare
+//     list<map<string,int>> over [null].
+//   - a CLASS arm MAY survive — a single-field class implied-keys the null into
+//     its lone field, and an all-defaultable class default-fills — and native does
+//     not prove which, so it is treated as surviving (decline).
 //
-// A union with any such arm therefore SUCCEEDS in BAML where a naive
-// "non-nullable union rejects null" rule would claim an error — a genuine
-// out-claim. So the claimed error is restricted to the one family where every arm
-// provably fails: all-NON-COMPOSITE leaves (primitive scalar / literal / enum),
-// each of which is an error_unexpected_null / error_unexpected_type on a JSON null,
-// leaving pick_best with no Ok candidate and BAML merging the errors. Anything else
-// DECLINES (falls back), which is the safe direction.
+// So a union with a LIST or CLASS arm SUCCEEDS in BAML and native DECLINES it (it
+// does not reproduce the surviving arm). A union of only LEAVES and MAPS provably
+// ERRORS: pick_best gets no Ok candidate and BAML merges the errors.
+//
+// A provable union error is NOT automatically a claimed parse error, because the
+// ENCLOSING position decides what happens to it. For a required class field,
+// coerce_class does `Some(Err(e)) => t.default_value(Some(e))` — so a union that
+// has ANY defaultable arm (a MAP's `{}`) is DEFAULT-FILLED with
+// DefaultButHadUnparseableValue rather than erroring the class. LIVE-CAPTURED:
+// Root{u: string|map<string,int>} over {"u":null} returns {"u":{}}, NOT an error.
+// Only a union with NO defaultable arm (all leaves) propagates, and that is the
+// one shape native claims outright. The defaultable case is reported as a PROVEN
+// BAML error instead, which declines at a standalone position and lets
+// coerceClass apply the same default_value BAML applies.
 func nullIntoNonNullableUnion(variants []schema.Type) error {
 	for i := range variants {
-		if !isFlatLeafField(variants[i]) {
-			return unsupported("JSON null into a non-nullable union with a composite arm (a list/map/defaultable-class arm ABSORBS the null in BAML — list->[], map->{}, class->defaults — so native cannot claim the error)")
+		if nullSurvivingUnionArm(variants[i]) {
+			return unsupported("JSON null into a non-nullable union with a null-SURVIVING arm (a list arm wraps it as [] via SingleToArray, and a class arm may implied-key or default-fill it) — BAML succeeds, so native cannot claim the error")
 		}
 	}
+	// Every arm provably rejects the null, so BAML's union errors. Whether that is
+	// the caller's error depends on the union's own TypeIR::default_value.
+	if _, defaultable := defaultValue(schema.Type{Kind: schema.TypeUnion, Union: &schema.UnionType{Variants: variants}}); defaultable {
+		return provenError("JSON null into a non-nullable union of leaf/map arms: BAML errors every arm, but the union has a default_value (a map arm's {}) so an enclosing required field default-fills it instead of erroring")
+	}
 	return typeMismatch("non-nullable union", value{kind: valNull})
+}
+
+// nullSurvivingUnionArm reports whether a union arm can SUCCEED on a JSON null
+// input, i.e. whether BAML's union still has an Ok candidate. See
+// [nullIntoNonNullableUnion] for the per-kind evidence: a LIST survives via
+// coerce_array's SingleToArray branch, a CLASS may survive via implied-key /
+// default-fill and is treated as surviving because native does not prove which, and
+// a MAP does not (coerce_map errors on every non-object). Every non-composite leaf
+// is an error_unexpected_null / error_unexpected_type. Unknown kinds are treated as
+// surviving, so a future kind declines rather than being claimed.
+func nullSurvivingUnionArm(t schema.Type) bool {
+	switch t.Kind {
+	case schema.TypePrimitive, schema.TypeLiteral, schema.TypeEnum:
+		return false
+	case schema.TypeMap:
+		return false
+	case schema.TypeList, schema.TypeClass:
+		return true
+	default:
+		return true
+	}
 }
 
 // coerceUnionSafeMulti resolves a proven-safe multi-variant union (a scalar/
