@@ -43,7 +43,7 @@ func TestTryCastClass_Strict(t *testing.T) {
 	b, aT := classBundle(t, s, "A") // A{id int, name string}
 
 	assertMatch := func(name string, in value, wantOut string, wantMatched bool) {
-		out, kind, matched, err := tryCastClass(b, aT.Name, aT.Mode, in, nil)
+		out, kind, _, matched, err := tryCastClass(b, aT.Name, aT.Mode, in, nil)
 		if err != nil {
 			t.Fatalf("%s: unexpected err: %v", name, err)
 		}
@@ -194,21 +194,50 @@ func TestClassUnion_HardGuardsStayFallback(t *testing.T) {
 	)
 	requireUnsupported(t, optField, `{"u":{"a":1,"b":"x"}}`)
 
-	// A class arm with a LIST field declines at the gate (single-to-array is M3d).
+	// A class arm with a required LIST or STRING-keyed MAP field is CLAIMED now:
+	// tryCastArray / tryCastMap cover phase 1 (their scores summed into the class
+	// try_cast score), coerceList / coerceMap cover phase 2, and an ABSENT one is
+	// TypeIR::default_value-filled to [] / {} (DefaultFromNoValue, score 100). Both
+	// are held byte-exact against live BAML by the parse-recovery differential.
 	listField := abClassUnionSchema(
 		props(kv("a", intProp()), kv("tags", &bamlutils.DynamicProperty{Type: "list", Items: &bamlutils.DynamicTypeSpec{Type: "string"}})),
 		props(kv("c", intProp()), kv("d", strProp())),
 	)
-	requireUnsupported(t, listField, `{"u":{"a":1,"tags":["x"]}}`)
+	mustParse(t, listField, `{"u":{"a":1,"tags":["x"]}}`, `{"u":{"a":1,"tags":["x"]}}`)
+	mustParse(t, listField, `{"u":{"a":1}}`, `{"u":{"a":1,"tags":[]}}`)
 
-	// A class arm with a MAP field declines: a map is not a flat-leaf field, so
-	// checkUnionClassVariant rejects the class arm (its default/partial scoring
-	// inside a union is unproven) and the whole union is out of scope.
 	mapField := abClassUnionSchema(
 		props(kv("a", intProp()), kv("m", &bamlutils.DynamicProperty{Type: "map", Keys: &bamlutils.DynamicTypeSpec{Type: "string"}, Values: &bamlutils.DynamicTypeSpec{Type: "int"}})),
 		props(kv("c", intProp()), kv("d", strProp())),
 	)
-	requireUnsupported(t, mapField, `{"u":{"a":1,"m":{"k":1}}}`)
+	mustParse(t, mapField, `{"u":{"a":1,"m":{"k":1}}}`, `{"u":{"a":1,"m":{"k":1}}}`)
+	mustParse(t, mapField, `{"u":{"a":1}}`, `{"u":{"a":1,"m":{}}}`)
+
+	// A class arm with a NON-STRING-keyed map field still declines: an enum/literal
+	// key that MISSES is kept leniently with an unproven-weight MapKeyParseError,
+	// and a union arm is always RANKED, so its score may not be guessed.
+	enumKeyMapField := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("u", &bamlutils.DynamicProperty{
+			Type:  "union",
+			OneOf: []*bamlutils.DynamicTypeSpec{{Ref: "A"}, {Ref: "B"}},
+		})),
+		Classes: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("A", &bamlutils.DynamicClass{
+				Properties: props(kv("a", intProp()), kv("m", &bamlutils.DynamicProperty{
+					Type:   "map",
+					Keys:   &bamlutils.DynamicTypeSpec{Ref: "Color"},
+					Values: &bamlutils.DynamicTypeSpec{Type: "int"},
+				})),
+			}),
+			bamlutils.OrderedKV("B", &bamlutils.DynamicClass{
+				Properties: props(kv("c", intProp()), kv("d", strProp())),
+			}),
+		),
+		Enums: bamlutils.MustOrderedMap(bamlutils.OrderedKV("Color", &bamlutils.DynamicEnum{
+			Values: []*bamlutils.DynamicEnumValue{{Name: "RED"}, {Name: "GREEN"}},
+		})),
+	}
+	requireUnsupported(t, enumKeyMapField, `{"u":{"a":1,"m":{"RED":1}}}`)
 
 	// M3d: ARRAY input to a class union of MULTI-field all-required-flat-leaf classes
 	// now CLAIMS via class array-to-singular. The A arm ({a,b}) array-to-singulars

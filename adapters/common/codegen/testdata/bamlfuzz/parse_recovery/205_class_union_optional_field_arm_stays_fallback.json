@@ -1,0 +1,80 @@
+{
+  "name": "class_union_optional_field_arm_stays_fallback",
+  "description": "FALLBACK-BOUNDARY GUARD (family: union_class_optional_field). A class union arm with an OPTIONAL field: A{a int, b string?} | B{c int, d string} with {\"a\":1,\"b\":\"x\"}. BAML's Class::try_cast fills a MISSING optional with OptionalDefaultFromNoValue and SUCCEEDS at a non-zero score rather than not matching, which tryCastClass does not model (it fails the strict cast on any absent field). The collection-field broadening deliberately stops short of optional fields for exactly that reason, so this must keep DECLINING while BAML claims. want live-captured from BAML v0.223 final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {
+                  "kind": "class_ref",
+                  "ref": "A"
+                },
+                {
+                  "kind": "class_ref",
+                  "ref": "B"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "A",
+        "properties": [
+          {
+            "name": "a",
+            "type": {
+              "kind": "int"
+            }
+          },
+          {
+            "name": "b",
+            "type": {
+              "kind": "optional",
+              "inner": {
+                "kind": "string"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "B",
+        "properties": [
+          {
+            "name": "c",
+            "type": {
+              "kind": "int"
+            }
+          },
+          {
+            "name": "d",
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":{\"a\":1,\"b\":\"x\"}}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": {
+        "a": 1,
+        "b": "x"
+      }
+    }
+  }
+}

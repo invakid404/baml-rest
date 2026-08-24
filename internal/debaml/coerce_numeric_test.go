@@ -393,3 +393,48 @@ func TestCoercePrimitiveNull(t *testing.T) {
 		t.Errorf("non-null input should flag DefaultButHadValue")
 	}
 }
+
+// TestJSONFloatFormatMatchesEncodingJSON pins native's emitted float SPELLING to
+// the one the worker boundary produces. The deployed /parse route byte-compares
+// native's payload against `sonic.Marshal` of BAML's decoded result
+// (worker/direct_parse_native.go), and DecodeOrderedAny preserves number tokens
+// verbatim — so a float native spells differently declines as result_drift even
+// though the VALUE is identical. sonic reproduces encoding/json's float encoder
+// exactly, so encoding/json is the reference here.
+//
+// The cases straddle both switch points of that encoder (|f| < 1e-6 and
+// |f| >= 1e21) and include the 2^53 neighbourhood the union_variant_hint corpus
+// fixtures land on, where a bare strconv 'g' would emit "9.007199254740992e+15".
+func TestJSONFloatFormatMatchesEncodingJSON(t *testing.T) {
+	cases := []float64{
+		0, 1, -1, 1.5, -1.5, 3, 100, 0.5,
+		9007199254740992, 9007199254740993, -9007199254740992,
+		1e6, 1e7, 1e15, 1e20, 1e21, 1e22, -1e21,
+		1e-5, 1e-6, 1e-7, 1e-9, 1e-300, 5e-324,
+		math.MaxFloat64, -math.MaxFloat64,
+		12345678901234567890, 1.7976931348623157e308,
+	}
+	for _, f := range cases {
+		want, err := json.Marshal(f)
+		if err != nil {
+			t.Fatalf("json.Marshal(%v): %v", f, err)
+		}
+		if got := jsonFloatFormat(f); got != string(want) {
+			t.Errorf("jsonFloatFormat(%v) = %q, want %q (encoding/json)", f, got, want)
+		}
+		raw, ok := floatRaw(f)
+		if !ok {
+			t.Errorf("floatRaw(%v): finite value reported unemittable", f)
+			continue
+		}
+		if string(raw) != string(want) {
+			t.Errorf("floatRaw(%v) = %q, want %q", f, raw, want)
+		}
+	}
+	// Non-finite values still have no JSON spelling and must decline.
+	for _, f := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		if _, ok := floatRaw(f); ok {
+			t.Errorf("floatRaw(%v): expected the non-finite decline", f)
+		}
+	}
+}

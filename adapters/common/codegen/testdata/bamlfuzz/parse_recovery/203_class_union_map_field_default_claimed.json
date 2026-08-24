@@ -1,0 +1,83 @@
+{
+  "name": "class_union_map_field_default_claimed",
+  "description": "UNION BURN-DOWN — a class union arm with a required STRING-KEYED MAP field. A{a int, m map<string,int>} | B{c int, d string} with {\"a\":1}: A's map field is ABSENT so TypeIR::default_value fills it with {} (DefaultFromNoValue 100) while B misses both required fields (a proven error arm, excluded), so pick_best returns A. Companion to class_union_all_default_now_claimed on the MAP side of the same gate broadening. want live-captured from BAML v0.223 final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {
+                  "kind": "class_ref",
+                  "ref": "A"
+                },
+                {
+                  "kind": "class_ref",
+                  "ref": "B"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "A",
+        "properties": [
+          {
+            "name": "a",
+            "type": {
+              "kind": "int"
+            }
+          },
+          {
+            "name": "m",
+            "type": {
+              "kind": "map",
+              "key": {
+                "kind": "string"
+              },
+              "inner": {
+                "kind": "int"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "B",
+        "properties": [
+          {
+            "name": "c",
+            "type": {
+              "kind": "int"
+            }
+          },
+          {
+            "name": "d",
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":{\"a\":1}}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": {
+        "a": 1,
+        "m": {}
+      }
+    }
+  }
+}

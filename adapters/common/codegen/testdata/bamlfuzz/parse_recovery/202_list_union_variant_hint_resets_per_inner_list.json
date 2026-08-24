@@ -1,0 +1,51 @@
+{
+  "name": "list_union_variant_hint_resets_per_inner_list",
+  "description": "UNION BURN-DOWN — the hint's SCOPE. list<list<int | float>> over [[1.5],[9007199254740993]]: each inner array starts its own last_union_hint at None (coerce_array/try_cast_array are per-array), so the float arm chosen inside the FIRST inner list does NOT reach the second one and 2^53+1 keeps full precision. Contrast list_union_variant_hint_float_arm, where both elements share one array. Pins that native resets the hint at every array boundary rather than threading it globally. want live-captured from BAML v0.223 final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "list",
+              "inner": {
+                "kind": "list",
+                "inner": {
+                  "kind": "union",
+                  "variants": [
+                    {
+                      "kind": "int"
+                    },
+                    {
+                      "kind": "float"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":[[1.5],[9007199254740993]]}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": [
+        [
+          1.5
+        ],
+        [
+          9007199254740993
+        ]
+      ]
+    }
+  }
+}

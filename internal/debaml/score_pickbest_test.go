@@ -1,6 +1,7 @@
 package debaml
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -310,4 +311,149 @@ func TestNullableClassUnion_ScoreBoundary(t *testing.T) {
 	mustParse(t, s, raw(109), `{"u":{"title":"Go","pages":300}}`) // 109 < 110 -> Book
 	mustParse(t, s, raw(110), `{"u":{"title":"Go","pages":300}}`) // 110 tie -> Book (index)
 	mustParse(t, s, raw(111), `{"u":null}`)                       // 111 > 110 -> null
+}
+
+// TestSelectUnionArms_HintOnlyWinsAtScoreZero pins the exact semantics of BAML's
+// ctx.union_variant_hint in the LENIENT pass (coerce_union.rs): the hinted option is
+// coerced FIRST and returned outright ONLY when it scores 0. Any other outcome — a
+// non-zero score, an error, an uncertain verdict — records NOTHING and falls through
+// to the ordered pass, where the arm is coerced again in its normal position. A hint
+// that short-circuited on a non-zero score would silently outrank earlier arms.
+func TestSelectUnionArms_HintOnlyWinsAtScoreZero(t *testing.T) {
+	// arm(i) score table: arm 0 scores 5, arm 1 scores 0, arm 2 scores 3.
+	scores := []int{5, 0, 3}
+	calls := []int{}
+	arm := unionArm(func(i int) (json.RawMessage, *coerceFlags, error) {
+		calls = append(calls, i)
+		f := &coerceFlags{targetIsUnion: true, kind: candScalar}
+		f.add(scores[i])
+		return json.RawMessage(fmt.Sprintf("%d", i)), f, nil
+	})
+	hint := func(i int) *int { return &i }
+
+	// No hint: the ordered pass returns arm 1 (the first score-0 arm).
+	calls = nil
+	w, err := selectUnionArms(3, false, nil, arm)
+	if err != nil {
+		t.Fatalf("no hint: %v", err)
+	}
+	if string(w.output) != "1" || w.unionArmIdx != 1 || !w.hasUnionMatch {
+		t.Errorf("no hint: got %q idx=%d unionMatch=%v, want arm 1", w.output, w.unionArmIdx, w.hasUnionMatch)
+	}
+
+	// Hint at the score-0 arm: same winner, but reached through the hint (arm 0 is
+	// never coerced by the fast path, and the ordered pass never runs).
+	calls = nil
+	if w, err = selectUnionArms(3, false, hint(1), arm); err != nil {
+		t.Fatalf("hint=1: %v", err)
+	}
+	if string(w.output) != "1" || w.unionArmIdx != 1 {
+		t.Errorf("hint=1: got %q idx=%d, want arm 1", w.output, w.unionArmIdx)
+	}
+	if len(calls) != 1 || calls[0] != 1 {
+		t.Errorf("hint=1: coerced arms %v, want only the hinted arm", calls)
+	}
+
+	// Hint at a NON-zero arm: the hint must NOT win. The ordered pass runs and arm 1
+	// (score 0) wins, exactly as with no hint.
+	calls = nil
+	if w, err = selectUnionArms(3, false, hint(2), arm); err != nil {
+		t.Fatalf("hint=2: %v", err)
+	}
+	if string(w.output) != "1" || w.unionArmIdx != 1 {
+		t.Errorf("hint=2: got %q idx=%d, want arm 1 (a non-zero hint may not short-circuit)", w.output, w.unionArmIdx)
+	}
+	if len(calls) != 3 || calls[0] != 2 || calls[1] != 0 || calls[2] != 1 {
+		t.Errorf("hint=2: coerced arms %v, want the hint probe (2) then the ordered pass up to the score-0 arm (0, 1)", calls)
+	}
+
+	// An OUT-OF-RANGE hint (the coerce lane's null-option index reaching a shorter
+	// option list) is ignored rather than panicking.
+	calls = nil
+	if w, err = selectUnionArms(3, false, hint(9), arm); err != nil {
+		t.Fatalf("hint=9: %v", err)
+	}
+	if string(w.output) != "1" {
+		t.Errorf("hint=9: got %q, want arm 1", w.output)
+	}
+	if len(calls) != 2 {
+		t.Errorf("hint=9: coerced arms %v, want the ordered pass only", calls)
+	}
+}
+
+// TestSelectUnionArms_HintErrorFallsThrough pins that a hinted arm which ERRORS is
+// not fatal: BAML's `if let Ok(mut val) = result` simply ignores it, so the ordered
+// pass still decides. Native must not turn the hint probe's error into a union
+// decline (which would be a regression for any array whose previous element won on
+// an arm the next element cannot take).
+func TestSelectUnionArms_HintErrorFallsThrough(t *testing.T) {
+	arm := unionArm(func(i int) (json.RawMessage, *coerceFlags, error) {
+		if i == 0 {
+			return nil, &coerceFlags{targetIsUnion: true}, provenError("arm 0 provably fails")
+		}
+		f := &coerceFlags{targetIsUnion: true, kind: candScalar}
+		return json.RawMessage("1"), f, nil
+	})
+	h := 0
+	w, err := selectUnionArms(2, false, &h, arm)
+	if err != nil {
+		t.Fatalf("hinted arm errored: %v", err)
+	}
+	if string(w.output) != "1" || w.unionArmIdx != 1 {
+		t.Errorf("got %q idx=%d, want arm 1", w.output, w.unionArmIdx)
+	}
+}
+
+// TestTryCastClass_SumsCollectionFieldScores pins the class try_cast SCORE the
+// collection-field broadening made load-bearing: types.rs Class score is own
+// conditions (empty for a try_cast) plus the sum of the field try_cast scores, and a
+// MAP field contributes ObjectToMap (1). A class arm that try_casts at a NON-zero
+// score is collected by try_cast_union for pick_best instead of short-circuiting the
+// union at score 0, so returning 0 unconditionally would pick the wrong arm.
+func TestTryCastClass_SumsCollectionFieldScores(t *testing.T) {
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(
+			kv("u", &bamlutils.DynamicProperty{Ref: "WithMap"}),
+			kv("v", &bamlutils.DynamicProperty{Ref: "WithList"}),
+		),
+		Classes: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("WithMap", &bamlutils.DynamicClass{
+				Properties: props(kv("m", &bamlutils.DynamicProperty{
+					Type:   "map",
+					Keys:   &bamlutils.DynamicTypeSpec{Type: "string"},
+					Values: &bamlutils.DynamicTypeSpec{Type: "int"},
+				})),
+			}),
+			bamlutils.OrderedKV("WithList", &bamlutils.DynamicClass{
+				Properties: props(kv("l", &bamlutils.DynamicProperty{
+					Type: "list", Items: &bamlutils.DynamicTypeSpec{Type: "int"},
+				})),
+			}),
+		),
+	}
+	b, withMap := classBundle(t, s, "WithMap")
+	_, withList := classBundle(t, s, "WithList")
+	obj := func(k string, v value) value {
+		return value{kind: valObject, objV: []field{{key: k, val: v}}}
+	}
+	num := func(tok string) value { return value{kind: valNumber, numV: json.Number(tok)} }
+
+	// A map field try_casts with ObjectToMap (1), so the class try_cast scores 1.
+	_, _, score, matched, err := tryCastClass(b, withMap.Name, withMap.Mode, obj("m", obj("k", num("1"))), nil)
+	if err != nil || !matched {
+		t.Fatalf("WithMap try_cast: matched=%v err=%v", matched, err)
+	}
+	if score != 1 {
+		t.Errorf("WithMap try_cast score = %d, want 1 (ObjectToMap on the map field)", score)
+	}
+	// A list field of clean scalars try_casts at 0, so the class try_cast scores 0
+	// and IS the union's immediate winner.
+	_, _, score, matched, err = tryCastClass(b, withList.Name, withList.Mode,
+		obj("l", value{kind: valArray, arrV: []value{num("1"), num("2")}}), nil)
+	if err != nil || !matched {
+		t.Fatalf("WithList try_cast: matched=%v err=%v", matched, err)
+	}
+	if score != 0 {
+		t.Errorf("WithList try_cast score = %d, want 0 (a clean scalar list adds nothing)", score)
+	}
 }

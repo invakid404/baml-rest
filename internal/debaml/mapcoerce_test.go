@@ -208,31 +208,48 @@ func TestParse_MapContainingSchemasClaim(t *testing.T) {
 
 // TestParse_OptionalMapUnsupportedValueDeclines pins the #596 review fix: an
 // OPTIONAL map whose value is a gate-only-declined tree must DECLINE on non-null
-// input, not over-claim. The canonical case is a direct list<multi-arm-union>
-// under the map value — its isMultiArmUnion guard lives only in
-// checkSupportedType's TypeList arm (array union_variant_hint), with no
-// coerce-time equivalent. The gate's nullable fast path (`if u.Nullable { return
-// nil }`) accepts the schema without walking the map value, so coerceUnionSafe
-// re-proves the lone optional arm before claiming non-null input. Null input and
-// a SUPPORTED optional map must still CLAIM (no regression).
+// input, not over-claim. The gate's nullable fast path (`if u.Nullable { return
+// nil }`) accepts the schema WITHOUT walking the map value, so coerceUnionSafe
+// re-proves the lone optional arm before claiming non-null input.
+//
+// The canonical case is an EMPTY object: a map<string, A|B> whose value union is
+// out of scope (A has a nested-class field) coerces every ENTRY through
+// coerceMapValueChild, which would decline — but an empty map has no entry to
+// decline on, so without the re-proof native would emit `{}` and over-claim. Null
+// input and a SUPPORTED optional map must still CLAIM (no regression).
 func TestParse_OptionalMapUnsupportedValueDeclines(t *testing.T) {
-	// optional map<string, list<int|string>>: the multi-arm-union list element is
-	// out of scope, so non-null input DECLINES even though the map is optional.
-	badValMap := oneField(&bamlutils.DynamicProperty{
-		Type: "optional",
-		Inner: &bamlutils.DynamicTypeSpec{
-			Type: "map",
-			Keys: &bamlutils.DynamicTypeSpec{Type: "string"},
-			Values: &bamlutils.DynamicTypeSpec{
-				Type: "list",
-				Items: &bamlutils.DynamicTypeSpec{
+	// optional map<string, A|B> with A{inner Leaf}: the union value type is out of
+	// scope (checkUnionClassVariant rejects a nested-class field), so non-null input
+	// DECLINES even though the map is optional AND even when it is EMPTY — the
+	// only signal at that point is the structural re-proof.
+	badValMap := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("u", &bamlutils.DynamicProperty{
+			Type: "optional",
+			Inner: &bamlutils.DynamicTypeSpec{
+				Type: "map",
+				Keys: &bamlutils.DynamicTypeSpec{Type: "string"},
+				Values: &bamlutils.DynamicTypeSpec{
 					Type:  "union",
-					OneOf: []*bamlutils.DynamicTypeSpec{{Type: "int"}, {Type: "string"}},
+					OneOf: []*bamlutils.DynamicTypeSpec{{Ref: "A"}, {Ref: "B"}},
 				},
 			},
-		},
-	})
-	requireUnsupported(t, badValMap, `{"u":{"a":[1,"x"]}}`)
+		})),
+		Classes: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("A", &bamlutils.DynamicClass{
+				Properties: props(kv("inner", &bamlutils.DynamicProperty{Ref: "Leaf"})),
+			}),
+			bamlutils.OrderedKV("B", &bamlutils.DynamicClass{
+				Properties: props(kv("n", &bamlutils.DynamicProperty{Type: "int"})),
+			}),
+			bamlutils.OrderedKV("Leaf", &bamlutils.DynamicClass{
+				Properties: props(kv("v", &bamlutils.DynamicProperty{Type: "int"})),
+			}),
+		),
+	}
+	requireUnsupported(t, badValMap, `{"u":{"a":{"n":1}}}`)
+	// EMPTY map: no entry is ever coerced, so ONLY the structural re-proof stands
+	// between native and an over-claim.
+	requireUnsupported(t, badValMap, `{"u":{}}`)
 	// Null input still claims null — the reproof only gates NON-null input.
 	mustParse(t, badValMap, `{"u":null}`, `{"u":null}`)
 

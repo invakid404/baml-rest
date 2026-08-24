@@ -169,6 +169,16 @@ func (c *coerceCtx) enterScope() *coerceCtx {
 	return &coerceCtx{coerceChain: cc, tryCastChain: tc}
 }
 
+// unionHint is the nil-safe read of the carried ctx.union_variant_hint. A nil
+// *coerceCtx is an empty context (leaf / stream / unit-probe callers pass one), and
+// an empty context carries no hint.
+func (c *coerceCtx) unionHint() *int {
+	if c == nil {
+		return nil
+	}
+	return c.hint
+}
+
 // enterScopeWithHint derives a CHILD context that inherits both active sets and
 // CARRIES the given union-variant hint — BAML's enter_scope_with_hint, used only for
 // the next array sibling. A nil hint is equivalent to enterScope.

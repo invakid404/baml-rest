@@ -1,0 +1,44 @@
+{
+  "name": "list_union_variant_hint_float_arm",
+  "description": "UNION BURN-DOWN — the array union_variant_hint made OBSERVABLE. list<int | float> over [1.5, 9007199254740993] (2^53+1). Element 0 only try_casts on the FLOAT arm (as_i64 rejects 1.5), so coerce_array carries the float arm as element 1's ctx.union_variant_hint; try_cast_union tries the HINTED arm FIRST and float try_casts 2^53+1 at score 0, returning IMMEDIATELY — before the int arm that PRECEDES it. f64 cannot represent 2^53+1, so the emitted value is 9007199254740992. A hint-less coercer would pick the int arm and emit 9007199254740993, so this is the case that proves native reproduces the hint rather than approximating it. Paired with list_union_variant_hint_int_arm (the mutate-to-diverge twin). want live-captured from BAML v0.223 final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "list",
+              "inner": {
+                "kind": "union",
+                "variants": [
+                  {
+                    "kind": "int"
+                  },
+                  {
+                    "kind": "float"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":[1.5,9007199254740993]}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": [
+        1.5,
+        9007199254740992
+      ]
+    }
+  }
+}

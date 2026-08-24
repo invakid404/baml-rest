@@ -925,9 +925,19 @@ func (c *constraintStateCollector) listValue(t schema.Type, in value, cctx *coer
 	}
 	values := make([]ConstraintValue, 0, len(items))
 	children := make([]*constraintCoercionState, 0, len(items))
+	// The array union_variant_hint (coerce_array.rs) carried from the previous
+	// element, so an element union resolves to the same arm production picks. A
+	// non-array SingleToArray element goes through enter_scope("<implied>"), which
+	// carries no hint.
+	var last *int
+	implied := in.kind != valArray
 	for i := range items {
 		itemPath := path.descend(constraintStatePathSegment{Kind: constraintPathIndex, Index: i})
-		_, keep, err := coerceListChild(c.bundle, *t.Elem, items[i], &coerceFlags{}, cctx)
+		itemCtx := cctx.enterScopeWithHint(last)
+		if implied {
+			itemCtx = cctx.enterScope()
+		}
+		_, keep, next, err := coerceListChild(c.bundle, *t.Elem, items[i], &coerceFlags{}, itemCtx)
 		if err != nil {
 			return ConstraintValue{}, nil, fmt.Errorf("debaml: constraint-state collector: %s: %w", itemPath, err)
 		}
@@ -936,7 +946,8 @@ func (c *constraintStateCollector) listValue(t schema.Type, in value, cctx *coer
 				"element dropped by BAML's ArrayItemParseError partial-array skip"))
 			continue
 		}
-		cs, err := c.node(*t.Elem, items[i], cctx, itemPath, false, false)
+		last = next
+		cs, err := c.node(*t.Elem, items[i], itemCtx, itemPath, false, false)
 		if err != nil {
 			return ConstraintValue{}, nil, err
 		}
@@ -1040,7 +1051,7 @@ func (c *constraintStateCollector) unionWinner(u *schema.UnionType, in value, cc
 		if err := checkSupportedType(c.bundle, u.Variants[0]); err != nil {
 			return 0, false, fmt.Errorf("debaml: constraint-state collector: %s: %w", path, err)
 		}
-		w, err := selectUnionArms(1, true, func(int) (json.RawMessage, *coerceFlags, error) {
+		w, err := selectUnionArms(1, true, cctx.unionHint(), func(int) (json.RawMessage, *coerceFlags, error) {
 			armF := &coerceFlags{targetIsUnion: true}
 			out, e := coerce(c.bundle, u.Variants[0], in, armF, cctx)
 			return out, armF, e
@@ -1059,7 +1070,7 @@ func (c *constraintStateCollector) unionWinner(u *schema.UnionType, in value, cc
 	} else if hit {
 		return w.originIndex, false, nil
 	}
-	w, err := selectUnionArms(len(u.Variants), u.Nullable, func(i int) (json.RawMessage, *coerceFlags, error) {
+	w, err := selectUnionArms(len(u.Variants), u.Nullable, cctx.unionHint(), func(i int) (json.RawMessage, *coerceFlags, error) {
 		armF := &coerceFlags{targetIsUnion: true}
 		out, e := coerce(c.bundle, u.Variants[i], in, armF, cctx)
 		return out, armF, e
