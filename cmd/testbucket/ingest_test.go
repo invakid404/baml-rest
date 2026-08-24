@@ -1,0 +1,513 @@
+package main
+
+import (
+	"bytes"
+	"fmt"
+	"math"
+	"sort"
+	"strings"
+	"testing"
+	"time"
+)
+
+// event renders one `go test -json` line.
+func event(action, pkg, test string, elapsed float64) string {
+	if test == "" {
+		return fmt.Sprintf(`{"Time":"2026-08-25T00:00:00Z","Action":%q,"Package":%q,"Elapsed":%g}`, action, pkg, elapsed)
+	}
+	return fmt.Sprintf(`{"Time":"2026-08-25T00:00:00Z","Action":%q,"Package":%q,"Test":%q,"Elapsed":%g}`, action, pkg, test, elapsed)
+}
+
+func stream(lines ...string) *bytes.Reader {
+	return bytes.NewReader([]byte(strings.Join(lines, "\n") + "\n"))
+}
+
+func defaultIngestOptions() ingestOptions {
+	return ingestOptions{
+		Alpha:  0.5,
+		Race:   true,
+		Count:  100,
+		WhaleK: 6,
+		Now:    time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC),
+	}
+}
+
+func TestParseEventsAggregatesTheStream(t *testing.T) {
+	sum, err := parseEvents(stream(
+		// One package split across two count-shards: its weight is the sum.
+		event("pass", repoPrefix+"bamlutils/llmhttp", "", 450),
+		event("pass", repoPrefix+"bamlutils/llmhttp", "", 450),
+		// Per-test rows, including a subtest that folds into its parent.
+		event("pass", repoPrefix+"internal/debaml", "TestAlpha", 200),
+		event("pass", repoPrefix+"internal/debaml", "TestAlpha/sub", 15),
+		event("pass", repoPrefix+"internal/debaml", "TestBeta", 100),
+		event("pass", repoPrefix+"internal/debaml", "", 420),
+		// A failed package: no fresh weight may be taken from it.
+		event("fail", repoPrefix+"pool", "", 12),
+		// A package with no test files.
+		event("skip", repoPrefix+"cmd/embed", "", 0),
+		// Chatter that is not an event at all.
+		event("run", repoPrefix+"worker", "TestWorker", 0),
+		event("output", repoPrefix+"worker", "TestWorker", 0),
+		event("pass", repoPrefix+"worker", "", 110),
+	), stream(
+		// A second file, as the record job would concatenate bucket artifacts.
+		event("pass", repoPrefix+"dynclient", "", 80),
+	))
+	if err != nil {
+		t.Fatalf("parseEvents: %v", err)
+	}
+
+	if got := sum.PackageSeconds[repoPrefix+"bamlutils/llmhttp"]; got != 900 {
+		t.Errorf("llmhttp = %v, want the 900s sum of both shards", got)
+	}
+	if got := sum.PackageRuns[repoPrefix+"bamlutils/llmhttp"]; got != 2 {
+		t.Errorf("llmhttp ran %d times, want 2", got)
+	}
+	if got := sum.TestSeconds[repoPrefix+"internal/debaml"]["TestAlpha"]; got != 215 {
+		t.Errorf("TestAlpha = %v, want 215 (subtest folded into its parent)", got)
+	}
+	if !sum.Failed[repoPrefix+"pool"] {
+		t.Error("the failed package was not recorded as failed")
+	}
+	if _, ok := sum.PackageSeconds[repoPrefix+"pool"]; ok {
+		t.Error("a failed package contributed a weight")
+	}
+	if !sum.NoTests[repoPrefix+"cmd/embed"] {
+		t.Error("the test-free package was not recorded")
+	}
+	if got := sum.PackageSeconds[repoPrefix+"dynclient"]; got != 80 {
+		t.Errorf("second stream not ingested: dynclient = %v", got)
+	}
+}
+
+func TestParseEventsToleratesJunkButNotSilence(t *testing.T) {
+	sum, err := parseEvents(stream(
+		"go: downloading github.com/example/thing v1.2.3",
+		"",
+		"{not json at all",
+		event("pass", repoPrefix+"pool", "", 120),
+	))
+	if err != nil {
+		t.Fatalf("a stray toolchain line cost the whole run's timings: %v", err)
+	}
+	if sum.Malformed != 2 {
+		t.Errorf("counted %d unparsable lines, want 2", sum.Malformed)
+	}
+	if sum.PackageSeconds[repoPrefix+"pool"] != 120 {
+		t.Error("the usable event was lost")
+	}
+
+	// A stream with nothing usable means the capture is broken. Writing an
+	// unchanged store and exiting 0 would hide that indefinitely.
+	if _, err := parseEvents(stream("not json", "still not json")); err == nil {
+		t.Error("an unusable stream was accepted")
+	}
+	// Well-formed chatter with no package result is just as broken — this
+	// is what a truncated or mis-redirected capture actually looks like.
+	_, err = parseEvents(stream(
+		event("run", repoPrefix+"pool", "TestPool", 0),
+		event("output", repoPrefix+"pool", "TestPool", 0),
+	))
+	if err == nil {
+		t.Error("a stream with no package results was accepted")
+	}
+}
+
+func TestApplyIngestSmoothsInsteadOfOverwriting(t *testing.T) {
+	st := syntheticStore()
+	before := st.Units[repoPrefix+"pool"].Seconds
+	sum, err := parseEvents(stream(event("pass", repoPrefix+"pool", "", 200)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep := applyIngest(st, sum, defaultIngestOptions())
+
+	row := st.Units[repoPrefix+"pool"]
+	if want := 0.5*200 + 0.5*before; row.Seconds != want {
+		t.Errorf("pool = %v, want the EWMA %v", row.Seconds, want)
+	}
+	if row.Samples != 13 {
+		t.Errorf("samples = %d, want 13", row.Samples)
+	}
+	if len(rep.Updated) != 1 || rep.Updated[0] != repoPrefix+"pool" {
+		t.Errorf("report updated = %v", rep.Updated)
+	}
+	if st.UpdatedAt == "" {
+		t.Error("the store was not stamped")
+	}
+}
+
+func TestApplyIngestKeepsThePriorWeightOnFailure(t *testing.T) {
+	// A race-detector abort or a -timeout reports a wall time that measures
+	// the failure, not the work. Folding it in would poison the split.
+	st := syntheticStore()
+	before := st.Units[repoPrefix+"bamlutils/llmhttp"].Seconds
+	sum, err := parseEvents(stream(
+		event("fail", repoPrefix+"bamlutils/llmhttp", "", 1200),
+		event("pass", repoPrefix+"pool", "", 120),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep := applyIngest(st, sum, defaultIngestOptions())
+
+	if got := st.Units[repoPrefix+"bamlutils/llmhttp"].Seconds; got != before {
+		t.Errorf("llmhttp = %v, want the prior %v kept", got, before)
+	}
+	if len(rep.SkippedFail) != 1 || rep.SkippedFail[0] != repoPrefix+"bamlutils/llmhttp" {
+		t.Errorf("report skipped = %v, want llmhttp named", rep.SkippedFail)
+	}
+}
+
+func TestApplyIngestFlagsWhalesAndPicksAPolicy(t *testing.T) {
+	// Automatic whale detection: a package that alone exceeds total/K sets
+	// the makespan, so it must be split before K can buy anything.
+	cases := []struct {
+		name       string
+		perTest    []string
+		wantSplit  string
+		wantShards int
+	}{
+		{
+			name:       "no per-test data yet: count-shard, which needs none",
+			wantSplit:  splitCount,
+			wantShards: 3,
+		},
+		{
+			name: "per-test data covering most of the wall-time: upgrade to name slicing",
+			perTest: []string{
+				event("pass", repoPrefix+"bamlutils/llmhttp", "TestRetry", 400),
+				event("pass", repoPrefix+"bamlutils/llmhttp", "TestSSE", 300),
+				event("pass", repoPrefix+"bamlutils/llmhttp", "TestBackoff", 100),
+			},
+			wantSplit:  splitRun,
+			wantShards: 3,
+		},
+		{
+			name: "per-test data explaining only a sliver: stay on count-sharding",
+			perTest: []string{
+				event("pass", repoPrefix+"bamlutils/llmhttp", "TestRetry", 20),
+				event("pass", repoPrefix+"bamlutils/llmhttp", "TestSSE", 10),
+			},
+			wantSplit:  splitCount,
+			wantShards: 3,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lines := []string{}
+			for dir, sec := range syntheticWeights {
+				lines = append(lines, event("pass", repoPrefix+dir, "", sec))
+			}
+			sort.Strings(lines)
+			lines = append(lines, tc.perTest...)
+			sum, err := parseEvents(stream(lines...))
+			if err != nil {
+				t.Fatal(err)
+			}
+			st := newStore(canonicalFlags(true, 100))
+			rep := applyIngest(st, sum, defaultIngestOptions())
+
+			row := st.Units[repoPrefix+"bamlutils/llmhttp"]
+			if row.Split != tc.wantSplit {
+				t.Errorf("llmhttp split = %q, want %q", row.Split, tc.wantSplit)
+			}
+			// The shard count is the MINIMUM that brings the unit under the
+			// threshold — ceil(900 / (2001/6)) = 3 — not the maximum the
+			// bucket count allows. Every extra slice costs another compile
+			// of the package for no further parallelism gain.
+			if row.SplitInto != tc.wantShards {
+				t.Errorf("llmhttp split_into = %d, want %d", row.SplitInto, tc.wantShards)
+			}
+			if perShard := row.Seconds / float64(row.SplitInto); perShard > rep.Threshold {
+				t.Errorf("each shard is %.1fs, still above the %.1fs threshold", perShard, rep.Threshold)
+			}
+			// The threshold is total/K: at 2001s over K=6 that is ~333s,
+			// so llmhttp (900s) and internal/debaml (420s) are whales and
+			// nothing else is.
+			if math.Abs(rep.Threshold-sumWeights()/6) > 1e-6 {
+				t.Errorf("threshold %v, want total/6 = %v", rep.Threshold, sumWeights()/6)
+			}
+			whales := map[string]bool{}
+			for _, w := range rep.Whales {
+				whales[strings.Fields(w)[0]] = true
+			}
+			if !whales[repoPrefix+"bamlutils/llmhttp"] || !whales[repoPrefix+"internal/debaml"] {
+				t.Errorf("whales = %v, want both dominators", rep.Whales)
+			}
+			if whales[repoPrefix+"pool"] {
+				t.Error("a 120s package was flagged as a whale")
+			}
+			// Per-test rows exist only to serve a split.
+			if st.Units[repoPrefix+"pool"].Tests != nil {
+				t.Error("per-test rows kept for a non-whale package")
+			}
+		})
+	}
+}
+
+func TestApplyIngestWillNotSliceBelowAJobsFixedOverhead(t *testing.T) {
+	// A unit can be over the relative threshold (total/K) and still be far
+	// too small in absolute terms to slice: every extra slice is another CI
+	// job paying checkout, setup and compile. Splitting a 1.5s package six
+	// ways would spend minutes of runner time to save milliseconds.
+	lines := []string{
+		event("pass", repoPrefix+"bamlutils/retry", "", 1.5),
+		event("pass", repoPrefix+"internal/apierror", "", 0.5),
+		event("pass", repoPrefix+"cmd/testbucket", "", 0.2),
+	}
+	sum, err := parseEvents(stream(lines...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := newStore(canonicalFlags(false, 1))
+	opt := defaultIngestOptions()
+	opt.Race, opt.Count = false, 1
+	opt.MinShardSeconds = 30
+	rep := applyIngest(st, sum, opt)
+
+	// retry IS over total/6 (~0.37s) — the relative rule alone would slice
+	// it — but no slice of it could reach 30s.
+	if got := st.Units[repoPrefix+"bamlutils/retry"]; got.splitPolicy() != splitNone {
+		t.Errorf("a 1.5s package was sliced %q x%d", got.Split, got.SplitInto)
+	}
+	if len(rep.Whales) != 0 {
+		t.Errorf("whales = %v, want none at this scale", rep.Whales)
+	}
+
+	// The same relative shape at a real scale still splits.
+	big, err := parseEvents(stream(
+		event("pass", repoPrefix+"bamlutils/llmhttp", "", 900),
+		event("pass", repoPrefix+"pool", "", 300),
+		event("pass", repoPrefix+"worker", "", 300),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st = newStore(canonicalFlags(true, 100))
+	opt = defaultIngestOptions()
+	opt.MinShardSeconds = 30
+	applyIngest(st, big, opt)
+	if got := st.Units[repoPrefix+"bamlutils/llmhttp"]; got.splitPolicy() == splitNone {
+		t.Error("a 900s whale was left whole")
+	}
+}
+
+func TestApplyIngestDoesNotStoreZeroWeightTests(t *testing.T) {
+	// go test reports 0.00 for sub-millisecond tests; a zero row carries no
+	// information and the slicer treats it as unknown regardless, so it
+	// would only grow the store.
+	sum, err := parseEvents(stream(
+		event("pass", repoPrefix+"bamlutils/llmhttp", "", 900),
+		event("pass", repoPrefix+"bamlutils/llmhttp", "TestHeavy", 500),
+		event("pass", repoPrefix+"bamlutils/llmhttp", "TestInstant", 0),
+		event("pass", repoPrefix+"bamlutils/llmhttp", "TestAlsoHeavy", 200),
+		event("pass", repoPrefix+"pool", "", 300),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := newStore(canonicalFlags(true, 100))
+	applyIngest(st, sum, defaultIngestOptions())
+
+	tests := st.Units[repoPrefix+"bamlutils/llmhttp"].Tests
+	if _, ok := tests["TestInstant"]; ok {
+		t.Error("a zero-weight test was stored")
+	}
+	if len(tests) != 2 {
+		t.Errorf("stored %d per-test rows, want the 2 with real weight: %v", len(tests), tests)
+	}
+}
+
+func TestApplyIngestUnflagsAPackageThatIsNoLongerAWhale(t *testing.T) {
+	// Self-optimizing in both directions: a package that got faster (or a
+	// tree that got slower around it) must stop paying split overhead.
+	st := syntheticStore()
+	harpoon(st, "internal/debaml", splitRun, 3, map[string]float64{"TestA": 200, "TestB": 120})
+	sum, err := parseEvents(stream(event("pass", repoPrefix+"internal/debaml", "", 10)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// alpha=1 so the single fast measurement lands in full.
+	opt := defaultIngestOptions()
+	opt.Alpha = 1
+	rep := applyIngest(st, sum, opt)
+
+	row := st.Units[repoPrefix+"internal/debaml"]
+	if row.splitPolicy() != splitNone {
+		t.Errorf("still flagged %q x%d after shrinking to 10s", row.Split, row.SplitInto)
+	}
+	if row.Tests != nil {
+		t.Error("per-test rows survived the un-flagging")
+	}
+	if len(rep.Unflagged) != 1 {
+		t.Errorf("report unflagged = %v", rep.Unflagged)
+	}
+}
+
+func TestApplyIngestPrunesOnlyAgainstAnAuthoritativeLiveSet(t *testing.T) {
+	// Pruning off an event batch alone would delete every package that
+	// merely was not part of this batch — e.g. a re-ingest of one bucket.
+	events := stream(event("pass", repoPrefix+"pool", "", 120))
+
+	t.Run("no live set: nothing is pruned", func(t *testing.T) {
+		st := syntheticStore()
+		st.Units[repoPrefix+"internal/deleted"] = &UnitStat{Seconds: 33, Samples: 3}
+		sum, err := parseEvents(events)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rep := applyIngest(st, sum, defaultIngestOptions())
+		if len(rep.Pruned) != 0 {
+			t.Errorf("pruned %v without an authoritative live set", rep.Pruned)
+		}
+		if st.Units[repoPrefix+"worker"] == nil {
+			t.Error("a package absent from this batch was deleted")
+		}
+		if rep.CoverageFrom != "go-test-json" {
+			t.Errorf("coverage source = %q", rep.CoverageFrom)
+		}
+	})
+
+	t.Run("authoritative live set: dead rows go", func(t *testing.T) {
+		st := syntheticStore()
+		st.Units[repoPrefix+"internal/deleted"] = &UnitStat{Seconds: 33, Samples: 3}
+		sum, err := parseEvents(stream(event("pass", repoPrefix+"pool", "", 120)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		opt := defaultIngestOptions()
+		opt.Live = syntheticLive()
+		opt.LiveAuthoritative = true
+		rep := applyIngest(st, sum, opt)
+
+		if len(rep.Pruned) != 1 || rep.Pruned[0] != repoPrefix+"internal/deleted" {
+			t.Errorf("pruned = %v, want internal/deleted", rep.Pruned)
+		}
+		if st.Units[repoPrefix+"worker"] == nil {
+			t.Error("a live package absent from this batch was pruned")
+		}
+		if rep.CoverageFrom != "go-list" || rep.Coverage != len(allTestablePackages()) {
+			t.Errorf("coverage = %d from %q, want %d from go-list", rep.Coverage, rep.CoverageFrom, len(allTestablePackages()))
+		}
+	})
+}
+
+func TestApplyIngestResetsWhenTheFlagSetChanges(t *testing.T) {
+	st := syntheticStore() // recorded under -race -count=100
+	sum, err := parseEvents(stream(event("pass", repoPrefix+"pool", "", 1.2)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opt := defaultIngestOptions()
+	opt.Count = 1
+	rep := applyIngest(st, sum, opt)
+
+	if rep.FlagsReset == "" {
+		t.Fatal("a flag-set change was not reported")
+	}
+	if st.Flags != "-race -count=1" {
+		t.Errorf("store flags = %q", st.Flags)
+	}
+	if st.Units[repoPrefix+"bamlutils/llmhttp"] != nil {
+		t.Error("incomparable weights survived the reset")
+	}
+	if got := st.Units[repoPrefix+"pool"]; got == nil || got.Seconds != 1.2 || got.Samples != 1 {
+		t.Errorf("the new measurement was not recorded from scratch: %+v", got)
+	}
+	var out bytes.Buffer
+	rep.write(&out, repoPrefix)
+	if !strings.Contains(out.String(), "FLAG SET CHANGED") {
+		t.Errorf("the reset was not announced:\n%s", out.String())
+	}
+}
+
+func TestIngestThenPlanClosesTheLoop(t *testing.T) {
+	// End to end, against a synthetic store the whole way: measure, record,
+	// re-plan. The second plan must know what the first run learned — that
+	// is the entire self-optimizing claim.
+	live := syntheticLive()
+
+	// 1. Cold start: no store at all. Everything is estimated, but the
+	//    matrix is complete.
+	cold := mustPlan(t, nil, "no store at test-timings.json", defaultPlanOptions(live))
+	if cold.Summary.Loaded != 0 || cold.Summary.Missing != len(allTestablePackages()) {
+		t.Fatalf("cold plan is not fully estimated: %+v", cold.Summary)
+	}
+
+	// 2. That run reports its timings.
+	var lines []string
+	for dir, sec := range syntheticWeights {
+		lines = append(lines, event("pass", repoPrefix+dir, "", sec))
+	}
+	sort.Strings(lines)
+	lines = append(lines,
+		event("pass", repoPrefix+"bamlutils/llmhttp", "TestRetry", 500),
+		event("pass", repoPrefix+"bamlutils/llmhttp", "TestSSE", 300),
+	)
+	sum, err := parseEvents(stream(lines...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := newStore(canonicalFlags(true, 100))
+	opt := defaultIngestOptions()
+	opt.Live = live
+	opt.LiveAuthoritative = true
+	applyIngest(st, sum, opt)
+
+	// 3. The next plan is warm, and the whale has been harpooned.
+	planOpt := defaultPlanOptions(live)
+	planOpt.Now = time.Date(2026, 8, 25, 13, 0, 0, 0, time.UTC)
+	planOpt.TestNames = syntheticTestNames(map[string][]string{
+		repoPrefix + "bamlutils/llmhttp": {"TestRetry", "TestSSE"},
+		repoPrefix + "internal/debaml":   {"TestParse", "TestRender", "TestEmit"},
+	})
+	warm := mustPlan(t, st, "", planOpt)
+
+	if warm.Summary.ColdStart {
+		t.Errorf("the plan after a record still reports a cold start: %q", warm.Summary.ColdStartReason)
+	}
+	if warm.Summary.Loaded != len(allTestablePackages()) || warm.Summary.Missing != 0 {
+		t.Errorf("warm plan: %d loaded / %d missing, want all loaded", warm.Summary.Loaded, warm.Summary.Missing)
+	}
+	if math.Abs(warm.Summary.MeasuredSeconds-sumWeights()) > 1e-9 {
+		t.Errorf("measured wall-time %v, want %v", warm.Summary.MeasuredSeconds, sumWeights())
+	}
+	if warm.Summary.ScheduledUnits <= cold.Summary.ScheduledUnits {
+		t.Errorf("no whale was split: %d units warm vs %d cold", warm.Summary.ScheduledUnits, cold.Summary.ScheduledUnits)
+	}
+	// And the makespan actually improved over running the whale whole.
+	if warm.Summary.MakespanSeconds >= 900 {
+		t.Errorf("makespan %.1fs did not beat the un-split 900s whale", warm.Summary.MakespanSeconds)
+	}
+	sched := scheduledPackages(warm)
+	for _, imp := range allTestablePackages() {
+		if sched[imp] == 0 {
+			t.Errorf("%s vanished from the warm plan", imp)
+		}
+	}
+	t.Logf("cold makespan %.1fs over %d units -> warm makespan %.1fs over %d units",
+		cold.Summary.MakespanSeconds, cold.Summary.ScheduledUnits,
+		warm.Summary.MakespanSeconds, warm.Summary.ScheduledUnits)
+}
+
+func TestIngestReportNamesWhatItDid(t *testing.T) {
+	st := syntheticStore()
+	sum, err := parseEvents(stream(
+		event("pass", repoPrefix+"pool", "", 130),
+		event("pass", repoPrefix+"internal/brandnew", "", 40),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep := applyIngest(st, sum, defaultIngestOptions())
+	var out bytes.Buffer
+	rep.write(&out, repoPrefix)
+	text := out.String()
+	for _, want := range []string{"packages updated", "packages new", "internal/brandnew", "total measured work", "whale threshold", "coverage recorded"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("ingest report omits %q:\n%s", want, text)
+		}
+	}
+}
