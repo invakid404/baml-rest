@@ -368,6 +368,12 @@ type Handler struct {
 	// never change what BAML parses. See bamlutils.NativeDirectParseObserveFunc.
 	nativeDirectParseObserver bamlutils.NativeDirectParseObserveFunc
 
+	// directParseMetrics is the native-first direct-parse burn-down counter,
+	// registered on metricsReg at construction. It is recorded ONLY from inside the
+	// native-first bridge, so a flag-off / BAML-only worker never touches it and the
+	// series stays absent there. See direct_parse_metrics.go.
+	directParseMetrics *directParseMetrics
+
 	sharedStateHook hookStorage
 
 	noSharedStateWarnOnce    sync.Once
@@ -416,6 +422,16 @@ func New(cfg Config) (*Handler, error) {
 
 		nativeDirectParseObserver: cfg.NativeDirectParseObserver,
 	}
+	// Register the direct-parse disposition counter up front. A registry that
+	// rejects it is a real misconfiguration (a colliding metric of a different
+	// type), so it fails construction here rather than at first parse; a registry
+	// that already carries it — an in-process host sharing one registry across
+	// handlers — re-uses it. See newDirectParseMetrics.
+	dpm, err := newDirectParseMetrics(metricsReg)
+	if err != nil {
+		return nil, fmt.Errorf("worker: registering direct-parse metrics: %w", err)
+	}
+	h.directParseMetrics = dpm
 	if cfg.SharedState != nil {
 		h.SetSharedStateHook(cfg.SharedState)
 	}

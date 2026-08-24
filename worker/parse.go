@@ -78,9 +78,31 @@ func (h *Handler) Parse(ctx context.Context, methodName string, inputJSON []byte
 		impl = method.StreamImpl
 	}
 
+	// De-BAML native-first DYNAMIC direct parse (final mode). Runs the injected
+	// native parser against the carried output schema and this exact raw string
+	// BEFORE BAML, and returns nil for everything outside that narrow lane —
+	// static methods, parse-stream, a schema-less request, a build with no native
+	// parser, and every flag-off build — leaving the path below byte-identical to
+	// what it has always been. See direct_parse_native.go.
+	native := h.beginNativeDirectParse(ctx, methodName, &input)
+	if native != nil {
+		// The oracle leg must be a GENUINE BAML parse of the same input, so turn
+		// the de-BAML flag OFF on this adapter for the call below. The generated
+		// dynamic parse entry point consults it first, so without this the "BAML"
+		// leg would take the generated native seam and the comparison would be
+		// native against itself. The adapter is per-request and is not used after
+		// this parse, so nothing else observes the change.
+		adapter.SetDeBAMLConfig(bamlutils.DeBAMLConfig{})
+	}
+
 	// Call the selected parse implementation.
 	result, err := impl(adapter, input.Raw)
 	if err != nil {
+		// The transition oracle: BAML rejected this input, so BAML's error is what
+		// the caller gets. Record what native had claimed for it.
+		if native != nil {
+			native.settleBAMLError()
+		}
 		// Wrap with any typed classification so the gRPC layer's
 		// errors.As against GetCode()/GetDetails() picks it up
 		// (workerplugin/grpc.go:220+). The /parse host endpoint also
@@ -98,7 +120,24 @@ func (h *Handler) Parse(ctx context.Context, methodName string, inputJSON []byte
 	// Marshal the result to JSON
 	data, err := sonic.Marshal(result)
 	if err != nil {
+		// BAML recovered a value with no JSON form (a non-finite float). There is
+		// no BAML payload for the oracle to hold native against, so the request
+		// fails exactly as it always did — but the disposition is still recorded,
+		// so every request the bridge handled accounts for itself.
+		if native != nil {
+			native.settleBAMLResultUnusable()
+		}
 		return nil, fmt.Errorf("failed to marshal parse result: %w", err)
+	}
+
+	// The transition oracle: native's payload is served ONLY when it is
+	// byte-identical to the BAML payload just produced for the same input. Any
+	// disagreement — drift, a claimed native error, an unsupported shape — falls
+	// through to `data` below, so BAML's answer stands.
+	if native != nil {
+		if nativeData, ok := native.settle(data); ok {
+			return &workerplugin.ParseResult{Data: nativeData}, nil
+		}
 	}
 
 	return &workerplugin.ParseResult{Data: data}, nil
