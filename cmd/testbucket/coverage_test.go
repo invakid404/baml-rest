@@ -857,6 +857,8 @@ func TestMalformedUnitCreditsNothingAsScheduled(t *testing.T) {
 			ID:       runSliceID(pool.ImportPath, []string{"TestA"}),
 			Kind:     kindRunSlice,
 			Packages: []LivePackage{pool, worker},
+			Module:   pool.Module,
+			Mode:     pool.Mode,
 			Run:      []string{"TestA"},
 			Count:    100,
 		}},
@@ -887,9 +889,13 @@ func TestRunSliceOverAnEmptyRunnableSetIsRejected(t *testing.T) {
 	buckets := []Bucket{{
 		Index: 0,
 		Units: []Unit{{
+			// Well-formed in every respect except the thing under test,
+			// so the grammar validator cannot mask it.
 			ID:       runSliceID(pool.ImportPath, []string{"TestA"}),
 			Kind:     kindRunSlice,
 			Packages: []LivePackage{pool},
+			Module:   pool.Module,
+			Mode:     pool.Mode,
 			Run:      []string{"TestA"},
 			Count:    100,
 		}},
@@ -905,5 +911,178 @@ func TestRunSliceOverAnEmptyRunnableSetIsRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "empty runnable set") {
 		t.Errorf("gate message omits the empty-universe reason:\n%s", err.Error())
+	}
+}
+
+func TestCoverageGateRejectsExecutionChangingFieldsOnAnyUnitKind(t *testing.T) {
+	// P0-5 regression, spelled out as the concrete bypasses rather than as
+	// the field matrix (that is grammar_test.go's job).
+	//
+	// The renderer copies u.Run into the invocation for EVERY kind and
+	// emits u.Count regardless of kind. The gate used to look at Run only
+	// inside its run-slice branch and at Count only for count-shards, so a
+	// unit could be structurally perfect — right package, right shard
+	// indices, right aggregate — and still render a command that runs a
+	// fraction of what it claims.
+	cases := []struct {
+		name   string
+		store  func() *Store
+		names  map[string][]string
+		doctor func(Unit) Unit
+		wantIn []string
+	}{
+		{
+			name: "every count-shard of a whale carries a -run filter",
+			// The review's exact bypass: one package, all six shard
+			// indices, correct aggregate -count — and every shard rendered
+			// as `-count=17 -run '^(TestOne)$'`, skipping the rest.
+			store: func() *Store {
+				st := syntheticStore()
+				harpoon(st, "bamlutils/llmhttp", splitCount, 6, nil)
+				return st
+			},
+			doctor: func(u Unit) Unit {
+				if u.Kind == kindCountShard {
+					u.Run = []string{"TestOne"}
+				}
+				return u
+			},
+			wantIn: []string{"count-shard carrying a -run filter", "silently skip the rest of the package", "TestOne"},
+		},
+		{
+			name:  "an ordinary package unit carries a -run filter",
+			store: func() *Store { return syntheticStore() },
+			doctor: func(u Unit) Unit {
+				if u.ID == repoPrefix+"pool" {
+					u.Run = []string{"TestOne", "TestTwo"}
+				}
+				return u
+			},
+			wantIn: []string{"package carrying a -run filter", "TestOne|TestTwo"},
+		},
+		{
+			name:  "a GOWORK=off module atom carries a -run filter",
+			store: func() *Store { return syntheticStore() },
+			doctor: func(u Unit) Unit {
+				if u.Kind == kindModuleAtom {
+					u.Run = []string{"TestOne"}
+				}
+				return u
+			},
+			wantIn: []string{"module-atom carrying a -run filter"},
+		},
+		{
+			name:  "an ordinary package unit runs zero iterations",
+			store: func() *Store { return syntheticStore() },
+			doctor: func(u Unit) Unit {
+				if u.ID == repoPrefix+"pool" {
+					u.Count = 0
+				}
+				return u
+			},
+			wantIn: []string{"runs -count=0", "executes nothing and still passes"},
+		},
+		{
+			name: "a run-slice runs zero iterations",
+			store: func() *Store {
+				st := syntheticStore()
+				harpoon(st, "internal/debaml", splitRun, 2, map[string]float64{"TestA": 200, "TestB": 120})
+				return st
+			},
+			names: map[string][]string{repoPrefix + "internal/debaml": {"TestA", "TestB"}},
+			doctor: func(u Unit) Unit {
+				if u.Kind == kindRunSlice {
+					u.Count = 0
+				}
+				return u
+			},
+			wantIn: []string{"runs -count=0"},
+		},
+		{
+			name: "a run-slice quietly weakens the flake sweep",
+			store: func() *Store {
+				st := syntheticStore()
+				harpoon(st, "internal/debaml", splitRun, 2, map[string]float64{"TestA": 200, "TestB": 120})
+				return st
+			},
+			names: map[string][]string{repoPrefix + "internal/debaml": {"TestA", "TestB"}},
+			doctor: func(u Unit) Unit {
+				if u.Kind == kindRunSlice {
+					u.Count = 25
+				}
+				return u
+			},
+			wantIn: []string{"runs -count=25, weakening the requested -count=100"},
+		},
+		{
+			name:  "a module atom quietly weakens the flake sweep",
+			store: func() *Store { return syntheticStore() },
+			doctor: func(u Unit) Unit {
+				if u.Kind == kindModuleAtom {
+					u.Count = 1
+				}
+				return u
+			},
+			wantIn: []string{"runs -count=1, weakening the requested -count=100"},
+		},
+		{
+			name:  "a unit carries a kind the renderer does not know",
+			store: func() *Store { return syntheticStore() },
+			doctor: func(u Unit) Unit {
+				if u.ID == repoPrefix+"pool" {
+					u.Kind = ""
+				}
+				return u
+			},
+			wantIn: []string{"unknown kind", "merges anything it does not recognise"},
+		},
+		{
+			name:  "a -run name carries a regex metacharacter",
+			store: func() *Store { return syntheticStore() },
+			doctor: func(u Unit) Unit {
+				if u.ID == repoPrefix+"pool" {
+					u.Kind = kindRunSlice
+					u.Run = []string{"TestOne/subtest"}
+				}
+				return u
+			},
+			// `/` retargets -run at a SUBTEST, running one child instead of
+			// the whole top-level test.
+			wantIn: []string{"regex metacharacter"},
+		},
+		{
+			name:  "a workspace unit claims to resolve with GOWORK=off",
+			store: func() *Store { return syntheticStore() },
+			doctor: func(u Unit) Unit {
+				if u.ID == repoPrefix+"pool" {
+					u.Mode = modeOff
+				}
+				return u
+			},
+			wantIn: []string{`runs in "off" mode`, `resolves in "work"`},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opt := expandOptions{}
+			if tc.names != nil {
+				opt.Runnables = syntheticRunnables(tc.names)
+			}
+			live, buckets, runnables := bucketsFor(t, tc.store(), opt)
+			if err := gate(live, buckets, runnables); err != nil {
+				t.Fatalf("the undoctored plan already fails the gate: %v", err)
+			}
+
+			err := gate(live, mapUnits(buckets, tc.doctor), runnables)
+			if err == nil {
+				t.Fatal("the gate PASSED a plan whose emitted commands do not run what the units claim")
+			}
+			for _, want := range tc.wantIn {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("gate message omits %q:\n%s", want, err.Error())
+				}
+			}
+		})
 	}
 }

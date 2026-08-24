@@ -551,6 +551,12 @@ func TestPlanOptionsValidation(t *testing.T) {
 		{"zero count", func(o *planOptions) { o.Count = 0 }, "--count"},
 		{"negative count", func(o *planOptions) { o.Count = -1 }, "--count"},
 		{"negative stale-after", func(o *planOptions) { o.StaleAfter = -time.Hour }, "--stale-after"},
+		// The timeout is spliced verbatim into every emitted invocation, so
+		// a typo fails every bucket of the matrix at once, far from its
+		// cause.
+		{"unparsable timeout", func(o *planOptions) { o.Timeout = "20 minutes" }, "--timeout"},
+		{"timeout with no unit", func(o *planOptions) { o.Timeout = "20" }, "--timeout"},
+		{"negative timeout", func(o *planOptions) { o.Timeout = "-5m" }, "--timeout"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -566,9 +572,14 @@ func TestPlanOptionsValidation(t *testing.T) {
 		})
 	}
 
-	// The healthy settings still build.
-	if _, err := buildPlan(syntheticStore(), "", defaultPlanOptions(live)); err != nil {
-		t.Fatalf("valid options were rejected: %v", err)
+	// The healthy settings still build, including the legal timeout
+	// spellings: a Go duration, or empty to omit -timeout altogether.
+	for _, timeout := range []string{"20m", "1h30m", "90s", ""} {
+		opt := defaultPlanOptions(live)
+		opt.Timeout = timeout
+		if _, err := buildPlan(syntheticStore(), "", opt); err != nil {
+			t.Errorf("valid options with --timeout %q were rejected: %v", timeout, err)
+		}
 	}
 }
 

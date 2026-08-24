@@ -108,6 +108,18 @@ func (o planOptions) validate() error {
 	case o.StaleAfter < 0:
 		return fmt.Errorf("--stale-after must be >= 0, got %v", o.StaleAfter)
 	}
+	// The timeout is spliced verbatim into every emitted invocation, so an
+	// unparsable value fails every bucket of the matrix at once — far from
+	// where the typo is.
+	if o.Timeout != "" {
+		d, err := time.ParseDuration(o.Timeout)
+		if err != nil {
+			return fmt.Errorf("--timeout %q is not a Go duration: %w", o.Timeout, err)
+		}
+		if d < 0 {
+			return fmt.Errorf("--timeout must be >= 0, got %v", d)
+		}
+	}
 	return nil
 }
 
