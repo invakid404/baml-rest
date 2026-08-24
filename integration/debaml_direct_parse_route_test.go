@@ -360,16 +360,25 @@ func TestDeBAMLDirectParseRouteNativeFirst(t *testing.T) {
 }
 
 // routeNativeServeFloor is how many of the corpus's final-parse cases the deployed
-// `/parse/_dynamic` route serves NATIVELY today: 151 of 186. The remaining 35
-// decline — 26 outside the native parser's cut-line, 5 where native's payload
-// differs from BAML's before the host's normalization passes (an absent optional
-// BAML spells as null, and nested-object field order), 3 where BAML recovered a
+// `/parse/_dynamic` route serves NATIVELY today: 160 of 186. The remaining 26
+// decline — 22 outside the native parser's cut-line, 3 where BAML recovered a
 // non-finite float that cannot be serialized at all, and 1 where both parsers
 // errored and BAML's error text is the one served.
 //
+// Burn-down batch 1 moved this from 151. The `result_drift` bucket is now EMPTY:
+// the five cases that declined there were never semantic disagreements, only
+// payload-shape ones the host's own normalization used to erase after the
+// comparison — an absent optional BAML spells as `null`, and class field order.
+// Both are closed at the source (internal/debaml emits the null itself;
+// worker/direct_parse_schema_order.go declares the schema in the order BAML's
+// TypeBuilder will be populated in), so native's worker-boundary bytes are BAML's
+// bytes with nothing downstream assumed. The other four came from the lenient
+// map-key family, where a key matching no enum value / literal arm is KEPT under
+// its original string rather than skipped.
+//
 // Asserted as a floor, not an equality: raising it is the point of the burn-down,
 // and a corpus that grows should not have to move this number to stay green.
-const routeNativeServeFloor = 151
+const routeNativeServeFloor = 160
 
 // parseRouteNamedFallbacks are the corpus families the native parser is known not
 // to reproduce and that must therefore keep declining at the deployed route. It is
@@ -384,17 +393,20 @@ const routeNativeServeFloor = 151
 // do today), so reusing the map would assert a fact this surface does not have.
 // What DOES transfer is the one-directional guarantee: a case the parser declines
 // can never be served natively, which is what this list checks.
+//
+// Batch 1 retired two of the original thirteen — `map_bad_enum_key` and
+// `map_enum_key_nonmember_live_probe` — by reproducing the lenient map-key keep
+// they were guarding, so they are served natively now and must NOT be listed (the
+// guard would fail on them). The eleven below still decline.
 var parseRouteNamedFallbacks = []string{
 	"truncated_final_error",
 	"trailing_commas_nested_object_array",
-	"map_bad_enum_key",
 	"map_partial_incomplete",
 	"class_union_all_default_stays_fallback",
 	"scalar_union_no_match_fallback",
 	"list_scalar_union_stays_fallback",
 	"literal_int_numeric_string_mismatch",
 	"literal_int_hex_spelling_stays_fallback",
-	"map_enum_key_nonmember_live_probe",
 	"primitive_int_array_empty_stays_fallback",
 	"list_string_int_union_stays_fallback",
 	"baml_error_native_fallback_guard",

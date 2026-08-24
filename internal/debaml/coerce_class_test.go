@@ -153,15 +153,16 @@ func TestCoerceClass_SingleFieldScalarInferredObject(t *testing.T) {
 }
 
 // TestCoerceClass_MissingOptionalNull pins that an absent optional field is
-// omitted (InjectAbsentOptionals adds the null downstream) yet flags cf
-// (OptionalDefaultFromNoValue, score 1) for nullable-union cleanliness.
+// emitted as an EXPLICIT null at its declaration position — the bytes BAML
+// produces, so no downstream absent-optional pass is needed to agree with it —
+// and still flags cf (OptionalDefaultFromNoValue, score 1) for nullable-union
+// cleanliness.
 func TestCoerceClass_MissingOptionalNull(t *testing.T) {
 	// Root{name string, nick string?} with nick absent.
 	s := &bamlutils.DynamicOutputSchema{
 		Properties: props(kv("name", strProp()), kv("nick", optProp(&bamlutils.DynamicTypeSpec{Type: "string"}))),
 	}
-	// The native coercer omits the absent optional; equality is semantic here.
-	mustParse(t, s, `{"name":"Ada"}`, `{"name":"Ada"}`)
+	mustParse(t, s, `{"name":"Ada"}`, `{"name":"Ada","nick":null}`)
 
 	b, ct := classBundle(t, s, "Baml_Rest_DynamicOutput")
 	cf := &coerceFlags{}
@@ -169,8 +170,8 @@ func TestCoerceClass_MissingOptionalNull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("missing optional: %v", err)
 	}
-	if string(out) != `{"name":"Ada"}` {
-		t.Errorf("absent optional must be OMITTED: got %s", out)
+	if string(out) != `{"name":"Ada","nick":null}` {
+		t.Errorf("absent optional must be emitted as an explicit null in declaration position: got %s", out)
 	}
 	if !cf.isFlagged() {
 		t.Errorf("absent optional must flag cf (OptionalDefaultFromNoValue, score-bearing)")
@@ -340,15 +341,15 @@ func TestCoerceClass_NullableScored(t *testing.T) {
 	mustParse(t, clean, `{"u":{"name":"x","extra":1}}`, `{"u":{"name":"x"}}`)
 
 	// Root{u: (C)?}, C{name string, nick string?} — an absent optional
-	// (OptionalDefaultFromNoValue, score 1 < 110) -> claim (native omits nick;
-	// InjectAbsentOptionals re-adds it downstream, outside this unit path).
+	// (OptionalDefaultFromNoValue, score 1 < 110) -> claim, with nick emitted as
+	// the explicit null BAML emits.
 	withOpt := &bamlutils.DynamicOutputSchema{
 		Properties: props(kv("u", optProp(&bamlutils.DynamicTypeSpec{Ref: "C"}))),
 		Classes: bamlutils.MustOrderedMap(bamlutils.OrderedKV("C", &bamlutils.DynamicClass{
 			Properties: props(kv("name", strProp()), kv("nick", optProp(&bamlutils.DynamicTypeSpec{Type: "string"}))),
 		})),
 	}
-	mustParse(t, withOpt, `{"u":{"name":"x"}}`, `{"u":{"name":"x"}}`)
+	mustParse(t, withOpt, `{"u":{"name":"x"}}`, `{"u":{"name":"x","nick":null}}`)
 	// Both fields present -> clean (score 0) -> claims.
 	mustParse(t, withOpt, `{"u":{"name":"x","nick":"y"}}`, `{"u":{"name":"x","nick":"y"}}`)
 

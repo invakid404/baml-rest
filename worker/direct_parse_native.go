@@ -128,8 +128,12 @@ func (h *Handler) beginNativeDirectParse(ctx context.Context, methodName string,
 	// — it would only convert a native bug into a silent BAML fallback, which is the
 	// one failure mode the seam contract (bamlutils.DeBAMLParseFunc) refuses.
 	res, err := h.deBAMLParse(ctx, bamlutils.DeBAMLParseRequest{
-		Raw:          input.Raw,
-		OutputSchema: input.Options.OutputSchema,
+		Raw: input.Raw,
+		// Declared in the order BAML's TypeBuilder will be populated in for THIS
+		// request, so the two legs emit a class's fields under the same key order
+		// and a byte comparison measures the answer rather than the declaration.
+		// See direct_parse_schema_order.go.
+		OutputSchema: nativeParseSchemaForOrder(input.Options.OutputSchema, parsePreservesSchemaOrder(input.Options)),
 	})
 	if err != nil {
 		n.err = err

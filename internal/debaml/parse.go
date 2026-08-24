@@ -26,18 +26,20 @@ import (
 //   - Schemas that cannot be lowered/validated, or that use general
 //     (multi-variant) unions, constraints, or recursive aliases.
 //   - A MAP whose key/value falls outside the proven map subset (see
-//     checkSupportedMapKey and coerceMap). Clean maps — a JSON-object input, an
-//     exact string / enum / string-literal(-union) KEY match, and an in-scope
-//     value — are CLAIMED in input key order (#581): native coerceMap emits
-//     entries in parsed input-key order, which the bamlfuzz parse-recovery
-//     differential (order-sensitive, under preserve_schema_order) proves equal
-//     to BAML's observable map-key order — maps preserve insertion order, so
-//     preserve_schema_order reorders only class fields, never map keys. A map
-//     whose order or key/value coercion native cannot prove still DECLINES and
-//     falls back: a missed enum/literal key BAML would keep leniently, a
-//     duplicate input key, a value that could defer to a lenient Mcoerce-d
-//     success, or a non-object input. (A non-ASCII key match is now proven via
-//     bamlunicode and CLAIMED — #555 Slice 2.)
+//     checkSupportedMapKey and coerceMap). Maps over a JSON-object input with an
+//     in-scope value are CLAIMED in input key order (#581): native coerceMap emits
+//     entries in parsed input-key order under their ORIGINAL key strings, which the
+//     bamlfuzz parse-recovery differential (order-sensitive, under
+//     preserve_schema_order) proves equal to BAML's observable map-key order —
+//     maps preserve insertion order, so preserve_schema_order reorders only class
+//     fields, never map keys. A key that matches NO enum value / string literal is
+//     KEPT rather than skipped (the dynamic bridge's lenient key coercion), which
+//     costs the map a provable SCORE and so declines only where a score is ranked.
+//     A map whose order or key/value coercion native cannot prove still DECLINES
+//     and falls back: a duplicate input key, an ambiguous substring tie on a key, a
+//     value that could defer to a lenient Mcoerce-d success, or a non-object input.
+//     (A non-ASCII key match is now proven via bamlunicode and CLAIMED — #555
+//     Slice 2.)
 //   - Raw text whose JSON-looking candidate needs a repair outside the
 //     conservative M2a fixing subset — comments, escapes, missing commas,
 //     unterminated structures, multiple top-level values, … — which stays

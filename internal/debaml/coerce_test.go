@@ -138,31 +138,42 @@ func TestCoerceMapKey(t *testing.T) {
 		keyT       schema.Type
 		key        string
 		wantAccept bool // true = nil (accepted), false = whole-map decline (err)
+		// wantScoreUnknown is set for an accept the dynamic bridge reaches by KEEPING
+		// a non-matching key: the entry's bytes are certain (the ORIGINAL key string)
+		// but BAML's MapKeyParseError weight is not, so the map may not be ranked.
+		wantScoreUnknown bool
 	}{
 		// String primitive: any key coerces -> ACCEPT.
-		{"string-any", nil, strKey, "whatever", true},
-		// String literal: exact -> ACCEPT; certain miss -> DECLINE (dynamic keeps).
-		{"literal-exact", nil, strLitType("\u00e9"), "\u00e9", true},
-		{"literal-certain-miss-decline", nil, strLitType("abc"), "xyz", false},
+		{"string-any", nil, strKey, "whatever", true, false},
+		// String literal: exact -> ACCEPT clean; a certain MISS -> ACCEPT with an
+		// unproven score (the dynamic bridge keeps the original key).
+		{"literal-exact", nil, strLitType("\u00e9"), "\u00e9", true, false},
+		{"literal-certain-miss-kept-unranked", nil, strLitType("abc"), "xyz", true, true},
 		// #555 Slice 2: key "É" folds to "é" (proven) and now CLAIMS the match.
-		{"literal-nonascii-casefold-now-accept", nil, strLitType("\u00e9"), "\u00c9", true},
+		{"literal-nonascii-casefold-now-accept", nil, strLitType("\u00e9"), "\u00c9", true, false},
 		// String-literal union.
-		{"union-normal-accept", nil, litUnionType("\u00e9", "beta"), "beta", true},
-		{"union-certain-miss-decline", nil, litUnionType("abc", "def"), "xyz", false},
+		{"union-normal-accept", nil, litUnionType("\u00e9", "beta"), "beta", true, false},
+		{"union-certain-miss-kept-unranked", nil, litUnionType("abc", "def"), "xyz", true, true},
 		// #555 Slice 2: the single non-ASCII arm now folds and ACCEPTS (was decline).
-		{"union-nonascii-casefold-now-accept", nil, litUnionType("\u00e9"), "\u00c9", true},
-		// "É" folds to "é" which matches NO ascii arm -> certain miss -> DECLINE.
-		{"union-nonascii-no-arm-decline", nil, litUnionType("abc", "def"), "\u00c9", false},
+		{"union-nonascii-casefold-now-accept", nil, litUnionType("\u00e9"), "\u00c9", true, false},
+		// "É" folds to "é" which matches NO ascii arm -> certain miss -> kept, unranked.
+		{"union-nonascii-no-arm-kept-unranked", nil, litUnionType("abc", "def"), "\u00c9", true, true},
 		// A later EXACT arm accepts regardless (unchanged).
-		{"union-accept-any-arm", nil, litUnionType("abc", "\u00c9"), "\u00c9", true},
+		{"union-accept-any-arm", nil, litUnionType("abc", "\u00c9"), "\u00c9", true, false},
+		// CROSS-ARM ambiguity: the key contains BOTH arms as substrings, so
+		// match_string over the whole candidate set is StrMatchOneFromMany. Matching
+		// arm-by-arm could never see this — each isolated call is a clean match — so
+		// this case is what pins that the arms go in as ONE candidate set. Unproven
+		// on a map key, so it DECLINES rather than picking a tied arm.
+		{"union-cross-arm-substring-tie-declines", nil, litUnionType("cat", "dog"), "cat and dog", false, false},
 		// Mixed union (string literal | int): declined by the guard, no scan.
-		{"mixed-union-guard", nil, mixedUnion, "\u00c9", false},
-		// Enum: exact -> ACCEPT; a MISS (dynamic keeps non-members) -> DECLINE.
-		{"enum-exact", enumB, enumKey, "A", true},
-		{"enum-miss-decline", enumB, enumKey, "ZZZ", false},
+		{"mixed-union-guard", nil, mixedUnion, "\u00c9", false, false},
+		// Enum: exact -> ACCEPT clean; a MISS -> ACCEPT the kept non-member, unranked.
+		{"enum-exact", enumB, enumKey, "A", true, false},
+		{"enum-miss-kept-unranked", enumB, enumKey, "ZZZ", true, true},
 		// #555 Slice 2: "É" folds to "é" (proven), != the ASCII enum values -> a
-		// CERTAIN miss -> DECLINE the whole map (dynamic keeps non-members).
-		{"enum-nonascii-certain-miss-decline", enumB, enumKey, "\u00c9", false},
+		// CERTAIN miss -> the entry is kept under "É", the map unranked.
+		{"enum-nonascii-certain-miss-kept-unranked", enumB, enumKey, "\u00c9", true, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -178,6 +189,9 @@ func TestCoerceMapKey(t *testing.T) {
 			// coerceMapKey marks no uncertainty after #555 Slice 2 (the fold is proven).
 			if cf.isUncertain() {
 				t.Errorf("cf.isUncertain() = true, want false (map-key coercion marks no uncertainty)")
+			}
+			if got := cf.hasUnknownScore(); got != c.wantScoreUnknown {
+				t.Errorf("cf.hasUnknownScore() = %v, want %v", got, c.wantScoreUnknown)
 			}
 		})
 	}

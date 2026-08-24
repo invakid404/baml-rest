@@ -239,19 +239,21 @@ var parseRecoveryNativeClaim = map[string]bool{
 	// comment-bearing final now CLAIMS the same result BAML recovers (native-only, no
 	// fallback). Held byte-exact vs live BAML by this differential.
 	"comments_fallback": true,
-	// M2b native MAPS: clean maps are claimed and diff-green vs BAML —
-	// object input, exact key match (string / enum / string-literal /
-	// string-literal-union), in-scope values, emitted in INPUT key order.
+	// M2b native MAPS: maps are claimed and diff-green vs BAML — object input, an
+	// in-scope value, and every entry emitted in INPUT key order under its
+	// ORIGINAL key string (a key that matches no enum value / literal arm is KEPT,
+	// not skipped — see the lenient-map-key block below).
 	"strict_map_string_int":        true,
 	"map_enum_keys":                true,
 	"map_string_class_values":      true,
 	"map_literal_union_keys_exact": true,
 	// M2b decline set: every map BAML would return as partial/scored — a
-	// skipped bad key/value (MapKeyParseError / MapValueParseError) or an
-	// unterminated/incomplete map (M2a defers). Native declines (fallback)
-	// rather than claim a clean result where BAML carries flags or skips
-	// entries. (map_fuzzy_enum_key flipped to claimed in Mcoerce-a.)
-	"map_bad_enum_key": false,
+	// skipped bad value (MapValueParseError) or an unterminated/incomplete map
+	// (M2a defers). Native declines (fallback) rather than claim a clean result
+	// where BAML carries flags or skips entries. (map_fuzzy_enum_key flipped to
+	// claimed in Mcoerce-a; map_bad_enum_key flipped in the batch-1 burn-down —
+	// see the lenient-map-key block below.)
+	"map_bad_enum_key": true,
 	// Mcoerce-c native MAPS flip: an OBJECT map value can't coerce to int
 	// (error_unexpected_type), a PROVEN MapValueParseError, so BAML skips just
 	// that entry and native now reproduces the partial map {"a":1} — CLAIMED.
@@ -442,15 +444,26 @@ var parseRecoveryNativeClaim = map[string]bool{
 	// key order under their ORIGINAL key strings.
 	"map_value_partial_bad_int": true,
 	"map_value_lenient_kept":    true,
-	// Mcoerce-c MAP fallback set. KEY misses are NOT native skips: the dynamic
-	// bridge keeps non-matching enum / string-literal / literal-union keys
-	// leniently (live-captured FULL maps, not partial), so a key miss is a
-	// DEFERRED Mcoerce-d keep and native declines the WHOLE map. Also fallback: a
-	// duplicate original key (unproven insert order). Map-key non-member probes
-	// stay fallback (M3d).
-	"map_literal_key_partial_bad_key":   false,
-	"map_bad_key_original_order":        false,
-	"map_enum_key_nonmember_live_probe": false,
+	// BURN-DOWN BATCH 1 — LENIENT MAP KEYS, now CLAIMED. A key miss was never a
+	// skip: the dynamic bridge KEEPS a non-matching enum / string-literal /
+	// literal-union key under its ORIGINAL string, in input order, alongside the
+	// matching entries (these four fixtures are live-captured FULL maps, and
+	// map_fuzzy_enum_key already proved a MATCHED key is likewise inserted under
+	// its original string rather than the canonical name). So the key coercion
+	// never changes what native emits — it only decides whether BAML additionally
+	// records a MapKeyParseError, whose types.rs weight is NOT live-captured.
+	// coerceMapKey therefore ACCEPTS the miss and marks the map's SCORE unproven
+	// (coerceFlags.scoreUnknown), which declines at pickBest — the one place a
+	// score is compared — so a plain map position claims byte-exact while any
+	// SCORED position (a nullable/union map arm) still falls back. An AMBIGUOUS
+	// substring tie on a key stays fallback: StrMatchOneFromMany on a map key has
+	// no live capture.
+	//
+	// Still fallback: a DUPLICATE original key (BAML's IndexMap insert/overwrite
+	// ordering is unproven).
+	"map_literal_key_partial_bad_key":   true,
+	"map_bad_key_original_order":        true,
+	"map_enum_key_nonmember_live_probe": true,
 	"map_duplicate_key_stays_fallback":  false,
 	// M3a CLAIMED: a nullable map arm carrying ObjectToMap (score 1) plus its clean
 	// value scores beats the null arm (110) — the map's inherent score is now
