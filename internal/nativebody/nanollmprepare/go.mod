@@ -21,9 +21,9 @@ go 1.26.5
 require (
 	github.com/boundaryml/baml v0.223.0
 	github.com/invakid404/baml-rest v0.0.48
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260824191050-05102106c569
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260824225140-83dde65a20f1
 	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260824191050-05102106c569
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260824225140-83dde65a20f1
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
@@ -112,7 +112,7 @@ require (
 // without recording it here fails the native-worker PACKAGING build (-mod=readonly)
 // with "updates to go.mod needed".
 //
-// PIN-STATUS: RESOLVED
+// PIN-STATUS: OUTSTANDING
 //
 // That marker is the MACHINE-READABLE statement of where these pins stand, and
 // cmd/build's TestPackagedManifestsMatchTheTrackedPins requires it to equal the
@@ -136,12 +136,12 @@ require (
 // 4a6c8f1ee571 on feat/debaml-s3b-enroll before #683 squash-merged it to master as
 // ba813ad3564d; the /parse burn-down batch 1 change did the same, briefly BRANCH-ONLY at
 // 251b09219943 on feat/debaml-parse-burndown-1 before #686 squash-merged it to master as
-// 05102106c569.
+// 05102106c569 (#687 performed that re-pin).
 //
-// RIGHT NOW they are MASTER-DURABLE: the /parse burn-down batch 1 change moved all five to
-// 05102106c569, the #686 master squash commit, which now carries the changed native SAP —
-// so nativeserve/pin_followup.md reads STATUS: RESOLVED and the post-squash re-pin runbook
-// has been PERFORMED. Do not treat this
+// RIGHT NOW they are BRANCH-ONLY: the /parse UNION burn-down moved all five to
+// 83dde65a20f1 on feat/debaml-parse-union, its LATEST SOURCE commit, because no master
+// commit carries the changed native SAP yet — so nativeserve/pin_followup.md reads
+// STATUS: OUTSTANDING and the post-squash re-pin runbook is OWED. Do not treat this
 // comment as the authority — nativeserve/pin_followup.md is the tracked record, and
 // cmd/build's TestFirstPartyPinFollowupIsTracked is what holds the two together: it
 // parses that record and the require directives above on every ordinary
@@ -150,17 +150,19 @@ require (
 // exactly what happened when the S1 text was left here after the S2 bump, and which is
 // why the runbook makes flipping BOTH narratives its own numbered step.
 //
-// Batch 1 changes BOTH sides of the graph, even though its functional diff is small. The
-// serve-core side changes the native SAP itself: internal/debaml now spells an absent
-// optional as an explicit null and KEEPS a map key that matches no enum value / literal
-// arm under its original string instead of declining the map, so the bytes a native
-// claim produces differ from the pre-batch-1 ones. THIS module's cmd/worker entrypoint is the
-// binary the booted-artifact proofs boot, its shadow comparator hands debaml.Parse the
-// same responses, and the worker module pinned above is where the direct-parse
-// field-order pass lives that makes those bytes comparable to BAML's in the first place.
-// A consumer resolving a PRE-batch-1 pin gets a serve core whose parse answers are shaped for
-// the previous boundary contract, so the lockstep is carrying real cross-module
-// behaviour rather than a version string.
+// The union burn-down changes BOTH sides of the graph. The serve-core side changes the
+// native SAP itself: internal/debaml now threads BAML's array union_variant_hint across
+// list siblings (so a list<multi-arm-union> element resolves on the arm BAML picks rather
+// than declining), scores a class union arm carrying a required list / string-keyed map
+// field, resolves a JSON null into a non-nullable union per ARM KIND (a list arm survives
+// it; a map arm rejects it and the enclosing class default-fills the union's
+// default_value), and spells emitted floats the way the worker boundary does. THIS
+// module's cmd/worker entrypoint is the binary the booted-artifact proofs boot, its shadow
+// comparator hands debaml.Parse the same responses, and the worker module pinned above is
+// where the direct-parse field-order pass lives that makes those bytes comparable to
+// BAML's in the first place. A consumer resolving a PRE-union pin gets a serve core whose
+// parse answers are shaped for the previous cut-line, so the lockstep is carrying real
+// cross-module behaviour rather than a version string.
 //
 // Resolve the root module and every locally-replaced sibling from the checkout
 // (this module is outside go.work, so root's own replaces do not propagate).
