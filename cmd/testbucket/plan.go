@@ -92,15 +92,31 @@ type planOptions struct {
 	StaleAfter   time.Duration
 	Now          time.Time
 	Live         []LivePackage
-	TestNames    testNamer
+	Runnables    runnableNamer
+}
+
+// validate rejects settings that would emit an invalid or meaningless
+// matrix. A non-positive -count is the sharp one: `go test -count=0` runs
+// nothing at all, so a plan built from it would be a complete, balanced,
+// gate-passing matrix that executes zero tests.
+func (o planOptions) validate() error {
+	switch {
+	case o.K < 1:
+		return fmt.Errorf("--k must be >= 1, got %d", o.K)
+	case o.Count < 1:
+		return fmt.Errorf("--count must be >= 1, got %d", o.Count)
+	case o.StaleAfter < 0:
+		return fmt.Errorf("--stale-after must be >= 0, got %v", o.StaleAfter)
+	}
+	return nil
 }
 
 // buildPlan is the whole planner as a pure function of (live tree, store,
 // options): no I/O, no clock beyond opt.Now. Everything the CLI does around
 // it is reading the store, resolving the live set, and printing.
 func buildPlan(st *Store, reason string, opt planOptions) (*planDocument, error) {
-	if opt.K <= 0 {
-		return nil, fmt.Errorf("--k must be >= 1, got %d", opt.K)
+	if err := opt.validate(); err != nil {
+		return nil, err
 	}
 	flags := canonicalFlags(opt.Race, opt.Count)
 
@@ -126,7 +142,7 @@ func buildPlan(st *Store, reason string, opt planOptions) (*planDocument, error)
 		K:           opt.K,
 		BaseCount:   opt.Count,
 		MeanSeconds: mean,
-		TestNames:   opt.TestNames,
+		Runnables:   opt.Runnables,
 	})
 	if err != nil {
 		return nil, err
@@ -153,7 +169,12 @@ func buildPlan(st *Store, reason string, opt planOptions) (*planDocument, error)
 
 	// The gate runs on the FINAL buckets, after partitioning — the point is
 	// to prove what will actually be executed, not what was intended.
-	if err := assertCoverage(opt.Live, buckets, ex.TestNames); err != nil {
+	if err := assertCoverage(gateInput{
+		Live:      opt.Live,
+		Buckets:   buckets,
+		Runnables: ex.Runnables,
+		BaseCount: opt.Count,
+	}); err != nil {
 		return nil, err
 	}
 
@@ -316,11 +337,30 @@ func renderBucket(b Bucket, opt planOptions) planBucket {
 	return pb
 }
 
+// serialPackages is the -p value every emitted invocation carries.
+//
+// It is 1 because the balancer's objective must be the job's wall time, and
+// the weights it partitions are SUMMED package elapsed times. `go test` runs
+// package test binaries in parallel by default, so a coalesced invocation
+// would finish in something closer to the bucket's critical package than its
+// sum — the planner would be optimising a cost function the runner does not
+// have, and a bucket estimated at 400s could really take 150s while another
+// estimated at 380s took 380s. Serialising the packages makes the measured
+// sum the thing that actually happens, and it makes the timings ingest
+// records contention-free and therefore comparable across runs.
+//
+// This is NOT `-parallel`: subtests inside one package still run in
+// parallel, and that concurrency is already inside the package's measured
+// elapsed time. Only cross-package concurrency is given up, and it is bought
+// back — with far better balance — by the K buckets themselves.
+const serialPackages = 1
+
 func goTestArgs(opt planOptions, count int, run []string, paths []string) []string {
 	args := []string{"go", "test"}
 	if opt.Race {
 		args = append(args, "-race")
 	}
+	args = append(args, fmt.Sprintf("-p=%d", serialPackages))
 	args = append(args, fmt.Sprintf("-count=%d", count))
 	if opt.Timeout != "" {
 		args = append(args, "-timeout", opt.Timeout)
@@ -499,8 +539,11 @@ func (d *planDocument) writeSummary(w io.Writer, shortenPrefix string) {
 			fmt.Fprintf(w, "  - %s\n", shortenID(n, shortenPrefix))
 		}
 	}
-	fmt.Fprintf(w, "\ncoverage gate: PASS — every live package (and every test func of every\n")
-	fmt.Fprintf(w, "sliced package) is assigned to exactly one bucket.\n")
+	fmt.Fprintf(w, "\ncoverage gate: PASS — every live package, every runnable (test, example\n")
+	fmt.Fprintf(w, "or fuzz target) of every name-sliced package, and every count-shard of\n")
+	fmt.Fprintf(w, "every sharded package is assigned to exactly one bucket; each sharded\n")
+	fmt.Fprintf(w, "package's shards add back up to the requested -count.\n")
+	fmt.Fprintf(w, "execution model: -p=%d, so a bucket's estimate is its serial wall time.\n", serialPackages)
 }
 
 // shortenID trims the repo's import-path prefix for display only. The

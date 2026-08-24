@@ -77,10 +77,22 @@ func TestExpandUnitsDefaultsToWholePackages(t *testing.T) {
 	}
 }
 
-func TestExpandUnitsColdStartUsesTheMeanWeight(t *testing.T) {
-	// THE INVARIANT, cold-start half: a package the store has never heard
-	// of is scheduled immediately on the mean weight. It does not wait for
-	// a record job, and it is never left out.
+func TestAStoreMissIsScheduledOnTheMeanWeightAndIsNotAnError(t *testing.T) {
+	// Missing from the STORE and missing from the PLAN are different things
+	// and only one of them is a bug. This test pins the first:
+	//
+	//   store miss -> scheduled on the cold-start mean weight, no error.
+	//
+	// That is the brief's explicit requirement, and it is what makes a
+	// rolling CI cache usable at all: a package the store has never heard
+	// of (new, renamed, or simply expired out of the cache) runs on THIS
+	// run and gets its real weight on the next master record. Erroring here
+	// instead would make every cold start a red build.
+	//
+	// The invariant proper — a live package missing from the FINAL PLAN is
+	// a hard error — is enforced by assertCoverage and proved by
+	// TestGateSeparatesStoreMissFromPlanMiss and
+	// TestCoverageGateCatchesEveryWayATestCanVanish.
 	cases := []struct {
 		name        string
 		store       *Store
@@ -192,7 +204,7 @@ func TestExpandUnitsRunSlicesABigPackage(t *testing.T) {
 		"TestAlpha": 200, "TestBeta": 100, "TestGamma": 60, "TestDelta": 40, "TestEpsilon": 20,
 	})
 	ex := expandFor(t, st, expandOptions{
-		TestNames: syntheticTestNames(map[string][]string{repoPrefix + "internal/debaml": names}),
+		Runnables: syntheticRunnables(map[string][]string{repoPrefix + "internal/debaml": names}),
 	})
 
 	slices := unitsForPackage(ex, repoPrefix+"internal/debaml")
@@ -227,7 +239,7 @@ func TestExpandUnitsRunSlicesABigPackage(t *testing.T) {
 	if math.Abs(total-420) > 1e-9 {
 		t.Errorf("slice weights sum to %v, want the package's 420s", total)
 	}
-	if ex.TestNames[repoPrefix+"internal/debaml"] == nil {
+	if ex.Runnables[repoPrefix+"internal/debaml"] == nil {
 		t.Error("the live test-name list was not recorded for the gate to check")
 	}
 }
@@ -243,7 +255,7 @@ func TestRunSliceSchedulesTestsTheStoreHasNeverSeen(t *testing.T) {
 		"TestOld1": 200, "TestOld2": 100,
 	})
 	ex := expandFor(t, st, expandOptions{
-		TestNames: syntheticTestNames(map[string][]string{repoPrefix + "internal/debaml": live}),
+		Runnables: syntheticRunnables(map[string][]string{repoPrefix + "internal/debaml": live}),
 	})
 
 	seen := map[string]int{}
@@ -279,7 +291,7 @@ func TestRunSliceWeightingFallbacks(t *testing.T) {
 		"TestHuge": 900,
 	})
 	ex := expandFor(t, st, expandOptions{
-		TestNames: syntheticTestNames(map[string][]string{
+		Runnables: syntheticRunnables(map[string][]string{
 			repoPrefix + "internal/debaml": {"TestHuge", "TestUnknown"},
 		}),
 	})
@@ -352,7 +364,7 @@ func TestExpandUnitsFailsLoudlyWhenTestNamesCannotBeResolved(t *testing.T) {
 	}
 
 	failing := func(p LivePackage) ([]string, error) { return nil, errBoom }
-	_, err := expandUnits(syntheticLive(), st, expandOptions{K: 6, BaseCount: 100, MeanSeconds: 60, TestNames: failing})
+	_, err := expandUnits(syntheticLive(), st, expandOptions{K: 6, BaseCount: 100, MeanSeconds: 60, Runnables: failing})
 	if err == nil || !strings.Contains(err.Error(), "internal/debaml") {
 		t.Errorf("err = %v, want a loud failure naming internal/debaml", err)
 	}

@@ -192,7 +192,7 @@ func TestBuildPlanIsDeterministic(t *testing.T) {
 	harpoon(st, "bamlutils/llmhttp", splitCount, 6, nil)
 	harpoon(st, "internal/debaml", splitRun, 3, map[string]float64{"TestA": 200, "TestB": 120, "TestC": 60})
 	opt := defaultPlanOptions(live)
-	opt.TestNames = syntheticTestNames(map[string][]string{
+	opt.Runnables = syntheticRunnables(map[string][]string{
 		repoPrefix + "internal/debaml": {"TestA", "TestB", "TestC", "TestD"},
 	})
 
@@ -276,7 +276,7 @@ func TestBuildPlanInvocationEnvelopes(t *testing.T) {
 	harpoon(st, "bamlutils/llmhttp", splitCount, 6, nil)
 	harpoon(st, "internal/debaml", splitRun, 3, map[string]float64{"TestA": 200, "TestB": 120, "TestC": 60})
 	opt := defaultPlanOptions(live)
-	opt.TestNames = syntheticTestNames(map[string][]string{
+	opt.Runnables = syntheticRunnables(map[string][]string{
 		repoPrefix + "internal/debaml": {"TestA", "TestB", "TestC"},
 	})
 	doc := mustPlan(t, st, "", opt)
@@ -396,7 +396,7 @@ func TestBuildPlanEventsCaptureWiring(t *testing.T) {
 
 func TestBuildPlanCoverageGateFiresEndToEnd(t *testing.T) {
 	// The reachable path to a dropped test: the store insists a package be
-	// name-sliced, but the tree reports no test funcs for it (a build-tag
+	// name-sliced, but the tree reports no runnables for it (a build-tag
 	// gated file set, a resolver returning nothing). The slicer produces no
 	// units, and `plan` must refuse rather than emit a matrix that quietly
 	// never runs internal/debaml.
@@ -404,7 +404,7 @@ func TestBuildPlanCoverageGateFiresEndToEnd(t *testing.T) {
 	st := syntheticStore()
 	harpoon(st, "internal/debaml", splitRun, 3, map[string]float64{"TestA": 200})
 	opt := defaultPlanOptions(live)
-	opt.TestNames = syntheticTestNames(map[string][]string{}) // resolves to nothing
+	opt.Runnables = syntheticRunnables(map[string][]string{}) // resolves to nothing
 
 	_, err := buildPlan(st, "", opt)
 	if err == nil {
@@ -473,4 +473,166 @@ func containsArg(args []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestEmittedExecutionMatchesTheBalancersCostModel(t *testing.T) {
+	// P1-1 regression, and the most load-bearing assumption in the tool.
+	//
+	// KK partitions SUMMED package elapsed times, and `ingest` records
+	// package elapsed by summing. That objective is the job's wall time
+	// only if the packages in a bucket actually run one after another. Left
+	// at the default -p, `go test pkgA pkgB pkgC` runs the three binaries
+	// concurrently, so a bucket estimated at 400s might finish in 150s
+	// while its neighbour estimated at 380s really takes 380s — the
+	// balancer would be optimising a cost function the runner does not have.
+	//
+	// This pins the topology, not just the flag.
+	live := syntheticLive()
+	st := syntheticStore()
+	harpoon(st, "bamlutils/llmhttp", splitCount, 6, nil)
+	harpoon(st, "internal/debaml", splitRun, 3, map[string]float64{"TestA": 200, "TestB": 120, "TestC": 60})
+	opt := defaultPlanOptions(live)
+	opt.Runnables = syntheticRunnables(map[string][]string{
+		repoPrefix + "internal/debaml": {"TestA", "TestB", "TestC", "ExampleD"},
+	})
+	doc := mustPlan(t, st, "", opt)
+
+	multiPackage := 0
+	for _, b := range doc.Buckets {
+		for _, inv := range b.Invocations {
+			if got := argValue(inv.Args, "-p"); got != "1" {
+				t.Errorf("bucket %d invocation runs packages concurrently (-p=%q): %v", b.Index, got, inv.Args)
+			}
+			if countPackageArgs(inv.Args) > 1 {
+				multiPackage++
+			}
+		}
+
+		// The estimate a bucket advertises must be exactly the serial cost
+		// of what it will execute — that is the number the matrix, the
+		// summary and the balancer all quote.
+		sum := 0.0
+		for _, u := range b.Units {
+			sum += u.Seconds
+		}
+		if math.Abs(b.Seconds-sum) > 1e-9 {
+			t.Errorf("bucket %d advertises %.3fs but its units sum to %.3fs", b.Index, b.Seconds, sum)
+		}
+	}
+	if multiPackage == 0 {
+		t.Fatal("no invocation coalesced several packages; this test would not be proving anything")
+	}
+
+	// And the makespan the summary reports is the heaviest bucket's serial
+	// cost, i.e. the predicted wall time of the matrix.
+	heaviest := 0.0
+	for _, b := range doc.Buckets {
+		if b.Seconds > heaviest {
+			heaviest = b.Seconds
+		}
+	}
+	if math.Abs(doc.Summary.MakespanSeconds-heaviest) > 1e-9 {
+		t.Errorf("summary makespan %.3fs, want the heaviest bucket's %.3fs", doc.Summary.MakespanSeconds, heaviest)
+	}
+}
+
+func TestPlanOptionsValidation(t *testing.T) {
+	// P3-1. `go test -count=0` runs nothing at all, so a plan built from it
+	// would be a complete, balanced, gate-passing matrix that executes zero
+	// tests — a green CI lane proving nothing.
+	live := syntheticLive()
+	cases := []struct {
+		name   string
+		mutate func(*planOptions)
+		wantIn string
+	}{
+		{"zero K", func(o *planOptions) { o.K = 0 }, "--k"},
+		{"negative K", func(o *planOptions) { o.K = -3 }, "--k"},
+		{"zero count", func(o *planOptions) { o.Count = 0 }, "--count"},
+		{"negative count", func(o *planOptions) { o.Count = -1 }, "--count"},
+		{"negative stale-after", func(o *planOptions) { o.StaleAfter = -time.Hour }, "--stale-after"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opt := defaultPlanOptions(live)
+			tc.mutate(&opt)
+			_, err := buildPlan(syntheticStore(), "", opt)
+			if err == nil {
+				t.Fatal("the setting was accepted")
+			}
+			if !strings.Contains(err.Error(), tc.wantIn) {
+				t.Errorf("error %q does not name %s", err.Error(), tc.wantIn)
+			}
+		})
+	}
+
+	// The healthy settings still build.
+	if _, err := buildPlan(syntheticStore(), "", defaultPlanOptions(live)); err != nil {
+		t.Fatalf("valid options were rejected: %v", err)
+	}
+}
+
+func TestMatrixIsTimeIndependentEvenThoughTheSummaryIsNot(t *testing.T) {
+	// P2-1's second half. The matrix that fans the jobs out must be a pure
+	// function of (store, K) so the same commit always runs the same split;
+	// the summary deliberately carries wall-clock facts (store age,
+	// staleness) because their whole job is to make expiry visible.
+	live := syntheticLive()
+	early := defaultPlanOptions(live)
+	early.Now = time.Date(2026, 8, 25, 0, 0, 0, 0, time.UTC)
+	late := defaultPlanOptions(live)
+	late.Now = time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+
+	a := mustPlan(t, syntheticStore(), "", early)
+	b := mustPlan(t, syntheticStore(), "", late)
+
+	ma, err := a.matrixJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mb, err := b.matrixJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(ma, mb) {
+		t.Error("the matrix changed with the clock; the split must depend only on the store and K")
+	}
+	if a.Summary.StoreAge == b.Summary.StoreAge {
+		t.Error("the summary did not track the clock; staleness would be invisible")
+	}
+	if a.Summary.Stale || !b.Summary.Stale {
+		t.Errorf("staleness did not flip across the threshold: early=%v late=%v", a.Summary.Stale, b.Summary.Stale)
+	}
+}
+
+// argValue returns the value of a flag in an argv, accepting both `-p=1` and
+// `-p 1` spellings.
+func argValue(args []string, flag string) string {
+	for i, a := range args {
+		if strings.HasPrefix(a, flag+"=") {
+			return strings.TrimPrefix(a, flag+"=")
+		}
+		if a == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// countPackageArgs counts the trailing package patterns of a go test argv.
+func countPackageArgs(args []string) int {
+	n := 0
+	for i, a := range args {
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		if i > 0 && (args[i-1] == "-run" || args[i-1] == "-timeout" || args[i-1] == "-p") {
+			continue
+		}
+		if a == "go" || a == "test" {
+			continue
+		}
+		n++
+	}
+	return n
 }

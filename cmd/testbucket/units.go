@@ -86,10 +86,13 @@ func runSliceID(importPath string, names []string) string {
 
 func moduleAtomID(moduleDir string) string { return "mod:" + moduleDir }
 
-// testNamer resolves the live top-level test functions of a package. It is
-// an injected dependency so the whole planner is testable against a
-// synthetic tree; the real implementation shells out to `go test -list`.
-type testNamer func(p LivePackage) ([]string, error)
+// runnableNamer resolves a package's complete top-level RUNNABLE set — every
+// name the emitted `-run` alternation can select: tests, examples and fuzz
+// targets alike. It is an injected dependency so the whole planner is
+// testable against a synthetic tree; the real implementation shells out to
+// `go test -list` (see listRunnableNames for why the universe must be the
+// full one and not just `Test*`).
+type runnableNamer func(p LivePackage) ([]string, error)
 
 type expandOptions struct {
 	// K is the bucket count, used only to bound how far a whale may be split.
@@ -102,17 +105,17 @@ type expandOptions struct {
 	// sink to whichever bucket happens to be lightest and, worse, would
 	// make the plan's estimates lie.
 	MeanSeconds float64
-	TestNames   testNamer
+	Runnables   runnableNamer
 }
 
 // expansion is the result of turning the live package set plus the store
 // into schedulable units.
 type expansion struct {
 	Units []Unit
-	// TestNames records the live test-name list used for each run-sliced
+	// Runnables records the live runnable-name list used for each run-sliced
 	// package, so the coverage gate can check the slices against the same
-	// set the slicer saw.
-	TestNames map[string][]string
+	// universe the slicer saw.
+	Runnables map[string][]string
 	Notes     []string
 	// Loaded / Missing count PACKAGES (not units) whose weight came from a
 	// real measurement vs the cold-start mean.
@@ -129,7 +132,7 @@ type expansion struct {
 // store has never heard of still gets a unit (on the mean weight), and a
 // store row with no live package simply never gets looked at.
 func expandUnits(live []LivePackage, st *Store, opt expandOptions) (*expansion, error) {
-	ex := &expansion{TestNames: map[string][]string{}}
+	ex := &expansion{Runnables: map[string][]string{}}
 
 	testable := make([]LivePackage, 0, len(live))
 	for _, p := range live {
@@ -224,22 +227,22 @@ func expandUnits(live []LivePackage, st *Store, opt expandOptions) (*expansion, 
 				p.ImportPath, shards, count, count*shards, opt.BaseCount))
 
 		case splitRun:
-			if opt.TestNames == nil {
-				return nil, fmt.Errorf("%s is flagged split=run but no test-name resolver is configured", p.ImportPath)
+			if opt.Runnables == nil {
+				return nil, fmt.Errorf("%s is flagged split=run but no runnable-name resolver is configured", p.ImportPath)
 			}
-			names, err := opt.TestNames(p)
+			names, err := opt.Runnables(p)
 			if err != nil {
 				// Loud, not silent: falling back to a whole-package run
 				// here would quietly undo the harpoon and blow the
 				// makespan without anyone noticing.
-				return nil, fmt.Errorf("resolve test names for %s (flagged split=run): %w", p.ImportPath, err)
+				return nil, fmt.Errorf("resolve runnable names for %s (flagged split=run): %w", p.ImportPath, err)
 			}
-			sort.Strings(names)
-			ex.TestNames[p.ImportPath] = names
+			names = dedupeSorted(names)
+			ex.Runnables[p.ImportPath] = names
 			slices := sliceByName(p, names, row, sec, clampShards(row.SplitInto, opt.K), opt.BaseCount, estimated)
 			ex.Units = append(ex.Units, slices...)
 			ex.Notes = append(ex.Notes, fmt.Sprintf(
-				"run-slice %s into %d slices over %d live test funcs",
+				"run-slice %s into %d slices over %d live runnables (tests, examples and fuzz targets)",
 				p.ImportPath, len(slices), len(names)))
 
 		default:
@@ -262,15 +265,16 @@ func expandUnits(live []LivePackage, st *Store, opt expandOptions) (*expansion, 
 	return ex, nil
 }
 
-// sliceByName packs a package's live test functions into up to `shards`
-// -run slices, weighting each name by its recorded per-test time and giving
-// names the store has never seen the package's residual per-test average.
-// Unrecorded names are packed exactly like recorded ones — that is what
-// keeps a brand-new test inside a harpooned whale from vanishing.
+// sliceByName packs a package's live runnables — tests, examples and fuzz
+// targets alike — into up to `shards` -run slices, weighting each name by
+// its recorded per-name time and giving names the store has never seen the
+// package's residual per-name average. Unrecorded names are packed exactly
+// like recorded ones: that is what keeps a brand-new test (or a newly added
+// Example) inside a harpooned whale from vanishing.
 func sliceByName(p LivePackage, names []string, row *UnitStat, pkgSeconds float64, shards, baseCount int, estimated bool) []Unit {
 	if len(names) == 0 {
 		// Deliberately returns nothing rather than an empty -run (which
-		// would match every test and duplicate the package across slices).
+		// would match everything and duplicate the package across slices).
 		// The coverage gate is the backstop that turns this into a loud
 		// failure, because `go list` says this package HAS tests.
 		return nil
@@ -406,6 +410,17 @@ func ceilDiv(a, b int) int {
 		return 1
 	}
 	return n
+}
+
+// dedupeSorted sorts and de-duplicates a resolver's names. A duplicate would
+// otherwise be packed into two slices and run twice.
+func dedupeSorted(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := append([]string(nil), in...)
+	sort.Strings(out)
+	return dedupe(out)
 }
 
 func sortedKeys[V any](m map[string]V) []string {

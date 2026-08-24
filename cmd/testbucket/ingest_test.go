@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -22,6 +23,16 @@ func stream(lines ...string) *bytes.Reader {
 	return bytes.NewReader([]byte(strings.Join(lines, "\n") + "\n"))
 }
 
+// mustIngest runs a merge that is expected to be well-formed.
+func mustIngest(t *testing.T, st *Store, sum *eventSummary, opt ingestOptions) *ingestReport {
+	t.Helper()
+	rep, err := applyIngest(st, sum, opt)
+	if err != nil {
+		t.Fatalf("applyIngest: %v", err)
+	}
+	return rep
+}
+
 func defaultIngestOptions() ingestOptions {
 	return ingestOptions{
 		Alpha:  0.5,
@@ -37,7 +48,8 @@ func TestParseEventsAggregatesTheStream(t *testing.T) {
 		// One package split across two count-shards: its weight is the sum.
 		event("pass", repoPrefix+"bamlutils/llmhttp", "", 450),
 		event("pass", repoPrefix+"bamlutils/llmhttp", "", 450),
-		// Per-test rows, including a subtest that folds into its parent.
+		// A parent and its subtest. The parent's Elapsed already covers
+		// the child, so only the parent may be weighed.
 		event("pass", repoPrefix+"internal/debaml", "TestAlpha", 200),
 		event("pass", repoPrefix+"internal/debaml", "TestAlpha/sub", 15),
 		event("pass", repoPrefix+"internal/debaml", "TestBeta", 100),
@@ -64,8 +76,14 @@ func TestParseEventsAggregatesTheStream(t *testing.T) {
 	if got := sum.PackageRuns[repoPrefix+"bamlutils/llmhttp"]; got != 2 {
 		t.Errorf("llmhttp ran %d times, want 2", got)
 	}
-	if got := sum.TestSeconds[repoPrefix+"internal/debaml"]["TestAlpha"]; got != 215 {
-		t.Errorf("TestAlpha = %v, want 215 (subtest folded into its parent)", got)
+	if got := sum.TestSeconds[repoPrefix+"internal/debaml"]["TestAlpha"]; got != 200 {
+		t.Errorf("TestAlpha = %v, want the parent's own 200 (its pass event already covers the subtest)", got)
+	}
+	if _, ok := sum.TestSeconds[repoPrefix+"internal/debaml"]["TestAlpha/sub"]; ok {
+		t.Error("a subtest was weighed as if it were a top-level runnable")
+	}
+	if sum.Subtests != 1 {
+		t.Errorf("counted %d subtest events, want 1", sum.Subtests)
 	}
 	if !sum.Failed[repoPrefix+"pool"] {
 		t.Error("the failed package was not recorded as failed")
@@ -121,7 +139,7 @@ func TestApplyIngestSmoothsInsteadOfOverwriting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rep := applyIngest(st, sum, defaultIngestOptions())
+	rep := mustIngest(t, st, sum, defaultIngestOptions())
 
 	row := st.Units[repoPrefix+"pool"]
 	if want := 0.5*200 + 0.5*before; row.Seconds != want {
@@ -150,7 +168,7 @@ func TestApplyIngestKeepsThePriorWeightOnFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rep := applyIngest(st, sum, defaultIngestOptions())
+	rep := mustIngest(t, st, sum, defaultIngestOptions())
 
 	if got := st.Units[repoPrefix+"bamlutils/llmhttp"].Seconds; got != before {
 		t.Errorf("llmhttp = %v, want the prior %v kept", got, before)
@@ -207,7 +225,7 @@ func TestApplyIngestFlagsWhalesAndPicksAPolicy(t *testing.T) {
 				t.Fatal(err)
 			}
 			st := newStore(canonicalFlags(true, 100))
-			rep := applyIngest(st, sum, defaultIngestOptions())
+			rep := mustIngest(t, st, sum, defaultIngestOptions())
 
 			row := st.Units[repoPrefix+"bamlutils/llmhttp"]
 			if row.Split != tc.wantSplit {
@@ -265,7 +283,7 @@ func TestApplyIngestWillNotSliceBelowAJobsFixedOverhead(t *testing.T) {
 	opt := defaultIngestOptions()
 	opt.Race, opt.Count = false, 1
 	opt.MinShardSeconds = 30
-	rep := applyIngest(st, sum, opt)
+	rep := mustIngest(t, st, sum, opt)
 
 	// retry IS over total/6 (~0.37s) — the relative rule alone would slice
 	// it — but no slice of it could reach 30s.
@@ -288,7 +306,7 @@ func TestApplyIngestWillNotSliceBelowAJobsFixedOverhead(t *testing.T) {
 	st = newStore(canonicalFlags(true, 100))
 	opt = defaultIngestOptions()
 	opt.MinShardSeconds = 30
-	applyIngest(st, big, opt)
+	mustIngest(t, st, big, opt)
 	if got := st.Units[repoPrefix+"bamlutils/llmhttp"]; got.splitPolicy() == splitNone {
 		t.Error("a 900s whale was left whole")
 	}
@@ -309,7 +327,7 @@ func TestApplyIngestDoesNotStoreZeroWeightTests(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := newStore(canonicalFlags(true, 100))
-	applyIngest(st, sum, defaultIngestOptions())
+	mustIngest(t, st, sum, defaultIngestOptions())
 
 	tests := st.Units[repoPrefix+"bamlutils/llmhttp"].Tests
 	if _, ok := tests["TestInstant"]; ok {
@@ -332,7 +350,7 @@ func TestApplyIngestUnflagsAPackageThatIsNoLongerAWhale(t *testing.T) {
 	// alpha=1 so the single fast measurement lands in full.
 	opt := defaultIngestOptions()
 	opt.Alpha = 1
-	rep := applyIngest(st, sum, opt)
+	rep := mustIngest(t, st, sum, opt)
 
 	row := st.Units[repoPrefix+"internal/debaml"]
 	if row.splitPolicy() != splitNone {
@@ -358,7 +376,7 @@ func TestApplyIngestPrunesOnlyAgainstAnAuthoritativeLiveSet(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		rep := applyIngest(st, sum, defaultIngestOptions())
+		rep := mustIngest(t, st, sum, defaultIngestOptions())
 		if len(rep.Pruned) != 0 {
 			t.Errorf("pruned %v without an authoritative live set", rep.Pruned)
 		}
@@ -380,7 +398,7 @@ func TestApplyIngestPrunesOnlyAgainstAnAuthoritativeLiveSet(t *testing.T) {
 		opt := defaultIngestOptions()
 		opt.Live = syntheticLive()
 		opt.LiveAuthoritative = true
-		rep := applyIngest(st, sum, opt)
+		rep := mustIngest(t, st, sum, opt)
 
 		if len(rep.Pruned) != 1 || rep.Pruned[0] != repoPrefix+"internal/deleted" {
 			t.Errorf("pruned = %v, want internal/deleted", rep.Pruned)
@@ -402,7 +420,7 @@ func TestApplyIngestResetsWhenTheFlagSetChanges(t *testing.T) {
 	}
 	opt := defaultIngestOptions()
 	opt.Count = 1
-	rep := applyIngest(st, sum, opt)
+	rep := mustIngest(t, st, sum, opt)
 
 	if rep.FlagsReset == "" {
 		t.Fatal("a flag-set change was not reported")
@@ -454,12 +472,12 @@ func TestIngestThenPlanClosesTheLoop(t *testing.T) {
 	opt := defaultIngestOptions()
 	opt.Live = live
 	opt.LiveAuthoritative = true
-	applyIngest(st, sum, opt)
+	mustIngest(t, st, sum, opt)
 
 	// 3. The next plan is warm, and the whale has been harpooned.
 	planOpt := defaultPlanOptions(live)
 	planOpt.Now = time.Date(2026, 8, 25, 13, 0, 0, 0, time.UTC)
-	planOpt.TestNames = syntheticTestNames(map[string][]string{
+	planOpt.Runnables = syntheticRunnables(map[string][]string{
 		repoPrefix + "bamlutils/llmhttp": {"TestRetry", "TestSSE"},
 		repoPrefix + "internal/debaml":   {"TestParse", "TestRender", "TestEmit"},
 	})
@@ -501,7 +519,7 @@ func TestIngestReportNamesWhatItDid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rep := applyIngest(st, sum, defaultIngestOptions())
+	rep := mustIngest(t, st, sum, defaultIngestOptions())
 	var out bytes.Buffer
 	rep.write(&out, repoPrefix)
 	text := out.String()
@@ -509,5 +527,198 @@ func TestIngestReportNamesWhatItDid(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("ingest report omits %q:\n%s", want, text)
 		}
+	}
+}
+
+func TestParentAndSubtestTimingIsCountedOnce(t *testing.T) {
+	// P1-2 regression, on a realistic `go test -json` fixture: a top-level
+	// test that runs three subtests. The parent's own pass event already
+	// reports 12.0s covering all of them, so weighing the children on top
+	// would record 21.0s for work that took 12.0s.
+	//
+	// Both whales lean on t.Run, so the inflation is not hypothetical: it
+	// distorts slice packing and can push a package over the 50% threshold
+	// that promotes count-sharding to -run slicing on time counted twice.
+	const fixture = `{"Time":"2026-08-25T00:00:00Z","Action":"run","Package":"example.com/pkg","Test":"TestParent"}
+{"Time":"2026-08-25T00:00:00Z","Action":"run","Package":"example.com/pkg","Test":"TestParent/alpha"}
+{"Time":"2026-08-25T00:00:03Z","Action":"pass","Package":"example.com/pkg","Test":"TestParent/alpha","Elapsed":3}
+{"Time":"2026-08-25T00:00:03Z","Action":"run","Package":"example.com/pkg","Test":"TestParent/beta"}
+{"Time":"2026-08-25T00:00:07Z","Action":"pass","Package":"example.com/pkg","Test":"TestParent/beta","Elapsed":4}
+{"Time":"2026-08-25T00:00:07Z","Action":"run","Package":"example.com/pkg","Test":"TestParent/beta/nested"}
+{"Time":"2026-08-25T00:00:09Z","Action":"pass","Package":"example.com/pkg","Test":"TestParent/beta/nested","Elapsed":2}
+{"Time":"2026-08-25T00:00:12Z","Action":"pass","Package":"example.com/pkg","Test":"TestParent","Elapsed":12}
+{"Time":"2026-08-25T00:00:12Z","Action":"pass","Package":"example.com/pkg","Test":"ExampleThing","Elapsed":1}
+{"Time":"2026-08-25T00:00:13Z","Action":"pass","Package":"example.com/pkg","Elapsed":13}
+`
+	sum, err := parseEvents(bytes.NewReader([]byte(fixture)))
+	if err != nil {
+		t.Fatalf("parseEvents: %v", err)
+	}
+	tests := sum.TestSeconds["example.com/pkg"]
+	if got := tests["TestParent"]; got != 12 {
+		t.Errorf("TestParent = %v, want the parent's own 12s counted once", got)
+	}
+	if len(tests) != 2 {
+		t.Errorf("weighed %d runnables, want just TestParent and ExampleThing: %v", len(tests), tests)
+	}
+	if got := tests["ExampleThing"]; got != 1 {
+		t.Errorf("ExampleThing = %v, want 1 — examples are runnables too", got)
+	}
+	if sum.Subtests != 3 {
+		t.Errorf("counted %d subtest events, want 3", sum.Subtests)
+	}
+
+	// The parent's weight must survive the merge intact, so slice packing
+	// balances on real seconds.
+	st := newStore(canonicalFlags(true, 100))
+	opt := defaultIngestOptions()
+	opt.WhaleSeconds = 1 // force the whale path so per-test rows are kept
+	mustIngest(t, st, sum, opt)
+	row := st.Units["example.com/pkg"]
+	if got := row.Tests["TestParent"]; got != 12 {
+		t.Errorf("stored TestParent = %v, want 12", got)
+	}
+	// Named time must not exceed the package's own elapsed; that is the
+	// invariant double-counting breaks, and the run-upgrade threshold is a
+	// ratio of exactly these two numbers.
+	named := 0.0
+	for _, v := range row.Tests {
+		named += v
+	}
+	if named > row.Seconds+1e-9 {
+		t.Errorf("named time %.2fs exceeds the package's %.2fs — subtest time is being counted twice", named, row.Seconds)
+	}
+}
+
+func TestSumSecondsIsOrderIndependent(t *testing.T) {
+	// P2-1. Float addition is not associative, and the two reductions this
+	// helper replaced ran over Go maps, whose iteration order is randomised
+	// per process. Near total/K or the 50% upgrade boundary that is enough
+	// to choose a different split for byte-identical inputs.
+	values := []float64{0.1, 0.2, 0.3}
+
+	// The naive sum really is order-dependent — otherwise this helper would
+	// be solving nothing.
+	forward := values[0] + values[1] + values[2]
+	backward := values[2] + values[1] + values[0]
+	if forward == backward {
+		t.Fatal("the fixture is not order-sensitive in float; pick different values")
+	}
+
+	want := sumSeconds(values)
+	if want != 0.6 {
+		t.Errorf("sumSeconds = %v, want an exact 0.6", want)
+	}
+	perms := [][]float64{
+		{0.1, 0.2, 0.3}, {0.1, 0.3, 0.2}, {0.2, 0.1, 0.3},
+		{0.2, 0.3, 0.1}, {0.3, 0.1, 0.2}, {0.3, 0.2, 0.1},
+	}
+	for _, p := range perms {
+		if got := sumSeconds(p); got != want {
+			t.Errorf("sumSeconds(%v) = %v, want %v", p, got, want)
+		}
+	}
+
+	// Non-finite values cannot poison a whole reduction.
+	if got := sumSeconds([]float64{1.5, math.NaN(), math.Inf(1), 2.5}); got != 4.0 {
+		t.Errorf("sumSeconds with junk = %v, want 4.0", got)
+	}
+}
+
+func TestApplyIngestIsStableAcrossRuns(t *testing.T) {
+	// The end-to-end form of P2-1: identical events must produce a
+	// byte-identical store every time, including the split policy and shard
+	// counts that ingest derives from summed weights. Go randomises map
+	// iteration order per process AND per range, so repeating the merge
+	// inside one test genuinely exercises it.
+	var lines []string
+	for i := 0; i < 40; i++ {
+		// Two-decimal weights, the precision go test -json reports, chosen
+		// so the total lands near a shard-count boundary.
+		lines = append(lines, event("pass", fmt.Sprintf("%sp%02d", repoPrefix, i), "", 0.07*float64(i%7)+1.13))
+	}
+	lines = append(lines,
+		event("pass", repoPrefix+"whale", "", 121.5),
+		event("pass", repoPrefix+"whale", "TestA", 40.5),
+		event("pass", repoPrefix+"whale", "TestB", 40.5),
+		event("pass", repoPrefix+"whale", "TestC", 20.25),
+	)
+
+	var first string
+	for run := 0; run < 200; run++ {
+		sum, err := parseEvents(stream(lines...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		st := newStore(canonicalFlags(true, 100))
+		opt := defaultIngestOptions()
+		opt.MinShardSeconds = 1
+		mustIngest(t, st, sum, opt)
+		st.UpdatedAt = "" // provenance only; deliberately wall-clock
+		blob, err := json.MarshalIndent(st, "", " ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if run == 0 {
+			first = string(blob)
+			continue
+		}
+		if string(blob) != first {
+			t.Fatalf("run %d produced a different store:\n--- first ---\n%s\n--- run %d ---\n%s", run, first, run, blob)
+		}
+	}
+}
+
+func TestIngestOptionsValidation(t *testing.T) {
+	// P3-1. An out-of-range alpha is the dangerous one: 0 makes the store
+	// stop learning forever, negative drives weights negative, and neither
+	// surfaces as anything but a mysteriously bad split much later.
+	cases := []struct {
+		name   string
+		mutate func(*ingestOptions)
+		wantIn string
+	}{
+		{"zero count", func(o *ingestOptions) { o.Count = 0 }, "--count"},
+		{"negative count", func(o *ingestOptions) { o.Count = -2 }, "--count"},
+		{"alpha of zero never learns", func(o *ingestOptions) { o.Alpha = 0 }, "--ewma"},
+		{"negative alpha", func(o *ingestOptions) { o.Alpha = -0.5 }, "--ewma"},
+		{"alpha above one", func(o *ingestOptions) { o.Alpha = 1.5 }, "--ewma"},
+		{"alpha not a number", func(o *ingestOptions) { o.Alpha = math.NaN() }, "--ewma"},
+		{"zero whale-k", func(o *ingestOptions) { o.WhaleK = 0 }, "--whale-k"},
+		{"negative whale-seconds", func(o *ingestOptions) { o.WhaleSeconds = -1 }, "--whale-seconds"},
+		{"infinite whale-seconds", func(o *ingestOptions) { o.WhaleSeconds = math.Inf(1) }, "--whale-seconds"},
+		{"negative min-shard-seconds", func(o *ingestOptions) { o.MinShardSeconds = -30 }, "--min-shard-seconds"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sum, err := parseEvents(stream(event("pass", repoPrefix+"pool", "", 120)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			opt := defaultIngestOptions()
+			tc.mutate(&opt)
+			st := syntheticStore()
+			before, _ := json.Marshal(st)
+			if _, err := applyIngest(st, sum, opt); err == nil {
+				t.Fatal("the setting was accepted")
+			} else if !strings.Contains(err.Error(), tc.wantIn) {
+				t.Errorf("error %q does not name %s", err.Error(), tc.wantIn)
+			}
+			after, _ := json.Marshal(st)
+			if !bytes.Equal(before, after) {
+				t.Error("the store was mutated before the settings were rejected")
+			}
+		})
+	}
+
+	// Alpha of exactly 1 is legal: take the latest measurement verbatim.
+	sum, err := parseEvents(stream(event("pass", repoPrefix+"pool", "", 120)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opt := defaultIngestOptions()
+	opt.Alpha = 1
+	if _, err := applyIngest(syntheticStore(), sum, opt); err != nil {
+		t.Errorf("alpha=1 was rejected: %v", err)
 	}
 }

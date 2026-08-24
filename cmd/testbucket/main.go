@@ -13,10 +13,16 @@
 //
 //   - NEVER DROP A TEST. `plan` enumerates the LIVE tree (`go list ./...`
 //     intersected with the module set), not the store, and refuses to emit a
-//     matrix unless every live package — and every test func of every
-//     name-sliced package — lands in exactly one bucket. A balanced but
+//     matrix unless every live package — and every RUNNABLE of every
+//     name-sliced package: tests, examples and fuzz targets, everything
+//     `go test -run` selects — lands in exactly one bucket. A balanced but
 //     incomplete split is the one failure mode worse than an imbalanced one,
 //     because nothing goes red.
+//
+//     The rule is about the FINAL PLAN, not about the store. Those two are
+//     easy to conflate: a live package MISSING FROM THE STORE is legal and
+//     routine (see below), while a live package MISSING FROM THE EMITTED
+//     BUCKETS is a hard error.
 //
 //   - COLD START IS NORMAL, NOT AN ERROR. The store is a rolling CI cache,
 //     not a committed file, so a miss is routine. Any package without a
@@ -32,6 +38,11 @@
 // The balancer is Karmarkar-Karp (largest differencing), deterministic down
 // to the tie-break, so the same store and the same K always produce the same
 // buckets.
+//
+// Its objective is the SUM of a bucket's package times, so every emitted
+// invocation carries -p=1: the packages in a bucket run one after another,
+// which is what makes that sum the job's actual wall time rather than a
+// proxy for it. See serialPackages.
 package main
 
 import (
@@ -102,6 +113,23 @@ func runPlan(args []string) error {
 		return err
 	}
 
+	opt := planOptions{
+		K:            *k,
+		StorePath:    *store,
+		Race:         *race,
+		Count:        *count,
+		Timeout:      *timeout,
+		NodePrefixes: strings.Split(*nodePrefixes, ","),
+		EventsDir:    *eventsDir,
+		StaleAfter:   *staleAfter,
+		Now:          time.Now(),
+	}
+	// Validate before the expensive discovery: a bad --count should cost a
+	// line of output, not a full `go list` sweep of every module.
+	if err := opt.validate(); err != nil {
+		return err
+	}
+
 	repoRoot, err := findRepoRoot(".")
 	if err != nil && *live == "" {
 		return err
@@ -133,19 +161,10 @@ func runPlan(args []string) error {
 		return err
 	}
 
-	doc, err := buildPlan(st, reason, planOptions{
-		K:            *k,
-		StorePath:    *store,
-		Race:         *race,
-		Count:        *count,
-		Timeout:      *timeout,
-		NodePrefixes: strings.Split(*nodePrefixes, ","),
-		EventsDir:    *eventsDir,
-		StaleAfter:   *staleAfter,
-		Now:          time.Now(),
-		Live:         livePkgs,
-		TestNames:    func(p LivePackage) ([]string, error) { return listTestNames(repoRoot, p) },
-	})
+	opt.Live = livePkgs
+	opt.Runnables = func(p LivePackage) ([]string, error) { return listRunnableNames(repoRoot, p) }
+
+	doc, err := buildPlan(st, reason, opt)
 	if err != nil {
 		return err
 	}
@@ -190,6 +209,21 @@ func runIngest(args []string) error {
 	var excludes stringList
 	fs.Var(&excludes, "exclude-module", "module dir (glob) to leave out of the module set; repeatable, replaces the defaults")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	opt := ingestOptions{
+		Alpha:           *alpha,
+		Race:            *race,
+		Count:           *count,
+		WhaleK:          *whaleK,
+		WhaleSeconds:    *whaleSeconds,
+		MinShardSeconds: *minShard,
+		Now:             time.Now(),
+	}
+	// Validate before touching any input or the store, so a bad --ewma can
+	// never leave a half-merged store behind.
+	if err := opt.validate(); err != nil {
 		return err
 	}
 
@@ -264,17 +298,14 @@ func runIngest(args []string) error {
 		}
 	}
 
-	rep := applyIngest(st, sum, ingestOptions{
-		Alpha:             *alpha,
-		Race:              *race,
-		Count:             *count,
-		WhaleK:            *whaleK,
-		WhaleSeconds:      *whaleSeconds,
-		MinShardSeconds:   *minShard,
-		Now:               time.Now(),
-		Live:              livePkgs,
-		LiveAuthoritative: authoritative,
-	})
+	opt.Live = livePkgs
+	opt.LiveAuthoritative = authoritative
+
+	rep, err := applyIngest(st, sum, opt)
+	if err != nil {
+		// Nothing has been written; the restored store is left as it was.
+		return err
+	}
 	if err := st.save(*store); err != nil {
 		return err
 	}

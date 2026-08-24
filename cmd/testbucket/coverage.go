@@ -18,13 +18,14 @@ type Bucket struct {
 // run", and it renders every offending name — a gate that says only "1
 // package missing" costs the reader a bisect.
 type coverageError struct {
-	MissingPackages []string
-	MissingTests    map[string][]string
-	DuplicateTests  map[string][]string
-	DuplicateUnits  []string
-	EmptySlices     []string
-	ShardGaps       []string
-	MixedCoverage   []string
+	MissingPackages   []string
+	MissingRunnables  map[string][]string
+	DuplicateRunnable map[string][]string
+	DuplicateUnits    []string
+	EmptySlices       []string
+	ShardGaps         []string
+	ShortSweeps       []string
+	MixedCoverage     []string
 }
 
 func (e *coverageError) Error() string {
@@ -36,15 +37,15 @@ func (e *coverageError) Error() string {
 			fmt.Fprintf(&b, "\n    - %s", p)
 		}
 	}
-	for _, pkg := range sortedKeys(e.MissingTests) {
-		fmt.Fprintf(&b, "\n  %s: %d test func(s) in no -run slice:", pkg, len(e.MissingTests[pkg]))
-		for _, t := range e.MissingTests[pkg] {
+	for _, pkg := range sortedKeys(e.MissingRunnables) {
+		fmt.Fprintf(&b, "\n  %s: %d runnable(s) in no -run slice:", pkg, len(e.MissingRunnables[pkg]))
+		for _, t := range e.MissingRunnables[pkg] {
 			fmt.Fprintf(&b, "\n    - %s", t)
 		}
 	}
-	for _, pkg := range sortedKeys(e.DuplicateTests) {
-		fmt.Fprintf(&b, "\n  %s: test func(s) in more than one -run slice: %s",
-			pkg, strings.Join(e.DuplicateTests[pkg], ", "))
+	for _, pkg := range sortedKeys(e.DuplicateRunnable) {
+		fmt.Fprintf(&b, "\n  %s: runnable(s) in more than one -run slice: %s",
+			pkg, strings.Join(e.DuplicateRunnable[pkg], ", "))
 	}
 	if len(e.DuplicateUnits) > 0 {
 		fmt.Fprintf(&b, "\n  unit(s) assigned to more than one bucket: %s", strings.Join(e.DuplicateUnits, ", "))
@@ -54,6 +55,10 @@ func (e *coverageError) Error() string {
 	}
 	if len(e.ShardGaps) > 0 {
 		fmt.Fprintf(&b, "\n  count-shard gaps: %s", strings.Join(e.ShardGaps, ", "))
+	}
+	if len(e.ShortSweeps) > 0 {
+		fmt.Fprintf(&b, "\n  count-shard group(s) below the requested aggregate sweep: %s",
+			strings.Join(e.ShortSweeps, ", "))
 	}
 	if len(e.MixedCoverage) > 0 {
 		fmt.Fprintf(&b, "\n  package(s) covered by incompatible units (would run twice): %s",
@@ -65,30 +70,50 @@ func (e *coverageError) Error() string {
 	return b.String()
 }
 
-// assertCoverage is the never-drop-a-test gate. It compares the emitted
-// buckets against the LIVE package set — `go list ./...` intersected with
-// the module set — and refuses the plan if anything live is unscheduled.
+// gateInput is everything the never-drop-a-test gate compares. It is a
+// struct rather than a positional list because the gate keeps growing checks
+// and each one needs its own independently-sourced fact.
+type gateInput struct {
+	// Live is the authority: `go list ./...` intersected with the module set.
+	Live []LivePackage
+	// Buckets is what will actually be executed.
+	Buckets []Bucket
+	// Runnables maps a run-sliced package to the complete top-level runnable
+	// universe the slicer saw — tests, examples and fuzz targets, i.e.
+	// everything `go test -run` selects. Packages absent from the map are
+	// not name-sliced and are covered by the package-level check alone.
+	Runnables map[string][]string
+	// BaseCount is the -count the un-split flake sweep asks for. It is the
+	// independent yardstick every count-shard group must add back up to.
+	BaseCount int
+}
+
+// assertCoverage is the never-drop-a-test gate.
+//
+// The rule it enforces is about the FINAL PLAN, not about the store: a live
+// package with no recorded timing is scheduled on the cold-start mean weight
+// and is perfectly legal (that is the brief's explicit requirement), whereas
+// a live package missing from the emitted buckets is a hard error. Those two
+// are easy to conflate and only one of them is a bug.
 //
 // It deliberately re-derives everything from the buckets rather than
 // trusting the expander's bookkeeping: it is the backstop for a bug in the
 // expander or the partitioner, so sharing their state would defeat it.
-//
-// liveTestNames maps a run-sliced package to the test-func list the slicer
-// saw; packages absent from that map are not name-sliced and are covered by
-// the package-level check alone.
-func assertCoverage(live []LivePackage, buckets []Bucket, liveTestNames map[string][]string) error {
+func assertCoverage(in gateInput) error {
 	cerr := &coverageError{
-		MissingTests:   map[string][]string{},
-		DuplicateTests: map[string][]string{},
+		MissingRunnables:  map[string][]string{},
+		DuplicateRunnable: map[string][]string{},
 	}
 
-	scheduled := map[string]bool{}         // import path -> covered by some unit
-	kinds := map[string]map[unitKind]int{} // import path -> unit kinds covering it
-	unitSeen := map[string]int{}           // unit ID -> number of buckets holding it
-	shards := map[string]map[int]int{}
+	scheduled := map[string]bool{}          // import path -> covered by some unit
+	kinds := map[string]map[unitKind]int{}  // import path -> unit kinds covering it
+	unitSeen := map[string]int{}            // unit ID -> number of buckets holding it
+	shards := map[string]map[int]int{}      // import path -> shard index -> times seen
+	shardWidth := map[string]map[int]bool{} // import path -> the N values its shards claim
+	sweep := map[string][]int{}             // import path -> each shard's -count
 	runNames := map[string]map[string]int{}
 
-	for _, b := range buckets {
+	for _, b := range in.Buckets {
 		for _, u := range b.Units {
 			unitSeen[u.ID]++
 			for _, p := range u.Packages {
@@ -103,8 +128,11 @@ func assertCoverage(live []LivePackage, buckets []Bucket, liveTestNames map[stri
 				pkg := u.Packages[0].ImportPath
 				if shards[pkg] == nil {
 					shards[pkg] = map[int]int{}
+					shardWidth[pkg] = map[int]bool{}
 				}
 				shards[pkg][u.Shard]++
+				shardWidth[pkg][u.Shards] = true
+				sweep[pkg] = append(sweep[pkg], u.Count)
 			case kindRunSlice:
 				pkg := u.Packages[0].ImportPath
 				if len(u.Run) == 0 {
@@ -120,12 +148,76 @@ func assertCoverage(live []LivePackage, buckets []Bucket, liveTestNames map[stri
 		}
 	}
 
-	for _, p := range live {
+	for _, p := range in.Live {
 		if !p.HasTests {
 			continue
 		}
 		if !scheduled[p.ImportPath] {
 			cerr.MissingPackages = append(cerr.MissingPackages, p.ImportPath)
+		}
+	}
+
+	for id, n := range unitSeen {
+		if n > 1 {
+			cerr.DuplicateUnits = append(cerr.DuplicateUnits, fmt.Sprintf("%s (x%d)", id, n))
+		}
+	}
+
+	// Count-shards must form a complete, non-overlapping 1..N run AND add
+	// back up to the requested sweep depth.
+	//
+	// N comes from the shards' own claimed width, NOT from the highest index
+	// present — deriving it from what is there cannot notice that the last
+	// shard is gone, which is precisely the boundary that loses a sixth of
+	// the flake sweep in silence. The aggregate -count check is the second,
+	// independent witness: at -count=100 over six shards, losing #shard6
+	// runs 85 iterations instead of 102 and nothing else in the system would
+	// ever say so.
+	for _, pkg := range sortedKeys(shards) {
+		seen := shards[pkg]
+		widths := sortedInts(setOfKeys(shardWidth[pkg]))
+		if len(widths) != 1 {
+			cerr.ShardGaps = append(cerr.ShardGaps, fmt.Sprintf(
+				"%s shards disagree on the group size: %v", pkg, widths))
+			continue
+		}
+		want := widths[0]
+		if want < 2 {
+			cerr.ShardGaps = append(cerr.ShardGaps, fmt.Sprintf(
+				"%s claims %d count-shards; a split must have at least 2", pkg, want))
+			continue
+		}
+		for i := 1; i <= want; i++ {
+			switch seen[i] {
+			case 1:
+			case 0:
+				cerr.ShardGaps = append(cerr.ShardGaps, fmt.Sprintf("%s missing shard %d of %d", pkg, i, want))
+			default:
+				cerr.ShardGaps = append(cerr.ShardGaps, fmt.Sprintf("%s shard %d scheduled %d times", pkg, i, seen[i]))
+			}
+		}
+		for _, idx := range sortedInts(setOfKeys(seen)) {
+			if idx < 1 || idx > want {
+				cerr.ShardGaps = append(cerr.ShardGaps, fmt.Sprintf(
+					"%s has shard %d outside the 1..%d group", pkg, idx, want))
+			}
+		}
+		if in.BaseCount > 0 {
+			aggregate := 0
+			for _, c := range sweep[pkg] {
+				if c < 1 {
+					cerr.ShortSweeps = append(cerr.ShortSweeps, fmt.Sprintf(
+						"%s has a shard with -count=%d", pkg, c))
+					aggregate = -1
+					break
+				}
+				aggregate += c
+			}
+			if aggregate >= 0 && aggregate < in.BaseCount {
+				cerr.ShortSweeps = append(cerr.ShortSweeps, fmt.Sprintf(
+					"%s runs %d iterations in aggregate, below the requested -count=%d",
+					pkg, aggregate, in.BaseCount))
+			}
 		}
 	}
 
@@ -153,44 +245,33 @@ func assertCoverage(live []LivePackage, buckets []Bucket, liveTestNames map[stri
 		}
 	}
 
-	for id, n := range unitSeen {
-		if n > 1 {
-			cerr.DuplicateUnits = append(cerr.DuplicateUnits, fmt.Sprintf("%s (x%d)", id, n))
-		}
-	}
-
-	// Count-shards must form a complete, non-overlapping 1..N run: a gap
-	// means a slice of the flake sweep silently went missing, which at
-	// -count=100/N is exactly the kind of loss that never shows up as a
-	// failing test.
-	for _, pkg := range sortedKeys(shards) {
-		seen := shards[pkg]
-		highest := 0
-		for idx := range seen {
-			if idx > highest {
-				highest = idx
-			}
-		}
-		for i := 1; i <= highest; i++ {
-			switch seen[i] {
-			case 1:
-			case 0:
-				cerr.ShardGaps = append(cerr.ShardGaps, fmt.Sprintf("%s missing shard %d of %d", pkg, i, highest))
-			default:
-				cerr.ShardGaps = append(cerr.ShardGaps, fmt.Sprintf("%s shard %d scheduled %d times", pkg, i, seen[i]))
-			}
-		}
-	}
-
-	for pkg, names := range liveTestNames {
+	// Every runnable `go test -run` could select must be in exactly one
+	// slice. The universe is the full one — tests, examples and fuzz
+	// targets — because that is what the emitted -run selects; gating a
+	// narrower set would prove coverage of something the command does not
+	// execute.
+	for _, pkg := range sortedKeys(in.Runnables) {
 		seen := runNames[pkg]
-		for _, n := range names {
+		for _, n := range in.Runnables[pkg] {
 			switch seen[n] {
 			case 1:
 			case 0:
-				cerr.MissingTests[pkg] = append(cerr.MissingTests[pkg], n)
+				cerr.MissingRunnables[pkg] = append(cerr.MissingRunnables[pkg], n)
 			default:
-				cerr.DuplicateTests[pkg] = append(cerr.DuplicateTests[pkg], n)
+				cerr.DuplicateRunnable[pkg] = append(cerr.DuplicateRunnable[pkg], n)
+			}
+		}
+		// A slice naming something outside the universe is not a coverage
+		// loss, but it means the slicer and the resolver disagree about
+		// what exists, so the gate's own evidence is unreliable.
+		universe := map[string]bool{}
+		for _, n := range in.Runnables[pkg] {
+			universe[n] = true
+		}
+		for _, n := range sortedKeys(seen) {
+			if !universe[n] {
+				cerr.DuplicateRunnable[pkg] = append(cerr.DuplicateRunnable[pkg],
+					fmt.Sprintf("%s (not in the package's runnable set)", n))
 			}
 		}
 	}
@@ -199,19 +280,36 @@ func assertCoverage(live []LivePackage, buckets []Bucket, liveTestNames map[stri
 	sort.Strings(cerr.DuplicateUnits)
 	sort.Strings(cerr.EmptySlices)
 	sort.Strings(cerr.ShardGaps)
+	sort.Strings(cerr.ShortSweeps)
 	sort.Strings(cerr.MixedCoverage)
-	for k := range cerr.MissingTests {
-		sort.Strings(cerr.MissingTests[k])
+	for k := range cerr.MissingRunnables {
+		sort.Strings(cerr.MissingRunnables[k])
 	}
-	for k := range cerr.DuplicateTests {
-		sort.Strings(cerr.DuplicateTests[k])
+	for k := range cerr.DuplicateRunnable {
+		sort.Strings(cerr.DuplicateRunnable[k])
 	}
 
-	if len(cerr.MissingPackages) == 0 && len(cerr.MissingTests) == 0 &&
-		len(cerr.DuplicateTests) == 0 && len(cerr.DuplicateUnits) == 0 &&
+	if len(cerr.MissingPackages) == 0 && len(cerr.MissingRunnables) == 0 &&
+		len(cerr.DuplicateRunnable) == 0 && len(cerr.DuplicateUnits) == 0 &&
 		len(cerr.EmptySlices) == 0 && len(cerr.ShardGaps) == 0 &&
-		len(cerr.MixedCoverage) == 0 {
+		len(cerr.ShortSweeps) == 0 && len(cerr.MixedCoverage) == 0 {
 		return nil
 	}
 	return cerr
+}
+
+// sortedInts is the integer twin of sortedKeys, so every reduction in this
+// package runs in a fixed, value-derived order.
+func sortedInts(in []int) []int {
+	out := append([]int(nil), in...)
+	sort.Ints(out)
+	return out
+}
+
+func setOfKeys[V any](m map[int]V) []int {
+	out := make([]int, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }

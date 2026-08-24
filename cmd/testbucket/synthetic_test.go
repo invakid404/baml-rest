@@ -112,22 +112,17 @@ func harpoon(st *Store, dir, policy string, into int, tests map[string]float64) 
 	row.Tests = tests
 }
 
-// syntheticTestNames stands in for `go test -list`. Packages absent from the
-// map report no tests, which is exactly the corruption the coverage gate
-// must catch rather than paper over.
-func syntheticTestNames(names map[string][]string) testNamer {
+// syntheticRunnables stands in for `go test -list`. Packages absent from the
+// map report nothing runnable, which is exactly the corruption the coverage
+// gate must catch rather than paper over.
+//
+// Fixtures deliberately mix Test, Example and Fuzz names: `go test -run`
+// selects all three, so a universe of only Test* would let the suite prove
+// coverage of something narrower than the emitted command executes.
+func syntheticRunnables(names map[string][]string) runnableNamer {
 	return func(p LivePackage) ([]string, error) {
 		return names[p.ImportPath], nil
 	}
-}
-
-func debamlTestNames(n int) []string {
-	out := make([]string, 0, n)
-	for i := 0; i < n; i++ {
-		out = append(out, "TestDeBAML"+string(rune('A'+i%26))+string(rune('a'+i/26)))
-	}
-	sort.Strings(out)
-	return out
 }
 
 func defaultPlanOptions(live []LivePackage) planOptions {

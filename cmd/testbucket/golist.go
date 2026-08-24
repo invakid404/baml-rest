@@ -211,14 +211,45 @@ func listPackages(repoRoot string, mods []moduleSpec) ([]LivePackage, error) {
 	return out, nil
 }
 
-// listTestNames enumerates a package's top-level test funcs via
-// `go test -list`. It is only ever called for packages the store has flagged
-// split=run — at most a couple — because it compiles the test binary.
+// runnablePrefixes are the top-level name prefixes that `go test -run`
+// actually selects: tests, examples and fuzz targets. Benchmarks are
+// deliberately absent — `-run` does not select them (`-bench` does), so
+// putting a Benchmark name into a slice's alternation would cover nothing
+// while claiming a weight the slicer would then balance around.
+var runnablePrefixes = []string{"Test", "Example", "Fuzz"}
+
+// isRunnable reports whether a name listed by `go test -list` is something
+// the emitted `-run` alternation can actually select.
+func isRunnable(name string) bool {
+	for _, pre := range runnablePrefixes {
+		if strings.HasPrefix(name, pre) {
+			return true
+		}
+	}
+	return false
+}
+
+// listRunnableNames enumerates a package's complete top-level RUNNABLE set —
+// every name the emitted `-run '^(...)$'` would select. It is only ever
+// called for packages the store has flagged split=run — at most a couple —
+// because it compiles the test binary.
 //
-// Using the toolchain instead of grepping for `func Test` is deliberate: it
-// respects build tags, so a tag-gated test file cannot contribute a name to
-// a -run slice that would then match nothing.
-func listTestNames(repoRoot string, p LivePackage) ([]string, error) {
+// The universe must be enumerated with the SAME selection semantics as the
+// invocation it feeds, or the slices are complete against a set narrower
+// than the one that runs. `go test -run` selects tests, examples AND fuzz
+// targets; listing only `^Test` would leave a package's ExampleXxx in no
+// slice at all, and since no slice names it, no slice runs it — a silently
+// skipped runnable behind a green matrix. That is exactly the failure the
+// coverage gate exists to prevent, so the list is taken wide (`-list '.*'`)
+// and narrowed here by the documented `-run` rule.
+//
+// Using the toolchain instead of grepping for `func Test` is deliberate on
+// two counts: it respects build tags, so a tag-gated file cannot contribute
+// a name to a -run slice that would then match nothing; and it lists only
+// examples the test binary actually registers, so an example with no Output
+// comment — compiled but never run — never enters the universe the gate
+// insists on covering.
+func listRunnableNames(repoRoot string, p LivePackage) ([]string, error) {
 	target := p.ImportPath
 	dir := repoRoot
 	env := os.Environ()
@@ -227,7 +258,7 @@ func listTestNames(repoRoot string, p LivePackage) ([]string, error) {
 		env = append(env, "GOWORK=off")
 		target = p.pattern()
 	}
-	cmd := exec.Command("go", "test", "-list", "^Test", target)
+	cmd := exec.Command("go", "test", "-list", ".*", target)
 	cmd.Dir = dir
 	cmd.Env = env
 	var stdout, stderr bytes.Buffer
@@ -240,7 +271,7 @@ func listTestNames(repoRoot string, p LivePackage) ([]string, error) {
 	for _, line := range strings.Split(stdout.String(), "\n") {
 		line = strings.TrimSpace(line)
 		// -list prints one name per line, then a trailing "ok <pkg> <t>".
-		if line == "" || !strings.HasPrefix(line, "Test") || strings.ContainsAny(line, " \t") {
+		if line == "" || strings.ContainsAny(line, " \t") || !isRunnable(line) {
 			continue
 		}
 		names = append(names, line)

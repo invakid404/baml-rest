@@ -41,7 +41,18 @@ func bucketsFor(t *testing.T, st *Store, opt expandOptions) ([]LivePackage, []Bu
 		}
 		buckets[i] = b
 	}
-	return live, buckets, ex.TestNames
+	return live, buckets, ex.Runnables
+}
+
+// gate runs the real coverage gate with the synthetic tree's base -count,
+// so every test exercises the aggregate-sweep check alongside the rest.
+func gate(live []LivePackage, buckets []Bucket, runnables map[string][]string) error {
+	return assertCoverage(gateInput{
+		Live:      live,
+		Buckets:   buckets,
+		Runnables: runnables,
+		BaseCount: 100,
+	})
 }
 
 // dropUnit removes a unit from the plan — the fault the gate exists to catch.
@@ -78,11 +89,11 @@ func TestCoverageGatePassesOnAWellFormedPlan(t *testing.T) {
 	harpoon(st, "bamlutils/llmhttp", splitCount, 6, nil)
 	harpoon(st, "internal/debaml", splitRun, 3, map[string]float64{"TestA": 200, "TestB": 120, "TestC": 60})
 	live, buckets, names := bucketsFor(t, st, expandOptions{
-		TestNames: syntheticTestNames(map[string][]string{
+		Runnables: syntheticRunnables(map[string][]string{
 			repoPrefix + "internal/debaml": {"TestA", "TestB", "TestC", "TestD"},
 		}),
 	})
-	if err := assertCoverage(live, buckets, names); err != nil {
+	if err := gate(live, buckets, names); err != nil {
 		t.Fatalf("gate rejected a well-formed plan: %v", err)
 	}
 }
@@ -215,14 +226,14 @@ func TestCoverageGateCatchesEveryWayATestCanVanish(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			opt := expandOptions{}
 			if tc.names != nil {
-				opt.TestNames = syntheticTestNames(tc.names)
+				opt.Runnables = syntheticRunnables(tc.names)
 			}
 			live, buckets, names := bucketsFor(t, tc.store(), opt)
-			if err := assertCoverage(live, buckets, names); err != nil {
+			if err := gate(live, buckets, names); err != nil {
 				t.Fatalf("the undoctored plan already fails the gate: %v", err)
 			}
 
-			err := assertCoverage(live, tc.doctor(buckets), names)
+			err := gate(live, tc.doctor(buckets), names)
 			if err == nil {
 				t.Fatal("the gate PASSED a plan that drops a live test — the invariant is not enforced")
 			}
@@ -248,7 +259,7 @@ func TestCoverageGateIgnoresPackagesWithNoTestFiles(t *testing.T) {
 	// A package with no _test.go files is not a test unit; demanding a
 	// bucket for it would make every plan fail for no reason.
 	live, buckets, names := bucketsFor(t, syntheticStore(), expandOptions{})
-	if err := assertCoverage(live, buckets, names); err != nil {
+	if err := gate(live, buckets, names); err != nil {
 		t.Fatalf("gate rejected a plan over a tree containing a test-free package: %v", err)
 	}
 	for _, b := range buckets {
@@ -268,7 +279,7 @@ func TestCoverageGateReportsEveryCasualtyNotJustTheFirst(t *testing.T) {
 	broken := dropUnit(buckets, func(u Unit) bool {
 		return u.ID == repoPrefix+"pool" || u.ID == repoPrefix+"worker" || u.ID == repoPrefix+"dynclient"
 	})
-	err := assertCoverage(live, broken, names)
+	err := gate(live, broken, names)
 	if err == nil {
 		t.Fatal("gate passed a plan missing three packages")
 	}
@@ -298,7 +309,7 @@ func TestCoverageGateCatchesAPackageScheduledTwice(t *testing.T) {
 	}
 	buckets[0].Units = append(buckets[0].Units, whole)
 
-	err := assertCoverage(live, buckets, names)
+	err := gate(live, buckets, names)
 	if err == nil {
 		t.Fatal("the gate passed a plan that runs llmhttp both whole and sharded")
 	}
@@ -319,7 +330,7 @@ func TestCoverageGateCatchesADuplicatedWholePackage(t *testing.T) {
 			break
 		}
 	}
-	if err := assertCoverage(live, buckets, names); err == nil {
+	if err := gate(live, buckets, names); err == nil {
 		t.Fatal("the gate passed a plan running one package as two separate units")
 	}
 }
@@ -355,5 +366,268 @@ func TestPlanNotesWhenKExceedsTheWork(t *testing.T) {
 	}
 	if len(doc.Buckets) != 6 {
 		t.Errorf("got %d buckets, want K=6 regardless", len(doc.Buckets))
+	}
+}
+
+// mixedRunnables is the universe of a package that has more than just
+// Test funcs. `go test -run` selects tests, examples AND fuzz targets, so
+// all of these must land in a slice.
+var mixedRunnables = []string{
+	"ExampleClient",
+	"ExampleClient_stream",
+	"FuzzDecode",
+	"TestRetry",
+	"TestSSE",
+}
+
+func TestRunSlicingCoversExamplesAndFuzzTargetsNotJustTests(t *testing.T) {
+	// P0-1 regression. `-run` selects tests, examples and fuzz targets
+	// alike. If the runnable universe is enumerated as only `Test*`, a
+	// package's ExampleXxx lands in no slice, no slice names it, and it
+	// silently never runs behind a completely green matrix.
+	st := syntheticStore()
+	harpoon(st, "internal/debaml", splitRun, 3, map[string]float64{
+		"TestRetry": 200, "TestSSE": 120,
+	})
+	live, buckets, runnables := bucketsFor(t, st, expandOptions{
+		Runnables: syntheticRunnables(map[string][]string{
+			repoPrefix + "internal/debaml": mixedRunnables,
+		}),
+	})
+
+	if err := gate(live, buckets, runnables); err != nil {
+		t.Fatalf("gate rejected a plan covering the full runnable set: %v", err)
+	}
+
+	// Every runnable — Example and Fuzz included — is in exactly one slice.
+	seen := map[string]int{}
+	for _, b := range buckets {
+		for _, u := range b.Units {
+			for _, n := range u.Run {
+				seen[n]++
+			}
+		}
+	}
+	for _, n := range mixedRunnables {
+		if seen[n] != 1 {
+			t.Errorf("%s is in %d slices, want exactly 1", n, seen[n])
+		}
+	}
+	if len(seen) != len(mixedRunnables) {
+		t.Errorf("slices name %d runnables, want %d: %v", len(seen), len(mixedRunnables), seen)
+	}
+
+	// And the gate must refuse a plan that covers only the Test* half —
+	// the exact shape a `-list ^Test` universe would have produced.
+	testsOnly := mapUnits(buckets, func(u Unit) Unit {
+		if u.Kind != kindRunSlice {
+			return u
+		}
+		var kept []string
+		for _, n := range u.Run {
+			if strings.HasPrefix(n, "Test") {
+				kept = append(kept, n)
+			}
+		}
+		u.Run = kept
+		return u
+	})
+	err := gate(live, testsOnly, runnables)
+	if err == nil {
+		t.Fatal("the gate passed a plan whose -run slices skip every Example and Fuzz target")
+	}
+	for _, want := range []string{"ExampleClient", "ExampleClient_stream", "FuzzDecode", "in no -run slice"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("gate message omits %q:\n%s", want, err.Error())
+		}
+	}
+}
+
+func TestIsRunnableMatchesGoTestRunSemantics(t *testing.T) {
+	// The universe filter must mirror `go test -run`, which selects tests,
+	// examples and fuzz targets — and NOT benchmarks (-bench does those).
+	// A Benchmark name inside a slice's alternation would cover nothing
+	// while claiming a weight the slicer balances around.
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"TestRetry", true},
+		{"ExampleClient", true},
+		{"ExampleClient_stream", true},
+		{"FuzzDecode", true},
+		{"BenchmarkEncode", false},
+		{"helper", false},
+	}
+	for _, tc := range cases {
+		if got := isRunnable(tc.name); got != tc.want {
+			t.Errorf("isRunnable(%q) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestCountShardGateCatchesTheLostFinalShard(t *testing.T) {
+	// P0-2 regression. Deriving the group size from the highest index
+	// PRESENT cannot notice that the last shard is gone: 1..5 of six is
+	// contiguous, the package is still "scheduled", and 85 of the requested
+	// 100 iterations quietly never run.
+	st := syntheticStore()
+	harpoon(st, "bamlutils/llmhttp", splitCount, 6, nil)
+	live, buckets, runnables := bucketsFor(t, st, expandOptions{})
+	if err := gate(live, buckets, runnables); err != nil {
+		t.Fatalf("the undoctored plan already fails: %v", err)
+	}
+
+	highest := 0
+	for _, b := range buckets {
+		for _, u := range b.Units {
+			if u.Kind == kindCountShard && u.Shard > highest {
+				highest = u.Shard
+			}
+		}
+	}
+	if highest != 6 {
+		t.Fatalf("expected a six-shard group, highest index is %d", highest)
+	}
+	broken := dropUnit(buckets, func(u Unit) bool { return u.Kind == kindCountShard && u.Shard == highest })
+
+	err := gate(live, broken, runnables)
+	if err == nil {
+		t.Fatal("the gate passed a six-shard group missing its last shard")
+	}
+	msg := err.Error()
+	// Both independent witnesses must fire: the index check against the
+	// shards' own claimed width, and the aggregate sweep against -count.
+	for _, want := range []string{"missing shard 6 of 6", "below the requested -count=100", "85 iterations"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("gate message omits %q:\n%s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "assigned to no bucket") {
+		t.Errorf("the package itself is still covered by its other shards; only the shard checks should fire:\n%s", msg)
+	}
+}
+
+func TestCountShardGateCatchesAnUndersizedSweep(t *testing.T) {
+	// A shard group can be structurally perfect — 1..N, each once — and
+	// still run a fraction of the requested flake sweep if the per-shard
+	// -count is wrong. Coverage of the PACKAGE is not coverage of the SWEEP.
+	cases := []struct {
+		name   string
+		doctor func(Unit) Unit
+		wantIn []string
+	}{
+		{
+			name: "each shard runs too few iterations",
+			doctor: func(u Unit) Unit {
+				if u.Kind == kindCountShard {
+					u.Count = 5 // 6 x 5 = 30, far short of 100
+				}
+				return u
+			},
+			wantIn: []string{"30 iterations in aggregate", "-count=100"},
+		},
+		{
+			name: "a shard runs zero iterations",
+			doctor: func(u Unit) Unit {
+				if u.Kind == kindCountShard && u.Shard == 2 {
+					u.Count = 0
+				}
+				return u
+			},
+			wantIn: []string{"-count=0"},
+		},
+		{
+			name: "the shards disagree about how many there are",
+			doctor: func(u Unit) Unit {
+				if u.Kind == kindCountShard && u.Shard == 4 {
+					u.Shards = 9
+				}
+				return u
+			},
+			wantIn: []string{"disagree on the group size"},
+		},
+		{
+			name: "a shard index sits outside the group",
+			doctor: func(u Unit) Unit {
+				if u.Kind == kindCountShard && u.Shard == 4 {
+					u.Shard = 11
+				}
+				return u
+			},
+			wantIn: []string{"missing shard 4 of 6", "shard 11 outside the 1..6 group"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := syntheticStore()
+			harpoon(st, "bamlutils/llmhttp", splitCount, 6, nil)
+			live, buckets, runnables := bucketsFor(t, st, expandOptions{})
+			err := gate(live, mapUnits(buckets, tc.doctor), runnables)
+			if err == nil {
+				t.Fatal("the gate passed a shard group that does not run the requested sweep")
+			}
+			for _, want := range tc.wantIn {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("gate message omits %q:\n%s", want, err.Error())
+				}
+			}
+		})
+	}
+}
+
+func TestCountShardAggregateSweepIsAtLeastTheBaseCount(t *testing.T) {
+	// The healthy direction: S x ceil(base/S) >= base for every S, so the
+	// sharded sweep may run slightly MORE iterations than the un-split job,
+	// never fewer.
+	for _, shards := range []int{2, 3, 4, 5, 6, 7, 8} {
+		st := syntheticStore()
+		harpoon(st, "bamlutils/llmhttp", splitCount, shards, nil)
+		live, buckets, runnables := bucketsFor(t, st, expandOptions{K: 8})
+		if err := assertCoverage(gateInput{Live: live, Buckets: buckets, Runnables: runnables, BaseCount: 100}); err != nil {
+			t.Errorf("shards=%d: %v", shards, err)
+		}
+		aggregate := 0
+		for _, b := range buckets {
+			for _, u := range b.Units {
+				if u.Kind == kindCountShard {
+					aggregate += u.Count
+				}
+			}
+		}
+		if aggregate < 100 {
+			t.Errorf("shards=%d: aggregate -count %d is below 100", shards, aggregate)
+		}
+	}
+}
+
+func TestGateSeparatesStoreMissFromPlanMiss(t *testing.T) {
+	// P0-3, stated as one executable contract so the two can never be
+	// conflated again:
+	//
+	//   missing from the STORE -> scheduled on the cold-start mean weight,
+	//                             no error. This is required by the brief.
+	//   missing from the PLAN  -> hard error. This is THE invariant.
+	live := syntheticLive()
+	storeMissing := syntheticStore("pool", "internal/schema")
+
+	doc, err := buildPlan(storeMissing, "", defaultPlanOptions(live))
+	if err != nil {
+		t.Fatalf("a store miss must not be an error, the brief requires it be scheduled on the mean: %v", err)
+	}
+	sched := scheduledPackages(doc)
+	for _, imp := range []string{repoPrefix + "pool", repoPrefix + "internal/schema"} {
+		if sched[imp] != 1 {
+			t.Errorf("%s is absent from the store and was scheduled %d times, want 1", imp, sched[imp])
+		}
+	}
+
+	// The same two packages, now missing from the emitted plan, must error.
+	_, buckets, runnables := bucketsFor(t, storeMissing, expandOptions{})
+	broken := dropUnit(buckets, func(u Unit) bool {
+		return u.ID == repoPrefix+"pool" || u.ID == repoPrefix+"internal/schema"
+	})
+	if err := gate(live, broken, runnables); err == nil {
+		t.Fatal("a package missing from the FINAL PLAN did not error")
 	}
 }
