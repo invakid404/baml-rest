@@ -23,12 +23,18 @@ import "context"
 // # What it is NOT
 //
 // It is NOT a native parse path, and it cannot become one by accident. The observer
-// returns nothing the parse route acts on: `Parse` calls it and then runs BAML
-// exactly as before, whatever the observer does. It cannot claim, cannot decline,
+// returns nothing the parse route acts on: `Parse` calls it and then parses exactly
+// as it would have, whatever the observer does. It cannot claim, cannot decline,
 // cannot substitute a result, and cannot fail the request — a panic inside it is
-// contained by the caller. Introducing an actual native direct-parse claim is a
-// later slice's work (the scope's S9), which is precisely why this seam observes
-// instead of dispatching.
+// contained by the caller.
+//
+// A native direct-parse CLAIM does now exist, but not here and not through this
+// seam: worker/parse.go carries a native-first bridge for the DYNAMIC final parse
+// that runs the injected DeBAMLParseFunc and then serves its bytes only when a
+// same-input BAML parse produced the identical bytes. That bridge has its own
+// gate, its own counter and its own transition oracle; this observer neither feeds
+// it nor learns anything from it, and remains a pure telemetry sink for the
+// surface as a whole.
 //
 // With BAML_REST_USE_DEBAML off, a worker installs no observer at all, so the parse
 // route calls nothing and the surface reports nothing — the same zero-native-observation

@@ -1276,12 +1276,15 @@ type BamlOptions struct {
 	IncludeReasoning bool `json:"include_reasoning,omitempty"`
 
 	// OutputSchema carries the original dynamic output schema to the
-	// worker so the native ctx.output_format renderer can run at the
-	// dynamic BuildRequest seam under BAML_REST_USE_DEBAML. The worker
-	// installs it on the adapter via SetDeBAMLOutputSchema. Only the
-	// dynamic call/stream path sets it (DynamicInput.ToWorkerInput);
-	// it is harmlessly absent everywhere else, and unused entirely when
-	// the de-BAML flag is off.
+	// worker. It feeds two native de-BAML seams under BAML_REST_USE_DEBAML:
+	// the ctx.output_format renderer on the dynamic BuildRequest path, and
+	// the native-first DYNAMIC direct parse in worker.Parse (which coerces
+	// the raw text against it and holds the result against BAML's). The
+	// worker also installs it on the adapter via SetDeBAMLOutputSchema.
+	// Both DynamicInput.ToWorkerInput (call/stream) and
+	// DynamicParseInput.ToWorkerInput (direct parse) set it; it is
+	// harmlessly absent everywhere else, and unused entirely when the
+	// de-BAML flag is off.
 	OutputSchema *DynamicOutputSchema `json:"output_schema,omitempty"`
 }
 

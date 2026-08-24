@@ -7,6 +7,7 @@ require (
 	github.com/invakid404/baml-rest/bamlutils v0.0.48
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
+	github.com/prometheus/client_model v0.6.2
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
 )
 
@@ -45,7 +46,6 @@ require (
 	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/oklog/run v1.1.0 // indirect
-	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.69.0 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
 	github.com/tidwall/match v1.1.1 // indirect

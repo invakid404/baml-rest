@@ -1595,6 +1595,30 @@ func (c *BAMLRestClient) dynamicStreamRequestBodyNDJSON(ctx context.Context, url
 	return events, errs
 }
 
+// DynamicParseJSON executes a /parse/_dynamic request with a caller-provided
+// JSON body — the parse twin of DynamicCallJSON. Used by tests that build the
+// request through bamlutils-ordered types so the output schema's declaration
+// order survives end to end (DynamicParseRequest's schema is map-backed and
+// cannot carry it), and by tests that need to set fields
+// DynamicParseRequest does not expose, such as preserve_schema_order.
+func (c *BAMLRestClient) DynamicParseJSON(ctx context.Context, body []byte) (*DynamicParseResponse, error) {
+	url := fmt.Sprintf("%s/parse/_dynamic", c.baseURL)
+	resp, respBody, err := c.doWithRetry(ctx, "POST", url, body)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &DynamicParseResponse{
+		StatusCode: resp.StatusCode,
+	}
+	if resp.StatusCode >= 400 {
+		result.Error, result.ErrorCode = extractErrorMessageAndCode(respBody)
+	} else {
+		result.Data = respBody
+	}
+	return result, nil
+}
+
 // DynamicParse executes a /parse/_dynamic request.
 func (c *BAMLRestClient) DynamicParse(ctx context.Context, req DynamicParseRequest) (*DynamicParseResponse, error) {
 	body, err := sonic.Marshal(req)
@@ -1619,6 +1643,22 @@ func (c *BAMLRestClient) DynamicParse(ctx context.Context, req DynamicParseReque
 	}
 
 	return result, nil
+}
+
+// Metrics fetches the server's Prometheus exposition from /metrics. The payload
+// is the COMBINED gather — main-process series plus every healthy worker's, so a
+// worker-registered counter is visible here exactly as an operator would scrape
+// it. Returned as raw text for the caller to parse.
+func (c *BAMLRestClient) Metrics(ctx context.Context) ([]byte, error) {
+	url := fmt.Sprintf("%s/metrics", c.baseURL)
+	resp, body, err := c.doWithRetry(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status %d from /metrics: %s", resp.StatusCode, string(body))
+	}
+	return body, nil
 }
 
 // OpenAPISchema represents the parsed OpenAPI schema with commonly accessed fields.
