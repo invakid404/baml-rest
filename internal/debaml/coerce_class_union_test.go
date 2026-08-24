@@ -250,3 +250,91 @@ func TestClassUnion_HardGuardsStayFallback(t *testing.T) {
 	)
 	mustParse(t, arr, `{"u":[{"a":1,"b":"x"}]}`, `{"u":{"a":1,"b":"x"}}`)
 }
+
+// TestClassUnion_CollectionClassFieldHeldToUnionRules pins the cold-review fix: a
+// class-valued LIST element / MAP value inside a class-union arm must be held to the
+// SAME union-arm class rules the arm itself is, because checkSupportedType stops at a
+// class REFERENCE (class definitions are validated once over the bundle's class
+// slice, under the ORDINARY field rules). Without checkUnionCollectionClasses,
+// `A{items list<B>}` would admit a `B` carrying an optional / nested-class /
+// multi-arm-union field — the very shapes class_union_optional_field_arm_stays_fallback
+// locks at depth 0 — and BAML's Class::try_cast fills B's missing optional and
+// SUCCEEDS at a NON-zero score where tryCastClass does not match at all, so the two
+// phases disagree about which arms compete.
+//
+// The restriction is a boundary, not a blanket: a collection of an IN-SCOPE class
+// (all required flat leaves), including a nested list-of-list, still CLAIMS.
+func TestClassUnion_CollectionClassFieldHeldToUnionRules(t *testing.T) {
+	// arm builds Root{u: A|C} with A carrying the given field and C{name string}.
+	arm := func(field string, spec *bamlutils.DynamicProperty, inner bamlutils.OrderedMap[*bamlutils.DynamicProperty]) *bamlutils.DynamicOutputSchema {
+		return &bamlutils.DynamicOutputSchema{
+			Properties: props(kv("u", &bamlutils.DynamicProperty{
+				Type:  "union",
+				OneOf: []*bamlutils.DynamicTypeSpec{{Ref: "A"}, {Ref: "C"}},
+			})),
+			Classes: bamlutils.MustOrderedMap(
+				bamlutils.OrderedKV("A", &bamlutils.DynamicClass{Properties: props(kv(field, spec))}),
+				bamlutils.OrderedKV("B", &bamlutils.DynamicClass{Properties: inner}),
+				bamlutils.OrderedKV("C", &bamlutils.DynamicClass{Properties: props(kv("name", strProp()))}),
+			),
+		}
+	}
+	listOfB := &bamlutils.DynamicProperty{Type: "list", Items: &bamlutils.DynamicTypeSpec{Ref: "B"}}
+	mapOfB := &bamlutils.DynamicProperty{
+		Type: "map",
+		Keys: &bamlutils.DynamicTypeSpec{Type: "string"}, Values: &bamlutils.DynamicTypeSpec{Ref: "B"},
+	}
+	nestedListOfB := &bamlutils.DynamicProperty{
+		Type:  "list",
+		Items: &bamlutils.DynamicTypeSpec{Type: "list", Items: &bamlutils.DynamicTypeSpec{Ref: "B"}},
+	}
+
+	// B with an OPTIONAL field: OUT of scope through a list, a map, and a nested list.
+	bOptional := props(kv("x", intProp()), kv("y", optProp(&bamlutils.DynamicTypeSpec{Type: "string"})))
+	requireUnsupported(t, arm("items", listOfB, bOptional), `{"u":{"items":[{"x":1}]}}`)
+	requireUnsupported(t, arm("m", mapOfB, bOptional), `{"u":{"m":{"k":{"x":1}}}}`)
+	requireUnsupported(t, arm("g", nestedListOfB, bOptional), `{"u":{"g":[[{"x":1}]]}}`)
+	// Even an EMPTY collection declines: the gate is structural, so there is no input
+	// that slips a rejected class through.
+	requireUnsupported(t, arm("items", listOfB, bOptional), `{"u":{"items":[]}}`)
+	requireUnsupported(t, arm("items", listOfB, bOptional), `{"u":{"name":"n"}}`)
+
+	// B with a NESTED-CLASS field is likewise out of scope through the collection.
+	bNested := props(kv("x", intProp()), kv("inner", &bamlutils.DynamicProperty{Ref: "D"}))
+	nestedSchema := arm("items", listOfB, bNested)
+	_ = nestedSchema.Classes.Set("D", &bamlutils.DynamicClass{Properties: props(kv("v", intProp()))})
+	requireUnsupported(t, nestedSchema, `{"u":{"items":[{"x":1,"inner":{"v":2}}]}}`)
+
+	// An IN-SCOPE B (all required flat leaves) still CLAIMS through a list, a map and
+	// a nested list — the restriction must not swallow the family it was added to.
+	bOK := props(kv("x", intProp()), kv("y", strProp()))
+	mustParse(t, arm("items", listOfB, bOK), `{"u":{"items":[{"x":1,"y":"z"}]}}`, `{"u":{"items":[{"x":1,"y":"z"}]}}`)
+	mustParse(t, arm("items", listOfB, bOK), `{"u":{"items":[]}}`, `{"u":{"items":[]}}`)
+	mustParse(t, arm("m", mapOfB, bOK), `{"u":{"m":{"k":{"x":1,"y":"z"}}}}`, `{"u":{"m":{"k":{"x":1,"y":"z"}}}}`)
+	mustParse(t, arm("g", nestedListOfB, bOK), `{"u":{"g":[[{"x":1,"y":"z"}]]}}`, `{"u":{"g":[[{"x":1,"y":"z"}]]}}`)
+	// The OTHER arm still wins when the input is its shape.
+	mustParse(t, arm("items", listOfB, bOK), `{"u":{"name":"n"}}`, `{"u":{"name":"n"}}`)
+}
+
+// TestClassUnion_CollectionClassCycleDeclines pins the walk's termination guard: a
+// class-valued collection that leads back to a class already on the walk (A{items
+// list<A>}) DECLINES instead of recursing forever. A recursive class inside a union
+// arm is out of scope anyway; the guard is what makes that a decline rather than a
+// hang.
+func TestClassUnion_CollectionClassCycleDeclines(t *testing.T) {
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("u", &bamlutils.DynamicProperty{
+			Type:  "union",
+			OneOf: []*bamlutils.DynamicTypeSpec{{Ref: "A"}, {Ref: "C"}},
+		})),
+		Classes: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("A", &bamlutils.DynamicClass{
+				Properties: props(kv("items", &bamlutils.DynamicProperty{
+					Type: "list", Items: &bamlutils.DynamicTypeSpec{Ref: "A"},
+				})),
+			}),
+			bamlutils.OrderedKV("C", &bamlutils.DynamicClass{Properties: props(kv("name", strProp()))}),
+		),
+	}
+	requireUnsupported(t, s, `{"u":{"items":[]}}`)
+}

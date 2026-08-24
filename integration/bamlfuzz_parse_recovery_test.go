@@ -706,6 +706,10 @@ var parseRecoveryBoundaryFamily = map[string]string{
 	// succeeds at a NON-zero score (OptionalDefaultFromNoValue) where tryCastClass
 	// fails the strict cast, so the arm stays out of the admitted class family.
 	"class_union_optional_field_arm_stays_fallback": "union_class_optional_field",
+	// The SAME boundary one level DOWN: a class-valued collection field of a union
+	// arm, whose class carries an optional field. checkSupportedType stops at a class
+	// reference, so checkUnionCollectionClasses is what holds it to the union-arm rules.
+	"class_union_arm_collection_class_field_stays_fallback": "union_class_optional_field",
 	// (The list_multi_arm_union family is GONE: the array union_variant_hint is
 	// modeled now — coerceList / tryCastArray thread it and both union phases consult
 	// it — so list_int_bool_union_now_claimed / list_string_int_union_now_claimed /

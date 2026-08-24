@@ -958,6 +958,16 @@ func checkUnionMapVariant(b *schema.Bundle, v schema.Type) error {
 // proven. A zero-field class declines too (its NoFields / empty-object try_cast is
 // unmodeled).
 func checkUnionClassVariant(b *schema.Bundle, v schema.Type) error {
+	return checkUnionClassVariantSeen(b, v, map[schema.ClassKey]struct{}{})
+}
+
+// checkUnionClassVariantSeen is [checkUnionClassVariant] carrying the set of class
+// keys already on the current walk. The walk recurses (a class-valued collection
+// element is held to these same rules — see [checkUnionCollectionClasses]), so a
+// class graph with a cycle would otherwise not terminate. A repeat DECLINES: a
+// recursive class inside a union arm is out of scope anyway, and declining is the
+// safe answer for a shape this gate cannot finish proving.
+func checkUnionClassVariantSeen(b *schema.Bundle, v schema.Type, walked map[schema.ClassKey]struct{}) error {
 	if len(v.Meta.Constraints) > 0 {
 		return unsupported("class-union variant has type constraints")
 	}
@@ -965,6 +975,12 @@ func checkUnionClassVariant(b *schema.Bundle, v schema.Type) error {
 	if !ok {
 		return fmt.Errorf("debaml: unknown class %q", v.Name)
 	}
+	key := schema.ClassKey{Name: cls.Name.Name, Mode: cls.Mode}
+	if _, cycle := walked[key]; cycle {
+		return unsupported("class-union variant class is recursive (a cyclic class graph inside a union arm is out of scope)")
+	}
+	walked[key] = struct{}{}
+	defer delete(walked, key)
 	if len(cls.Constraints) > 0 {
 		return unsupported("class-union variant class has constraints")
 	}
@@ -974,7 +990,7 @@ func checkUnionClassVariant(b *schema.Bundle, v schema.Type) error {
 	seen := make(map[string]struct{}, len(cls.Fields))
 	for j := range cls.Fields {
 		f := &cls.Fields[j]
-		if err := checkUnionClassField(b, f.Type); err != nil {
+		if err := checkUnionClassField(b, f.Type, walked); err != nil {
 			return err
 		}
 		rn := f.Name.RenderedName()
@@ -992,7 +1008,18 @@ func checkUnionClassVariant(b *schema.Bundle, v schema.Type) error {
 // inside a scored union (see [checkUnionClassVariant]). An OPTIONAL field (a
 // nullable union), a multi-arm union, a nested class, or a recursive alias declines:
 // each one has a try_cast or default path whose union scoring is not proven.
-func checkUnionClassField(b *schema.Bundle, t schema.Type) error {
+//
+// A collection field's ELEMENT / VALUE is checked TWICE, and both are needed.
+// [checkSupportedType] proves it is in the parser's cut-line at all, but it treats a
+// class reference as a LEAF (class definitions are validated once over the bundle's
+// class slice, under the ORDINARY field rules), so on its own it would let a
+// class-valued collection smuggle a class the union-arm rules reject — `list<B>`
+// where `B{x int, y string?}` bypasses the optional-field boundary one level down,
+// and BAML's Class::try_cast fills that optional and SUCCEEDS at a non-zero score
+// where tryCastClass does not match at all. [checkUnionCollectionClasses] closes
+// that by holding every class reachable through the collection to the union-arm
+// rules as well.
+func checkUnionClassField(b *schema.Bundle, t schema.Type, walked map[schema.ClassKey]struct{}) error {
 	if isFlatLeafField(t) {
 		return nil
 	}
@@ -1001,12 +1028,57 @@ func checkUnionClassField(b *schema.Bundle, t schema.Type) error {
 		// checkSupportedType covers the constraint reject and proves the element is
 		// in scope (including a multi-arm-union element, now that the array
 		// union_variant_hint is modeled).
-		return checkSupportedType(b, t)
+		if err := checkSupportedType(b, t); err != nil {
+			return err
+		}
+		if t.Elem == nil {
+			return unsupported("class-union variant class has a list field without an element")
+		}
+		return checkUnionCollectionClasses(b, *t.Elem, walked)
 	case schema.TypeMap:
-		return checkUnionMapVariant(b, t)
+		if err := checkUnionMapVariant(b, t); err != nil {
+			return err
+		}
+		if t.Value == nil {
+			return unsupported("class-union variant class has a map field without a value")
+		}
+		return checkUnionCollectionClasses(b, *t.Value, walked)
 	default:
 		return unsupported("class-union variant class has an optional / union / nested-class field (only flat leaves and required list/string-keyed-map fields are modeled inside a union)")
 	}
+}
+
+// checkUnionCollectionClasses holds every CLASS reachable through a union arm's
+// collection field to the union-arm class rules ([checkUnionClassVariantSeen]),
+// descending through nested lists / maps / unions to find them. Non-class types are
+// already decided by [checkSupportedType] at the field, so this adds nothing for
+// them — it exists solely because that walk stops at a class reference.
+func checkUnionCollectionClasses(b *schema.Bundle, t schema.Type, walked map[schema.ClassKey]struct{}) error {
+	switch t.Kind {
+	case schema.TypeClass:
+		return checkUnionClassVariantSeen(b, t, walked)
+	case schema.TypeList:
+		if t.Elem != nil {
+			return checkUnionCollectionClasses(b, *t.Elem, walked)
+		}
+	case schema.TypeMap:
+		if t.Value != nil {
+			return checkUnionCollectionClasses(b, *t.Value, walked)
+		}
+	case schema.TypeUnion:
+		// A NON-nullable multi-arm union's class arms were already held to these
+		// rules by checkSupportedUnionShape, but a NULLABLE union takes
+		// checkSupportedType's fast path without walking its arms, so descend here
+		// too rather than rely on which branch ran.
+		if t.Union != nil {
+			for i := range t.Union.Variants {
+				if err := checkUnionCollectionClasses(b, t.Union.Variants[i], walked); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // isMultiArmUnion reports whether t is a union with two or more NON-NULL

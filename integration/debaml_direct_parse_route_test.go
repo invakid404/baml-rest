@@ -360,8 +360,8 @@ func TestDeBAMLDirectParseRouteNativeFirst(t *testing.T) {
 }
 
 // routeNativeServeFloor is how many of the corpus's final-parse cases the deployed
-// `/parse/_dynamic` route serves NATIVELY today: 169 of 194. The remaining 25
-// decline — 21 outside the native parser's cut-line, 3 where BAML recovered a
+// `/parse/_dynamic` route serves NATIVELY today: 169 of 195. The remaining 26
+// decline — 22 outside the native parser's cut-line, 3 where BAML recovered a
 // non-finite float that cannot be serialized at all, and 1 where both parsers
 // errored and BAML's error text is the one served.
 //
@@ -427,7 +427,9 @@ const routeNativeServeFloor = 169
 // it (a list ELEMENT), so BAML skips the item and native — unable to prove a failing
 // UNION element is a BAML parse error — declines. Its class-field sibling
 // (`class_field_union_map_arm_null_default_claimed`) is served NATIVELY and must NOT
-// be listed.
+// be listed. `class_union_arm_collection_class_field_stays_fallback` joins them: it is
+// the union arm's optional-field boundary one level down, inside a class-valued
+// collection field.
 var parseRouteNamedFallbacks = []string{
 	"truncated_final_error",
 	"trailing_commas_nested_object_array",
@@ -439,6 +441,7 @@ var parseRouteNamedFallbacks = []string{
 	"union_null_composite_arm_stays_fallback",
 	"list_union_map_arm_rejects_null_stays_fallback",
 	"class_union_optional_field_arm_stays_fallback",
+	"class_union_arm_collection_class_field_stays_fallback",
 	"baml_error_native_fallback_guard",
 }
 
