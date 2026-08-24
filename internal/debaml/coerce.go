@@ -68,6 +68,16 @@ type coerceFlags struct {
 	score     int
 	uncertain bool
 
+	// scoreUnknown records that this subtree's EMITTED BYTES are proven but its
+	// SCORE is not: BAML recorded a flag whose types.rs weight native has no
+	// live-captured evidence for. Today the sole cause is a map KEY that matched
+	// no enum value / string literal, which the dynamic bridge keeps under its
+	// ORIGINAL string (so the map's content is certain) while adding a
+	// MapKeyParseError whose cost is unproven. It rides up through foldChild /
+	// absorb and DECLINES at pickBest — the one place a score is ever compared —
+	// so a non-scored position claims and any scored position falls back.
+	scoreUnknown bool
+
 	// targetIsUnion mirrors BAML's `target` being a TypeIR::Union at THIS coercion
 	// (coerce_union.rs passes union_target down to each arm's coerce). It is an
 	// INPUT signal, not an output discriminator (never snapshotted by toCandidate /
@@ -119,6 +129,9 @@ func (f *coerceFlags) foldChild(child *coerceFlags) {
 	if child.isUncertain() {
 		f.markUncertain()
 	}
+	if child.hasUnknownScore() {
+		f.markScoreUnknown()
+	}
 }
 
 // absorb folds a selected candidate (a union / array-to-singular winner) into
@@ -132,6 +145,9 @@ func (f *coerceFlags) absorb(w candidate) {
 		return
 	}
 	f.score += w.score
+	if w.scoreUnknown {
+		f.scoreUnknown = true
+	}
 	f.kind = w.kind
 	f.singleToArray = w.singleToArray
 	f.itemsEmpty = w.itemsEmpty
@@ -158,6 +174,19 @@ func (f *coerceFlags) markUncertain() {
 // isUncertain reports whether a number-display uncertainty was recorded (the
 // sole remaining cause after #555 Slice 2 dropped the Unicode case-fold cause).
 func (f *coerceFlags) isUncertain() bool { return f != nil && f.uncertain }
+
+// markScoreUnknown records that the emitted bytes are proven but the score is
+// not (see coerceFlags.scoreUnknown). Unlike markUncertain it does NOT stop the
+// value from being claimed — only from being RANKED.
+func (f *coerceFlags) markScoreUnknown() {
+	if f != nil {
+		f.scoreUnknown = true
+	}
+}
+
+// hasUnknownScore reports whether an unproven-weight flag was recorded anywhere
+// in this subtree.
+func (f *coerceFlags) hasUnknownScore() bool { return f != nil && f.scoreUnknown }
 
 // isFlagged reports whether any score-bearing condition was recorded — i.e. the
 // value is not a clean zero-score success. Every native score-bearing flag has
@@ -186,6 +215,7 @@ func (f *coerceFlags) toCandidate(out json.RawMessage, originIndex int) candidat
 	}
 	c.kind = f.kind
 	c.score = f.score
+	c.scoreUnknown = f.scoreUnknown
 	c.singleToArray = f.singleToArray
 	c.itemsEmpty = f.itemsEmpty
 	c.arrayItemErrors = f.arrayItemErrors
@@ -208,9 +238,13 @@ func (f *coerceFlags) toCandidate(out json.RawMessage, originIndex int) candidat
 // Field and enum-value names follow BAML's rendered/canonical split: input
 // keys are matched by rendered name (the alias the model is shown), and
 // output keys use the canonical name — the form the downstream
-// FlattenDynamicOutput / InjectAbsentOptionals / ReorderDynamicOutputBySchema
-// pipeline keys on. Class fields are emitted in schema declaration order so
-// that order pass remains the authority.
+// FlattenDynamicOutput / ReorderDynamicOutputBySchema pipeline keys on. A class
+// emits EVERY declared field, in schema declaration order, with an absent
+// optional spelled as an explicit null — the same key set and order BAML
+// produces when its TypeBuilder was populated from that same declaration order,
+// so the output is comparable to BAML's before any downstream normalization runs
+// (the caller is responsible for declaring the schema in the order BAML's
+// TypeBuilder receives it; see worker/direct_parse_schema_order.go).
 //
 // Coercion cut-line (Mcoerce-b): on top of Mcoerce-a's match_string parity
 // (enum values, string literals, class field keys, map keys via trim /
@@ -1503,9 +1537,20 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 		}
 		ft := cls.Fields[i].Type
 		if isOptional(ft) {
-			// Absent optional → null (OptionalDefaultFromNoValue + Pending). Native
-			// omits it (InjectAbsentOptionals adds the null downstream, identically
-			// for both legs) but scores it for the nullable-union comparison.
+			// Absent optional → an EXPLICIT null at the field's declaration position
+			// (OptionalDefaultFromNoValue + Pending), which is exactly what BAML
+			// emits: its completed instance carries the field with a null value, and
+			// the generated Go type lowers `T?` to a pointer whose nil marshals as
+			// `null` (the same fact static_normalizer.go's absent-optional normalizer
+			// was written for). Native used to OMIT the field and rely on the
+			// caller's InjectAbsentOptionals pass to re-add the null before the wire
+			// — which made native's OWN bytes differ from BAML's at the worker
+			// boundary, so the /parse transition oracle declined an agreement it
+			// should have won (`class_missing_optional_null`). The score is
+			// unchanged: an absent optional still costs 1 and never counts as a real
+			// field, so nullable-union comparison is byte-for-byte what it was.
+			out[i] = json.RawMessage("null")
+			filled[i] = true
 			cf.add(1) // OptionalDefaultFromNoValue (cost 1)
 			continue
 		}
@@ -1545,17 +1590,22 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 		cf.classSingleImplied = impliedString
 	}
 
+	// Emit EVERY declared field, in declaration order. A successful class coercion
+	// leaves no field unfilled: a matched/implied value fills it, an absent optional
+	// takes an explicit null, a defaultable type takes its TypeIR default, and a
+	// missing required non-defaultable field returned above. That is also BAML's
+	// shape — its completed instance carries one entry per declared field — so the
+	// declared field set IS the emitted key set, with no presence rule left for a
+	// downstream pass to apply.
 	var buf bytes.Buffer
 	buf.WriteByte('{')
-	first := true
 	for i := range cls.Fields {
 		if !filled[i] {
-			continue // absent optional (omitted; InjectAbsentOptionals adds null).
+			return nil, fmt.Errorf("debaml: class %q: field %q left unresolved after the defaults pass", name, cls.Fields[i].Name.Name)
 		}
-		if !first {
+		if i > 0 {
 			buf.WriteByte(',')
 		}
-		first = false
 		key, err := marshalJSON(cls.Fields[i].Name.Name)
 		if err != nil {
 			return nil, err
@@ -2128,9 +2178,11 @@ func coerceMap(b *schema.Bundle, keyT, valT *schema.Type, input value, cf *coerc
 			cf.add(1) // MapValueParseError (cost 1) → skip entry.
 			continue
 		}
-		// KEY second: the original key string coerced against the key type. A key
-		// that does not cleanly coerce DECLINES the whole map (the dynamic bridge
-		// keeps non-matching keys leniently — a miss is Mcoerce-d, never a skip).
+		// KEY second: the original key string coerced against the key type. A MISS
+		// is KEPT (the dynamic bridge is lenient — it inserts the original string
+		// and flags rather than dropping the entry) at the cost of a provable
+		// score; only an ambiguous match, or a key type outside the proven set,
+		// declines the whole map. A key is NEVER a per-entry skip.
 		if err := coerceMapKey(b, *keyT, f.key, cf); err != nil {
 			return nil, err
 		}
@@ -2216,28 +2268,30 @@ func provenMapValueError(b *schema.Bundle, valT schema.Type, val value) bool {
 // four legal shapes (string primitive / enum / string literal / non-nullable
 // union of string literals), so the default arm is defensive.
 //
-// Unlike a map VALUE, a KEY has NO native partial-skip path: a key that does not
-// cleanly match DECLINES THE WHOLE MAP (Mcoerce-d), never a per-entry skip. The
-// live-captured DYNAMIC behavior is that enum / string-literal / literal-union
-// map keys are LENIENT — a NON-MATCHING key is ACCEPTED and inserted under its
-// ORIGINAL string, so {"A":x,"C":z} over enum {A,B} (map_bad_enum_key) or over
-// "A"|"B" (map_literal_key_partial_bad_key) yields the FULL map, not a partial
-// one. Native cannot SKIP a missed key (BAML keeps it) nor reproduce that lenient
-// keep (that is Mcoerce-d structural leniency), so it declines the whole map on
-// ANY non-clean key. Per key type:
+// Unlike a map VALUE, a KEY is NEVER a per-entry skip. The live-captured DYNAMIC
+// behavior is that enum / string-literal / literal-union map keys are LENIENT: a
+// NON-MATCHING key is inserted under its ORIGINAL string exactly like a matching
+// one, so {"A":x,"C":z} over enum {A,B} (map_bad_enum_key,
+// map_enum_key_nonmember_live_probe) and {"B":y,"C":z,"A":x} over "A"|"B"
+// (map_literal_key_partial_bad_key, map_bad_key_original_order) are FULL maps in
+// input order, not partial ones. Since the inserted key is the original string
+// either way — map_fuzzy_enum_key proves that even for a key that DOES match — the
+// key coercion changes nothing native emits. What it does change is BAML's SCORE:
+// a miss records a MapKeyParseError whose types.rs weight has no live capture.
 //
-//   - string primitive: any key coerces → ACCEPT.
+// So a miss ACCEPTS and marks cf.scoreUnknown, which declines at pickBest — the
+// one place a score is ever compared. A map in a plain position claims byte-exact;
+// the same map as a nullable/union arm falls back rather than be ranked on a score
+// native cannot prove. Per key type:
+//
+//   - string primitive: any key coerces → ACCEPT, clean.
 //   - enum / string literal / string-literal union: a clean match_string match
-//     (any arm, for a union) → ACCEPT; a certain MISS declines the whole map
-//     (dynamic lenient keep). The match_string fold is now proven (bamlunicode ==
-//     Rust str::to_lowercase), so a non-ASCII key match/miss is native's to CLAIM
-//     — there is no case-fold-uncertain branch (#555 Slice 2).
-//
-// cf is retained for the scored-context threading convention every coerce* helper
-// follows (and so a future NON-Unicode key uncertainty could propagate to an
-// enclosing union counter). Key coercion produces no uncertainty today, so cf is
-// never marked here; no claimable union admits a map arm anyway (parse.go's safe
-// families are literal/class only).
+//     (any arm, for a union) → ACCEPT, clean; a certain MISS → ACCEPT, score
+//     unproven; an AMBIGUOUS substring tie → DECLINE the whole map
+//     (StrMatchOneFromMany on a map key has no live capture). The match_string
+//     fold is proven (bamlunicode == Rust str::to_lowercase), so a non-ASCII key
+//     match/miss is native's to CLAIM — there is no case-fold-uncertain branch
+//     (#555 Slice 2).
 func coerceMapKey(b *schema.Bundle, keyT schema.Type, key string, cf *coerceFlags) error {
 	switch keyT.Kind {
 	case schema.TypePrimitive:
@@ -2256,9 +2310,18 @@ func coerceMapKey(b *schema.Bundle, keyT schema.Type, key string, cf *coerceFlag
 		if outcome == matchOne {
 			return nil
 		}
-		// A missed enum key is a DEFERRED lenient keep (dynamic enum keys accept
-		// non-members → full map), not a skip, so decline the whole map.
-		return unsupported(fmt.Sprintf("map key %q: no clean enum %q match (dynamic keeps non-members → Mcoerce-d decline)", key, keyT.Name))
+		if outcome == matchNone {
+			// A missed enum key is KEPT: the dynamic bridge inserts the ORIGINAL key
+			// string and records a MapKeyParseError rather than dropping the entry,
+			// so {"A":x,"C":z} over enum {A,B} is the FULL map. Native reproduces the
+			// keep (the emitted bytes are the original key either way) and marks the
+			// score unproven, since MapKeyParseError's weight is not live-captured.
+			cf.markScoreUnknown()
+			return nil
+		}
+		// An AMBIGUOUS substring tie is a different BAML path (StrMatchOneFromMany on
+		// the key) with no live capture of what the map then does: decline.
+		return unsupported(fmt.Sprintf("map key %q: ambiguous enum %q match (StrMatchOneFromMany on a map key is unproven)", key, keyT.Name))
 	case schema.TypeLiteral:
 		if keyT.Literal == nil || keyT.Literal.Kind != schema.LiteralString {
 			return unsupported("map key literal must be a string literal")
@@ -2267,8 +2330,13 @@ func coerceMapKey(b *schema.Bundle, keyT schema.Type, key string, cf *coerceFlag
 		if outcome == matchOne {
 			return nil
 		}
-		// A missed literal key is a DEFERRED lenient keep, not a skip → decline.
-		return unsupported(fmt.Sprintf("map key %q: no clean literal %q match (dynamic keeps non-matches → Mcoerce-d decline)", key, keyT.Literal.String))
+		if outcome == matchNone {
+			// Same lenient keep as the enum case: the entry stays under its ORIGINAL
+			// key with an unproven-weight MapKeyParseError.
+			cf.markScoreUnknown()
+			return nil
+		}
+		return unsupported(fmt.Sprintf("map key %q: ambiguous literal %q match (StrMatchOneFromMany on a map key is unproven)", key, keyT.Literal.String))
 	case schema.TypeUnion:
 		// Only a non-nullable union of string literals is a legal map key
 		// (the same invariant the parse gate proves via isStringLiteralUnionType
@@ -2279,20 +2347,34 @@ func coerceMapKey(b *schema.Bundle, keyT schema.Type, key string, cf *coerceFlag
 		if !isStringLiteralUnionType(keyT) {
 			return unsupported("map key union must be a non-nullable union of string literals")
 		}
-		// A union-of-string-literals key coerces through BAML's union coercer,
-		// which accepts when ANY arm matches; the map then inserts the ORIGINAL
-		// key, so the winning arm is irrelevant. The fold is now proven
-		// (bamlunicode == Rust str::to_lowercase), so a non-ASCII arm match
-		// (e.g. key "É" vs literal "é", matched in the case-fold pass) is native's
-		// to CLAIM. Scan the arms: the FIRST clean match accepts the key.
-		for _, lit := range flattenStringLiterals(keyT) {
-			if _, outcome, _ := matchString(key, []matchCandidate{{name: lit, validValues: []string{lit}}}, true); outcome == matchOne {
-				return nil
-			}
+		// A union-of-string-literals key coerces through BAML's union coercer, which
+		// runs match_string over ALL the arms AT ONCE — so the arms are matched as a
+		// single candidate set, exactly like enumMatchCandidates does above, and NOT
+		// arm-by-arm. The difference is the whole point: match_string's ambiguity
+		// verdict is a property of the candidate SET (a key that substring-matches two
+		// arms is StrMatchOneFromMany), and a per-arm scan can never see it — each
+		// isolated call would report a clean match and the first one would win, which
+		// is precisely the tie BAML refuses to resolve. The map then inserts the
+		// ORIGINAL key either way, so the winning arm itself is irrelevant; only the
+		// outcome CLASS matters. The fold is proven (bamlunicode == Rust
+		// str::to_lowercase), so a non-ASCII arm match (key "É" vs literal "é", matched
+		// in the case-fold pass) is native's to CLAIM.
+		lits := flattenStringLiterals(keyT)
+		cands := make([]matchCandidate, 0, len(lits))
+		for _, lit := range lits {
+			cands = append(cands, matchCandidate{name: lit, validValues: []string{lit}})
 		}
-		// No arm matched: a DEFERRED lenient keep (dynamic keeps non-matching
-		// literal-union keys → full map), not a skip → decline the whole map.
-		return unsupported(fmt.Sprintf("map key %q: matches no string-literal-union arm (dynamic keeps non-matches → Mcoerce-d decline)", key))
+		switch _, outcome, _ := matchString(key, cands, true); outcome {
+		case matchOne:
+			return nil
+		case matchNone:
+			// No arm matched: the entry is KEPT under its ORIGINAL key (the dynamic
+			// bridge's lenient literal-union keys — {"A":x,"C":z,"B":y} stays whole and
+			// in input order), with an unproven-weight MapKeyParseError.
+			cf.markScoreUnknown()
+			return nil
+		}
+		return unsupported(fmt.Sprintf("map key %q: ambiguous string-literal-union match (StrMatchOneFromMany on a map key is unproven)", key))
 	default:
 		return unsupported(fmt.Sprintf("map key kind %q", keyT.Kind))
 	}
@@ -2345,6 +2427,10 @@ type candidate struct {
 	classPropCount     int
 	classAllDefault    bool
 	classSingleImplied bool
+
+	// scoreUnknown mirrors coerceFlags.scoreUnknown: this candidate's bytes are
+	// proven but its score is not, so it cannot be RANKED against another.
+	scoreUnknown bool
 }
 
 // isDefaultList mirrors pick_best's "default" bit: an EMPTY list produced by
@@ -2381,6 +2467,19 @@ func nullCandidate(originIndex int) candidate {
 func pickBest(targetIsUnion bool, cands []candidate) (int, error) {
 	if len(cands) == 0 {
 		return -1, unsupported("pick_best: empty candidate set")
+	}
+	// A candidate whose SCORE native cannot prove (coerceFlags.scoreUnknown — a
+	// map key BAML kept under an unproven-weight MapKeyParseError) may not be
+	// RANKED: its bytes are certain but its position in the ordering is not, so
+	// any comparison involving it could pick the arm BAML did not. DECLINE the
+	// whole selection instead. Checked before the single-candidate shortcut so a
+	// lone unrankable candidate cannot slip through — for a one-arm nullable union
+	// the null arm is always appended, and any caller that does pass exactly one
+	// candidate is still asking for a ranked verdict this cannot supply.
+	for i := range cands {
+		if cands[i].scoreUnknown {
+			return -1, unsupported("pick_best: a candidate carries a flag whose BAML score weight is unproven (map key kept leniently) — declining rather than ranking it")
+		}
 	}
 	if len(cands) == 1 {
 		return 0, nil
@@ -2993,9 +3092,20 @@ func tryCastArm(b *schema.Bundle, t schema.Type, input value, cctx *coerceCtx) (
 // carrying ObjectToMap (score 1) plus any nested value try_cast scores. Unlike a
 // leaf/class arm this is a NON-zero try_cast, so it does NOT short-circuit the union
 // at score 0 — tryCastUnion collects it and pick_best chooses. try_cast_map does NOT
-// validate keys (the union gate restricts map arms to STRING keys, where every key
-// is valid, so this is faithful); a non-object input, or any value that does not
-// try_cast, returns not-matched (the arm falls to the lenient partial-map coerce).
+// validate keys. That is faithful to BAML, but it is only SAFE while every map arm
+// has a STRING key — where every key is valid and coerceMapKey would accept it
+// cleanly anyway. For an enum / string-literal key it would not be: coerceMapKey
+// KEEPS a non-matching key and marks the map's score unproven
+// (coerceFlags.scoreUnknown) precisely so a scored position declines, while a strict
+// candidate built here carries no coerceFlags at all and would be RANKED on a score
+// native cannot prove. checkUnionMapVariant already restricts union map arms to a
+// string key for exactly that reason, so the situation is unreachable today — but
+// "unreachable" is not a boundary, and the gate that makes it unreachable lives in a
+// different file from the one that would be wrong. So a NON-STRING key returns
+// not-matched here and the arm falls to the lenient pass, where the scoreUnknown
+// decline lives; broadening the gate can then only ever cost a decline, never an
+// out-claim. A non-object input, or any value that does not
+// try_cast, likewise returns not-matched (the arm falls to the lenient partial-map coerce).
 // A DUPLICATE input key returns not-matched (BAML's IndexMap overwrite order is
 // unproven — coerceMap declines duplicates too), so the arm falls to the lenient
 // pass, which also declines the whole map, declining the union (safe under-claim).
@@ -3003,6 +3113,12 @@ func tryCastArm(b *schema.Bundle, t schema.Type, input value, cctx *coerceCtx) (
 func tryCastMap(b *schema.Bundle, keyT, valT *schema.Type, input value, cctx *coerceCtx) (candidate, bool, error) {
 	if keyT == nil || valT == nil {
 		return candidate{}, false, fmt.Errorf("debaml: map type missing key or value")
+	}
+	// Key-blind strict cast is only safe for a STRING key (see the doc above): any
+	// other key type has a coerceMapKey outcome that can leave the map's score
+	// unproven, and a candidate built here would be ranked without it.
+	if keyT.Kind != schema.TypePrimitive || keyT.Primitive != schema.PrimitiveString {
+		return candidate{}, false, nil
 	}
 	if input.kind != valObject {
 		return candidate{}, false, nil

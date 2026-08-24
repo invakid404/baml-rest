@@ -76,11 +76,18 @@ const (
 
 	// directParseReasonResultDrift — both parsers succeeded and their serialized
 	// results differ. BAML's result is served. This is the shape the oracle exists
-	// for. It covers two populations that the comparison cannot tell apart and
-	// deliberately treats alike: real semantic drift, and a difference the HOST's
+	// for, and it now means what it says: a real disagreement about the answer.
+	//
+	// It used to carry a second, non-semantic population — a payload the HOST's
 	// downstream normalization (absent-optional injection, reorder/sort) would have
-	// erased before the wire. Both decline, because the worker compares what it
-	// actually produces and does not model the host's pipeline.
+	// erased before the wire, so the two legs "disagreed" only about shape. That
+	// population is closed at the source rather than tolerated here: the native
+	// parser spells an absent optional as an explicit null like BAML does, and the
+	// bridge declares the schema in the order BAML's TypeBuilder will be populated
+	// in (direct_parse_schema_order.go), so the comparison no longer sees a
+	// difference the wire would not. The worker still compares exactly what it
+	// produces and models nothing about the host's pipeline — that is why the fix
+	// had to be on this side of the boundary.
 	directParseReasonResultDrift = "result_drift"
 
 	// directParseReasonBAMLResultUnusable — BAML parsed the input but its result

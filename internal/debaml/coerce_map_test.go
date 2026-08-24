@@ -101,30 +101,54 @@ func TestCoerceMap_ClassValueScalarSkips(t *testing.T) {
 	requireCoerceUnsupported(t, s, `{"items":{"a":{"a":"x","b":"y"},"b":{"a":"x"}}}`)
 }
 
-// TestCoerceMap_KeyMissDeclines pins that a KEY matching NO string-literal-union
-// arm is NOT a native partial skip: the dynamic bridge keeps non-matching keys
-// leniently (a live-captured FULL map), so native declines the WHOLE map rather
-// than skip an entry BAML would keep. A fully-matching map (incl. a fuzzy
-// case-variant kept under its ORIGINAL string) still claims.
-func TestCoerceMap_KeyMissDeclines(t *testing.T) {
+// TestCoerceMap_KeyMissIsKeptNotSkipped pins the dynamic bridge's LENIENT
+// string-literal-union map keys: a key matching NO arm is neither dropped nor
+// canonicalized — it is inserted under its ORIGINAL string, in input order,
+// alongside the matching entries (corpus fixtures 103/104, live-captured FULL
+// maps). A fully-matching map, including a fuzzy case-variant, is unchanged.
+func TestCoerceMap_KeyMissIsKeptNotSkipped(t *testing.T) {
 	s := mapLitUnionStrSchema()
 	// All keys match -> claim, keeping ORIGINAL strings in INPUT order.
 	mustCoerceExact(t, s, `{"u":{"B":"y","A":"x"}}`, `{"u":{"B":"y","A":"x"}}`)
 	// A fuzzy (case-variant) key still matches via match_string and is KEPT under
 	// its ORIGINAL string, not the canonical literal.
 	mustCoerceExact(t, s, `{"u":{"a":"x"}}`, `{"u":{"a":"x"}}`)
-	// A key matching no arm -> decline the whole map (dynamic keeps it -> Mcoerce-d).
-	requireCoerceUnsupported(t, s, `{"u":{"B":"y","C":"z","A":"x"}}`)
+	// A key matching no arm is KEPT, between the two that do, in INPUT order
+	// (fixture 104's shape: the matching keys are also out of lexical order).
+	mustCoerceExact(t, s, `{"u":{"B":"y","C":"z","A":"x"}}`, `{"u":{"B":"y","C":"z","A":"x"}}`)
 }
 
-// TestCoerceMap_EnumKeyMissDeclines pins that a MISSED enum key is NOT a partial
-// skip: the dynamic bridge keeps non-member enum keys (map_bad_enum_key -> full
-// map), so native declines the whole map rather than skip an entry BAML keeps.
-func TestCoerceMap_EnumKeyMissDeclines(t *testing.T) {
+// TestCoerceMap_EnumKeyMissIsKeptNotSkipped pins the same leniency for an ENUM
+// key: a non-member is KEPT under its original string rather than skipped
+// (corpus fixtures 28/105 — map_bad_enum_key / the non-member live probe — are
+// live-captured FULL maps).
+func TestCoerceMap_EnumKeyMissIsKeptNotSkipped(t *testing.T) {
 	s := mapEnumKeySchema()
-	// All keys match -> claim; a missed key -> decline (not a partial skip).
 	mustCoerceExact(t, s, `{"labels":{"A":"one","B":"two"}}`, `{"labels":{"A":"one","B":"two"}}`)
-	requireCoerceUnsupported(t, s, `{"labels":{"A":"one","C":"two"}}`)
+	mustCoerceExact(t, s, `{"labels":{"A":"one","C":"two"}}`, `{"labels":{"A":"one","C":"two"}}`)
+}
+
+// TestCoerceMap_KeptKeyMissCannotBeRanked is the BITING side of the leniency: the
+// entry's BYTES are proven but BAML's MapKeyParseError weight is not, so a map
+// carrying a kept non-matching key must never be RANKED against another candidate.
+// An OPTIONAL map field scores its arm against the null arm, so it declines —
+// while the same map in a plain (unranked) position above claims.
+func TestCoerceMap_KeptKeyMissCannotBeRanked(t *testing.T) {
+	optionalMap := oneField(optProp(&bamlutils.DynamicTypeSpec{
+		Type: "map",
+		Keys: &bamlutils.DynamicTypeSpec{
+			Type: "union",
+			OneOf: []*bamlutils.DynamicTypeSpec{
+				{Type: "literal_string", Value: "A"},
+				{Type: "literal_string", Value: "B"},
+			},
+		},
+		Values: &bamlutils.DynamicTypeSpec{Type: "string"},
+	}))
+	// Control: every key matches, the arm is rankable, the map claims.
+	mustCoerceExact(t, optionalMap, `{"u":{"A":"x"}}`, `{"u":{"A":"x"}}`)
+	// A kept non-matching key makes the arm unrankable -> decline the whole parse.
+	requireCoerceUnsupported(t, optionalMap, `{"u":{"A":"x","C":"z"}}`)
 }
 
 // TestCoerceMap_ValueThenKeyOrder pins BAML's VALUE-first order: an entry with a
@@ -149,19 +173,15 @@ func TestCoerceMap_ValueThenKeyOrder(t *testing.T) {
 	mustCoerceExact(t, s, `{"u":{"É":"zzz"}}`, `{"u":{}}`)
 }
 
-// TestCoerceMap_DeferredValuePreemptsKeySkip pins value-first ordering: a value
-// that is a DEFERRED Mcoerce-d success (JsonToString) declines the WHOLE map
-// before the key is even coerced — native must not emit a partial map that drops
-// an entry BAML would keep via a lenient value path.
-func TestCoerceMap_DeferredValuePreemptsKeySkip(t *testing.T) {
-	// map<"A"|"B", string> with {"C": 5}: the value 5 -> string is JsonToString
-	// (Mcoerce-d, NOT a proven parse error), so the map declines on the VALUE
-	// first — the key "C" is never reached. And even if it were, a non-matching
-	// key is NOT a skip: coerceMapKey is decline-only (the dynamic bridge keeps
-	// non-matching literal-union keys leniently -> a whole-map decline, not a
-	// partial MapKeyParseError skip; see TestCoerceMap_KeyMissDeclines). Either
-	// way the whole map declines rather than dropping an entry.
-	requireCoerceUnsupported(t, mapLitUnionStrSchema(), `{"u":{"C":5}}`)
+// TestCoerceMap_NonMatchingKeyAndLenientValueBothKept composes the two leniencies
+// this map surface models, on the same entry: map<"A"|"B", string> with
+// {"C": 5}. The VALUE is coerced first and stringifies to "5" (JsonToString,
+// fixture 107's rule), then the KEY misses every arm and is kept under its
+// original string (fixtures 103/104's rule). Neither is a skip, so the entry
+// survives whole. The composition is not itself a corpus fixture; the deployed
+// route's byte comparison is what holds it to BAML.
+func TestCoerceMap_NonMatchingKeyAndLenientValueBothKept(t *testing.T) {
+	mustCoerceExact(t, mapLitUnionStrSchema(), `{"u":{"C":5}}`, `{"u":{"C":"5"}}`)
 }
 
 // TestCoerceMap_StringStringNonStringValueStringified pins the Mcoerce-d PR 1
@@ -246,4 +266,93 @@ func TestProvenMapValueError(t *testing.T) {
 			t.Errorf("%s: provenMapValueError = %v, want %v", c.name, got, c.want)
 		}
 	}
+}
+
+// TestCoerceMap_CrossArmLiteralKeyTieDeclinesTheWholeMap is the map-level half of
+// the literal-union key ambiguity boundary. A key that substring-matches TWO arms is
+// BAML's StrMatchOneFromMany, which native has no live capture for on a map key — so
+// it must decline the whole map rather than silently resolve the tie to whichever arm
+// it happened to scan first. The control alongside it is a key that matches exactly
+// one arm, which still claims: the decline is about the TIE, not about substrings.
+func TestCoerceMap_CrossArmLiteralKeyTieDeclinesTheWholeMap(t *testing.T) {
+	s := oneField(&bamlutils.DynamicProperty{
+		Type: "map",
+		Keys: &bamlutils.DynamicTypeSpec{
+			Type: "union",
+			OneOf: []*bamlutils.DynamicTypeSpec{
+				{Type: "literal_string", Value: "cat"},
+				{Type: "literal_string", Value: "dog"},
+			},
+		},
+		Values: &bamlutils.DynamicTypeSpec{Type: "string"},
+	})
+	// Control: a substring hit on exactly ONE arm is a clean match and claims, with
+	// the ORIGINAL key preserved.
+	mustCoerceExact(t, s, `{"u":{"a cat":"x"}}`, `{"u":{"a cat":"x"}}`)
+	// The tie: "cat and dog" substring-matches BOTH arms.
+	requireCoerceUnsupported(t, s, `{"u":{"cat and dog":"x"}}`)
+}
+
+// TestTryCastMap_NonStringKeyIsNotMatched is the boundary that keeps the lenient
+// map-key keep from ever being RANKED through the strict phase.
+//
+// try_cast_map does not look at keys, which is faithful to BAML and harmless for a
+// string key. For an enum / string-literal key it would not be: coerceMapKey KEEPS a
+// non-matching key and marks the map's score unproven so a scored position declines,
+// and a candidate built by tryCastMap carries no coerceFlags at all — so if the
+// strict phase could produce one for a non-string-keyed map, pickBest would rank it
+// on a score native cannot prove. checkUnionMapVariant already refuses a non-string
+// map key at the union gate (the case below therefore never reaches coercion in
+// practice), but the gate lives in a different file from the code that would be
+// wrong, so tryCastMap refuses it directly too.
+func TestTryCastMap_NonStringKeyIsNotMatched(t *testing.T) {
+	b, err := schema.FromDynamicOutputSchema(mapEnumKeySchema(), schema.BuildOptions{})
+	if err != nil {
+		t.Fatalf("build bundle: %v", err)
+	}
+	enumKey := schema.Type{Kind: schema.TypeEnum, Name: "Key"}
+	strVal := schema.Type{Kind: schema.TypePrimitive, Primitive: schema.PrimitiveString}
+	// An input every VALUE of which try_casts cleanly, and whose keys include a
+	// NON-MEMBER: the only thing standing between this and a rankable candidate is
+	// the key-type refusal.
+	in := objVal(fld("A", strVv("one")), fld("C", strVv("two")))
+
+	if _, matched, err := tryCastMap(b, &enumKey, &strVal, in, &coerceCtx{}); err != nil {
+		t.Fatalf("tryCastMap: %v", err)
+	} else if matched {
+		t.Error("tryCastMap matched an ENUM-keyed map; a non-string key must fall to the lenient pass, where the scoreUnknown decline lives")
+	}
+	// Control: the SAME entries under a STRING key do try_cast, so the refusal above
+	// is about the key TYPE and not about the input.
+	if _, matched, err := tryCastMap(b, &strVal, &strVal, in, &coerceCtx{}); err != nil {
+		t.Fatalf("tryCastMap (string key): %v", err)
+	} else if !matched {
+		t.Error("tryCastMap declined a string-keyed map whose every value try_casts")
+	}
+}
+
+// TestUnionMapArm_NonStringKeyDeclines is the end-to-end half: a multi-arm union
+// carrying an ENUM-keyed map arm, fed an object with a retained non-member key, must
+// DECLINE the whole parse rather than claim the kept map through a union position.
+// Which layer refuses it (the gate today) is deliberately not asserted — the
+// observable contract is that native does not claim.
+func TestUnionMapArm_NonStringKeyDeclines(t *testing.T) {
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("u", &bamlutils.DynamicProperty{
+			Type: "union",
+			OneOf: []*bamlutils.DynamicTypeSpec{
+				{Type: "map", Keys: &bamlutils.DynamicTypeSpec{Ref: "Key"}, Values: &bamlutils.DynamicTypeSpec{Type: "string"}},
+				{Type: "string"},
+			},
+		})),
+		Enums: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("Key", &bamlutils.DynamicEnum{
+				Values: []*bamlutils.DynamicEnumValue{{Name: "A"}, {Name: "B"}},
+			}),
+		),
+	}
+	requireCoerceUnsupported(t, s, `{"u":{"A":"one","C":"two"}}`)
+	// And with every key a member, so the decline above is the ARM SHAPE and not the
+	// retained key: an enum-keyed map arm is outside the proven union family either way.
+	requireCoerceUnsupported(t, s, `{"u":{"A":"one","B":"two"}}`)
 }

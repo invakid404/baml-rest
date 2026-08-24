@@ -1030,9 +1030,10 @@ func TestConstraintStateDroppedListElementIsASkippedPath(t *testing.T) {
 }
 
 // TestConstraintStateAbsentOptionalFieldIsASkippedPath proves an absent optional
-// field is a skipped path: production omits the key, the canonical class value
-// omits it too, and the state records the omission — with its declared predicate
-// listed as not-run — at the field's path.
+// field is a skipped path: production emits the key as an explicit null (what
+// BAML emits), the canonical class value carries that null, and the state still
+// records the field's own path as a skip — with its declared predicate listed as
+// not-run — because nothing was coerced there.
 func TestConstraintStateAbsentOptionalFieldIsASkippedPath(t *testing.T) {
 	nickname := constraintStateCheck(constraintStateOptional(constraintStateStringType()), "short", `this == "nick"`)
 	cls := constraintStateClass("Profile",
@@ -1042,7 +1043,7 @@ func TestConstraintStateAbsentOptionalFieldIsASkippedPath(t *testing.T) {
 	b := constraintStateBundle(t, constraintStateClassType("Profile"), []schema.ClassDef{cls}, nil)
 	run := collectConstraintStateFixture(t, b, `{"name":"ada"}`)
 
-	if got, want := constraintStateDescribe(run.Root.Canonical), `class:Profile{name=string:"ada"}`; got != want {
+	if got, want := constraintStateDescribe(run.Root.Canonical), `class:Profile{name=string:"ada",nickname=null}`; got != want {
 		t.Fatalf("root canonical = %s, want %s", got, want)
 	}
 	requireConstraintStateCount(t, len(run.Root.Children), 2, "root children")
@@ -1051,7 +1052,7 @@ func TestConstraintStateAbsentOptionalFieldIsASkippedPath(t *testing.T) {
 		t.Errorf("$.nickname disposition = %s, want %s", got, want)
 	}
 	if nick.HasCanonical {
-		t.Error("$.nickname synthesized a value for an absent optional field")
+		t.Error("$.nickname synthesized a coerced value for an absent optional field")
 	}
 	if !strings.Contains(nick.SkipReason, "absent optional") {
 		t.Errorf("$.nickname reason = %q", nick.SkipReason)

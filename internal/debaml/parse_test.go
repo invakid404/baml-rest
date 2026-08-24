@@ -204,9 +204,9 @@ func TestParse_OptionalPresentAndAbsent(t *testing.T) {
 	mustParse(t, s, `{"name":"Ada","nick":"Ace"}`, `{"name":"Ada","nick":"Ace"}`)
 	// Explicit null.
 	mustParse(t, s, `{"name":"Ada","nick":null}`, `{"name":"Ada","nick":null}`)
-	// Absent: the parser omits it; the downstream InjectAbsentOptionals
-	// pass (not the parser) inserts the null.
-	mustParse(t, s, `{"name":"Ada"}`, `{"name":"Ada"}`)
+	// Absent: the parser itself emits the null, at the field's declaration
+	// position — the same bytes BAML returns for the same input.
+	mustParse(t, s, `{"name":"Ada"}`, `{"name":"Ada","nick":null}`)
 }
 
 func TestParse_RequiredFieldMissingDeclines(t *testing.T) {
@@ -397,10 +397,13 @@ func TestParse_MapEnumKeysExact(t *testing.T) {
 		`{"labels":{"A":"one","B":"two"}}`)
 }
 
-func TestParse_MapBadEnumKeyDeclines(t *testing.T) {
-	// A key not exactly in the enum: BAML records MapKeyParseError and skips
-	// it (partial map). Native declines the whole map.
-	requireCoerceUnsupported(t, mapEnumKeySchema(), `{"labels":{"A":"one","C":"two"}}`)
+func TestParse_MapBadEnumKeyIsKept(t *testing.T) {
+	// A key not in the enum: the dynamic bridge inserts it under its ORIGINAL
+	// string and records a MapKeyParseError rather than dropping it, so the map
+	// stays FULL (corpus fixture 28, live-captured).
+	mustCoerceExact(t, mapEnumKeySchema(),
+		`{"labels":{"A":"one","C":"two"}}`,
+		`{"labels":{"A":"one","C":"two"}}`)
 }
 
 func TestParse_MapFuzzyEnumKeyClaimed(t *testing.T) {
@@ -446,10 +449,9 @@ func TestParse_MapLiteralUnionKeysExact(t *testing.T) {
 		})),
 	}
 	mustCoerceExact(t, s, `{"m":{"A":"x","B":"y"}}`, `{"m":{"A":"x","B":"y"}}`)
-	// A key matching NO string-literal-union arm is NOT a native partial skip: the
-	// dynamic bridge KEEPS the non-matching key (live-captured full map), so
-	// native declines the WHOLE map rather than skip an entry BAML keeps.
-	requireCoerceUnsupported(t, s, `{"m":{"A":"x","C":"z"}}`)
+	// A key matching NO string-literal-union arm is KEPT under its original string
+	// (live-captured full map), not skipped and not canonicalized.
+	mustCoerceExact(t, s, `{"m":{"A":"x","C":"z"}}`, `{"m":{"A":"x","C":"z"}}`)
 }
 
 // mapStringItemSchema is a root class with one map<string, Item> field; Item

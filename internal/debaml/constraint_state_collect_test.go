@@ -739,11 +739,14 @@ func (c *constraintStateCollector) classValue(t schema.Type, in value, cctx *coe
 		var cs *constraintCoercionState
 		switch {
 		case !matched[j] && isOptional(f.Type):
-			// Absent optional: production OMITS the key (InjectAbsentOptionals adds
-			// the null downstream), so the canonical class value omits it too. The
-			// path is recorded as a skipped child with NO value.
+			// Absent optional: production emits the key with an explicit null at the
+			// field's declaration position (OptionalDefaultFromNoValue), which is what
+			// BAML emits, so the canonical class value carries a null entry for it.
+			// The field's own PATH is still a skipped child with NO synthesized value:
+			// nothing was coerced there, so its declared predicate does not run.
 			children = append(children, c.skippedPath(f.Type, fieldPath,
-				fmt.Sprintf("absent optional field %q (OptionalDefaultFromNoValue; production omits the key)", f.Name.Name)))
+				fmt.Sprintf("absent optional field %q (OptionalDefaultFromNoValue; production emits an explicit null)", f.Name.Name)))
+			entries = append(entries, ConstraintEntry{Key: f.Name.Name, Value: NullValue()})
 			continue
 		case !matched[j]:
 			// Absent required field -> TypeIR::default_value (DefaultFromNoValue).
