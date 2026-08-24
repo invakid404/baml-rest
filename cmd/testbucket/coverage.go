@@ -22,6 +22,8 @@ type coverageError struct {
 	MissingRunnables  map[string][]string
 	DuplicateRunnable map[string][]string
 	DuplicateUnits    []string
+	MalformedUnits    []string
+	UngatedSlices     []string
 	EmptySlices       []string
 	ShardGaps         []string
 	ShortSweeps       []string
@@ -49,6 +51,18 @@ func (e *coverageError) Error() string {
 	}
 	if len(e.DuplicateUnits) > 0 {
 		fmt.Fprintf(&b, "\n  unit(s) assigned to more than one bucket: %s", strings.Join(e.DuplicateUnits, ", "))
+	}
+	if len(e.MalformedUnits) > 0 {
+		fmt.Fprintf(&b, "\n  malformed unit(s) — the emitted invocation would not run what the unit claims:")
+		for _, m := range e.MalformedUnits {
+			fmt.Fprintf(&b, "\n    - %s", m)
+		}
+	}
+	if len(e.UngatedSlices) > 0 {
+		fmt.Fprintf(&b, "\n  package(s) name-sliced with no resolved runnable universe to check against:")
+		for _, m := range e.UngatedSlices {
+			fmt.Fprintf(&b, "\n    - %s", m)
+		}
 	}
 	if len(e.EmptySlices) > 0 {
 		fmt.Fprintf(&b, "\n  run-slice unit(s) with an empty -run set: %s", strings.Join(e.EmptySlices, ", "))
@@ -116,6 +130,39 @@ func assertCoverage(in gateInput) error {
 	for _, b := range in.Buckets {
 		for _, u := range b.Units {
 			unitSeen[u.ID]++
+
+			// Arity first, before anything is credited to a package.
+			//
+			// A sub-package unit carries per-invocation arguments — one
+			// -run regex, one divided -count — that are only meaningful for
+			// the single package they were computed from. renderBucket
+			// applies those arguments to every package in the unit, so a
+			// second package riding along would be run under the FIRST
+			// package's regex: scheduled on paper, and in reality executing
+			// whichever of its own tests happen to share a name. Zero
+			// packages is worse still — the old code indexed [0] and would
+			// have panicked where it promised a coverage error.
+			//
+			// A malformed unit is not allowed to mark anything scheduled.
+			// Crediting it would let a package look covered by a unit that
+			// cannot actually run it, which is precisely the shape this
+			// gate exists to refuse.
+			switch u.Kind {
+			case kindRunSlice, kindCountShard:
+				if len(u.Packages) != 1 {
+					cerr.MalformedUnits = append(cerr.MalformedUnits, fmt.Sprintf(
+						"%s is a %s over %d packages; a sub-package unit must cover exactly 1 (%s)",
+						u.ID, u.Kind, len(u.Packages), importPathsOf(u.Packages)))
+					continue
+				}
+			default:
+				if len(u.Packages) == 0 {
+					cerr.MalformedUnits = append(cerr.MalformedUnits, fmt.Sprintf(
+						"%s is a %s covering no package at all", u.ID, u.Kind))
+					continue
+				}
+			}
+
 			for _, p := range u.Packages {
 				scheduled[p.ImportPath] = true
 				if kinds[p.ImportPath] == nil {
@@ -145,6 +192,32 @@ func assertCoverage(in gateInput) error {
 					runNames[pkg][n]++
 				}
 			}
+		}
+	}
+
+	// A package is only allowed to be name-sliced if there is a resolved
+	// runnable universe to hold the slices to. Checking completeness only
+	// for packages ALREADY in in.Runnables makes the check vacuous for any
+	// package the expander never chose to slice: turn an ordinary package
+	// unit into a run-slice naming one test and it would sail through —
+	// scheduled, single-kind, and never compared against anything — while
+	// the emitted `-run '^(TestOne)$'` silently skips every other test,
+	// example and fuzz target in it.
+	//
+	// Requiring the universe to EXIST closes that, and it is the honest
+	// condition: without it the gate has no evidence either way, and "no
+	// evidence" must not read as "passed".
+	for _, pkg := range sortedKeys(runNames) {
+		universe, ok := in.Runnables[pkg]
+		if !ok {
+			cerr.UngatedSlices = append(cerr.UngatedSlices, fmt.Sprintf(
+				"%s is run-sliced in the final plan but the expander never resolved its runnable set, "+
+					"so the slices cannot be proved complete", pkg))
+			continue
+		}
+		if len(universe) == 0 {
+			cerr.UngatedSlices = append(cerr.UngatedSlices, fmt.Sprintf(
+				"%s is run-sliced against an empty runnable set", pkg))
 		}
 	}
 
@@ -278,6 +351,8 @@ func assertCoverage(in gateInput) error {
 
 	sort.Strings(cerr.MissingPackages)
 	sort.Strings(cerr.DuplicateUnits)
+	sort.Strings(cerr.MalformedUnits)
+	sort.Strings(cerr.UngatedSlices)
 	sort.Strings(cerr.EmptySlices)
 	sort.Strings(cerr.ShardGaps)
 	sort.Strings(cerr.ShortSweeps)
@@ -291,6 +366,7 @@ func assertCoverage(in gateInput) error {
 
 	if len(cerr.MissingPackages) == 0 && len(cerr.MissingRunnables) == 0 &&
 		len(cerr.DuplicateRunnable) == 0 && len(cerr.DuplicateUnits) == 0 &&
+		len(cerr.MalformedUnits) == 0 && len(cerr.UngatedSlices) == 0 &&
 		len(cerr.EmptySlices) == 0 && len(cerr.ShardGaps) == 0 &&
 		len(cerr.ShortSweeps) == 0 && len(cerr.MixedCoverage) == 0 {
 		return nil
@@ -312,4 +388,17 @@ func setOfKeys[V any](m map[int]V) []int {
 		out = append(out, k)
 	}
 	return out
+}
+
+// importPathsOf renders a unit's packages for an error message.
+func importPathsOf(pkgs []LivePackage) string {
+	if len(pkgs) == 0 {
+		return "none"
+	}
+	out := make([]string, 0, len(pkgs))
+	for _, p := range pkgs {
+		out = append(out, p.ImportPath)
+	}
+	sort.Strings(out)
+	return strings.Join(out, ", ")
 }

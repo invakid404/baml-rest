@@ -631,3 +631,279 @@ func TestGateSeparatesStoreMissFromPlanMiss(t *testing.T) {
 		t.Fatal("a package missing from the FINAL PLAN did not error")
 	}
 }
+
+// findUnit returns the first unit in the plan matching pred, so a test can
+// doctor a REAL unit rather than hand-build one that may not resemble what
+// the expander actually emits.
+func findUnit(buckets []Bucket, pred func(Unit) bool) (int, Unit) {
+	for i, b := range buckets {
+		for _, u := range b.Units {
+			if pred(u) {
+				return i, u
+			}
+		}
+	}
+	return -1, Unit{}
+}
+
+func replaceUnit(buckets []Bucket, id string, with Unit) []Bucket {
+	return mapUnits(buckets, func(u Unit) Unit {
+		if u.ID == id {
+			return with
+		}
+		return u
+	})
+}
+
+func TestCoverageGateRejectsMalformedFinalUnits(t *testing.T) {
+	// P0-4 regression. The gate is the declared backstop for a defect in
+	// the expander or the partitioner, so it must REJECT shapes that normal
+	// expansion happens not to produce today — the whole point of a
+	// backstop is that it does not trust the thing it backs up.
+	//
+	// The common thread: a sub-package unit carries per-invocation
+	// arguments (one -run regex, one divided -count) computed for exactly
+	// one package. renderBucket applies them to every package in the unit,
+	// so any other shape emits a command that does not run what the unit
+	// claims to cover.
+	cases := []struct {
+		name    string
+		store   func() *Store
+		names   map[string][]string
+		doctor  func(*testing.T, []Bucket, []LivePackage) []Bucket
+		wantIn  []string
+		wantNot []string
+	}{
+		{
+			name:  "an ordinary package is converted into a run-slice",
+			store: func() *Store { return syntheticStore() },
+			doctor: func(t *testing.T, b []Bucket, live []LivePackage) []Bucket {
+				// pool was never name-sliced, so nothing ever resolved its
+				// runnable set. Emitting -run '^(TestOne)$' for it would
+				// silently skip every other test, example and fuzz target
+				// it has — and the package still looks "scheduled".
+				_, u := findUnit(b, func(u Unit) bool { return u.ID == repoPrefix+"pool" })
+				if u.ID == "" {
+					t.Fatal("no pool unit to doctor")
+				}
+				u.Kind = kindRunSlice
+				u.Run = []string{"TestOne"}
+				return replaceUnit(b, repoPrefix+"pool", u)
+			},
+			wantIn: []string{
+				"name-sliced with no resolved runnable universe",
+				"never resolved its runnable set",
+				repoPrefix + "pool",
+				"cannot be proved complete",
+			},
+		},
+		{
+			name: "a second package is folded into a legitimate run-slice",
+			store: func() *Store {
+				st := syntheticStore()
+				harpoon(st, "internal/debaml", splitRun, 2, map[string]float64{"TestA": 200, "TestB": 120})
+				return st
+			},
+			names: map[string][]string{repoPrefix + "internal/debaml": {"TestA", "TestB"}},
+			doctor: func(t *testing.T, b []Bucket, live []LivePackage) []Bucket {
+				// worker rides along inside a debaml slice. Only the first
+				// package's names are checked, and the first package's
+				// regex is what actually gets passed — so worker would run
+				// whichever of its own tests happen to be named TestA/TestB,
+				// and nothing else.
+				idx, slice := findUnit(b, func(u Unit) bool { return u.Kind == kindRunSlice })
+				if idx < 0 {
+					t.Fatal("no run-slice to doctor")
+				}
+				var worker LivePackage
+				for _, p := range live {
+					if p.ImportPath == repoPrefix+"worker" {
+						worker = p
+					}
+				}
+				slice.Packages = append(append([]LivePackage(nil), slice.Packages...), worker)
+				// Drop worker's own unit, so it is covered ONLY by the
+				// malformed slice: exactly the expander bug being modelled.
+				withoutWorker := dropUnit(b, func(u Unit) bool { return u.ID == repoPrefix+"worker" })
+				return replaceUnit(withoutWorker, slice.ID, slice)
+			},
+			wantIn: []string{
+				"over 2 packages",
+				"must cover exactly 1",
+				repoPrefix + "worker",
+				// And because a malformed unit credits nothing, worker is
+				// correctly reported as unscheduled rather than silently
+				// counted as covered.
+				"assigned to no bucket",
+			},
+		},
+		{
+			name: "a count-shard carries two packages",
+			store: func() *Store {
+				st := syntheticStore()
+				harpoon(st, "bamlutils/llmhttp", splitCount, 6, nil)
+				return st
+			},
+			doctor: func(t *testing.T, b []Bucket, live []LivePackage) []Bucket {
+				idx, shard := findUnit(b, func(u Unit) bool { return u.Kind == kindCountShard })
+				if idx < 0 {
+					t.Fatal("no count-shard to doctor")
+				}
+				var pool LivePackage
+				for _, p := range live {
+					if p.ImportPath == repoPrefix+"pool" {
+						pool = p
+					}
+				}
+				shard.Packages = append(append([]LivePackage(nil), shard.Packages...), pool)
+				return replaceUnit(b, shard.ID, shard)
+			},
+			wantIn: []string{"count-shard over 2 packages", "must cover exactly 1"},
+		},
+		{
+			name:  "a run-slice carries no package at all",
+			store: func() *Store { return syntheticStore() },
+			doctor: func(t *testing.T, b []Bucket, live []LivePackage) []Bucket {
+				_, u := findUnit(b, func(u Unit) bool { return u.ID == repoPrefix+"pool" })
+				u.Kind = kindRunSlice
+				u.Run = []string{"TestOne"}
+				u.Packages = nil
+				return replaceUnit(b, repoPrefix+"pool", u)
+			},
+			// This is the case that used to panic at Packages[0] instead of
+			// returning the coverage error the gate promises.
+			wantIn: []string{"run-slice over 0 packages", "must cover exactly 1", "assigned to no bucket", repoPrefix + "pool"},
+		},
+		{
+			name:  "a count-shard carries no package at all",
+			store: func() *Store { return syntheticStore() },
+			doctor: func(t *testing.T, b []Bucket, live []LivePackage) []Bucket {
+				_, u := findUnit(b, func(u Unit) bool { return u.ID == repoPrefix+"pool" })
+				u.Kind = kindCountShard
+				u.Shard, u.Shards, u.Count = 1, 2, 50
+				u.Packages = nil
+				return replaceUnit(b, repoPrefix+"pool", u)
+			},
+			wantIn: []string{"count-shard over 0 packages", "must cover exactly 1"},
+		},
+		{
+			name:  "an ordinary package unit carries no package at all",
+			store: func() *Store { return syntheticStore() },
+			doctor: func(t *testing.T, b []Bucket, live []LivePackage) []Bucket {
+				_, u := findUnit(b, func(u Unit) bool { return u.ID == repoPrefix+"pool" })
+				u.Packages = nil
+				return replaceUnit(b, repoPrefix+"pool", u)
+			},
+			wantIn: []string{"covering no package at all", "assigned to no bucket"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opt := expandOptions{}
+			if tc.names != nil {
+				opt.Runnables = syntheticRunnables(tc.names)
+			}
+			live, buckets, runnables := bucketsFor(t, tc.store(), opt)
+			if err := gate(live, buckets, runnables); err != nil {
+				t.Fatalf("the undoctored plan already fails the gate: %v", err)
+			}
+
+			// The gate must return an error, never panic, on any of these.
+			var err error
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Fatalf("the gate PANICKED instead of reporting a coverage error: %v", r)
+					}
+				}()
+				err = gate(live, tc.doctor(t, buckets, live), runnables)
+			}()
+			if err == nil {
+				t.Fatal("the gate PASSED a malformed final unit — the backstop is not a backstop")
+			}
+			msg := err.Error()
+			for _, want := range tc.wantIn {
+				if !strings.Contains(msg, want) {
+					t.Errorf("gate message omits %q:\n%s", want, msg)
+				}
+			}
+			for _, notWant := range tc.wantNot {
+				if strings.Contains(msg, notWant) {
+					t.Errorf("gate message unexpectedly mentions %q:\n%s", notWant, msg)
+				}
+			}
+			if !strings.Contains(msg, "coverage gate FAILED") {
+				t.Errorf("gate message is not self-identifying:\n%s", msg)
+			}
+		})
+	}
+}
+
+func TestMalformedUnitCreditsNothingAsScheduled(t *testing.T) {
+	// The mechanism behind the P0-4 fix, stated on its own: a unit the gate
+	// cannot vouch for must not mark its packages covered. Crediting it
+	// would let a package look scheduled by a unit that cannot actually run
+	// it — the exact illusion this gate exists to break.
+	live := syntheticLive()
+	pool := livePkg("pool", "pool", modeWork, true)
+	worker := livePkg("worker", "worker", modeWork, true)
+
+	// One bucket, one unit, claiming to cover both packages under a single
+	// -run regex computed for whichever one sorts first.
+	buckets := []Bucket{{
+		Index: 0,
+		Units: []Unit{{
+			ID:       runSliceID(pool.ImportPath, []string{"TestA"}),
+			Kind:     kindRunSlice,
+			Packages: []LivePackage{pool, worker},
+			Run:      []string{"TestA"},
+			Count:    100,
+		}},
+	}}
+	err := assertCoverage(gateInput{
+		Live:      live,
+		Buckets:   buckets,
+		Runnables: map[string][]string{pool.ImportPath: {"TestA"}},
+		BaseCount: 100,
+	})
+	if err == nil {
+		t.Fatal("the gate passed a two-package run-slice")
+	}
+	// Both packages must be reported unscheduled: neither is credited by a
+	// unit the gate refused.
+	for _, want := range []string{pool.ImportPath, worker.ImportPath, "assigned to no bucket", "must cover exactly 1"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("gate message omits %q:\n%s", want, err.Error())
+		}
+	}
+}
+
+func TestRunSliceOverAnEmptyRunnableSetIsRejected(t *testing.T) {
+	// "No evidence" must not read as "passed": a slice held to an empty
+	// universe has nothing to be proved complete against.
+	live := syntheticLive()
+	pool := livePkg("pool", "pool", modeWork, true)
+	buckets := []Bucket{{
+		Index: 0,
+		Units: []Unit{{
+			ID:       runSliceID(pool.ImportPath, []string{"TestA"}),
+			Kind:     kindRunSlice,
+			Packages: []LivePackage{pool},
+			Run:      []string{"TestA"},
+			Count:    100,
+		}},
+	}}
+	err := assertCoverage(gateInput{
+		Live:      live,
+		Buckets:   buckets,
+		Runnables: map[string][]string{pool.ImportPath: nil}, // resolved, but empty
+		BaseCount: 100,
+	})
+	if err == nil {
+		t.Fatal("the gate passed a run-slice with nothing to check it against")
+	}
+	if !strings.Contains(err.Error(), "empty runnable set") {
+		t.Errorf("gate message omits the empty-universe reason:\n%s", err.Error())
+	}
+}
