@@ -1,0 +1,200 @@
+{
+  "manifest_version": 1,
+  "note": "M0 contract freeze for the rank-1 native codegen spine. Prose ADR: docs/codegen-spine/. Every enumerable value here is validated against the live tree by manifest_test.go; this is a freeze, not an aspiration.",
+  "descriptor_versions": {
+    "schemadescriptor": 1,
+    "promptdescriptor": 3,
+    "project_descriptor_planned": 1
+  },
+  "dynamic_endpoint_name": "_dynamic",
+  "dynamic_method_name": "Baml_Rest_Dynamic",
+  "retained_endpoints": [
+    {
+      "path": "/call",
+      "stream_mode": "StreamModeCall",
+      "needs_raw": false,
+      "needs_partials": false,
+      "success_envelope": "structured output bytes written directly (workerplugin.CallResult.Data); dynamic variant flattens DynamicProperties",
+      "servers": ["fiber", "chi"],
+      "source_ref": "cmd/serve/main.go:478,474; cmd/serve/unary.go:92; worker/handler.go:528"
+    },
+    {
+      "path": "/call-with-raw",
+      "stream_mode": "StreamModeCallWithRaw",
+      "needs_raw": true,
+      "needs_partials": false,
+      "success_envelope": "CallWithRawResponse{data,raw,reasoning?} (cmd/serve/main.go:856)",
+      "servers": ["fiber", "chi"],
+      "source_ref": "cmd/serve/main.go:479,856; cmd/serve/unary.go:93; worker/handler.go:528"
+    },
+    {
+      "path": "/stream",
+      "stream_mode": "StreamModeStream",
+      "needs_raw": false,
+      "needs_partials": true,
+      "success_envelope": "NDJSON frames (NDJSONEvent) or SSE events; content-negotiated application/x-ndjson vs text/event-stream",
+      "servers": ["fiber"],
+      "source_ref": "cmd/serve/main.go:494; cmd/serve/streamwriter.go:53,35"
+    },
+    {
+      "path": "/stream-with-raw",
+      "stream_mode": "StreamModeStreamWithRaw",
+      "needs_raw": true,
+      "needs_partials": true,
+      "success_envelope": "NDJSON/SSE frames incl raw+reasoning on data/final frames",
+      "servers": ["fiber"],
+      "source_ref": "cmd/serve/main.go:495; cmd/serve/streamwriter.go:147"
+    },
+    {
+      "path": "/parse",
+      "stream_mode": "",
+      "needs_raw": false,
+      "needs_partials": false,
+      "success_envelope": "structured output bytes (workerplugin.ParseResult.Data); dynamic variant flattens DynamicProperties; parse-stream selected by input.stream via ParseMethod.StreamImpl",
+      "servers": ["fiber", "chi"],
+      "source_ref": "cmd/serve/main.go:498,509; cmd/serve/unary.go:94; worker/parse.go:14,28,73"
+    }
+  ],
+  "error_taxonomy": {
+    "envelope_type": "github.com/invakid404/baml-rest/internal/apierror.Response",
+    "envelope_fields": ["error", "code", "details", "request_id"],
+    "codes": [
+      "invalid_json",
+      "invalid_request",
+      "request_too_large",
+      "body_read_error",
+      "not_acceptable",
+      "request_canceled",
+      "worker_unavailable",
+      "worker_error",
+      "provider_error",
+      "parse_error",
+      "internal_error"
+    ],
+    "worker_facing_codes": ["worker_error", "provider_error", "parse_error", "internal_error"],
+    "provider_error_detail_fields": [
+      "status_code",
+      "body",
+      "client_name",
+      "error_code",
+      "error_message",
+      "exception_type",
+      "exception_message"
+    ],
+    "source_ref": "internal/apierror/error.go:20-138; worker/errors.go:22-107,202-307; cmd/serve/error.go:157-219; workerplugin/plugin.go:77-135"
+  },
+  "options_envelope": {
+    "wire_key": "__baml_options__",
+    "go_type": "github.com/invakid404/baml-rest/bamlutils.BamlOptions",
+    "fields": [
+      { "json": "client_registry", "go": "ClientRegistry" },
+      { "json": "type_builder", "go": "TypeBuilder" },
+      { "json": "retry", "go": "Retry" },
+      { "json": "include_reasoning", "go": "IncludeReasoning" },
+      { "json": "output_schema", "go": "OutputSchema" }
+    ],
+    "source_ref": "bamlutils/interfaces.go:1261-1289; worker/options.go:13-77"
+  },
+  "capabilities": [
+    { "code": "static_method", "kind": "mode", "proven_status": "proven", "source_ref": "bamlutils StreamingMethod (interfaces.go:217); nativeschema BuildStaticSchemas (build.go:233)" },
+    { "code": "final_call", "kind": "mode", "proven_status": "proven", "source_ref": "StreamModeCall (interfaces.go:196); nativeserve unary /call cohort (admission/static.go)" },
+    { "code": "call_with_raw", "kind": "mode", "proven_status": "transitional", "source_ref": "StreamModeCallWithRaw (interfaces.go:200); ReasonWithRawUnproven with_raw_unproven (admission/decline.go:123)" },
+    { "code": "stream", "kind": "mode", "proven_status": "transitional", "source_ref": "StreamModeStream (interfaces.go:198); ReasonStreamingUnproven streaming_unproven (admission/decline.go:124); static streaming not emitted (nativeschema/build.go D12)" },
+    { "code": "stream_with_raw", "kind": "mode", "proven_status": "transitional", "source_ref": "StreamModeStreamWithRaw (interfaces.go:202)" },
+    { "code": "final_parse", "kind": "mode", "proven_status": "transitional", "source_ref": "ParseMethod (interfaces.go:226); native-first dynamic /parse final with BAML oracle; ReasonDirectParseUnproven direct_parse_unproven (admission/decline.go:299)" },
+    { "code": "media_image", "kind": "media", "proven_status": "proven", "source_ref": "nativeprompt only image proven (support.go:199-224); schemadescriptor MediaImage (descriptor.go:182)" },
+    { "code": "media_audio", "kind": "media", "proven_status": "declined", "source_ref": "beyond proven corpus (nativeprompt/support.go:221); FeatureMediaPart (nativebody/support.go:119); ReasonMediaPart media_part (admission/decline.go:214)" },
+    { "code": "media_pdf", "kind": "media", "proven_status": "declined", "source_ref": "schemadescriptor MediaPDF (descriptor.go:184); nativeprompt gate m.Kind != MediaImage (support.go:199)" },
+    { "code": "media_video", "kind": "media", "proven_status": "declined", "source_ref": "schemadescriptor MediaVideo (descriptor.go:185)" },
+    { "code": "dynamic_types", "kind": "dynamic", "proven_status": "transitional", "source_ref": "runtime TypeBuilder.DynamicTypes overlay: ordered request-time construct (bamlutils/interfaces.go:600-609,693-703); distinct from the schema-side @@dynamic marker" },
+    { "code": "schema_dynamic_class", "kind": "dynamic", "proven_status": "declined", "source_ref": "the .baml @@dynamic class/enum marker; tied to runtime TypeBuilder / dynamic schema mutation, so native schema building fail-closed DECLINES it (nativeschema/build.go:68-69)" },
+    { "code": "baml_snippets", "kind": "dynamic", "proven_status": "declined", "source_ref": "bamlutils.TypeBuilder.BamlSnippets (interfaces.go:600-607); D4: parse natively or reject explicitly, never silently ignore" },
+    { "code": "checks", "kind": "checks", "proven_status": "transitional", "source_ref": "schemadescriptor.Constraint level=check (descriptor.go:257-270); bamlutils.Checked (checked.go:61); ErrConstraintUnsupported out-of-profile (debaml/constraint_profile.go:92)" },
+    { "code": "asserts", "kind": "checks", "proven_status": "transitional", "source_ref": "schemadescriptor.Constraint level=assert (descriptor.go:257-270); parse_error on assert failure (worker/errors.go)" },
+    { "code": "strategy_fallback", "kind": "strategy", "proven_status": "declined", "source_ref": "ReasonFallbackChain fallback_chain (admission/decline.go:132)" },
+    { "code": "strategy_round_robin", "kind": "strategy", "proven_status": "declined", "source_ref": "ReasonRoundRobin round_robin (admission/decline.go:133)" },
+    { "code": "single_leaf_client", "kind": "strategy", "proven_status": "proven", "source_ref": "ReasonNotSingleLeaf not_single_leaf gates to one leaf (admission/decline.go:131; clientmap.go)" },
+    { "code": "provider_openai", "kind": "provider", "proven_status": "proven", "source_ref": "nativebody.ProviderOpenAI (support.go:126); PolicyStrictOpenAI (admission/clientmap.go:27)" }
+  ],
+  "declines": {
+    "umbrella_sentinel": "github.com/invakid404/baml-rest/nativeserve/admission.ErrDeclined",
+    "reason_source": "nativeserve/admission/decline.go (Stage + Reason enums); prompt-lane Feature keys nativeprompt/support.go:36-59; body-lane Feature keys nativebody/support.go:57-122",
+    "principle": "A descriptor may exist for a method whose serving feature is not admitted; native codegen MUST NOT infer support from mere descriptor presence. Admission selects a whole method + mode-capability BEFORE any claim/socket; a typed pre-socket decline may fall back to generated BAML during transition, a post-send failure never does.",
+    "representative_reasons": [
+      "worker_not_capable",
+      "flag_disabled",
+      "not_single_leaf",
+      "fallback_chain",
+      "round_robin",
+      "provider_not_openai",
+      "model_not_literal",
+      "tools_option",
+      "response_format_option",
+      "request_body_option",
+      "media_part",
+      "role_unsupported",
+      "stream_schema_unsupported",
+      "output_schema_unbounded",
+      "with_raw_unproven",
+      "streaming_unproven",
+      "direct_parse_unproven"
+    ]
+  },
+  "fixtures": [
+    {
+      "id": "integration_static_functions",
+      "path": "integration/testdata/baml_src/functions.baml",
+      "must_parse": true,
+      "capabilities": [
+        { "code": "static_method", "signal": "(?m)^function\\s+\\w+", "min": 1 },
+        { "code": "final_call", "signal": "(?m)^function\\s+[A-Za-z0-9_]+.*->", "min": 1 },
+        { "code": "media_image", "signal": ":\\s*image\\b", "min": 1 },
+        { "code": "media_audio", "signal": ":\\s*audio\\b", "min": 1 }
+      ]
+    },
+    {
+      "id": "integration_clients_strategies",
+      "path": "integration/testdata/baml_src/clients.baml",
+      "must_parse": true,
+      "capabilities": [
+        { "code": "strategy_fallback", "signal": "provider\\s+baml-fallback", "min": 1 },
+        { "code": "strategy_round_robin", "signal": "provider\\s+round-robin", "min": 1 }
+      ]
+    },
+    {
+      "id": "integration_types_schema_dynamic",
+      "path": "integration/testdata/baml_src/types.baml",
+      "must_parse": true,
+      "capabilities": [
+        { "code": "schema_dynamic_class", "signal": "@@dynamic", "min": 1 }
+      ]
+    },
+    {
+      "id": "parity_types_stream_checks",
+      "path": "integration/testdata/parity_baml_src/types.baml",
+      "must_parse": true,
+      "capabilities": [
+        { "code": "stream", "signal": "@stream\\.", "min": 1 },
+        { "code": "checks", "signal": "@check\\(", "min": 1 },
+        { "code": "asserts", "signal": "@assert\\(", "min": 1 }
+      ]
+    }
+  ],
+  "required_capability_coverage": [
+    "static_method",
+    "final_call",
+    "stream",
+    "checks",
+    "asserts",
+    "schema_dynamic_class",
+    "media_image",
+    "media_audio",
+    "strategy_fallback",
+    "strategy_round_robin"
+  ],
+  "guarded_paths": [
+    "internal/debaml",
+    "nativeserve",
+    "internal/nativebody/nanollmprepare"
+  ]
+}

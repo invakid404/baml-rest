@@ -1,0 +1,52 @@
+{
+  "note": "Frozen at M0. Pin/tar-independence baseline for the codegen-spine slice: the packaged native-worker tar, the five first-party pseudo-version pins, and the byte content of the three collision-path trees. Regenerate with: go test ./internal/codegenspine/ -run TestSourceGuard -update-codegenspine-guard",
+  "native_worker_tar": {
+    "path": "cmd/build/nativeworker_module.tar",
+    "size_bytes": 781312,
+    "sha256": "b36ba03484428c1b948effe944982152a1f429424253b55a680464763538d0b1"
+  },
+  "first_party_pins": [
+    {
+      "file": "nativeserve/go.mod",
+      "module": "github.com/invakid404/baml-rest",
+      "version": "v0.0.0-20260824191050-05102106c569"
+    },
+    {
+      "file": "nativeserve/go.mod",
+      "module": "github.com/invakid404/baml-rest/bamlutils",
+      "version": "v0.0.49-0.20260824191050-05102106c569"
+    },
+    {
+      "file": "nativeserve/go.mod",
+      "module": "github.com/invakid404/baml-rest/worker",
+      "version": "v0.0.49-0.20260824191050-05102106c569"
+    },
+    {
+      "file": "internal/nativebody/nanollmprepare/go.mod",
+      "module": "github.com/invakid404/baml-rest/bamlutils",
+      "version": "v0.0.49-0.20260824191050-05102106c569"
+    },
+    {
+      "file": "internal/nativebody/nanollmprepare/go.mod",
+      "module": "github.com/invakid404/baml-rest/worker",
+      "version": "v0.0.49-0.20260824191050-05102106c569"
+    }
+  ],
+  "guarded_trees": [
+    {
+      "prefix": "internal/debaml",
+      "file_count": 240,
+      "sha256": "c95a51597fe5241d504905b48a7d30a5c74084de73c0c5d200065eef27a2eecd"
+    },
+    {
+      "prefix": "nativeserve",
+      "file_count": 90,
+      "sha256": "ca003319c9ce59cebc3164f982a94ad05e48882ab0d07a3b868eefc56e3b3cf9"
+    },
+    {
+      "prefix": "internal/nativebody/nanollmprepare",
+      "file_count": 73,
+      "sha256": "daf63c39a5208fc2efb4f4a4638572f0a7f8700034f7d7ae3261e6f3da47d2bd"
+    }
+  ]
+}
