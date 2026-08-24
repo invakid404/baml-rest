@@ -76,14 +76,14 @@
 // the pins were moved here. Pin to a branch commit only if unavoidable, and re-pin to the
 // merged master commit as the immediate follow-up.
 //
-// PIN-STATUS: RESOLVED
+// PIN-STATUS: OUTSTANDING
 //
 // That marker is the MACHINE-READABLE statement of where these pins stand, and
 // cmd/build's TestPackagedManifestsMatchTheTrackedPins requires it to equal the
 // STATUS in nativeserve/pin_followup.md — inside the packaged tar as well as
 // here. It exists because prose is not auditable: a reviewer grepping this file
-// for `4a6c8f1ee571` or `OUTSTANDING` hits the HISTORICAL sentences below and can
-// reasonably conclude the pins are stale when they are not. Read the marker, not
+// for `ba813ad3564d` or `RESOLVED` hits the HISTORICAL sentences below and can
+// reasonably conclude the pins are elsewhere than they are. Read the marker, not
 // the paragraphs.
 //
 // The COMPLETE post-squash re-pin runbook — every ordered step, including the two
@@ -92,39 +92,40 @@
 // go get/build/run) — is nativeserve/pin_followup.md, section "The follow-up —
 // OWED". Follow it there; do not reconstruct it from these paragraphs.
 //
-// NOTE (de-BAML serving cutover S3b): these pins are now MASTER-durable and the tracked
-// follow-up in nativeserve/pin_followup.md is therefore STATUS: RESOLVED. They name
-// ba813ad3564d on master — the #683 squash-merge of the S3b source commit — the commit
-// that enrolls the one fe-v1 strict-OpenAI class on the dynamic unary call surface and
-// adds the approved-verification-regime check this module's serve path now runs. The
-// enrollment and the symbols it links reach master in that squash-merge, so an external
-// consumer resolves, builds and runs against a master commit that survives branch
-// deletion. The post-squash re-pin has been PERFORMED — see pin_followup.md.
+// NOTE (de-BAML /parse burn-down batch 1): these pins are BRANCH-ONLY and the tracked
+// follow-up in nativeserve/pin_followup.md is therefore STATUS: OUTSTANDING. They name
+// 251b09219943 on feat/debaml-parse-burndown-1, the burn-down source commit, because no
+// master commit carries the changed native SAP yet. THIS module's serve path is what
+// runs it: canary/serve.go hands debaml.Parse to execute.DynamicParse and
+// canary/serve_static*.go calls debaml.ParseStaticBundle*, so the batch-1 change to how
+// a coerced class is spelled — an absent optional emitted as an explicit null, and a map
+// key matching no enum value / literal arm KEPT under its original string instead of
+// declining the map — changes the bytes this serve core produces. A consumer resolving
+// the OLD pin gets a serve core whose native SAP answers differently from the one this
+// tree ships, which is the cross-module behaviour the lockstep exists to carry. The
+// post-squash re-pin to the master squash commit is OWED — see pin_followup.md.
 //
 // HISTORICAL, SUPERSEDED — the SHAs in this paragraph are not the current pins:
-// before the #683 squash-merge these five were BRANCH-ONLY at 4a6c8f1ee571 on
-// feat/debaml-s3b-enroll, the S3b source commit, because no master commit carried the
-// enrollment until the squash; the previous instance of this note recorded S3a's pins at
-// 2f2e13c6dadb (#681), the master squash-merge of the S3a identity resolver, after its
-// own branch-only pin at 9f4cfe14e878 was re-pinned post-merge; before that S2's were at
-// c676a4dacc90 (#677) after e38f7effd633, and S1's at de1eefa68ed8 (#675) after
-// 7cb69af02b36. That branch-pin-then-re-pin sequence is the precedent this bump repeats.
+// the previous instance of this note recorded S3b's pins at ba813ad3564d (#683), the
+// master squash-merge of the S3b enrollment, after its own branch-only pin at
+// 4a6c8f1ee571 was re-pinned post-merge; before that S3a's were at 2f2e13c6dadb (#681)
+// after 9f4cfe14e878, S2's at c676a4dacc90 (#677) after e38f7effd633, and S1's at
+// de1eefa68ed8 (#675) after 7cb69af02b36. That branch-pin-then-re-pin sequence is the
+// precedent this bump repeats.
 //
-// This bump carries real cross-module behaviour, not a version string. S2 changes BOTH
-// sides of the graph. The root side gains internal/artifactprofile and the
-// internal/workerboot artifact ATTESTATION: a worker derives its artifact profile from
-// its own linked capability, cross-checks it against the build's -ldflags stamp,
-// re-derives the release artifact ID from the stamped inputs, and REFUSES TO SERVE on a
-// contradiction. The packaged side supplies what that attestation reads — including the
-// repair that makes a flag-off native-capable worker advertise its static build
-// capability instead of deriving baml_only, contradicting its own stamp and exiting
-// before serving any BAML. A consumer resolving the OLD pin therefore gets a root with
-// no attestation at all underneath a packaged worker written for one.
+// This bump carries real cross-module behaviour, not a version string. Batch 1 changes
+// BOTH sides of the graph. The ROOT side changes internal/debaml's class and map
+// coercion — the native SAP this module's canary serves from — so the bytes a native
+// claim produces differ from the pinned ones. The WORKER side (also pinned here) gains
+// the direct-parse field-order pass that declares the schema in the order BAML's
+// TypeBuilder will be populated in, which is what makes the native and BAML payloads
+// comparable at the worker boundary at all. A consumer resolving the OLD pin gets a
+// serve core whose parse answers are shaped for the previous boundary contract.
 //
-// The precedent for the follow-up is #672 -> #673 and #675 -> #676: pin to the branch
+// The precedent for the follow-up is #681 -> #682 and #683 -> #684: pin to the branch
 // commit only because no master commit carries the change yet, then re-pin all five to
 // the master squash commit and regenerate the tar IMMEDIATELY after the merge. That
-// follow-up has been performed here — see pin_followup.md.
+// follow-up is OWED here — see pin_followup.md.
 //
 // A bump must ALSO move internal/nativebody/nanollmprepare/go.mod's recorded bamlutils +
 // worker selections in LOCKSTEP: nanollmprepare directory-replaces root / bamlutils /
@@ -140,9 +141,9 @@ go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260822230654-ba813ad3564d
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260822230654-ba813ad3564d
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260822230654-ba813ad3564d
+	github.com/invakid404/baml-rest v0.0.0-20260824164954-251b09219943
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260824164954-251b09219943
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260824164954-251b09219943
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/viktordanov/nanollm-ffi/go v0.4.3

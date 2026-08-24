@@ -21,9 +21,9 @@ go 1.26.5
 require (
 	github.com/boundaryml/baml v0.223.0
 	github.com/invakid404/baml-rest v0.0.48
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260822230654-ba813ad3564d
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260824164954-251b09219943
 	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260822230654-ba813ad3564d
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260824164954-251b09219943
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
@@ -112,7 +112,7 @@ require (
 // without recording it here fails the native-worker PACKAGING build (-mod=readonly)
 // with "updates to go.mod needed".
 //
-// PIN-STATUS: RESOLVED
+// PIN-STATUS: OUTSTANDING
 //
 // That marker is the MACHINE-READABLE statement of where these pins stand, and
 // cmd/build's TestPackagedManifestsMatchTheTrackedPins requires it to equal the
@@ -136,28 +136,29 @@ require (
 // 4a6c8f1ee571 on feat/debaml-s3b-enroll before #683 squash-merged it to master as
 // ba813ad3564d.
 //
-// RIGHT NOW they are MASTER-durable: the serving-cutover S3b change moved all five to
-// 4a6c8f1ee571 on feat/debaml-s3b-enroll, its own source commit, and #683 then
-// squash-merged that to master as ba813ad3564d, where these five are now re-pinned — so
-// nativeserve/pin_followup.md reads STATUS: RESOLVED and the post-squash re-pin runbook
-// has been PERFORMED. Do not treat this comment as the authority: the tracked record is,
-// and cmd/build's
-// TestFirstPartyPinFollowupIsTracked parses that record and the require directives on every
-// ordinary `go test ./...` and requires them to agree. This paragraph exists only so a
-// reader of this manifest is not told the opposite of what the record says — which is
+// RIGHT NOW they are BRANCH-ONLY: the /parse burn-down batch 1 change moved all five to
+// 251b09219943 on feat/debaml-parse-burndown-1, its own source commit, because no master
+// commit carries the changed native SAP yet — so nativeserve/pin_followup.md reads
+// STATUS: OUTSTANDING and the post-squash re-pin runbook is OWED. Do not treat this
+// comment as the authority — nativeserve/pin_followup.md is the tracked record, and
+// cmd/build's TestFirstPartyPinFollowupIsTracked is what holds the two together: it
+// parses that record and the require directives above on every ordinary
+// `go test ./...` and requires them to agree. This paragraph exists only so a reader
+// of this manifest is not told the opposite of what the record says — which is
 // exactly what happened when the S1 text was left here after the S2 bump, and which is
 // why the runbook makes flipping BOTH narratives its own numbered step.
 //
-// S3b changes BOTH sides of the graph, even though its functional diff is small. The
-// serve-core side gains the ENROLLMENT itself — the one fe-v1 inventory record and the
-// one (dynamic_call, fe_v1) policy tuple that first permit a native provider request —
-// plus the approved-verification-regime check that keeps that enrollment on the strict
-// OpenAI anchor, where BOTH retained BAML oracles run. THIS module's cmd/worker
-// entrypoint is the binary the booted-artifact `/call` proof boots to demonstrate it,
-// and its packaged serve core is what actually claims. A consumer resolving the OLD pin
-// gets a serve core that enrolls nothing under a manifest that describes a worker which
-// serves a cohort, so the lockstep is carrying real cross-module behaviour rather than a
-// version string.
+// Batch 1 changes BOTH sides of the graph, even though its functional diff is small. The
+// serve-core side changes the native SAP itself: internal/debaml now spells an absent
+// optional as an explicit null and KEEPS a map key that matches no enum value / literal
+// arm under its original string instead of declining the map, so the bytes a native
+// claim produces are not the pinned ones. THIS module's cmd/worker entrypoint is the
+// binary the booted-artifact proofs boot, its shadow comparator hands debaml.Parse the
+// same responses, and the worker module pinned above is where the direct-parse
+// field-order pass lives that makes those bytes comparable to BAML's in the first place.
+// A consumer resolving the OLD pin gets a serve core whose parse answers are shaped for
+// the previous boundary contract, so the lockstep is carrying real cross-module
+// behaviour rather than a version string.
 //
 // Resolve the root module and every locally-replaced sibling from the checkout
 // (this module is outside go.work, so root's own replaces do not propagate).
