@@ -165,6 +165,47 @@ type ingestOptions struct {
 	LiveAuthoritative bool
 }
 
+// chooseSplitPolicy decides how a whale is harpooned, and it is the one place
+// the two mechanisms are compared on equal terms.
+//
+// Count-sharding divides ITERATIONS: S shards of -count=base/S each cost
+// roughly seconds/S, whatever the package's internal shape. Name-slicing
+// divides the TEST LIST, so its makespan can never fall below the single
+// heaviest name — pack the other 200 tests however you like, the slice
+// holding the dominant one still has to run it.
+//
+// So a run split is only worth choosing when that dominant name would not
+// itself be slower than a count-shard. Measuring this repo's two whales made
+// the point concrete (Phase B, #656): llmhttp's TestExactStreamNoGoroutineLeak
+// is ~50% of its package and debaml's TestConstraintStateCollectorIsTestOnly
+// ~44%, both repeating per iteration. Both packages have >90% of their wall
+// time attributable to named tests, so the named-coverage heuristic alone
+// picked `run` for both — and `run` floors them at 6.8 and 6.0 minutes while
+// count-sharding takes them to 2-3. The heuristic was not merely suboptimal
+// there, it was inverted.
+//
+// Named coverage is still required: without per-test weights for most of the
+// package the slicer would be packing blind. It is just no longer sufficient.
+func chooseSplitPolicy(pkgSeconds, namedSeconds, heaviestName float64, namedCount, shards int) (policy, reason string) {
+	switch {
+	case pkgSeconds <= 0 || shards < 2:
+		return splitCount, "no usable per-test picture"
+	case namedCount < 2:
+		return splitCount, "fewer than two named runnables to slice"
+	case namedSeconds/pkgSeconds < runUpgradeFraction:
+		return splitCount, fmt.Sprintf("named runnables explain only %.0f%% of the package (need %.0f%%)",
+			namedSeconds/pkgSeconds*100, runUpgradeFraction*100)
+	case heaviestName > pkgSeconds/float64(shards):
+		// The decisive comparison: the -run floor against what a count-shard
+		// of the same width would cost.
+		return splitCount, fmt.Sprintf("dominated by one runnable (%.1fs > the %.1fs a %d-way count-shard costs)",
+			heaviestName, pkgSeconds/float64(shards), shards)
+	default:
+		return splitRun, fmt.Sprintf("name-divisible: heaviest runnable %.1fs fits under the %.1fs count-shard cost",
+			heaviestName, pkgSeconds/float64(shards))
+	}
+}
+
 // runUpgradeFraction is how much of a whale's wall time must be attributable
 // to named top-level runnables before `ingest` promotes it from count-sharding to the
 // finer -run slicing. Below it, the per-test picture is too incomplete for
@@ -189,6 +230,7 @@ type ingestReport struct {
 	Subtests        int
 	Implausible     int
 	PartialCaptures []string
+	Dominated       []string
 }
 
 // validate rejects settings that would silently corrupt the store rather
@@ -313,7 +355,19 @@ func applyIngest(st *Store, sum *eventSummary, opt ingestOptions) (*ingestReport
 			row.Tests = nil
 			continue
 		}
-		shards := clampShards(int(math.Ceil(row.Seconds/rep.Threshold)), opt.WhaleK)
+		// The split width is K itself, not the minimum that would bring this
+		// package under the current threshold.
+		//
+		// Two reasons. First, K shards of pkg/K each fit any bucket by
+		// construction, so the width does not have to be re-derived every
+		// time the tree grows. Second — and this is what decides it — the
+		// width feeds the mechanism comparison below: a wider count-shard is
+		// a CHEAPER count-shard (pkg/S), which is what makes the dominance
+		// test bite. Deriving the width from total/K instead would make the
+		// split policy a function of the whole tree's size, so an unrelated
+		// package getting slower elsewhere could silently flip a whale from
+		// count-sharding to name-slicing.
+		shards := clampShards(opt.WhaleK, opt.WhaleK)
 		if opt.MinShardSeconds > 0 {
 			if affordable := int(row.Seconds / opt.MinShardSeconds); affordable < shards {
 				shards = affordable
@@ -382,16 +436,22 @@ func applyIngest(st *Store, sum *eventSummary, opt ingestOptions) (*ingestReport
 		// Same fixed-order, integer reduction: this sum decides count-shard
 		// versus -run slicing, and the two are not interchangeable.
 		perTest := make([]float64, 0, len(row.Tests))
+		heaviestName, heaviest := "", 0.0
 		for _, name := range sortedKeys(row.Tests) {
-			perTest = append(perTest, row.Tests[name])
+			w := row.Tests[name]
+			perTest = append(perTest, w)
+			if w > heaviest {
+				heaviestName, heaviest = name, w
+			}
 		}
 		named := sumSeconds(perTest)
-		if len(row.Tests) >= 2 && row.Seconds > 0 && named/row.Seconds >= runUpgradeFraction {
-			row.Split = splitRun
-		} else {
-			row.Split = splitCount
+		row.Split, row.SplitReason = chooseSplitPolicy(row.Seconds, named, heaviest, len(row.Tests), shards)
+		if row.Split == splitCount && heaviestName != "" {
+			rep.Dominated = append(rep.Dominated, fmt.Sprintf(
+				"%s: %s alone is %.0f%% of the package (%.1fs of %.1fs) — a -run split cannot finish faster than it",
+				pkg, heaviestName, heaviest/row.Seconds*100, heaviest, row.Seconds))
 		}
-		rep.Whales = append(rep.Whales, fmt.Sprintf("%s %.1fs -> split=%s x%d", pkg, row.Seconds, row.Split, shards))
+		rep.Whales = append(rep.Whales, fmt.Sprintf("%s %.1fs -> split=%s x%d (%s)", pkg, row.Seconds, row.Split, shards, row.SplitReason))
 	}
 
 	// Record the coverage snapshot `plan` diffs against.
@@ -540,6 +600,12 @@ func (r *ingestReport) write(out io.Writer, prefix string) error {
 		_, _ = fmt.Fprintf(w, "  partial captures (per-test rows kept, not pruned):\n")
 		for _, pc := range r.PartialCaptures {
 			_, _ = fmt.Fprintf(w, "    - %s\n", shortenID(pc, prefix))
+		}
+	}
+	if len(r.Dominated) > 0 {
+		_, _ = fmt.Fprintf(w, "  count-sharded because one runnable dominates:\n")
+		for _, d := range r.Dominated {
+			_, _ = fmt.Fprintf(w, "    - %s\n", shortenID(d, prefix))
 		}
 	}
 	if len(r.Unflagged) > 0 {

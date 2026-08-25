@@ -401,10 +401,20 @@ jobs:
         uses: actions/cache/restore@v4.2.4
         with:
           path: ${{ runner.temp }}/testbucket-store
-          # Per-commit key: this run's entry cannot already exist, so the
-          # save below always writes. The prefix restore-key then hands this
-          # run the newest PREVIOUS store, which is what makes the weights
-          # roll forward (EWMA) instead of restarting from scratch.
+          # Per-commit key. GitHub cache entries are IMMUTABLE, so this is a
+          # deliberate choice rather than an incidental one: each NEW master
+          # commit writes exactly one entry, and a re-run of the same commit
+          # restores that entry and cannot replace it (the save below logs a
+          # duplicate-key warning and moves on). That is the property the
+          # design wants — the split a PR sees is deterministic for a given
+          # master SHA rather than drifting with however many times that SHA
+          # was re-run. If a re-run should instead contribute a fresh EWMA
+          # sample, add ${{ github.run_id }} to the key; the cost is losing
+          # that determinism.
+          #
+          # The prefix restore-key hands this run the newest PREVIOUS entry,
+          # which is what rolls the weights forward through EWMA instead of
+          # restarting from scratch.
           key: testbucket-timings-v1-${{ github.sha }}
           restore-keys: |
             testbucket-timings-v1-
@@ -445,6 +455,9 @@ jobs:
             --store "$RUNNER_TEMP/testbucket-store/test-timings.json"
 
       - name: Save the timing store
+        # Writes on a new master commit; on a same-SHA re-run the entry
+        # already exists and the action warns instead of overwriting. See the
+        # restore step for why per-commit immutability is wanted here.
         uses: actions/cache/save@v4.2.4
         with:
           path: ${{ runner.temp }}/testbucket-store

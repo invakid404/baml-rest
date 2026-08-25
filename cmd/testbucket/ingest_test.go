@@ -190,17 +190,38 @@ func TestApplyIngestFlagsWhalesAndPicksAPolicy(t *testing.T) {
 		{
 			name:       "no per-test data yet: count-shard, which needs none",
 			wantSplit:  splitCount,
-			wantShards: 3,
+			wantShards: 6,
 		},
 		{
-			name: "per-test data covering most of the wall-time: upgrade to name slicing",
+			name: "per-test data covering most of the wall-time, no dominant name: upgrade to name slicing",
 			perTest: []string{
+				// A 6-way count-shard costs 150s; every name fits under
+				// that, so packing by name can actually beat it.
+				event("pass", repoPrefix+"bamlutils/llmhttp", "TestRetry", 140),
+				event("pass", repoPrefix+"bamlutils/llmhttp", "TestSSE", 140),
+				event("pass", repoPrefix+"bamlutils/llmhttp", "TestBackoff", 140),
+				event("pass", repoPrefix+"bamlutils/llmhttp", "TestParse", 140),
+				event("pass", repoPrefix+"bamlutils/llmhttp", "TestRender", 140),
+				event("pass", repoPrefix+"bamlutils/llmhttp", "TestEmit", 140),
+			},
+			wantSplit:  splitRun,
+			wantShards: 6,
+		},
+		{
+			name: "per-test data covering most of the wall-time but ONE name dominates: stay on count-sharding",
+			perTest: []string{
+				// The measured shape of both real whales. 89% of the package
+				// is attributable to named tests — the old heuristic's only
+				// condition — but TestRetry alone is 44% of it, so no -run
+				// split can finish faster than 400s while a 6-way count-shard
+				// costs 150s. Name-slicing here is not merely worse, it is
+				// the wrong mechanism.
 				event("pass", repoPrefix+"bamlutils/llmhttp", "TestRetry", 400),
 				event("pass", repoPrefix+"bamlutils/llmhttp", "TestSSE", 300),
 				event("pass", repoPrefix+"bamlutils/llmhttp", "TestBackoff", 100),
 			},
-			wantSplit:  splitRun,
-			wantShards: 3,
+			wantSplit:  splitCount,
+			wantShards: 6,
 		},
 		{
 			name: "per-test data explaining only a sliver: stay on count-sharding",
@@ -209,7 +230,7 @@ func TestApplyIngestFlagsWhalesAndPicksAPolicy(t *testing.T) {
 				event("pass", repoPrefix+"bamlutils/llmhttp", "TestSSE", 10),
 			},
 			wantSplit:  splitCount,
-			wantShards: 3,
+			wantShards: 6,
 		},
 	}
 	for _, tc := range cases {
@@ -231,15 +252,17 @@ func TestApplyIngestFlagsWhalesAndPicksAPolicy(t *testing.T) {
 			if row.Split != tc.wantSplit {
 				t.Errorf("llmhttp split = %q, want %q", row.Split, tc.wantSplit)
 			}
-			// The shard count is the MINIMUM that brings the unit under the
-			// threshold — ceil(900 / (2001/6)) = 3 — not the maximum the
-			// bucket count allows. Every extra slice costs another compile
-			// of the package for no further parallelism gain.
+			// The shard width is K, so a shard fits any bucket by
+			// construction and the width does not move when an unrelated
+			// package elsewhere gets slower.
 			if row.SplitInto != tc.wantShards {
 				t.Errorf("llmhttp split_into = %d, want %d", row.SplitInto, tc.wantShards)
 			}
 			if perShard := row.Seconds / float64(row.SplitInto); perShard > rep.Threshold {
 				t.Errorf("each shard is %.1fs, still above the %.1fs threshold", perShard, rep.Threshold)
+			}
+			if row.SplitInto != 6 {
+				t.Errorf("split width %d, want K=6", row.SplitInto)
 			}
 			// The threshold is total/K: at 2001s over K=6 that is ~333s,
 			// so llmhttp (900s) and internal/debaml (420s) are whales and
@@ -943,4 +966,229 @@ func TestImplausibleElapsedIsRejectedNotAbsorbed(t *testing.T) {
 			t.Errorf("the corrupt capture is not visible in the job log:\n%s", out.String())
 		}
 	})
+}
+
+func TestChooseSplitPolicyComparesTheTwoMechanisms(t *testing.T) {
+	// The decision the Phase B measurement forced. Name-slicing's makespan can
+	// never fall below the single heaviest runnable — pack the other names
+	// however you like, the slice holding the dominant one still has to run
+	// it. Count-sharding divides ITERATIONS and does not care about the
+	// package's internal shape at all. So the only honest test is the two
+	// costs against each other, not a coverage percentage on its own.
+	cases := []struct {
+		name       string
+		pkg        float64
+		named      float64
+		heaviest   float64
+		namedCount int
+		shards     int
+		want       string
+		reasonHas  string
+	}{
+		{
+			name: "bamlutils/llmhttp as measured: 96% named, but one name is 50%",
+			// A -run split floors at 407s; a 3-way count-shard costs 271s.
+			pkg: 814, named: 782, heaviest: 407.2, namedCount: 221, shards: 3,
+			want: splitCount, reasonHas: "dominated by one runnable",
+		},
+		{
+			name: "internal/debaml as measured: 92% named, but one name is 44%",
+			pkg:  822, named: 754, heaviest: 361.1, namedCount: 457, shards: 3,
+			want: splitCount, reasonHas: "dominated by one runnable",
+		},
+		{
+			name: "genuinely name-divisible: a long tail with no dominant name",
+			pkg:  900, named: 850, heaviest: 250, namedCount: 4, shards: 3,
+			want: splitRun, reasonHas: "name-divisible",
+		},
+		{
+			name: "exactly at the boundary: the heaviest name equals the count-shard cost",
+			// Ties go to name-slicing: it is no worse here and it avoids
+			// repeating the package's fixed per-binary setup S times.
+			pkg: 900, named: 850, heaviest: 300, namedCount: 4, shards: 3,
+			want: splitRun, reasonHas: "name-divisible",
+		},
+		{
+			name: "one iota over the boundary flips it",
+			pkg:  900, named: 850, heaviest: 300.01, namedCount: 4, shards: 3,
+			want: splitCount, reasonHas: "dominated by one runnable",
+		},
+		{
+			name: "too little per-test data to pack with, however flat it looks",
+			pkg:  900, named: 100, heaviest: 30, namedCount: 5, shards: 3,
+			want: splitCount, reasonHas: "explain only",
+		},
+		{
+			name: "a single named runnable is not a test list",
+			pkg:  900, named: 880, heaviest: 880, namedCount: 1, shards: 3,
+			want: splitCount, reasonHas: "fewer than two",
+		},
+		{
+			name: "more shards make the count-shard cheaper and raise the bar for slicing",
+			// The SAME package that sliced at S=3 no longer does at S=6: a
+			// 6-way count-shard costs 150s, under the 250s dominant name.
+			pkg: 900, named: 850, heaviest: 250, namedCount: 4, shards: 6,
+			want: splitCount, reasonHas: "dominated by one runnable",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, reason := chooseSplitPolicy(tc.pkg, tc.named, tc.heaviest, tc.namedCount, tc.shards)
+			if got != tc.want {
+				t.Errorf("policy = %q, want %q (reason: %s)", got, tc.want, reason)
+			}
+			if !strings.Contains(reason, tc.reasonHas) {
+				t.Errorf("reason %q does not mention %q", reason, tc.reasonHas)
+			}
+		})
+	}
+}
+
+func TestBothRealWhalesSelectCountSharding(t *testing.T) {
+	// End to end through applyIngest with the two whales' MEASURED shapes,
+	// because the policy that matters is the one the store actually records.
+	//
+	// The old named-coverage heuristic chose `run` for both of these — they
+	// are 96% and 92% named — and `run` is the mechanism the Phase B
+	// measurement showed cannot help either of them.
+	whale := func(pkg string, total float64, tests map[string]float64) []string {
+		lines := []string{event("pass", repoPrefix+pkg, "", total)}
+		for _, n := range sortedKeys(tests) {
+			lines = append(lines, event("pass", repoPrefix+pkg, n, tests[n]))
+		}
+		return lines
+	}
+	var lines []string
+	lines = append(lines, whale("bamlutils/llmhttp", 814, map[string]float64{
+		"TestExactStreamNoGoroutineLeak":                 407.2,
+		"TestExactStreamIdleTimeoutResetsOnEveryByte":    66.0,
+		"TestIdleTimeoutNeverFalseKillsAtBoundary":       52.4,
+		"TestExactStreamConcurrentCloseCancelSecondCall": 52.3,
+		"TestExecuteStreamContextCancellation":           20.0,
+		"TestTail":                                       182.1,
+	})...)
+	lines = append(lines, whale("internal/debaml", 822, map[string]float64{
+		"TestConstraintStateCollectorIsTestOnly":          361.1,
+		"TestPromotedIntegralFloatCompositionsAreBounded": 109.2,
+		"TestServingOracleIsTestOnly":                     86.1,
+		"TestStaticCheckedCutoverHasNoRuntimeWriter":      74.3,
+		"TestPhase3cRegression_JSONDeepNestingUnchanged":  60.9,
+		"TestTail": 62.4,
+	})...)
+	// Plankton, so the whale threshold (total/K) is realistic.
+	for i := 0; i < 20; i++ {
+		lines = append(lines, event("pass", fmt.Sprintf("%splankton%02d", repoPrefix, i), "", 30))
+	}
+	sum, err := parseEvents(stream(lines...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := newStore(canonicalFlags(true, 100))
+	rep := mustIngest(t, st, sum, defaultIngestOptions())
+
+	for _, pkg := range []string{"bamlutils/llmhttp", "internal/debaml"} {
+		row := st.Units[repoPrefix+pkg]
+		if row == nil {
+			t.Fatalf("%s is not in the store", pkg)
+		}
+		if row.Split != splitCount {
+			t.Errorf("%s selected %q x%d (%s), want %q — a -run split floors at its dominant name",
+				pkg, row.Split, row.SplitInto, row.SplitReason, splitCount)
+		}
+		if row.SplitInto != 6 {
+			t.Errorf("%s split into %d, want the K=6 width", pkg, row.SplitInto)
+		}
+		if !strings.Contains(row.SplitReason, "dominated by one runnable") {
+			t.Errorf("%s reason %q does not record the dominance", pkg, row.SplitReason)
+		}
+		// Each shard must actually come in under what the un-split package
+		// costs by the width the store chose.
+		perShard := row.Seconds / float64(row.SplitInto)
+		if perShard >= row.Seconds {
+			t.Errorf("%s per-shard %.1fs is no better than the whole %.1fs", pkg, perShard, row.Seconds)
+		}
+		t.Logf("%s: %.1fs -> %s x%d, %.1fs per shard (%s)", pkg, row.Seconds, row.Split, row.SplitInto, perShard, row.SplitReason)
+	}
+	if len(rep.Dominated) != 2 {
+		t.Errorf("report named %d dominated packages, want both whales: %v", len(rep.Dominated), rep.Dominated)
+	}
+	var out bytes.Buffer
+	if err := rep.write(&out, repoPrefix); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "one runnable dominates") {
+		t.Errorf("the dominance is not visible in the job log:\n%s", out.String())
+	}
+}
+
+func TestWhaleReportReDerivesTheDominanceShares(t *testing.T) {
+	// The reproducibility half of the divisibility evidence: whatever a
+	// measurement report claims about a whale's internal distribution must be
+	// re-derivable from the store itself, by anyone, on any machine — and in
+	// particular from the store artifact a master run uploads, which is CI's
+	// own numbers rather than one laptop's.
+	st := newStore(canonicalFlags(true, 100))
+	st.UpdatedAt = "2026-08-25T00:00:00Z"
+	st.CoverageSource = "go-list"
+	st.Units[repoPrefix+"bamlutils/llmhttp"] = &UnitStat{
+		Seconds: 814, Samples: 3, Split: splitCount, SplitInto: 3,
+		SplitReason: "dominated by one runnable (407.2s > the 271.3s a 3-way count-shard costs)",
+		Tests: map[string]float64{
+			"TestExactStreamNoGoroutineLeak":              407.2,
+			"TestExactStreamIdleTimeoutResetsOnEveryByte": 66.0,
+			"TestIdleTimeoutNeverFalseKillsAtBoundary":    52.4,
+		},
+	}
+	for i := 0; i < 10; i++ {
+		st.Units[fmt.Sprintf("%splankton%02d", repoPrefix, i)] = &UnitStat{Seconds: 40, Samples: 3}
+	}
+
+	var out bytes.Buffer
+	writeWhaleReport(&out, st, 6, 3, false)
+	text := out.String()
+
+	for _, want := range []string{
+		"bamlutils/llmhttp",
+		"heaviest runnable",
+		"TestExactStreamNoGoroutineLeak",
+		// The two costs the policy turns on, side by side.
+		"count-shard",
+		"-run slice",
+		"floor",
+		"dominated by one runnable",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("whale report omits %q:\n%s", want, text)
+		}
+	}
+
+	// The dominance share must be stated, not left to be computed: 407.2/814
+	// is 50.0%, and that single number is what decides the mechanism.
+	if !strings.Contains(text, "50.0%") {
+		t.Errorf("the dominance share is not reported:\n%s", text)
+	}
+	// And the two mechanism costs must both appear so the comparison is
+	// checkable rather than asserted: 814/3 = 271.3s against a 407.2s floor.
+	if !strings.Contains(text, "271.3s") || !strings.Contains(text, "407.2s") {
+		t.Errorf("the mechanism comparison is not reproducible from the output:\n%s", text)
+	}
+
+	// Plankton must not be listed: the report is about split candidates.
+	if strings.Contains(text, "plankton") {
+		t.Errorf("an unsplit package was reported as a whale:\n%s", text)
+	}
+
+	// --all opens it up, for auditing a store that has not flagged anything.
+	var everything bytes.Buffer
+	writeWhaleReport(&everything, st, 6, 3, true)
+	if !strings.Contains(everything.String(), "plankton") {
+		t.Errorf("--all did not widen the report:\n%s", everything.String())
+	}
+
+	// A store with nothing flagged says so rather than printing an empty table.
+	var empty bytes.Buffer
+	writeWhaleReport(&empty, newStore(canonicalFlags(true, 100)), 6, 3, false)
+	if !strings.Contains(empty.String(), "nothing has crossed the split threshold") {
+		t.Errorf("an empty store produced no explanation:\n%s", empty.String())
+	}
 }
