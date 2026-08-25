@@ -23,6 +23,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -215,6 +216,99 @@ func TestRunStreamOrchestration_NonRawStrictOnParseFailure_SSE(t *testing.T) {
 	}
 	if streamErrors != 1 {
 		t.Errorf("non-raw stream must hard-fail with 1 error on a final-parse miss, got %d", streamErrors)
+	}
+}
+
+// runSoftFinalScenario drives a raw stream whose partial AND final parses
+// both fail (the full customer scenario), toggling only StreamConfig.
+// SoftFinalParse, and returns the collected results.
+func runSoftFinalScenario(t *testing.T, softFinalParse bool) []*testResult {
+	t.Helper()
+	server := makeOpenAIServer(proseChunks)
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &StreamConfig{
+		Provider:       "openai",
+		NeedsPartials:  true,
+		NeedsRaw:       true,
+		SoftFinalParse: softFinalParse,
+	}
+
+	_ = RunStreamOrchestration(
+		context.Background(), out, config, client,
+		func(_ context.Context, _ string) (*llmhttp.Request, error) {
+			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
+		},
+		rootCoercionParseStream,
+		rootCoercionParseStream, // final parse also fails (root coercion)
+		newTestResult,
+	)
+	return collectResults(out)
+}
+
+// TestRunStreamOrchestration_SoftFinalParse_OptIn_ReturnsRawSuccess_SSE is
+// the lock for fix (2): with StreamConfig.SoftFinalParse enabled, a final
+// structured-parse miss on a raw-wanted stream must complete SUCCESSFULLY,
+// surfacing the full accumulated raw text as the result — not a terminal
+// error.
+//
+// FAILS on clean 0.0.48: the field is inert, so the final parse still
+// hard-fails (newRawError) → 1 error result, 0 finals.
+func TestRunStreamOrchestration_SoftFinalParse_OptIn_ReturnsRawSuccess_SSE(t *testing.T) {
+	results := runSoftFinalScenario(t, true /* SoftFinalParse */)
+
+	var finals, streamErrors int
+	var finalRaw string
+	var finalData any
+	for _, r := range results {
+		switch r.kind {
+		case bamlutils.StreamResultKindFinal:
+			finals++
+			finalRaw = r.raw
+			finalData = r.final
+		case bamlutils.StreamResultKindError:
+			streamErrors++
+		}
+	}
+
+	if streamErrors != 0 {
+		t.Errorf("SoftFinalParse ON: expected 0 error results, got %d", streamErrors)
+	}
+	if finals != 1 {
+		t.Fatalf("SoftFinalParse ON: expected 1 successful final, got %d", finals)
+	}
+	if want := strings.Join(proseChunks, ""); finalRaw != want {
+		t.Errorf("SoftFinalParse ON: final raw = %q, want full accumulated raw %q", finalRaw, want)
+	}
+	if finalData != nil {
+		t.Errorf("SoftFinalParse ON: final structured data must be nil on a parse miss, got %#v", finalData)
+	}
+}
+
+// TestRunStreamOrchestration_SoftFinalParse_DefaultStrict_Errors_SSE is the
+// default-behavior guard for fix (2): with SoftFinalParse OFF (the default),
+// a final structured-parse miss must STILL hard-fail the call. Passes both
+// before and after the fix — proving the soft path is strictly opt-in.
+func TestRunStreamOrchestration_SoftFinalParse_DefaultStrict_Errors_SSE(t *testing.T) {
+	results := runSoftFinalScenario(t, false /* default: strict */)
+
+	var finals, streamErrors int
+	for _, r := range results {
+		switch r.kind {
+		case bamlutils.StreamResultKindFinal:
+			finals++
+		case bamlutils.StreamResultKindError:
+			streamErrors++
+		}
+	}
+	if finals != 0 {
+		t.Errorf("SoftFinalParse OFF (default): expected 0 finals on a final-parse miss, got %d", finals)
+	}
+	if streamErrors != 1 {
+		t.Errorf("SoftFinalParse OFF (default): expected 1 terminal error on a final-parse miss, got %d", streamErrors)
 	}
 }
 

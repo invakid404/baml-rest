@@ -263,6 +263,20 @@ type StreamConfig struct {
 	// NeedsRaw is true if the caller wants raw LLM response text.
 	NeedsRaw bool
 
+	// SoftFinalParse opts a raw-wanted stream (NeedsRaw) out of the
+	// strict final-parse contract. Default false preserves the historical
+	// behavior: a final structured-parse miss hard-fails the attempt
+	// (newRawError → retry/fallback → terminal error). When true AND
+	// NeedsRaw is set, a final-parse miss is treated as a successful
+	// raw-only completion instead — the accumulated raw/reasoning text is
+	// surfaced as the result with no structured final. Intended for
+	// raw-first streaming callers (e.g. DynamicStreamRaw over a class
+	// schema whose model returns prose) that consume raw independently of
+	// any structured projection. Only consulted in the streaming
+	// orchestrator; never softens non-raw streams or the non-streaming
+	// call paths.
+	SoftFinalParse bool
+
 	// IncludeReasoning is the per-request opt-in for surfacing provider-
 	// specific reasoning/thinking text on the structured reasoning
 	// channel of /with-raw endpoints, distinct from raw. When true, the
