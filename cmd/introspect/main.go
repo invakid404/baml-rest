@@ -38,6 +38,12 @@ type config struct {
 	ClientPkgName  string
 	InterfacesPkg  string
 	BAMLModulePath string
+	// NativeSpineDescriptors, when non-empty, selects the experimental
+	// codegen-spine descriptor mode: build the neutral projectdescriptor.Project
+	// from the same parsed .baml files and write it as JSON to this path ("-" for
+	// stdout), then exit WITHOUT touching the normal introspected.go emission.
+	// Empty (the default) leaves normal invocation byte-identical.
+	NativeSpineDescriptors string
 }
 
 // streamPkg returns the generated-client root import path used to
@@ -122,12 +128,25 @@ func main() {
 	clientPkgFlag := flag.String("client-pkg", "", "Generated client package leaf name (defaults to filepath.Base of --input-dir)")
 	flag.StringVar(&cfg.InterfacesPkg, "interfaces-pkg", cfg.InterfacesPkg, "Import path of the bamlutils interfaces package")
 	flag.StringVar(&cfg.BAMLModulePath, "baml-module-path", cfg.BAMLModulePath, "Import path of the BAML Go runtime module")
+	flag.StringVar(&cfg.NativeSpineDescriptors, "native-spine-descriptors", "", "EXPERIMENTAL: build the codegen-spine ProjectDescriptor from --baml-src-dir and write it as JSON to this path (\"-\" for stdout), then exit without emitting introspected.go")
 	flag.Parse()
 
 	if *clientPkgFlag != "" {
 		cfg.ClientPkgName = *clientPkgFlag
 	} else {
 		cfg.ClientPkgName = filepath.Base(cfg.InputDir)
+	}
+
+	// Experimental codegen-spine descriptor mode (M1). It is a separate,
+	// early-return path: it reuses the same .baml walk but never constructs a
+	// jen.File and never calls generateStub/generateFull, so normal invocation
+	// (this flag empty) is byte-identical.
+	if cfg.NativeSpineDescriptors != "" {
+		if err := emitNativeSpineDescriptors(cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "cmd/introspect: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	if cfg.Stub {
@@ -1363,6 +1382,13 @@ type bamlConfig struct {
 	// declines here even though the schema builder (D11) drops skipped OUTPUT
 	// fields — native prompt rendering has not proven BAML's skip semantics yet.
 	staticPromptDeclines map[string]string
+	// staticPromptDeclineFeatures maps a declined function name to the STRUCTURAL
+	// feature (nativeschema.PreDeclineFeature) the firing decline path identified
+	// from the parsed type graph — media/@@dynamic/@check/@assert or a bare input/
+	// output shape. It is keyed exactly like staticPromptDeclines and lets the
+	// native-spine classifier pick a precise capability code from structure rather
+	// than by scraping the human-readable reason string. Build-only; never emitted.
+	staticPromptDeclineFeatures map[string]nativeschema.PreDeclineFeature
 }
 
 // bamlValidationError captures a single semantic-validation failure
@@ -1516,7 +1542,7 @@ func parseBamlSourceDir(dir string) *bamlConfig {
 	// ClientConfig ARE emitted into introspected.go (StaticPromptDescriptors) as
 	// representation-only metadata that stays unrouted — see the security/ownership
 	// contract on emitStaticPromptDescriptors.
-	cfg.staticPromptDescriptors, cfg.staticPromptDeclines = nativeschema.BuildPromptDescriptors(
+	cfg.staticPromptDescriptors, cfg.staticPromptDeclines, cfg.staticPromptDeclineFeatures = nativeschema.BuildPromptDescriptorsWithFeatures(
 		parsedFiles, cfg.staticSchemas, cfg.staticSchemaDeclines, cfg.clientProvider, clientConfigs)
 
 	return cfg

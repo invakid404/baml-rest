@@ -15,6 +15,7 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
 	"github.com/invakid404/baml-rest/bamlutils/schemadescriptor"
 	"github.com/invakid404/baml-rest/internal/apierror"
+	"github.com/invakid404/baml-rest/internal/nativespine"
 )
 
 // repoRoot returns the repository root, computed from this test file's location
@@ -346,6 +347,69 @@ func TestDynamicTypesCapabilityGroundedInLiveInput(t *testing.T) {
 	}
 	if opts.TypeBuilder.DynamicTypes == nil {
 		t.Fatal("dynamic_types did not deserialize into bamlutils.TypeBuilder.DynamicTypes")
+	}
+}
+
+// TestCodegenAdmissionDeclineCatalogue grounds the M1 native codegen classifier's
+// decline vocabulary against the manifest: the exact set of codes
+// internal/nativespine can emit must equal manifest declines.codegen_admission_declines,
+// and every one of those codes must itself be catalogued (a capability code, or a
+// serving representative reason). This is the "declines use codes from the
+// manifest" contract (scope §4), machine-checked against the live classifier.
+func TestCodegenAdmissionDeclineCatalogue(t *testing.T) {
+	m := loadManifest(t)
+
+	manifestSet := map[string]bool{}
+	for _, c := range m.Declines.CodegenAdmissionDeclines {
+		manifestSet[c] = true
+	}
+	liveSet := map[string]bool{}
+	for _, c := range nativespine.DeclineCodes() {
+		if liveSet[string(c)] {
+			t.Errorf("duplicate code %q in nativespine.DeclineCodes()", c)
+		}
+		liveSet[string(c)] = true
+	}
+	if !reflect.DeepEqual(manifestSet, liveSet) {
+		t.Errorf("codegen_admission_declines mismatch\n manifest: %v\n live nativespine.DeclineCodes(): %v",
+			m.Declines.CodegenAdmissionDeclines, nativespine.DeclineCodes())
+	}
+	if len(m.Declines.CodegenAdmissionDeclines) == 0 {
+		t.Fatal("codegen_admission_declines is empty")
+	}
+
+	// Non-empty, unique codes. Codes that reuse a serving concept (media_*,
+	// checks, asserts, schema_dynamic_class, strategy_*, provider_not_openai,
+	// model_not_literal) must be spelled exactly as the capability / representative
+	// reason they mirror; the remainder (unsupported_*_shape) are codegen-native
+	// and catalogued here.
+	capSet := map[string]bool{}
+	for _, c := range m.Capabilities {
+		capSet[c.Code] = true
+	}
+	reasonSet := map[string]bool{}
+	for _, r := range m.Declines.RepresentativeReasons {
+		reasonSet[r] = true
+	}
+	codegenNative := map[string]bool{
+		"unsupported_output_shape": true,
+		"unsupported_input_shape":  true,
+		"prompt_dependency":        true,
+		"name_collision":           true,
+	}
+	seen := map[string]bool{}
+	for _, c := range m.Declines.CodegenAdmissionDeclines {
+		if c == "" {
+			t.Error("empty codegen decline code")
+			continue
+		}
+		if seen[c] {
+			t.Errorf("duplicate codegen decline code %q", c)
+		}
+		seen[c] = true
+		if !capSet[c] && !reasonSet[c] && !codegenNative[c] {
+			t.Errorf("codegen decline code %q is neither a capability, a representative reason, nor a known codegen-native code", c)
+		}
 	}
 }
 

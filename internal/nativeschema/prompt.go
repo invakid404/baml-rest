@@ -64,12 +64,77 @@ package nativeschema
 // @skip/@@dynamic/invalid declarations.
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/invakid404/baml-rest/bamlutils/bamlparser"
 	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
 	sd "github.com/invakid404/baml-rest/bamlutils/schemadescriptor"
 )
+
+// PreDeclineFeature is the STRUCTURAL classification a static prompt/schema
+// decline carries out to internal/nativespine, so the stable capability code is
+// chosen from a stamped verdict rather than by scraping the human-readable reason
+// string. It is stamped by the decline path that actually fires, so it inherits
+// that path's precedence and never a second, non-equivalent traversal.
+//
+// M1 scope (a "dark slice"): a feature is stamped only where the WINNING producer
+// already knows it exactly — `FeatureDynamic` from the eligibility scan / project
+// enum / macro-argument verdict — plus the reliable input-vs-return CONTEXT
+// (`FeatureInputShape` / `FeatureOutputShape`) taken from which side of the
+// signature the decline fired on. The static-SCHEMA builder is not yet
+// instrumented to carry its causative node, so a schema-builder decline is named
+// by its context, never by an independent re-walk that could pick an incidental
+// earlier feature (an `@check` that lowered fine) over the real later cause (a
+// `media`/union node). Precise media/checks/asserts sub-codes for those
+// schema-builder pre-declines are M2 (full producer instrumentation). See
+// docs/codegen-spine/04.
+type PreDeclineFeature int
+
+const (
+	FeatureNone        PreDeclineFeature = iota // no carried structural cause (defensive default)
+	FeatureDynamic                              // @@dynamic reachable — from the scan/enum/macro verdict
+	FeatureOutputShape                          // a return-side decline (structural context)
+	FeatureInputShape                           // an input/macro-side decline (structural context)
+)
+
+// featureError is a decline error that also carries the structural feature its
+// producing path identified. Error() returns the SAME string the path emitted
+// before, so every existing string-based decline assertion is unaffected; the
+// feature rides alongside for the one seam (BuildPromptDescriptorsWithFeatures)
+// that reads it.
+type featureError struct {
+	feature PreDeclineFeature
+	msg     string
+}
+
+func (e *featureError) Error() string { return e.msg }
+
+// declineFeature builds a decline error whose message is exactly the given
+// formatted string and which carries feature for the structured seam.
+func declineFeature(feature PreDeclineFeature, format string, args ...any) error {
+	return &featureError{feature: feature, msg: fmt.Sprintf(format, args...)}
+}
+
+// featureOf extracts the structural feature a decline error carries, or
+// FeatureNone for a plain error (a pure prompt-eligibility decline that named no
+// type-graph cause).
+func featureOf(err error) PreDeclineFeature {
+	var fe *featureError
+	if errors.As(err, &fe) {
+		return fe.feature
+	}
+	return FeatureNone
+}
+
+// shapeFeature is the bare-shape feature for a scan root: a return root's defect
+// is an output-shape decline, anything else (input/macro) an input-shape one.
+func shapeFeature(rootKind string) PreDeclineFeature {
+	if rootKind == "return" {
+		return FeatureOutputShape
+	}
+	return FeatureInputShape
+}
 
 // BuildPromptDescriptors builds a native static prompt descriptor for every
 // eligible LLM function from the already-parsed .baml files, the static-schema
@@ -100,34 +165,58 @@ func BuildPromptDescriptors(
 	clientProvider map[string]string,
 	clientConfigs map[string]promptdescriptor.ClientConfig,
 ) (map[string]promptdescriptor.Function, map[string]string) {
+	descriptors, declines, _ := BuildPromptDescriptorsWithFeatures(
+		files, schemas, schemaDeclines, clientProvider, clientConfigs)
+	return descriptors, declines
+}
+
+// BuildPromptDescriptorsWithFeatures is BuildPromptDescriptors plus a third map:
+// for every declined function, the STRUCTURAL feature (PreDeclineFeature) the
+// firing decline path identified from the parsed type graph. The reason strings
+// in the second map are byte-identical to BuildPromptDescriptors — the feature is
+// a strict addition — so cmd/introspect can classify a pre-decline by structure
+// rather than by scraping words out of the reason. The feature map is keyed
+// exactly like declines (a name is in one of descriptors/declines, never both).
+func BuildPromptDescriptorsWithFeatures(
+	files []SourceFile,
+	schemas map[string]sd.Bundle,
+	schemaDeclines map[string]string,
+	clientProvider map[string]string,
+	clientConfigs map[string]promptdescriptor.ClientConfig,
+) (map[string]promptdescriptor.Function, map[string]string, map[string]PreDeclineFeature) {
 	idx := buildSchemaTypeIndex(files)
 	rec := idx.recursion()
 
 	// Build the project macro set once. Every template_string is globally
 	// injected by BAML, so a bad/duplicate/ambiguous macro is a GLOBAL decline:
 	// buildMacros returns a non-empty reason that poisons every function.
-	macros, macroDecline := buildMacros(files, idx, rec)
+	macros, macroDecline, macroDeclineFeature := buildMacros(files, idx, rec)
 
 	// (g) Build the V3 project enum universe once. BAML installs one namespace
 	// global per PROJECT enum, so the set is resolved whole and an unresolvable
-	// enum is a GLOBAL decline — see inputvalues.go.
-	projectEnums, enumDecline := resolveProjectEnums(files, idx)
+	// enum is a GLOBAL decline — see inputvalues.go. enumDeclineFeature records
+	// whether that global decline is @@dynamic (schema_dynamic_class) or another
+	// input-universe defect.
+	projectEnums, enumDecline, enumDeclineFeature := resolveProjectEnums(files, idx)
 
 	pb := &promptBuilder{
-		schemas:        schemas,
-		schemaDeclines: schemaDeclines,
-		clientProvider: clientProvider,
-		clientConfigs:  clientConfigs,
-		idx:            idx,
-		rec:            rec,
-		macros:         macros,
-		macroDecline:   macroDecline,
-		projectEnums:   projectEnums,
-		enumDecline:    enumDecline,
+		schemas:             schemas,
+		schemaDeclines:      schemaDeclines,
+		clientProvider:      clientProvider,
+		clientConfigs:       clientConfigs,
+		idx:                 idx,
+		rec:                 rec,
+		macros:              macros,
+		macroDecline:        macroDecline,
+		macroDeclineFeature: macroDeclineFeature,
+		projectEnums:        projectEnums,
+		enumDecline:         enumDecline,
+		enumDeclineFeature:  enumDeclineFeature,
 	}
 
 	descriptors := make(map[string]promptdescriptor.Function)
 	declines := make(map[string]string)
+	features := make(map[string]PreDeclineFeature)
 
 	for _, sf := range files {
 		f := sf.File
@@ -144,15 +233,17 @@ func BuildPromptDescriptors(
 				// Last-wins on duplicate function names — a later declaration's
 				// outcome supersedes an earlier one (mirrors BuildStaticSchemas).
 				declines[fn.Name] = err.Error()
+				features[fn.Name] = featureOf(err)
 				delete(descriptors, fn.Name)
 				continue
 			}
 			descriptors[fn.Name] = desc
 			delete(declines, fn.Name)
+			delete(features, fn.Name)
 		}
 	}
 
-	return descriptors, declines
+	return descriptors, declines, features
 }
 
 // promptBuilder carries the shared inputs for a single BuildPromptDescriptors
@@ -168,12 +259,22 @@ type promptBuilder struct {
 	rec            *recursionInfo
 	macros         []promptdescriptor.TemplateString
 	macroDecline   string
+	// macroDeclineFeature is the structural feature of macroDecline: FeatureDynamic
+	// for an @@dynamic-reachable macro argument, FeatureInputShape for every other
+	// macro decline (missing name, unusable body, duplicate name, @skip/unresolvable
+	// argument). Zero (FeatureNone) only when there is no macro decline.
+	macroDeclineFeature PreDeclineFeature
 	// projectEnums is the V3 project-wide resolved enum set (every declared
 	// enum, in source order); enumDecline is the global reason it could not be
 	// resolved, which poisons V3 — and therefore the descriptor — for every
 	// function. See inputvalues.go.
 	projectEnums []promptdescriptor.ResolvedEnum
 	enumDecline  string
+	// enumDeclineFeature is the structural feature of enumDecline: FeatureDynamic
+	// for an @@dynamic project enum, FeatureInputShape for any other unresolvable
+	// project enum (both poison the V3 input universe). Zero (FeatureNone) when
+	// there is no enum decline.
+	enumDeclineFeature PreDeclineFeature
 }
 
 // buildFunction evaluates one function against the full decline contract and
@@ -201,25 +302,25 @@ func (pb *promptBuilder) buildFunction(fn *bamlparser.FunctionBlock) (promptdesc
 			// The final prompt is projected onto fn.PromptRaw/HasPrompt during
 			// parse normalization; nothing to read from Fields here.
 		default:
-			return promptdescriptor.Function{}, fmt.Errorf(
+			return promptdescriptor.Function{}, declineFeature(FeatureInputShape,
 				"no usable LLM function shape: function %q has field %q other than client/prompt", fn.Name, f.Key)
 		}
 	}
 	if !fn.HasPrompt {
-		return promptdescriptor.Function{}, fmt.Errorf(
+		return promptdescriptor.Function{}, declineFeature(FeatureInputShape,
 			"no usable LLM function shape: function %q has no prompt field", fn.Name)
 	}
 	if fn.PromptRaw == nil {
-		return promptdescriptor.Function{}, fmt.Errorf(
+		return promptdescriptor.Function{}, declineFeature(FeatureInputShape,
 			"no usable LLM function shape: function %q final prompt field is not a raw string", fn.Name)
 	}
 	if !haveClient {
-		return promptdescriptor.Function{}, fmt.Errorf(
+		return promptdescriptor.Function{}, declineFeature(FeatureInputShape,
 			"no usable LLM function shape: function %q has no usable scalar client field", fn.Name)
 	}
 	provider, ok := pb.clientProvider[clientName]
 	if !ok {
-		return promptdescriptor.Function{}, fmt.Errorf(
+		return promptdescriptor.Function{}, declineFeature(FeatureInputShape,
 			"no usable LLM function shape: function %q client %q does not resolve to a provider after shorthand enrichment", fn.Name, clientName)
 	}
 
@@ -229,16 +330,21 @@ func (pb *promptBuilder) buildFunction(fn *bamlparser.FunctionBlock) (promptdesc
 	bundle, ok := pb.schemas[fn.Name]
 	if !ok {
 		if reason, has := pb.schemaDeclines[fn.Name]; has {
-			return promptdescriptor.Function{}, fmt.Errorf(
-				"prompt descriptor return bundle unavailable: %s", reason)
+			// The static-schema builder is the winning path here, and it does not
+			// (M1) carry which node it failed on. Rather than re-walk the raw return
+			// graph independently — which can pick an incidental earlier feature over
+			// the real later cause — name it by its reliable RETURN context. Precise
+			// media/checks sub-codes for schema-builder declines are M2.
+			return promptdescriptor.Function{}, declineFeature(
+				FeatureOutputShape, "prompt descriptor return bundle unavailable: %s", reason)
 		}
-		return promptdescriptor.Function{}, fmt.Errorf(
+		return promptdescriptor.Function{}, declineFeature(FeatureOutputShape,
 			"prompt descriptor return bundle unavailable: no native static return bundle")
 	}
 
 	// (f)+(c/d/e via macro) A poisoned project macro declines every function.
 	if pb.macroDecline != "" {
-		return promptdescriptor.Function{}, fmt.Errorf("%s", pb.macroDecline)
+		return promptdescriptor.Function{}, declineFeature(pb.macroDeclineFeature, "%s", pb.macroDecline)
 	}
 
 	// (c)/(d)/(e) Reachable-eligibility scan over every function INPUT type and
@@ -259,11 +365,15 @@ func (pb *promptBuilder) buildFunction(fn *bamlparser.FunctionBlock) (promptdesc
 	// a shape V3 cannot describe exactly gets no descriptor at all. The project
 	// enum decline is checked first because it poisons every function.
 	if pb.enumDecline != "" {
-		return promptdescriptor.Function{}, fmt.Errorf("%s", pb.enumDecline)
+		return promptdescriptor.Function{}, declineFeature(pb.enumDeclineFeature, "%s", pb.enumDecline)
 	}
 	args, universe, err := pb.buildInputValues(fn)
 	if err != nil {
-		return promptdescriptor.Function{}, err
+		// The input value graph declined. Its @@dynamic/@skip cases already fired
+		// in the scanRoot pass above (carried precisely); the shape/media cases the
+		// input resolver reports are (M1) named by their reliable INPUT context
+		// rather than an independent re-walk. Precise media sub-codes are M2.
+		return promptdescriptor.Function{}, declineFeature(FeatureInputShape, "%s", err.Error())
 	}
 
 	// (Phase 4a) Stamp the passive client/options config. A missing entry (a
@@ -347,7 +457,7 @@ func (pb *promptBuilder) buildInputValues(fn *bamlparser.FunctionBlock) ([]promp
 // function) the moment a macro is unusable per contract (f): a missing/non-raw/
 // brace-tolerated body, a duplicate name, or a macro-argument type graph the
 // eligibility scan rejects (c/d/e reachable from a macro-arg root).
-func buildMacros(files []SourceFile, idx *schemaTypeIndex, rec *recursionInfo) ([]promptdescriptor.TemplateString, string) {
+func buildMacros(files []SourceFile, idx *schemaTypeIndex, rec *recursionInfo) ([]promptdescriptor.TemplateString, string, PreDeclineFeature) {
 	var macros []promptdescriptor.TemplateString
 	seen := make(map[string]bool)
 
@@ -362,27 +472,33 @@ func buildMacros(files []SourceFile, idx *schemaTypeIndex, rec *recursionInfo) (
 				continue
 			}
 			if tb.Name == "" {
-				return nil, "template string declaration has no name"
+				return nil, "template string declaration has no name", FeatureInputShape
 			}
 			// (f) A brace-tolerated or non-raw body is never fabricated into a
-			// Body string by the parser; decline rather than invent one.
+			// Body string by the parser; decline rather than invent one. A poisoned
+			// macro is a global, input-like decline; its context is stamped
+			// STRUCTURALLY (FeatureInputShape) so the user-controlled macro name in
+			// the reason can never influence the stable code.
 			if tb.HasUnsupportedBody || tb.Body == nil {
 				return nil, fmt.Sprintf(
-					"template string %q has no usable raw body (missing, non-raw, or brace-tolerated)", tb.Name)
+					"template string %q has no usable raw body (missing, non-raw, or brace-tolerated)", tb.Name), FeatureInputShape
 			}
 			// (f) Duplicate macro names are ambiguous under global injection.
 			if seen[tb.Name] {
-				return nil, fmt.Sprintf("duplicate template string name %q", tb.Name)
+				return nil, fmt.Sprintf("duplicate template string name %q", tb.Name), FeatureInputShape
 			}
 			seen[tb.Name] = true
-			// (c)/(d)/(e) A macro-argument type is a scan root too.
+			// (c)/(d)/(e) A macro-argument type is a scan root too. A macro argument
+			// reaching @@dynamic is a schema_dynamic_class cause structurally, just
+			// like a function argument reaching it — the feature comes from the scan
+			// verdict, not from the reason string.
 			for _, p := range tb.Args {
 				if p.Type == nil {
 					continue // a bare (untyped) macro argument reaches no type graph
 				}
 				s := newPromptTypeScanner(idx, rec)
 				if res := s.scan(p.Type); res.kind != scanOK {
-					return nil, macroArgDecline(tb.Name, p.Name, res)
+					return nil, macroArgDecline(tb.Name, p.Name, res), macroArgFeature(res)
 				}
 			}
 			macros = append(macros, promptdescriptor.TemplateString{
@@ -393,7 +509,17 @@ func buildMacros(files []SourceFile, idx *schemaTypeIndex, rec *recursionInfo) (
 			})
 		}
 	}
-	return macros, ""
+	return macros, "", FeatureNone
+}
+
+// macroArgFeature names the structural feature of a macro-argument scan decline:
+// FeatureDynamic for an @@dynamic-reachable argument, FeatureInputShape for a
+// @skip/unresolvable one (a macro argument is an input-like root).
+func macroArgFeature(res scanResult) PreDeclineFeature {
+	if res.kind == scanDynamic {
+		return FeatureDynamic
+	}
+	return FeatureInputShape
 }
 
 // scanRoot runs the reachable-eligibility scan from one root type (a function
@@ -416,11 +542,11 @@ func (pb *promptBuilder) scanRoot(rootKind, name string, t *bamlparser.TypeExpr)
 	}
 	switch res.kind {
 	case scanSkip:
-		return fmt.Errorf("@skip is reachable from %s: %s", root, res.reason)
+		return declineFeature(shapeFeature(rootKind), "@skip is reachable from %s: %s", root, res.reason)
 	case scanDynamic:
-		return fmt.Errorf("@@dynamic/type_builder-like content is reachable from %s: %s", root, res.reason)
+		return declineFeature(FeatureDynamic, "@@dynamic/type_builder-like content is reachable from %s: %s", root, res.reason)
 	default:
-		return fmt.Errorf("%s graph cannot be resolved faithfully: %s", root, res.reason)
+		return declineFeature(shapeFeature(rootKind), "%s graph cannot be resolved faithfully: %s", root, res.reason)
 	}
 }
 

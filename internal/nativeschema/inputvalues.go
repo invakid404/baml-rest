@@ -63,7 +63,7 @@ import (
 // It returns a non-empty decline reason — which poisons V3 for every function in
 // the project — the moment any enum cannot be described exactly. See the file
 // doc for why the failure is global rather than per-function.
-func resolveProjectEnums(files []SourceFile, idx *schemaTypeIndex) ([]promptdescriptor.ResolvedEnum, string) {
+func resolveProjectEnums(files []SourceFile, idx *schemaTypeIndex) ([]promptdescriptor.ResolvedEnum, string, PreDeclineFeature) {
 	var out []promptdescriptor.ResolvedEnum
 	seen := make(map[string]bool)
 
@@ -80,17 +80,29 @@ func resolveProjectEnums(files []SourceFile, idx *schemaTypeIndex) ([]promptdesc
 			if seen[tb.Name] {
 				// Duplicate declaration: idx.ambiguous already records it, but a
 				// second pass would also emit a duplicate namespace global.
-				return nil, enumDecline(tb.Name, "declared more than once")
+				return nil, enumDecline(tb.Name, "declared more than once"), FeatureInputShape
 			}
 			seen[tb.Name] = true
 			def, err := resolveEnumDef(tb, idx)
 			if err != nil {
-				return nil, enumDecline(tb.Name, err.Error())
+				// An @@dynamic enum is a schema_dynamic_class cause; any other
+				// unresolvable project enum is a bare input-universe shape defect.
+				return nil, enumDecline(tb.Name, err.Error()), enumDeclineFeatureOf(err)
 			}
 			out = append(out, def)
 		}
 	}
-	return out, ""
+	return out, "", FeatureNone
+}
+
+// enumDeclineFeatureOf maps a project-enum resolution error to the structural
+// feature it poisons the V3 input universe with: FeatureDynamic when the enum
+// carries @@dynamic (stamped by resolveEnumDef), FeatureInputShape otherwise.
+func enumDeclineFeatureOf(err error) PreDeclineFeature {
+	if featureOf(err) == FeatureDynamic {
+		return FeatureDynamic
+	}
+	return FeatureInputShape
 }
 
 // resolveEnumDef describes one enum exactly, or reports why it cannot be.
@@ -113,7 +125,7 @@ func resolveEnumDef(tb *bamlparser.TypeBlock, idx *schemaTypeIndex) (promptdescr
 	// the member set genuinely is not a build-time fact.
 	for _, a := range tb.Attributes {
 		if a.Block && a.Name == "dynamic" {
-			return promptdescriptor.ResolvedEnum{}, fmt.Errorf(
+			return promptdescriptor.ResolvedEnum{}, declineFeature(FeatureDynamic,
 				"enum is @@dynamic; its member set is extended at request time by type_builder, so it is not a build-time fact")
 		}
 	}

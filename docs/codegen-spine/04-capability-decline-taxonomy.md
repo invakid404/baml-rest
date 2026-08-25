@@ -128,3 +128,56 @@ separately-grounded capabilities.
 This is the fixture set M0 establishes; M3+ extends it with JSON-roundtrip
 goldens for carrier parity, and M4 wires the "missing retained endpoint fails the
 build" rule against `proven_status`.
+
+## 6. Pre-decline sub-codes are STRUCTURAL, not string-derived (M1)
+
+A *pre-decline* is a function that never became a `promptdescriptor.Function`
+because an upstream pass (`nativeschema.BuildStaticSchemas` /
+`BuildPromptDescriptors`) declined it first. Those passes return a free-form,
+human-readable reason string. Early M1 rounds reverse-engineered the precise
+sub-code (`media_part`, `schema_dynamic_class`, `checks`, `asserts`,
+`unsupported_input_shape`, `unsupported_output_shape`) by scanning that string for
+feature words. That was fragile: the same reason prose mentions `@check`,
+`@assert`, and `@@dynamic` in explanatory help even when an unrelated attribute is
+the cause, quotes user-controlled names, and varies by phrasing — so every new
+upstream wording risked regressing a code.
+
+**ADR (M1, fix #6/#7): the feature-from-string parser is dropped entirely; the
+sub-code comes from a STRUCTURAL verdict the WINNING producer carries.**
+`nativeschema` stamps each decline with a typed `PreDeclineFeature` on the SAME
+path that produced it (`BuildPromptDescriptorsWithFeatures`), alongside a
+byte-identical reason string. `internal/nativespine.preDeclineCode` is a pure
+lookup on that verdict — it reads no reason text, so no help prose and no
+user-controlled declaration name (a class, field, or **macro** name) can influence
+a code.
+
+- **Precise feature — only where the producer knows it exactly.**
+  `schema_dynamic_class` is stamped from the eligibility scan / project-enum /
+  macro-argument verdict (`scanDynamic`), including the project-wide `@@dynamic`
+  enum that poisons every function. This is carried from the branch that won, so it
+  never disagrees with the decline.
+- **Context — everywhere else.** Every other decline is named by its reliable
+  input-vs-return CONTEXT (`FeatureInputShape` / `FeatureOutputShape`), taken from
+  which side of the signature the decline fired on (a return-bundle decline is
+  output; an input-value-graph, macro, or eligibility decline is input). The
+  context is carried structurally, **not** read from the reason prefix.
+
+**M1 boundary (dark slice) — fix #7.** The static-SCHEMA builder
+(`BuildStaticSchemas` / `ValidateOutput`) is *not* instrumented to carry which node
+caused its decline. A round-6 attempt to recover the feature by an INDEPENDENT
+second walk of the raw return/argument graph was removed: it did not share the
+producer's precedence and could name an incidental feature over the real cause —
+an earlier `@check` that lowered fine beating a later `media` field, a union
+treated as featureless so `image?` missed media, and a single-`@` `@dynamic` field
+mis-read as schema-dynamic. So a schema-builder pre-decline now resolves to its
+context code (`unsupported_output_shape` / `unsupported_input_shape`), never a
+guessed `media_part` / `checks`. **M2** replaces this with full producer
+instrumentation (the schema builder carrying the causative `PreDeclineFeature` from
+the failing node), restoring precise media/checks sub-codes for these pre-declines.
+
+**Catalogue unchanged (19 codes).** `checks`, `asserts`, and the media codes stay
+emittable via the *admitted* classifier path (`classifyOutputSchema`): a VALID
+`@check`/`@assert` lowers into the return bundle, the function is admitted, and the
+classifier declines it with the precise code. Only the *malformed*/pre-declined
+variants fall to context. `DeclineCodes()` == `codegen_admission_declines` is
+therefore untouched. The full reason string is always preserved in `Decline.Detail`.
