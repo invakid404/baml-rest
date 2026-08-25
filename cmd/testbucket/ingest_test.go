@@ -435,7 +435,7 @@ func TestApplyIngestResetsWhenTheFlagSetChanges(t *testing.T) {
 		t.Errorf("the new measurement was not recorded from scratch: %+v", got)
 	}
 	var out bytes.Buffer
-	rep.write(&out, repoPrefix)
+	_ = rep.write(&out, repoPrefix)
 	if !strings.Contains(out.String(), "FLAG SET CHANGED") {
 		t.Errorf("the reset was not announced:\n%s", out.String())
 	}
@@ -521,7 +521,7 @@ func TestIngestReportNamesWhatItDid(t *testing.T) {
 	}
 	rep := mustIngest(t, st, sum, defaultIngestOptions())
 	var out bytes.Buffer
-	rep.write(&out, repoPrefix)
+	_ = rep.write(&out, repoPrefix)
 	text := out.String()
 	for _, want := range []string{"packages updated", "packages new", "internal/brandnew", "total measured work", "whale threshold", "coverage recorded"} {
 		if !strings.Contains(text, want) {
@@ -720,5 +720,152 @@ func TestIngestOptionsValidation(t *testing.T) {
 	opt.Alpha = 1
 	if _, err := applyIngest(syntheticStore(), sum, opt); err != nil {
 		t.Errorf("alpha=1 was rejected: %v", err)
+	}
+}
+
+func TestPerTestRowsSurviveAFailedOrPartialCapture(t *testing.T) {
+	// Per-test weights are what `-run` slicing balances on, and a DELETION
+	// is not smoothed by EWMA the way a weight is. One aborted or
+	// half-uploaded run must not erase them and silently demote a
+	// name-sliced whale back to count-sharding on the next plan.
+	warm := func() *Store {
+		st := newStore(canonicalFlags(true, 100))
+		st.Units[repoPrefix+"whale"] = &UnitStat{
+			Seconds: 900, Samples: 6, Split: splitRun, SplitInto: 3,
+			Tests: map[string]float64{"TestA": 400, "TestB": 300, "TestC": 200},
+		}
+		st.Units[repoPrefix+"pool"] = &UnitStat{Seconds: 120, Samples: 6}
+		return st
+	}
+	names := func(st *Store) []string {
+		return sortedKeys(st.Units[repoPrefix+"whale"].Tests)
+	}
+
+	t.Run("a failed package contributes no per-test weight at all", func(t *testing.T) {
+		// The package aborted under -race after two of its three tests
+		// finished. Its wall time already measures the failure, not the
+		// work; its partial test list is no better.
+		sum, err := parseEvents(stream(
+			event("fail", repoPrefix+"whale", "", 1200),
+			event("pass", repoPrefix+"whale", "TestA", 9999),
+			event("pass", repoPrefix+"pool", "", 120),
+		))
+		if err != nil {
+			t.Fatal(err)
+		}
+		st := warm()
+		mustIngest(t, st, sum, defaultIngestOptions())
+
+		row := st.Units[repoPrefix+"whale"]
+		if got := row.Tests["TestA"]; got != 400 {
+			t.Errorf("TestA = %v, want the prior 400 kept; a failed run must not reweight it", got)
+		}
+		if want := []string{"TestA", "TestB", "TestC"}; strings.Join(names(st), ",") != strings.Join(want, ",") {
+			t.Errorf("per-test rows = %v, want %v kept intact", names(st), want)
+		}
+	})
+
+	t.Run("a partial capture updates weights but prunes nothing", func(t *testing.T) {
+		// Only one of the whale's three -run slices uploaded its artifact.
+		// The names it did not carry are not deleted tests, they are
+		// unreported ones.
+		sum, err := parseEvents(stream(
+			event("pass", repoPrefix+"whale", "", 300),
+			event("pass", repoPrefix+"whale", "TestA", 300),
+			event("pass", repoPrefix+"pool", "", 120),
+		))
+		if err != nil {
+			t.Fatal(err)
+		}
+		st := warm()
+		rep := mustIngest(t, st, sum, defaultIngestOptions())
+
+		if want := []string{"TestA", "TestB", "TestC"}; strings.Join(names(st), ",") != strings.Join(want, ",") {
+			t.Fatalf("per-test rows = %v, want %v — a partial capture deleted the unreported tests", names(st), want)
+		}
+		if got := st.Units[repoPrefix+"whale"].Tests["TestA"]; got != 350 { // 0.5*300 + 0.5*400
+			t.Errorf("TestA = %v, want the EWMA 350; reported weights should still merge", got)
+		}
+		if len(rep.PartialCaptures) != 1 {
+			t.Fatalf("partial captures = %v, want the shortfall reported", rep.PartialCaptures)
+		}
+		if !strings.Contains(rep.PartialCaptures[0], "reported 1 of 3") {
+			t.Errorf("report does not say how short the batch was: %q", rep.PartialCaptures[0])
+		}
+		var out bytes.Buffer
+		_ = rep.write(&out, repoPrefix)
+		if !strings.Contains(out.String(), "partial captures") {
+			t.Errorf("the shortfall is not visible in the job log:\n%s", out.String())
+		}
+	})
+
+	t.Run("a complete capture does prune a deleted test", func(t *testing.T) {
+		// All three slices reported and TestC is gone: that is a real
+		// deletion or rename, and keeping its weight would misdirect a
+		// future slice.
+		sum, err := parseEvents(stream(
+			event("pass", repoPrefix+"whale", "", 300),
+			event("pass", repoPrefix+"whale", "TestA", 300),
+			event("pass", repoPrefix+"whale", "", 300),
+			event("pass", repoPrefix+"whale", "TestB", 300),
+			event("pass", repoPrefix+"whale", "", 300),
+			event("pass", repoPrefix+"pool", "", 120),
+		))
+		if err != nil {
+			t.Fatal(err)
+		}
+		st := warm()
+		rep := mustIngest(t, st, sum, defaultIngestOptions())
+
+		if want := []string{"TestA", "TestB"}; strings.Join(names(st), ",") != strings.Join(want, ",") {
+			t.Errorf("per-test rows = %v, want %v — a complete capture must prune the deleted test", names(st), want)
+		}
+		if len(rep.PartialCaptures) != 0 {
+			t.Errorf("a complete capture was reported as partial: %v", rep.PartialCaptures)
+		}
+	})
+
+	t.Run("an un-split package needs only one invocation to count as covered", func(t *testing.T) {
+		st := newStore(canonicalFlags(true, 100))
+		st.Units[repoPrefix+"whale"] = &UnitStat{
+			Seconds: 900, Samples: 6,
+			Tests: map[string]float64{"TestA": 400, "TestGone": 300},
+		}
+		sum, err := parseEvents(stream(
+			event("pass", repoPrefix+"whale", "", 900),
+			event("pass", repoPrefix+"whale", "TestA", 500),
+			event("pass", repoPrefix+"whale", "TestB", 300),
+			event("pass", repoPrefix+"pool", "", 120),
+		))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustIngest(t, st, sum, defaultIngestOptions())
+		if want := []string{"TestA", "TestB"}; strings.Join(names(st), ",") != strings.Join(want, ",") {
+			t.Errorf("per-test rows = %v, want %v", names(st), want)
+		}
+	})
+}
+
+func TestExpectedRunsPerSplitPolicy(t *testing.T) {
+	cases := []struct {
+		policy string
+		into   int
+		want   int
+	}{
+		{splitNone, 0, 1},
+		{splitNone, 6, 1},
+		{splitCount, 6, 6},
+		{splitRun, 3, 3},
+		// A policy recorded as split but with an incoherent width still
+		// expects at least one invocation, never zero — otherwise every
+		// batch would count as complete.
+		{splitRun, 1, 1},
+		{splitCount, 0, 1},
+	}
+	for _, tc := range cases {
+		if got := expectedRuns(tc.policy, tc.into); got != tc.want {
+			t.Errorf("expectedRuns(%q,%d) = %d, want %d", tc.policy, tc.into, got, tc.want)
+		}
 	}
 }

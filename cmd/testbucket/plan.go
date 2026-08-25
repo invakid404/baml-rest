@@ -478,11 +478,35 @@ func (d *planDocument) matrixJSON() ([]byte, error) {
 
 func round1(f float64) float64 { return float64(int64(f*10+0.5)) / 10 }
 
+// errWriter records the first write failure and swallows the rest, so a
+// report built from dozens of Fprintf calls can be checked once at the end
+// instead of threading an error through every line.
+type errWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (e *errWriter) Write(p []byte) (int, error) {
+	if e.err != nil {
+		// Report the length as written: the caller is mid-report and the
+		// first error is the one worth keeping.
+		return len(p), nil
+	}
+	n, err := e.w.Write(p)
+	if err != nil {
+		e.err = err
+	}
+	return n, err
+}
+
 // writeSummary prints the human report. It goes to the job log (stderr when
 // the matrix is on stdout) precisely so that staleness is never silent: the
 // loaded-vs-missing block is the whole early-warning system for a store
-// that expired out of the Actions cache.
-func (d *planDocument) writeSummary(w io.Writer, shortenPrefix string) {
+// that expired out of the Actions cache — which is why a failure to write it
+// is returned rather than dropped.
+func (d *planDocument) writeSummary(out io.Writer, shortenPrefix string) error {
+	ew := &errWriter{w: out}
+	w := io.Writer(ew)
 	s := d.Summary
 	fmt.Fprintf(w, "testbucket plan — K=%d, algorithm=%s, flags %q\n", d.K, d.Algorithm, d.Flags)
 	fmt.Fprintf(w, "store: %s", d.StorePath)
@@ -516,7 +540,7 @@ func (d *planDocument) writeSummary(w io.Writer, shortenPrefix string) {
 	if len(s.DriftAdded) > 0 || len(s.DriftRemoved) > 0 {
 		fmt.Fprintf(tw, "  coverage drift vs store\t+%d / -%d\t%s\n", len(s.DriftAdded), len(s.DriftRemoved), truncList(append(append([]string{}, s.DriftAdded...), s.DriftRemoved...), 3))
 	}
-	tw.Flush()
+	_ = tw.Flush()
 	if len(s.MissingPackages) > 0 {
 		fmt.Fprintf(w, "  estimated packages: %s\n", truncList(s.MissingPackages, 8))
 	}
@@ -527,7 +551,7 @@ func (d *planDocument) writeSummary(w io.Writer, shortenPrefix string) {
 	fmt.Fprintf(tw, "  makespan (heaviest)\t%s\n", humanSeconds(s.MakespanSeconds))
 	fmt.Fprintf(tw, "  lightest\t%s\n", humanSeconds(s.LightestSeconds))
 	fmt.Fprintf(tw, "  imbalance over ideal\t%.1f%%\n", s.ImbalancePct)
-	tw.Flush()
+	_ = tw.Flush()
 
 	fmt.Fprintf(w, "\nbuckets\n")
 	tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
@@ -543,7 +567,7 @@ func (d *planDocument) writeSummary(w io.Writer, shortenPrefix string) {
 		}
 		fmt.Fprintf(tw, "  %d\t%.1fs\t%s\t%s\n", b.Index, b.Seconds, node, truncList(names, 6))
 	}
-	tw.Flush()
+	_ = tw.Flush()
 
 	if len(d.Notes) > 0 {
 		fmt.Fprintf(w, "\nsplit notes\n")
@@ -551,11 +575,12 @@ func (d *planDocument) writeSummary(w io.Writer, shortenPrefix string) {
 			fmt.Fprintf(w, "  - %s\n", shortenID(n, shortenPrefix))
 		}
 	}
-	fmt.Fprintf(w, "\ncoverage gate: PASS — every live package, every runnable (test, example\n")
-	fmt.Fprintf(w, "or fuzz target) of every name-sliced package, and every count-shard of\n")
-	fmt.Fprintf(w, "every sharded package is assigned to exactly one bucket; each sharded\n")
-	fmt.Fprintf(w, "package's shards add back up to the requested -count.\n")
-	fmt.Fprintf(w, "execution model: -p=%d, so a bucket's estimate is its serial wall time.\n", serialPackages)
+	_, _ = fmt.Fprintf(w, "\ncoverage gate: PASS — every live package, every runnable (test, example\n")
+	_, _ = fmt.Fprintf(w, "or fuzz target) of every name-sliced package, and every count-shard of\n")
+	_, _ = fmt.Fprintf(w, "every sharded package is assigned to exactly one bucket; each sharded\n")
+	_, _ = fmt.Fprintf(w, "package's shards add back up to the requested -count.\n")
+	_, _ = fmt.Fprintf(w, "execution model: -p=%d, so a bucket's estimate is its serial wall time.\n", serialPackages)
+	return ew.err
 }
 
 // shortenID trims the repo's import-path prefix for display only. The
@@ -609,11 +634,11 @@ func sharedPrefix(a, b string) string {
 	return a[:i]
 }
 
-func truncList(items []string, max int) string {
-	if len(items) <= max {
+func truncList(items []string, limit int) string {
+	if len(items) <= limit {
 		return strings.Join(items, ", ")
 	}
-	return fmt.Sprintf("%s, … (+%d more)", strings.Join(items[:max], ", "), len(items)-max)
+	return fmt.Sprintf("%s, … (+%d more)", strings.Join(items[:limit], ", "), len(items)-limit)
 }
 
 func firstNonEmpty(vals ...string) string {

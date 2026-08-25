@@ -144,17 +144,17 @@ func karmarkarKarp(items []Item, k int) [][]Item {
 	final := tuples[0]
 	// Recompute true loads: the running `load` values are normalised
 	// differences, not sums.
-	real := make([]kkPart, k)
+	loaded := make([]kkPart, k)
 	for idx, p := range final.parts {
 		total := 0.0
 		for _, it := range p.items {
 			total += it.Weight
 		}
-		real[idx] = kkPart{load: total, items: p.items}
+		loaded[idx] = kkPart{load: total, items: p.items}
 	}
-	sortParts(real)
-	for idx := range real {
-		buckets[idx] = sortItems(real[idx].items)
+	sortParts(loaded)
+	for idx := range loaded {
+		buckets[idx] = sortItems(loaded[idx].items)
 	}
 	return buckets
 }
@@ -241,15 +241,15 @@ func longestProcessingTime(items []Item, k int) [][]Item {
 // makespan is the load of the heaviest bucket: the wall-time the matrix
 // actually costs.
 func makespan(buckets [][]Item) float64 {
-	max := 0.0
+	heaviest := 0.0
 	for _, b := range buckets {
 		total := 0.0
 		for _, it := range b {
 			total += it.Weight
 		}
-		if total > max {
-			max = total
+		if total > heaviest {
+			heaviest = total
 		}
 	}
-	return max
+	return heaviest
 }

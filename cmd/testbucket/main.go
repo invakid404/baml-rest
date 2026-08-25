@@ -46,6 +46,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -107,6 +108,7 @@ func runPlan(args []string) error {
 	nodePrefixes := fs.String("node-prefixes", "adapters", "comma-separated package-dir prefixes whose buckets need Node set up")
 	eventsDir := fs.String("events-dir", "", "if set, emitted invocations add -json and tee events into this directory")
 	staleAfter := fs.Duration("stale-after", 14*24*time.Hour, "warn when the store was recorded longer ago than this (0 disables)")
+	toolchainTimeout := fs.Duration("toolchain-timeout", 10*time.Minute, "deadline for each `go` subprocess (go work edit / go list / go test -list); 0 disables")
 	var excludes stringList
 	fs.Var(&excludes, "exclude-module", "module dir (glob) to leave out of the module set; repeatable, replaces the defaults")
 	if err := fs.Parse(args); err != nil {
@@ -130,12 +132,19 @@ func runPlan(args []string) error {
 		return err
 	}
 
-	repoRoot, err := findRepoRoot(".")
-	if err != nil && *live == "" {
-		return err
+	// Every `go` subprocess runs under this deadline, so a hung toolchain
+	// fails the plan step with a clear error instead of holding the job
+	// open until the workflow's own timeout kills it with no diagnosis.
+	ctx, cancel := toolchainContext(*toolchainTimeout)
+	defer cancel()
+
+	repoRoot, rootErr := findRepoRoot(".")
+	if rootErr != nil && *live == "" {
+		return rootErr
 	}
 
 	var livePkgs []LivePackage
+	var err error
 	if *live != "" {
 		livePkgs, err = loadLivePackages(*live)
 		if err != nil {
@@ -146,11 +155,11 @@ func runPlan(args []string) error {
 		if len(excludes) > 0 {
 			ex = excludes
 		}
-		mods, err := discoverModules(repoRoot, ex)
+		mods, err := discoverModules(ctx, repoRoot, ex)
 		if err != nil {
 			return err
 		}
-		livePkgs, err = listPackages(repoRoot, mods)
+		livePkgs, err = listPackages(ctx, repoRoot, mods)
 		if err != nil {
 			return err
 		}
@@ -162,7 +171,17 @@ func runPlan(args []string) error {
 	}
 
 	opt.Live = livePkgs
-	opt.Runnables = func(p LivePackage) ([]string, error) { return listRunnableNames(repoRoot, p) }
+	opt.Runnables = func(p LivePackage) ([]string, error) {
+		// --live can supply the package set without a repo root, but
+		// resolving runnable names cannot: listRunnableNames would run the
+		// toolchain from the process working directory, or from the wrong
+		// module for a GOWORK=off package, and report a confusing
+		// `go test -list` failure. Fail with the real cause instead.
+		if rootErr != nil {
+			return nil, fmt.Errorf("cannot resolve the runnable set for %s (flagged split=run): no repo root: %w", p.ImportPath, rootErr)
+		}
+		return listRunnableNames(ctx, repoRoot, p)
+	}
 
 	doc, err := buildPlan(st, reason, opt)
 	if err != nil {
@@ -181,14 +200,21 @@ func runPlan(args []string) error {
 	if *asJSON {
 		summaryOut = os.Stderr
 	}
-	doc.writeSummary(summaryOut, commonImportPrefix(livePkgs))
+	if err := doc.writeSummary(summaryOut, commonImportPrefix(livePkgs)); err != nil {
+		return fmt.Errorf("write plan summary: %w", err)
+	}
 
 	if *asJSON {
 		matrix, err := doc.matrixJSON()
 		if err != nil {
 			return err
 		}
-		fmt.Println(string(matrix))
+		// A short write here is the difference between a matrix and a
+		// truncated one; `matrix=$(testbucket plan --json)` would happily
+		// consume the fragment and fan out the wrong jobs.
+		if _, err := fmt.Println(string(matrix)); err != nil {
+			return fmt.Errorf("write matrix: %w", err)
+		}
 	}
 	return nil
 }
@@ -204,6 +230,7 @@ func runIngest(args []string) error {
 	minShard := fs.Float64("min-shard-seconds", 30, "never slice a unit into pieces smaller than this; each slice costs a whole CI job's fixed overhead")
 	live := fs.String("live", "", "read the live package set from this JSON file instead of running go list")
 	noGoList := fs.Bool("no-golist", false, "skip go list; record coverage from the observed events only (no row pruning)")
+	toolchainTimeout := fs.Duration("toolchain-timeout", 10*time.Minute, "deadline for each `go` subprocess; 0 disables")
 	var in stringList
 	fs.Var(&in, "in", "go test -json file to ingest, or - for stdin; repeatable (extra positional args also count)")
 	var excludes stringList
@@ -268,6 +295,8 @@ func runIngest(args []string) error {
 		}
 		authoritative = true
 	case !*noGoList:
+		ctx, cancel := toolchainContext(*toolchainTimeout)
+		defer cancel()
 		repoRoot, err := findRepoRoot(".")
 		if err != nil {
 			return err
@@ -276,11 +305,11 @@ func runIngest(args []string) error {
 		if len(excludes) > 0 {
 			ex = excludes
 		}
-		mods, err := discoverModules(repoRoot, ex)
+		mods, err := discoverModules(ctx, repoRoot, ex)
 		if err != nil {
 			return err
 		}
-		livePkgs, err = listPackages(repoRoot, mods)
+		livePkgs, err = listPackages(ctx, repoRoot, mods)
 		if err != nil {
 			return err
 		}
@@ -309,20 +338,39 @@ func runIngest(args []string) error {
 	if err := st.save(*store); err != nil {
 		return err
 	}
-	rep.write(os.Stderr, commonImportPrefix(livePkgs))
+	if err := rep.write(os.Stderr, commonImportPrefix(livePkgs)); err != nil {
+		return fmt.Errorf("write ingest report: %w", err)
+	}
 	return nil
 }
 
-func writeJSONFile(path string, v any) error {
-	f, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("create %s: %w", path, err)
+func writeJSONFile(path string, v any) (err error) {
+	f, cerr := os.Create(path)
+	if cerr != nil {
+		return fmt.Errorf("create %s: %w", path, cerr)
 	}
-	defer f.Close()
+	// The close error is the one that matters here: a buffered short write
+	// surfaces only on close, and a silently truncated --shard-plan
+	// artifact is a debugging aid that lies.
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close %s: %w", path, closeErr)
+		}
+	}()
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(v); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil
+}
+
+// toolchainContext bounds every `go` subprocess. A zero timeout disables the
+// deadline, for the rare local run where a cold module download legitimately
+// takes longer than any sensible cap.
+func toolchainContext(timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return context.WithCancel(context.Background())
+	}
+	return context.WithTimeout(context.Background(), timeout)
 }

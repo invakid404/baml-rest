@@ -161,21 +161,22 @@ type ingestOptions struct {
 const runUpgradeFraction = 0.5
 
 type ingestReport struct {
-	Updated      []string
-	New          []string
-	SkippedFail  []string
-	Pruned       []string
-	Whales       []string
-	Unflagged    []string
-	TotalSeconds float64
-	Threshold    float64
-	Alpha        float64
-	Events       int
-	Malformed    int
-	Coverage     int
-	CoverageFrom string
-	FlagsReset   string
-	Subtests     int
+	Updated         []string
+	New             []string
+	SkippedFail     []string
+	Pruned          []string
+	Whales          []string
+	Unflagged       []string
+	TotalSeconds    float64
+	Threshold       float64
+	Alpha           float64
+	Events          int
+	Malformed       int
+	Coverage        int
+	CoverageFrom    string
+	FlagsReset      string
+	Subtests        int
+	PartialCaptures []string
 }
 
 // validate rejects settings that would silently corrupt the store rather
@@ -281,6 +282,11 @@ func applyIngest(st *Store, sum *eventSummary, opt ingestOptions) (*ingestReport
 
 	for _, pkg := range sortedKeys(st.Units) {
 		row := st.Units[pkg]
+		// The split policy in force when this batch was CAPTURED, not the
+		// one about to be derived: it says how many invocations were
+		// supposed to report this package, which is what makes a batch
+		// judgeable as complete or partial.
+		capturedPolicy, capturedInto := row.splitPolicy(), row.SplitInto
 		if !row.measured() || rep.Threshold <= 0 || row.Seconds <= rep.Threshold {
 			if row.splitPolicy() != splitNone {
 				rep.Unflagged = append(rep.Unflagged, pkg)
@@ -314,11 +320,18 @@ func applyIngest(st *Store, sum *eventSummary, opt ingestOptions) (*ingestReport
 		// Fold this batch's per-test weights in before deciding whether the
 		// package can be name-sliced, so a package that becomes a whale on
 		// the same run it was measured can go straight to -run slicing.
-		if fresh := sum.TestSeconds[pkg]; len(fresh) > 0 {
+		//
+		// A FAILED package contributes nothing here, for the same reason it
+		// contributes no package weight: a run that aborted under -race or
+		// hit its -timeout reports pass events only for the tests that
+		// finished before it died, and blending that partial picture in
+		// would quietly bias the slices toward whatever ran first.
+		if fresh := sum.TestSeconds[pkg]; len(fresh) > 0 && !sum.Failed[pkg] {
 			if row.Tests == nil {
 				row.Tests = map[string]float64{}
 			}
-			for name, sec := range fresh {
+			for _, name := range sortedKeys(fresh) {
+				sec := fresh[name]
 				if sec <= 0 {
 					// A sub-millisecond test reports 0.00; a zero row
 					// carries no weight information and is treated as
@@ -330,10 +343,24 @@ func applyIngest(st *Store, sum *eventSummary, opt ingestOptions) (*ingestReport
 			}
 			// A test that no longer reports has been renamed or deleted;
 			// keeping its weight would misdirect a future slice.
-			for name := range row.Tests {
-				if _, ok := fresh[name]; !ok {
-					delete(row.Tests, name)
+			//
+			// But prune ONLY when this batch actually covered the package.
+			// A weight is smoothed by EWMA and recovers from one bad run; a
+			// deletion is not, so a partial capture — a missing bucket
+			// artifact, a cancelled job, one -run slice of several that
+			// never uploaded — would erase the per-test picture that -run
+			// slicing depends on and silently demote the package back to
+			// count-sharding on the next plan.
+			if batchCoveredPackage(sum.PackageRuns[pkg], capturedPolicy, capturedInto) {
+				for name := range row.Tests {
+					if _, ok := fresh[name]; !ok {
+						delete(row.Tests, name)
+					}
 				}
+			} else {
+				rep.PartialCaptures = append(rep.PartialCaptures, fmt.Sprintf(
+					"%s reported %d of %d expected invocations; per-test rows updated but not pruned",
+					pkg, sum.PackageRuns[pkg], expectedRuns(capturedPolicy, capturedInto)))
 			}
 		}
 
@@ -393,6 +420,24 @@ func sumSeconds(values []float64) float64 {
 	return float64(micros) / 1e6
 }
 
+// expectedRuns is how many package-level pass events a complete capture of
+// this package should contain under the split policy that produced it: one
+// per shard or slice, and one for an un-split package.
+func expectedRuns(policy string, into int) int {
+	if policy == splitNone || into < 2 {
+		return 1
+	}
+	return into
+}
+
+// batchCoveredPackage reports whether the batch looks like a complete
+// capture of the package. More invocations than expected is fine (a re-run,
+// or a policy that shrank between plan and record); fewer is the partial
+// case that must not drive deletions.
+func batchCoveredPackage(runs int, policy string, into int) bool {
+	return runs >= expectedRuns(policy, into)
+}
+
 // whaleThreshold is total/K — the point above which a single package alone
 // sets the makespan and no value of K can help until it is split.
 func whaleThreshold(total float64, opt ingestOptions) float64 {
@@ -425,7 +470,9 @@ func dedupe(in []string) []string {
 	return out
 }
 
-func (r *ingestReport) write(w io.Writer, prefix string) {
+func (r *ingestReport) write(out io.Writer, prefix string) error {
+	ew := &errWriter{w: out}
+	w := io.Writer(ew)
 	fmt.Fprintf(w, "testbucket ingest — %d events (%d unparsable lines), alpha=%.2f\n", r.Events, r.Malformed, r.Alpha)
 	if r.Subtests > 0 {
 		fmt.Fprintf(w, "  subtest events seen %d (not weighed: already inside their parent's elapsed)\n", r.Subtests)
@@ -449,10 +496,17 @@ func (r *ingestReport) write(w io.Writer, prefix string) {
 			fmt.Fprintf(w, "    - %s\n", shortenID(wl, prefix))
 		}
 	}
+	if len(r.PartialCaptures) > 0 {
+		fmt.Fprintf(w, "  partial captures (per-test rows kept, not pruned):\n")
+		for _, pc := range r.PartialCaptures {
+			fmt.Fprintf(w, "    - %s\n", shortenID(pc, prefix))
+		}
+	}
 	if len(r.Unflagged) > 0 {
 		fmt.Fprintf(w, "  no longer whales   %d%s\n", len(r.Unflagged), listSuffix(r.Unflagged, prefix))
 	}
 	fmt.Fprintf(w, "  coverage recorded  %d packages (source: %s)\n", r.Coverage, r.CoverageFrom)
+	return ew.err
 }
 
 func listSuffix(items []string, prefix string) string {

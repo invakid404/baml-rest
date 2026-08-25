@@ -65,7 +65,7 @@ func TestBuildPlanColdStartStillProducesACompleteMatrix(t *testing.T) {
 			}
 
 			var out bytes.Buffer
-			doc.writeSummary(&out, repoPrefix)
+			_ = doc.writeSummary(&out, repoPrefix)
 			if !strings.Contains(out.String(), "COLD START") {
 				t.Errorf("the summary does not announce the cold start:\n%s", out.String())
 			}
@@ -114,7 +114,7 @@ func TestBuildPlanLoadedVsMissingSummary(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	doc.writeSummary(&out, repoPrefix)
+	_ = doc.writeSummary(&out, repoPrefix)
 	text := out.String()
 	for _, want := range []string{
 		"loaded vs missing",
@@ -174,7 +174,7 @@ func TestBuildPlanAnnouncesAStaleStore(t *testing.T) {
 		t.Fatal("a 38-day-old store was not reported stale against a 14-day threshold")
 	}
 	var out bytes.Buffer
-	doc.writeSummary(&out, repoPrefix)
+	_ = doc.writeSummary(&out, repoPrefix)
 	if !strings.Contains(out.String(), "STALE STORE") {
 		t.Errorf("summary does not announce staleness:\n%s", out.String())
 	}
@@ -646,4 +646,61 @@ func countPackageArgs(args []string) int {
 		n++
 	}
 	return n
+}
+
+// failingWriter fails after letting n bytes through, modelling a full pipe
+// or a closed redirect target.
+type failingWriter struct {
+	budget int
+}
+
+func (f *failingWriter) Write(p []byte) (int, error) {
+	if f.budget <= 0 {
+		return 0, errTestOnly("write: no space left on device")
+	}
+	if len(p) > f.budget {
+		n := f.budget
+		f.budget = 0
+		return n, errTestOnly("write: no space left on device")
+	}
+	f.budget -= len(p)
+	return len(p), nil
+}
+
+func TestReportWritesPropagateFailure(t *testing.T) {
+	// A summary that could not be written must not be reported as written.
+	// The loaded-vs-missing block is the only early warning for a store
+	// that expired out of the cache, so losing it silently defeats the
+	// mitigation it exists to provide.
+	live := syntheticLive()
+	doc := mustPlan(t, syntheticStore(), "", defaultPlanOptions(live))
+
+	for _, budget := range []int{0, 40, 400} {
+		if err := doc.writeSummary(&failingWriter{budget: budget}, repoPrefix); err == nil {
+			t.Errorf("budget=%d: a failed summary write was reported as success", budget)
+		}
+	}
+
+	var ok bytes.Buffer
+	if err := doc.writeSummary(&ok, repoPrefix); err != nil {
+		t.Errorf("a healthy write returned an error: %v", err)
+	}
+	if ok.Len() == 0 {
+		t.Error("the healthy write produced nothing")
+	}
+}
+
+func TestIngestReportWritePropagatesFailure(t *testing.T) {
+	sum, err := parseEvents(stream(event("pass", repoPrefix+"pool", "", 120)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep := mustIngest(t, syntheticStore(), sum, defaultIngestOptions())
+	if err := rep.write(&failingWriter{budget: 10}, repoPrefix); err == nil {
+		t.Error("a failed ingest-report write was reported as success")
+	}
+	var ok bytes.Buffer
+	if err := rep.write(&ok, repoPrefix); err != nil {
+		t.Errorf("a healthy write returned an error: %v", err)
+	}
 }

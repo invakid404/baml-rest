@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -61,11 +62,20 @@ func findRepoRoot(dir string) (string, error) {
 // workspaceMembers reads go.work through `go work edit -json` rather than
 // parsing it: the file in this repo is mostly a long rationale comment, and
 // the toolchain is the only correct parser of the directive it wraps.
-func workspaceMembers(repoRoot string) (map[string]bool, error) {
+func workspaceMembers(ctx context.Context, repoRoot string) (map[string]bool, error) {
 	if _, err := os.Stat(filepath.Join(repoRoot, "go.work")); err != nil {
-		return map[string]bool{}, nil
+		if os.IsNotExist(err) {
+			// A repo with no workspace file is a legitimate shape: every
+			// module then resolves standalone.
+			return map[string]bool{}, nil
+		}
+		// Any other stat failure — a permission problem, a broken symlink —
+		// must NOT be read as "there is no workspace". Doing so would flip
+		// every module to GOWORK=off and pack each as a whole-module atom,
+		// silently rescheduling the entire tree on the back of an I/O error.
+		return nil, fmt.Errorf("stat go.work in %s: %w", repoRoot, err)
 	}
-	cmd := exec.Command("go", "work", "edit", "-json")
+	cmd := exec.CommandContext(ctx, "go", "work", "edit", "-json")
 	cmd.Dir = repoRoot
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
@@ -90,8 +100,8 @@ func workspaceMembers(repoRoot string) (map[string]bool, error) {
 
 // discoverModules finds every go.mod under repoRoot that the module set
 // includes, and tags each with the resolution mode its packages must run in.
-func discoverModules(repoRoot string, excludes []string) ([]moduleSpec, error) {
-	members, err := workspaceMembers(repoRoot)
+func discoverModules(ctx context.Context, repoRoot string, excludes []string) ([]moduleSpec, error) {
+	members, err := workspaceMembers(ctx, repoRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +112,12 @@ func discoverModules(repoRoot string, excludes []string) ([]moduleSpec, error) {
 		}
 		if d.IsDir() {
 			name := d.Name()
-			if name == ".git" || name == "node_modules" || name == "vendor" {
+			// testdata is skipped for the same reason the Go toolchain
+			// ignores it: a go.mod fixture there is data, not a module of
+			// this repo. Discovering one would run `go list ./...` inside
+			// it, and a fixture that does not build would abort the whole
+			// plan.
+			if name == ".git" || name == "node_modules" || name == "vendor" || name == "testdata" {
 				return fs.SkipDir
 			}
 			return nil
@@ -134,21 +149,37 @@ func discoverModules(repoRoot string, excludes []string) ([]moduleSpec, error) {
 }
 
 // excluded matches a repo-relative dir against the exclusion patterns,
-// including anything nested beneath an excluded module.
+// including anything nested beneath an excluded module at ANY depth.
+//
+// The pattern is tested against the dir and against every ancestor of it,
+// which is the only formulation that works for a glob. The three checks this
+// replaced covered one level and could not nest a glob at all: `*` does not
+// cross `/`, so "adapters/adapter_*/*" misses "adapters/adapter_x/a/b", and
+// the literal prefix check compared against the un-expanded pattern text
+// ("adapters/adapter_*/"), which matches nothing. A module two levels under
+// an excluded adapter was therefore discovered and scheduled, contradicting
+// the documented module set.
+//
+// Matching ancestors cannot over-exclude: a pattern only ever matches a
+// COMPLETE path element sequence, so "nativeserve" excludes "nativeserve"
+// and "nativeserve/x" but never "nativeservefoo", and "adapters/adapter_*"
+// never touches "adapters/common". The tests pin both directions, because
+// dropping a module here silently drops every test in it.
 func excluded(rel string, patterns []string) bool {
 	for _, pat := range patterns {
 		pat = strings.TrimSpace(strings.TrimSuffix(pat, "/"))
 		if pat == "" {
 			continue
 		}
-		if ok, _ := path.Match(pat, rel); ok {
-			return true
-		}
-		if ok, _ := path.Match(pat+"/*", rel); ok {
-			return true
-		}
-		if strings.HasPrefix(rel, pat+"/") {
-			return true
+		for cur := path.Clean(rel); ; cur = path.Dir(cur) {
+			if ok, _ := path.Match(pat, cur); ok {
+				return true
+			}
+			if !strings.Contains(cur, "/") {
+				// path.Dir of a single element is ".", which can only
+				// match a pattern of "." — not a shape the module set uses.
+				break
+			}
 		}
 	}
 	return false
@@ -158,12 +189,12 @@ func excluded(rel string, patterns []string) bool {
 // run. A package with no _test.go files is reported with HasTests=false: it
 // is not bucketed (running it is a no-op) but the moment it gains a test
 // file the next `go list` schedules it, with no store update needed.
-func listPackages(repoRoot string, mods []moduleSpec) ([]LivePackage, error) {
+func listPackages(ctx context.Context, repoRoot string, mods []moduleSpec) ([]LivePackage, error) {
 	var out []LivePackage
 	seen := map[string]bool{}
 	for _, m := range mods {
 		const format = "{{.ImportPath}}\t{{.Dir}}\t{{len .TestGoFiles}}\t{{len .XTestGoFiles}}"
-		cmd := exec.Command("go", "list", "-f", format, "./...")
+		cmd := exec.CommandContext(ctx, "go", "list", "-f", format, "./...")
 		cmd.Dir = filepath.Join(repoRoot, filepath.FromSlash(m.Dir))
 		cmd.Env = os.Environ()
 		if m.Mode == modeOff {
@@ -249,7 +280,7 @@ func isRunnable(name string) bool {
 // examples the test binary actually registers, so an example with no Output
 // comment — compiled but never run — never enters the universe the gate
 // insists on covering.
-func listRunnableNames(repoRoot string, p LivePackage) ([]string, error) {
+func listRunnableNames(ctx context.Context, repoRoot string, p LivePackage) ([]string, error) {
 	target := p.ImportPath
 	dir := repoRoot
 	env := os.Environ()
@@ -258,7 +289,7 @@ func listRunnableNames(repoRoot string, p LivePackage) ([]string, error) {
 		env = append(env, "GOWORK=off")
 		target = p.pattern()
 	}
-	cmd := exec.Command("go", "test", "-list", ".*", target)
+	cmd := exec.CommandContext(ctx, "go", "test", "-list", ".*", target)
 	cmd.Dir = dir
 	cmd.Env = env
 	var stdout, stderr bytes.Buffer
