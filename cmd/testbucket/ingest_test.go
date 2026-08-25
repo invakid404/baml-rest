@@ -1656,3 +1656,81 @@ func TestWhaleReportSurvivesANegativeTop(t *testing.T) {
 		}
 	}
 }
+
+func TestCountShardNeverMultipliesTheSweep(t *testing.T) {
+	// A count-shard divides ITERATIONS. It cannot divide more finely than the
+	// sweep has iterations to give, and past that point `-count=ceil(base/S)`
+	// stops rounding and starts duplicating: at -count=1 a six-way split
+	// gives every shard ceil(1/6) = 1, which is the whole package, six times
+	// over, for six times the work.
+	//
+	// The coverage gate does not catch this — it bounds the aggregate sweep
+	// from BELOW (6 >= 1 is true) and says nothing about waste above. Found
+	// while rehearsing the bucketed workflow at -count=1.
+	whale := []string{
+		event("pass", repoPrefix+"whale", "", 900),
+		event("pass", repoPrefix+"whale", "TestHuge", 500),
+		event("pass", repoPrefix+"whale", "TestRest", 380),
+	}
+	for i := 0; i < 10; i++ {
+		whale = append(whale, event("pass", fmt.Sprintf("%splankton%02d", repoPrefix, i), "", 20))
+	}
+
+	cases := []struct {
+		name       string
+		baseCount  int
+		wantSplit  bool
+		wantShards int
+	}{
+		{name: "the production sweep divides cleanly", baseCount: 100, wantSplit: true, wantShards: 6},
+		{name: "twelve iterations still support six shards of two", baseCount: 12, wantSplit: true, wantShards: 6},
+		{name: "ten iterations narrow the split to five", baseCount: 10, wantSplit: true, wantShards: 5},
+		{name: "four iterations narrow it to two", baseCount: 4, wantSplit: true, wantShards: 2},
+		{name: "three iterations cannot support two shards of two", baseCount: 3, wantSplit: false},
+		{name: "a single iteration cannot be divided at all", baseCount: 1, wantSplit: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sum, err := parseEvents(stream(whale...))
+			if err != nil {
+				t.Fatal(err)
+			}
+			st := newStore(canonicalFlags(true, tc.baseCount))
+			opt := defaultIngestOptions()
+			opt.Count = tc.baseCount
+			mustIngest(t, st, sum, opt)
+
+			row := st.Units[repoPrefix+"whale"]
+			if !tc.wantSplit {
+				if row.splitPolicy() != splitNone {
+					t.Fatalf("-count=%d was split %q x%d (%s); it cannot divide",
+						tc.baseCount, row.Split, row.SplitInto, row.SplitReason)
+				}
+				return
+			}
+			if row.Split != splitCount {
+				t.Fatalf("-count=%d selected %q, want %q", tc.baseCount, row.Split, splitCount)
+			}
+			if row.SplitInto != tc.wantShards {
+				t.Errorf("-count=%d split into %d, want %d", tc.baseCount, row.SplitInto, tc.wantShards)
+			}
+
+			// The property that actually matters: each shard runs strictly
+			// fewer iterations than the whole, and the aggregate stays close
+			// to the requested sweep rather than multiplying it.
+			per := ceilDiv(tc.baseCount, row.SplitInto)
+			if per >= tc.baseCount {
+				t.Errorf("each shard runs -count=%d, no fewer than the whole package's %d", per, tc.baseCount)
+			}
+			aggregate := per * row.SplitInto
+			if aggregate < tc.baseCount {
+				t.Errorf("aggregate -count %d is below the requested %d", aggregate, tc.baseCount)
+			}
+			if waste := float64(aggregate-tc.baseCount) / float64(tc.baseCount); waste > 0.5 {
+				t.Errorf("aggregate -count %d wastes %.0f%% over the requested %d",
+					aggregate, waste*100, tc.baseCount)
+			}
+			t.Logf("-count=%d -> %d shards of -count=%d, aggregate %d", tc.baseCount, row.SplitInto, per, aggregate)
+		})
+	}
+}

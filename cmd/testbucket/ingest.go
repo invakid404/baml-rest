@@ -425,9 +425,25 @@ func applyIngest(st *Store, sum *eventSummary, opt ingestOptions) (*ingestReport
 				shards = affordable
 			}
 		}
+		// A count-shard divides ITERATIONS, so it cannot divide more finely
+		// than the sweep has iterations to give. Requiring at least two per
+		// shard is the count-dimension twin of MinShardSeconds: below it the
+		// rounding in -count=ceil(base/S) stops being rounding and starts
+		// being duplication.
+		//
+		// The degenerate case is not hypothetical — it turned up rehearsing
+		// the bucketed workflow at -count=1, where ceil(1/6) is 1 and a
+		// six-way "split" ran the whole package six times, for six times the
+		// work. The aggregate check in the coverage gate does not catch it,
+		// because 6 >= 1 is perfectly true; the gate bounds the sweep from
+		// below, not the waste from above.
+		if affordable := opt.Count / 2; affordable < shards {
+			shards = affordable
+		}
 		if shards < 2 {
-			// Above the relative threshold but too small in absolute terms
-			// for slicing to pay for itself. Leave it whole.
+			// Above the relative threshold but too small for slicing to pay
+			// for itself — in wall time, or in iterations to divide. Leave
+			// it whole.
 			if row.splitPolicy() != splitNone {
 				rep.Unflagged = append(rep.Unflagged, pkg)
 			}
