@@ -26,18 +26,12 @@ shift
 
 mkdir -p "$(dirname "$events_file")"
 
-# The renderer is jq (preinstalled on GitHub-hosted runners). If it is missing
-# we degrade to passing the raw stream through rather than failing: an ugly log
-# is a far better outcome than a red unit-test job caused by the instrumentation
-# that was supposed to be transparent.
-if command -v jq >/dev/null 2>&1; then
-  render() { jq -j --unbuffered 'select(.Action == "output") | .Output'; }
-else
-  echo "testbucket-capture: jq not found; emitting the raw -json stream" >&2
-  render() { cat; }
-fi
+# Rendering lives in testbucket-render.sh so the bucketed workflow's test job,
+# which runs whole plan-emitted scripts rather than single invocations, replays
+# its stream exactly the same way.
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-go test -json "$@" | tee -a "$events_file" | render
+go test -json "$@" | tee -a "$events_file" | bash "$here/testbucket-render.sh"
 status=${PIPESTATUS[0]}
 
 exit "$status"

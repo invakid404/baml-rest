@@ -1,0 +1,520 @@
+name: Unit Tests (bucketed)
+
+# Phase C of the test-bucketing graph (#656): plan -> test (generated matrix)
+# -> record, running SIDE BY SIDE with unit-tests.yml rather than replacing it.
+#
+# Both workflows fire on the same triggers so the two makespans can be compared
+# on the same commits. Nothing here modifies the existing lanes; Phase D
+# promotes this one and deletes them once the soak gate passes.
+#
+# The mechanism in one paragraph: a cheap `plan` job restores the rolling
+# timing store, partitions the live package set K ways with Karmarkar-Karp, and
+# emits a `fromJSON` matrix. The `test` job fans out over it, each bucket
+# running only its own slice. A master-only `record` job folds the measured
+# timings back in, so the next run's split is better than this one's. The
+# never-drop-a-test coverage gate inside `plan` is what makes the fan-out safe:
+# it refuses to emit a matrix unless every live package lands in exactly one
+# bucket, so a green matrix is a statement about coverage and not just about
+# exit codes.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: unit-tests-bucketed-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.26.5"
+
+  # THE SINGLE K KNOB, shared with unit-tests.yml's record job (#656 decision
+  # 1). It drives BOTH `ingest --whale-k` and `plan --k`, because the
+  # whale-split policy is derived and stored at record time against total/K
+  # while the matrix width is applied at plan time — a K that reached only one
+  # of them would fan out to more buckets without splitting the whales those
+  # buckets need split. Changing lane count is changing this number, and it
+  # settles on the next master record run.
+  TESTBUCKET_K: "6"
+
+  # Where the plan-emitted invocations tee their `go test -json` streams.
+  #
+  # A fixed absolute path rather than $RUNNER_TEMP on purpose: the path is
+  # baked into the script by the PLAN job and executed by the TEST job, and
+  # those are different runners. A literal path is valid in both; an expansion
+  # of a per-job variable would not be.
+  TESTBUCKET_EVENTS_DIR: /tmp/testbucket-events
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1/3 — PLAN. Cheap, and the gate for everything downstream.
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Restore the timing store
+        id: restore
+        uses: actions/cache/restore@v4.2.4
+        with:
+          path: ${{ runner.temp }}/testbucket-store
+          # Prefer this workflow's own store, then fall back to the one
+          # unit-tests.yml's record job seeds. The fallback matters on day one
+          # and after a cache expiry: the bucketed lane inherits the existing
+          # measurements instead of cold-starting into an unbalanced matrix,
+          # and then evolves its own — measured under -p=1, so contention-free
+          # and comparable across runs.
+          key: testbucket-timings-bucketed-v1-${{ github.sha }}
+          restore-keys: |
+            testbucket-timings-bucketed-v1-
+            testbucket-timings-v1-
+
+      - name: Compute the bucket matrix
+        id: plan
+        run: |
+          set -euo pipefail
+          store="$RUNNER_TEMP/testbucket-store/test-timings.json"
+          if [ -f "$store" ]; then
+            echo "restored a store from cache key '${{ steps.restore.outputs.cache-matched-key }}'"
+          else
+            echo "no store in the cache yet — planning from the cold-start mean weight"
+          fi
+
+          # --json puts the fromJSON matrix on stdout and the loaded-vs-missing
+          # summary on stderr, so the summary lands in this log while the
+          # matrix stays machine-clean. --shard-plan writes the full plan for
+          # download. The coverage gate runs inside this command: if any live
+          # package would be left unscheduled it exits non-zero and no matrix
+          # is produced, which fails the fan-out closed rather than open.
+          matrix=$(go run ./cmd/testbucket plan \
+            --k "$TESTBUCKET_K" \
+            --store "$store" \
+            --events-dir "$TESTBUCKET_EVENTS_DIR" \
+            --shard-plan "$RUNNER_TEMP/shard-plan.json" \
+            --json)
+
+          # printf, not echo: the matrix carries \n escapes inside its script
+          # fields, and some shells' echo expands those into real newlines,
+          # which both corrupts the JSON and breaks the single-line
+          # key=value form $GITHUB_OUTPUT expects. printf '%s' never
+          # interprets its argument.
+          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the shard plan
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: testbucket-shard-plan
+          path: ${{ runner.temp }}/shard-plan.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # 2/3 — TEST. One job per bucket, each running only its own slice.
+  test:
+    needs: plan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Each bucket is a K-th of the sweep plus fixed overhead. 30 leaves room
+    # for a badly balanced early run on a cold store without hiding a hang.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+
+    env:
+      # Same CapStress knob the existing lanes carry, so the bucketed runs are
+      # envelope-identical to the ones they are being compared against.
+      BAML_HEAVY_TEST_RUNS: "5"
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Set up Node
+        # Only the bucket holding the codegen/adapter packages shells out to
+        # node; the pure-Go buckets skip the setup, as bamlutils-race already
+        # does. `plan` marks which bucket that is.
+        if: matrix.needs_node
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: "24.18.0"
+
+      - name: Install goimports
+        if: matrix.needs_node
+        run: go install golang.org/x/tools/cmd/goimports@latest
+
+      - name: Run bucket ${{ matrix.bucket }}
+        env:
+          # Passed through the environment and quoted on use rather than
+          # interpolated into the shell: the script is generated data, and
+          # splicing generated text into a command line is how a workflow
+          # grows an injection.
+          BUCKET_SCRIPT: ${{ matrix.script }}
+          BUCKET_NAME: ${{ matrix.name }}
+          BUCKET_EST: ${{ matrix.est_seconds }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$TESTBUCKET_EVENTS_DIR"
+
+          echo "=== $BUCKET_NAME — estimated ${BUCKET_EST}s ==="
+          printf '%s\n' "$BUCKET_SCRIPT" > "$RUNNER_TEMP/bucket.sh"
+          echo "--- invocations ---"
+          cat "$RUNNER_TEMP/bucket.sh"
+          echo "--- output ---"
+
+          # The generated script already carries -json and tees each stream to
+          # $TESTBUCKET_EVENTS_DIR for the record job. Piping its stdout back
+          # through the renderer turns that NDJSON into the plain test log a
+          # human reading a failure expects, exactly as
+          # scripts/testbucket-capture.sh does for the un-bucketed lanes.
+          #
+          # The status taken is the SCRIPT's, never the renderer's: a happy
+          # renderer must not make a red bucket look green.
+          set +e
+          bash "$RUNNER_TEMP/bucket.sh" | bash scripts/testbucket-render.sh
+          status=${PIPESTATUS[0]}
+          set -e
+          exit "$status"
+
+      - name: Upload timing events
+        # if: always() so a red bucket still contributes what it measured;
+        # ingest drops a failed package's weight and keeps the rest.
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: testbucket-events-bucket-${{ matrix.bucket }}
+          path: /tmp/testbucket-events/
+          if-no-files-found: warn
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # ONCE-ONLY SERIAL GATES. Deliberately NOT bucketed (brief decision 5).
+  #
+  # These must run exactly once per commit: the two fresh-tree gates assert
+  # that a generator is idempotent on a clean checkout, which is meaningless
+  # run six times in parallel, and the tag-gated proofs rebuild and reboot
+  # artifacts that would collide. They stay one serial job.
+  #
+  # They are copied verbatim from unit-tests.yml rather than shared, because
+  # Phase C must not modify the workflow it is being compared against. That
+  # means they run twice per commit during the side-by-side period — the
+  # deliberate cost of keeping this workflow a complete replacement candidate.
+  # Phase D deletes the originals along with the old lanes.
+  once-only-gates:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 25
+
+    env:
+      BAML_HEAVY_TEST_RUNS: "5"
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: "24.18.0"
+
+      - name: Install goimports
+        run: go install golang.org/x/tools/cmd/goimports@latest
+
+      - name: Subprocess build + test sanity
+        # The default loop above runs everything under the no-tag build
+        # (which is now the direct in-process worker path). The
+        # `subprocess` tag flips a few key call sites and removes the
+        # recover wrappers in pool + worker; this step
+        # exercises that the tag still compiles cleanly and the
+        # subprocess-only tests pass. Kept narrow on purpose — running
+        # -race -count=100 across every module under subprocess would
+        # roughly double CI wallclock for marginal additional coverage.
+        run: |
+          go build ./...
+          # Route the subprocess-tag sanity build artifact to $RUNNER_TEMP so
+          # it doesn't leave an untracked `serve` binary in the repo root
+          # that would trip the `cmd/regenerate-dynclient fresh-tree gate`
+          # below.
+          go build -tags=subprocess -o "$RUNNER_TEMP/serve-build-sanity" ./cmd/serve
+          go test -tags=subprocess -count=1 ./pool ./worker ./cmd/serve
+          go test -race -tags=subprocess -count=1 ./pool ./worker
+
+      - name: de-BAML S2 artifact profile proofs
+        # Two tag-gated proofs for the serving-cutover S2 artifact contract that
+        # the default loop above cannot run:
+        #
+        #  - `nativeworkerartifact` is the build tag cmd/build/build.sh sets when
+        #    it embeds an isolated-module (natively linked) worker. The tagged
+        #    half of the tag-split host constant only compiles under it, so
+        #    without this step the "this build is the native-capable artifact"
+        #    assertion would be dead code and the tag could silently invert.
+        #
+        #  - `artifactrehearsal` is the LIVE rollback rehearsal: it builds the
+        #    BAML-only rollback worker, boots it through the real go-plugin
+        #    handshake, serves RPCs on it, and requires that a MISLABELLED profile
+        #    stamp — and a well-formed but WRONG release artifact ID — refuse to
+        #    serve. It is tag-gated because the default loop runs every test with
+        #    -race -count=100, and rebuilding and rebooting a worker binary a
+        #    hundred times would dominate that lane.
+        #
+        # The NATIVE-capable artifacts are proved separately, in nanollm-prepare.yml
+        # (`-tags=nativeartifactproof`), because only that lane can build them: they
+        # need CGO and a linked nanollm archive, which this lane deliberately keeps
+        # out. That proof fails rather than skips when the artifacts are missing.
+        #
+        # Both write their build output outside the repo (RUNNER_TEMP / the
+        # test's own temp dir) so the fresh-tree gates below stay clean.
+        run: |
+          go vet -tags=nativeworkerartifact ./cmd/serve
+          go build -tags=subprocess,nativeworkerartifact -o "$RUNNER_TEMP/serve-native-artifact-sanity" ./cmd/serve
+          go test -tags=subprocess,nativeworkerartifact -count=1 ./cmd/serve
+          go vet -tags=artifactrehearsal ./internal/workerboot
+          go test -tags=artifactrehearsal -count=1 -timeout 10m ./internal/workerboot
+
+      - name: Verify framework adapter codegen-emit
+        # Two independent checks per adapter: deterministic emission
+        # (run the emitter twice, byte-compare) and behavioural test
+        # parity (copy the per-adapter module to a tempdir, write the
+        # emitted adapter.go into it, run GOWORK=off go test ./adapter/).
+        # The verifier writes only to tempdirs; the source-tree
+        # adapters/adapter_v*/adapter/ siblings (test harnesses,
+        # dynamic_value.go) are never touched.
+        run: go run ./cmd/verify-framework-adapter
+
+      - name: scripts/sync.sh fresh-tree gate
+        # Fresh-tree gate for the sync.sh / per-adapter BAML-pin contract.
+        # Running sync.sh on a clean checkout must leave every pinned
+        # module's go.mod / go.sum byte-identical: if `go work sync` ever
+        # lifts a pin (the regression fixed by removing adapters/common
+        # from go.work), this step fails with a diff. The verify step
+        # double-asserts the pin matrix via cmd/verify-adapter-pins so a
+        # diff-free-but-wrong state can't slip through either.
+        #
+        # The diff covers ALL Go module metadata, not just adapter paths
+        # (#473). scripts/sync.sh is a bounded fixed-point loop, so a
+        # converged tree re-run must be byte-clean across every go.mod /
+        # go.sum / go.work / go.work.sum. Diffing the whole set here means
+        # a future non-convergence surfaces as a direct "scripts/sync.sh
+        # is not idempotent" failure at this step, instead of leaking into
+        # the confusing "tree dirty before cmd/regenerate-dynclient" error
+        # downstream — which is exactly how #473 manifested.
+        #
+        # go.work.sum is excluded from --exit-code and restored instead:
+        # it's an additive checksum database (not a lockfile), and an
+        # earlier workspace-mode Go command in this job may have appended
+        # module-content sums the committed file lacks. That additive
+        # growth is tolerated repo-wide (see the cmd/regenerate-dynclient
+        # gate below and #442); restoring it to HEAD keeps that tolerance
+        # while the full set below still fails on any go.mod/go.sum drift.
+        run: |
+          git status --porcelain
+          ./scripts/sync.sh
+          git checkout -- go.work.sum 2>/dev/null || true
+          git diff --exit-code -- \
+            go.mod go.sum go.work \
+            '*/go.mod' '*/go.sum'
+
+      - name: cmd/regenerate-dynclient fresh-tree gate
+        # Fresh-tree gate for committed dynclient regeneration artifacts.
+        # The regen tool owns dynclient/internal/generated/**,
+        # dynclient/baml-patched/**, root embed.go, and related provenance.
+        # Running it on a clean checkout must leave the tree byte-identical.
+        # Pairs with PR #299 normalization — without this gate, regen drift
+        # accumulates silently across PRs (the latent-drift class of bug
+        # that produced #299).
+        run: |
+          # go.work.sum may be dirtied by earlier workspace-mode Go commands
+          # (the per-module test loop above appends additive module-content
+          # checksums). Restore the committed version before checking
+          # dynclient-owned drift. This only discards uncommitted go.work.sum
+          # mutations — `git checkout -- go.work.sum` restores it to HEAD,
+          # which already includes any committed PR change, and the full-tree
+          # status check immediately below still fails on every other dirty
+          # file (#442).
+          git checkout -- go.work.sum 2>/dev/null || true
+
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "ERROR: tree is dirty before cmd/regenerate-dynclient."
+            git status --short
+            git diff
+            exit 1
+          fi
+
+          go run ./cmd/regenerate-dynclient
+
+          # go.work.sum is an additive checksum database, not a lockfile.
+          # The regen's transitive `go mod tidy` may append entries that
+          # weren't present at commit time if the Go module proxy has
+          # published new sums since. Restore the committed version so
+          # additive-only sum drift doesn't trip the idempotency gate.
+          git checkout -- go.work.sum 2>/dev/null || true
+
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "ERROR: cmd/regenerate-dynclient is not idempotent on this commit."
+            git status --short
+            echo
+            echo "Tracked diff:"
+            git diff
+            echo
+            echo "Untracked files:"
+            git ls-files --others --exclude-standard
+            exit 1
+          fi
+
+
+  # ---------------------------------------------------------------------------
+  # 3/3 — RECORD. Master-only, exactly as the Phase B path (#656 decision 3).
+  record:
+    needs: [plan, test]
+    # !cancelled() rather than always(): record what a red run measured, but
+    # not a cancelled one whose artifacts are arbitrary partial captures.
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Download timing events
+        uses: actions/download-artifact@v8.0.1
+        with:
+          pattern: testbucket-events-bucket-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/testbucket-events
+
+      - name: Download the shard plan
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: testbucket-shard-plan
+          path: ${{ runner.temp }}/plan
+
+      - name: Audit the run against the plan
+        run: |
+          set -euo pipefail
+          # The plan's coverage gate proved the MATRIX was complete before
+          # anything ran. This proves the RUN was, which is a different
+          # statement and the one a merge decision actually needs: a bucket
+          # whose job produced no events, an artifact that failed to upload,
+          # a shard that died before reporting — all invisible to a gate that
+          # only ever saw the plan.
+          #
+          # It is semantics-aware because "exactly once" means three things
+          # here: a whole package runs in one invocation, a count-shard
+          # package in S (each a slice of the SWEEP, not a repeat of the
+          # package), and a run-sliced package in S whose name sets must
+          # union to the package's whole runnable set.
+          shopt -s nullglob
+          events=("$RUNNER_TEMP/testbucket-events"/*.ndjson)
+          go run ./cmd/testbucket audit \
+            --shard-plan "$RUNNER_TEMP/plan/shard-plan.json" \
+            "${events[@]}"
+
+      - name: Restore the previous timing store
+        uses: actions/cache/restore@v4.2.4
+        with:
+          path: ${{ runner.temp }}/testbucket-store
+          key: testbucket-timings-bucketed-v1-${{ github.sha }}
+          restore-keys: |
+            testbucket-timings-bucketed-v1-
+            testbucket-timings-v1-
+
+      - name: Ingest timings into the store
+        run: |
+          set -euo pipefail
+          store_dir="$RUNNER_TEMP/testbucket-store"
+          events_dir="$RUNNER_TEMP/testbucket-events"
+          mkdir -p "$store_dir"
+
+          shopt -s nullglob
+          events=("$events_dir"/*.ndjson)
+          if [ ${#events[@]} -eq 0 ]; then
+            echo "no timing events were uploaded; nothing to record" >&2
+            exit 1
+          fi
+          echo "ingesting ${#events[@]} event file(s) from $TESTBUCKET_K bucket(s)"
+
+          # A sharded package reports once per shard; ingest sums the
+          # package-level Elapsed back into a whole-package weight, so the
+          # store keeps measuring PACKAGES however the matrix happened to
+          # slice them. --whale-k is the same K the plan used.
+          go run ./cmd/testbucket ingest \
+            --store "$store_dir/test-timings.json" \
+            --race --count=100 \
+            --whale-k "$TESTBUCKET_K" \
+            "${events[@]}"
+
+      - name: Show the plan the next run will get
+        run: |
+          set -euo pipefail
+          echo "planning at the recorded K=$TESTBUCKET_K"
+          go run ./cmd/testbucket plan \
+            --k "$TESTBUCKET_K" \
+            --store "$RUNNER_TEMP/testbucket-store/test-timings.json"
+
+      - name: Show the split decisions behind it
+        run: |
+          set -euo pipefail
+          # The divisibility evidence re-derived on CI's own numbers rather
+          # than a laptop's: per-runnable distribution and both mechanism
+          # costs for every package that crossed the split threshold.
+          go run ./cmd/testbucket whales \
+            --k "$TESTBUCKET_K" \
+            --store "$RUNNER_TEMP/testbucket-store/test-timings.json"
+
+      - name: Save the timing store
+        # Writes on a new master commit; on a same-SHA re-run the entry
+        # already exists and the action warns instead of overwriting, which
+        # keeps the split deterministic for a given SHA.
+        uses: actions/cache/save@v4.2.4
+        with:
+          path: ${{ runner.temp }}/testbucket-store
+          key: testbucket-timings-bucketed-v1-${{ github.sha }}
+
+      - name: Upload the timing store
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: testbucket-timing-store-bucketed
+          path: ${{ runner.temp }}/testbucket-store/test-timings.json
+          if-no-files-found: warn
+          retention-days: 30

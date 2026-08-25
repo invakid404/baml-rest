@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"sort"
 	"strings"
@@ -998,9 +999,13 @@ func TestChooseSplitPolicyComparesTheTwoMechanisms(t *testing.T) {
 		heaviest   float64
 		namedCount int
 		shards     int
-		want       string
-		reasonHas  string
-		wantCause  string
+		// countShards defaults to shards when zero: every pre-existing case
+		// models the -count=100 regime, where Count/2 is far above K and the
+		// two widths coincide.
+		countShards int
+		want        string
+		reasonHas   string
+		wantCause   string
 	}{
 		{
 			name: "bamlutils/llmhttp as measured: 96% named, but one name is 50%",
@@ -1062,7 +1067,11 @@ func TestChooseSplitPolicyComparesTheTwoMechanisms(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, cause, reason := chooseSplitPolicy(tc.pkg, tc.named, tc.heaviest, tc.namedCount, tc.shards)
+			countShards := tc.countShards
+			if countShards == 0 {
+				countShards = tc.shards
+			}
+			got, cause, reason := chooseSplitPolicy(tc.pkg, tc.named, tc.heaviest, tc.namedCount, tc.shards, countShards)
 			if got != tc.want {
 				t.Errorf("policy = %q, want %q (reason: %s)", got, tc.want, reason)
 			}
@@ -1655,4 +1664,332 @@ func TestWhaleReportSurvivesANegativeTop(t *testing.T) {
 			t.Errorf("--top %d produced no report", top)
 		}
 	}
+}
+
+func TestCountShardNeverMultipliesTheSweep(t *testing.T) {
+	// A count-shard divides ITERATIONS. It cannot divide more finely than the
+	// sweep has iterations to give, and past that point `-count=ceil(base/S)`
+	// stops rounding and starts duplicating: at -count=1 a six-way split
+	// gives every shard ceil(1/6) = 1, which is the whole package, six times
+	// over, for six times the work.
+	//
+	// The coverage gate does not catch this — it bounds the aggregate sweep
+	// from BELOW (6 >= 1 is true) and says nothing about waste above. Found
+	// while rehearsing the bucketed workflow at -count=1.
+	// A whale that can ONLY be count-sharded: its named tests explain 4% of
+	// its wall time, far under the coverage a name-slice needs, so the count
+	// path is the only candidate and the iteration bound is what decides
+	// whether it splits at all. (A name-divisible whale takes the other
+	// branch; TestNameSliceIgnoresTheIterationBound covers that.)
+	whale := []string{
+		event("pass", repoPrefix+"whale", "", 900),
+		event("pass", repoPrefix+"whale", "TestA", 20),
+		event("pass", repoPrefix+"whale", "TestB", 15),
+	}
+	for i := 0; i < 10; i++ {
+		whale = append(whale, event("pass", fmt.Sprintf("%splankton%02d", repoPrefix, i), "", 20))
+	}
+
+	cases := []struct {
+		name       string
+		baseCount  int
+		wantSplit  bool
+		wantShards int
+	}{
+		{name: "the production sweep divides cleanly", baseCount: 100, wantSplit: true, wantShards: 6},
+		{name: "twelve iterations still support six shards of two", baseCount: 12, wantSplit: true, wantShards: 6},
+		{name: "ten iterations narrow the split to five", baseCount: 10, wantSplit: true, wantShards: 5},
+		{name: "four iterations narrow it to two", baseCount: 4, wantSplit: true, wantShards: 2},
+		{name: "three iterations cannot support two shards of two", baseCount: 3, wantSplit: false},
+		{name: "a single iteration cannot be divided at all", baseCount: 1, wantSplit: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sum, err := parseEvents(stream(whale...))
+			if err != nil {
+				t.Fatal(err)
+			}
+			st := newStore(canonicalFlags(true, tc.baseCount))
+			opt := defaultIngestOptions()
+			opt.Count = tc.baseCount
+			mustIngest(t, st, sum, opt)
+
+			row := st.Units[repoPrefix+"whale"]
+			if !tc.wantSplit {
+				if row.splitPolicy() != splitNone {
+					t.Fatalf("-count=%d was split %q x%d (%s); it cannot divide",
+						tc.baseCount, row.Split, row.SplitInto, row.SplitReason)
+				}
+				return
+			}
+			if row.Split != splitCount {
+				t.Fatalf("-count=%d selected %q, want %q", tc.baseCount, row.Split, splitCount)
+			}
+			if row.SplitInto != tc.wantShards {
+				t.Errorf("-count=%d split into %d, want %d", tc.baseCount, row.SplitInto, tc.wantShards)
+			}
+
+			// The property that actually matters: each shard runs strictly
+			// fewer iterations than the whole, and the aggregate stays close
+			// to the requested sweep rather than multiplying it.
+			per := ceilDiv(tc.baseCount, row.SplitInto)
+			if per >= tc.baseCount {
+				t.Errorf("each shard runs -count=%d, no fewer than the whole package's %d", per, tc.baseCount)
+			}
+			aggregate := per * row.SplitInto
+			if aggregate < tc.baseCount {
+				t.Errorf("aggregate -count %d is below the requested %d", aggregate, tc.baseCount)
+			}
+			if waste := float64(aggregate-tc.baseCount) / float64(tc.baseCount); waste > 0.5 {
+				t.Errorf("aggregate -count %d wastes %.0f%% over the requested %d",
+					aggregate, waste*100, tc.baseCount)
+			}
+			t.Logf("-count=%d -> %d shards of -count=%d, aggregate %d", tc.baseCount, row.SplitInto, per, aggregate)
+		})
+	}
+}
+
+func TestNameSliceIgnoresTheIterationBound(t *testing.T) {
+	// The iteration bound belongs to COUNT-sharding alone.
+	//
+	// A count-shard divides iterations, so `-count=ceil(base/S)` stops
+	// dividing once S exceeds the sweep depth. A name-slice divides the TEST
+	// LIST: its slices are disjoint name sets and each still runs the full
+	// -count, so a six-way name split at -count=1 neither reruns a test nor
+	// weakens the sweep.
+	//
+	// An earlier version of the iteration cap was applied to the single
+	// shared width and therefore hit both mechanisms, which forced a
+	// perfectly name-divisible whale to run WHOLE at -count=1 and quietly
+	// narrowed its width at other low counts — changing the run-vs-count
+	// decision the cap was never supposed to touch.
+	nameDivisible := []string{
+		// Six even names over a 900s package: 93% attributable, nothing
+		// dominant, so this is the shape name-slicing exists for.
+		event("pass", repoPrefix+"whale", "", 900),
+		event("pass", repoPrefix+"whale", "TestA", 140),
+		event("pass", repoPrefix+"whale", "TestB", 140),
+		event("pass", repoPrefix+"whale", "TestC", 140),
+		event("pass", repoPrefix+"whale", "TestD", 140),
+		event("pass", repoPrefix+"whale", "TestE", 140),
+		event("pass", repoPrefix+"whale", "TestF", 140),
+	}
+	for i := 0; i < 10; i++ {
+		nameDivisible = append(nameDivisible, event("pass", fmt.Sprintf("%splankton%02d", repoPrefix, i), "", 20))
+	}
+
+	for _, baseCount := range []int{1, 2, 3, 6, 12, 100} {
+		t.Run(fmt.Sprintf("-count=%d", baseCount), func(t *testing.T) {
+			sum, err := parseEvents(stream(nameDivisible...))
+			if err != nil {
+				t.Fatal(err)
+			}
+			st := newStore(canonicalFlags(true, baseCount))
+			opt := defaultIngestOptions()
+			opt.Count = baseCount
+			mustIngest(t, st, sum, opt)
+
+			row := st.Units[repoPrefix+"whale"]
+			if row.Split != splitRun {
+				t.Fatalf("selected %q x%d (%s), want %q — the iteration bound must not reach the run width",
+					row.Split, row.SplitInto, row.SplitReason, splitRun)
+			}
+			// The width stays K. It is NOT capped to Count/2, which at
+			// -count=1 would be zero and would force the package whole.
+			if row.SplitInto != 6 {
+				t.Errorf("run width %d, want the K=6 width (Count/2 would have given %d)",
+					row.SplitInto, baseCount/2)
+			}
+		})
+	}
+
+	// And end to end through the planner at the sharpest count: every slice
+	// must keep the FULL base -count, and the never-drop gate must stay green.
+	sum, err := parseEvents(stream(nameDivisible...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := newStore(canonicalFlags(true, 1))
+	opt := defaultIngestOptions()
+	opt.Count = 1
+	mustIngest(t, st, sum, opt)
+
+	live := []LivePackage{livePkg("whale", ".", modeWork, true)}
+	for i := 0; i < 10; i++ {
+		live = append(live, livePkg(fmt.Sprintf("plankton%02d", i), ".", modeWork, true))
+	}
+	popt := defaultPlanOptions(live)
+	popt.Count = 1
+	popt.Runnables = syntheticRunnables(map[string][]string{
+		repoPrefix + "whale": {"TestA", "TestB", "TestC", "TestD", "TestE", "TestF"},
+	})
+	doc, err := buildPlan(st, "", popt)
+	if err != nil {
+		// buildPlan returns an error when the coverage gate fails, so
+		// reaching past this line is itself the never-drop assertion.
+		t.Fatalf("plan at -count=1: %v", err)
+	}
+
+	slices, names := 0, map[string]int{}
+	for _, b := range doc.Buckets {
+		for _, u := range b.Units {
+			if u.Kind != kindRunSlice {
+				continue
+			}
+			slices++
+			for _, inv := range b.Invocations {
+				if !strings.Contains(inv.Desc, u.ID) {
+					continue
+				}
+				// Each disjoint slice keeps the base sweep depth; splitting
+				// by name must not divide -count.
+				if got := argValue(inv.Args, "-count"); got != "1" {
+					t.Errorf("slice %s runs -count=%s, want the full base count of 1", u.ID, got)
+				}
+			}
+			// planUnit carries no Run field; the names are in the unit ID
+			// (pkg[A|B|C]), which is what the emitted -run regex is built
+			// from — so reading them from there checks the artifact rather
+			// than an internal.
+			open := strings.Index(u.ID, "[")
+			if open < 0 || !strings.HasSuffix(u.ID, "]") {
+				t.Errorf("run-slice %s does not name its runnables", u.ID)
+				continue
+			}
+			for _, n := range strings.Split(u.ID[open+1:len(u.ID)-1], "|") {
+				names[n]++
+			}
+		}
+	}
+	if slices != 6 {
+		t.Errorf("plan emitted %d run-slices, want 6", slices)
+	}
+	for _, n := range []string{"TestA", "TestB", "TestC", "TestD", "TestE", "TestF"} {
+		if names[n] != 1 {
+			t.Errorf("%s appears in %d slices, want exactly 1 (slices must be disjoint and complete)", n, names[n])
+		}
+	}
+}
+
+func TestAuditProvesTheRunMatchedThePlan(t *testing.T) {
+	// The coverage gate inside `plan` proves the MATRIX is complete before
+	// anything runs. This proves the RUN was — the after-the-fact half, which
+	// catches what the gate structurally cannot: a bucket whose job produced
+	// no events, an artifact that failed to upload, a shard that died before
+	// reporting. To the gate those are invisible, because the plan it
+	// approved was complete and it has no view of what happened next.
+	//
+	// It has to be semantics-aware, because "exactly once" means three
+	// different things: a whole package runs in one invocation, a count-shard
+	// package in S (each a slice of the SWEEP, not a repeat of the package),
+	// and a run-sliced package in S whose name sets must union to the whole.
+	plan := &plannedCoverage{
+		Units: 9,
+		Invocations: map[string]int{
+			repoPrefix + "plain":   1, // whole package
+			repoPrefix + "atom":    1, // module atom
+			repoPrefix + "sharded": 6, // count-shard group
+			repoPrefix + "sliced":  2, // run-slice group
+		},
+		Runnables: map[string][]string{
+			repoPrefix + "sliced": {"TestA", "TestB", "TestC"},
+		},
+	}
+	events := func(extra ...string) *eventSummary {
+		lines := []string{
+			event("pass", repoPrefix+"plain", "", 10),
+			event("pass", repoPrefix+"atom", "", 10),
+			event("pass", repoPrefix+"sliced", "", 5),
+			event("pass", repoPrefix+"sliced", "TestA", 3),
+			event("pass", repoPrefix+"sliced", "", 5),
+			event("pass", repoPrefix+"sliced", "TestB", 2),
+			event("pass", repoPrefix+"sliced", "TestC", 1),
+		}
+		for i := 0; i < 6; i++ {
+			lines = append(lines, event("pass", repoPrefix+"sharded", "", 20))
+		}
+		lines = append(lines, extra...)
+		sum, err := parseEvents(stream(lines...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sum
+	}
+
+	t.Run("a healthy run passes", func(t *testing.T) {
+		var out bytes.Buffer
+		if err := auditCoverage(&out, plan, events()); err != nil {
+			t.Fatalf("a complete run failed the audit: %v", err)
+		}
+		if !strings.Contains(out.String(), "PASS") {
+			t.Errorf("audit did not report a pass:\n%s", out.String())
+		}
+	})
+
+	t.Run("a count-shard group is one logical package, not six repeats", func(t *testing.T) {
+		// The naive check would call six results for one package a
+		// duplicate. It is not: it is the sweep divided six ways.
+		var out bytes.Buffer
+		if err := auditCoverage(&out, plan, events()); err != nil {
+			t.Fatalf("six shard results were mistaken for repeats: %v", err)
+		}
+	})
+
+	t.Run("a bucket that produced no events is caught", func(t *testing.T) {
+		// The case the plan-time gate cannot see.
+		short := &plannedCoverage{
+			Units:       plan.Units,
+			Invocations: map[string]int{repoPrefix + "plain": 1, repoPrefix + "vanished": 1},
+			Runnables:   map[string][]string{},
+		}
+		err := auditCoverage(io.Discard, short, events())
+		if err == nil {
+			t.Fatal("a package that never reported passed the audit")
+		}
+		for _, want := range []string{"vanished", "never reported", "produced no events"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("audit message omits %q:\n%s", want, err.Error())
+			}
+		}
+	})
+
+	t.Run("a missing shard is caught", func(t *testing.T) {
+		deeper := &plannedCoverage{
+			Units:       plan.Units,
+			Invocations: map[string]int{repoPrefix + "sharded": 8},
+			Runnables:   map[string][]string{},
+		}
+		err := auditCoverage(io.Discard, deeper, events())
+		if err == nil {
+			t.Fatal("a shard group short of its planned width passed")
+		}
+		if !strings.Contains(err.Error(), "reported 6 of 8") {
+			t.Errorf("audit does not say how short it was:\n%s", err.Error())
+		}
+	})
+
+	t.Run("a runnable a slice never ran is caught", func(t *testing.T) {
+		gapped := &plannedCoverage{
+			Units:       plan.Units,
+			Invocations: map[string]int{repoPrefix + "sliced": 2},
+			Runnables:   map[string][]string{repoPrefix + "sliced": {"TestA", "TestB", "TestC", "TestGhost"}},
+		}
+		err := auditCoverage(io.Discard, gapped, events())
+		if err == nil {
+			t.Fatal("a planned runnable that never reported passed the audit")
+		}
+		if !strings.Contains(err.Error(), "TestGhost") {
+			t.Errorf("audit does not name the missing runnable:\n%s", err.Error())
+		}
+	})
+
+	t.Run("a package that ran but was in no bucket is caught", func(t *testing.T) {
+		err := auditCoverage(io.Discard, plan, events(event("pass", repoPrefix+"stowaway", "", 4)))
+		if err == nil {
+			t.Fatal("an unplanned package passed the audit")
+		}
+		if !strings.Contains(err.Error(), "stowaway") || !strings.Contains(err.Error(), "no bucket") {
+			t.Errorf("audit does not flag the stowaway:\n%s", err.Error())
+		}
+	})
 }
