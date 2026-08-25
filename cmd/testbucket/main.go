@@ -46,7 +46,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -138,11 +137,10 @@ func runPlan(args []string) error {
 	// Every `go` subprocess runs under this deadline, so a hung toolchain
 	// fails the plan step with a clear error instead of holding the job
 	// open until the workflow's own timeout kills it with no diagnosis.
-	ctx, cancel, err := toolchainContext(*toolchainTimeout)
+	tc, err := newToolchain(*toolchainTimeout)
 	if err != nil {
 		return err
 	}
-	defer cancel()
 
 	repoRoot, rootErr := findRepoRoot(".")
 	if rootErr != nil && *live == "" {
@@ -160,11 +158,11 @@ func runPlan(args []string) error {
 		if len(excludes) > 0 {
 			ex = excludes
 		}
-		mods, err := discoverModules(ctx, repoRoot, ex)
+		mods, err := discoverModules(tc, repoRoot, ex)
 		if err != nil {
 			return err
 		}
-		livePkgs, err = listPackages(ctx, repoRoot, mods)
+		livePkgs, err = listPackages(tc, repoRoot, mods)
 		if err != nil {
 			return err
 		}
@@ -185,7 +183,7 @@ func runPlan(args []string) error {
 		if rootErr != nil {
 			return nil, fmt.Errorf("cannot resolve the runnable set for %s (flagged split=run): no repo root: %w", p.ImportPath, rootErr)
 		}
-		return listRunnableNames(ctx, repoRoot, p)
+		return listRunnableNames(tc, repoRoot, p)
 	}
 
 	doc, err := buildPlan(st, reason, opt)
@@ -303,11 +301,10 @@ func runIngest(args []string) error {
 		}
 		authoritative = true
 	case !*noGoList:
-		ctx, cancel, ctxErr := toolchainContext(*toolchainTimeout)
-		if ctxErr != nil {
-			return ctxErr
+		tc, tcErr := newToolchain(*toolchainTimeout)
+		if tcErr != nil {
+			return tcErr
 		}
-		defer cancel()
 		repoRoot, err := findRepoRoot(".")
 		if err != nil {
 			return err
@@ -316,11 +313,11 @@ func runIngest(args []string) error {
 		if len(excludes) > 0 {
 			ex = excludes
 		}
-		mods, err := discoverModules(ctx, repoRoot, ex)
+		mods, err := discoverModules(tc, repoRoot, ex)
 		if err != nil {
 			return err
 		}
-		livePkgs, err = listPackages(ctx, repoRoot, mods)
+		livePkgs, err = listPackages(tc, repoRoot, mods)
 		if err != nil {
 			return err
 		}
@@ -391,21 +388,13 @@ func validateToolchainTimeout(timeout time.Duration) error {
 	return nil
 }
 
-// toolchainContext bounds every `go` subprocess. A zero timeout disables the
-// deadline, for the rare local run where a cold module download legitimately
-// takes longer than any sensible cap.
-//
-// It re-validates rather than trusting its caller: the check is the whole
-// point, so it must not be possible to construct an unbounded context by
-// reaching this function down a path that forgot to validate.
-func toolchainContext(timeout time.Duration) (context.Context, context.CancelFunc, error) {
+// newToolchain builds the subprocess runner, rejecting a timeout the flag
+// does not allow. It re-validates rather than trusting its caller: the check
+// is the whole point, so it must not be possible to build an unbounded
+// runner by reaching this down a path that forgot to validate.
+func newToolchain(timeout time.Duration) (toolchain, error) {
 	if err := validateToolchainTimeout(timeout); err != nil {
-		return nil, nil, err
+		return toolchain{}, err
 	}
-	if timeout == 0 {
-		ctx, cancel := context.WithCancel(context.Background())
-		return ctx, cancel, nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	return ctx, cancel, nil
+	return toolchain{timeout: timeout}, nil
 }

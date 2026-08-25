@@ -1,14 +1,19 @@
 package main
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
+
+// testToolchain is the subprocess runner the toolchain-backed tests use.
+// Each `go` invocation gets its own deadline, so a hung one fails that
+// single command instead of blocking the suite.
+func testToolchain() toolchain { return toolchain{timeout: 2 * time.Minute} }
 
 // TestListRunnableNamesAgainstTheRealToolchain is the one test in this
 // package that shells out. Everything else runs against a synthetic tree,
@@ -68,7 +73,7 @@ func ExampleGreet_second() { Greet() }
 		Atomic:     true,
 		HasTests:   true,
 	}
-	got, err := listRunnableNames(context.Background(), dir, p)
+	got, err := listRunnableNames(testToolchain(), dir, p)
 	if err != nil {
 		t.Fatalf("listRunnableNames: %v", err)
 	}
@@ -134,6 +139,33 @@ func TestExcludedMatchesWholePathElementsAtAnyDepth(t *testing.T) {
 			t.Errorf("%s %s, want excluded=%v — %s", tc.rel, verb, tc.want, tc.why)
 		}
 	}
+
+	// An exclusion pattern is normalised the same way the candidate dir is.
+	// A perfectly reasonable spelling that silently matched nothing would
+	// be the worst outcome for a knob whose only job is to scope the module
+	// set — the user believes a module is excluded and it quietly is not.
+	spellings := []struct {
+		pat  string
+		rel  string
+		want bool
+		why  string
+	}{
+		{"./nativeserve", "nativeserve", true, "a leading ./ is how most people type a repo-relative path"},
+		{"./nativeserve", "nativeserve/deep", true, "and it must still nest"},
+		{"nativeserve//x", "nativeserve/x", true, "a doubled separator"},
+		{"adapters/./adapter_*", "adapters/adapter_v1", true, "a /./ segment inside a glob pattern"},
+		{"adapters/./adapter_*", "adapters/adapter_v1/a/b", true, "and it must still nest at depth"},
+		{"nativeserve/", "nativeserve", true, "a trailing slash was already handled"},
+		{"  nativeserve  ", "nativeserve", true, "surrounding whitespace was already handled"},
+		// Normalising must not widen a pattern into matching more.
+		{"./nativeserve", "nativeservefoo", false, "normalisation must not turn a pattern into a text prefix"},
+		{"adapters/./adapter_*", "adapters/common", false, "normalisation must not reach a sibling"},
+	}
+	for _, tc := range spellings {
+		if got := excluded(tc.rel, []string{tc.pat}); got != tc.want {
+			t.Errorf("excluded(%q, [%q]) = %v, want %v — %s", tc.rel, tc.pat, got, tc.want, tc.why)
+		}
+	}
 }
 
 func TestDiscoverModulesKeepsEveryLiveModuleAndDropsOnlyExcludedOnes(t *testing.T) {
@@ -183,7 +215,7 @@ func TestDiscoverModulesKeepsEveryLiveModuleAndDropsOnlyExcludedOnes(t *testing.
 	// A fixture module under testdata: data, not a module of this repo.
 	mod("internal/schema/testdata/broken", "example.com/fixture")
 
-	mods, err := discoverModules(context.Background(), root, defaultExcludedModules)
+	mods, err := discoverModules(testToolchain(), root, defaultExcludedModules)
 	if err != nil {
 		t.Fatalf("discoverModules: %v", err)
 	}
@@ -230,7 +262,7 @@ func TestWorkspaceMembersDistinguishesAbsenceFromFailure(t *testing.T) {
 	root := t.TempDir()
 
 	// No go.work at all: a legitimate shape, no error, no members.
-	members, err := workspaceMembers(context.Background(), root)
+	members, err := workspaceMembers(testToolchain(), root)
 	if err != nil {
 		t.Fatalf("a missing go.work must not be an error: %v", err)
 	}
@@ -257,7 +289,7 @@ func TestWorkspaceMembersDistinguishesAbsenceFromFailure(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(dangling, "go.work")); err != nil {
 		t.Fatalf("fixture has no directory entry: lstat err = %v", err)
 	}
-	members, err = workspaceMembers(context.Background(), dangling)
+	members, err = workspaceMembers(testToolchain(), dangling)
 	if err == nil {
 		t.Errorf("a dangling go.work symlink was reported as an empty workspace (%v); every module would silently become GOWORK=off/atomic", members)
 	} else if !strings.Contains(err.Error(), "dangling symlink") {
@@ -276,7 +308,7 @@ func TestWorkspaceMembersDistinguishesAbsenceFromFailure(t *testing.T) {
 	if err := os.Symlink(real, filepath.Join(linked, "go.work")); err != nil {
 		t.Fatal(err)
 	}
-	if members, err := workspaceMembers(context.Background(), linked); err != nil {
+	if members, err := workspaceMembers(testToolchain(), linked); err != nil {
 		t.Errorf("a resolvable go.work symlink was rejected: %v", err)
 	} else if !members["."] {
 		t.Errorf("members = %v, want the root module", members)
@@ -287,7 +319,7 @@ func TestWorkspaceMembersDistinguishesAbsenceFromFailure(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, "go.work"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := workspaceMembers(context.Background(), root); err == nil {
+	if _, err := workspaceMembers(testToolchain(), root); err == nil {
 		t.Error("an unusable go.work was reported as an empty workspace")
 	}
 }

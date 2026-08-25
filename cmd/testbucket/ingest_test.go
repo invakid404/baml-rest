@@ -869,3 +869,78 @@ func TestExpectedRunsPerSplitPolicy(t *testing.T) {
 		}
 	}
 }
+
+func TestImplausibleElapsedIsRejectedNotAbsorbed(t *testing.T) {
+	// Elapsed comes from NDJSON that a corrupt or truncated upload can
+	// write, so it is untrusted input. A value like 1e300 survives the
+	// NaN/Inf filter, and `int64(math.Round(v*1e6))` on it is
+	// implementation-defined in Go — which would defeat the exact
+	// reproducibility sumSeconds exists to provide and can drive the total,
+	// and the whale threshold derived from it, negative.
+	t.Run("sumSeconds bounds what it will believe", func(t *testing.T) {
+		cases := []struct {
+			name   string
+			values []float64
+			want   float64
+		}{
+			{"a huge finite value is dropped", []float64{1.5, 1e300, 2.5}, 4.0},
+			{"a huge negative value is dropped", []float64{1.5, -1e300, 2.5}, 4.0},
+			{"NaN and Inf are still dropped", []float64{1.5, math.NaN(), math.Inf(1), math.Inf(-1), 2.5}, 4.0},
+			{"the largest float is dropped", []float64{10, math.MaxFloat64}, 10},
+			{"ordinary durations are kept", []float64{900.25, 420.5}, 1320.75},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				got := sumSeconds(tc.values)
+				if got != tc.want {
+					t.Errorf("sumSeconds(%v) = %v, want %v", tc.values, got, tc.want)
+				}
+				if got < 0 {
+					t.Errorf("sumSeconds went negative: %v", got)
+				}
+			})
+		}
+	})
+
+	t.Run("a corrupt Elapsed never reaches the store", func(t *testing.T) {
+		sum, err := parseEvents(stream(
+			event("pass", repoPrefix+"pool", "", 1e300),
+			event("pass", repoPrefix+"worker", "", 110),
+		))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sum.Implausible != 1 {
+			t.Errorf("counted %d implausible events, want 1", sum.Implausible)
+		}
+		if _, ok := sum.PackageSeconds[repoPrefix+"pool"]; ok {
+			t.Error("an implausible Elapsed was recorded as a package weight")
+		}
+		if got := sum.PackageSeconds[repoPrefix+"worker"]; got != 110 {
+			t.Errorf("the healthy event was lost: worker = %v", got)
+		}
+
+		st := newStore(canonicalFlags(true, 100))
+		rep := mustIngest(t, st, sum, defaultIngestOptions())
+		if st.Units[repoPrefix+"pool"] != nil {
+			t.Errorf("the corrupt package reached the store: %+v", st.Units[repoPrefix+"pool"])
+		}
+		if rep.TotalSeconds < 0 {
+			t.Errorf("total measured work went negative: %v", rep.TotalSeconds)
+		}
+		if rep.Threshold < 0 {
+			t.Errorf("whale threshold went negative: %v", rep.Threshold)
+		}
+		// The corruption must be visible, not silently swallowed.
+		if rep.Implausible != 1 {
+			t.Errorf("report implausible = %d, want 1", rep.Implausible)
+		}
+		var out bytes.Buffer
+		if err := rep.write(&out, repoPrefix); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), "implausible Elapsed") {
+			t.Errorf("the corrupt capture is not visible in the job log:\n%s", out.String())
+		}
+	})
+}

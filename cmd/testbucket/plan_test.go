@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"math"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -738,27 +739,97 @@ func TestToolchainTimeoutBoundary(t *testing.T) {
 				t.Fatalf("a legal value was rejected: %v", err)
 			}
 
-			// toolchainContext re-validates rather than trusting its
-			// caller, so an unbounded context cannot be built by reaching
-			// it down a path that forgot to check.
-			ctx, cancel, cerr := toolchainContext(tc.timeout)
+			// newToolchain re-validates rather than trusting its caller,
+			// so an unbounded runner cannot be built by reaching it down a
+			// path that forgot to check.
+			tcr, cerr := newToolchain(tc.timeout)
 			if tc.wantErr {
 				if cerr == nil {
-					cancel()
-					t.Fatal("toolchainContext built a context from a rejected value")
+					t.Fatal("newToolchain built a runner from a rejected value")
 				}
-				if ctx != nil || cancel != nil {
-					t.Error("toolchainContext returned a usable context alongside its error")
+				if tcr.timeout != 0 {
+					t.Errorf("newToolchain returned a usable runner alongside its error: %+v", tcr)
 				}
 				return
 			}
 			if cerr != nil {
-				t.Fatalf("toolchainContext: %v", cerr)
+				t.Fatalf("newToolchain: %v", cerr)
 			}
+			ctx, cancel := tcr.context()
 			defer cancel()
 			if _, ok := ctx.Deadline(); ok != tc.wantDeadlin {
 				t.Errorf("context has deadline=%v, want %v", ok, tc.wantDeadlin)
 			}
 		})
+	}
+}
+
+func TestEachSubprocessGetsItsOwnDeadline(t *testing.T) {
+	// The deadline must be PER SUBPROCESS, not a budget for the whole
+	// discovery pass. `plan` runs `go work edit`, one `go list` per module
+	// and one `go test -list` per name-sliced package, sequentially — with
+	// one shared context a slow-but-healthy `go list` could consume the
+	// budget and make a later `go test -list` fail the instant it started,
+	// a false failure charged to the wrong command that gets worse as the
+	// module set grows.
+	tc, err := newToolchain(time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, cancel1 := tc.context()
+	defer cancel1()
+	d1, ok := first.Deadline()
+	if !ok {
+		t.Fatal("the first subprocess got no deadline")
+	}
+
+	// Any elapsed time at all must push the next subprocess's deadline
+	// out; a shared context would hand back the same instant forever.
+	time.Sleep(3 * time.Millisecond)
+
+	second, cancel2 := tc.context()
+	defer cancel2()
+	d2, ok := second.Deadline()
+	if !ok {
+		t.Fatal("the second subprocess got no deadline")
+	}
+	if !d2.After(d1) {
+		t.Errorf("both subprocesses share one deadline (%v vs %v); the timeout is a budget for the whole sweep, not per command", d1, d2)
+	}
+	if remaining := time.Until(d2); remaining < 50*time.Second {
+		t.Errorf("the second subprocess got only %v of its 1m deadline; earlier commands consumed it", remaining)
+	}
+
+	// Zero still means "no deadline", for both.
+	off, err := newToolchain(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		ctx, cancel := off.context()
+		if _, ok := ctx.Deadline(); ok {
+			t.Errorf("call %d: a disabled timeout produced a deadline", i)
+		}
+		cancel()
+	}
+}
+
+func TestToolchainReportsADeadlineHitAsSuch(t *testing.T) {
+	// A timeout must not read as a broken repository: the message names the
+	// flag so the reader knows which knob to turn.
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("no go toolchain on PATH")
+	}
+	tc, err := newToolchain(time.Nanosecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, runErr := tc.run(t.TempDir(), nil, "work", "edit", "-json")
+	if runErr == nil {
+		t.Skip("the subprocess beat a 1ns deadline; nothing to assert")
+	}
+	if !strings.Contains(runErr.Error(), "timed out") || !strings.Contains(runErr.Error(), "--toolchain-timeout") {
+		t.Errorf("a deadline hit does not name itself or the flag: %v", runErr)
 	}
 }

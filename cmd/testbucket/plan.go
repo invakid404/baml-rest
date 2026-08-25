@@ -488,8 +488,11 @@ type errWriter struct {
 
 func (e *errWriter) Write(p []byte) (int, error) {
 	if e.err != nil {
-		// Report the length as written: the caller is mid-report and the
-		// first error is the one worth keeping.
+		// Report the length as written and return nil: the caller is
+		// mid-report, the FIRST error is the one worth keeping, and
+		// surfacing every subsequent failure would turn one broken pipe
+		// into a page of identical errors. writeSummary returns e.err.
+		//nolint:nilerr // deliberate: the stored first error is returned by the caller
 		return len(p), nil
 	}
 	n, err := e.w.Write(p)

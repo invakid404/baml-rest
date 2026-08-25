@@ -1086,3 +1086,56 @@ func TestCoverageGateRejectsExecutionChangingFieldsOnAnyUnitKind(t *testing.T) {
 		})
 	}
 }
+
+func TestUnknownRunnableIsItsOwnDiagnosis(t *testing.T) {
+	// A name scheduled ONCE but unknown to the package is a different fault
+	// from a name scheduled TWICE: the first says the slicer and the
+	// resolver disagree about what exists, the second says a runnable will
+	// execute in two lanes. Filing the first under the duplicate header
+	// pointed the reader at the wrong defect.
+	st := syntheticStore()
+	harpoon(st, "internal/debaml", splitRun, 2, map[string]float64{"TestA": 200, "TestB": 120})
+	names := map[string][]string{repoPrefix + "internal/debaml": {"TestA", "TestB"}}
+	live, buckets, runnables := bucketsFor(t, st, expandOptions{Runnables: syntheticRunnables(names)})
+	if err := gate(live, buckets, runnables); err != nil {
+		t.Fatalf("the undoctored plan already fails: %v", err)
+	}
+
+	// One slice names a runnable the package does not have. Nothing is
+	// duplicated and nothing is missing.
+	ghosted := mapUnits(buckets, func(u Unit) Unit {
+		if u.Kind == kindRunSlice && len(u.Run) > 0 && u.Run[0] == "TestA" {
+			u.Run = []string{"TestA", "TestGhost"}
+		}
+		return u
+	})
+	err := gate(live, ghosted, runnables)
+	if err == nil {
+		t.Fatal("the gate passed a slice naming a runnable the package does not have")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "does not have") || !strings.Contains(msg, "TestGhost") {
+		t.Errorf("gate message does not diagnose the unknown runnable:\n%s", msg)
+	}
+	if strings.Contains(msg, "more than one -run slice") {
+		t.Errorf("an unknown runnable was reported under the DUPLICATE header:\n%s", msg)
+	}
+
+	// And a genuine duplicate still reports as a duplicate, not as unknown.
+	doubled := mapUnits(buckets, func(u Unit) Unit {
+		if u.Kind == kindRunSlice {
+			u.Run = []string{"TestA", "TestB"}
+		}
+		return u
+	})
+	err = gate(live, doubled, runnables)
+	if err == nil {
+		t.Fatal("the gate passed a runnable scheduled in two slices")
+	}
+	if !strings.Contains(err.Error(), "more than one -run slice") {
+		t.Errorf("a real duplicate lost its diagnosis:\n%s", err.Error())
+	}
+	if strings.Contains(err.Error(), "does not have") {
+		t.Errorf("a real duplicate was reported as unknown:\n%s", err.Error())
+	}
+}

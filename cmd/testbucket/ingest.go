@@ -46,8 +46,10 @@ type eventSummary struct {
 	Lines   int
 	Events  int
 	// Subtests counts child pass events seen and deliberately not weighed.
-	Subtests  int
-	Malformed int
+	Subtests int
+	// Implausible counts events whose Elapsed could not be believed.
+	Implausible int
+	Malformed   int
 }
 
 func newEventSummary() *eventSummary {
@@ -89,6 +91,15 @@ func parseEvents(readers ...io.Reader) (*eventSummary, error) {
 				continue
 			}
 			sum.Events++
+			if ev.Elapsed != 0 && !plausibleSeconds(ev.Elapsed) {
+				// Reject rather than absorb: an implausible Elapsed is
+				// corrupt data, and silently folding it in would poison the
+				// weight, the whale threshold and every split derived from
+				// them. Counting it keeps the corruption visible in the
+				// job log instead of showing up later as a bizarre split.
+				sum.Implausible++
+				continue
+			}
 			switch {
 			case ev.Test == "" && ev.Action == "pass":
 				sum.PackageSeconds[ev.Package] += ev.Elapsed
@@ -176,6 +187,7 @@ type ingestReport struct {
 	CoverageFrom    string
 	FlagsReset      string
 	Subtests        int
+	Implausible     int
 	PartialCaptures []string
 }
 
@@ -207,7 +219,10 @@ func applyIngest(st *Store, sum *eventSummary, opt ingestOptions) (*ingestReport
 		return nil, err
 	}
 	flags := canonicalFlags(opt.Race, opt.Count)
-	rep := &ingestReport{Alpha: opt.Alpha, Events: sum.Events, Malformed: sum.Malformed, Subtests: sum.Subtests}
+	rep := &ingestReport{
+		Alpha: opt.Alpha, Events: sum.Events, Malformed: sum.Malformed,
+		Subtests: sum.Subtests, Implausible: sum.Implausible,
+	}
 
 	if st.Flags != "" && st.Flags != flags {
 		// Weights from a different flag set cannot be blended with these.
@@ -412,12 +427,34 @@ func applyIngest(st *Store, sum *eventSummary, opt ingestOptions) (*ingestReport
 func sumSeconds(values []float64) float64 {
 	var micros int64
 	for _, v := range values {
-		if math.IsNaN(v) || math.IsInf(v, 0) {
+		if !plausibleSeconds(v) {
+			// Non-finite values, and finite ones too large to survive the
+			// microsecond conversion, are dropped rather than folded in.
+			// Beyond maxPlausibleSeconds `int64(math.Round(v*1e6))` is
+			// implementation-defined in Go, which would defeat the exact
+			// reproducibility this helper exists to provide and could turn
+			// the total — and the whale threshold derived from it —
+			// negative.
 			continue
 		}
 		micros += int64(math.Round(v * 1e6))
 	}
 	return float64(micros) / 1e6
+}
+
+// maxPlausibleSeconds bounds any single duration this tool will believe.
+// It is ~34 years: far above any real package, shard or batch, and far
+// below the point where the microsecond conversion leaves int64 range.
+const maxPlausibleSeconds = 1 << 30
+
+// plausibleSeconds reports whether a duration read from an artifact can be
+// used arithmetically. Elapsed comes from NDJSON that a corrupt or truncated
+// upload can write, so it is untrusted input, not a program invariant.
+func plausibleSeconds(v float64) bool {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return false
+	}
+	return v >= -maxPlausibleSeconds && v <= maxPlausibleSeconds
 }
 
 // expectedRuns is how many package-level pass events a complete capture of
@@ -473,39 +510,42 @@ func dedupe(in []string) []string {
 func (r *ingestReport) write(out io.Writer, prefix string) error {
 	ew := &errWriter{w: out}
 	w := io.Writer(ew)
-	fmt.Fprintf(w, "testbucket ingest — %d events (%d unparsable lines), alpha=%.2f\n", r.Events, r.Malformed, r.Alpha)
+	_, _ = fmt.Fprintf(w, "testbucket ingest — %d events (%d unparsable lines), alpha=%.2f\n", r.Events, r.Malformed, r.Alpha)
+	if r.Implausible > 0 {
+		_, _ = fmt.Fprintf(w, "*** %d event(s) carried an implausible Elapsed and were discarded — the capture looks corrupt. ***\n", r.Implausible)
+	}
 	if r.Subtests > 0 {
-		fmt.Fprintf(w, "  subtest events seen %d (not weighed: already inside their parent's elapsed)\n", r.Subtests)
+		_, _ = fmt.Fprintf(w, "  subtest events seen %d (not weighed: already inside their parent's elapsed)\n", r.Subtests)
 	}
 	if r.FlagsReset != "" {
-		fmt.Fprintf(w, "*** FLAG SET CHANGED (%s): previous weights discarded, store cold-starts. ***\n", r.FlagsReset)
+		_, _ = fmt.Fprintf(w, "*** FLAG SET CHANGED (%s): previous weights discarded, store cold-starts. ***\n", r.FlagsReset)
 	}
-	fmt.Fprintf(w, "  packages updated   %d\n", len(r.Updated))
-	fmt.Fprintf(w, "  packages new       %d%s\n", len(r.New), listSuffix(r.New, prefix))
+	_, _ = fmt.Fprintf(w, "  packages updated   %d\n", len(r.Updated))
+	_, _ = fmt.Fprintf(w, "  packages new       %d%s\n", len(r.New), listSuffix(r.New, prefix))
 	if len(r.SkippedFail) > 0 {
-		fmt.Fprintf(w, "  failed (no fresh weight, prior kept) %d%s\n", len(r.SkippedFail), listSuffix(r.SkippedFail, prefix))
+		_, _ = fmt.Fprintf(w, "  failed (no fresh weight, prior kept) %d%s\n", len(r.SkippedFail), listSuffix(r.SkippedFail, prefix))
 	}
 	if len(r.Pruned) > 0 {
-		fmt.Fprintf(w, "  rows pruned (package gone) %d%s\n", len(r.Pruned), listSuffix(r.Pruned, prefix))
+		_, _ = fmt.Fprintf(w, "  rows pruned (package gone) %d%s\n", len(r.Pruned), listSuffix(r.Pruned, prefix))
 	}
-	fmt.Fprintf(w, "  total measured work %s\n", humanSeconds(r.TotalSeconds))
-	fmt.Fprintf(w, "  whale threshold     %.1fs\n", r.Threshold)
+	_, _ = fmt.Fprintf(w, "  total measured work %s\n", humanSeconds(r.TotalSeconds))
+	_, _ = fmt.Fprintf(w, "  whale threshold     %.1fs\n", r.Threshold)
 	if len(r.Whales) > 0 {
-		fmt.Fprintf(w, "  split candidates:\n")
+		_, _ = fmt.Fprintf(w, "  split candidates:\n")
 		for _, wl := range r.Whales {
-			fmt.Fprintf(w, "    - %s\n", shortenID(wl, prefix))
+			_, _ = fmt.Fprintf(w, "    - %s\n", shortenID(wl, prefix))
 		}
 	}
 	if len(r.PartialCaptures) > 0 {
-		fmt.Fprintf(w, "  partial captures (per-test rows kept, not pruned):\n")
+		_, _ = fmt.Fprintf(w, "  partial captures (per-test rows kept, not pruned):\n")
 		for _, pc := range r.PartialCaptures {
-			fmt.Fprintf(w, "    - %s\n", shortenID(pc, prefix))
+			_, _ = fmt.Fprintf(w, "    - %s\n", shortenID(pc, prefix))
 		}
 	}
 	if len(r.Unflagged) > 0 {
-		fmt.Fprintf(w, "  no longer whales   %d%s\n", len(r.Unflagged), listSuffix(r.Unflagged, prefix))
+		_, _ = fmt.Fprintf(w, "  no longer whales   %d%s\n", len(r.Unflagged), listSuffix(r.Unflagged, prefix))
 	}
-	fmt.Fprintf(w, "  coverage recorded  %d packages (source: %s)\n", r.Coverage, r.CoverageFrom)
+	_, _ = fmt.Fprintf(w, "  coverage recorded  %d packages (source: %s)\n", r.Coverage, r.CoverageFrom)
 	return ew.err
 }
 

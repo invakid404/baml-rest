@@ -22,6 +22,7 @@ type coverageError struct {
 	MissingPackages   []string
 	MissingRunnables  map[string][]string
 	DuplicateRunnable map[string][]string
+	UnknownRunnable   map[string][]string
 	DuplicateUnits    []string
 	MalformedUnits    []string
 	UngatedSlices     []string
@@ -48,6 +49,10 @@ func (e *coverageError) Error() string {
 	for _, pkg := range sortedKeys(e.DuplicateRunnable) {
 		fmt.Fprintf(&b, "\n  %s: runnable(s) in more than one -run slice: %s",
 			pkg, strings.Join(e.DuplicateRunnable[pkg], ", "))
+	}
+	for _, pkg := range sortedKeys(e.UnknownRunnable) {
+		fmt.Fprintf(&b, "\n  %s: -run slice names %d runnable(s) the package does not have: %s",
+			pkg, len(e.UnknownRunnable[pkg]), strings.Join(e.UnknownRunnable[pkg], ", "))
 	}
 	if len(e.DuplicateUnits) > 0 {
 		fmt.Fprintf(&b, "\n  unit(s) assigned to more than one bucket: %s", strings.Join(e.DuplicateUnits, ", "))
@@ -114,6 +119,7 @@ func assertCoverage(in gateInput) error {
 	cerr := &coverageError{
 		MissingRunnables:  map[string][]string{},
 		DuplicateRunnable: map[string][]string{},
+		UnknownRunnable:   map[string][]string{},
 	}
 
 	// The live set is the authority the whole grammar is checked against:
@@ -318,14 +324,19 @@ func assertCoverage(in gateInput) error {
 		// A slice naming something outside the universe is not a coverage
 		// loss, but it means the slicer and the resolver disagree about
 		// what exists, so the gate's own evidence is unreliable.
+		//
+		// It gets its own category rather than riding along with the
+		// duplicates: a name scheduled once but unknown to the package is a
+		// different fault from a name scheduled twice, and filing it under
+		// "in more than one -run slice" would point the reader at the wrong
+		// defect entirely.
 		universe := map[string]bool{}
 		for _, n := range in.Runnables[pkg] {
 			universe[n] = true
 		}
 		for _, n := range sortedKeys(seen) {
 			if !universe[n] {
-				cerr.DuplicateRunnable[pkg] = append(cerr.DuplicateRunnable[pkg],
-					fmt.Sprintf("%s (not in the package's runnable set)", n))
+				cerr.UnknownRunnable[pkg] = append(cerr.UnknownRunnable[pkg], n)
 			}
 		}
 	}
@@ -343,9 +354,13 @@ func assertCoverage(in gateInput) error {
 	for k := range cerr.DuplicateRunnable {
 		sort.Strings(cerr.DuplicateRunnable[k])
 	}
+	for k := range cerr.UnknownRunnable {
+		sort.Strings(cerr.UnknownRunnable[k])
+	}
 
 	if len(cerr.MissingPackages) == 0 && len(cerr.MissingRunnables) == 0 &&
-		len(cerr.DuplicateRunnable) == 0 && len(cerr.DuplicateUnits) == 0 &&
+		len(cerr.DuplicateRunnable) == 0 && len(cerr.UnknownRunnable) == 0 &&
+		len(cerr.DuplicateUnits) == 0 &&
 		len(cerr.MalformedUnits) == 0 && len(cerr.UngatedSlices) == 0 &&
 		len(cerr.ShardGaps) == 0 &&
 		len(cerr.ShortSweeps) == 0 && len(cerr.MixedCoverage) == 0 {

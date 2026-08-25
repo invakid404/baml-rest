@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // defaultExcludedModules mirrors the module set the current unit-tests
@@ -29,6 +30,59 @@ var defaultExcludedModules = []string{
 	"dynclient/baml-patched",
 	"internal/nativebody/nanollmprepare",
 	"nativeserve",
+}
+
+// toolchain runs `go` subprocesses, giving EACH ONE its own deadline.
+//
+// The deadline is per subprocess, not per discovery pass, because that is
+// what --toolchain-timeout promises and what actually protects the job:
+// `plan` runs `go work edit`, one `go list` per module and one
+// `go test -list` per name-sliced package, all sequentially. A single
+// shared context.WithTimeout would turn the flag into a budget for the
+// whole sweep, so a slow-but-healthy `go list` could consume it and make a
+// later `go test -list` fail the instant it started — a false failure
+// charged to the wrong command, and one that would get worse as the module
+// set grew.
+//
+// Carrying the duration rather than a context is the point: there is no
+// shared context to accidentally reuse, so the property is enforced by the
+// signatures rather than by everyone remembering.
+type toolchain struct {
+	// timeout bounds each subprocess. Zero disables the deadline.
+	timeout time.Duration
+}
+
+// context returns a FRESH deadline for one subprocess.
+func (t toolchain) context() (context.Context, context.CancelFunc) {
+	if t.timeout <= 0 {
+		return context.WithCancel(context.Background())
+	}
+	return context.WithTimeout(context.Background(), t.timeout)
+}
+
+// run executes one `go` invocation under its own deadline and returns its
+// stdout. A deadline hit is reported as such, naming the flag, so a timeout
+// never reads as a broken repository.
+func (t toolchain) run(dir string, extraEnv []string, args ...string) ([]byte, error) {
+	ctx, cancel := t.context()
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "go", args...)
+	cmd.Dir = dir
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("go %s timed out after %s (raise or disable --toolchain-timeout)",
+				strings.Join(args, " "), t.timeout)
+		}
+		return nil, fmt.Errorf("go %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.Bytes(), nil
 }
 
 type moduleSpec struct {
@@ -62,7 +116,7 @@ func findRepoRoot(dir string) (string, error) {
 // workspaceMembers reads go.work through `go work edit -json` rather than
 // parsing it: the file in this repo is mostly a long rationale comment, and
 // the toolchain is the only correct parser of the directive it wraps.
-func workspaceMembers(ctx context.Context, repoRoot string) (map[string]bool, error) {
+func workspaceMembers(tc toolchain, repoRoot string) (map[string]bool, error) {
 	workFile := filepath.Join(repoRoot, "go.work")
 	if _, err := os.Stat(workFile); err != nil {
 		// Any stat failure other than absence — a permission problem, an
@@ -89,20 +143,16 @@ func workspaceMembers(ctx context.Context, repoRoot string) (map[string]bool, er
 		// legitimate shape, and every module then resolves standalone.
 		return map[string]bool{}, nil
 	}
-	cmd := exec.CommandContext(ctx, "go", "work", "edit", "-json")
-	cmd.Dir = repoRoot
-	var out, errb bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errb
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("go work edit -json: %w: %s", err, strings.TrimSpace(errb.String()))
+	out, err := tc.run(repoRoot, nil, "work", "edit", "-json")
+	if err != nil {
+		return nil, err
 	}
 	var doc struct {
 		Use []struct {
 			DiskPath string `json:"DiskPath"`
 		} `json:"Use"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+	if err := json.Unmarshal(out, &doc); err != nil {
 		return nil, fmt.Errorf("parse go work edit -json: %w", err)
 	}
 	members := map[string]bool{}
@@ -114,8 +164,8 @@ func workspaceMembers(ctx context.Context, repoRoot string) (map[string]bool, er
 
 // discoverModules finds every go.mod under repoRoot that the module set
 // includes, and tags each with the resolution mode its packages must run in.
-func discoverModules(ctx context.Context, repoRoot string, excludes []string) ([]moduleSpec, error) {
-	members, err := workspaceMembers(ctx, repoRoot)
+func discoverModules(tc toolchain, repoRoot string, excludes []string) ([]moduleSpec, error) {
+	members, err := workspaceMembers(tc, repoRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -185,6 +235,12 @@ func excluded(rel string, patterns []string) bool {
 		if pat == "" {
 			continue
 		}
+		// Normalise the pattern the same way rel is normalised, or a
+		// perfectly reasonable `--exclude-module ./nativeserve` matches no
+		// cleaned dir and the exclusion silently does nothing — the worst
+		// outcome for a knob whose only job is to scope the module set.
+		// Clean collapses "./", "//" and "/./" and leaves globs alone.
+		pat = path.Clean(pat)
 		for cur := path.Clean(rel); ; cur = path.Dir(cur) {
 			if ok, _ := path.Match(pat, cur); ok {
 				return true
@@ -203,24 +259,20 @@ func excluded(rel string, patterns []string) bool {
 // run. A package with no _test.go files is reported with HasTests=false: it
 // is not bucketed (running it is a no-op) but the moment it gains a test
 // file the next `go list` schedules it, with no store update needed.
-func listPackages(ctx context.Context, repoRoot string, mods []moduleSpec) ([]LivePackage, error) {
+func listPackages(tc toolchain, repoRoot string, mods []moduleSpec) ([]LivePackage, error) {
 	var out []LivePackage
 	seen := map[string]bool{}
 	for _, m := range mods {
 		const format = "{{.ImportPath}}\t{{.Dir}}\t{{len .TestGoFiles}}\t{{len .XTestGoFiles}}"
-		cmd := exec.CommandContext(ctx, "go", "list", "-f", format, "./...")
-		cmd.Dir = filepath.Join(repoRoot, filepath.FromSlash(m.Dir))
-		cmd.Env = os.Environ()
+		var env []string
 		if m.Mode == modeOff {
-			cmd.Env = append(cmd.Env, "GOWORK=off")
+			env = []string{"GOWORK=off"}
 		}
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil {
-			return nil, fmt.Errorf("go list in %s (mode=%s): %w: %s", m.Dir, m.Mode, err, strings.TrimSpace(stderr.String()))
+		stdout, err := tc.run(filepath.Join(repoRoot, filepath.FromSlash(m.Dir)), env, "list", "-f", format, "./...")
+		if err != nil {
+			return nil, fmt.Errorf("module %s (mode=%s): %w", m.Dir, m.Mode, err)
 		}
-		for _, line := range strings.Split(stdout.String(), "\n") {
+		for _, line := range strings.Split(string(stdout), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" {
 				continue
@@ -294,26 +346,21 @@ func isRunnable(name string) bool {
 // examples the test binary actually registers, so an example with no Output
 // comment — compiled but never run — never enters the universe the gate
 // insists on covering.
-func listRunnableNames(ctx context.Context, repoRoot string, p LivePackage) ([]string, error) {
+func listRunnableNames(tc toolchain, repoRoot string, p LivePackage) ([]string, error) {
 	target := p.ImportPath
 	dir := repoRoot
-	env := os.Environ()
+	var env []string
 	if p.Mode == modeOff {
 		dir = filepath.Join(repoRoot, filepath.FromSlash(p.Module))
-		env = append(env, "GOWORK=off")
+		env = []string{"GOWORK=off"}
 		target = p.pattern()
 	}
-	cmd := exec.CommandContext(ctx, "go", "test", "-list", ".*", target)
-	cmd.Dir = dir
-	cmd.Env = env
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("go test -list in %s: %w: %s", p.ImportPath, err, strings.TrimSpace(stderr.String()))
+	stdout, err := tc.run(dir, env, "test", "-list", ".*", target)
+	if err != nil {
+		return nil, fmt.Errorf("package %s: %w", p.ImportPath, err)
 	}
 	var names []string
-	for _, line := range strings.Split(stdout.String(), "\n") {
+	for _, line := range strings.Split(string(stdout), "\n") {
 		line = strings.TrimSpace(line)
 		// -list prints one name per line, then a trailing "ok <pkg> <t>".
 		if line == "" || strings.ContainsAny(line, " \t") || !isRunnable(line) {
