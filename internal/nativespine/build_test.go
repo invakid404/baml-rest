@@ -129,8 +129,31 @@ func TestClassifyOutputSchema(t *testing.T) {
 		}, DeclineChecks},
 		{"assert constraint on target meta", sd.Bundle{Target: sd.Type{Kind: sd.TypePrimitive, Primitive: sd.PrimitiveString, Meta: sd.TypeMeta{Constraints: []sd.Constraint{{Level: sd.ConstraintAssert, Expression: "x"}}}}}, DeclineAsserts},
 		{"multi-variant union", sd.Bundle{Target: sd.Type{Kind: sd.TypeUnion, Union: &sd.UnionType{Variants: []sd.Type{prim(sd.PrimitiveString), prim(sd.PrimitiveInt)}}}}, DeclineUnsupportedOutputShape},
-		{"map", sd.Bundle{Target: sd.Type{Kind: sd.TypeMap, Key: ptr(prim(sd.PrimitiveString)), Value: ptr(prim(sd.PrimitiveString))}}, DeclineUnsupportedOutputShape},
+		// M3a admits a STRING-keyed map (value within the carrier profile); a
+		// non-string-keyed map or a value outside the profile still declines.
+		{"string-keyed map", sd.Bundle{Target: sd.Type{Kind: sd.TypeMap, Key: ptr(prim(sd.PrimitiveString)), Value: ptr(prim(sd.PrimitiveString))}}, ""},
+		{"int-keyed map", sd.Bundle{Target: sd.Type{Kind: sd.TypeMap, Key: ptr(prim(sd.PrimitiveInt)), Value: ptr(prim(sd.PrimitiveString))}}, DeclineUnsupportedOutputShape},
+		// A string-keyed map with NO value type must FAIL CLOSED at classification —
+		// otherwise it is admitted here (walkType(nil) succeeds) and schemaGoType
+		// rejects it only at emit time (admit-then-fail).
+		{"string-keyed map, nil value type", sd.Bundle{Target: sd.Type{Kind: sd.TypeMap, Key: ptr(prim(sd.PrimitiveString)), Value: nil}}, DeclineUnsupportedOutputShape},
+		{"string-keyed map of media value", sd.Bundle{Target: sd.Type{Kind: sd.TypeMap, Key: ptr(prim(sd.PrimitiveString)), Value: ptr(sd.Type{Kind: sd.TypePrimitive, Primitive: sd.PrimitiveMedia, Media: sd.MediaImage})}}, DeclineMediaImage},
 		{"recursive classes", sd.Bundle{Target: sd.Type{Kind: sd.TypeClass, Name: "C"}, RecursiveClasses: []string{"C"}}, DeclineUnsupportedOutputShape},
+		// An aliased output field/enum member is DECLINED: the native codec would
+		// serve it under the ALIAS, but a baml_client-generated carrier serves it
+		// under the CANONICAL json tag, so the bytes diverge. (Policy deferred to M3b.)
+		{"aliased class field", sd.Bundle{
+			Target: sd.Type{Kind: sd.TypeClass, Name: "C"},
+			Classes: []sd.ClassDef{{Name: sd.Name{Name: "C"}, Fields: []sd.ClassField{
+				{Name: sd.Name{Name: "confidence", Alias: strptr("score")}, Type: prim(sd.PrimitiveFloat)},
+			}}},
+		}, DeclineUnsupportedOutputShape},
+		{"aliased enum member", sd.Bundle{
+			Target: sd.Type{Kind: sd.TypeEnum, Name: "E"},
+			Enums: []sd.EnumDef{{Name: sd.Name{Name: "E"}, Values: []sd.EnumValue{
+				{Name: sd.Name{Name: "RED", Alias: strptr("rouge")}},
+			}}},
+		}, DeclineUnsupportedOutputShape},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -142,4 +165,5 @@ func TestClassifyOutputSchema(t *testing.T) {
 	}
 }
 
-func ptr(t sd.Type) *sd.Type { return &t }
+func ptr(t sd.Type) *sd.Type  { return &t }
+func strptr(s string) *string { return &s }

@@ -134,9 +134,32 @@ type nativeSpineField struct {
 	val any
 }
 
+// nativeSpineEncode marshals v with HTML escaping DISABLED, matching the serving
+// serializer (worker serves final results via sonic.Marshal == sonic ConfigDefault,
+// whose EscapeHTML is false). encoding/json's package default escapes '<', '>', '&'
+// to </>/&, which would make a string field like "<x>" diverge from
+// the bytes BAML actually serves. Go maps still emit in sorted-key order here
+// (encoding/json sorts), which is the native lane's documented canonical order.
+func nativeSpineEncode(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	// Encoder.Encode appends a trailing newline; the codec assembles the object
+	// by hand, so strip it.
+	out := buf.Bytes()
+	if n := len(out); n > 0 && out[n-1] == '\n' {
+		out = out[:n-1]
+	}
+	return out, nil
+}
+
 // nativeSpineMarshalObject renders fields as a JSON object in declaration order,
 // writing each field under its exact wire key — including keys Go struct tags
-// cannot express ("-", "", names with commas).
+// cannot express ("-", "", names with commas). Every key and value is encoded
+// with nativeSpineEncode (HTML escaping off) so the bytes match the serving path.
 func nativeSpineMarshalObject(fields []nativeSpineField) ([]byte, error) {
 	var buf bytes.Buffer
 	buf.WriteByte('{')
@@ -144,13 +167,13 @@ func nativeSpineMarshalObject(fields []nativeSpineField) ([]byte, error) {
 		if i > 0 {
 			buf.WriteByte(',')
 		}
-		k, err := json.Marshal(f.key)
+		k, err := nativeSpineEncode(f.key)
 		if err != nil {
 			return nil, err
 		}
 		buf.Write(k)
 		buf.WriteByte(':')
-		v, err := json.Marshal(f.val)
+		v, err := nativeSpineEncode(f.val)
 		if err != nil {
 			return nil, err
 		}
