@@ -33,13 +33,23 @@ func mustIngest(t *testing.T, st *Store, sum *eventSummary, opt ingestOptions) *
 	return rep
 }
 
+// defaultIngestOptions mirrors the production CLI defaults exactly, so a test
+// that uses it is testing the configuration the record job actually runs.
+//
+// MinShardSeconds is the one that used to be missing: the CLI defaults it to
+// 30s, and a test leaving it at the zero value silently exercises a
+// no-minimum variant in which a package can be sliced into pieces smaller
+// than a job's fixed overhead. Anything that wants a different value should
+// set it explicitly and say why.
 func defaultIngestOptions() ingestOptions {
 	return ingestOptions{
-		Alpha:  0.5,
-		Race:   true,
-		Count:  100,
-		WhaleK: 6,
-		Now:    time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC),
+		Alpha:           0.5,
+		Race:            true,
+		Count:           100,
+		WhaleK:          6,
+		WhaleSeconds:    0,
+		MinShardSeconds: 30,
+		Now:             time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC),
 	}
 }
 
@@ -595,7 +605,13 @@ func TestParentAndSubtestTimingIsCountedOnce(t *testing.T) {
 	// balances on real seconds.
 	st := newStore(canonicalFlags(true, 100))
 	opt := defaultIngestOptions()
-	opt.WhaleSeconds = 1 // force the whale path so per-test rows are kept
+	// Force the whale path so per-test rows are kept at all. Both overrides
+	// are deliberate and both are needed on a 13s fixture: the threshold to
+	// make it a whale, and the minimum shard size to stop the "too small to
+	// be worth slicing" guard from immediately un-flagging it. The subject
+	// here is per-test weighting, not the split economics.
+	opt.WhaleSeconds = 1
+	opt.MinShardSeconds = 1
 	mustIngest(t, st, sum, opt)
 	row := st.Units["example.com/pkg"]
 	if got := row.Tests["TestParent"]; got != 12 {
@@ -1251,9 +1267,13 @@ func TestWhaleThresholdAtTheWorkflowScale(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := newStore(canonicalFlags(true, 100))
-	// Exactly what .github/workflows/unit-tests.yml runs: no --whale-seconds,
-	// no --whale-k override. If this test needs an override to pass, the
+	// Exactly what .github/workflows/unit-tests.yml runs: --whale-k from the
+	// single TESTBUCKET_K knob (6), no --whale-seconds, and the CLI's real
+	// 30s minimum shard. If this test needs an override to pass, the
 	// production job would not reproduce it.
+	if defaultIngestOptions().MinShardSeconds != 30 {
+		t.Fatal("this regression must run the production minimum-shard default")
+	}
 	rep := mustIngest(t, st, sum, defaultIngestOptions())
 
 	if math.Abs(rep.TotalSeconds-workflowTotal) > 1 {
@@ -1304,4 +1324,162 @@ func TestWhaleThresholdAtTheWorkflowScale(t *testing.T) {
 	t.Logf("threshold %.1fs: llmhttp %.1fs WHOLE, debaml %.1fs WHOLE, oversized %.1fs -> %s x%d",
 		rep.Threshold, st.Units[repoPrefix+"bamlutils/llmhttp"].Seconds,
 		st.Units[repoPrefix+"internal/debaml"].Seconds, big.Seconds, big.Split, big.SplitInto)
+}
+
+func TestKIsASingleKnobEndToEnd(t *testing.T) {
+	// K is meant to be one knob (brief decision 1): adding a bucket is
+	// changing one number. But the split policy is derived and STORED by
+	// ingest, which compares each package against total/K, while plan only
+	// EXPANDS what the store already says. So the knob only behaves like one
+	// if the same K reaches both — which is what TESTBUCKET_K does in the
+	// workflow, and what this test pins end to end.
+	//
+	// The failure it guards is quiet rather than loud: raising K on the plan
+	// side alone gives you more, smaller buckets while a whale that now
+	// exceeds the new total/K stays whole and sets the floor, so the matrix
+	// gets wider and no faster.
+	live := syntheticLive()
+
+	// A tree where one package sits between total/8 and total/6: whole at
+	// K=6, a whale at K=8. That is exactly the shape the K decision turns on.
+	const total = 4800.0
+	const whaleSeconds = 700.0 // total/6 = 800 (under), total/8 = 600 (over)
+	lines := []string{
+		event("pass", repoPrefix+"bamlutils/llmhttp", "", whaleSeconds),
+		event("pass", repoPrefix+"bamlutils/llmhttp", "TestExactStreamNoGoroutineLeak", 350),
+		event("pass", repoPrefix+"bamlutils/llmhttp", "TestTail", 340),
+	}
+	const plankton = 41
+	for i := 0; i < plankton; i++ {
+		lines = append(lines, event("pass", fmt.Sprintf("%splankton%02d", repoPrefix, i), "", (total-whaleSeconds)/plankton))
+	}
+	sum, err := parseEvents(stream(lines...))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	planFor := func(t *testing.T, st *Store, k int) *planDocument {
+		t.Helper()
+		opt := defaultPlanOptions(live)
+		opt.K = k
+		opt.Live = append(append([]LivePackage(nil), live...), planktonLive(plankton)...)
+		doc, err := buildPlan(st, "", opt)
+		if err != nil {
+			t.Fatalf("plan --k %d: %v", k, err)
+		}
+		return doc
+	}
+	shardIDs := func(doc *planDocument, pkg string) []string {
+		var out []string
+		for _, b := range doc.Buckets {
+			for _, u := range b.Units {
+				if u.Kind == kindCountShard && len(u.Packages) == 1 && u.Packages[0] == repoPrefix+pkg {
+					out = append(out, u.ID)
+				}
+			}
+		}
+		sort.Strings(out)
+		return out
+	}
+
+	// 1. Record at the operative K=6. The whale is under total/6, so it is
+	//    correctly left whole.
+	k6 := newStore(canonicalFlags(true, 100))
+	mustIngest(t, k6, sum, defaultIngestOptions())
+	if row := k6.Units[repoPrefix+"bamlutils/llmhttp"]; row.splitPolicy() != splitNone {
+		t.Fatalf("at K=6 the whale was split %q x%d; it is below total/6", row.Split, row.SplitInto)
+	}
+	if got := shardIDs(planFor(t, k6, 6), "bamlutils/llmhttp"); len(got) != 0 {
+		t.Errorf("plan --k 6 emitted shards for a whole package: %v", got)
+	}
+
+	// 2. THE FAILURE THIS GUARDS: raising K on the plan side alone changes
+	//    nothing about the split, because the stored policy is what plan
+	//    expands. The matrix gets wider; the whale stays whole and becomes
+	//    the floor.
+	planOnly := planFor(t, k6, 8)
+	if got := shardIDs(planOnly, "bamlutils/llmhttp"); len(got) != 0 {
+		t.Errorf("plan --k 8 on a K=6 store produced shards %v — if this ever passes, "+
+			"the single-knob model changed and the report must change with it", got)
+	}
+	if planOnly.Summary.MakespanSeconds < whaleSeconds {
+		t.Errorf("makespan %.1fs is below the un-split whale's %.1fs; the whale should still be the floor",
+			planOnly.Summary.MakespanSeconds, whaleSeconds)
+	}
+
+	// 3. THE SUPPORTED TRANSITION: move the single knob, and the next master
+	//    run re-records the policy at the new K.
+	k8 := newStore(canonicalFlags(true, 100))
+	opt8 := defaultIngestOptions()
+	opt8.WhaleK = 8
+	rep := mustIngest(t, k8, sum, opt8)
+
+	row := k8.Units[repoPrefix+"bamlutils/llmhttp"]
+	if row.Split != splitCount {
+		t.Fatalf("after re-recording at K=8 the whale selected %q (%s), want %q",
+			row.Split, row.SplitReason, splitCount)
+	}
+	if row.SplitInto != 8 {
+		t.Errorf("split width %d, want the new K=8", row.SplitInto)
+	}
+	if len(rep.Whales) == 0 {
+		t.Error("the re-record did not report the whale")
+	}
+
+	// 4. plan --k 8 now realizes it: 8 shards, complete 1..N, aggregate
+	//    -count at least the requested sweep, coverage gate green (buildPlan
+	//    returns an error otherwise, so reaching here already proves it).
+	doc := planFor(t, k8, 8)
+	got := shardIDs(doc, "bamlutils/llmhttp")
+	if len(got) != 8 {
+		t.Fatalf("plan --k 8 emitted %d shards, want 8: %v", len(got), got)
+	}
+	// Read the shard facts off the EMITTED plan — the unit IDs and the
+	// invocation arguments — rather than internal fields, so this checks what
+	// the matrix will actually run.
+	seen := map[int]int{}
+	aggregate := 0
+	for _, b := range doc.Buckets {
+		for _, u := range b.Units {
+			if u.Kind != kindCountShard || len(u.Packages) != 1 || u.Packages[0] != repoPrefix+"bamlutils/llmhttp" {
+				continue
+			}
+			var idx int
+			if _, err := fmt.Sscanf(u.ID[strings.LastIndex(u.ID, "#"):], "#shard%d", &idx); err != nil {
+				t.Errorf("cannot read a shard index from %q: %v", u.ID, err)
+				continue
+			}
+			seen[idx]++
+			for _, inv := range b.Invocations {
+				if !strings.Contains(inv.Desc, u.ID) {
+					continue
+				}
+				for _, a := range inv.Args {
+					if strings.HasPrefix(a, "-count=") {
+						var c int
+						if _, err := fmt.Sscanf(a, "-count=%d", &c); err == nil {
+							aggregate += c
+						}
+					}
+				}
+			}
+		}
+	}
+	if aggregate < 100 {
+		t.Errorf("aggregate -count %d is below the requested 100 — the sweep was weakened", aggregate)
+	}
+	t.Logf("K=6 recorded: whole, makespan %.1fs | plan --k 8 alone: still whole, makespan %.1fs | "+
+		"re-recorded at K=8: count x%d, aggregate -count %d, makespan %.1fs",
+		planFor(t, k6, 6).Summary.MakespanSeconds, planOnly.Summary.MakespanSeconds,
+		row.SplitInto, aggregate, doc.Summary.MakespanSeconds)
+}
+
+// planktonLive returns the live packages the K-knob fixture's filler events
+// refer to, so the coverage gate sees a tree that matches the store.
+func planktonLive(n int) []LivePackage {
+	out := make([]LivePackage, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, livePkg(fmt.Sprintf("plankton%02d", i), ".", modeWork, true))
+	}
+	return out
 }

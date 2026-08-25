@@ -12,6 +12,22 @@ concurrency:
 env:
   GO_VERSION: "1.26.5"
 
+  # THE SINGLE K KNOB (#656, brief decision 1). Adding or removing a bucket is
+  # changing this one number.
+  #
+  # It has to drive BOTH sides of the loop, and that is not a stylistic point.
+  # The whale-split policy is derived and STORED by `ingest`, which compares
+  # each package against total/K; `plan` only expands what the store already
+  # says. So a K that reached `plan` alone would change how many buckets the
+  # matrix has without changing which packages get split for them — the same
+  # store would be re-planned into more, smaller lanes while a whale that now
+  # exceeds the new total/K stayed whole and set the floor.
+  #
+  # Driving both from here makes the transition a single edit with a defined
+  # settling time: bump K, and the next master `record-timings` run re-records
+  # the split policy at the new K, after which `plan --k` realizes it.
+  TESTBUCKET_K: "6"
+
 jobs:
   unit-tests:
     runs-on: ubuntu-latest
@@ -438,9 +454,11 @@ jobs:
           # under. It is stored with the weights: if the sweep depth ever
           # changes, `plan` sees the mismatch and cold-starts loudly instead
           # of balancing on numbers that no longer mean anything.
+          # --whale-k is the SAME K the plan below uses; see TESTBUCKET_K.
           go run ./cmd/testbucket ingest \
             --store "$store_dir/test-timings.json" \
             --race --count=100 \
+            --whale-k "$TESTBUCKET_K" \
             "${events[@]}"
 
       - name: Show the plan the next PR will get
@@ -450,8 +468,14 @@ jobs:
           # the split the freshly recorded store produces, so a store that
           # stopped growing — or a whale that just crossed the split threshold
           # — is visible on the master run that caused it.
+          #
+          # Same K as the ingest above. If these two ever disagree the store's
+          # split policy is derived for a different bucket count than the one
+          # the matrix fans out to, which is the failure the single knob
+          # exists to prevent.
+          echo "planning at the recorded K=$TESTBUCKET_K"
           go run ./cmd/testbucket plan \
-            --k 6 \
+            --k "$TESTBUCKET_K" \
             --store "$RUNNER_TEMP/testbucket-store/test-timings.json"
 
       - name: Save the timing store
@@ -532,7 +556,7 @@ jobs:
           # gate inside `plan` is what makes that meaningful: it fails loudly
           # if any live package is left unscheduled, so a green line here is
           # a real statement about coverage and not just about exit codes.
-          go run ./cmd/testbucket plan --k 6 --store "$store"
+          go run ./cmd/testbucket plan --k "$TESTBUCKET_K" --store "$store"
 
       - name: Cold start from a guaranteed miss
         run: |
@@ -541,7 +565,7 @@ jobs:
           # that is not there must produce a valid, coverage-complete matrix
           # on mean weights, not a failed job.
           go run ./cmd/testbucket plan \
-            --k 6 \
+            --k "$TESTBUCKET_K" \
             --store "$RUNNER_TEMP/definitely-not-a-store.json"
 
   # Per-module GOWORK=off sanity matrix for the modules we publish
