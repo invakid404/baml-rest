@@ -522,6 +522,14 @@ func classifyOutputSchema(b schemadescriptor.Bundle) (projectdescriptor.Capabili
 			return code, detail
 		}
 		for j := range c.Fields {
+			// An aliased output field serves under its ALIAS in the native codec,
+			// but a baml_client-generated carrier serves it under its CANONICAL
+			// json tag (e.g. `confidence @alias("score")` -> `json:"confidence"`),
+			// so the two byte streams diverge. Decline until M3b pins the
+			// output-key policy and differentially proves it.
+			if c.Fields[j].Name.Alias != nil {
+				return DeclineUnsupportedOutputShape, "return schema field " + c.Name.Name + "." + c.Fields[j].Name.Name + " is aliased (native output-key policy deferred to M3b)"
+			}
 			if code, detail := walkType(&c.Fields[j].Type, seen); code != "" {
 				return code, detail
 			}
@@ -530,6 +538,13 @@ func classifyOutputSchema(b schemadescriptor.Bundle) (projectdescriptor.Capabili
 	for i := range b.Enums {
 		if code, detail := constraintCode(b.Enums[i].Constraints); code != "" {
 			return code, detail
+		}
+		for j := range b.Enums[i].Values {
+			// Same divergence for an aliased enum member (native emits the alias as
+			// the string value; the generated enum emits the canonical member).
+			if b.Enums[i].Values[j].Name.Alias != nil {
+				return DeclineUnsupportedOutputShape, "return schema enum " + b.Enums[i].Name.Name + " member " + b.Enums[i].Values[j].Name.Name + " is aliased (native output-key policy deferred to M3b)"
+			}
 		}
 	}
 	return "", ""
@@ -564,6 +579,20 @@ func walkType(t *schemadescriptor.Type, seen map[*schemadescriptor.Type]bool) (p
 		return "", "" // named ref; the def is walked at the Bundle level
 	case schemadescriptor.TypeList:
 		return walkType(t.Elem, seen)
+	case schemadescriptor.TypeMap:
+		// M3a admits a STRING-keyed map (BAML's only key type; it maps to a JSON
+		// object == a Go map[string]V). A non-string key or a value outside the
+		// carrier profile still declines.
+		if t.Key == nil || t.Key.Kind != schemadescriptor.TypePrimitive || t.Key.Primitive != schemadescriptor.PrimitiveString {
+			return DeclineUnsupportedOutputShape, "return schema contains a non-string-keyed map"
+		}
+		// Fail CLOSED on a missing value type: walkType(nil) reports success, so
+		// without this guard the map would be admitted here and then rejected by
+		// schemaGoType at emit time ("map has no key/value type") — an admit-then-fail.
+		if t.Value == nil {
+			return DeclineUnsupportedOutputShape, "return schema contains a map with no value type"
+		}
+		return walkType(t.Value, seen)
 	case schemadescriptor.TypeUnion:
 		if t.Union == nil {
 			return "", ""
@@ -578,7 +607,7 @@ func walkType(t *schemadescriptor.Type, seen map[*schemadescriptor.Type]bool) (p
 		}
 		return "", ""
 	default:
-		// top, literal, map, tuple, arrow, recursive_alias: outside the M1 class.
+		// top, literal, tuple, arrow, recursive_alias: outside the M3a class.
 		return DeclineUnsupportedOutputShape, "return schema contains an unsupported type kind " + string(t.Kind)
 	}
 }

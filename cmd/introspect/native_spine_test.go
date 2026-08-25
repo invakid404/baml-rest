@@ -154,6 +154,11 @@ function CollideFields() -> Reply { client GPT4 prompt #"x"# }
 	if !admitted["GoodGreet"] {
 		t.Errorf("GoodGreet should be admitted; declines=%v", declines)
 	}
+	// M3a admits a string-keyed map OUTPUT (the native carrier generates it); a map
+	// INPUT is still declined (no map in the input-value profile).
+	if !admitted["MapOutput"] {
+		t.Errorf("MapOutput (string-keyed map output) should be admitted (M3a); declines=%v", declines)
+	}
 	want := map[string]string{
 		"RRGreet":    "strategy_round_robin",     // P2-1: canonical baml-roundrobin
 		"TempGreet":  "request_body_option",      // P1-1: temperature body option
@@ -166,8 +171,7 @@ function CollideFields() -> Reply { client GPT4 prompt #"x"# }
 		"ImgReturn": "unsupported_output_shape", // media return -> OUTPUT context
 		"ImgInput":  "unsupported_input_shape",  // media input  -> INPUT context
 		// P2-2 (fix #2): input-graph vs return-bundle context decides the shape code.
-		"MapInput":    "unsupported_input_shape",  // input map -> INPUT shape (was wrongly output)
-		"MapOutput":   "unsupported_output_shape", // output map -> OUTPUT shape (classifier)
+		"MapInput":    "unsupported_input_shape",  // input map -> INPUT shape (still declined)
 		"TupleOutput": "unsupported_output_shape", // output tuple -> OUTPUT shape (pre-decline)
 		// P1-5 (fix #2): lossy Go normalization collision -> stable decline, not
 		// an uncompilable carrier (foo_bar and fooBar both normalize to FooBar).
