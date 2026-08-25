@@ -1,0 +1,54 @@
+{
+  "name": "list_scalar_union_now_claimed",
+  "description": "UNION BURN-DOWN — CLAIMED: a MULTI-ARM union as a LIST ELEMENT (list<Color enum | string>). BAML threads the previous element's winning arm into the next as ctx.union_variant_hint (coerce_array.rs, the only hint setter) and tries that arm FIRST in both the try_cast and lenient phases, taking it outright at score 0. coerceList / tryCastArray now carry that hint per element and the union coercers consult it, so per-element arm selection reproduces BAML's. Here 'other' matches no enum value so element 0 lands on the STRING arm, and the hint makes element 1 take the string arm too (a canonical enum token and its string spelling are the same bytes). want live-captured.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "list",
+              "inner": {
+                "kind": "union",
+                "variants": [
+                  {
+                    "kind": "enum_ref",
+                    "ref": "Color"
+                  },
+                  {
+                    "kind": "string"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "enums": [
+      {
+        "name": "Color",
+        "values": [
+          "RED",
+          "GREEN",
+          "BLUE"
+        ]
+      }
+    ],
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":[\"other\",\"GREEN\"]}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": [
+        "other",
+        "GREEN"
+      ]
+    }
+  }
+}

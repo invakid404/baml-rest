@@ -670,27 +670,19 @@ func checkSupportedType(b *schema.Bundle, t schema.Type) error {
 		if t.Elem == nil {
 			return unsupported("list without element")
 		}
-		// A MULTI-ARM union as a LIST ELEMENT stays out of scope: BAML threads the
-		// previous element's winning arm into the next element as
+		// A MULTI-ARM union as a LIST ELEMENT is IN SCOPE as of the union burn-down:
+		// BAML threads the previous element's winning arm into the next element as
 		// ctx.union_variant_hint (coerce_array.rs enter_scope_with_hint, the ONLY
-		// setter of the hint) and tries that arm FIRST in both the try_cast and
-		// lenient phases (coerce_union.rs), so an array like list<Color | string> can
-		// pick a DIFFERENT arm per element than a hint-less native coercer (e.g. a
-		// hinted string arm keeps an exact enum token as a string). The hint only
-		// flows when the elements are THEMSELVES unions (the hint is the previous
-		// element's OUTERMOST UnionMatch, which a map/class/list element never
-		// carries), and map values and class fields RESET the hint (enter_scope /
-		// visit_class_value_pair), so map<_, union> and class union fields stay in
-		// scope. A single-non-null-arm optional element (T?) is safe — its only hint
-		// is that one arm. M3d EVALUATED modeling the array union_variant_hint and
-		// DELIBERATELY DEFERRED it (the conservative answer to the scope's open
-		// question): faithfully reproducing the per-element hint carry-over and its
-		// two-phase first-try semantics — and PROVING per-element parity for every
-		// arm shape — is not something native can guarantee without over-claim risk,
-		// so a multi-arm-union list element keeps DECLINING (over-decline is safe).
-		if isMultiArmUnion(*t.Elem) {
-			return unsupported("list element is a multi-arm union (array union_variant_hint deferred — over-claim risk)")
-		}
+		// setter of the hint) and tries that arm FIRST in both the try_cast and the
+		// lenient phase (coerce_union.rs), taking it outright when it scores 0 — so
+		// an array like list<int | float> resolves element 2 of [1.5, 9007199254740993]
+		// on the FLOAT arm (9007199254740992) where a hint-less coercer would pick int.
+		// coerceList / tryCastArray now carry that hint per element (siblingHint =
+		// extract_union_winner_index) and the union coercers consult it, so the element
+		// is decided by the SAME cross-element rule BAML uses. Everything else about a
+		// list element is unchanged: map values and class fields RESET the hint
+		// (enter_scope / visit_class_value_pair) and a non-union element carries no
+		// UnionMatch, so the hint stays nil for every shape that was already claimed.
 		return checkSupportedType(b, *t.Elem)
 	case schema.TypeUnion:
 		if t.Union == nil {
@@ -946,12 +938,36 @@ func checkUnionMapVariant(b *schema.Bundle, v schema.Type) error {
 // faithful pick_best participant. NO disjoint-key requirement either — overlapping
 // field-name sets are resolved by pick_best now, not declined.
 //
-// A class with ANY optional / list / map / union / nested-class field declines: its
-// try_cast can score non-zero (a missing optional → OptionalDefaultFromNoValue) and
-// its lenient default/partial/implied scoring inside a union is not yet proven (that
-// broadening, plus the try_cast_union non-zero-collection sub-path, is M3d+). A
-// zero-field class declines too (its NoFields / empty-object try_cast is unmodeled).
+// DEFAULTABLE COLLECTION fields (a required LIST or a required STRING-keyed MAP) are
+// admitted by the union burn-down. Both are fully modeled on BOTH phases: try_cast
+// via tryCastArray / tryCastMap (whose scores tryCastClass now sums into the class's
+// try_cast score, so a non-zero class try_cast lands in try_cast_union's pick_best
+// sub-path instead of short-circuiting), and the lenient phase via coerceList /
+// coerceMap plus TypeIR::default_value's `[]` / `{}` fill for an ABSENT one
+// (DefaultFromNoValue, score 100) — which is what makes an all-default class arm
+// (A{items string[]} against `{}`) score and win pick_best the way BAML's
+// classAllDefault devalue orders it. The map key is restricted to a STRING for the
+// same reason [checkUnionMapVariant] restricts a map ARM: an enum/literal key that
+// MISSES is kept leniently with an unproven-weight MapKeyParseError, and a scored
+// position may not be ranked on a score native cannot prove.
+//
+// A class with ANY optional / union / nested-class / recursive field still declines:
+// a missing OPTIONAL makes BAML's Class::try_cast succeed at a NON-zero score
+// (OptionalDefaultFromNoValue) rather than not match, which tryCastClass does not
+// model, and a nested class/union field's own lenient scoring inside a union is not
+// proven. A zero-field class declines too (its NoFields / empty-object try_cast is
+// unmodeled).
 func checkUnionClassVariant(b *schema.Bundle, v schema.Type) error {
+	return checkUnionClassVariantSeen(b, v, map[schema.ClassKey]struct{}{})
+}
+
+// checkUnionClassVariantSeen is [checkUnionClassVariant] carrying the set of class
+// keys already on the current walk. The walk recurses (a class-valued collection
+// element is held to these same rules — see [checkUnionCollectionClasses]), so a
+// class graph with a cycle would otherwise not terminate. A repeat DECLINES: a
+// recursive class inside a union arm is out of scope anyway, and declining is the
+// safe answer for a shape this gate cannot finish proving.
+func checkUnionClassVariantSeen(b *schema.Bundle, v schema.Type, walked map[schema.ClassKey]struct{}) error {
 	if len(v.Meta.Constraints) > 0 {
 		return unsupported("class-union variant has type constraints")
 	}
@@ -959,6 +975,12 @@ func checkUnionClassVariant(b *schema.Bundle, v schema.Type) error {
 	if !ok {
 		return fmt.Errorf("debaml: unknown class %q", v.Name)
 	}
+	key := schema.ClassKey{Name: cls.Name.Name, Mode: cls.Mode}
+	if _, cycle := walked[key]; cycle {
+		return unsupported("class-union variant class is recursive (a cyclic class graph inside a union arm is out of scope)")
+	}
+	walked[key] = struct{}{}
+	defer delete(walked, key)
 	if len(cls.Constraints) > 0 {
 		return unsupported("class-union variant class has constraints")
 	}
@@ -968,17 +990,93 @@ func checkUnionClassVariant(b *schema.Bundle, v schema.Type) error {
 	seen := make(map[string]struct{}, len(cls.Fields))
 	for j := range cls.Fields {
 		f := &cls.Fields[j]
-		if !isFlatLeafField(f.Type) {
-			// Any optional/union/map/list/nested-class/recursive field opens BAML
-			// leniency (defaults, implied keys, partial maps, single-to-array) whose
-			// union scoring native does not yet prove — decline (M3d).
-			return unsupported("class-union variant class has a non-flat-leaf or optional field (M3c models required flat-leaf class fields only)")
+		if err := checkUnionClassField(b, f.Type, walked); err != nil {
+			return err
 		}
 		rn := f.Name.RenderedName()
 		if _, dup := seen[rn]; dup {
 			return unsupported("class-union variant class has duplicate rendered field names")
 		}
 		seen[rn] = struct{}{}
+	}
+	return nil
+}
+
+// checkUnionClassField validates ONE field of a class union arm: a flat leaf
+// (primitive scalar / literal / enum), a required LIST, or a required STRING-keyed
+// MAP — the three shapes whose try_cast score AND lenient score native reproduces
+// inside a scored union (see [checkUnionClassVariant]). An OPTIONAL field (a
+// nullable union), a multi-arm union, a nested class, or a recursive alias declines:
+// each one has a try_cast or default path whose union scoring is not proven.
+//
+// A collection field's ELEMENT / VALUE is checked TWICE, and both are needed.
+// [checkSupportedType] proves it is in the parser's cut-line at all, but it treats a
+// class reference as a LEAF (class definitions are validated once over the bundle's
+// class slice, under the ORDINARY field rules), so on its own it would let a
+// class-valued collection smuggle a class the union-arm rules reject — `list<B>`
+// where `B{x int, y string?}` bypasses the optional-field boundary one level down,
+// and BAML's Class::try_cast fills that optional and SUCCEEDS at a non-zero score
+// where tryCastClass does not match at all. [checkUnionCollectionClasses] closes
+// that by holding every class reachable through the collection to the union-arm
+// rules as well.
+func checkUnionClassField(b *schema.Bundle, t schema.Type, walked map[schema.ClassKey]struct{}) error {
+	if isFlatLeafField(t) {
+		return nil
+	}
+	switch t.Kind {
+	case schema.TypeList:
+		// checkSupportedType covers the constraint reject and proves the element is
+		// in scope (including a multi-arm-union element, now that the array
+		// union_variant_hint is modeled).
+		if err := checkSupportedType(b, t); err != nil {
+			return err
+		}
+		if t.Elem == nil {
+			return unsupported("class-union variant class has a list field without an element")
+		}
+		return checkUnionCollectionClasses(b, *t.Elem, walked)
+	case schema.TypeMap:
+		if err := checkUnionMapVariant(b, t); err != nil {
+			return err
+		}
+		if t.Value == nil {
+			return unsupported("class-union variant class has a map field without a value")
+		}
+		return checkUnionCollectionClasses(b, *t.Value, walked)
+	default:
+		return unsupported("class-union variant class has an optional / union / nested-class field (only flat leaves and required list/string-keyed-map fields are modeled inside a union)")
+	}
+}
+
+// checkUnionCollectionClasses holds every CLASS reachable through a union arm's
+// collection field to the union-arm class rules ([checkUnionClassVariantSeen]),
+// descending through nested lists / maps / unions to find them. Non-class types are
+// already decided by [checkSupportedType] at the field, so this adds nothing for
+// them — it exists solely because that walk stops at a class reference.
+func checkUnionCollectionClasses(b *schema.Bundle, t schema.Type, walked map[schema.ClassKey]struct{}) error {
+	switch t.Kind {
+	case schema.TypeClass:
+		return checkUnionClassVariantSeen(b, t, walked)
+	case schema.TypeList:
+		if t.Elem != nil {
+			return checkUnionCollectionClasses(b, *t.Elem, walked)
+		}
+	case schema.TypeMap:
+		if t.Value != nil {
+			return checkUnionCollectionClasses(b, *t.Value, walked)
+		}
+	case schema.TypeUnion:
+		// A NON-nullable multi-arm union's class arms were already held to these
+		// rules by checkSupportedUnionShape, but a NULLABLE union takes
+		// checkSupportedType's fast path without walking its arms, so descend here
+		// too rather than rely on which branch ran.
+		if t.Union != nil {
+			for i := range t.Union.Variants {
+				if err := checkUnionCollectionClasses(b, t.Union.Variants[i], walked); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	return nil
 }

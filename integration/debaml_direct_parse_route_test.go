@@ -360,13 +360,25 @@ func TestDeBAMLDirectParseRouteNativeFirst(t *testing.T) {
 }
 
 // routeNativeServeFloor is how many of the corpus's final-parse cases the deployed
-// `/parse/_dynamic` route serves NATIVELY today: 160 of 186. The remaining 26
+// `/parse/_dynamic` route serves NATIVELY today: 169 of 195. The remaining 26
 // decline — 22 outside the native parser's cut-line, 3 where BAML recovered a
 // non-finite float that cannot be serialized at all, and 1 where both parsers
 // errored and BAML's error text is the one served.
 //
-// Burn-down batch 1 moved this from 151. The `result_drift` bucket is now EMPTY:
-// the five cases that declined there were never semantic disagreements, only
+// The UNION burn-down moved this from 160 (of 186). Nine cases flipped, all in the
+// union family: the three direct list<multi-arm-union> shapes plus the class union
+// with a defaultable-collection arm, and five new fixtures that pin the mechanisms
+// those needed — the array `union_variant_hint` made observable (2^53+1 through
+// `list<int|float>`), its per-array reset, the map-field default, and the
+// null-into-`string|map` class-field default-fill the cold review surfaced. Nothing
+// was removed from the cut-line to get there: `internal/debaml` now reproduces
+// BAML's cross-element hint (coerce_array.rs), its class try_cast scoring, and
+// coerce_class's `default_value(Some(e))` fill for a provably-failing required
+// field, so the byte comparison that gates every native serve simply started
+// agreeing.
+//
+// Burn-down batch 1 had moved it from 151, emptying the `result_drift` bucket: the
+// five cases that declined there were never semantic disagreements, only
 // payload-shape ones the host's own normalization used to erase after the
 // comparison — an absent optional BAML spells as `null`, and class field order.
 // Both are closed at the source (internal/debaml emits the null itself;
@@ -378,7 +390,7 @@ func TestDeBAMLDirectParseRouteNativeFirst(t *testing.T) {
 //
 // Asserted as a floor, not an equality: raising it is the point of the burn-down,
 // and a corpus that grows should not have to move this number to stay green.
-const routeNativeServeFloor = 160
+const routeNativeServeFloor = 169
 
 // parseRouteNamedFallbacks are the corpus families the native parser is known not
 // to reproduce and that must therefore keep declining at the deployed route. It is
@@ -396,19 +408,40 @@ const routeNativeServeFloor = 160
 //
 // Batch 1 retired two of the original thirteen — `map_bad_enum_key` and
 // `map_enum_key_nonmember_live_probe` — by reproducing the lenient map-key keep
-// they were guarding, so they are served natively now and must NOT be listed (the
-// guard would fail on them). The eleven below still decline.
+// they were guarding. The UNION burn-down retires three more —
+// `class_union_all_default_*`, `list_scalar_union_*` and `list_string_int_union_*`
+// — by reproducing the array union_variant_hint and the defaultable-collection class
+// arm; all five are served natively now and must NOT be listed (the guard would fail
+// on them). Two NEW guards join in their place, both live-captured boundaries this
+// slice deliberately did not cross: a JSON null against a non-nullable union with a
+// COMPOSITE arm (BAML's list arm absorbs it as `[]`), and a class union arm with an
+// OPTIONAL field (BAML's Class::try_cast succeeds at a non-zero score).
+//
+// `scalar_union_no_match_fallback` stays listed, and always will: its `want` is a
+// BAML ERROR, and an errored parse is BY CONSTRUCTION never native-served — the
+// bridge returns BAML's own error object (worker/direct_parse_native.go
+// settleBAMLError), so no parser change can move it.
+//
+// The cold-review fix adds one more: `list_union_map_arm_rejects_null_stays_fallback`
+// is the position where a `string|map` union's null error has nothing to default-fill
+// it (a list ELEMENT), so BAML skips the item and native — unable to prove a failing
+// UNION element is a BAML parse error — declines. Its class-field sibling
+// (`class_field_union_map_arm_null_default_claimed`) is served NATIVELY and must NOT
+// be listed. `class_union_arm_collection_class_field_stays_fallback` joins them: it is
+// the union arm's optional-field boundary one level down, inside a class-valued
+// collection field.
 var parseRouteNamedFallbacks = []string{
 	"truncated_final_error",
 	"trailing_commas_nested_object_array",
 	"map_partial_incomplete",
-	"class_union_all_default_stays_fallback",
 	"scalar_union_no_match_fallback",
-	"list_scalar_union_stays_fallback",
 	"literal_int_numeric_string_mismatch",
 	"literal_int_hex_spelling_stays_fallback",
 	"primitive_int_array_empty_stays_fallback",
-	"list_string_int_union_stays_fallback",
+	"union_null_composite_arm_stays_fallback",
+	"list_union_map_arm_rejects_null_stays_fallback",
+	"class_union_optional_field_arm_stays_fallback",
+	"class_union_arm_collection_class_field_stays_fallback",
 	"baml_error_native_fallback_guard",
 }
 

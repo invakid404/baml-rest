@@ -101,6 +101,13 @@ type coerceFlags struct {
 	hasJsonToString bool // a string coerced from a non-string via JsonToString
 	hasFirstMatch   bool // an array-to-singular / pick_best FirstMatch winner
 	hasUnionMatch   bool // a union winner (carries UnionMatch, score 0)
+	// unionArmIdx is the index the UnionMatch flag carries, meaningful ONLY when
+	// hasUnionMatch. It is BAML's extract_union_winner_index (coerce_array.rs): the
+	// value that seeds the NEXT array sibling's ctx.union_variant_hint. For a union
+	// winner it is the arm's index (iter_include_null order, so the null arm is
+	// len(variants)); for an array-to-singular winner that pick_best flagged under a
+	// UNION target it is the winning ITEM index, exactly as BAML records it.
+	unionArmIdx int
 
 	// class discriminators:
 	classPropCount     int
@@ -156,6 +163,7 @@ func (f *coerceFlags) absorb(w candidate) {
 	f.hasJsonToString = w.hasJsonToString
 	f.hasFirstMatch = w.hasFirstMatch
 	f.hasUnionMatch = w.hasUnionMatch
+	f.unionArmIdx = w.unionArmIdx
 	f.classPropCount = w.classPropCount
 	f.classAllDefault = w.classAllDefault
 	f.classSingleImplied = w.classSingleImplied
@@ -223,6 +231,7 @@ func (f *coerceFlags) toCandidate(out json.RawMessage, originIndex int) candidat
 	c.hasJsonToString = f.hasJsonToString
 	c.hasFirstMatch = f.hasFirstMatch
 	c.hasUnionMatch = f.hasUnionMatch
+	c.unionArmIdx = f.unionArmIdx
 	c.classPropCount = f.classPropCount
 	c.classAllDefault = f.classAllDefault
 	c.classSingleImplied = f.classSingleImplied
@@ -933,17 +942,45 @@ func boolRaw(b bool) json.RawMessage {
 	return json.RawMessage("false")
 }
 
-// floatRaw emits f as a JSON number using the shortest round-trip form, or
-// reports ok=false for a NON-FINITE value (NaN, +Inf, -Inf) — which has no
-// valid JSON number spelling, so the caller must DECLINE rather than emit an
-// invalid token like "NaN"/"+Inf". The differential compares numeric VALUE
-// (both sides decode to float64), so the byte spelling (50 vs 50.0 vs
-// scientific) never affects parity — only the decoded value must equal BAML's.
+// floatRaw emits f as a JSON number in the SPELLING the worker boundary uses, or
+// reports ok=false for a NON-FINITE value (NaN, +Inf, -Inf) — which has no valid
+// JSON number spelling, so the caller must DECLINE rather than emit an invalid
+// token like "NaN"/"+Inf".
+//
+// The spelling is NOT free. The in-process differential decodes both sides and
+// compares VALUES, but the DEPLOYED /parse route compares native's bytes against
+// BAML's with bytes.Equal at the worker boundary (worker/direct_parse_native.go),
+// and BAML's side is `sonic.Marshal` of the decoded float — which reproduces
+// encoding/json's float encoder exactly. So native must reproduce it too: a bare
+// strconv 'g' spells 9007199254740992 as "9.007199254740992e+15" where the bridge
+// spells it "9007199254740992", and every such float would decline as result_drift
+// even though the value is identical. jsonFloatFormat is that encoder.
 func floatRaw(f float64) (json.RawMessage, bool) {
 	if math.IsNaN(f) || math.IsInf(f, 0) {
 		return nil, false
 	}
-	return json.RawMessage(strconv.FormatFloat(f, 'g', -1, 64)), true
+	return json.RawMessage(jsonFloatFormat(f)), true
+}
+
+// jsonFloatFormat spells a FINITE float64 exactly as encoding/json's floatEncoder
+// does (and therefore as sonic.Marshal does): decimal ('f') notation except for a
+// magnitude outside [1e-6, 1e21), which uses 'e' with the exponent's leading zero
+// stripped ("1e-7", never "1e-07"). Shortest-round-trip precision throughout.
+func jsonFloatFormat(f float64) string {
+	abs := math.Abs(f)
+	format := byte('f')
+	if abs != 0 && (abs < 1e-6 || abs >= 1e21) {
+		format = 'e'
+	}
+	b := strconv.AppendFloat(nil, f, format, -1, 64)
+	if format == 'e' {
+		// Clean up an "e-09"-style exponent to "e-9", matching encoding/json.
+		if n := len(b); n >= 4 && b[n-4] == 'e' && b[n-3] == '-' && b[n-2] == '0' {
+			b[n-2] = b[n-1]
+			b = b[:n-1]
+		}
+	}
+	return string(b)
 }
 
 // emitFloat wraps floatRaw for coerceFloatValue's string paths: a finite value
@@ -1384,9 +1421,32 @@ func coerceClass(b *schema.Bundle, name string, mode schema.StreamingMode, input
 			// the same error (the differential checks status parity).
 			return err
 		}
+		if d, ok := defaultValue(cls.Fields[i].Type); ok && isProvenBamlError(err) {
+			// coerce_class's `Some(Err(e)) => t.default_value(Some(e))`: a REQUIRED
+			// field whose coercion PROVABLY failed and whose TYPE has a
+			// TypeIR::default_value is DEFAULT-FILLED (DefaultButHadUnparseableValue,
+			// cost 2), not errored — which is why provenClassFieldError refuses to
+			// call a defaultable field a proven CLASS error. The proof is the error
+			// itself: a provenErr means BAML errors this field for this value (a
+			// claimed mismatchError was already propagated above). The canonical case
+			// is a JSON null against a non-nullable `string|map<string,int>` field:
+			// every arm errors, and the union's default_value is the map arm's `{}`.
+			out[i] = d
+			filled[i] = true
+			// DefaultButHadUnparseableValue is NOT one of the flags pick_best's
+			// all-default devalue looks for (OptionalDefaultFromNoValue /
+			// DefaultFromNoValue), so this field does NOT make the class all-default.
+			hasRealField = true
+			cf.add(2) // DefaultButHadUnparseableValue (cost 2)
+			return nil
+		}
 		if cls.Fields[i].Type.Kind == schema.TypeMap && v.kind != valObject {
 			// coerce_map on a non-object is error_unexpected_type (coerce_map.rs),
 			// so BAML fills the map default {} with DefaultButHadUnparseableValue.
+			// Kept alongside the general rule above because coerceMap reports a
+			// non-object as a plain DECLINE, not a provenErr (BAML's own scoring can
+			// still shape a partial map from some non-objects), so the proof here is
+			// the INPUT KIND rather than the error.
 			out[i] = json.RawMessage("{}")
 			filled[i] = true
 			hasRealField = true
@@ -1751,6 +1811,16 @@ func defaultValue(t schema.Type) (json.RawMessage, bool) {
 // child's own flags) are threaded into cf so the nullable-union clean-only rule
 // (coerceUnionSafe) sees a flagged list arm and declines it against the scored
 // null arm — Mcoerce-c does not score collection arms against null.
+//
+// ARRAY UNION HINT: coerce_array is the ONLY setter of ctx.union_variant_hint. Each
+// element is coerced under enter_scope_with_hint(i, last_union_hint), where
+// last_union_hint is the PREVIOUS element's outermost UnionMatch index
+// (extract_union_winner_index, reproduced by [siblingHint]) — nil for the first
+// element, and left UNCHANGED by an element that failed (BAML only reassigns it on
+// Ok). The non-array SingleToArray element goes through enter_scope("<implied>"),
+// which carries NO hint. A UNION element then tries the hinted arm first and takes
+// it outright at score 0 (selectUnionArms / tryCastUnion), which is how BAML makes
+// an array of unions pick arms cross-element rather than per-element.
 func coerceList(b *schema.Bundle, elem *schema.Type, input value, cf *coerceFlags, cctx *coerceCtx) (json.RawMessage, error) {
 	if elem == nil {
 		return nil, fmt.Errorf("debaml: list type missing element")
@@ -1767,7 +1837,7 @@ func coerceList(b *schema.Bundle, elem *schema.Type, input value, cf *coerceFlag
 		if cf != nil {
 			cf.singleToArray = true
 		}
-		out, keep, err := coerceListChild(b, *elem, input, cf, cctx)
+		out, keep, _, err := coerceListChild(b, *elem, input, cf, cctx.enterScope())
 		if err != nil {
 			return nil, err
 		}
@@ -1789,8 +1859,13 @@ func coerceList(b *schema.Bundle, elem *schema.Type, input value, cf *coerceFlag
 	}
 
 	first := true
+	// last is the previous element's winning union arm (BAML's last_union_hint). It
+	// starts nil and is REASSIGNED only by an element that coerced successfully, so a
+	// skipped (ArrayItemParseError) element leaves the preceding element's hint in
+	// place — exactly as coerce_array.rs does.
+	var last *int
 	for i := range input.arrV {
-		out, keep, err := coerceListChild(b, *elem, input.arrV[i], cf, cctx)
+		out, keep, next, err := coerceListChild(b, *elem, input.arrV[i], cf, cctx.enterScopeWithHint(last))
 		if err != nil {
 			return nil, err
 		}
@@ -1800,6 +1875,7 @@ func coerceList(b *schema.Bundle, elem *schema.Type, input value, cf *coerceFlag
 			errCount++
 			continue
 		}
+		last = next
 		if !first {
 			buf.WriteByte(',')
 		}
@@ -1818,14 +1894,17 @@ func coerceList(b *schema.Bundle, elem *schema.Type, input value, cf *coerceFlag
 // coerceListChild coerces one list element (array item or implied singleton).
 // It returns exactly one of:
 //
-//   - (out, true, nil):  the child coerced; append out (its flags merged into cf).
-//   - (nil, false, nil): the child is a PROVEN BAML parse error; the caller SKIPS
-//     it (BAML records ArrayItemParseError and the list still succeeds).
-//   - (nil, false, err): the whole list must FAIL — err is either a HARD/invariant
-//     error to propagate, or an ErrDeBAMLParseUnsupported DECLINE because the
-//     child could be a DEFERRED Mcoerce-d success or carried number-display
-//     uncertainty, so native falls back rather than skip an item BAML might keep.
-func coerceListChild(b *schema.Bundle, elem schema.Type, item value, cf *coerceFlags, cctx *coerceCtx) (json.RawMessage, bool, error) {
+//   - (out, true, hint, nil):  the child coerced; append out (its flags merged into
+//     cf). hint is the child's outermost UnionMatch index — the next sibling's
+//     union_variant_hint — or nil when it carries none.
+//   - (nil, false, nil, nil): the child is a PROVEN BAML parse error; the caller
+//     SKIPS it (BAML records ArrayItemParseError and the list still succeeds).
+//   - (nil, false, nil, err): the whole list must FAIL — err is either a
+//     HARD/invariant error to propagate, or an ErrDeBAMLParseUnsupported DECLINE
+//     because the child could be a DEFERRED Mcoerce-d success or carried
+//     number-display uncertainty, so native falls back rather than skip an item BAML
+//     might keep.
+func coerceListChild(b *schema.Bundle, elem schema.Type, item value, cf *coerceFlags, cctx *coerceCtx) (json.RawMessage, bool, *int, error) {
 	childF := &coerceFlags{}
 	out, err := coerce(b, elem, item, childF, cctx)
 	if err == nil {
@@ -1833,10 +1912,10 @@ func coerceListChild(b *schema.Bundle, elem schema.Type, item value, cf *coerceF
 		// (types.rs List score = own conditions + sum of item scores), so fold
 		// it in (and propagate any child uncertainty).
 		cf.foldChild(childF)
-		return out, true, nil
+		return out, true, siblingHint(childF), nil
 	}
 	if !declinableChildError(err) {
-		return nil, false, err // hard/invariant failure: propagate, never mask.
+		return nil, false, nil, err // hard/invariant failure: propagate, never mask.
 	}
 	if childF.isUncertain() {
 		// A nested child carried number-display uncertainty native cannot reproduce
@@ -1844,16 +1923,16 @@ func coerceListChild(b *schema.Bundle, elem schema.Type, item value, cf *coerceF
 		// and native cannot tell which, so DECLINE the whole list. (#555 Slice 2
 		// removed the former case-fold cause; only number-display reaches here now.)
 		cf.markUncertain()
-		return nil, false, unsupported(fmt.Sprintf("list element %s→%s: number-display uncertainty (cannot prove skip vs keep)", item.kind, elem.Kind))
+		return nil, false, nil, unsupported(fmt.Sprintf("list element %s→%s: number-display uncertainty (cannot prove skip vs keep)", item.kind, elem.Kind))
 	}
 	if provenListItemError(b, elem, item) {
-		return nil, false, nil // PROVEN parse error → BAML skips via ArrayItemParseError.
+		return nil, false, nil, nil // PROVEN parse error → BAML skips via ArrayItemParseError.
 	}
 	// A declinable error that is NOT a proven parse error: BAML may still SUCCEED
 	// via a deferred Mcoerce-d path (JsonToString / ObjectToString /
 	// ObjectToPrimitive / implied-key / default-fill / array-to-singular / union
 	// scoring), so native cannot skip it — DECLINE the whole list (fall back).
-	return nil, false, unsupported(fmt.Sprintf("list element %s→%s: child declined but not a proven BAML parse error (deferred Mcoerce-d success possible): %v", item.kind, elem.Kind, err))
+	return nil, false, nil, unsupported(fmt.Sprintf("list element %s→%s: child declined but not a proven BAML parse error (deferred Mcoerce-d success possible): %v", item.kind, elem.Kind, err))
 }
 
 // provenListItemError reports whether BAML PROVABLY errors coercing item to the
@@ -2221,7 +2300,10 @@ func coerceMap(b *schema.Bundle, keyT, valT *schema.Type, input value, cf *coerc
 // is still propagated.
 func coerceMapValueChild(b *schema.Bundle, valT schema.Type, val value, cf *coerceFlags, cctx *coerceCtx) (json.RawMessage, bool, error) {
 	childF := &coerceFlags{}
-	out, err := coerce(b, valT, val, childF, cctx)
+	// coerce_map.rs coerces each value under ctx.enter_scope(key), which carries NO
+	// union_variant_hint — a map value never inherits the enclosing array sibling's
+	// hint (unlike try_cast_map, which reuses ctx verbatim).
+	out, err := coerce(b, valT, val, childF, cctx.enterScope())
 	if err == nil {
 		cf.foldChild(childF) // map score += accepted value score (key conds are empty=0)
 		return out, true, nil
@@ -2423,6 +2505,10 @@ type candidate struct {
 	hasJsonToString bool
 	hasFirstMatch   bool
 	hasUnionMatch   bool
+	// unionArmIdx mirrors coerceFlags.unionArmIdx: the index this value's UnionMatch
+	// flag carries (meaningful only when hasUnionMatch), which is what an enclosing
+	// array carries forward as the next sibling's union_variant_hint.
+	unionArmIdx int
 
 	classPropCount     int
 	classAllDefault    bool
@@ -2678,6 +2764,12 @@ func coerceArrayToSingular(items []value, targetIsUnion bool, coerceItem func(it
 	if n > 1 && !(w.hasUnionMatch || w.hasFirstMatch) {
 		if targetIsUnion {
 			w.hasUnionMatch = true // UnionMatch (score 0)
+			// BAML flags the winner with Flag::UnionMatch(i) where i is the winning
+			// ITEM's index in the coerced-item slice, NOT a union variant index —
+			// pick_best has no notion of variants here. That is nonetheless the value
+			// an enclosing array would carry forward as the next sibling's
+			// union_variant_hint, so reproduce it verbatim.
+			w.unionArmIdx = idx
 		} else {
 			w.score++ // FirstMatch (score 1)
 			w.hasFirstMatch = true
@@ -2710,7 +2802,31 @@ type unionArm func(i int) (json.RawMessage, *coerceFlags, error)
 //
 // A non-nullable union with no successful arm declines (BAML merges the errors
 // and errors; native falls back — a safe under-claim).
-func selectUnionArms(narms int, nullable bool, arm unionArm) (candidate, error) {
+//
+// hint is BAML's ctx.union_variant_hint (the previous ARRAY sibling's winning arm,
+// coerce_array.rs enter_scope_with_hint). coerce_union tries the hinted option FIRST
+// and returns it immediately IF it coerces with score 0; any other outcome (an error,
+// a non-zero score, a verdict native cannot prove) falls through to the standard pass
+// with NOTHING recorded, exactly as BAML's `if let Ok(mut val) = result { if
+// val.score() == 0 {...} }` does. The hint indexes iter_include_null(), so index
+// narms is the NULL option; that option can never score 0 here (selectUnionArms is
+// only ever reached for NON-null input — coerceUnionSafe's null fast path returns
+// first — and a non-null value coerces to null with DefaultButHadValue, score 110),
+// so the hint is only ever consulted for a real arm.
+func selectUnionArms(narms int, nullable bool, hint *int, arm unionArm) (candidate, error) {
+	// Hint fast path (coerce_union.rs): the previous array sibling's winning arm is
+	// coerced FIRST and wins outright at score 0 — before the arms that precede it,
+	// which is the ONLY way this differs from the standard pass.
+	if hint != nil && *hint >= 0 && *hint < narms {
+		h := *hint
+		if out, armF, err := arm(h); err == nil && !armF.isUncertain() {
+			if c := armF.toCandidate(out, h); c.score == 0 {
+				c.hasUnionMatch = true
+				c.unionArmIdx = h
+				return c, nil
+			}
+		}
+	}
 	var cands []candidate
 	for i := 0; i < narms; i++ {
 		out, armF, err := arm(i)
@@ -2736,6 +2852,8 @@ func selectUnionArms(narms int, nullable bool, arm unionArm) (candidate, error) 
 				// arise. If future work adds a score-0-capable discriminator or
 				// changes any flag weight, RE-AUDIT this branch against BAML's
 				// coerce_union before routing score-0 arms through pickBest.
+				c.hasUnionMatch = true // Flag::UnionMatch(i) — coerce_union's score-0 exit
+				c.unionArmIdx = i
 				return c, nil
 			}
 			cands = append(cands, c)
@@ -2759,19 +2877,76 @@ func selectUnionArms(narms int, nullable bool, arm unionArm) (candidate, error) 
 	if err != nil {
 		return candidate{}, err
 	}
-	return cands[idx], nil
+	w := cands[idx]
+	// array_helper::pick_best adds Flag::UnionMatch(i) to the winner — with i the
+	// index into the SAME res slice BAML built, which is the arm index (originIndex,
+	// with the null option last) — but ONLY when the winner carries neither
+	// UnionMatch nor FirstMatch already. A winner that does carry FirstMatch (an
+	// array-to-singular arm) therefore reports NO arm index to the enclosing array.
+	if !w.hasUnionMatch && !w.hasFirstMatch {
+		w.hasUnionMatch = true
+		w.unionArmIdx = w.originIndex
+	}
+	return w, nil
 }
 
 // setWinnerCf folds the union WINNER into the enclosing accumulator. The union
-// result IS the winner value plus UnionMatch (score 0), so the caller sees the
-// winner's score and top-level discriminators (needed only when this union is
-// itself a field/element of an outer scored context). Nil-safe.
+// result IS the winner value plus whatever UnionMatch flag the selection recorded
+// on it (score 0), so the caller sees the winner's score, top-level discriminators
+// and — for an enclosing ARRAY — the arm index the next sibling's
+// union_variant_hint is seeded from. Nil-safe.
+//
+// The UnionMatch flag is NOT forced on here: BAML records it at the SELECTION site
+// (coerce_union / try_cast_union add it on the hint hit, the first-score-0 exit and
+// the single-filtered try_cast exit; array_helper::pick_best adds it only when the
+// winner carries neither UnionMatch nor FirstMatch). Every one of those sites sets
+// candidate.hasUnionMatch / candidate.unionArmIdx itself, so absorbing the winner
+// reproduces BAML's flag list exactly — including the case where pick_best does NOT
+// add one because the winner already carries FirstMatch (an array-to-singular arm),
+// which is precisely the case where BAML's extract_union_winner_index would NOT
+// report this union's arm index to the next array sibling.
 func setWinnerCf(cf *coerceFlags, w candidate) {
 	if cf == nil {
 		return
 	}
-	cf.absorb(w) // score (UnionMatch adds 0) + kind + discriminators
-	cf.hasUnionMatch = true
+	cf.absorb(w) // score (UnionMatch adds 0) + kind + discriminators + arm index
+}
+
+// unionHintIndex resolves the carried ctx.union_variant_hint against an option list
+// of length n, returning the index and whether it is in range — BAML's
+// `if let Some(hint_idx) = ctx.union_variant_hint { if hint_idx < all_options.len() ...`.
+// Out-of-range (notably the coerce lane's NULL option index reaching the
+// iter_skip_null try_cast lane) yields ok=false and the hint is simply ignored.
+func unionHintIndex(cctx *coerceCtx, n int) (int, bool) {
+	h := cctx.unionHint()
+	if h == nil || *h < 0 || *h >= n {
+		return 0, false
+	}
+	return *h, true
+}
+
+// siblingHint converts a coerced/try_cast element's accumulator into the NEXT array
+// sibling's ctx.union_variant_hint — BAML's extract_union_winner_index
+// (coerce_array.rs): the index carried by the value's LAST (outermost) UnionMatch
+// flag, or nil when it carries none. A non-union element (and a union winner
+// pick_best did not flag because it already carried FirstMatch) yields nil, exactly
+// as BAML's find_map over the flags does.
+func siblingHint(f *coerceFlags) *int {
+	if f == nil || !f.hasUnionMatch {
+		return nil
+	}
+	h := f.unionArmIdx
+	return &h
+}
+
+// candSiblingHint is [siblingHint] for a candidate (the try_cast lane, which carries
+// its result as a candidate rather than an accumulator).
+func candSiblingHint(c candidate) *int {
+	if !c.hasUnionMatch {
+		return nil
+	}
+	h := c.unionArmIdx
+	return &h
 }
 
 // coerceUnionSafe coerces a value against a union, claiming native JSON ONLY
@@ -2805,7 +2980,7 @@ func coerceUnionSafe(b *schema.Bundle, u *schema.UnionType, input value, cf *coe
 	// Case 1: nullable null fast path (any nullable union).
 	if input.kind == valNull {
 		if !u.Nullable {
-			return nil, typeMismatch("non-nullable union", input)
+			return nil, nullIntoNonNullableUnion(u.Variants)
 		}
 		return json.RawMessage("null"), nil
 	}
@@ -2830,7 +3005,7 @@ func coerceUnionSafe(b *schema.Bundle, u *schema.UnionType, input value, cf *coe
 		if err := checkSupportedType(b, u.Variants[0]); err != nil {
 			return nil, err
 		}
-		w, err := selectUnionArms(1, true, func(i int) (json.RawMessage, *coerceFlags, error) {
+		w, err := selectUnionArms(1, true, cctx.unionHint(), func(i int) (json.RawMessage, *coerceFlags, error) {
 			armF := &coerceFlags{targetIsUnion: true}
 			out, e := coerce(b, u.Variants[0], input, armF, cctx)
 			return out, armF, e
@@ -2848,6 +3023,76 @@ func coerceUnionSafe(b *schema.Bundle, u *schema.UnionType, input value, cf *coe
 		return nil, err
 	}
 	return coerceUnionSafeMulti(b, u.Variants, input, u.Nullable, cf, cctx)
+}
+
+// nullIntoNonNullableUnion decides what a JSON null against a NON-nullable union
+// is. BAML has no null fast path here (try_cast_union's optional exit does not
+// apply), so coerce_union coerces the null through EVERY arm and pick_bests the
+// survivors. Which arms survive is NOT uniform across composites, and getting it
+// wrong is an out-claim in one direction and an under-claim in the other:
+//
+//   - a LIST arm SURVIVES: coerce_array's non-array branch wraps the null as one
+//     implied element (SingleToArray), the element fails as ArrayItemParseError,
+//     and the arm still succeeds as `[]` (coerce_array.rs — a list coercion never
+//     errors). LIVE-CAPTURED: list<string|list<int>> over [null] keeps the element
+//     as [[]] rather than skipping it.
+//   - a MAP arm does NOT survive: coerce_map's `Some(value)` match falls to the
+//     catch-all `_ => Err(ctx.error_unexpected_type(...))` for every non-object,
+//     and try_cast_map likewise returns None (coerce_map.rs). LIVE-CAPTURED: a
+//     list<string|map<string,int>> over [null] SKIPS the element ([]), which only
+//     happens when the union genuinely errored — and so does a bare
+//     list<map<string,int>> over [null].
+//   - a CLASS arm MAY survive — a single-field class implied-keys the null into
+//     its lone field, and an all-defaultable class default-fills — and native does
+//     not prove which, so it is treated as surviving (decline).
+//
+// So a union with a LIST or CLASS arm SUCCEEDS in BAML and native DECLINES it (it
+// does not reproduce the surviving arm). A union of only LEAVES and MAPS provably
+// ERRORS: pick_best gets no Ok candidate and BAML merges the errors.
+//
+// A provable union error is NOT automatically a claimed parse error, because the
+// ENCLOSING position decides what happens to it. For a required class field,
+// coerce_class does `Some(Err(e)) => t.default_value(Some(e))` — so a union that
+// has ANY defaultable arm (a MAP's `{}`) is DEFAULT-FILLED with
+// DefaultButHadUnparseableValue rather than erroring the class. LIVE-CAPTURED:
+// Root{u: string|map<string,int>} over {"u":null} returns {"u":{}}, NOT an error.
+// Only a union with NO defaultable arm (all leaves) propagates, and that is the
+// one shape native claims outright. The defaultable case is reported as a PROVEN
+// BAML error instead, which declines at a standalone position and lets
+// coerceClass apply the same default_value BAML applies.
+func nullIntoNonNullableUnion(variants []schema.Type) error {
+	for i := range variants {
+		if nullSurvivingUnionArm(variants[i]) {
+			return unsupported("JSON null into a non-nullable union with a null-SURVIVING arm (a list arm wraps it as [] via SingleToArray, and a class arm may implied-key or default-fill it) — BAML succeeds, so native cannot claim the error")
+		}
+	}
+	// Every arm provably rejects the null, so BAML's union errors. Whether that is
+	// the caller's error depends on the union's own TypeIR::default_value.
+	if _, defaultable := defaultValue(schema.Type{Kind: schema.TypeUnion, Union: &schema.UnionType{Variants: variants}}); defaultable {
+		return provenError("JSON null into a non-nullable union of leaf/map arms: BAML errors every arm, but the union has a default_value (a map arm's {}) so an enclosing required field default-fills it instead of erroring")
+	}
+	return typeMismatch("non-nullable union", value{kind: valNull})
+}
+
+// nullSurvivingUnionArm reports whether a union arm can SUCCEED on a JSON null
+// input, i.e. whether BAML's union still has an Ok candidate. See
+// [nullIntoNonNullableUnion] for the per-kind evidence: a LIST survives via
+// coerce_array's SingleToArray branch, a CLASS may survive via implied-key /
+// default-fill and is treated as surviving because native does not prove which, and
+// a MAP does not (coerce_map errors on every non-object). Every non-composite leaf
+// is an error_unexpected_null / error_unexpected_type. Unknown kinds are treated as
+// surviving, so a future kind declines rather than being claimed.
+func nullSurvivingUnionArm(t schema.Type) bool {
+	switch t.Kind {
+	case schema.TypePrimitive, schema.TypeLiteral, schema.TypeEnum:
+		return false
+	case schema.TypeMap:
+		return false
+	case schema.TypeList, schema.TypeClass:
+		return true
+	default:
+		return true
+	}
 }
 
 // coerceUnionSafeMulti resolves a proven-safe multi-variant union (a scalar/
@@ -2900,10 +3145,10 @@ func coerceUnionSafeMulti(b *schema.Bundle, variants []schema.Type, input value,
 		setWinnerCf(cf, w)
 		return w.output, nil
 	}
-	// Phase 2: lenient coerce pass (coerce_union.rs standard path) — early
-	// first-score-0, else array_helper::pick_best, with the null arm (score 110)
-	// when nullable.
-	w, err := selectUnionArms(len(variants), nullable, func(i int) (json.RawMessage, *coerceFlags, error) {
+	// Phase 2: lenient coerce pass (coerce_union.rs standard path) — the array
+	// union_variant_hint first, then early first-score-0, else
+	// array_helper::pick_best, with the null arm (score 110) when nullable.
+	w, err := selectUnionArms(len(variants), nullable, cctx.unionHint(), func(i int) (json.RawMessage, *coerceFlags, error) {
 		armF := &coerceFlags{targetIsUnion: true}
 		out, e := coerce(b, variants[i], input, armF, cctx)
 		return out, armF, e
@@ -2942,6 +3187,25 @@ func coerceUnionSafeMulti(b *schema.Bundle, variants []schema.Type, input value,
 // non-finite float) or a hard/invariant failure (unknown class/enum / malformed arm
 // type), which declines/propagates.
 func tryCastUnion(b *schema.Bundle, variants []schema.Type, input value, cctx *coerceCtx) (candidate, bool, error) {
+	// Hint fast path (try_cast_union): the previous ARRAY sibling's winning arm is
+	// try_cast FIRST and wins outright at score 0 — before the arms that precede it.
+	// The hint indexes iter_skip_null() here (BAML's `all_options`), which is exactly
+	// `variants`; a hint of len(variants) (the coerce lane's NULL option) is out of
+	// range and correctly ignored. A hinted arm that does not match, or matches with
+	// a non-zero score, records NOTHING and falls through to the ordered pass, where
+	// it is tried again in its normal position.
+	if h, ok := unionHintIndex(cctx, len(variants)); ok {
+		c, matched, err := tryCastArm(b, variants[h], input, cctx)
+		if err != nil {
+			return candidate{}, false, err
+		}
+		if matched && c.score == 0 {
+			c.originIndex = h
+			c.hasUnionMatch = true
+			c.unionArmIdx = h
+			return c, true, nil
+		}
+	}
 	var filtered []candidate
 	for i := range variants {
 		c, matched, err := tryCastArm(b, variants[i], input, cctx)
@@ -2952,7 +3216,10 @@ func tryCastUnion(b *schema.Bundle, variants []schema.Type, input value, cctx *c
 			continue
 		}
 		c.originIndex = i
+		// try_cast_union adds Flag::UnionMatch(i) with the ORIGINAL index BEFORE
+		// storing, so pick_best never adds a second one with a filtered-list index.
 		c.hasUnionMatch = true
+		c.unionArmIdx = i
 		if c.score == 0 {
 			// BAML's first-score-0 fast path: return immediately, before later arms.
 			return c, true, nil
@@ -3010,11 +3277,14 @@ func tryCastUnion(b *schema.Bundle, variants []schema.Type, input value, cctx *c
 func tryCastArm(b *schema.Bundle, t schema.Type, input value, cctx *coerceCtx) (candidate, bool, error) {
 	switch t.Kind {
 	case schema.TypeClass:
-		out, kind, matched, err := tryCastClass(b, t.Name, t.Mode, input, cctx)
+		out, kind, score, matched, err := tryCastClass(b, t.Name, t.Mode, input, cctx)
 		if err != nil || !matched {
 			return candidate{}, matched, err
 		}
-		return candidate{output: out, kind: kind, score: 0}, true, nil
+		// A try_cast class is never all-default and never carries ImpliedKey (every
+		// field came from a present input key), so the pick_best class discriminators
+		// stay false — the zero value is the correct one here.
+		return candidate{output: out, kind: kind, score: score}, true, nil
 	case schema.TypeMap:
 		return tryCastMap(b, t.Key, t.Value, input, cctx)
 	case schema.TypeList:
@@ -3166,12 +3436,13 @@ func tryCastMap(b *schema.Bundle, keyT, valT *schema.Type, input value, cctx *co
 // list (score 0). A non-array input, or any element that does not try_cast,
 // returns not-matched (the arm falls to the lenient coerceList pass).
 //
-// The gate DECLINES a list whose element is a MULTI-ARM union (checkSupportedType),
-// so tryCastArray never sees the array union_variant_hint's per-element cross-hint:
-// its admitted element shapes (scalar / literal / enum / class / map / nested list /
-// single-non-null-arm optional) each try_cast independently, and BAML's hint is a
-// no-op for them (a non-union element carries no UnionMatch; a single-arm-optional's
-// only hint is its lone arm), so ignoring the hint here is faithful.
+// try_cast_array threads the SAME cross-element union_variant_hint coerce_array does
+// (enter_scope_with_hint per element, seeded from the previous element's outermost
+// UnionMatch), so a list of MULTI-ARM unions picks arms cross-element in the strict
+// phase exactly as it does in the lenient one. For every element shape that carries
+// no UnionMatch (scalar / literal / enum / class / map / nested list) the hint stays
+// nil and this is a no-op, which is why it was faithful to omit while the gate still
+// declined multi-arm-union elements.
 func tryCastArray(b *schema.Bundle, elem *schema.Type, input value, cctx *coerceCtx) (candidate, bool, error) {
 	if elem == nil {
 		return candidate{}, false, fmt.Errorf("debaml: list type missing element")
@@ -3182,14 +3453,16 @@ func tryCastArray(b *schema.Bundle, elem *schema.Type, input value, cctx *coerce
 	score := 0
 	var buf bytes.Buffer
 	buf.WriteByte('[')
+	var last *int
 	for i := range input.arrV {
-		ec, matched, err := tryCastArm(b, *elem, input.arrV[i], cctx)
+		ec, matched, err := tryCastArm(b, *elem, input.arrV[i], cctx.enterScopeWithHint(last))
 		if err != nil {
 			return candidate{}, false, err
 		}
 		if !matched {
 			return candidate{}, false, nil // fail-fast → lenient coerceList.
 		}
+		last = candSiblingHint(ec)
 		score += ec.score // types.rs list score = own (0) + sum(element scores)
 		if i > 0 {
 			buf.WriteByte(',')
@@ -3214,8 +3487,10 @@ func tryCastUnionArm(b *schema.Bundle, u *schema.UnionType, input value, cctx *c
 	}
 	if input.kind == valNull {
 		if u.Nullable {
-			// try_cast_union's null fast path: a Null result with empty conditions (score 0).
-			return candidate{output: json.RawMessage("null"), kind: candNull, score: 0, hasUnionMatch: true}, true, nil
+			// try_cast_union's null fast path: a Null result with EMPTY conditions
+			// (score 0) — note it carries NO UnionMatch flag, so an enclosing array
+			// reports no hint for the next sibling (extract_union_winner_index → None).
+			return candidate{output: json.RawMessage("null"), kind: candNull, score: 0}, true, nil
 		}
 		return candidate{}, false, nil
 	}
@@ -3227,28 +3502,31 @@ func tryCastUnionArm(b *schema.Bundle, u *schema.UnionType, input value, cctx *c
 // rendered name — a case-sensitive BamlMap key lookup, NOT the lenient fuzzy
 // matches_string_to_string coerce uses) a subset of the class fields with NO extra
 // key, where every present field's value try_casts (recursively, via tryCastArm)
-// and every field is present. The M3c gate (checkUnionClassVariant) guarantees all
-// fields are REQUIRED flat leaves, so there are no optional fills and a class
-// try_cast that matches always scores 0 (own conditions empty, every field try_cast
-// score 0) — hence it is BAML's immediate union winner, and no non-zero try_cast
-// score arises for the caller to pick_best over.
+// and every field is present. The gate (checkUnionClassVariant) guarantees every
+// field is REQUIRED, so there are no optional fills; the class try_cast's score is
+// therefore its own (empty) conditions plus the SUM of its field try_cast scores
+// (types.rs Class score). For a class of flat-leaf fields that sum is always 0 —
+// hence such an arm is BAML's immediate union winner — but a LIST or MAP field can
+// contribute (a map field's ObjectToMap is 1), and try_cast_union then collects the
+// arm for pick_best instead of short-circuiting. Returning the real score is what
+// keeps those two exits apart.
 //
-// Returns (out, candClass, true, nil) on a strict match (emitted in SCHEMA field
-// order under canonical field names, byte-identical to the class's clean lenient
-// coerce output); (nil, candClass, false, nil) when the object does not strictly
-// match (extra key, missing field, or a field that does not try_cast — the caller
-// falls to the lenient phase, or the next arm); (nil, _, false, err) only for a
-// hard/invariant failure (unknown class, or a malformed field arm type).
-func tryCastClass(b *schema.Bundle, name string, mode schema.StreamingMode, input value, cctx *coerceCtx) (json.RawMessage, candKind, bool, error) {
+// Returns (out, candClass, score, true, nil) on a strict match (emitted in SCHEMA
+// field order under canonical field names, byte-identical to the class's clean
+// lenient coerce output); (nil, candClass, 0, false, nil) when the object does not
+// strictly match (extra key, missing field, or a field that does not try_cast — the
+// caller falls to the lenient phase, or the next arm); (nil, _, 0, false, err) only
+// for a hard/invariant failure (unknown class, or a malformed field arm type).
+func tryCastClass(b *schema.Bundle, name string, mode schema.StreamingMode, input value, cctx *coerceCtx) (json.RawMessage, candKind, int, bool, error) {
 	cls, ok := b.FindClass(name, mode)
 	if !ok {
-		return nil, 0, false, fmt.Errorf("debaml: unknown class %q", name)
+		return nil, 0, 0, false, fmt.Errorf("debaml: unknown class %q", name)
 	}
 	if input.kind != valObject {
 		// Class try_cast handles objects only (a scalar/array/null never try_casts
 		// to a class; those are the lenient inferred-object / array-to-singular
 		// paths, not the strict cast).
-		return nil, candClass, false, nil
+		return nil, candClass, 0, false, nil
 	}
 	// BAML's Class::try_cast circular-reference guard (ir_ref/coerce_class.rs), on the
 	// SEPARATE try_cast active set, after the object check and before field recursion:
@@ -3257,7 +3535,7 @@ func tryCastClass(b *schema.Bundle, name string, mode schema.StreamingMode, inpu
 	// try_cast context carrying this pair for the field recursion below.
 	key := schema.ClassKey{Name: name, Mode: mode}
 	if cctx.tryCastHas(key, input) {
-		return nil, candClass, false, nil
+		return nil, candClass, 0, false, nil
 	}
 	child := cctx.enterTryCast(key, input)
 	nF := len(cls.Fields)
@@ -3276,7 +3554,7 @@ func tryCastClass(b *schema.Bundle, name string, mode schema.StreamingMode, inpu
 		}
 		if mf < 0 {
 			// try_cast rejects objects with ANY extra key (stricter matching).
-			return nil, candClass, false, nil
+			return nil, candClass, 0, false, nil
 		}
 		if present[mf] {
 			continue // duplicate key for an already-set field: keep first.
@@ -3288,36 +3566,38 @@ func tryCastClass(b *schema.Bundle, name string, mode schema.StreamingMode, inpu
 	var buf bytes.Buffer
 	buf.WriteByte('{')
 	first := true
+	score := 0
 	for j := range cls.Fields {
 		if !present[j] {
 			// The gate guarantees every field is REQUIRED (no optional), so a field
 			// with no input key fails the strict cast (BAML returns None; the lenient
 			// phase would default/error it instead).
-			return nil, candClass, false, nil
+			return nil, candClass, 0, false, nil
 		}
 		fc, matched, err := tryCastArm(b, cls.Fields[j].Type, assigned[j], child)
 		if err != nil {
-			return nil, candClass, false, err
+			return nil, candClass, 0, false, err
 		}
 		if !matched {
 			// A field's value does not strictly cast to its type → the class
 			// try_cast fails (BAML returns None; the lenient phase may still coerce).
-			return nil, candClass, false, nil
+			return nil, candClass, 0, false, nil
 		}
+		score += fc.score // types.rs Class score = own conditions (empty) + Σ field scores
 		if !first {
 			buf.WriteByte(',')
 		}
 		first = false
 		key, err := marshalJSON(cls.Fields[j].Name.Name)
 		if err != nil {
-			return nil, candClass, false, err
+			return nil, candClass, 0, false, err
 		}
 		buf.Write(key)
 		buf.WriteByte(':')
 		buf.Write(fc.output)
 	}
 	buf.WriteByte('}')
-	return buf.Bytes(), candClass, true, nil
+	return buf.Bytes(), candClass, score, true, nil
 }
 
 // isOptional reports whether t is an optional (a nullable union), the only

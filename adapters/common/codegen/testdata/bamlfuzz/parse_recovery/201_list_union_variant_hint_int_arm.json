@@ -1,0 +1,44 @@
+{
+  "name": "list_union_variant_hint_int_arm",
+  "description": "UNION BURN-DOWN — the MUTATE-TO-DIVERGE twin of list_union_variant_hint_float_arm: the SAME schema and the same second element, with element 0 mutated from 1.5 to 1. Now element 0 try_casts on the INT arm, so element 1's hint is int — which does not change the ordered outcome (int is arm 0 anyway) and 2^53+1 keeps full precision. Emitting 9007199254740992 here (or 9007199254740993 there) would be a divergence, so the pair pins the hint's DIRECTION, not just its presence. want live-captured from BAML v0.223 final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "list",
+              "inner": {
+                "kind": "union",
+                "variants": [
+                  {
+                    "kind": "int"
+                  },
+                  {
+                    "kind": "float"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":[1,9007199254740993]}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": [
+        1,
+        9007199254740993
+      ]
+    }
+  }
+}

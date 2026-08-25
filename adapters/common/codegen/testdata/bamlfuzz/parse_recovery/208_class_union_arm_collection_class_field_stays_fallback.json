@@ -1,0 +1,93 @@
+{
+  "name": "class_union_arm_collection_class_field_stays_fallback",
+  "description": "FALLBACK-BOUNDARY GUARD (family: union_class_optional_field) — the same boundary one level DOWN, inside a collection. A{items list<B>} | C{name string} where B{x int, y string?} carries an OPTIONAL field. checkSupportedType treats a class reference as a LEAF (class definitions are validated once over the bundle's class slice under the ORDINARY field rules), so validating the list field with it alone would let B bypass the union-arm optional-field boundary that class_union_optional_field_arm_stays_fallback locks at depth 0. BAML's Class::try_cast fills B's missing optional with OptionalDefaultFromNoValue and SUCCEEDS at a NON-zero score — landing the A arm in try_cast_union's pick_best sub-path — where tryCastClass does not match at all, so the two phases disagree about which arms even compete. checkUnionCollectionClasses closes it by holding every class reachable through a union arm's collection to the union-arm rules. A collection of an IN-SCOPE class (all required flat leaves) still CLAIMS; only this shape declines. want live-captured from BAML v0.223 final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {
+                  "kind": "class_ref",
+                  "ref": "A"
+                },
+                {
+                  "kind": "class_ref",
+                  "ref": "C"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "A",
+        "properties": [
+          {
+            "name": "items",
+            "type": {
+              "kind": "list",
+              "inner": {
+                "kind": "class_ref",
+                "ref": "B"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "B",
+        "properties": [
+          {
+            "name": "x",
+            "type": {
+              "kind": "int"
+            }
+          },
+          {
+            "name": "y",
+            "type": {
+              "kind": "optional",
+              "inner": {
+                "kind": "string"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "C",
+        "properties": [
+          {
+            "name": "name",
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":{\"items\":[{\"x\":1}]}}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": {
+        "items": [
+          {
+            "x": 1,
+            "y": null
+          }
+        ]
+      }
+    }
+  }
+}

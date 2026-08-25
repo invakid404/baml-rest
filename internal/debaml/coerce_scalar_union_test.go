@@ -193,14 +193,16 @@ func TestScalarUnion_NonFiniteFloatDeclines(t *testing.T) {
 	requireUnsupported(t, fi, `{"u":"nan"}`)
 }
 
-// TestScalarUnion_ListElementUnionDeclines pins the M3b hint guard: a MULTI-ARM
-// union as a LIST ELEMENT declines (BAML threads ctx.union_variant_hint between
-// array elements; native has no hint, so per-element arm selection can diverge —
-// array hints are M3d). A single-non-null-arm optional element, a TOP-LEVEL
-// scalar union, and a MAP VALUE union all stay CLAIMED (map values / class fields
-// reset the hint, and an optional's only hint is its one arm).
-func TestScalarUnion_ListElementUnionDeclines(t *testing.T) {
-	// list<int | string> — multi-arm union element -> DECLINE (hint gap).
+// TestScalarUnion_ListElementUnionClaims pins the array union_variant_hint burn-down:
+// a MULTI-ARM union as a LIST ELEMENT is now CLAIMED, because coerceList /
+// tryCastArray thread BAML's ctx.union_variant_hint (coerce_array.rs) across
+// siblings and the union coercers try the hinted arm first. The shapes that were
+// already safe (a single-non-null-arm optional element, a TOP-LEVEL scalar union, a
+// MAP VALUE union) are unchanged.
+func TestScalarUnion_ListElementUnionClaims(t *testing.T) {
+	// list<int | string> — each element resolves on its own strict try_cast; the
+	// hint from element 0 (the string arm) does not match a number, so element 1
+	// falls through to the ordered pass and picks int.
 	listUnion := oneField(&bamlutils.DynamicProperty{
 		Type: "list",
 		Items: &bamlutils.DynamicTypeSpec{
@@ -208,8 +210,11 @@ func TestScalarUnion_ListElementUnionDeclines(t *testing.T) {
 			OneOf: []*bamlutils.DynamicTypeSpec{{Type: "int"}, {Type: "string"}},
 		},
 	})
-	requireUnsupported(t, listUnion, `{"u":["a",1]}`)
-	// list<Color | string> — the enum|string shape the reviewer flagged -> DECLINE.
+	mustParse(t, listUnion, `{"u":["a",1]}`, `{"u":["a",1]}`)
+	// list<Color | string> — the enum|string shape: "other" matches no enum value so
+	// element 0 lands on the STRING arm, and the hint then makes element 1 take the
+	// string arm too (a canonical enum token and its string spelling are the same
+	// bytes, so the list reads back unchanged either way).
 	listEnumUnion := &bamlutils.DynamicOutputSchema{
 		Properties: props(kv("u", &bamlutils.DynamicProperty{
 			Type: "list",
@@ -222,7 +227,7 @@ func TestScalarUnion_ListElementUnionDeclines(t *testing.T) {
 			Values: []*bamlutils.DynamicEnumValue{{Name: "GREEN"}, {Name: "RED"}},
 		})),
 	}
-	requireUnsupported(t, listEnumUnion, `{"u":["other","GREEN"]}`)
+	mustParse(t, listEnumUnion, `{"u":["other","GREEN"]}`, `{"u":["other","GREEN"]}`)
 
 	// list<int?> — a single-non-null-arm optional element is hint-safe -> CLAIMED.
 	listOptional := oneField(&bamlutils.DynamicProperty{
@@ -258,4 +263,41 @@ func TestScalarUnion_ListElementUnionDeclines(t *testing.T) {
 func TestScalarUnion_LiteralStringSubstringTie_PickFirst(t *testing.T) {
 	s := unionSchema(litStr("foo"), litStr("bar"))
 	mustParse(t, s, `{"u":["foo","bar"]}`, `{"u":"foo"}`)
+}
+
+// TestListUnion_VariantHintIsObservable is the BITING hint test: it pins the one
+// shape where BAML's cross-element ctx.union_variant_hint changes the emitted
+// BYTES, so a native coercer that ignored the hint would out-claim.
+//
+// list<int | float> over [1.5, 9007199254740993] (2^53+1): element 0 only try_casts
+// on the FLOAT arm (as_i64 rejects 1.5), so the hint carried into element 1 is the
+// float arm — and float try_casts 2^53+1 at score 0, which returns IMMEDIATELY,
+// before the int arm that precedes it. f64 cannot represent 2^53+1, so the emitted
+// value is 9007199254740992. Mutate element 0 to an integer and the hint becomes the
+// INT arm, which no longer matches float first, so element 1 keeps full precision.
+// Both are live-captured from BAML v0.223 (corpus fixtures
+// list_union_variant_hint_float_arm / list_union_variant_hint_int_arm).
+func TestListUnion_VariantHintIsObservable(t *testing.T) {
+	s := oneField(&bamlutils.DynamicProperty{
+		Type: "list",
+		Items: &bamlutils.DynamicTypeSpec{
+			Type:  "union",
+			OneOf: []*bamlutils.DynamicTypeSpec{{Type: "int"}, {Type: "float"}},
+		},
+	})
+	// Hint = float arm: element 1 is taken by float and loses the odd bit.
+	mustParse(t, s, `{"u":[1.5,9007199254740993]}`, `{"u":[1.5,9007199254740992]}`)
+	// Hint = int arm: element 1 is taken by int, exactly.
+	mustParse(t, s, `{"u":[1,9007199254740993]}`, `{"u":[1,9007199254740993]}`)
+	// No preceding element: no hint, so the ordered pass picks the int arm.
+	mustParse(t, s, `{"u":[9007199254740993]}`, `{"u":[9007199254740993]}`)
+	// An element BAML drops (ArrayItemParseError) is a characterized UNDER-claim,
+	// not a divergence: BAML skips "zz" and — because coerce_array only reassigns
+	// last_union_hint on a SUCCESSFUL element — still resolves index 2 on the float
+	// arm ([1.5, 9007199254740992]). Native's coerceListChild cannot PROVE a failing
+	// UNION element is a BAML parse error rather than a deferred success
+	// (provenListItemError has no union entry), so it declines the whole list. The
+	// hint-carry itself is modeled (coerceList only reassigns `last` on a kept
+	// element); this pins that the decline is the reason, not a wrong answer.
+	requireUnsupported(t, s, `{"u":[1.5,"zz",9007199254740993]}`)
 }

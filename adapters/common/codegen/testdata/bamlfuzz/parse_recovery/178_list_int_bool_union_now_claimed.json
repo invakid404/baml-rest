@@ -1,0 +1,44 @@
+{
+  "name": "list_int_bool_union_now_claimed",
+  "description": "UNION BURN-DOWN — CLAIMED (was the list_multi_arm_union fallback-boundary guard): a direct list<int | bool> element is a MULTI-ARM union, which BAML threads across elements via ctx.union_variant_hint (coerce_array.rs). Native now carries the same per-element hint, so each element resolves on the arm BAML picks: 1 -> int (hint none), true -> bool (the int hint does not match a bool, so the ordered pass runs), 2 -> int (the bool hint does not match a number). want live-captured from BAML v0.223 final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "list",
+              "inner": {
+                "kind": "union",
+                "variants": [
+                  {
+                    "kind": "int"
+                  },
+                  {
+                    "kind": "bool"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":[1,true,2]}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": [
+        1,
+        true,
+        2
+      ]
+    }
+  }
+}

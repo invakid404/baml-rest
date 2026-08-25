@@ -1,0 +1,67 @@
+{
+  "name": "class_union_all_default_now_claimed",
+  "description": "UNION BURN-DOWN — CLAIMED: a class union with a DEFAULTABLE-field arm. A{items string[]} | B{name string} with an empty object. BAML: A fills items via TypeIR::default_value ([], DefaultFromNoValue 100) -> an ALL-DEFAULT class; B errors (missing required string, a proven error arm). pick_best has exactly one Ok candidate and returns A. checkUnionClassVariant now admits a required LIST / string-keyed MAP field (tryCastArray / tryCastMap on phase 1, with their scores summed into tryCastClass's class score; coerceList / coerceMap plus default_value on phase 2), so the all-default class devalue is a real pick_best participant. want captured from BAML final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {
+                  "kind": "class_ref",
+                  "ref": "A"
+                },
+                {
+                  "kind": "class_ref",
+                  "ref": "B"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "name": "A",
+        "properties": [
+          {
+            "name": "items",
+            "type": {
+              "kind": "list",
+              "inner": {
+                "kind": "string"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "B",
+        "properties": [
+          {
+            "name": "name",
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":{}}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": {
+        "items": []
+      }
+    }
+  }
+}

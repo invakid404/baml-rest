@@ -327,11 +327,17 @@ var parseRecoveryNativeClaim = map[string]bool{
 	// the literal wins via ObjectToPrimitive — both CLAIMED green vs live BAML.
 	"class_union_single_string_implied_devalue":            true,
 	"literal_class_union_object_to_primitive_literal_wins": true,
-	// M3d guard: a class union with a DEFAULTABLE-field arm (a list field defaulting
-	// to [], an all-default class) stays fallback — its default-fill / all-default
-	// devalue scoring inside a union is not modeled until M3d, so native declines at
-	// the gate (the arm has a non-flat-leaf field).
-	"class_union_all_default_stays_fallback": false,
+	// UNION BURN-DOWN — CLAIMED. A class union arm may now carry a required LIST or
+	// STRING-KEYED MAP field: tryCastArray / tryCastMap cover phase 1 (and
+	// tryCastClass sums their scores into the class's try_cast score, so a non-zero
+	// class try_cast lands in try_cast_union's pick_best sub-path instead of
+	// short-circuiting), coerceList / coerceMap cover phase 2, and an ABSENT one is
+	// TypeIR::default_value-filled to [] / {} (DefaultFromNoValue 100) — which is what
+	// makes the ALL-DEFAULT class arm score and be ordered by pick_best's
+	// classAllDefault devalue. OPTIONAL fields deliberately stay out (see
+	// class_union_optional_field_arm_stays_fallback).
+	"class_union_all_default_now_claimed":   true,
+	"class_union_map_field_default_claimed": true,
 	// M3d CLAIMED — unions with LIST / MAP arms + array-to-singular. The union gate
 	// now admits a list arm (scored by coerceList + pick_best list ordering) and a
 	// string-keyed map arm (tryCastMap phase 1 + coerceMap phase 2), and the
@@ -352,10 +358,20 @@ var parseRecoveryNativeClaim = map[string]bool{
 	"scalar_union_array_input_claimed": true,
 	// Still fallback: a scalar union where no arm proves a winner (all arms error).
 	"scalar_union_no_match_fallback": false,
-	// A multi-arm union as a LIST ELEMENT declines: BAML threads the previous
-	// element's arm as ctx.union_variant_hint (coerce_array.rs) but native has no
-	// hint, so per-element arm selection can diverge. Array union hints are M3d.
-	"list_scalar_union_stays_fallback": false,
+	// UNION BURN-DOWN — CLAIMED. A multi-arm union as a LIST ELEMENT is in scope now
+	// that coerceList / tryCastArray thread BAML's ctx.union_variant_hint
+	// (coerce_array.rs — the ONLY hint setter) across siblings and both union phases
+	// try the hinted arm first, taking it outright at score 0. The hint is seeded from
+	// the previous element's OUTERMOST UnionMatch (extract_union_winner_index), is
+	// left unchanged by an element BAML skipped, and resets at every array / map-value
+	// / class-field boundary.
+	"list_scalar_union_now_claimed": true,
+	// The hint made OBSERVABLE: list<int|float> over 2^53+1 emits a DIFFERENT number
+	// depending on which arm the previous element won, so these three pin the hint's
+	// direction and scope rather than just its presence.
+	"list_union_variant_hint_float_arm":             true,
+	"list_union_variant_hint_int_arm":               true,
+	"list_union_variant_hint_resets_per_inner_list": true,
 	// Mcoerce-b native LENIENT PRIMITIVE + LITERAL numeric/bool/null coercion:
 	// numeric-string parsing (trim + trailing-comma trim, i64 / u64-wrap / f64 /
 	// fraction / extracted-number regex), float→int rounding (half-away,
@@ -606,10 +622,43 @@ var parseRecoveryNativeClaim = map[string]bool{
 	// is visible, not just a single-case pin flip. All want values are live-captured
 	// from BAML v0.223 (BAMLFUZZ_PARSE_CAPTURE=1), never hand-written.
 	//
-	// Direct list<multi-arm-union> elements (checkSupportedType decline — the
-	// deferred array union_variant_hint, coerce_array.rs):
-	"list_int_bool_union_stays_fallback":   false,
-	"list_string_int_union_stays_fallback": false,
+	// The former list<multi-arm-union> fallback-boundary guards, now CLAIMED by the
+	// union burn-down (the array union_variant_hint is modeled — see the hint pins
+	// above). The list_multi_arm_union boundary FAMILY is retired with them.
+	"list_int_bool_union_now_claimed":   true,
+	"list_string_int_union_now_claimed": true,
+	// NEW fallback-boundary guards this slice adds, both live-captured:
+	//   - a JSON null against a NON-nullable union with a null-SURVIVING arm: BAML's
+	//     LIST arm wraps the null (SingleToArray) and still succeeds as [], and a
+	//     CLASS arm may implied-key / default-fill it, so native may not claim
+	//     "non-nullable union rejects null" and DECLINES;
+	//   - a class union arm with an OPTIONAL field: BAML's Class::try_cast fills a
+	//     missing optional (OptionalDefaultFromNoValue) and succeeds at a NON-zero
+	//     score, which tryCastClass does not model.
+	"union_null_composite_arm_stays_fallback":       false,
+	"class_union_optional_field_arm_stays_fallback": false,
+	// COLD-REVIEW FIX — the MAP arm's null behaviour, pinned live in BOTH directions.
+	// A map arm does NOT absorb a null (coerce_map's catch-all is
+	// error_unexpected_type for every non-object; try_cast_map returns None), so a
+	// string|map union over null provably ERRORS — and the enclosing REQUIRED class
+	// field then default-fills it from the union's TypeIR::default_value (the map
+	// arm's {}) with DefaultButHadUnparseableValue, which native now reproduces:
+	//   - CLAIMED at a class field: {"u":{}} (not an error, and not a map that ate
+	//     the null);
+	//   - FALLBACK as a list ELEMENT, where nothing can rescue the union error and
+	//     BAML SKIPS the item ([]) — the discriminator that proves the arm rejected
+	//     the null rather than absorbing it. Native cannot prove a failing UNION
+	//     element is a BAML parse error, so it declines.
+	"class_field_union_map_arm_null_default_claimed": true,
+	"list_union_map_arm_rejects_null_stays_fallback": false,
+	// COLD-REVIEW FIX — the class-union arm's OPTIONAL-field boundary, one level DOWN.
+	// checkSupportedType stops at a class REFERENCE (class definitions are validated
+	// once over the bundle's class slice, under the ORDINARY field rules), so a
+	// class-valued collection field would otherwise smuggle a class the union-arm
+	// rules reject. checkUnionCollectionClasses holds every class reachable through a
+	// union arm's collection to those rules; a collection of an IN-SCOPE class still
+	// claims.
+	"class_union_arm_collection_class_field_stays_fallback": false,
 	// #555 Slice 2 — Unicode match_string CLAIMS. match_string now folds through
 	// internal/debaml/bamlunicode (byte-for-byte Rust 1.93.0 str::to_lowercase /
 	// unicode-normalization 0.1.24), so every non-ASCII case/normalization fold the
@@ -667,10 +716,27 @@ var parseRecoveryNativeClaim = map[string]bool{
 // (constraints/media/recursive-* build a schema.Bundle/Type directly and assert
 // ErrDeBAMLParseUnsupported) rather than through this differential.
 var parseRecoveryBoundaryFamily = map[string]string{
-	// Direct list<multi-arm-union> elements.
-	"list_int_bool_union_stays_fallback":   "list_multi_arm_union",
-	"list_string_int_union_stays_fallback": "list_multi_arm_union",
-	"list_scalar_union_stays_fallback":     "list_multi_arm_union",
+	// UNION SLICE: a JSON null into a NON-nullable union whose arm set contains a
+	// null-SURVIVING (list / possibly-absorbing class) arm — BAML still produces a
+	// value on that arm, so native's claimed "non-nullable union rejects null" error
+	// would be an out-claim and it declines instead. The MAP-arm sibling joins the
+	// family from the other side: that arm REJECTS the null, and the fixture pins the
+	// position (a list ELEMENT) where nothing default-fills the resulting union
+	// error, so native declines there too.
+	"union_null_composite_arm_stays_fallback":        "union_null_composite_arm",
+	"list_union_map_arm_rejects_null_stays_fallback": "union_null_composite_arm",
+	// UNION SLICE: a class union arm with an OPTIONAL field — BAML's Class::try_cast
+	// succeeds at a NON-zero score (OptionalDefaultFromNoValue) where tryCastClass
+	// fails the strict cast, so the arm stays out of the admitted class family.
+	"class_union_optional_field_arm_stays_fallback": "union_class_optional_field",
+	// The SAME boundary one level DOWN: a class-valued collection field of a union
+	// arm, whose class carries an optional field. checkSupportedType stops at a class
+	// reference, so checkUnionCollectionClasses is what holds it to the union-arm rules.
+	"class_union_arm_collection_class_field_stays_fallback": "union_class_optional_field",
+	// (The list_multi_arm_union family is GONE: the array union_variant_hint is
+	// modeled now — coerceList / tryCastArray thread it and both union phases consult
+	// it — so list_int_bool_union_now_claimed / list_string_int_union_now_claimed /
+	// list_scalar_union_now_claimed all CLAIM. See parseRecoveryNativeClaim.)
 	// #555 Slice 2: the unicode_casefold fallback-boundary family is GONE — match_string
 	// now folds through bamlunicode (Rust str::to_lowercase / unicode-normalization), so the
 	// former guard fixtures 180/181 and the new non-ASCII corpus all CLAIM (see

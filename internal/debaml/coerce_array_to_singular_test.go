@@ -259,9 +259,10 @@ func TestCheckUnionMapVariant_ConstrainedKeyDeclines(t *testing.T) {
 	}
 }
 
-// TestList_MultiArmUnionElementDeclines pins the list<union> guard: an array whose
-// element is a MULTI-ARM union declines (the array union_variant_hint is deferred).
-func TestList_MultiArmUnionElementDeclines(t *testing.T) {
+// TestList_MultiArmUnionElementClaims pins the list<union> burn-down: an array whose
+// element is a MULTI-ARM union is CLAIMED now that coerceList / tryCastArray thread
+// the array union_variant_hint (coerce_array.rs) across siblings.
+func TestList_MultiArmUnionElementClaims(t *testing.T) {
 	s := oneField(&bamlutils.DynamicProperty{
 		Type: "list",
 		Items: &bamlutils.DynamicTypeSpec{
@@ -269,7 +270,7 @@ func TestList_MultiArmUnionElementDeclines(t *testing.T) {
 			OneOf: []*bamlutils.DynamicTypeSpec{{Type: "int"}, {Type: "string"}},
 		},
 	})
-	requireUnsupported(t, s, `{"u":[1,"x"]}`)
+	mustParse(t, s, `{"u":[1,"x"]}`, `{"u":[1,"x"]}`)
 	// A single-non-null-arm optional element (list<int?>) is NOT multi-arm → in scope.
 	opt := oneField(&bamlutils.DynamicProperty{
 		Type:  "list",

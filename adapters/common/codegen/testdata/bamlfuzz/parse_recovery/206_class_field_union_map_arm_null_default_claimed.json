@@ -1,0 +1,44 @@
+{
+  "name": "class_field_union_map_arm_null_default_claimed",
+  "description": "COLD-REVIEW FIX — CLAIMED. A JSON null against a NON-NULLABLE string | map<string,int> at a REQUIRED CLASS FIELD. Both arms provably ERROR on the null (coerce_string is error_unexpected_null; coerce_map's catch-all is error_unexpected_type for every non-object, and try_cast_map returns None), so pick_best has no Ok candidate and the union errors. The class does NOT error with it: coerce_class's required-field rule is `Some(Err(e)) => t.default_value(Some(e))`, and TypeIR::default_value on the union finds the MAP arm's {} — so the field is DEFAULT-FILLED with DefaultButHadUnparseableValue (cost 2) and BAML returns {\"u\":{}}. This is the exact schema the cold review flagged: treating the map arm as null-ABSORBING (it is not) or claiming the union's error as the parse's error (the class rescues it) are both wrong, and this fixture pins the live answer against the CFFI. want live-captured from BAML v0.223 final parse.",
+  "preserve_schema_order": false,
+  "schema": {
+    "classes": [
+      {
+        "name": "Root",
+        "properties": [
+          {
+            "name": "u",
+            "type": {
+              "kind": "union",
+              "variants": [
+                {
+                  "kind": "string"
+                },
+                {
+                  "kind": "map",
+                  "key": {
+                    "kind": "string"
+                  },
+                  "inner": {
+                    "kind": "int"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "enums": null,
+    "root_class": "Root",
+    "has_union": true
+  },
+  "raw": "{\"u\":null}",
+  "want": {
+    "status": "success",
+    "json": {
+      "u": {}
+    }
+  }
+}
