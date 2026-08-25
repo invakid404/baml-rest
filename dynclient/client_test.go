@@ -267,6 +267,48 @@ func TestNewAppliesOptions(t *testing.T) {
 	}
 }
 
+// TestWithSoftFinalParseThreadsToAdapter proves the WithSoftFinalParse
+// option flows all the way to the adapter's BuildRequestConfig() — the
+// exact value the generated stream router copies into
+// buildrequest.StreamConfig.SoftFinalParse, which the orchestrator's
+// final-parse arms consult. Also pins the default (option unset) to false
+// so the soft path stays strictly opt-in.
+func TestWithSoftFinalParseThreadsToAdapter(t *testing.T) {
+	run := func(t *testing.T, opts ...Option) bamlutils.BuildRequestConfig {
+		t.Helper()
+		rt := &fakeRuntime{}
+		c := newClient(t, rt, opts...)
+		rt.streamingImpl = func(_ bamlutils.Adapter, _ any) (<-chan bamlutils.StreamResult, error) {
+			ch := make(chan bamlutils.StreamResult, 1)
+			ch <- &fakeStreamResult{kind: bamlutils.StreamResultKindFinal, final: map[string]any{"DynamicProperties": map[string]any{"answer": "ok"}}}
+			close(ch)
+			return ch, nil
+		}
+		if _, err := c.DynamicCall(context.Background(), validRequest()); err != nil {
+			t.Fatalf("DynamicCall: %v", err)
+		}
+		captured := rt.capturedAdapter.Load()
+		if captured == nil {
+			t.Fatal("expected adapter to be captured")
+		}
+		return captured.BuildRequestConfig()
+	}
+
+	t.Run("enabled", func(t *testing.T) {
+		got := run(t, WithUseBuildRequest(true), WithSoftFinalParse())
+		if !got.SoftFinalParse {
+			t.Errorf("BuildRequestConfig.SoftFinalParse = false, want true when WithSoftFinalParse() is set")
+		}
+	})
+
+	t.Run("default", func(t *testing.T) {
+		got := run(t, WithUseBuildRequest(true))
+		if got.SoftFinalParse {
+			t.Errorf("BuildRequestConfig.SoftFinalParse = true, want false by default")
+		}
+	})
+}
+
 func TestNewDoesNotReadEnv(t *testing.T) {
 	t.Setenv("BAML_REST_BASE_URL_REWRITES", "https://upstream.example/=http://env.local:9090/")
 	t.Setenv("BAML_REST_CLIENT_DEFAULTS", `{"api_key":"env-key"}`)

@@ -566,6 +566,7 @@ func (me *methodEmitter) emitBuildRequest() {
 			jen.Id("RetryPolicy"):        jen.Id("retryPolicy"),
 			jen.Id("NeedsPartials"):      jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsPartials").Call(),
 			jen.Id("NeedsRaw"):           jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
+			jen.Id("SoftFinalParse"):     jen.Id("adapter").Dot("BuildRequestConfig").Call().Dot("SoftFinalParse"),
 			jen.Id("IncludeReasoning"):   jen.Id("adapter").Dot("IncludeReasoning").Call(),
 			jen.Id("FallbackChain"):      jen.Id("fallbackChain"),
 			jen.Id("ClientOverride"):     jen.Id("clientOverride"),

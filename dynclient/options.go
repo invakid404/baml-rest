@@ -77,6 +77,27 @@ func WithDisableCallBuildRequest(disabled bool) Option {
 	}
 }
 
+// WithSoftFinalParse opts this client's raw streams out of the strict
+// final-parse contract. By default (option unset) a streaming-with-raw
+// call whose final structured parse fails returns a terminal parse error,
+// even though the raw text streamed successfully. When enabled, such a
+// final-parse miss instead completes successfully, surfacing the full
+// accumulated raw (and reasoning) text with no structured final Data.
+//
+// This targets raw-first consumers of DynamicStreamRaw — e.g. wrapping a
+// scalar as a {value: string} class schema, or a model that emits prose
+// before (or instead of) a structured object — that consume raw text
+// independently of any structured projection. It only affects raw
+// streaming (NeedsRaw); non-raw streams, DynamicStream, and the
+// non-streaming call paths keep their strict behavior. Live raw partials
+// are always delivered regardless of this option.
+func WithSoftFinalParse() Option {
+	return func(c *config) error {
+		c.buildRequest.SoftFinalParse = true
+		return nil
+	}
+}
+
 // WithBaseURLRewrites installs URL rewrite rules applied both to
 // outbound HTTP requests and to per-request client_registry base_url
 // overrides. Passing nil clears any previously installed rules. The

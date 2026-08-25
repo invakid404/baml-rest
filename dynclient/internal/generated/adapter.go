@@ -792,6 +792,7 @@ func bamlRestDynamicBuildRequest(adapter bamlutils.Adapter, rawInput any, out ch
 		MetadataPlan:              plannedMetadata,
 		NeedsPartials:             adapter.StreamMode().NeedsPartials(),
 		NeedsRaw:                  adapter.StreamMode().NeedsRaw(),
+		SoftFinalParse:            adapter.BuildRequestConfig().SoftFinalParse,
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newBamlRestDynamicOutputMetadata(md)
 		},

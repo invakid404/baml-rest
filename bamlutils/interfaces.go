@@ -989,6 +989,17 @@ type BuildRequestConfig struct {
 	// to the stream-accumulation bridge (when StreamRequest is available)
 	// or to legacy.
 	DisableCallBuildRequest bool
+
+	// SoftFinalParse opts raw-wanted streams (NeedsRaw) out of the strict
+	// final-parse contract. Default false preserves historical behavior: a
+	// final structured-parse miss hard-fails the streaming call. When true,
+	// a NeedsRaw stream whose final parse misses completes successfully with
+	// the accumulated raw/reasoning text and no structured final — intended
+	// for raw-first callers (e.g. DynamicStreamRaw over a class schema whose
+	// model returns prose). The generated stream router copies this into
+	// buildrequest.StreamConfig.SoftFinalParse. It never affects non-raw
+	// streams or the non-streaming call paths.
+	SoftFinalParse bool
 }
 
 type Adapter interface {
