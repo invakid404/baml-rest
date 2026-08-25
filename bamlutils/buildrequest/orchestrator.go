@@ -773,6 +773,18 @@ func RunStreamOrchestration(
 						if err := trySendPartialShared(parsed, rawForResult, reasoningForResult); err != nil {
 							return nil, "", "", err
 						}
+					} else if config.NeedsRaw {
+						// Streaming-with-raw (#hotfix raw-stream-partials):
+						// structured parsing produced no partial this tick
+						// (parse error or nil result), but raw delivery must
+						// NOT depend on structured-parse success. Forward the
+						// raw/reasoning delta with no structured Data so live
+						// text reaches the caller as it streams; structured
+						// partials resume automatically once ParseStream
+						// starts succeeding. Non-raw streams are unaffected.
+						if err := trySendPartialShared(nil, delta.Raw, delta.Reasoning); err != nil {
+							return nil, "", "", err
+						}
 					}
 				}
 			}
@@ -783,6 +795,15 @@ func RunStreamOrchestration(
 
 		finalResult, parseErr := parseFinal(ctx, parseableAccumulated.String())
 		if parseErr != nil {
+			if config.NeedsRaw && config.SoftFinalParse {
+				// Opt-in soft final parse (#hotfix raw-stream-partials):
+				// the provider successfully delivered the requested raw
+				// stream, so a final structured-parse miss is not fatal for
+				// a raw-first caller — surface the accumulated raw/reasoning
+				// as a successful raw-only result (nil structured final).
+				// Off by default; the strict path below is unchanged.
+				return nil, fullRaw, fullReasoning, nil
+			}
 			// Carry accumulated raw across the retry/fallback boundary
 			// so the outer error emission can forward it as
 			// details.raw (per #256). The wrap is no-op when fullRaw
@@ -927,6 +948,19 @@ func RunStreamOrchestration(
 							callbackErr = err
 							return sseclient.ErrStopScan
 						}
+					} else if config.NeedsRaw {
+						// Streaming-with-raw (#hotfix raw-stream-partials):
+						// structured parsing produced no partial this tick
+						// (parse error or nil result), but raw delivery must
+						// NOT depend on structured-parse success. Forward the
+						// raw/reasoning delta with no structured Data so live
+						// text reaches the caller as it streams; structured
+						// partials resume once ParseStream starts succeeding.
+						// Non-raw streams are unaffected.
+						if err := trySendPartial(nil, delta.Raw, delta.Reasoning); err != nil {
+							callbackErr = err
+							return sseclient.ErrStopScan
+						}
 					}
 				}
 			} else if config.NeedsRaw {
@@ -962,6 +996,15 @@ func RunStreamOrchestration(
 
 		finalResult, parseErr := parseFinal(ctx, parseableAccumulated.String())
 		if parseErr != nil {
+			if config.NeedsRaw && config.SoftFinalParse {
+				// Opt-in soft final parse (#hotfix raw-stream-partials):
+				// the provider successfully delivered the requested raw
+				// stream, so a final structured-parse miss is not fatal for
+				// a raw-first caller — surface the accumulated raw/reasoning
+				// as a successful raw-only result (nil structured final).
+				// Off by default; the strict path below is unchanged.
+				return nil, fullRaw, fullReasoning, nil
+			}
 			// Same raw-carrying wrap as the bedrock final-parse site
 			// — the outer emission extracts via rawFromError.
 			return nil, "", "", newRawError(
