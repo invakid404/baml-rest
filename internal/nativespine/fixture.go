@@ -124,6 +124,15 @@ func BuildFromSource(sources map[string]string) (projectdescriptor.Project, erro
 		}
 	}
 	funcs, preDeclines, preDeclineFeatures := nativeschema.BuildPromptDescriptorsWithFeatures(files, schemas, schemaDeclines, clientProvider, clientConfigs)
+	clients, retries, strategies := nativeschema.BuildClientGraph(files)
 
-	return BuildProjectDescriptor(funcs, preDeclines, preDeclineFeatures), nil
+	return BuildProjectDescriptor(SourceFacts{
+		Funcs:              funcs,
+		PreDeclines:        preDeclines,
+		PreDeclineFeatures: preDeclineFeatures,
+		Clients:            clients,
+		RetryPolicies:      retries,
+		Strategies:         strategies,
+		Templates:          nativeschema.BuildProjectTemplates(files),
+	}), nil
 }

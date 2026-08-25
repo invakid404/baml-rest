@@ -1,0 +1,339 @@
+{
+  "version": 2,
+  "prompt_descriptor_version": 3,
+  "schema_version": 1,
+  "methods": [
+    {
+      "name": "FastGreet",
+      "class": "static_unary",
+      "prompt": "Hi {{ name }}",
+      "args": [
+        {
+          "name": "name",
+          "type": {
+            "Kind": "string",
+            "Nullable": false,
+            "EnumName": "",
+            "ClassName": "",
+            "Elem": null
+          }
+        }
+      ],
+      "client": "Fast",
+      "provider": "openai",
+      "model": {
+        "value": "gpt-4o-mini",
+        "provenance": "literal"
+      },
+      "return": {
+        "version": 1,
+        "method": "FastGreet",
+        "target": {
+          "kind": "primitive",
+          "primitive": "string"
+        }
+      },
+      "required_capabilities": [
+        "static_method",
+        "final_call",
+        "provider_openai",
+        "single_leaf_client"
+      ]
+    },
+    {
+      "name": "Greet",
+      "class": "static_unary",
+      "prompt": "Hi {{ name }}",
+      "args": [
+        {
+          "name": "name",
+          "type": {
+            "Kind": "string",
+            "Nullable": false,
+            "EnumName": "",
+            "ClassName": "",
+            "Elem": null
+          }
+        }
+      ],
+      "client": "GPT4",
+      "provider": "openai",
+      "model": {
+        "value": "gpt-4o",
+        "provenance": "literal"
+      },
+      "return": {
+        "version": 1,
+        "method": "Greet",
+        "target": {
+          "kind": "primitive",
+          "primitive": "string"
+        }
+      },
+      "required_capabilities": [
+        "static_method",
+        "final_call",
+        "provider_openai",
+        "single_leaf_client"
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "config": {
+        "Present": true,
+        "Name": "FB",
+        "Provider": "baml-fallback",
+        "Model": {
+          "Value": "",
+          "Provenance": "",
+          "EnvVar": "",
+          "RawString": false
+        },
+        "RequestBodyPresent": false,
+        "RequestBody": null,
+        "TransportOptions": null,
+        "BodyAffectingOptions": [
+          {
+            "Key": "strategy",
+            "Value": {
+              "Kind": "list",
+              "String": "",
+              "Number": "",
+              "Bool": false,
+              "List": [
+                {
+                  "Kind": "ident",
+                  "String": "GPT4",
+                  "Number": "",
+                  "Bool": false,
+                  "List": null,
+                  "Object": null
+                },
+                {
+                  "Kind": "ident",
+                  "String": "Fast",
+                  "Number": "",
+                  "Bool": false,
+                  "List": null,
+                  "Object": null
+                }
+              ],
+              "Object": null
+            }
+          }
+        ]
+      }
+    },
+    {
+      "config": {
+        "Present": true,
+        "Name": "Fast",
+        "Provider": "openai",
+        "Model": {
+          "Value": "gpt-4o-mini",
+          "Provenance": "literal",
+          "EnvVar": "",
+          "RawString": false
+        },
+        "RequestBodyPresent": false,
+        "RequestBody": null,
+        "TransportOptions": [
+          {
+            "Key": "api_key",
+            "Value": {
+              "Kind": "env",
+              "String": "K",
+              "Number": "",
+              "Bool": false,
+              "List": null,
+              "Object": null
+            }
+          }
+        ],
+        "BodyAffectingOptions": null
+      },
+      "retry_policy": "Retry1"
+    },
+    {
+      "config": {
+        "Present": true,
+        "Name": "GPT4",
+        "Provider": "openai",
+        "Model": {
+          "Value": "gpt-4o",
+          "Provenance": "literal",
+          "EnvVar": "",
+          "RawString": false
+        },
+        "RequestBodyPresent": false,
+        "RequestBody": null,
+        "TransportOptions": [
+          {
+            "Key": "api_key",
+            "Value": {
+              "Kind": "env",
+              "String": "K",
+              "Number": "",
+              "Bool": false,
+              "List": null,
+              "Object": null
+            }
+          }
+        ],
+        "BodyAffectingOptions": null
+      }
+    },
+    {
+      "config": {
+        "Present": true,
+        "Name": "RR",
+        "Provider": "round-robin",
+        "Model": {
+          "Value": "",
+          "Provenance": "",
+          "EnvVar": "",
+          "RawString": false
+        },
+        "RequestBodyPresent": false,
+        "RequestBody": null,
+        "TransportOptions": null,
+        "BodyAffectingOptions": [
+          {
+            "Key": "strategy",
+            "Value": {
+              "Kind": "list",
+              "String": "",
+              "Number": "",
+              "Bool": false,
+              "List": [
+                {
+                  "Kind": "ident",
+                  "String": "GPT4",
+                  "Number": "",
+                  "Bool": false,
+                  "List": null,
+                  "Object": null
+                },
+                {
+                  "Kind": "ident",
+                  "String": "Fast",
+                  "Number": "",
+                  "Bool": false,
+                  "List": null,
+                  "Object": null
+                }
+              ],
+              "Object": null
+            }
+          },
+          {
+            "Key": "start",
+            "Value": {
+              "Kind": "number",
+              "String": "",
+              "Number": "1",
+              "Bool": false,
+              "List": null,
+              "Object": null
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "retry_policies": [
+    {
+      "name": "Retry1",
+      "max_retries": 3,
+      "strategy": "exponential_backoff",
+      "delay_ms": 200,
+      "multiplier": 2,
+      "max_delay_ms": 5000
+    }
+  ],
+  "strategies": [
+    {
+      "name": "FB",
+      "kind": "fallback",
+      "children": [
+        "GPT4",
+        "Fast"
+      ]
+    },
+    {
+      "name": "RR",
+      "kind": "round_robin",
+      "children": [
+        "GPT4",
+        "Fast"
+      ],
+      "start": 1
+    }
+  ],
+  "templates": [
+    {
+      "name": "Header",
+      "args": [
+        "name"
+      ],
+      "body": "Hello {{ name }}"
+    }
+  ],
+  "capabilities": [
+    {
+      "method": "FallbackGreet",
+      "admitted": false,
+      "blocked": "strategy_fallback"
+    },
+    {
+      "method": "FastGreet",
+      "admitted": true,
+      "class": "static_unary",
+      "required": [
+        "static_method",
+        "final_call",
+        "provider_openai",
+        "single_leaf_client"
+      ]
+    },
+    {
+      "method": "Greet",
+      "admitted": true,
+      "class": "static_unary",
+      "required": [
+        "static_method",
+        "final_call",
+        "provider_openai",
+        "single_leaf_client"
+      ]
+    },
+    {
+      "method": "ImgFn",
+      "admitted": false,
+      "blocked": "unsupported_output_shape"
+    },
+    {
+      "method": "RRGreet",
+      "admitted": false,
+      "blocked": "strategy_round_robin"
+    }
+  ],
+  "diagnostics": [
+    {
+      "method": "FallbackGreet",
+      "code": "strategy_fallback",
+      "detail": "client uses a fallback strategy provider (baml-fallback)"
+    },
+    {
+      "method": "ImgFn",
+      "code": "unsupported_output_shape",
+      "detail": "prompt descriptor return bundle unavailable: schema: target: media is not usable as an output type"
+    },
+    {
+      "method": "RRGreet",
+      "code": "strategy_round_robin",
+      "detail": "client uses a round-robin strategy provider (round-robin)"
+    }
+  ]
+}
