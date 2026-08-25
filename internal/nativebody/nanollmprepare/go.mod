@@ -21,9 +21,9 @@ go 1.26.5
 require (
 	github.com/boundaryml/baml v0.223.0
 	github.com/invakid404/baml-rest v0.0.48
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260824225140-83dde65a20f1
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260825064313-062871154d95
 	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260824225140-83dde65a20f1
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260825064313-062871154d95
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
@@ -112,7 +112,7 @@ require (
 // without recording it here fails the native-worker PACKAGING build (-mod=readonly)
 // with "updates to go.mod needed".
 //
-// PIN-STATUS: OUTSTANDING
+// PIN-STATUS: RESOLVED
 //
 // That marker is the MACHINE-READABLE statement of where these pins stand, and
 // cmd/build's TestPackagedManifestsMatchTheTrackedPins requires it to equal the
@@ -136,12 +136,19 @@ require (
 // 4a6c8f1ee571 on feat/debaml-s3b-enroll before #683 squash-merged it to master as
 // ba813ad3564d; the /parse burn-down batch 1 change did the same, briefly BRANCH-ONLY at
 // 251b09219943 on feat/debaml-parse-burndown-1 before #686 squash-merged it to master as
-// 05102106c569 (#687 performed that re-pin).
+// 05102106c569 (#687 performed that re-pin); the /parse UNION burn-down did the same,
+// BRANCH-ONLY at 83dde65a20f1 on feat/debaml-parse-union (re-bumped there off d43120c9de32
+// and 939f5d7ff1f6 as cold-review fixes landed) before #689 squash-merged it to master as
+// cf03786a1fac — a squash that flattened all three of those SHAs away and orphaned the
+// pins, which is what THIS re-pin repairs.
 //
-// RIGHT NOW they are BRANCH-ONLY: the /parse UNION burn-down moved all five to
-// 83dde65a20f1 on feat/debaml-parse-union, its LATEST SOURCE commit, because no master
-// commit carries the changed native SAP yet — so nativeserve/pin_followup.md reads
-// STATUS: OUTSTANDING and the post-squash re-pin runbook is OWED. Do not treat this
+// RIGHT NOW they are MASTER-DURABLE: all five name 062871154d95, the CURRENT master tip.
+// That tip carries the union SAP — #689's squash cf03786a1fac put internal/debaml there,
+// and the M1 codegen spine (#691) on top left internal/debaml untouched — and it is the
+// commit to name rather than the squash alone, because M1 DID move bamlutils, one of the
+// five pinned modules, so only the tip has a root AND a bamlutils matching this tree. So
+// nativeserve/pin_followup.md reads STATUS: RESOLVED and the post-squash re-pin runbook
+// has been PERFORMED. Do not treat this
 // comment as the authority — nativeserve/pin_followup.md is the tracked record, and
 // cmd/build's TestFirstPartyPinFollowupIsTracked is what holds the two together: it
 // parses that record and the require directives above on every ordinary
