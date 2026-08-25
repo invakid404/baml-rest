@@ -422,6 +422,33 @@ jobs:
           merge-multiple: true
           path: ${{ runner.temp }}/testbucket-events
 
+      - name: Download the shard plan
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: testbucket-shard-plan
+          path: ${{ runner.temp }}/plan
+
+      - name: Audit the run against the plan
+        run: |
+          set -euo pipefail
+          # The plan's coverage gate proved the MATRIX was complete before
+          # anything ran. This proves the RUN was, which is a different
+          # statement and the one a merge decision actually needs: a bucket
+          # whose job produced no events, an artifact that failed to upload,
+          # a shard that died before reporting — all invisible to a gate that
+          # only ever saw the plan.
+          #
+          # It is semantics-aware because "exactly once" means three things
+          # here: a whole package runs in one invocation, a count-shard
+          # package in S (each a slice of the SWEEP, not a repeat of the
+          # package), and a run-sliced package in S whose name sets must
+          # union to the package's whole runnable set.
+          shopt -s nullglob
+          events=("$RUNNER_TEMP/testbucket-events"/*.ndjson)
+          go run ./cmd/testbucket audit \
+            --shard-plan "$RUNNER_TEMP/plan/shard-plan.json" \
+            "${events[@]}"
+
       - name: Restore the previous timing store
         uses: actions/cache/restore@v4.2.4
         with:

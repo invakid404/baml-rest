@@ -63,6 +63,10 @@ usage:
   testbucket whales [flags]   show the per-runnable distribution behind each
                               split decision, so the divisibility question can
                               be re-derived from any store
+  testbucket audit  [flags]   check a finished run's captured events against
+                              the plan it was fanned out from: every package
+                              covered exactly as scheduled, shards and slices
+                              accounted for
 
 run "testbucket <subcommand> -h" for the flags of each.
 `
@@ -80,6 +84,8 @@ func main() {
 		err = runIngest(os.Args[2:])
 	case "whales":
 		err = runWhales(os.Args[2:])
+	case "audit":
+		err = runAudit(os.Args[2:])
 	case "-h", "--help", "help":
 		fmt.Fprint(os.Stderr, usage)
 		return

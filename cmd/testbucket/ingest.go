@@ -220,25 +220,37 @@ func countShardFloor(pkgSeconds, namedSeconds float64, shards int) float64 {
 //
 // Named coverage is still required: without per-test weights for most of the
 // package the slicer would be packing blind. It is just no longer sufficient.
-func chooseSplitPolicy(pkgSeconds, namedSeconds, heaviestSeconds float64, namedCount, shards int) (policy, cause, reason string) {
-	floor := countShardFloor(pkgSeconds, namedSeconds, shards)
+func chooseSplitPolicy(pkgSeconds, namedSeconds, heaviestSeconds float64, namedCount, runShards, countShards int) (policy, cause, reason string) {
+	// Count-sharding is only on the table if the sweep has iterations to
+	// divide; name-slicing is bounded only by runShards, because disjoint
+	// name sets each keep the full -count.
+	countViable := countShards >= 2
+
 	switch {
-	case pkgSeconds <= 0 || shards < 2:
+	case pkgSeconds <= 0 || runShards < 2:
 		return splitCount, causeNoPicture, "no usable per-test picture"
 	case namedCount < 2:
 		return splitCount, causeTooFewNames, "fewer than two named runnables to slice"
 	case namedSeconds/pkgSeconds < runUpgradeFraction:
 		return splitCount, causeLowCoverage, fmt.Sprintf("named runnables explain only %.0f%% of the package (need %.0f%%)",
 			namedSeconds/pkgSeconds*100, runUpgradeFraction*100)
-	case heaviestSeconds > floor:
-		// The decisive comparison: the -run floor against the best case a
-		// count-shard of the same width could manage.
-		return splitCount, causeDominated, fmt.Sprintf("dominated by one runnable (%.1fs, above the %.1fs a %d-way count-shard costs at best)",
-			heaviestSeconds, floor, shards)
-	default:
-		return splitRun, causeNameDivisible, fmt.Sprintf("name-divisible: heaviest runnable %.1fs fits under the %.1fs best case for a %d-way count-shard",
-			heaviestSeconds, floor, shards)
+	case !countViable:
+		// The package IS name-divisible and count-sharding cannot divide this
+		// sweep at all. Name-slicing wins by default rather than by
+		// comparison: there is nothing to compare against.
+		return splitRun, causeNameDivisible, fmt.Sprintf(
+			"name-divisible, and a count-shard cannot divide this sweep (heaviest runnable %.1fs)", heaviestSeconds)
 	}
+
+	// The decisive comparison, made against the width count-sharding could
+	// ACTUALLY use — not the width name-slicing would use.
+	floor := countShardFloor(pkgSeconds, namedSeconds, countShards)
+	if heaviestSeconds > floor {
+		return splitCount, causeDominated, fmt.Sprintf("dominated by one runnable (%.1fs, above the %.1fs a %d-way count-shard costs at best)",
+			heaviestSeconds, floor, countShards)
+	}
+	return splitRun, causeNameDivisible, fmt.Sprintf("name-divisible: heaviest runnable %.1fs fits under the %.1fs best case for a %d-way count-shard",
+		heaviestSeconds, floor, countShards)
 }
 
 // Why a package got the policy it did. Returned alongside the prose reason so
@@ -407,53 +419,41 @@ func applyIngest(st *Store, sum *eventSummary, opt ingestOptions) (*ingestReport
 			row.Tests = nil
 			continue
 		}
-		// The split width is K itself, not the minimum that would bring this
-		// package under the current threshold.
+		// TWO candidate widths, because the two mechanisms are bounded by
+		// different things and sharing one number silently couples them.
 		//
-		// Two reasons. First, K shards of pkg/K each fit any bucket by
-		// construction, so the width does not have to be re-derived every
-		// time the tree grows. Second — and this is what decides it — the
-		// width feeds the mechanism comparison below: a wider count-shard is
-		// a CHEAPER count-shard (pkg/S), which is what makes the dominance
-		// test bite. Deriving the width from total/K instead would make the
-		// split policy a function of the whole tree's size, so an unrelated
-		// package getting slower elsewhere could silently flip a whale from
-		// count-sharding to name-slicing.
-		shards := clampShards(opt.WhaleK, opt.WhaleK)
+		// runShards is what a name-slice could use: K, because K slices of
+		// pkg/K fit any bucket by construction, narrowed only by whether the
+		// package has the wall time to make slicing worth its fixed cost.
+		// Deriving it from total/K instead would make a package's policy a
+		// function of the whole tree's size, so an unrelated package getting
+		// slower elsewhere could flip a whale's mechanism.
+		runShards := clampShards(opt.WhaleK, opt.WhaleK)
 		if opt.MinShardSeconds > 0 {
-			if affordable := int(row.Seconds / opt.MinShardSeconds); affordable < shards {
-				shards = affordable
+			if affordable := int(row.Seconds / opt.MinShardSeconds); affordable < runShards {
+				runShards = affordable
 			}
 		}
-		// A count-shard divides ITERATIONS, so it cannot divide more finely
+
+		// countShards is what a COUNT-shard could actually use, and it
+		// carries one extra bound the run width must NOT inherit: a
+		// count-shard divides ITERATIONS, so it cannot divide more finely
 		// than the sweep has iterations to give. Requiring at least two per
-		// shard is the count-dimension twin of MinShardSeconds: below it the
+		// shard is the count-dimension twin of MinShardSeconds — below it the
 		// rounding in -count=ceil(base/S) stops being rounding and starts
-		// being duplication.
+		// being duplication. At -count=1, ceil(1/6) is 1, so a six-way
+		// "split" reruns the whole package six times.
 		//
-		// The degenerate case is not hypothetical — it turned up rehearsing
-		// the bucketed workflow at -count=1, where ceil(1/6) is 1 and a
-		// six-way "split" ran the whole package six times, for six times the
-		// work. The aggregate check in the coverage gate does not catch it,
-		// because 6 >= 1 is perfectly true; the gate bounds the sweep from
-		// below, not the waste from above.
-		if affordable := opt.Count / 2; affordable < shards {
-			shards = affordable
+		// A name-slice has no such limit: its slices are DISJOINT name sets,
+		// each still running the full -count, so a six-way name split at
+		// -count=1 neither multiplies a test nor weakens the sweep. Applying
+		// the iteration cap to both widths is what an earlier version of this
+		// did, and it forced perfectly name-divisible whales to run whole at
+		// low counts.
+		countShards := runShards
+		if affordable := opt.Count / 2; affordable < countShards {
+			countShards = affordable
 		}
-		if shards < 2 {
-			// Above the relative threshold but too small for slicing to pay
-			// for itself — in wall time, or in iterations to divide. Leave
-			// it whole.
-			if row.splitPolicy() != splitNone {
-				rep.Unflagged = append(rep.Unflagged, pkg)
-			}
-			row.Split = ""
-			row.SplitInto = 0
-			row.SplitReason = ""
-			row.Tests = nil
-			continue
-		}
-		row.SplitInto = shards
 
 		// Fold this batch's per-test weights in before deciding whether the
 		// package can be name-sliced, so a package that becomes a whale on
@@ -514,8 +514,26 @@ func applyIngest(st *Store, sum *eventSummary, opt ingestOptions) (*ingestReport
 			}
 		}
 		named := sumSeconds(perTest)
-		var cause string
-		row.Split, cause, row.SplitReason = chooseSplitPolicy(row.Seconds, named, heaviest, len(row.Tests), shards)
+		policy, cause, reason := chooseSplitPolicy(row.Seconds, named, heaviest, len(row.Tests), runShards, countShards)
+		// The chosen mechanism decides which of the two widths applies.
+		width := runShards
+		if policy == splitCount {
+			width = countShards
+		}
+		if width < 2 {
+			// Over the relative threshold but too small for the chosen
+			// mechanism to pay for itself — in wall time, or in iterations
+			// to divide. Leave it whole.
+			if row.splitPolicy() != splitNone {
+				rep.Unflagged = append(rep.Unflagged, pkg)
+			}
+			row.Split = ""
+			row.SplitInto = 0
+			row.SplitReason = ""
+			row.Tests = nil
+			continue
+		}
+		row.Split, row.SplitInto, row.SplitReason = policy, width, reason
 		// Only the dominance branch may be reported as dominance. Count is
 		// also chosen when there are too few names to slice, or when named
 		// tests explain too little of the package — and a 30s runnable in a
@@ -526,7 +544,7 @@ func applyIngest(st *Store, sum *eventSummary, opt ingestOptions) (*ingestReport
 				"%s: %s alone is %.0f%% of the package (%.1fs of %.1fs) — a -run split cannot finish faster than it",
 				pkg, heaviestName, heaviest/row.Seconds*100, heaviest, row.Seconds))
 		}
-		rep.Whales = append(rep.Whales, fmt.Sprintf("%s %.1fs -> split=%s x%d (%s)", pkg, row.Seconds, row.Split, shards, row.SplitReason))
+		rep.Whales = append(rep.Whales, fmt.Sprintf("%s %.1fs -> split=%s x%d (%s)", pkg, row.Seconds, row.Split, row.SplitInto, row.SplitReason))
 	}
 
 	// Record the coverage snapshot `plan` diffs against.
