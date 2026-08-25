@@ -336,6 +336,11 @@ func TestGuardArtifactsOutsideCollisionPaths(t *testing.T) {
 	m0Paths := []string{
 		"internal/codegenspine",
 		"docs/codegen-spine",
+		// M1 (first native descriptor vertical) artifacts — all pin/tar-neutral.
+		"bamlutils/projectdescriptor",
+		"internal/nativespine",
+		"internal/nativespinefixture",
+		"adapters/common/codegen/nativespine.go",
 	}
 	for _, p := range m0Paths {
 		for _, guarded := range guardedTreePrefixes {

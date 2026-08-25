@@ -122,6 +122,11 @@ type Declines struct {
 	ReasonSource          string   `json:"reason_source"`
 	Principle             string   `json:"principle"`
 	RepresentativeReasons []string `json:"representative_reasons"`
+	// CodegenAdmissionDeclines is the exact set of decline codes the M1+ native
+	// codegen classifier (internal/nativespine) can emit — distinct from the
+	// serving-admission RepresentativeReasons above. Validated against
+	// nativespine.DeclineCodes() by manifest_test.go.
+	CodegenAdmissionDeclines []string `json:"codegen_admission_declines"`
 }
 
 // Fixture is one representative .baml corpus file the manifest is validated
