@@ -49,6 +49,12 @@ type renderProbe struct {
 	// units is the fixture; units[0] is the one that gets mutated.
 	units  func() []Unit
 	mutate func(Unit) Unit
+	// assert optionally pins WHAT changed, not merely that something did.
+	// A byte comparison alone can pass on a metadata-only difference —
+	// Invocation.Desc carries unit IDs — which would prove nothing about
+	// the commands that actually run. Fields whose renderer effect is a
+	// change in grouping use this to assert the grouping itself.
+	assert func(t *testing.T, before, after planBucket)
 }
 
 type unitFieldRule struct {
@@ -114,17 +120,57 @@ var unitFieldContract = map[string]unitFieldRule{
 	"ID": {
 		changesCommands: true,
 		gateCheck:       "non-empty ID (the renderer keys solo invocations by it, so two unnamed units collapse into one command)",
-		probes: []unitProbe{{
-			name:     "an unnamed count-shard",
-			baseKind: kindCountShard,
-			mutate:   func(u Unit) Unit { u.ID = ""; return u },
-			wantIn:   "has no ID",
-		}},
+		probes: []unitProbe{
+			{
+				name:     "an unnamed count-shard",
+				baseKind: kindCountShard,
+				mutate:   func(u Unit) Unit { u.ID = ""; return u },
+				wantIn:   "has no ID",
+			},
+			{
+				// The other half of the same property: two units sharing an
+				// ID are one unit as far as the renderer's grouping is
+				// concerned, and the gate must refuse that too.
+				name:     "two count-shards sharing an ID",
+				baseKind: kindCountShard,
+				mutate: func(u Unit) Unit {
+					u.ID = countShardID(repoPrefix+"bamlutils/llmhttp", 1)
+					if u.Shard == 1 {
+						u.ID = countShardID(repoPrefix+"bamlutils/llmhttp", 2)
+					}
+					return u
+				},
+				wantIn: "more than one bucket",
+			},
+		},
 		render: renderProbe{
-			// Two shards of one package are solo invocations keyed by ID;
-			// blanking one collapses its key toward the other's.
+			// Sub-package invocations are keyed by unit ID, so a COLLISION
+			// is what the renderer actually punishes: the two shards fold
+			// into one command and half the flake sweep stops running.
+			// Blanking one ID would only change Invocation.Desc, which is
+			// metadata and would prove nothing about what executes.
 			units:  func() []Unit { return []Unit{fixtureShard(1), fixtureShard(2)} },
-			mutate: func(u Unit) Unit { u.ID = ""; return u },
+			mutate: func(u Unit) Unit { u.ID = countShardID(repoPrefix+"bamlutils/llmhttp", 2); return u },
+			assert: func(t *testing.T, before, after planBucket) {
+				t.Helper()
+				if len(before.Invocations) != 2 {
+					t.Fatalf("the fixture should render two separate shard commands, got %d", len(before.Invocations))
+				}
+				if len(after.Invocations) != 1 {
+					t.Fatalf("colliding unit IDs did not merge the commands: still %d invocations", len(after.Invocations))
+				}
+				// Both shards asked for -count=17; after the merge only one
+				// command survives, so the package runs 17 iterations
+				// instead of 34. The surviving command names the package
+				// twice, which is the visible fingerprint of the fold.
+				args := strings.Join(after.Invocations[0].Args, " ")
+				if n := strings.Count(args, repoPrefix+"bamlutils/llmhttp"); n != 2 {
+					t.Errorf("merged command names the package %d times, want 2: %s", n, args)
+				}
+				if !strings.Contains(args, "-count=17") {
+					t.Errorf("merged command lost the shard -count: %s", args)
+				}
+			},
 		},
 	},
 	"Kind": {
@@ -453,6 +499,10 @@ func TestFieldClassificationMatchesWhatTheRendererEmits(t *testing.T) {
 		return string(blob)
 	}
 
+	renderBucketOf := func(units []Unit) planBucket {
+		return renderBucket(Bucket{Index: 0, Units: units}, opt)
+	}
+
 	for _, field := range sortedKeys(unitFieldContract) {
 		rule := unitFieldContract[field]
 		t.Run(field, func(t *testing.T) {
@@ -462,6 +512,13 @@ func TestFieldClassificationMatchesWhatTheRendererEmits(t *testing.T) {
 			doctored := append([]Unit(nil), rule.render.units()...)
 			doctored[0] = rule.render.mutate(doctored[0])
 			after := render(doctored)
+
+			// A byte difference is necessary but not sufficient: it can
+			// come from Invocation.Desc, which is metadata. Probes for
+			// fields whose effect is a grouping change say so explicitly.
+			if rule.render.assert != nil {
+				rule.render.assert(t, renderBucketOf(base), renderBucketOf(doctored))
+			}
 
 			switch {
 			case rule.changesCommands && before == after:

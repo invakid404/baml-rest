@@ -63,17 +63,31 @@ func findRepoRoot(dir string) (string, error) {
 // parsing it: the file in this repo is mostly a long rationale comment, and
 // the toolchain is the only correct parser of the directive it wraps.
 func workspaceMembers(ctx context.Context, repoRoot string) (map[string]bool, error) {
-	if _, err := os.Stat(filepath.Join(repoRoot, "go.work")); err != nil {
-		if os.IsNotExist(err) {
-			// A repo with no workspace file is a legitimate shape: every
-			// module then resolves standalone.
-			return map[string]bool{}, nil
+	workFile := filepath.Join(repoRoot, "go.work")
+	if _, err := os.Stat(workFile); err != nil {
+		// Any stat failure other than absence — a permission problem, an
+		// I/O error — must NOT be read as "there is no workspace". Doing so
+		// would flip every module to GOWORK=off and pack each as a
+		// whole-module atom, silently rescheduling the entire tree. There
+		// is no coverage-gate backstop for this: it changes discovery
+		// before the final plan is ever checked.
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("stat go.work in %s: %w", repoRoot, err)
 		}
-		// Any other stat failure — a permission problem, a broken symlink —
-		// must NOT be read as "there is no workspace". Doing so would flip
-		// every module to GOWORK=off and pack each as a whole-module atom,
-		// silently rescheduling the entire tree on the back of an I/O error.
-		return nil, fmt.Errorf("stat go.work in %s: %w", repoRoot, err)
+		// Stat FOLLOWS symlinks, so ENOENT here is ambiguous: either there
+		// is no directory entry at all, or there is one that points at
+		// nothing. Only the first is a repo that legitimately has no
+		// workspace; the second is a broken workspace and must be loud, or
+		// it degrades into exactly the silent rescheduling above. Lstat
+		// answers the question by not following the link.
+		if _, lerr := os.Lstat(workFile); lerr == nil {
+			return nil, fmt.Errorf("go.work in %s is a dangling symlink: %w", repoRoot, err)
+		} else if !os.IsNotExist(lerr) {
+			return nil, fmt.Errorf("lstat go.work in %s: %w", repoRoot, lerr)
+		}
+		// No directory entry at all: a repo with no workspace file is a
+		// legitimate shape, and every module then resolves standalone.
+		return map[string]bool{}, nil
 	}
 	cmd := exec.CommandContext(ctx, "go", "work", "edit", "-json")
 	cmd.Dir = repoRoot

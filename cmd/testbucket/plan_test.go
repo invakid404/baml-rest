@@ -704,3 +704,61 @@ func TestIngestReportWritePropagatesFailure(t *testing.T) {
 		t.Errorf("a healthy write returned an error: %v", err)
 	}
 }
+
+func TestToolchainTimeoutBoundary(t *testing.T) {
+	// Zero is the ONLY opt-out from the subprocess deadline. A negative
+	// duration parses fine, and treating it as "disabled" would let a typo
+	// (-10m for 10m) silently remove the hang protection — leaving a job to
+	// hang until the workflow's own timeout kills it, which is exactly what
+	// the deadline was added to prevent.
+	cases := []struct {
+		name        string
+		timeout     time.Duration
+		wantErr     bool
+		wantDeadlin bool
+	}{
+		{name: "a negative duration is rejected", timeout: -time.Second, wantErr: true},
+		{name: "a large negative duration is rejected", timeout: -10 * time.Minute, wantErr: true},
+		{name: "the smallest negative value is rejected", timeout: -1, wantErr: true},
+		{name: "zero disables the deadline", timeout: 0},
+		{name: "one nanosecond still sets a deadline", timeout: 1, wantDeadlin: true},
+		{name: "the default sets a deadline", timeout: 10 * time.Minute, wantDeadlin: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateToolchainTimeout(tc.timeout)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("the value was accepted")
+				}
+				if !strings.Contains(err.Error(), "--toolchain-timeout") {
+					t.Errorf("error does not name the flag: %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("a legal value was rejected: %v", err)
+			}
+
+			// toolchainContext re-validates rather than trusting its
+			// caller, so an unbounded context cannot be built by reaching
+			// it down a path that forgot to check.
+			ctx, cancel, cerr := toolchainContext(tc.timeout)
+			if tc.wantErr {
+				if cerr == nil {
+					cancel()
+					t.Fatal("toolchainContext built a context from a rejected value")
+				}
+				if ctx != nil || cancel != nil {
+					t.Error("toolchainContext returned a usable context alongside its error")
+				}
+				return
+			}
+			if cerr != nil {
+				t.Fatalf("toolchainContext: %v", cerr)
+			}
+			defer cancel()
+			if _, ok := ctx.Deadline(); ok != tc.wantDeadlin {
+				t.Errorf("context has deadline=%v, want %v", ok, tc.wantDeadlin)
+			}
+		})
+	}
+}

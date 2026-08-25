@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -235,6 +236,50 @@ func TestWorkspaceMembersDistinguishesAbsenceFromFailure(t *testing.T) {
 	}
 	if len(members) != 0 {
 		t.Errorf("members = %v, want none", members)
+	}
+
+	// A DANGLING SYMLINK is the ambiguous case, and the one that used to
+	// slip through: os.Stat follows links, so a go.work pointing at nothing
+	// reports the missing TARGET as ENOENT and looks exactly like "no
+	// workspace here". A broken workspace must be loud — silently treating
+	// it as absent flips every module to GOWORK=off/atomic and reschedules
+	// the whole tree, and discovery runs before the final plan is ever
+	// gated, so nothing downstream would catch it.
+	dangling := t.TempDir()
+	if err := os.Symlink(filepath.Join(dangling, "no-such-file"), filepath.Join(dangling, "go.work")); err != nil {
+		t.Skipf("cannot create symlinks here: %v", err)
+	}
+	// Sanity: confirm the fixture really is the ambiguous shape — Stat says
+	// "does not exist" while the directory entry is right there.
+	if _, err := os.Stat(filepath.Join(dangling, "go.work")); !os.IsNotExist(err) {
+		t.Fatalf("fixture is not a dangling symlink: stat err = %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dangling, "go.work")); err != nil {
+		t.Fatalf("fixture has no directory entry: lstat err = %v", err)
+	}
+	members, err = workspaceMembers(context.Background(), dangling)
+	if err == nil {
+		t.Errorf("a dangling go.work symlink was reported as an empty workspace (%v); every module would silently become GOWORK=off/atomic", members)
+	} else if !strings.Contains(err.Error(), "dangling symlink") {
+		t.Errorf("error does not name the cause: %v", err)
+	}
+
+	// A symlink that RESOLVES is a normal workspace and must still work.
+	linked := t.TempDir()
+	real := filepath.Join(linked, "real.work")
+	if err := os.WriteFile(real, []byte("go 1.26.5\n\nuse (\n\t.\n)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(linked, "go.mod"), []byte("module example.com/linked\n\ngo 1.26.5\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, filepath.Join(linked, "go.work")); err != nil {
+		t.Fatal(err)
+	}
+	if members, err := workspaceMembers(context.Background(), linked); err != nil {
+		t.Errorf("a resolvable go.work symlink was rejected: %v", err)
+	} else if !members["."] {
+		t.Errorf("members = %v, want the root module", members)
 	}
 
 	// go.work present but unreadable as a directory entry: `go work edit`

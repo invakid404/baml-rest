@@ -131,11 +131,17 @@ func runPlan(args []string) error {
 	if err := opt.validate(); err != nil {
 		return err
 	}
+	if err := validateToolchainTimeout(*toolchainTimeout); err != nil {
+		return err
+	}
 
 	// Every `go` subprocess runs under this deadline, so a hung toolchain
 	// fails the plan step with a clear error instead of holding the job
 	// open until the workflow's own timeout kills it with no diagnosis.
-	ctx, cancel := toolchainContext(*toolchainTimeout)
+	ctx, cancel, err := toolchainContext(*toolchainTimeout)
+	if err != nil {
+		return err
+	}
 	defer cancel()
 
 	repoRoot, rootErr := findRepoRoot(".")
@@ -144,7 +150,6 @@ func runPlan(args []string) error {
 	}
 
 	var livePkgs []LivePackage
-	var err error
 	if *live != "" {
 		livePkgs, err = loadLivePackages(*live)
 		if err != nil {
@@ -253,6 +258,9 @@ func runIngest(args []string) error {
 	if err := opt.validate(); err != nil {
 		return err
 	}
+	if err := validateToolchainTimeout(*toolchainTimeout); err != nil {
+		return err
+	}
 
 	inputs := append([]string(nil), in...)
 	inputs = append(inputs, fs.Args()...)
@@ -295,7 +303,10 @@ func runIngest(args []string) error {
 		}
 		authoritative = true
 	case !*noGoList:
-		ctx, cancel := toolchainContext(*toolchainTimeout)
+		ctx, cancel, ctxErr := toolchainContext(*toolchainTimeout)
+		if ctxErr != nil {
+			return ctxErr
+		}
 		defer cancel()
 		repoRoot, err := findRepoRoot(".")
 		if err != nil {
@@ -365,12 +376,36 @@ func writeJSONFile(path string, v any) (err error) {
 	return nil
 }
 
+// validateToolchainTimeout keeps ZERO as the only way to opt out of the
+// subprocess deadline.
+//
+// A negative duration parses fine and would previously have been treated as
+// "disabled", so a typo (-10m for 10m) silently removed the hang protection
+// the deadline exists to provide — the failure mode being a job that hangs
+// until the workflow's own timeout kills it, which is precisely what the
+// deadline was added to prevent.
+func validateToolchainTimeout(timeout time.Duration) error {
+	if timeout < 0 {
+		return fmt.Errorf("--toolchain-timeout must be >= 0 (0 disables the deadline), got %v", timeout)
+	}
+	return nil
+}
+
 // toolchainContext bounds every `go` subprocess. A zero timeout disables the
 // deadline, for the rare local run where a cold module download legitimately
 // takes longer than any sensible cap.
-func toolchainContext(timeout time.Duration) (context.Context, context.CancelFunc) {
-	if timeout <= 0 {
-		return context.WithCancel(context.Background())
+//
+// It re-validates rather than trusting its caller: the check is the whole
+// point, so it must not be possible to construct an unbounded context by
+// reaching this function down a path that forgot to validate.
+func toolchainContext(timeout time.Duration) (context.Context, context.CancelFunc, error) {
+	if err := validateToolchainTimeout(timeout); err != nil {
+		return nil, nil, err
 	}
-	return context.WithTimeout(context.Background(), timeout)
+	if timeout == 0 {
+		ctx, cancel := context.WithCancel(context.Background())
+		return ctx, cancel, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	return ctx, cancel, nil
 }
