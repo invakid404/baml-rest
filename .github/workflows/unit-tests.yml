@@ -386,6 +386,12 @@ jobs:
   #     weeks later as a mysteriously bad split.
   record-timings:
     needs: [unit-tests, bamlutils-race]
+    # Least privilege: this job reads the tree, reads/writes the Actions cache
+    # and handles artifacts. None of that needs write scope on repository
+    # contents — and decision 3 deliberately keeps the store out of the repo
+    # precisely so no CI job ever needs one.
+    permissions:
+      contents: read
     # !cancelled() rather than always(): record what a red run measured (the
     # passing packages still have honest timings, and ingest drops the failed
     # ones), but do not try to record a cancelled one, whose artifacts are
@@ -512,6 +518,9 @@ jobs:
   # quality; if (2) breaks, a cache expiry takes the whole matrix down.
   timings-restore:
     runs-on: ubuntu-latest
+    # Least privilege: restores a cache and runs `plan`. Read-only.
+    permissions:
+      contents: read
     timeout-minutes: 10
 
     steps:

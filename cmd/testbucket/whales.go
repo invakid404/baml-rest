@@ -30,6 +30,9 @@ func runWhales(args []string) error {
 	if *k < 1 {
 		return fmt.Errorf("--k must be >= 1, got %d", *k)
 	}
+	if *top < 0 {
+		return fmt.Errorf("--top must be >= 0, got %d", *top)
+	}
 
 	st, reason, err := loadStore(*store)
 	if err != nil {
@@ -109,7 +112,13 @@ func writeWhaleReport(w io.Writer, st *Store, k, top int, all bool) {
 		}
 
 		if len(names) > 0 {
+			// Clamped at both ends, not just the top: writeWhaleReport is
+			// called directly by tests and could be reached with a negative
+			// limit, where names[:limit] panics rather than reporting.
 			limit := top
+			if limit < 0 {
+				limit = 0
+			}
 			if limit > len(names) {
 				limit = len(names)
 			}

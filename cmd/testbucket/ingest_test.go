@@ -1000,22 +1000,23 @@ func TestChooseSplitPolicyComparesTheTwoMechanisms(t *testing.T) {
 		shards     int
 		want       string
 		reasonHas  string
+		wantCause  string
 	}{
 		{
 			name: "bamlutils/llmhttp as measured: 96% named, but one name is 50%",
 			// A -run split floors at 407s; a 3-way count-shard costs 271s.
 			pkg: 814, named: 782, heaviest: 407.2, namedCount: 221, shards: 3,
-			want: splitCount, reasonHas: "dominated by one runnable",
+			want: splitCount, reasonHas: "dominated by one runnable", wantCause: causeDominated,
 		},
 		{
 			name: "internal/debaml as measured: 92% named, but one name is 44%",
 			pkg:  822, named: 754, heaviest: 361.1, namedCount: 457, shards: 3,
-			want: splitCount, reasonHas: "dominated by one runnable",
+			want: splitCount, reasonHas: "dominated by one runnable", wantCause: causeDominated,
 		},
 		{
 			name: "genuinely name-divisible: a long tail with no dominant name",
 			pkg:  900, named: 850, heaviest: 250, namedCount: 4, shards: 3,
-			want: splitRun, reasonHas: "name-divisible",
+			want: splitRun, reasonHas: "name-divisible", wantCause: causeNameDivisible,
 		},
 		{
 			name: "exactly at the boundary: the heaviest name equals the count-shard floor",
@@ -1024,12 +1025,12 @@ func TestChooseSplitPolicyComparesTheTwoMechanisms(t *testing.T) {
 			// is no worse here and it avoids repeating the package's
 			// per-binary setup S times.
 			pkg: 900, named: 900, heaviest: 300, namedCount: 4, shards: 3,
-			want: splitRun, reasonHas: "name-divisible",
+			want: splitRun, reasonHas: "name-divisible", wantCause: causeNameDivisible,
 		},
 		{
 			name: "one iota over the boundary flips it",
 			pkg:  900, named: 900, heaviest: 300.01, namedCount: 4, shards: 3,
-			want: splitCount, reasonHas: "dominated by one runnable",
+			want: splitCount, reasonHas: "dominated by one runnable", wantCause: causeDominated,
 		},
 		{
 			name: "the un-attributed fixed term raises the count-shard floor",
@@ -1044,29 +1045,37 @@ func TestChooseSplitPolicyComparesTheTwoMechanisms(t *testing.T) {
 		{
 			name: "too little per-test data to pack with, however flat it looks",
 			pkg:  900, named: 100, heaviest: 30, namedCount: 5, shards: 3,
-			want: splitCount, reasonHas: "explain only",
+			want: splitCount, reasonHas: "explain only", wantCause: causeLowCoverage,
 		},
 		{
 			name: "a single named runnable is not a test list",
 			pkg:  900, named: 880, heaviest: 880, namedCount: 1, shards: 3,
-			want: splitCount, reasonHas: "fewer than two",
+			want: splitCount, reasonHas: "fewer than two", wantCause: causeTooFewNames,
 		},
 		{
 			name: "more shards make the count-shard cheaper and raise the bar for slicing",
 			// The SAME package that sliced at S=3 no longer does at S=6: a
 			// 6-way count-shard costs 150s, under the 250s dominant name.
 			pkg: 900, named: 850, heaviest: 250, namedCount: 4, shards: 6,
-			want: splitCount, reasonHas: "dominated by one runnable",
+			want: splitCount, reasonHas: "dominated by one runnable", wantCause: causeDominated,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, reason := chooseSplitPolicy(tc.pkg, tc.named, tc.heaviest, tc.namedCount, tc.shards)
+			got, cause, reason := chooseSplitPolicy(tc.pkg, tc.named, tc.heaviest, tc.namedCount, tc.shards)
 			if got != tc.want {
 				t.Errorf("policy = %q, want %q (reason: %s)", got, tc.want, reason)
 			}
 			if !strings.Contains(reason, tc.reasonHas) {
 				t.Errorf("reason %q does not mention %q", reason, tc.reasonHas)
+			}
+			// The cause is what callers branch on, so it must agree with the
+			// prose rather than drift from it.
+			if tc.wantCause != "" && cause != tc.wantCause {
+				t.Errorf("cause = %q, want %q", cause, tc.wantCause)
+			}
+			if (cause == causeNameDivisible) != (got == splitRun) {
+				t.Errorf("cause %q disagrees with policy %q", cause, got)
 			}
 		})
 	}
@@ -1482,4 +1491,168 @@ func planktonLive(n int) []LivePackage {
 		out = append(out, livePkg(fmt.Sprintf("plankton%02d", i), ".", modeWork, true))
 	}
 	return out
+}
+
+func TestOnlyRealDominanceIsReportedAsDominance(t *testing.T) {
+	// Count-sharding is chosen for four different reasons and only one of
+	// them is "a single runnable dominates". Reporting the others under that
+	// heading prints a claim about the package that is simply false: a 30s
+	// runnable in a 900s package dominates nothing, and telling a reviewer
+	// that "a -run split cannot finish faster than it" would send them
+	// looking for a problem that is not there.
+	//
+	// The gate is on the returned CAUSE rather than on the formatted prose,
+	// so rewording a reason string cannot silently change which packages get
+	// filed under dominance.
+	base := func(pkg string, total float64, tests map[string]float64) []string {
+		lines := []string{event("pass", repoPrefix+pkg, "", total)}
+		for _, n := range sortedKeys(tests) {
+			lines = append(lines, event("pass", repoPrefix+pkg, n, tests[n]))
+		}
+		return lines
+	}
+
+	var lines []string
+	// Genuinely dominated: one name is half the package.
+	lines = append(lines, base("dominated", 900, map[string]float64{
+		"TestHuge": 450, "TestRest": 400,
+	})...)
+	// A whale whose named tests explain only a sliver. It is count-sharded,
+	// but NOT because anything dominates.
+	lines = append(lines, base("sliver", 900, map[string]float64{
+		"TestTiny": 30, "TestAlsoTiny": 20,
+	})...)
+	// A whale with a single named runnable: too few names to slice, again
+	// not a dominance decision.
+	lines = append(lines, base("onename", 900, map[string]float64{
+		"TestOnly": 880,
+	})...)
+	for i := 0; i < 10; i++ {
+		lines = append(lines, event("pass", fmt.Sprintf("%splankton%02d", repoPrefix, i), "", 40))
+	}
+
+	sum, err := parseEvents(stream(lines...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := newStore(canonicalFlags(true, 100))
+	rep := mustIngest(t, st, sum, defaultIngestOptions())
+
+	// All three are count-sharded...
+	for _, pkg := range []string{"dominated", "sliver", "onename"} {
+		if got := st.Units[repoPrefix+pkg]; got.Split != splitCount {
+			t.Errorf("%s selected %q (%s), want %q", pkg, got.Split, got.SplitReason, splitCount)
+		}
+	}
+	// ...but only one of them for dominance.
+	joined := strings.Join(rep.Dominated, "\n")
+	if !strings.Contains(joined, "dominated") {
+		t.Errorf("the genuinely dominated package is missing from the dominance report:\n%s", joined)
+	}
+	for _, pkg := range []string{"sliver", "onename"} {
+		if strings.Contains(joined, repoPrefix+pkg) {
+			t.Errorf("%s was reported as dominated, but its policy came from a different cause (%s):\n%s",
+				pkg, st.Units[repoPrefix+pkg].SplitReason, joined)
+		}
+	}
+	if len(rep.Dominated) != 1 {
+		t.Errorf("dominance report lists %d packages, want exactly 1: %v", len(rep.Dominated), rep.Dominated)
+	}
+}
+
+func TestUnflaggingClearsTheSplitReason(t *testing.T) {
+	// The recorded justification must go with the policy it justified. Left
+	// behind, it is persisted next to "policy none x0" and `testbucket
+	// whales` prints a decision that no longer applies — a store that
+	// explains a split it is not doing.
+	warm := func() *Store {
+		st := newStore(canonicalFlags(true, 100))
+		st.Units[repoPrefix+"shrunk"] = &UnitStat{
+			Seconds: 900, Samples: 4, Split: splitCount, SplitInto: 6,
+			SplitReason: "dominated by one runnable (450.0s, above the 150.0s a 6-way count-shard costs at best)",
+			Tests:       map[string]float64{"TestHuge": 450, "TestRest": 400},
+		}
+		for i := 0; i < 10; i++ {
+			st.Units[fmt.Sprintf("%splankton%02d", repoPrefix, i)] = &UnitStat{Seconds: 40, Samples: 4}
+		}
+		return st
+	}
+
+	t.Run("a package that drops below the threshold", func(t *testing.T) {
+		st := warm()
+		sum, err := parseEvents(stream(event("pass", repoPrefix+"shrunk", "", 5)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		opt := defaultIngestOptions()
+		opt.Alpha = 1 // take the fast measurement whole
+		mustIngest(t, st, sum, opt)
+
+		row := st.Units[repoPrefix+"shrunk"]
+		if row.splitPolicy() != splitNone {
+			t.Fatalf("still split %q x%d after shrinking", row.Split, row.SplitInto)
+		}
+		if row.SplitReason != "" {
+			t.Errorf("stale split reason survived the un-flagging: %q", row.SplitReason)
+		}
+	})
+
+	t.Run("a package too small for slicing to pay for itself", func(t *testing.T) {
+		// Above the relative threshold but under the minimum shard size, so
+		// the width collapses below 2 — the other un-flag branch.
+		st := newStore(canonicalFlags(true, 100))
+		st.Units[repoPrefix+"tiny"] = &UnitStat{
+			Seconds: 20, Samples: 4, Split: splitCount, SplitInto: 6,
+			SplitReason: "dominated by one runnable (stale)",
+			Tests:       map[string]float64{"TestA": 10, "TestB": 8},
+		}
+		sum, err := parseEvents(stream(event("pass", repoPrefix+"tiny", "", 20)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustIngest(t, st, sum, defaultIngestOptions())
+
+		row := st.Units[repoPrefix+"tiny"]
+		if row.splitPolicy() != splitNone {
+			t.Fatalf("a 20s package was sliced %q x%d", row.Split, row.SplitInto)
+		}
+		if row.SplitReason != "" {
+			t.Errorf("stale split reason survived: %q", row.SplitReason)
+		}
+	})
+
+	t.Run("the whale report does not print a reason for an unsplit package", func(t *testing.T) {
+		st := newStore(canonicalFlags(true, 100))
+		st.Units[repoPrefix+"clean"] = &UnitStat{Seconds: 900, Samples: 4}
+		var out bytes.Buffer
+		writeWhaleReport(&out, st, 6, 3, true)
+		if strings.Contains(out.String(), "dominated") {
+			t.Errorf("an unsplit package carried a dominance claim:\n%s", out.String())
+		}
+	})
+}
+
+func TestWhaleReportSurvivesANegativeTop(t *testing.T) {
+	// names[:limit] panics on a negative limit. The flag is validated, but
+	// writeWhaleReport is reachable directly, so it clamps too.
+	st := newStore(canonicalFlags(true, 100))
+	st.Units[repoPrefix+"whale"] = &UnitStat{
+		Seconds: 900, Samples: 4, Split: splitCount, SplitInto: 6,
+		SplitReason: "dominated by one runnable",
+		Tests:       map[string]float64{"TestA": 450, "TestB": 400},
+	}
+	for _, top := range []int{-1, -100, 0, 1} {
+		var out bytes.Buffer
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("--top %d panicked: %v", top, r)
+				}
+			}()
+			writeWhaleReport(&out, st, 6, top, true)
+		}()
+		if out.Len() == 0 {
+			t.Errorf("--top %d produced no report", top)
+		}
+	}
 }

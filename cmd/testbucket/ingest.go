@@ -220,26 +220,39 @@ func countShardFloor(pkgSeconds, namedSeconds float64, shards int) float64 {
 //
 // Named coverage is still required: without per-test weights for most of the
 // package the slicer would be packing blind. It is just no longer sufficient.
-func chooseSplitPolicy(pkgSeconds, namedSeconds, heaviestName float64, namedCount, shards int) (policy, reason string) {
+func chooseSplitPolicy(pkgSeconds, namedSeconds, heaviestSeconds float64, namedCount, shards int) (policy, cause, reason string) {
 	floor := countShardFloor(pkgSeconds, namedSeconds, shards)
 	switch {
 	case pkgSeconds <= 0 || shards < 2:
-		return splitCount, "no usable per-test picture"
+		return splitCount, causeNoPicture, "no usable per-test picture"
 	case namedCount < 2:
-		return splitCount, "fewer than two named runnables to slice"
+		return splitCount, causeTooFewNames, "fewer than two named runnables to slice"
 	case namedSeconds/pkgSeconds < runUpgradeFraction:
-		return splitCount, fmt.Sprintf("named runnables explain only %.0f%% of the package (need %.0f%%)",
+		return splitCount, causeLowCoverage, fmt.Sprintf("named runnables explain only %.0f%% of the package (need %.0f%%)",
 			namedSeconds/pkgSeconds*100, runUpgradeFraction*100)
-	case heaviestName > floor:
+	case heaviestSeconds > floor:
 		// The decisive comparison: the -run floor against the best case a
 		// count-shard of the same width could manage.
-		return splitCount, fmt.Sprintf("dominated by one runnable (%.1fs, above the %.1fs a %d-way count-shard costs at best)",
-			heaviestName, floor, shards)
+		return splitCount, causeDominated, fmt.Sprintf("dominated by one runnable (%.1fs, above the %.1fs a %d-way count-shard costs at best)",
+			heaviestSeconds, floor, shards)
 	default:
-		return splitRun, fmt.Sprintf("name-divisible: heaviest runnable %.1fs fits under the %.1fs best case for a %d-way count-shard",
-			heaviestName, floor, shards)
+		return splitRun, causeNameDivisible, fmt.Sprintf("name-divisible: heaviest runnable %.1fs fits under the %.1fs best case for a %d-way count-shard",
+			heaviestSeconds, floor, shards)
 	}
 }
+
+// Why a package got the policy it did. Returned alongside the prose reason so
+// callers can branch on the DECISION rather than pattern-match the wording:
+// count-sharding is chosen for four quite different reasons, and only one of
+// them is "a single runnable dominates". Reporting the others under that
+// heading would state something false about the package.
+const (
+	causeDominated     = "dominated"
+	causeLowCoverage   = "low-named-coverage"
+	causeTooFewNames   = "too-few-names"
+	causeNoPicture     = "no-per-test-picture"
+	causeNameDivisible = "name-divisible"
+)
 
 // runUpgradeFraction is how much of a whale's wall time must be attributable
 // to named top-level runnables before `ingest` promotes it from count-sharding to the
@@ -385,6 +398,10 @@ func applyIngest(st *Store, sum *eventSummary, opt ingestOptions) (*ingestReport
 			}
 			row.Split = ""
 			row.SplitInto = 0
+			// The recorded justification goes with the policy it justified.
+			// Left behind, it would be persisted next to "policy none x0" and
+			// `testbucket whales` would print a decision that no longer holds.
+			row.SplitReason = ""
 			// Per-test rows exist only to serve a split; drop them with it
 			// so the store does not accrete a per-test index of the tree.
 			row.Tests = nil
@@ -416,6 +433,7 @@ func applyIngest(st *Store, sum *eventSummary, opt ingestOptions) (*ingestReport
 			}
 			row.Split = ""
 			row.SplitInto = 0
+			row.SplitReason = ""
 			row.Tests = nil
 			continue
 		}
@@ -480,8 +498,14 @@ func applyIngest(st *Store, sum *eventSummary, opt ingestOptions) (*ingestReport
 			}
 		}
 		named := sumSeconds(perTest)
-		row.Split, row.SplitReason = chooseSplitPolicy(row.Seconds, named, heaviest, len(row.Tests), shards)
-		if row.Split == splitCount && heaviestName != "" {
+		var cause string
+		row.Split, cause, row.SplitReason = chooseSplitPolicy(row.Seconds, named, heaviest, len(row.Tests), shards)
+		// Only the dominance branch may be reported as dominance. Count is
+		// also chosen when there are too few names to slice, or when named
+		// tests explain too little of the package — and a 30s runnable in a
+		// 900s package does not dominate anything, so filing it under that
+		// heading would print a claim that is simply untrue.
+		if cause == causeDominated && heaviestName != "" {
 			rep.Dominated = append(rep.Dominated, fmt.Sprintf(
 				"%s: %s alone is %.0f%% of the package (%.1fs of %.1fs) — a -run split cannot finish faster than it",
 				pkg, heaviestName, heaviest/row.Seconds*100, heaviest, row.Seconds))
