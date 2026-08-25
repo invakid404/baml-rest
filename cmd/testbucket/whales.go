@@ -97,14 +97,15 @@ func writeWhaleReport(w io.Writer, st *Store, k, top int, all bool) {
 		tw.Flush()
 
 		// The comparison the policy actually turns on. Count-sharding divides
-		// iterations, so it costs seconds/S whatever the internal shape;
+		// iterations, so its cost is independent of the internal shape;
 		// name-slicing divides the test list, so it can never finish faster
 		// than its single heaviest name.
 		fmt.Fprintf(w, "  mechanism comparison at S=%d:\n", shards)
-		fmt.Fprintf(w, "    count-shard  %7.1fs per shard   (seconds/S — independent of the internal distribution)\n",
-			row.Seconds/float64(shards))
+		fmt.Fprintf(w, "    count-shard  >= %7.1fs per shard  (a LOWER BOUND: each shard is a separate\n",
+			countShardFloor(row.Seconds, named, shards))
+		fmt.Fprintf(w, "                                       binary, so per-binary fixed work repeats S times)\n")
 		if heaviestName != "" {
-			fmt.Fprintf(w, "    -run slice   %7.1fs floor       (the heaviest single runnable; no S beats it)\n", heaviest)
+			fmt.Fprintf(w, "    -run slice      %7.1fs floor     (the heaviest single runnable; no S beats it)\n", heaviest)
 		}
 
 		if len(names) > 0 {

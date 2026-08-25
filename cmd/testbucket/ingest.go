@@ -165,28 +165,63 @@ type ingestOptions struct {
 	LiveAuthoritative bool
 }
 
+// countShardFloor is a LOWER BOUND on what one count-shard of a package
+// costs, not an estimate of it.
+//
+// Each shard is a SEPARATE `go test` binary, so every per-binary fixed cost —
+// package init, TestMain, fixture construction — is paid S times over rather
+// than divided. Dividing the package's wall time by S therefore describes the
+// best case a count-shard could possibly achieve.
+//
+// The part of that fixed cost this can see is the wall time NOT attributable
+// to any named runnable. The part it cannot see is fixed work that happens
+// INSIDE a named test: internal/debaml's depth-1000 JSON nesting witness runs
+// once per binary behind a sync.Once, but its cost is billed to the test that
+// happens to trigger it, so it looks per-iteration from here. Sharding that
+// package six ways really does repeat the witness six times, and no reduction
+// over `go test -json` output alone can tell you so.
+//
+// The bound is used deliberately rather than apologetically: it is compared
+// against the heaviest name below, and understating the count-shard cost
+// makes the "name-slicing wins" branch HARDER to reach. The policy therefore
+// errs toward count-sharding, which is the direction the divisibility
+// measurement concluded is right.
+func countShardFloor(pkgSeconds, namedSeconds float64, shards int) float64 {
+	if shards < 1 {
+		return pkgSeconds
+	}
+	fixed := pkgSeconds - namedSeconds
+	if fixed < 0 {
+		// Named time can exceed the package's wall time when tests run in
+		// parallel inside the binary; there is no observable fixed term then.
+		fixed = 0
+	}
+	return fixed + (pkgSeconds-fixed)/float64(shards)
+}
+
 // chooseSplitPolicy decides how a whale is harpooned, and it is the one place
 // the two mechanisms are compared on equal terms.
 //
-// Count-sharding divides ITERATIONS: S shards of -count=base/S each cost
-// roughly seconds/S, whatever the package's internal shape. Name-slicing
-// divides the TEST LIST, so its makespan can never fall below the single
-// heaviest name — pack the other 200 tests however you like, the slice
-// holding the dominant one still has to run it.
+// Count-sharding divides ITERATIONS: S shards of -count=base/S each, costing
+// at least seconds/S (see countShardFloor for why "at least"), whatever the
+// package's internal shape. Name-slicing divides the TEST LIST, so its
+// makespan can never fall below the single heaviest name — pack the other 200
+// tests however you like, the slice holding the dominant one still has to run
+// it.
 //
 // So a run split is only worth choosing when that dominant name would not
 // itself be slower than a count-shard. Measuring this repo's two whales made
 // the point concrete (Phase B, #656): llmhttp's TestExactStreamNoGoroutineLeak
-// is ~50% of its package and debaml's TestConstraintStateCollectorIsTestOnly
-// ~44%, both repeating per iteration. Both packages have >90% of their wall
-// time attributable to named tests, so the named-coverage heuristic alone
-// picked `run` for both — and `run` floors them at 6.8 and 6.0 minutes while
-// count-sharding takes them to 2-3. The heuristic was not merely suboptimal
-// there, it was inverted.
+// is ~50% of its package and debaml's dominant runnable ~28-44% depending on
+// execution topology, both repeating per iteration. Both packages have >90% of
+// their wall time attributable to named tests, so the named-coverage heuristic
+// alone picked `run` for both — and `run` floors them where count-sharding
+// does not. The heuristic was not merely suboptimal there, it was inverted.
 //
 // Named coverage is still required: without per-test weights for most of the
 // package the slicer would be packing blind. It is just no longer sufficient.
 func chooseSplitPolicy(pkgSeconds, namedSeconds, heaviestName float64, namedCount, shards int) (policy, reason string) {
+	floor := countShardFloor(pkgSeconds, namedSeconds, shards)
 	switch {
 	case pkgSeconds <= 0 || shards < 2:
 		return splitCount, "no usable per-test picture"
@@ -195,14 +230,14 @@ func chooseSplitPolicy(pkgSeconds, namedSeconds, heaviestName float64, namedCoun
 	case namedSeconds/pkgSeconds < runUpgradeFraction:
 		return splitCount, fmt.Sprintf("named runnables explain only %.0f%% of the package (need %.0f%%)",
 			namedSeconds/pkgSeconds*100, runUpgradeFraction*100)
-	case heaviestName > pkgSeconds/float64(shards):
-		// The decisive comparison: the -run floor against what a count-shard
-		// of the same width would cost.
-		return splitCount, fmt.Sprintf("dominated by one runnable (%.1fs > the %.1fs a %d-way count-shard costs)",
-			heaviestName, pkgSeconds/float64(shards), shards)
+	case heaviestName > floor:
+		// The decisive comparison: the -run floor against the best case a
+		// count-shard of the same width could manage.
+		return splitCount, fmt.Sprintf("dominated by one runnable (%.1fs, above the %.1fs a %d-way count-shard costs at best)",
+			heaviestName, floor, shards)
 	default:
-		return splitRun, fmt.Sprintf("name-divisible: heaviest runnable %.1fs fits under the %.1fs count-shard cost",
-			heaviestName, pkgSeconds/float64(shards))
+		return splitRun, fmt.Sprintf("name-divisible: heaviest runnable %.1fs fits under the %.1fs best case for a %d-way count-shard",
+			heaviestName, floor, shards)
 	}
 }
 

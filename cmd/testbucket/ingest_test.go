@@ -1002,16 +1002,28 @@ func TestChooseSplitPolicyComparesTheTwoMechanisms(t *testing.T) {
 			want: splitRun, reasonHas: "name-divisible",
 		},
 		{
-			name: "exactly at the boundary: the heaviest name equals the count-shard cost",
-			// Ties go to name-slicing: it is no worse here and it avoids
-			// repeating the package's fixed per-binary setup S times.
-			pkg: 900, named: 850, heaviest: 300, namedCount: 4, shards: 3,
+			name: "exactly at the boundary: the heaviest name equals the count-shard floor",
+			// Fully attributable, so there is no observable fixed term and
+			// the floor is a clean 900/3 = 300s. Ties go to name-slicing: it
+			// is no worse here and it avoids repeating the package's
+			// per-binary setup S times.
+			pkg: 900, named: 900, heaviest: 300, namedCount: 4, shards: 3,
 			want: splitRun, reasonHas: "name-divisible",
 		},
 		{
 			name: "one iota over the boundary flips it",
-			pkg:  900, named: 850, heaviest: 300.01, namedCount: 4, shards: 3,
+			pkg:  900, named: 900, heaviest: 300.01, namedCount: 4, shards: 3,
 			want: splitCount, reasonHas: "dominated by one runnable",
+		},
+		{
+			name: "the un-attributed fixed term raises the count-shard floor",
+			// Same package and heaviest name as the tie above, but 50s of its
+			// wall time belongs to no named test — per-binary setup that a
+			// count-shard repeats S times rather than divides. The floor
+			// rises from 300s to 50 + 850/3 = 333.3s, so name-slicing now
+			// wins outright where it previously only tied.
+			pkg: 900, named: 850, heaviest: 300, namedCount: 4, shards: 3,
+			want: splitRun, reasonHas: "333.3s",
 		},
 		{
 			name: "too little per-test data to pack with, however flat it looks",
@@ -1044,9 +1056,16 @@ func TestChooseSplitPolicyComparesTheTwoMechanisms(t *testing.T) {
 	}
 }
 
-func TestBothRealWhalesSelectCountSharding(t *testing.T) {
+func TestWhenTheRealWhalesAreSplitTheyAreCountSharded(t *testing.T) {
 	// End to end through applyIngest with the two whales' MEASURED shapes,
 	// because the policy that matters is the one the store actually records.
+	//
+	// This fixture is sized so both packages exceed total/K and therefore GET
+	// a policy; it is about WHICH mechanism is chosen, not about whether they
+	// cross the threshold in production. TestWhaleThresholdAtTheWorkflowScale
+	// covers that separately, and on the workflow-scale total neither of them
+	// does — so do not read this test as a statement about what the master
+	// record job will emit.
 	//
 	// The old named-coverage heuristic chose `run` for both of these — they
 	// are 96% and 92% named — and `run` is the mechanism the Phase B
@@ -1191,4 +1210,98 @@ func TestWhaleReportReDerivesTheDominanceShares(t *testing.T) {
 	if !strings.Contains(empty.String(), "nothing has crossed the split threshold") {
 		t.Errorf("an empty store produced no explanation:\n%s", empty.String())
 	}
+}
+
+func TestWhaleThresholdAtTheWorkflowScale(t *testing.T) {
+	// The threshold behaviour that decides whether ANY of the split policy
+	// runs, exercised at the total the real sweep actually produces (~5446s
+	// projected) rather than at a total sized to make the candidates whales.
+	//
+	// This is the case an earlier version of this suite missed, and missing
+	// it hid something that matters: on these numbers NEITHER whale crosses
+	// total/K at K=6, so the production `ingest` — which passes no
+	// --whale-seconds — leaves both WHOLE. A package only gets a split policy
+	// once it alone exceeds what one bucket is supposed to hold, because
+	// below that line splitting cannot lower the makespan and only multiplies
+	// per-binary cost.
+	const workflowTotal = 5446.3
+
+	// The measured whales, plus a deliberately oversized package, plus enough
+	// plankton to reach the workflow-scale total.
+	lines := []string{
+		event("pass", repoPrefix+"bamlutils/llmhttp", "", 814.0),
+		event("pass", repoPrefix+"bamlutils/llmhttp", "TestExactStreamNoGoroutineLeak", 402.4),
+		event("pass", repoPrefix+"bamlutils/llmhttp", "TestTail", 411.6),
+		event("pass", repoPrefix+"internal/debaml", "", 660.2),
+		event("pass", repoPrefix+"internal/debaml", "TestPhase3cRegression_JSONDeepNestingUnchanged", 187.2),
+		event("pass", repoPrefix+"internal/debaml", "TestTail", 473.0),
+		// Above total/6 = 907.7s, so this one IS a whale.
+		event("pass", repoPrefix+"internal/oversized", "", 1200.0),
+		event("pass", repoPrefix+"internal/oversized", "TestHuge", 700.0),
+		event("pass", repoPrefix+"internal/oversized", "TestRest", 480.0),
+	}
+	remaining := workflowTotal - 814.0 - 660.2 - 1200.0
+	const planktonCount = 40
+	for i := 0; i < planktonCount; i++ {
+		lines = append(lines, event("pass", fmt.Sprintf("%splankton%02d", repoPrefix, i), "", remaining/planktonCount))
+	}
+
+	sum, err := parseEvents(stream(lines...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := newStore(canonicalFlags(true, 100))
+	// Exactly what .github/workflows/unit-tests.yml runs: no --whale-seconds,
+	// no --whale-k override. If this test needs an override to pass, the
+	// production job would not reproduce it.
+	rep := mustIngest(t, st, sum, defaultIngestOptions())
+
+	if math.Abs(rep.TotalSeconds-workflowTotal) > 1 {
+		t.Fatalf("fixture total %.1fs, want ~%.1fs", rep.TotalSeconds, workflowTotal)
+	}
+	wantThreshold := workflowTotal / 6
+	if math.Abs(rep.Threshold-wantThreshold) > 1 {
+		t.Fatalf("threshold %.1fs, want total/K = %.1fs", rep.Threshold, wantThreshold)
+	}
+
+	// (a) A whale BELOW total/K is not flagged: it fits in a bucket, so
+	//     splitting it cannot lower the makespan.
+	for _, pkg := range []string{"bamlutils/llmhttp", "internal/debaml"} {
+		row := st.Units[repoPrefix+pkg]
+		if row == nil {
+			t.Fatalf("%s missing from the store", pkg)
+		}
+		if row.Seconds >= rep.Threshold {
+			t.Fatalf("fixture error: %s (%.1fs) is not below the %.1fs threshold", pkg, row.Seconds, rep.Threshold)
+		}
+		if row.splitPolicy() != splitNone {
+			t.Errorf("%s (%.1fs, below the %.1fs threshold) was split %q x%d — the production job would not do this",
+				pkg, row.Seconds, rep.Threshold, row.Split, row.SplitInto)
+		}
+		if row.Tests != nil {
+			t.Errorf("%s kept per-test rows without a split policy", pkg)
+		}
+	}
+
+	// (b) A package ABOVE total/K is flagged, count-sharded because one name
+	//     dominates, and (c) split exactly K ways.
+	big := st.Units[repoPrefix+"internal/oversized"]
+	if big == nil {
+		t.Fatal("the oversized package is missing from the store")
+	}
+	if big.Seconds <= rep.Threshold {
+		t.Fatalf("fixture error: oversized (%.1fs) does not exceed the %.1fs threshold", big.Seconds, rep.Threshold)
+	}
+	if big.Split != splitCount {
+		t.Errorf("oversized selected %q (%s), want %q", big.Split, big.SplitReason, splitCount)
+	}
+	if big.SplitInto != 6 {
+		t.Errorf("oversized split into %d, want the K=6 width", big.SplitInto)
+	}
+	if !strings.Contains(big.SplitReason, "dominated by one runnable") {
+		t.Errorf("oversized reason %q does not record the dominance", big.SplitReason)
+	}
+	t.Logf("threshold %.1fs: llmhttp %.1fs WHOLE, debaml %.1fs WHOLE, oversized %.1fs -> %s x%d",
+		rep.Threshold, st.Units[repoPrefix+"bamlutils/llmhttp"].Seconds,
+		st.Units[repoPrefix+"internal/debaml"].Seconds, big.Seconds, big.Split, big.SplitInto)
 }
