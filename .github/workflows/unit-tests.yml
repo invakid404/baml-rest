@@ -12,6 +12,22 @@ concurrency:
 env:
   GO_VERSION: "1.26.5"
 
+  # THE SINGLE K KNOB (#656, brief decision 1). Adding or removing a bucket is
+  # changing this one number.
+  #
+  # It has to drive BOTH sides of the loop, and that is not a stylistic point.
+  # The whale-split policy is derived and STORED by `ingest`, which compares
+  # each package against total/K; `plan` only expands what the store already
+  # says. So a K that reached `plan` alone would change how many buckets the
+  # matrix has without changing which packages get split for them — the same
+  # store would be re-planned into more, smaller lanes while a whale that now
+  # exceeds the new total/K stayed whole and set the floor.
+  #
+  # Driving both from here makes the transition a single edit with a defined
+  # settling time: bump K, and the next master `record-timings` run re-records
+  # the split policy at the new K, after which `plan --k` realizes it.
+  TESTBUCKET_K: "6"
+
 jobs:
   unit-tests:
     runs-on: ubuntu-latest
@@ -105,14 +121,40 @@ jobs:
           # flags, so coverage is byte-for-byte identical; only the lane
           # changed. This is the first slice of the balanced-matrix shard
           # tracked in #656.
+          # Phase B (#656): each invocation now runs through
+          # scripts/testbucket-capture.sh, which adds -json, tees the event
+          # stream to $RUNNER_TEMP for the `record` job to ingest, and replays
+          # the stream's output events so this log still reads exactly like a
+          # plain `go test` log. Flags, module set and resolution modes are
+          # unchanged, so coverage is identical to before; only the timing
+          # capture is new. The events live under $RUNNER_TEMP, never in the
+          # repo, because the fresh-tree gates below fail on a dirty tree.
+          repo_root=$PWD
+          events_dir="$RUNNER_TEMP/testbucket-events"
+          mkdir -p "$events_dir"
           find . -name go.mod -not -path '*/adapters/adapter_*' -not -path '*/dynclient/baml-patched/*' -not -path '*/internal/nativebody/nanollmprepare/*' -not -path '*/nativeserve/*' -not -path './bamlutils/*' -exec dirname {} \; | while read -r dir; do
             echo "=== Testing $dir ==="
+            slug=$(printf '%s' "$dir" | sed 's|^\./||; s|^\.$|root|; s|/|-|g')
+            events="$events_dir/unit-tests-$slug.ndjson"
             if [ "$dir" = "./adapters/common" ]; then
-              (cd "$dir" && GOWORK=off go test -race -count=100 -timeout 20m ./...)
+              (cd "$dir" && GOWORK=off "$repo_root/scripts/testbucket-capture.sh" "$events" -race -count=100 -timeout 20m ./...)
             else
-              (cd "$dir" && go test -race -count=100 -timeout 20m ./...)
+              (cd "$dir" && "$repo_root/scripts/testbucket-capture.sh" "$events" -race -count=100 -timeout 20m ./...)
             fi
           done
+
+      - name: Upload timing events
+        # if: always() so a RED run still contributes what it measured. ingest
+        # drops a failed package's weight (its wall time measures the failure,
+        # not the work) but keeps every package that passed, so one flaky lane
+        # cannot stall the store.
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: testbucket-events-unit-tests
+          path: ${{ runner.temp }}/testbucket-events/
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Subprocess build + test sanity
         # The default loop above runs everything under the no-tag build
@@ -301,8 +343,239 @@ jobs:
         run: |
           # Workspace mode (go.work active), matching exactly how the
           # unit-tests serial loop invoked bamlutils before the split.
+          #
+          # Phase B (#656): wrapped in scripts/testbucket-capture.sh for timing
+          # capture. Same flags, same mode, same packages — the capture only
+          # adds -json and tees the stream, then replays it so this log is
+          # unchanged. This lane matters most to the store: bamlutils/llmhttp
+          # is the whale the whole bucketing exercise exists to harpoon.
+          events_dir="$RUNNER_TEMP/testbucket-events"
+          mkdir -p "$events_dir"
+          repo_root=$PWD
           cd bamlutils
-          go test -race -count=100 -timeout 20m ./...
+          "$repo_root/scripts/testbucket-capture.sh" \
+            "$events_dir/bamlutils-race.ndjson" \
+            -race -count=100 -timeout 20m ./...
+
+      - name: Upload timing events
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: testbucket-events-bamlutils
+          path: ${{ runner.temp }}/testbucket-events/
+          if-no-files-found: warn
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Phase B (#656): the WRITE side of the self-optimizing timing store.
+  #
+  # MASTER ONLY, per owner decision 3. The store is a rolling CI cache, not a
+  # committed file and not a bot commit: a PR restores the last-known-good
+  # store and never writes one, so no PR can poison the split every other PR
+  # is planned from, and a fork PR needs no write permission at all.
+  #
+  # Rot mitigations, all three from decision 3, live here or in the tool:
+  #   * cache-key + restore-keys fallback — the key is per-commit so every
+  #     master run writes a fresh immutable entry, and the prefix restore-key
+  #     hands the newest previous entry to whoever asks. A total miss is not
+  #     an error: `plan` cold-starts on the mean weight.
+  #   * cold-start on a miss — proved on every run by the `timings-restore`
+  #     job below, which also runs on PRs.
+  #   * loaded-vs-missing summary — printed at the end of this job, so a store
+  #     that quietly stopped growing is visible in the log rather than three
+  #     weeks later as a mysteriously bad split.
+  record-timings:
+    needs: [unit-tests, bamlutils-race]
+    # Least privilege: this job reads the tree, reads/writes the Actions cache
+    # and handles artifacts. None of that needs write scope on repository
+    # contents — and decision 3 deliberately keeps the store out of the repo
+    # precisely so no CI job ever needs one.
+    permissions:
+      contents: read
+    # !cancelled() rather than always(): record what a red run measured (the
+    # passing packages still have honest timings, and ingest drops the failed
+    # ones), but do not try to record a cancelled one, whose artifacts are
+    # arbitrary partial captures.
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.0
+        with:
+          # Reads events and writes a cache entry; it never pushes.
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Download timing events
+        uses: actions/download-artifact@v8.0.1
+        with:
+          pattern: testbucket-events-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/testbucket-events
+
+      - name: Restore the previous timing store
+        uses: actions/cache/restore@v4.2.4
+        with:
+          path: ${{ runner.temp }}/testbucket-store
+          # Per-commit key. GitHub cache entries are IMMUTABLE, so this is a
+          # deliberate choice rather than an incidental one: each NEW master
+          # commit writes exactly one entry, and a re-run of the same commit
+          # restores that entry and cannot replace it (the save below logs a
+          # duplicate-key warning and moves on). That is the property the
+          # design wants — the split a PR sees is deterministic for a given
+          # master SHA rather than drifting with however many times that SHA
+          # was re-run. If a re-run should instead contribute a fresh EWMA
+          # sample, add ${{ github.run_id }} to the key; the cost is losing
+          # that determinism.
+          #
+          # The prefix restore-key hands this run the newest PREVIOUS entry,
+          # which is what rolls the weights forward through EWMA instead of
+          # restarting from scratch.
+          key: testbucket-timings-v1-${{ github.sha }}
+          restore-keys: |
+            testbucket-timings-v1-
+
+      - name: Ingest timings into the store
+        run: |
+          set -euo pipefail
+          store_dir="$RUNNER_TEMP/testbucket-store"
+          events_dir="$RUNNER_TEMP/testbucket-events"
+          mkdir -p "$store_dir"
+
+          shopt -s nullglob
+          events=("$events_dir"/*.ndjson)
+          if [ ${#events[@]} -eq 0 ]; then
+            echo "no timing events were uploaded; nothing to record" >&2
+            exit 1
+          fi
+          echo "ingesting ${#events[@]} event file(s)"
+
+          # --race --count=100 is the flag set BOTH instrumented lanes run
+          # under. It is stored with the weights: if the sweep depth ever
+          # changes, `plan` sees the mismatch and cold-starts loudly instead
+          # of balancing on numbers that no longer mean anything.
+          # --whale-k is the SAME K the plan below uses; see TESTBUCKET_K.
+          go run ./cmd/testbucket ingest \
+            --store "$store_dir/test-timings.json" \
+            --race --count=100 \
+            --whale-k "$TESTBUCKET_K" \
+            "${events[@]}"
+
+      - name: Show the plan the next PR will get
+        run: |
+          set -euo pipefail
+          # Not a gate, a window: this prints the loaded-vs-missing summary and
+          # the split the freshly recorded store produces, so a store that
+          # stopped growing — or a whale that just crossed the split threshold
+          # — is visible on the master run that caused it.
+          #
+          # Same K as the ingest above. If these two ever disagree the store's
+          # split policy is derived for a different bucket count than the one
+          # the matrix fans out to, which is the failure the single knob
+          # exists to prevent.
+          echo "planning at the recorded K=$TESTBUCKET_K"
+          go run ./cmd/testbucket plan \
+            --k "$TESTBUCKET_K" \
+            --store "$RUNNER_TEMP/testbucket-store/test-timings.json"
+
+      - name: Save the timing store
+        # Writes on a new master commit; on a same-SHA re-run the entry
+        # already exists and the action warns instead of overwriting. See the
+        # restore step for why per-commit immutability is wanted here.
+        uses: actions/cache/save@v4.2.4
+        with:
+          path: ${{ runner.temp }}/testbucket-store
+          key: testbucket-timings-v1-${{ github.sha }}
+
+      - name: Upload the timing store
+        # The cache is the mechanism; the artifact is the receipt. It makes
+        # the store downloadable for inspection without re-running anything,
+        # which is how the Phase C measurements get their baseline.
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: testbucket-timing-store
+          path: ${{ runner.temp }}/testbucket-store/test-timings.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Phase B (#656): the READ side, and the standing proof of decision 3's two
+  # rot mitigations. Runs on PRs as well as master, and is deliberately cheap.
+  #
+  # It answers the two questions that decide whether the bucketing mechanism is
+  # usable at all, on every run rather than once at review time:
+  #   1. does a PR restore the store master recorded, and
+  #   2. does a TOTAL cache miss still produce a valid, complete matrix?
+  #
+  # Both must hold. If (1) breaks the split silently degrades to cold-start
+  # quality; if (2) breaks, a cache expiry takes the whole matrix down.
+  timings-restore:
+    runs-on: ubuntu-latest
+    # Least privilege: restores a cache and runs `plan`. Read-only.
+    permissions:
+      contents: read
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Capture-script regression tests
+        # The capture wraps every `go test` invocation in the two heavy lanes,
+        # so a bug in it is a bug in the unit-test job itself. The sharpest
+        # one it guards is fail-open: a pipeline's status is its LAST
+        # command's, so without an explicit PIPESTATUS read a RED suite would
+        # be reported through the renderer's happy exit and the job would go
+        # green. These tests pin that first.
+        run: bash scripts/testbucket-capture_test.sh
+
+      - name: Restore the last-known-good timing store
+        id: restore
+        uses: actions/cache/restore@v4.2.4
+        with:
+          path: ${{ runner.temp }}/testbucket-store
+          key: testbucket-timings-v1-${{ github.sha }}
+          restore-keys: |
+            testbucket-timings-v1-
+
+      - name: Plan from the restored store
+        run: |
+          set -euo pipefail
+          store="$RUNNER_TEMP/testbucket-store/test-timings.json"
+          if [ -f "$store" ]; then
+            echo "restored a store from cache key '${{ steps.restore.outputs.cache-matched-key }}'"
+          else
+            echo "no store in the cache yet — this run exercises the cold-start path"
+          fi
+          # Either way this must exit 0 with a complete matrix. The coverage
+          # gate inside `plan` is what makes that meaningful: it fails loudly
+          # if any live package is left unscheduled, so a green line here is
+          # a real statement about coverage and not just about exit codes.
+          go run ./cmd/testbucket plan --k "$TESTBUCKET_K" --store "$store"
+
+      - name: Cold start from a guaranteed miss
+        run: |
+          set -euo pipefail
+          # The mitigation that has to work when the cache expires. A store
+          # that is not there must produce a valid, coverage-complete matrix
+          # on mean weights, not a failed job.
+          go run ./cmd/testbucket plan \
+            --k "$TESTBUCKET_K" \
+            --store "$RUNNER_TEMP/definitely-not-a-store.json"
 
   # Per-module GOWORK=off sanity matrix for the modules we publish
   # release tags for. The job above runs everything under the

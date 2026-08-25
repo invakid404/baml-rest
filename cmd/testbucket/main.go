@@ -60,6 +60,9 @@ const usage = `testbucket — time-balanced unit-test bucketing
 usage:
   testbucket plan   [flags]   compute K buckets and emit a GH-Actions matrix
   testbucket ingest [flags]   fold go test -json timings back into the store
+  testbucket whales [flags]   show the per-runnable distribution behind each
+                              split decision, so the divisibility question can
+                              be re-derived from any store
 
 run "testbucket <subcommand> -h" for the flags of each.
 `
@@ -75,6 +78,8 @@ func main() {
 		err = runPlan(os.Args[2:])
 	case "ingest":
 		err = runIngest(os.Args[2:])
+	case "whales":
+		err = runWhales(os.Args[2:])
 	case "-h", "--help", "help":
 		fmt.Fprint(os.Stderr, usage)
 		return

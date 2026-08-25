@@ -71,6 +71,11 @@ type UnitStat struct {
 	// test name, needs Tests). Set automatically by `ingest`.
 	Split     string `json:"split,omitempty"`
 	SplitInto int    `json:"split_into,omitempty"`
+	// SplitReason records WHY this policy was chosen. It is provenance, not
+	// input — nothing reads it back — but a store that says "count-sharded
+	// because TestX alone is 50% of the package" answers the question a
+	// reviewer of the emitted matrix will actually have.
+	SplitReason string `json:"split_reason,omitempty"`
 	// Tests holds per-test weights, recorded only for packages `ingest` has
 	// flagged as split candidates. Keeping per-test rows for the whole tree
 	// would bloat the store and churn on every test rename for no benefit —
