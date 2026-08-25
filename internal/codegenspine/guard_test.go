@@ -206,7 +206,7 @@ func readPinVersion(gomodPath, module string) (string, error) {
 func computeLiveBaseline(t *testing.T, root string) guardBaseline {
 	t.Helper()
 	b := guardBaseline{
-		Note: "Frozen at M0. Pin/tar-independence baseline for the codegen-spine slice: the packaged native-worker tar, the five first-party pseudo-version pins, and the byte content of the three collision-path trees. Regenerate with: go test ./internal/codegenspine/ -run TestSourceGuard -update-codegenspine-guard",
+		Note: "Pin/tar-independence baseline for the codegen-spine slice: the packaged native-worker tar, the five first-party pseudo-version pins, and the byte content of the three collision-path trees. A codegen-spine (M/P) slice must leave every value here untouched. It is NOT a freeze on master: a sanctioned change to a guarded path — the /parse union burn-down (#689), a post-squash first-party re-pin — legitimately moves these, and MUST re-run the update flag in the same change, or this guard stays red for everyone. First frozen at M0; re-frozen after #689 + the post-squash re-pin to 062871154d95. Regenerate with: go test ./internal/codegenspine/ -run TestSourceGuard -update-codegenspine-guard",
 	}
 
 	tarPath := filepath.Join(root, filepath.FromSlash(nativeWorkerTarRelPath))
