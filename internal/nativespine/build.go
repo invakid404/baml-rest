@@ -108,53 +108,124 @@ var (
 	roundRobinProviders = map[string]bool{"baml-roundrobin": true, "baml-round-robin": true, "round-robin": true}
 )
 
-// BuildProjectDescriptor classifies the introspect facts into a v1 Project.
-// funcs is cmd/introspect's cfg.staticPromptDescriptors (functions that got a V3
-// prompt descriptor); preDeclines is cfg.staticPromptDeclines (functions that
-// could not — e.g. media or map/tuple/union I/O, dynamic content, or macro
-// failures); preDeclineFeatures is cfg.staticPromptDeclineFeatures, the STRUCTURAL
-// feature nativeschema stamped for each pre-decline (keyed like preDeclines).
-// Method order is deterministic (sorted by name), independent of file walk order.
-func BuildProjectDescriptor(funcs map[string]promptdescriptor.Function, preDeclines map[string]string, preDeclineFeatures map[string]nativeschema.PreDeclineFeature) projectdescriptor.Project {
+// SourceFacts is the whole-project input to [BuildProjectDescriptor], assembled
+// from the SAME parsed .baml walk by both the introspect pass and the fixture:
+//
+//   - Funcs / PreDeclines / PreDeclineFeatures are nativeschema's per-function
+//     prompt-descriptor outputs (a V3 descriptor, a decline reason, and the
+//     structural pre-decline feature) — the M1 inputs, unchanged.
+//   - Clients / RetryPolicies / Strategies are nativeschema.BuildClientGraph's
+//     ordered whole-project client graph.
+//   - Templates is nativeschema.BuildProjectTemplates' ordered macro set.
+//
+// It carries no serving state and no Go-map order escapes the builder.
+type SourceFacts struct {
+	Funcs              map[string]promptdescriptor.Function
+	PreDeclines        map[string]string
+	PreDeclineFeatures map[string]nativeschema.PreDeclineFeature
+	Clients            []projectdescriptor.Client
+	RetryPolicies      []projectdescriptor.RetryPolicy
+	Strategies         []projectdescriptor.Strategy
+	Templates          []promptdescriptor.TemplateString
+}
+
+// BuildProjectDescriptor classifies the whole-project source facts into a Project
+// (descriptor Version 2). Every retained method is admitted as one native class
+// or recorded as a stable structural decline; the project's client graph,
+// templates, and a per-method capability manifest are carried alongside. Method,
+// diagnostic, and capability order is deterministic (sorted by name), independent
+// of file walk order; the client-graph slices arrive already name-ordered.
+func BuildProjectDescriptor(facts SourceFacts) projectdescriptor.Project {
 	p := projectdescriptor.Project{
 		Version:                 projectdescriptor.Version,
 		PromptDescriptorVersion: promptdescriptor.Version,
 		SchemaVersion:           schemadescriptor.Version,
+		Clients:                 facts.Clients,
+		RetryPolicies:           facts.RetryPolicies,
+		Strategies:              facts.Strategies,
+		Templates:               projectTemplates(facts.Templates),
 	}
 
-	names := make([]string, 0, len(funcs))
-	for name := range funcs {
+	// caps accumulates one MethodCapability for EVERY retained method (admitted or
+	// declined) so M4 can read a complete per-method manifest; it is sorted by
+	// method name at the end.
+	var caps []projectdescriptor.MethodCapability
+
+	names := make([]string, 0, len(facts.Funcs))
+	for name := range facts.Funcs {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		fn := funcs[name]
+		fn := facts.Funcs[name]
 		if code, detail := classify(fn); code != "" {
 			p.Diagnostics = append(p.Diagnostics, projectdescriptor.Decline{Method: name, Code: code, Detail: detail})
+			caps = append(caps, projectdescriptor.MethodCapability{Method: name, Admitted: false, Blocked: code})
 			continue
 		}
-		p.Methods = append(p.Methods, admitMethod(name, fn))
+		m := admitMethod(name, fn)
+		p.Methods = append(p.Methods, m)
+		caps = append(caps, projectdescriptor.MethodCapability{
+			Method:   name,
+			Admitted: true,
+			Class:    m.Class,
+			Required: append([]projectdescriptor.CapabilityCode(nil), m.RequiredCapabilities...),
+		})
 	}
 
 	// Functions that never got a V3 prompt descriptor are declined too; the
 	// native lane must record them, never silently drop a retained method (D3).
 	// Their specific upstream reason is mapped to the most precise stable code so
 	// diagnostic tallies stay trustworthy.
-	preNames := make([]string, 0, len(preDeclines))
-	for name := range preDeclines {
-		if _, described := funcs[name]; described {
+	preNames := make([]string, 0, len(facts.PreDeclines))
+	for name := range facts.PreDeclines {
+		if _, described := facts.Funcs[name]; described {
 			continue // already handled above
 		}
 		preNames = append(preNames, name)
 	}
 	sort.Strings(preNames)
 	for _, name := range preNames {
-		reason := preDeclines[name]
+		code := preDeclineCode(facts.PreDeclineFeatures[name])
 		p.Diagnostics = append(p.Diagnostics, projectdescriptor.Decline{
-			Method: name, Code: preDeclineCode(preDeclineFeatures[name]), Detail: reason,
+			Method: name, Code: code, Detail: facts.PreDeclines[name],
+		})
+		caps = append(caps, projectdescriptor.MethodCapability{Method: name, Admitted: false, Blocked: code})
+	}
+
+	// Diagnostics are appended in two passes (classifier declines, then
+	// pre-declines), each name-sorted internally; sort the COMBINED slice by method
+	// name so the whole-project ordering contract holds regardless of which pass a
+	// decline came from.
+	sort.Slice(p.Diagnostics, func(i, j int) bool { return p.Diagnostics[i].Method < p.Diagnostics[j].Method })
+	sort.Slice(caps, func(i, j int) bool { return caps[i].Method < caps[j].Method })
+	p.Capabilities = caps
+	return p
+}
+
+// projectTemplates projects the passive macro set into the JSON-clean descriptor
+// [projectdescriptor.Template] (argument NAMES only — a macro argument is never
+// bound to a resolved value type, and its bamlparser AST type does not round-trip).
+func projectTemplates(macros []promptdescriptor.TemplateString) []projectdescriptor.Template {
+	if len(macros) == 0 {
+		return nil
+	}
+	out := make([]projectdescriptor.Template, 0, len(macros))
+	for _, m := range macros {
+		var argNames []string
+		if len(m.Args) > 0 {
+			argNames = make([]string, 0, len(m.Args))
+			for _, a := range m.Args {
+				argNames = append(argNames, a.Name)
+			}
+		}
+		out = append(out, projectdescriptor.Template{
+			Name: m.Name,
+			Args: argNames,
+			Body: m.Body,
 		})
 	}
-	return p
+	return out
 }
 
 // admitMethod projects a promptdescriptor.Function into an admitted

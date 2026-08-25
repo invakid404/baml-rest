@@ -38,7 +38,17 @@ import (
 // Version is the monotonic ProjectDescriptor schema version, enforced by an
 // exact-equality fail-closed fence in [Project.Validate]. Bumping it is a
 // coordinated, contract-owner-reviewed change (D11).
-const Version = 1
+//
+// Version 2 (M2, whole-project source descriptor) adds the project-wide graphs
+// every retained method's serving will read — ordered [Client]s (with their
+// resolved body/transport config and retry reference), [RetryPolicy]s,
+// fallback/round-robin [Strategy] graphs, [Template] (macro) descriptors — and a
+// per-method [MethodCapability] manifest that records, for EVERY retained method,
+// whether it is native-admitted (and its required capabilities) or which feature
+// blocks it. It carries no new carrier vocabulary: stream requirements ride on
+// the per-field streaming metadata already in each method's Return
+// [schemadescriptor.Bundle] plus the capability manifest (stream carriers are M3).
+const Version = 2
 
 // MethodClass names the native capability class a method was admitted into. A
 // declined method carries no class (it stays on generated BAML); its reason is
@@ -78,8 +88,97 @@ type Project struct {
 	PromptDescriptorVersion int `json:"prompt_descriptor_version"`
 	SchemaVersion           int `json:"schema_version"`
 
-	Methods     []Method  `json:"methods"`
+	Methods []Method `json:"methods"`
+
+	// Clients, RetryPolicies, and Strategies are the whole-project client graph
+	// (Version 2+), each in deterministic source-declaration order. A serving lane
+	// reads them to reproduce client selection, retry, and fallback/round-robin
+	// behavior; they are descriptor data only (no serving path consumes them yet).
+	Clients       []Client      `json:"clients,omitempty"`
+	RetryPolicies []RetryPolicy `json:"retry_policies,omitempty"`
+	Strategies    []Strategy    `json:"strategies,omitempty"`
+	// Templates is the project template_string (macro) set (Version 2+), ordered
+	// by template name for determinism (independent of file-walk order), JSON-clean
+	// (see [Template]). BAML's render-time macro-injection order is a source-order
+	// concern a later render phase recovers; it is deliberately NOT the descriptor
+	// order.
+	Templates []Template `json:"templates,omitempty"`
+	// Capabilities is the per-method native-capability manifest (Version 2+): one
+	// record for EVERY retained method (admitted or declined), ordered by method
+	// name. It is the seam M4's "a retained endpoint missing from both the native
+	// registry and an allowed transition fallback fails the build" rule reads.
+	Capabilities []MethodCapability `json:"capabilities,omitempty"`
+
 	Diagnostics []Decline `json:"diagnostics,omitempty"`
+}
+
+// Client is one declared `client<llm>` block, in source-declaration order, with
+// its resolved body/transport configuration and its retry-policy reference. It
+// COMPOSES promptdescriptor.ClientConfig verbatim (the ordered model +
+// request_body tree + transport/body-affecting option split) and adds only the
+// retry reference the config does not carry. A strategy wrapper client (provider
+// baml-fallback / round-robin) also appears here; its ordered children are in the
+// matching [Strategy].
+type Client struct {
+	Config      promptdescriptor.ClientConfig `json:"config"`
+	RetryPolicy string                        `json:"retry_policy,omitempty"`
+}
+
+// StrategyKind names a client-selection strategy: an ordered fallback chain or a
+// round-robin rotation.
+type StrategyKind string
+
+const (
+	StrategyFallback   StrategyKind = "fallback"
+	StrategyRoundRobin StrategyKind = "round_robin"
+)
+
+// Strategy is one fallback or round-robin wrapper client and its ordered child
+// client names. Start is the round-robin `start N` seed when the block declares
+// one (nil otherwise, and always nil for a fallback strategy).
+type Strategy struct {
+	Name     string       `json:"name"`
+	Kind     StrategyKind `json:"kind"`
+	Children []string     `json:"children"`
+	Start    *int         `json:"start,omitempty"`
+}
+
+// RetryPolicy is one declared `retry_policy` block, in source-declaration order.
+// Strategy is the delay strategy ("constant_delay" or "exponential_backoff"); the
+// delay parameters are the raw source values (Multiplier/MaxDelayMs are only
+// meaningful for exponential_backoff).
+type RetryPolicy struct {
+	Name       string  `json:"name"`
+	MaxRetries int     `json:"max_retries"`
+	Strategy   string  `json:"strategy,omitempty"`
+	DelayMs    int     `json:"delay_ms,omitempty"`
+	Multiplier float64 `json:"multiplier,omitempty"`
+	MaxDelayMs int     `json:"max_delay_ms,omitempty"`
+}
+
+// Template is a retained `template_string` (macro) declaration, JSON-clean.
+// Unlike promptdescriptor.TemplateString — whose argument types are transient
+// bamlparser AST that does not round-trip — it projects only the argument NAMES
+// (a macro argument is never bound to a resolved value type). Body is the raw
+// template body with only the raw-string delimiters removed, byte-for-byte. The
+// source path is deliberately NOT carried: it is diagnostic-only (not load-
+// bearing) and would make the descriptor depend on file names.
+type Template struct {
+	Name string   `json:"name"`
+	Args []string `json:"args,omitempty"`
+	Body string   `json:"body"`
+}
+
+// MethodCapability is the per-method native-capability record. Every retained
+// method has exactly one: an admitted method carries its [MethodClass] and the
+// ordered capability codes it requires; a declined method carries the single
+// blocking code. Admitted and Blocked are mutually exclusive by construction.
+type MethodCapability struct {
+	Method   string           `json:"method"`
+	Admitted bool             `json:"admitted"`
+	Class    MethodClass      `json:"class,omitempty"`
+	Required []CapabilityCode `json:"required,omitempty"`
+	Blocked  CapabilityCode   `json:"blocked,omitempty"`
 }
 
 // Method is one admitted native method. It composes the JSON-clean projections
@@ -160,5 +259,159 @@ func (p *Project) Validate() error {
 			return fmt.Errorf("projectdescriptor: diagnostic[%d] (method %q) has empty code", i, p.Diagnostics[i].Method)
 		}
 	}
+	seenClient := make(map[string]bool, len(p.Clients))
+	for i := range p.Clients {
+		name := p.Clients[i].Config.Name
+		if name == "" {
+			return fmt.Errorf("projectdescriptor: client[%d] has empty name", i)
+		}
+		if seenClient[name] {
+			return fmt.Errorf("projectdescriptor: client %q is declared more than once", name)
+		}
+		seenClient[name] = true
+	}
+	seenRetry := make(map[string]bool, len(p.RetryPolicies))
+	for i := range p.RetryPolicies {
+		name := p.RetryPolicies[i].Name
+		if name == "" {
+			return fmt.Errorf("projectdescriptor: retry_policy[%d] has empty name", i)
+		}
+		if seenRetry[name] {
+			return fmt.Errorf("projectdescriptor: retry_policy %q is declared more than once", name)
+		}
+		seenRetry[name] = true
+	}
+	seenStrategy := make(map[string]bool, len(p.Strategies))
+	for i := range p.Strategies {
+		s := &p.Strategies[i]
+		if s.Name == "" {
+			return fmt.Errorf("projectdescriptor: strategy[%d] has empty name", i)
+		}
+		if s.Kind != StrategyFallback && s.Kind != StrategyRoundRobin {
+			return fmt.Errorf("projectdescriptor: strategy %q has invalid kind %q", s.Name, s.Kind)
+		}
+		if seenStrategy[s.Name] {
+			return fmt.Errorf("projectdescriptor: strategy %q is declared more than once", s.Name)
+		}
+		seenStrategy[s.Name] = true
+	}
+	seenTemplate := make(map[string]bool, len(p.Templates))
+	for i := range p.Templates {
+		if p.Templates[i].Name == "" {
+			return fmt.Errorf("projectdescriptor: template[%d] has empty name", i)
+		}
+		if seenTemplate[p.Templates[i].Name] {
+			return fmt.Errorf("projectdescriptor: template %q is declared more than once", p.Templates[i].Name)
+		}
+		seenTemplate[p.Templates[i].Name] = true
+	}
+	// The capability manifest must cover EVERY retained method exactly once and
+	// agree with that method's admit/decline outcome — it is the seam M4 reads, so
+	// an absent, duplicate, unknown-method, or inconsistent record is a hard error.
+	// A retained method is admitted (in Methods) or declined (in Diagnostics).
+	// Admitted (Methods) and declined (Diagnostics) name sets must each be free of
+	// duplicates and be DISJOINT — a method is admitted XOR declined, never both,
+	// never twice.
+	admitted := make(map[string]*Method, len(p.Methods))
+	for i := range p.Methods {
+		m := &p.Methods[i]
+		if _, dup := admitted[m.Name]; dup {
+			return fmt.Errorf("projectdescriptor: admitted method %q is declared more than once", m.Name)
+		}
+		admitted[m.Name] = m
+	}
+	declined := make(map[string]*Decline, len(p.Diagnostics))
+	for i := range p.Diagnostics {
+		d := &p.Diagnostics[i]
+		name := d.Method
+		if declined[name] != nil {
+			return fmt.Errorf("projectdescriptor: declined method %q appears in diagnostics more than once", name)
+		}
+		declined[name] = d
+		if _, both := admitted[name]; both {
+			return fmt.Errorf("projectdescriptor: method %q is both admitted and declined", name)
+		}
+	}
+	seenCap := make(map[string]bool, len(p.Capabilities))
+	for i := range p.Capabilities {
+		c := &p.Capabilities[i]
+		if c.Method == "" {
+			return fmt.Errorf("projectdescriptor: capability[%d] has empty method", i)
+		}
+		if seenCap[c.Method] {
+			return fmt.Errorf("projectdescriptor: duplicate capability record for method %q", c.Method)
+		}
+		seenCap[c.Method] = true
+		m, isAdmitted := admitted[c.Method]
+		decline, isDeclined := declined[c.Method]
+		if !isAdmitted && !isDeclined {
+			return fmt.Errorf("projectdescriptor: capability for unknown method %q (not in methods or diagnostics)", c.Method)
+		}
+		if c.Admitted != isAdmitted {
+			return fmt.Errorf("projectdescriptor: capability for method %q says admitted=%v but the method is %s", c.Method, c.Admitted, admitState(isAdmitted))
+		}
+		if c.Admitted {
+			if c.Class == "" {
+				return fmt.Errorf("projectdescriptor: capability for admitted method %q has empty class", c.Method)
+			}
+			if c.Class != m.Class {
+				return fmt.Errorf("projectdescriptor: capability for admitted method %q has class %q but the method's class is %q", c.Method, c.Class, m.Class)
+			}
+			if c.Blocked != "" {
+				return fmt.Errorf("projectdescriptor: capability for admitted method %q also carries a blocked code %q", c.Method, c.Blocked)
+			}
+			if !equalCapabilityCodes(c.Required, m.RequiredCapabilities) {
+				return fmt.Errorf("projectdescriptor: capability for admitted method %q: required %v disagrees with method.RequiredCapabilities %v", c.Method, c.Required, m.RequiredCapabilities)
+			}
+		} else {
+			if c.Blocked == "" {
+				return fmt.Errorf("projectdescriptor: capability for declined method %q has empty blocked code", c.Method)
+			}
+			// The blocking code MUST agree with the method's diagnostic code — the
+			// descriptor must never carry two conflicting reasons for one decline.
+			if c.Blocked != decline.Code {
+				return fmt.Errorf("projectdescriptor: capability for declined method %q has blocked code %q but its diagnostic code is %q", c.Method, c.Blocked, decline.Code)
+			}
+			// A declined record carries ONLY the blocking code — no admitted-only
+			// fields.
+			if c.Class != "" {
+				return fmt.Errorf("projectdescriptor: capability for declined method %q carries a class %q (admitted-only)", c.Method, c.Class)
+			}
+			if len(c.Required) != 0 {
+				return fmt.Errorf("projectdescriptor: capability for declined method %q carries required capabilities %v (admitted-only)", c.Method, c.Required)
+			}
+		}
+	}
+	for name := range admitted {
+		if !seenCap[name] {
+			return fmt.Errorf("projectdescriptor: admitted method %q has no capability record", name)
+		}
+	}
+	for name := range declined {
+		if !seenCap[name] {
+			return fmt.Errorf("projectdescriptor: declined method %q has no capability record", name)
+		}
+	}
 	return nil
+}
+
+func admitState(admitted bool) string {
+	if admitted {
+		return "admitted"
+	}
+	return "declined"
+}
+
+// equalCapabilityCodes reports whether two capability-code slices are equal in
+// order and content (nil and empty are equal).
+func equalCapabilityCodes(a, b []CapabilityCode) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

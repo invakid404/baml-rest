@@ -20,6 +20,15 @@ import (
 // existing "-update-*-goldens" convention (cmd/introspect). Run:
 //
 //	go test ./internal/codegenspine/ -run TestSourceGuard -update-codegenspine-guard
+//
+// guardBaselineNote is the CURRENT provenance written by a regen and asserted
+// against the committed guard.json (TestSourceGuard/provenance_note_current).
+// Holding it in one named place — instead of hardcoding it inside
+// computeLiveBaseline — stops a regen from silently rewriting the honest
+// provenance back to obsolete wording (the M2 fix), and keeps the note in sync
+// with guard.json. Its value here mirrors the post-#692 baseline note verbatim.
+const guardBaselineNote = "Pin/tar-independence baseline for the codegen-spine slice: the packaged native-worker tar, the five first-party pseudo-version pins, and the byte content of the three collision-path trees. A codegen-spine (M/P) slice must leave every value here untouched. It is NOT a freeze on master: a sanctioned change to a guarded path — the /parse union burn-down (#689), a post-squash first-party re-pin — legitimately moves these, and MUST re-run the update flag in the same change, or this guard stays red for everyone. First frozen at M0; re-frozen after #689 + the post-squash re-pin to 062871154d95. Regenerate with: go test ./internal/codegenspine/ -run TestSourceGuard -update-codegenspine-guard"
+
 var updateGuard = flag.Bool("update-codegenspine-guard", false,
 	"regenerate internal/codegenspine/guard.json from the live tree")
 
@@ -205,9 +214,7 @@ func readPinVersion(gomodPath, module string) (string, error) {
 // computeLiveBaseline reads the current tree into a guardBaseline.
 func computeLiveBaseline(t *testing.T, root string) guardBaseline {
 	t.Helper()
-	b := guardBaseline{
-		Note: "Pin/tar-independence baseline for the codegen-spine slice: the packaged native-worker tar, the five first-party pseudo-version pins, and the byte content of the three collision-path trees. A codegen-spine (M/P) slice must leave every value here untouched. It is NOT a freeze on master: a sanctioned change to a guarded path — the /parse union burn-down (#689), a post-squash first-party re-pin — legitimately moves these, and MUST re-run the update flag in the same change, or this guard stays red for everyone. First frozen at M0; re-frozen after #689 + the post-squash re-pin to 062871154d95. Regenerate with: go test ./internal/codegenspine/ -run TestSourceGuard -update-codegenspine-guard",
-	}
+	b := guardBaseline{Note: guardBaselineNote}
 
 	tarPath := filepath.Join(root, filepath.FromSlash(nativeWorkerTarRelPath))
 	fi, err := os.Stat(tarPath)
@@ -277,6 +284,12 @@ func TestSourceGuard(t *testing.T) {
 	}
 
 	want := loadGuardBaseline(t)
+
+	t.Run("provenance_note_current", func(t *testing.T) {
+		if want.Note != live.Note {
+			t.Errorf("guard.json note is stale — re-run -update-codegenspine-guard:\n frozen: %q\n want:   %q", want.Note, live.Note)
+		}
+	})
 
 	t.Run("native_worker_tar_byte_identical", func(t *testing.T) {
 		if live.NativeWorkerTar.SizeBytes != want.NativeWorkerTar.SizeBytes {

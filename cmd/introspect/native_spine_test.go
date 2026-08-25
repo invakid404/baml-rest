@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils/projectdescriptor"
@@ -32,7 +33,7 @@ func TestNativeSpineFlagEquivalence(t *testing.T) {
 	dir := writeFixture(t)
 	bc := parseBamlSourceDir(dir)
 
-	proj := nativespine.BuildProjectDescriptor(bc.staticPromptDescriptors, bc.staticPromptDeclines, bc.staticPromptDeclineFeatures)
+	proj := nativespine.BuildProjectDescriptor(bc.nativeSourceFacts())
 	if err := proj.Validate(); err != nil {
 		t.Fatalf("descriptor invalid: %v", err)
 	}
@@ -82,7 +83,7 @@ func pipelineDeclines(t *testing.T, sources map[string]string) (admitted map[str
 		}
 	}
 	bc := parseBamlSourceDir(dir)
-	proj := nativespine.BuildProjectDescriptor(bc.staticPromptDescriptors, bc.staticPromptDeclines, bc.staticPromptDeclineFeatures)
+	proj := nativespine.BuildProjectDescriptor(bc.nativeSourceFacts())
 	if err := proj.Validate(); err != nil {
 		t.Fatalf("descriptor invalid: %v", err)
 	}
@@ -556,5 +557,180 @@ func TestNativeSpineFlagWritesJSON(t *testing.T) {
 	}
 	if len(proj.Diagnostics) != 4 {
 		t.Fatalf("diagnostics = %d, want 4", len(proj.Diagnostics))
+	}
+}
+
+// TestNativeSpineStrictDiagnostics proves the native-spine descriptor pass (unlike
+// the best-effort generated lane) FAILS generation on invalid retained source: a
+// duplicate declaration or an unresolved type reference (M2, §1.3). A clean
+// project succeeds.
+func TestNativeSpineStrictDiagnostics(t *testing.T) {
+	run := func(sources map[string]string) error {
+		dir := t.TempDir()
+		for name, src := range sources {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o644); err != nil {
+				t.Fatalf("write %s: %v", name, err)
+			}
+		}
+		out := filepath.Join(t.TempDir(), "d.json")
+		return emitNativeSpineDescriptors(&config{BAMLSourceDir: dir, NativeSpineDescriptors: out})
+	}
+
+	if err := run(map[string]string{
+		"clients.baml":   goodClient,
+		"functions.baml": `function Greet(name: string) -> string { client GPT4 prompt #"Hi {{ name }}"# }`,
+	}); err != nil {
+		t.Errorf("clean project failed strict generation: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		sources map[string]string
+		want    string
+	}{
+		{
+			name: "duplicate function",
+			sources: map[string]string{
+				"clients.baml": goodClient,
+				"functions.baml": "function Greet(name: string) -> string { client GPT4 prompt #\"a\"# }\n" +
+					"function Greet(name: string) -> string { client GPT4 prompt #\"b\"# }\n",
+			},
+			want: "declared more than once",
+		},
+		{
+			name: "unresolved reference",
+			sources: map[string]string{
+				"clients.baml":   goodClient,
+				"functions.baml": `function Greet(x: Missing) -> string { client GPT4 prompt #"x"# }`,
+			},
+			want: "resolves to no declared",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := run(tc.sources)
+			if err == nil {
+				t.Fatalf("want strict error containing %q, got nil", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %q, want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+// TestNativeSpineStrategyMirrorsProduction proves the descriptor's fallback/
+// round-robin strategy graph matches the PRODUCTION introspect semantics for the
+// pinned depth-gating and empty-list shapes (fix P1-4): nested `strategy`
+// overrides the outer one (last-write-wins), an empty `strategy []` yields no
+// strategy, and `start` is depth-1-gated and round-robin-only.
+func TestNativeSpineStrategyMirrorsProduction(t *testing.T) {
+	sources := map[string]string{
+		"clients.baml": `
+client<llm> NestedDepth {
+    provider baml-fallback
+    options {
+        strategy [A, B]
+        start 1
+        custom_subblock {
+            start 99
+            endpoint_url "x"
+            strategy [C, D]
+        }
+        region "us-east-1"
+    }
+}
+client<llm> EmptyStrat {
+    provider baml-fallback
+    options { strategy [] }
+}
+client<llm> RRStart {
+    provider round-robin
+    options { strategy [A, B] start 2 }
+}
+client<llm> MultiKeep {
+    provider round-robin
+    options { strategy [A, B] start 2 }
+    options { model "ignored" }
+}
+client<llm> MultiNew {
+    provider round-robin
+    options { strategy [A, B] start 2 }
+    options { strategy [C, D] }
+}
+`,
+	}
+	dir := t.TempDir()
+	for name, src := range sources {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	bc := parseBamlSourceDir(dir)
+	proj := nativespine.BuildProjectDescriptor(bc.nativeSourceFacts())
+	strat := map[string]projectdescriptor.Strategy{}
+	for _, s := range proj.Strategies {
+		strat[s.Name] = s
+	}
+
+	// NestedDepth: nested [C,D] wins; descriptor agrees with production fallbackChains.
+	if got := strat["NestedDepth"].Children; !reflect.DeepEqual(got, []string{"C", "D"}) {
+		t.Errorf("NestedDepth children = %v, want [C D] (nested override)", got)
+	}
+	if got := bc.fallbackChains["NestedDepth"]; !reflect.DeepEqual(got, []string{"C", "D"}) {
+		t.Errorf("production fallbackChains[NestedDepth] = %v, want [C D]", got)
+	}
+	if strat["NestedDepth"].Start != nil {
+		t.Errorf("NestedDepth (fallback) start = %v, want nil (round-robin-only)", *strat["NestedDepth"].Start)
+	}
+
+	// EmptyStrat: empty list yields no Strategy; production records no chain either.
+	if _, ok := strat["EmptyStrat"]; ok {
+		t.Errorf("empty strategy list produced a Strategy: %+v", strat["EmptyStrat"])
+	}
+	if _, ok := bc.fallbackChains["EmptyStrat"]; ok {
+		t.Errorf("production recorded a fallback chain for an empty strategy list")
+	}
+
+	// RRStart: round-robin start is carried and matches production.
+	rr := strat["RRStart"]
+	if rr.Kind != projectdescriptor.StrategyRoundRobin || !reflect.DeepEqual(rr.Children, []string{"A", "B"}) || rr.Start == nil || *rr.Start != 2 {
+		t.Errorf("RRStart = %+v, want round_robin children [A B] start 2", rr)
+	}
+	if bc.roundRobinStart["RRStart"] != 2 {
+		t.Errorf("production roundRobinStart[RRStart] = %d, want 2", bc.roundRobinStart["RRStart"])
+	}
+
+	// MultiKeep: a later `options { model … }` block must NOT wipe the earlier
+	// strategy/start — the descriptor and production both retain [A,B] / start 2.
+	mk := strat["MultiKeep"]
+	if !reflect.DeepEqual(mk.Children, []string{"A", "B"}) || mk.Start == nil || *mk.Start != 2 {
+		t.Errorf("MultiKeep = %+v, want children [A B] start 2 (later options{model} must not wipe)", mk)
+	}
+	if !reflect.DeepEqual(bc.fallbackChains["MultiKeep"], []string{"A", "B"}) || bc.roundRobinStart["MultiKeep"] != 2 {
+		t.Errorf("production MultiKeep chain=%v start=%d, want [A B] / 2", bc.fallbackChains["MultiKeep"], bc.roundRobinStart["MultiKeep"])
+	}
+
+	// MultiNew: a later block with a NEW non-empty strategy overwrites the chain,
+	// but the earlier start (absent from the new block) is preserved.
+	mn := strat["MultiNew"]
+	if !reflect.DeepEqual(mn.Children, []string{"C", "D"}) || mn.Start == nil || *mn.Start != 2 {
+		t.Errorf("MultiNew = %+v, want children [C D] start 2 (new chain, earlier start kept)", mn)
+	}
+	if !reflect.DeepEqual(bc.fallbackChains["MultiNew"], []string{"C", "D"}) || bc.roundRobinStart["MultiNew"] != 2 {
+		t.Errorf("production MultiNew chain=%v start=%d, want [C D] / 2", bc.fallbackChains["MultiNew"], bc.roundRobinStart["MultiNew"])
+	}
+}
+
+// TestNativeSpineStrictMissingDir proves strict mode fails on a missing/unreadable
+// --baml-src-dir rather than emitting an empty descriptor and exiting 0 (fix P1-1).
+func TestNativeSpineStrictMissingDir(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	out := filepath.Join(t.TempDir(), "d.json")
+	err := emitNativeSpineDescriptors(&config{BAMLSourceDir: missing, NativeSpineDescriptors: out})
+	if err == nil {
+		t.Fatal("strict pass on a missing source dir returned nil, want a walk error")
+	}
+	if !strings.Contains(err.Error(), "strict source diagnostics") {
+		t.Errorf("error = %q, want a strict source-diagnostics failure", err.Error())
 	}
 }

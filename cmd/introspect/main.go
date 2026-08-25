@@ -1389,6 +1389,17 @@ type bamlConfig struct {
 	// native-spine classifier pick a precise capability code from structure rather
 	// than by scraping the human-readable reason string. Build-only; never emitted.
 	staticPromptDeclineFeatures map[string]nativeschema.PreDeclineFeature
+
+	// parsedFiles is the ordered set of successfully-parsed .baml source files
+	// (M2). It is retained so the experimental native-spine descriptor pass can
+	// build the whole-project client graph / templates from the same AST without
+	// re-walking; the normal generated-lane path ignores it.
+	parsedFiles []nativeschema.SourceFile
+	// parseDiagnostics accumulates unreadable-file and parse errors encountered
+	// during the walk. The generated lane stays best-effort and ignores them; the
+	// STRICT native-spine descriptor pass (M2, codegen-spine §1.3) reads them and
+	// fails generation rather than silently skipping invalid retained source.
+	parseDiagnostics []error
 }
 
 // bamlValidationError captures a single semantic-validation failure
@@ -1488,21 +1499,28 @@ func parseBamlSourceDir(dir string) *bamlConfig {
 
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil // skip unreadable entries
+			// A stat/read failure on the walk root or a subtree (incl. a missing
+			// --baml-src-dir) is recorded so the STRICT native-spine pass fails closed;
+			// the generated lane stays best-effort and continues skipping.
+			cfg.parseDiagnostics = append(cfg.parseDiagnostics, fmt.Errorf("walk %s: %w", path, err))
+			return nil // skip unreadable entries (best-effort generated lane)
 		}
 		if d.IsDir() || !strings.HasSuffix(d.Name(), ".baml") {
 			return nil
 		}
 		data, readErr := os.ReadFile(path)
 		if readErr != nil {
-			return nil // skip unreadable files
+			cfg.parseDiagnostics = append(cfg.parseDiagnostics, fmt.Errorf("read %s: %w", path, readErr))
+			return nil // skip unreadable files (best-effort generated lane)
 		}
 		file, parseErr := bamlparser.ParseBytes(path, data)
 		if parseErr != nil {
 			// The new parser is intentionally permissive (Codex scoping Q2/Q6);
 			// any real-world parse error is a parser bug to be fixed by adding
 			// a fixture rather than swallowing here. Match the old line walker's
-			// silent-on-unreadable posture so generation stays best-effort.
+			// silent-on-unreadable posture so generation stays best-effort — but
+			// record the error so the STRICT native-spine pass can fail on it.
+			cfg.parseDiagnostics = append(cfg.parseDiagnostics, fmt.Errorf("parse %s: %w", path, parseErr))
 			return nil
 		}
 		processBAMLFile(cfg, file)
@@ -1512,6 +1530,17 @@ func parseBamlSourceDir(dir string) *bamlConfig {
 		parsedFiles = append(parsedFiles, nativeschema.SourceFile{File: file, Path: path})
 		return nil
 	})
+
+	// A non-nil WalkDir result (e.g. the root could not be opened at all) is also
+	// a strict-mode failure; the generated lane below already tolerates it via the
+	// err==nil guard on enrichShorthandClientProviders.
+	if err != nil {
+		cfg.parseDiagnostics = append(cfg.parseDiagnostics, fmt.Errorf("walk %s: %w", dir, err))
+	}
+
+	// Retain the parsed files for the experimental native-spine descriptor pass
+	// (M2), which builds the whole-project client graph / templates from them.
+	cfg.parsedFiles = parsedFiles
 
 	// Build the native per-function static schemas from the collected files.
 	// This is fail-closed (per-function decline, never a pipeline error) and is
