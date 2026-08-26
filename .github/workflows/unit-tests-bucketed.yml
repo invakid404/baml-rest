@@ -614,6 +614,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    permissions:
+      contents: read
+
     strategy:
       fail-fast: false
       matrix:
@@ -629,6 +632,8 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v6.5.0
