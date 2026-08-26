@@ -85,35 +85,42 @@ jobs:
             testbucket-timings-v1-
 
       - name: Compute the bucket matrix
+        # Cut over to the standalone tool's composite action (testbucket v0.1.1),
+        # pinned to the exact tag. This replaces `go run ./cmd/testbucket plan`:
+        # the action installs the released binary and runs the same planner, so
+        # the never-drop coverage-completeness gate still runs INSIDE it (a live
+        # target left unscheduled exits non-zero and emits no matrix — the
+        # fan-out fails closed rather than open). --json / --shard-plan are
+        # emitted by the action; the summary still lands on this job's log.
+        #
+        #   version: v0.1.1   pin the installed binary too (there is no `v1`
+        #                     release, so the action's default alias would fail).
+        #   count: "100"      F1 — the action input defaults to "1"; leaving it
+        #                     would collapse the flake sweep AND cold-start the
+        #                     timing store via a `-race -count=1` token mismatch.
+        #   node-prefixes     reproduces the former in-repo default; flags the
+        #                     bucket holding adapters/** so `matrix.needs_node`
+        #                     gates the setup-node + goimports steps below.
+        #   exclude-module    the module set this pure-Go lane sweeps: the
+        #                     pinned-BAML adapters (the integration workflow owns
+        #                     them), vendored upstream baml-patched, and the two
+        #                     cgo modules kept out of go.work. Scopes BOTH the
+        #                     split and the never-drop coverage gate.
         id: plan
-        run: |
-          set -euo pipefail
-          store="$RUNNER_TEMP/testbucket-store/test-timings.json"
-          if [ -f "$store" ]; then
-            echo "restored a store from cache key '${{ steps.restore.outputs.cache-matched-key }}'"
-          else
-            echo "no store in the cache yet — planning from the cold-start mean weight"
-          fi
-
-          # --json puts the fromJSON matrix on stdout and the loaded-vs-missing
-          # summary on stderr, so the summary lands in this log while the
-          # matrix stays machine-clean. --shard-plan writes the full plan for
-          # download. The coverage gate runs inside this command: if any live
-          # package would be left unscheduled it exits non-zero and no matrix
-          # is produced, which fails the fan-out closed rather than open.
-          matrix=$(go run ./cmd/testbucket plan \
-            --k "$TESTBUCKET_K" \
-            --store "$store" \
-            --events-dir "$TESTBUCKET_EVENTS_DIR" \
-            --shard-plan "$RUNNER_TEMP/shard-plan.json" \
-            --json)
-
-          # printf, not echo: the matrix carries \n escapes inside its script
-          # fields, and some shells' echo expands those into real newlines,
-          # which both corrupts the JSON and breaks the single-line
-          # key=value form $GITHUB_OUTPUT expects. printf '%s' never
-          # interprets its argument.
-          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+        uses: invakid404/testbucket/.github/actions/plan@551d49cea6a74a99706912fe18504f318bdba1cc # v0.1.1
+        with:
+          version: v0.1.1
+          k: ${{ env.TESTBUCKET_K }}
+          count: "100"
+          store-path: ${{ runner.temp }}/testbucket-store/test-timings.json
+          events-dir: ${{ env.TESTBUCKET_EVENTS_DIR }}
+          shard-plan: ${{ runner.temp }}/shard-plan.json
+          node-prefixes: adapters
+          exclude-module: |
+            adapters/adapter_*
+            dynclient/baml-patched
+            internal/nativebody/nanollmprepare
+            nativeserve
 
       - name: Upload the shard plan
         if: always()
@@ -168,37 +175,22 @@ jobs:
         run: go install golang.org/x/tools/cmd/goimports@latest
 
       - name: Run bucket ${{ matrix.bucket }}
-        env:
-          # Passed through the environment and quoted on use rather than
-          # interpolated into the shell: the script is generated data, and
-          # splicing generated text into a command line is how a workflow
-          # grows an injection.
-          BUCKET_SCRIPT: ${{ matrix.script }}
-          BUCKET_NAME: ${{ matrix.name }}
-          BUCKET_EST: ${{ matrix.est_seconds }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$TESTBUCKET_EVENTS_DIR"
-
-          echo "=== $BUCKET_NAME — estimated ${BUCKET_EST}s ==="
-          printf '%s\n' "$BUCKET_SCRIPT" > "$RUNNER_TEMP/bucket.sh"
-          echo "--- invocations ---"
-          cat "$RUNNER_TEMP/bucket.sh"
-          echo "--- output ---"
-
-          # The generated script already carries -json and tees each stream to
-          # $TESTBUCKET_EVENTS_DIR for the record job. Piping its stdout back
-          # through the renderer turns that NDJSON into the plain test log a
-          # human reading a failure expects, exactly as
-          # scripts/testbucket-capture.sh does for the un-bucketed lanes.
-          #
-          # The status taken is the SCRIPT's, never the renderer's: a happy
-          # renderer must not make a red bucket look green.
-          set +e
-          bash "$RUNNER_TEMP/bucket.sh" | bash scripts/testbucket-render.sh
-          status=${PIPESTATUS[0]}
-          set -e
-          exit "$status"
+        # testbucket v0.1.1 run-bucket: installs the binary (for `testbucket
+        # render`), writes the plan-generated script, runs it, and pipes its
+        # `go test -json` through the renderer to a human-readable log — taking
+        # the SCRIPT's status (PIPESTATUS[0]), never the renderer's, so a happy
+        # renderer can't make a red bucket look green. The generated script
+        # already carries -json and tees each stream into events-dir for the
+        # record job. Same behavior as the former inline
+        # `bash bucket.sh | scripts/testbucket-render.sh`; the script itself is
+        # generated data passed through env, never spliced into a command line.
+        uses: invakid404/testbucket/.github/actions/run-bucket@551d49cea6a74a99706912fe18504f318bdba1cc # v0.1.1
+        with:
+          version: v0.1.1
+          script: ${{ matrix.script }}
+          name: ${{ matrix.name }}
+          est-seconds: ${{ matrix.est_seconds }}
+          events-dir: ${{ env.TESTBUCKET_EVENTS_DIR }}
 
       - name: Upload timing events
         # if: always() so a red bucket still contributes what it measured;
@@ -428,28 +420,9 @@ jobs:
           name: testbucket-shard-plan
           path: ${{ runner.temp }}/plan
 
-      - name: Audit the run against the plan
-        run: |
-          set -euo pipefail
-          # The plan's coverage gate proved the MATRIX was complete before
-          # anything ran. This proves the RUN was, which is a different
-          # statement and the one a merge decision actually needs: a bucket
-          # whose job produced no events, an artifact that failed to upload,
-          # a shard that died before reporting — all invisible to a gate that
-          # only ever saw the plan.
-          #
-          # It is semantics-aware because "exactly once" means three things
-          # here: a whole package runs in one invocation, a count-shard
-          # package in S (each a slice of the SWEEP, not a repeat of the
-          # package), and a run-sliced package in S whose name sets must
-          # union to the package's whole runnable set.
-          shopt -s nullglob
-          events=("$RUNNER_TEMP/testbucket-events"/*.ndjson)
-          go run ./cmd/testbucket audit \
-            --shard-plan "$RUNNER_TEMP/plan/shard-plan.json" \
-            "${events[@]}"
-
       - name: Restore the previous timing store
+        # Restored BEFORE the record action so its ingest folds the new
+        # measurements into the existing store rather than cold-starting one.
         uses: actions/cache/restore@v4.2.4
         with:
           path: ${{ runner.temp }}/testbucket-store
@@ -458,48 +431,38 @@ jobs:
             testbucket-timings-bucketed-v1-
             testbucket-timings-v1-
 
-      - name: Ingest timings into the store
-        run: |
-          set -euo pipefail
-          store_dir="$RUNNER_TEMP/testbucket-store"
-          events_dir="$RUNNER_TEMP/testbucket-events"
-          mkdir -p "$store_dir"
-
-          shopt -s nullglob
-          events=("$events_dir"/*.ndjson)
-          if [ ${#events[@]} -eq 0 ]; then
-            echo "no timing events were uploaded; nothing to record" >&2
-            exit 1
-          fi
-          echo "ingesting ${#events[@]} event file(s) from $TESTBUCKET_K bucket(s)"
-
-          # A sharded package reports once per shard; ingest sums the
-          # package-level Elapsed back into a whole-package weight, so the
-          # store keeps measuring PACKAGES however the matrix happened to
-          # slice them. --whale-k is the same K the plan used.
-          go run ./cmd/testbucket ingest \
-            --store "$store_dir/test-timings.json" \
-            --race --count=100 \
-            --whale-k "$TESTBUCKET_K" \
-            "${events[@]}"
-
-      - name: Show the plan the next run will get
-        run: |
-          set -euo pipefail
-          echo "planning at the recorded K=$TESTBUCKET_K"
-          go run ./cmd/testbucket plan \
-            --k "$TESTBUCKET_K" \
-            --store "$RUNNER_TEMP/testbucket-store/test-timings.json"
-
-      - name: Show the split decisions behind it
-        run: |
-          set -euo pipefail
-          # The divisibility evidence re-derived on CI's own numbers rather
-          # than a laptop's: per-runnable distribution and both mechanism
-          # costs for every package that crossed the split threshold.
-          go run ./cmd/testbucket whales \
-            --k "$TESTBUCKET_K" \
-            --store "$RUNNER_TEMP/testbucket-store/test-timings.json"
+      - name: Audit the run, then ingest the measured timings
+        # testbucket v0.1.1 record: AUDIT the finished run against the plan it
+        # fanned out from — the plan's coverage gate proved the MATRIX was
+        # complete before anything ran; this proves the RUN was (a bucket that
+        # produced no events, an artifact that failed to upload, a shard that
+        # died before reporting are all invisible to the plan-time gate) — then
+        # INGEST the measured timings so the next split is better than this one.
+        # It finishes by echoing the whale split decisions on the recorded
+        # store. baml still owns the Actions cache: the store is restored above
+        # and saved + uploaded below; the action only reads/writes store-path.
+        #
+        #   version: v0.1.1   pin the installed binary (no `v1` release exists).
+        #   count: "100"      F1 — matches the plan; keeps the comparability
+        #                     token `-race -count=100`, so these timings stay
+        #                     comparable with the store instead of cold-starting.
+        #   k                 --whale-k is derived from it, so the whale split
+        #                     policy is recorded against total/K exactly as before.
+        #   exclude-module    the SAME four globs the plan used, so the ingest's
+        #                     stale-row pruning discovery sees the same module set.
+        uses: invakid404/testbucket/.github/actions/record@551d49cea6a74a99706912fe18504f318bdba1cc # v0.1.1
+        with:
+          version: v0.1.1
+          k: ${{ env.TESTBUCKET_K }}
+          count: "100"
+          store-path: ${{ runner.temp }}/testbucket-store/test-timings.json
+          events-dir: ${{ runner.temp }}/testbucket-events
+          shard-plan: ${{ runner.temp }}/plan/shard-plan.json
+          exclude-module: |
+            adapters/adapter_*
+            dynclient/baml-patched
+            internal/nativebody/nanollmprepare
+            nativeserve
 
       - name: Save the timing store
         # Writes on a new master commit; on a same-SHA re-run the entry
