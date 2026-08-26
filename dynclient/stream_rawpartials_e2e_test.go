@@ -173,11 +173,18 @@ func TestDynamicStreamRaw_ProsePartials_RealRuntime(t *testing.T) {
 		// Default (no WithSoftFinalParse): the final structured parse
 		// misses and surfaces as a terminal error, matching the customer's
 		// observed final coerce error — the strict contract is unchanged.
+		// Lock the RIGHT reason: the stable final-parse wrapper + the
+		// root-coercion payload, and NO successful final frame.
 		if terminalErr == nil {
-			t.Errorf("expected a terminal final-parse error under default strict mode (sawFinal=%v)", sawFinal)
-		} else if !strings.Contains(terminalErr.Error(), "coerce") &&
-			!strings.Contains(terminalErr.Error(), "parse final result") {
-			t.Logf("terminal error (informational): %v", terminalErr)
+			t.Fatalf("expected a terminal final-parse error under default strict mode (sawFinal=%v)", sawFinal)
+		}
+		if sawFinal {
+			t.Errorf("default strict mode must not emit a successful final on a final-parse miss")
+		}
+		if msg := terminalErr.Error(); !strings.Contains(msg, "failed to parse final result") {
+			t.Errorf("terminal error must be the final-parse wrapper, got: %v", terminalErr)
+		} else if !strings.Contains(msg, "Failed to coerce value") {
+			t.Errorf("terminal error must carry the root-coercion payload, got: %v", terminalErr)
 		}
 	})
 
@@ -209,4 +216,34 @@ func TestDynamicStreamRaw_ProsePartials_RealRuntime(t *testing.T) {
 			t.Errorf("final raw = %q, want the full prose %q", finalRaw, full)
 		}
 	})
+}
+
+// TestDynamicCallRaw_SoftFinalParse_ScopeGuard_RealRuntime locks the
+// streaming-mode boundary end-to-end (review P1/finding 2): WithSoftFinalParse
+// must NOT leak into the non-streaming DynamicCallRaw API, even when that call
+// is forced through the streaming bridge via WithDisableCallBuildRequest.
+// StreamModeCallWithRaw carries NeedsPartials=false, so the soft-final gate
+// (NeedsPartials && NeedsRaw && SoftFinalParse) keeps it strict: a final-parse
+// miss must still surface as an error, not a raw-success result.
+func TestDynamicCallRaw_SoftFinalParse_ScopeGuard_RealRuntime(t *testing.T) {
+	server := serveProseSSE(e2eProseChunks)
+	defer server.Close()
+
+	c := realRuntimeClient(t,
+		WithUseBuildRequest(true),
+		// Disable the non-streaming Request path so DynamicCallRaw falls back
+		// to the BuildRequest stream-accumulation bridge (the path the option
+		// could otherwise leak into).
+		WithDisableCallBuildRequest(true),
+		WithSoftFinalParse(),
+	)
+
+	res, err := c.DynamicCallRaw(context.Background(), proseRequest(server.URL))
+	if err == nil {
+		t.Fatalf("DynamicCallRaw must stay strict on a final-parse miss even with "+
+			"WithSoftFinalParse; got success: %+v", res)
+	}
+	if !strings.Contains(err.Error(), "coerce") {
+		t.Errorf("expected the strict root-coercion final-parse error, got: %v", err)
+	}
 }

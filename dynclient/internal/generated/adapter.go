@@ -792,12 +792,12 @@ func bamlRestDynamicBuildRequest(adapter bamlutils.Adapter, rawInput any, out ch
 		MetadataPlan:              plannedMetadata,
 		NeedsPartials:             adapter.StreamMode().NeedsPartials(),
 		NeedsRaw:                  adapter.StreamMode().NeedsRaw(),
-		SoftFinalParse:            adapter.BuildRequestConfig().SoftFinalParse,
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newBamlRestDynamicOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.BuildRequestConfig().SoftFinalParse,
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
