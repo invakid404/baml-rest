@@ -107,7 +107,7 @@ jobs:
         #                     cgo modules kept out of go.work. Scopes BOTH the
         #                     split and the never-drop coverage gate.
         id: plan
-        uses: invakid404/testbucket/.github/actions/plan@v0.1.1
+        uses: invakid404/testbucket/.github/actions/plan@551d49cea6a74a99706912fe18504f318bdba1cc # v0.1.1
         with:
           version: v0.1.1
           k: ${{ env.TESTBUCKET_K }}
@@ -184,7 +184,7 @@ jobs:
         # record job. Same behavior as the former inline
         # `bash bucket.sh | scripts/testbucket-render.sh`; the script itself is
         # generated data passed through env, never spliced into a command line.
-        uses: invakid404/testbucket/.github/actions/run-bucket@v0.1.1
+        uses: invakid404/testbucket/.github/actions/run-bucket@551d49cea6a74a99706912fe18504f318bdba1cc # v0.1.1
         with:
           version: v0.1.1
           script: ${{ matrix.script }}
@@ -450,7 +450,7 @@ jobs:
         #                     policy is recorded against total/K exactly as before.
         #   exclude-module    the SAME four globs the plan used, so the ingest's
         #                     stale-row pruning discovery sees the same module set.
-        uses: invakid404/testbucket/.github/actions/record@v0.1.1
+        uses: invakid404/testbucket/.github/actions/record@551d49cea6a74a99706912fe18504f318bdba1cc # v0.1.1
         with:
           version: v0.1.1
           k: ${{ env.TESTBUCKET_K }}
