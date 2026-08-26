@@ -156,6 +156,19 @@ type StreamConfig struct {
 	// Zero means parse on every SSE event (no throttling).
 	ParseThrottleInterval time.Duration
 
+	// SoftFinalParse is the per-request opt-in that softens a final
+	// structured-parse miss on a raw-wanted STREAM. When true AND the
+	// stream needs both partials and raw (NeedsPartials && NeedsRaw —
+	// i.e. StreamModeStreamWithRaw), a parseFinal error that is not a
+	// cancellation/deadline completes the call successfully with the
+	// accumulated raw text (nil structured final) instead of hard-failing
+	// with newRawError. Default false keeps the strict final-parse
+	// behaviour. It never applies to the non-streaming CallWithRaw bridge
+	// (NeedsPartials=false), to non-raw streams, or to the native lane
+	// (whose final parse is terminal by design). See the final-parse arms
+	// in tryOneStreamChild / tryOneBedrockStreamChild.
+	SoftFinalParse bool
+
 	// FallbackChain is the ordered list of child client names for fallback
 	// strategies. When non-empty, each retry attempt walks the entire chain
 	// in order; if any child succeeds, the attempt returns immediately.
