@@ -88,6 +88,8 @@ func (a *fakeAdapter) SetRetryConfig(c *bamlutils.RetryConfig) { a.retryConfig =
 func (a *fakeAdapter) RetryConfig() *bamlutils.RetryConfig     { return a.retryConfig }
 func (a *fakeAdapter) SetIncludeReasoning(v bool)              { a.includeReasoning = v }
 func (a *fakeAdapter) IncludeReasoning() bool                  { return a.includeReasoning }
+func (a *fakeAdapter) SetSoftFinalParse(bool)                  {}
+func (a *fakeAdapter) SoftFinalParse() bool                    { return false }
 func (a *fakeAdapter) ClientRegistryProvider() string          { return a.clientRegistryProvider }
 func (a *fakeAdapter) OriginalClientRegistry() *bamlutils.ClientRegistry {
 	return a.originalRegistry

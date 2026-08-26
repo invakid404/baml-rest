@@ -29,6 +29,7 @@ type fakeAdapter struct {
 	logger                 bamlutils.Logger
 	retryConfig            *bamlutils.RetryConfig
 	includeReasoning       bool
+	softFinalParse         bool
 	originalRegistry       *bamlutils.ClientRegistry
 	clientRegistryProvider string
 	roundRobinAdvancer     bamlutils.RoundRobinAdvancer
@@ -62,6 +63,8 @@ func (a *fakeAdapter) SetRetryConfig(c *bamlutils.RetryConfig) { a.retryConfig =
 func (a *fakeAdapter) RetryConfig() *bamlutils.RetryConfig     { return a.retryConfig }
 func (a *fakeAdapter) SetIncludeReasoning(v bool)              { a.includeReasoning = v }
 func (a *fakeAdapter) IncludeReasoning() bool                  { return a.includeReasoning }
+func (a *fakeAdapter) SetSoftFinalParse(v bool)                { a.softFinalParse = v }
+func (a *fakeAdapter) SoftFinalParse() bool                    { return a.softFinalParse }
 func (a *fakeAdapter) ClientRegistryProvider() string          { return a.clientRegistryProvider }
 func (a *fakeAdapter) OriginalClientRegistry() *bamlutils.ClientRegistry {
 	return a.originalRegistry
@@ -277,6 +280,46 @@ func TestNewAppliesOptions(t *testing.T) {
 	if gotURL != "http://proxy.local:8080/v1" {
 		t.Errorf("base_url after rewrite = %q, want http://proxy.local:8080/v1", gotURL)
 	}
+}
+
+// TestWithSoftFinalParseThreadsToAdapter locks the dynclient -> worker ->
+// adapter threading for the soft-final opt-in: WithSoftFinalParse() must reach
+// the per-request adapter (which the generated stream router copies into
+// StreamConfig.SoftFinalParse), and the default must stay OFF. The orchestrator
+// behaviour driven by the flag is locked separately in
+// bamlutils/buildrequest/orchestrator_rawstream_canary_test.go.
+func TestWithSoftFinalParseThreadsToAdapter(t *testing.T) {
+	run := func(t *testing.T, opts ...Option) *fakeAdapter {
+		t.Helper()
+		rt := &fakeRuntime{}
+		c := newClient(t, rt, opts...)
+		rt.streamingImpl = func(adapter bamlutils.Adapter, _ any) (<-chan bamlutils.StreamResult, error) {
+			ch := make(chan bamlutils.StreamResult, 1)
+			ch <- &fakeStreamResult{kind: bamlutils.StreamResultKindFinal, final: map[string]any{"DynamicProperties": map[string]any{"answer": "ok"}}}
+			close(ch)
+			return ch, nil
+		}
+		if _, err := c.DynamicCall(context.Background(), validRequest()); err != nil {
+			t.Fatalf("DynamicCall: %v", err)
+		}
+		captured := rt.capturedAdapter.Load()
+		if captured == nil {
+			t.Fatal("expected adapter to be captured")
+		}
+		return captured
+	}
+
+	t.Run("opt_in", func(t *testing.T) {
+		if got := run(t, WithSoftFinalParse()).SoftFinalParse(); !got {
+			t.Errorf("SoftFinalParse() = %v, want true (WithSoftFinalParse wiring)", got)
+		}
+	})
+
+	t.Run("default_off", func(t *testing.T) {
+		if got := run(t).SoftFinalParse(); got {
+			t.Errorf("SoftFinalParse() = %v, want false by default", got)
+		}
+	})
 }
 
 func TestNewDoesNotReadEnv(t *testing.T) {

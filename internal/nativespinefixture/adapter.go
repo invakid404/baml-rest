@@ -51,6 +51,8 @@ func (a *fixtureAdapter) SetRetryConfig(c *bamlutils.RetryConfig) { a.retryConfi
 func (a *fixtureAdapter) RetryConfig() *bamlutils.RetryConfig     { return a.retryConfig }
 func (a *fixtureAdapter) SetIncludeReasoning(v bool)              { a.includeReasoning = v }
 func (a *fixtureAdapter) IncludeReasoning() bool                  { return a.includeReasoning }
+func (a *fixtureAdapter) SetSoftFinalParse(bool)                  {}
+func (a *fixtureAdapter) SoftFinalParse() bool                    { return false }
 func (a *fixtureAdapter) ClientRegistryProvider() string          { return "" }
 func (a *fixtureAdapter) OriginalClientRegistry() *bamlutils.ClientRegistry {
 	return a.originalRegistry

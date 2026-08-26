@@ -731,6 +731,8 @@ func (a *fakeAdapter) SetRetryConfig(*bamlutils.RetryConfig)                {}
 func (a *fakeAdapter) RetryConfig() *bamlutils.RetryConfig                  { return nil }
 func (a *fakeAdapter) SetIncludeReasoning(bool)                             {}
 func (a *fakeAdapter) IncludeReasoning() bool                               { return false }
+func (a *fakeAdapter) SetSoftFinalParse(bool)                               {}
+func (a *fakeAdapter) SoftFinalParse() bool                                 { return false }
 func (a *fakeAdapter) ClientRegistryProvider() string                       { return "" }
 func (a *fakeAdapter) OriginalClientRegistry() *bamlutils.ClientRegistry    { return nil }
 func (a *fakeAdapter) HTTPClient() *llmhttp.Client                          { return nil }

@@ -751,11 +751,16 @@ func (me *methodEmitter) emitBuildRequest() {
 		// the WithClient target so a centrally-unwrapped RR child
 		// routes to the selected leaf rather than the RR wrapper name.
 		jen.Id("streamConfig").Op(":=").Op("&").Qual(g.pkgs.BuildRequestPkg, "StreamConfig").Values(jen.Dict{
-			jen.Id("Provider"):           jen.Id("provider"),
-			jen.Id("RetryPolicy"):        jen.Id("retryPolicy"),
-			jen.Id("NeedsPartials"):      jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsPartials").Call(),
-			jen.Id("NeedsRaw"):           jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
-			jen.Id("IncludeReasoning"):   jen.Id("adapter").Dot("IncludeReasoning").Call(),
+			jen.Id("Provider"):         jen.Id("provider"),
+			jen.Id("RetryPolicy"):      jen.Id("retryPolicy"),
+			jen.Id("NeedsPartials"):    jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsPartials").Call(),
+			jen.Id("NeedsRaw"):         jen.Id("adapter").Dot("StreamMode").Call().Dot("NeedsRaw").Call(),
+			jen.Id("IncludeReasoning"): jen.Id("adapter").Dot("IncludeReasoning").Call(),
+			// SoftFinalParse is the per-handler opt-in (dynclient.WithSoftFinalParse)
+			// that softens a final structured-parse miss on a raw-wanted STREAM. The
+			// orchestrator gates it on NeedsPartials && NeedsRaw, so it never affects
+			// the non-streaming CallWithRaw bridge.
+			jen.Id("SoftFinalParse"):     jen.Id("adapter").Dot("SoftFinalParse").Call(),
 			jen.Id("FallbackChain"):      jen.Id("fallbackChain"),
 			jen.Id("ClientOverride"):     jen.Id("clientOverride"),
 			jen.Id("ClientProviders"):    jen.Id("clientProviders"),
