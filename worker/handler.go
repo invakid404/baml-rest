@@ -62,6 +62,16 @@ type Config struct {
 	BaseURLRewrites []urlrewrite.Rule
 	HTTPClient      *llmhttp.Client
 
+	// SoftFinalParse is the per-handler opt-in (dynclient.WithSoftFinalParse)
+	// that softens a final structured-parse miss on a raw-wanted STREAM
+	// (/stream-with-raw, StreamModeStreamWithRaw) into a successful raw-only
+	// final instead of a hard error. Zero value (false) keeps the strict
+	// final parse. configureAdapter installs it on every adapter; the
+	// orchestrator gates it on NeedsPartials && NeedsRaw (streaming only) and
+	// never applies it to a cancellation/deadline. dynclient supplies it
+	// explicitly; server/worker entrypoints leave it false today.
+	SoftFinalParse bool
+
 	// DeBAML mirrors BAML_REST_USE_DEBAML — the umbrella switch for
 	// native de-BAML behaviour (the native ctx.output_format renderer on
 	// the dynamic BuildRequest route today). Zero value (disabled) keeps
@@ -307,6 +317,10 @@ type Handler struct {
 	deBAMLRender    bamlutils.DeBAMLRenderFunc
 	deBAMLParse     bamlutils.DeBAMLParseFunc
 
+	// softFinalParse mirrors Config.SoftFinalParse — the per-handler
+	// soft-final opt-in installed on every adapter in configureAdapter.
+	softFinalParse bool
+
 	// nativeCapability is the neutral native-send capability linked into this
 	// worker binary, or nil for the BAML-only worker. Stored at construction
 	// and read back via NativeCapability; never wired to the orchestrator in
@@ -411,6 +425,7 @@ func New(cfg Config) (*Handler, error) {
 		deBAML:                  cfg.DeBAML,
 		deBAMLRender:            cfg.DeBAMLRender,
 		deBAMLParse:             cfg.DeBAMLParse,
+		softFinalParse:          cfg.SoftFinalParse,
 		nativeCapability:        cfg.NativeCapability,
 		nativeShadow:            cfg.NativeShadowComparator,
 		nativeServe:             cfg.NativeServeComparator,
@@ -461,6 +476,7 @@ func (h *Handler) NativeCapability() NativeCapability {
 func (h *Handler) configureAdapter(adapter bamlutils.Adapter) {
 	adapter.SetHTTPClient(h.httpClient)
 	adapter.SetDeBAMLConfig(h.deBAML)
+	adapter.SetSoftFinalParse(h.softFinalParse)
 	if setter, ok := adapter.(deBAMLRendererSetter); ok {
 		setter.SetDeBAMLRenderer(h.deBAMLRender)
 	}

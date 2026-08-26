@@ -809,8 +809,9 @@ func bamlRestDynamicBuildRequest(adapter bamlutils.Adapter, rawInput any, out ch
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newBamlRestDynamicOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {

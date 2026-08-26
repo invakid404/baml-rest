@@ -138,6 +138,13 @@ func emitFrameworkAdapter(out *jen.File, opts Options) {
 		jen.Comment("text passed to Parse/ParseStream."),
 		jen.Id("includeReasoning").Bool(),
 		jen.Line(),
+		jen.Comment("softFinalParse is the per-handler opt-in (dynclient.WithSoftFinalParse)"),
+		jen.Comment("that softens a final structured-parse miss on a raw-wanted STREAM into a"),
+		jen.Comment("successful raw-only final instead of a hard error. Default false keeps the"),
+		jen.Comment("strict final parse. Consumed by the stream router as"),
+		jen.Comment("StreamConfig.SoftFinalParse (streaming + raw only)."),
+		jen.Id("softFinalParse").Bool(),
+		jen.Line(),
 		jen.Comment("clientRegistryProvider is the provider of the primary client from"),
 		jen.Comment("the runtime ClientRegistry override. Empty if no override."),
 		jen.Id("clientRegistryProvider").String(),
@@ -266,6 +273,7 @@ func emitFrameworkAdapter(out *jen.File, opts Options) {
 
 	emitFrameworkAdapterRetryConfig(out, bamlutilsPkg)
 	emitFrameworkAdapterIncludeReasoning(out)
+	emitFrameworkAdapterSoftFinalParse(out)
 	emitFrameworkAdapterSetClientRegistry(out, opts, bamlPkg, bamlutilsPkg)
 	emitFrameworkAdapterClientRegistryProvider(out)
 	emitFrameworkAdapterOriginalClientRegistry(out, bamlutilsPkg)
@@ -308,6 +316,20 @@ func emitFrameworkAdapterIncludeReasoning(out *jen.File) {
 		Id("IncludeReasoning").Params().Bool().
 		Block(
 			jen.Return(jen.Id("b").Dot("includeReasoning")),
+		)
+}
+
+func emitFrameworkAdapterSoftFinalParse(out *jen.File) {
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("SetSoftFinalParse").Params(jen.Id("softFinalParse").Bool()).
+		Block(
+			jen.Id("b").Dot("softFinalParse").Op("=").Id("softFinalParse"),
+		)
+
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("SoftFinalParse").Params().Bool().
+		Block(
+			jen.Return(jen.Id("b").Dot("softFinalParse")),
 		)
 }
 

@@ -133,6 +133,7 @@ func newWithRuntime(rt worker.Runtime, init func(), opts ...Option) (*Client, er
 		NativeStreamServeComparator: cfg.nativeStreamServe,
 		BaseURLRewrites:             cfg.baseURLRewrites,
 		HTTPClient:                  httpClient,
+		SoftFinalParse:              cfg.softFinalParse,
 	}
 	if cfg.sharedState != nil {
 		workerCfg.SharedState = worker.NewStoreSharedStateHook(cfg.sharedState)

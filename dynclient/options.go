@@ -46,6 +46,11 @@ type config struct {
 	trustedClients       *trustedclients.Set
 	sharedState          *workerplugin.SharedStateStore
 
+	// softFinalParse is the client-wide WithSoftFinalParse opt-in. It is
+	// forwarded to worker.Config.SoftFinalParse and installed on every
+	// adapter, reaching the orchestrator as StreamConfig.SoftFinalParse.
+	softFinalParse bool
+
 	clientMode    llmhttp.ClientMode
 	clientModeSet bool
 
@@ -103,6 +108,27 @@ func WithDeBAMLRenderer(render bamlutils.DeBAMLRenderFunc) Option {
 func WithDeBAMLParser(parse bamlutils.DeBAMLParseFunc) Option {
 	return func(c *config) error {
 		c.deBAMLParse = parse
+		return nil
+	}
+}
+
+// WithSoftFinalParse enables the soft-final opt-in for this client. On a
+// /stream-with-raw dynamic streaming call (DynamicStreamRaw), a final
+// structured-parse miss — e.g. plain prose streamed against a class schema,
+// which BAML's Parse rejects with a root-coercion error — completes
+// SUCCESSFULLY carrying the accumulated raw text (a final frame with a null
+// structured payload) instead of returning a terminal parse error. Default
+// OFF: the strict final parse is unchanged.
+//
+// Scope: STREAMING raw calls only. The orchestrator gates the softening on
+// NeedsPartials && NeedsRaw, so the non-streaming DynamicCallRaw bridge stays
+// strict even with this enabled, and a cancellation/deadline is never turned
+// into a success. Live raw partials are ALWAYS decoupled from the structured
+// parse (they flow even without this option); enable this only to also receive
+// a successful final when the final parse misses.
+func WithSoftFinalParse() Option {
+	return func(c *config) error {
+		c.softFinalParse = true
 		return nil
 	}
 }

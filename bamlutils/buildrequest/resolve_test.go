@@ -36,6 +36,8 @@ func (m *mockAdapter) SetRetryConfig(rc *bamlutils.RetryConfig) { m.retryConfig 
 func (m *mockAdapter) RetryConfig() *bamlutils.RetryConfig      { return m.retryConfig }
 func (m *mockAdapter) SetIncludeReasoning(v bool)               { m.includeReasoning = v }
 func (m *mockAdapter) IncludeReasoning() bool                   { return m.includeReasoning }
+func (m *mockAdapter) SetSoftFinalParse(bool)                   {}
+func (m *mockAdapter) SoftFinalParse() bool                     { return false }
 func (m *mockAdapter) ClientRegistryProvider() string           { return m.clientRegistryProvider }
 func (m *mockAdapter) HTTPClient() *llmhttp.Client              { return m.httpClient }
 func (m *mockAdapter) SetHTTPClient(c *llmhttp.Client)          { m.httpClient = c }
