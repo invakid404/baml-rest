@@ -312,6 +312,138 @@ func TestRunStreamOrchestration_SoftFinalParse_DefaultStrict_Errors_SSE(t *testi
 	}
 }
 
+// TestRunStreamOrchestration_RawPartialsSurviveThrottle_SSE locks the
+// throttle-skip case for fix (1): with a large ParseThrottleInterval only the
+// first tick parses; the rest are throttled. Raw delivery must not depend on
+// parse cadence, so every prose delta's raw must still arrive.
+//
+// Pre-hardening this failed (the raw-only emit lived inside `if shouldParse`,
+// so throttled ticks emitted nothing → 1 partial instead of 3).
+func TestRunStreamOrchestration_RawPartialsSurviveThrottle_SSE(t *testing.T) {
+	server := makeOpenAIServer(proseChunks)
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &StreamConfig{
+		Provider:              "openai",
+		NeedsPartials:         true,
+		NeedsRaw:              true,
+		ParseThrottleInterval: time.Hour, // only the first tick parses
+	}
+
+	err := RunStreamOrchestration(
+		context.Background(), out, config, client,
+		func(_ context.Context, _ string) (*llmhttp.Request, error) {
+			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
+		},
+		rootCoercionParseStream,
+		func(_ context.Context, accumulated string) (any, error) {
+			return map[string]any{"value": accumulated}, nil
+		},
+		newTestResult,
+	)
+	if err != nil {
+		t.Fatalf("RunStreamOrchestration returned error: %v", err)
+	}
+
+	assertLiveRawPartials(t, collectResults(out), proseChunks)
+}
+
+// TestRunStreamOrchestration_SoftFinalParse_HonorsCancellation_SSE locks that
+// the soft-final opt-in never swallows a cancellation/deadline: when the final
+// parse fails specifically with context.Canceled, the call must fall through
+// to the strict path, not return a successful raw final.
+func TestRunStreamOrchestration_SoftFinalParse_HonorsCancellation_SSE(t *testing.T) {
+	server := makeOpenAIServer(proseChunks)
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &StreamConfig{
+		Provider:       "openai",
+		NeedsPartials:  true,
+		NeedsRaw:       true,
+		SoftFinalParse: true,
+	}
+
+	_ = RunStreamOrchestration(
+		context.Background(), out, config, client,
+		func(_ context.Context, _ string) (*llmhttp.Request, error) {
+			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
+		},
+		rootCoercionParseStream,
+		// Final parse fails with a cancellation error rather than a
+		// structured-parse miss. Soft final must NOT treat this as success.
+		func(_ context.Context, _ string) (any, error) { return nil, context.Canceled },
+		newTestResult,
+	)
+
+	var finals, streamErrors int
+	for _, r := range collectResults(out) {
+		switch r.kind {
+		case bamlutils.StreamResultKindFinal:
+			finals++
+		case bamlutils.StreamResultKindError:
+			streamErrors++
+		}
+	}
+	if finals != 0 {
+		t.Errorf("SoftFinalParse must not convert a cancellation into a successful final; got %d finals", finals)
+	}
+	if streamErrors != 1 {
+		t.Errorf("a cancellation final-parse error must take the strict error path; got %d errors", streamErrors)
+	}
+}
+
+// TestRunStreamOrchestration_SoftFinalParse_ScopedToStreaming_SSE locks the
+// streaming-mode boundary for fix (2): NeedsPartials=false mirrors the
+// non-streaming CallWithRaw bridge (StreamModeCallWithRaw has NeedsRaw=true,
+// NeedsPartials=false). SoftFinalParse must NOT soften that path — it stays
+// strict on a final-parse miss.
+func TestRunStreamOrchestration_SoftFinalParse_ScopedToStreaming_SSE(t *testing.T) {
+	server := makeOpenAIServer(proseChunks)
+	defer server.Close()
+
+	client := llmhttp.NewClient(server.Client())
+	out := make(chan bamlutils.StreamResult, 100)
+
+	config := &StreamConfig{
+		Provider:       "openai",
+		NeedsPartials:  false, // non-streaming call bridge shape
+		NeedsRaw:       true,
+		SoftFinalParse: true,
+	}
+
+	_ = RunStreamOrchestration(
+		context.Background(), out, config, client,
+		func(_ context.Context, _ string) (*llmhttp.Request, error) {
+			return &llmhttp.Request{URL: server.URL, Method: "POST", Body: `{}`}, nil
+		},
+		nil,                     // no parseStream on the call bridge
+		rootCoercionParseStream, // final parse fails (root coercion)
+		newTestResult,
+	)
+
+	var finals, streamErrors int
+	for _, r := range collectResults(out) {
+		switch r.kind {
+		case bamlutils.StreamResultKindFinal:
+			finals++
+		case bamlutils.StreamResultKindError:
+			streamErrors++
+		}
+	}
+	if finals != 0 {
+		t.Errorf("SoftFinalParse must not soften a non-streaming (NeedsPartials=false) call; got %d finals", finals)
+	}
+	if streamErrors != 1 {
+		t.Errorf("non-streaming raw call must still hard-fail on a final-parse miss; got %d errors", streamErrors)
+	}
+}
+
 // assertLiveRawPartials checks that exactly len(want) non-reset stream
 // (partial) events arrived, each carrying the corresponding per-delta raw
 // text and no structured data (parsed == nil), in order.
