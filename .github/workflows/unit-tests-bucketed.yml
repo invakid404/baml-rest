@@ -86,12 +86,12 @@ jobs:
 
       - name: Compute the bucket matrix
         # Cut over to the standalone tool's composite action (testbucket v0.1.1),
-        # pinned to the exact tag. This replaces `go run ./cmd/testbucket plan`:
-        # the action installs the released binary and runs the same planner, so
-        # the never-drop coverage-completeness gate still runs INSIDE it (a live
-        # target left unscheduled exits non-zero and emits no matrix — the
-        # fan-out fails closed rather than open). --json / --shard-plan are
-        # emitted by the action; the summary still lands on this job's log.
+        # pinned to the exact tag. The action installs the released binary and
+        # runs the planner, so the never-drop coverage-completeness gate still
+        # runs INSIDE it (a live target left unscheduled exits non-zero and emits
+        # no matrix — the fan-out fails closed rather than open). --json /
+        # --shard-plan are emitted by the action; the summary still lands on this
+        # job's log.
         #
         #   version: v0.1.1   pin the installed binary too (there is no `v1`
         #                     release, so the action's default alias would fail).
@@ -209,9 +209,8 @@ jobs:
         # the SCRIPT's status (PIPESTATUS[0]), never the renderer's, so a happy
         # renderer can't make a red bucket look green. The generated script
         # already carries -json and tees each stream into events-dir for the
-        # record job. Same behavior as the former inline
-        # `bash bucket.sh | scripts/testbucket-render.sh`; the script itself is
-        # generated data passed through env, never spliced into a command line.
+        # record job. The script itself is generated data passed through env,
+        # never spliced into a command line.
         uses: invakid404/testbucket/.github/actions/run-bucket@551d49cea6a74a99706912fe18504f318bdba1cc # v0.1.1
         with:
           version: v0.1.1
