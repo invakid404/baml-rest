@@ -559,8 +559,9 @@ func staticAssertConfidenceBuildRequest(adapter bamlutils.Adapter, rawInput any,
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticAssertConfidenceOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -1452,8 +1453,9 @@ func staticCheckedAliasedFieldBuildRequest(adapter bamlutils.Adapter, rawInput a
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticCheckedAliasedFieldOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -2345,8 +2347,9 @@ func staticCheckedConfidenceBuildRequest(adapter bamlutils.Adapter, rawInput any
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticCheckedConfidenceOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -3238,8 +3241,9 @@ func staticCheckedFloatBuildRequest(adapter bamlutils.Adapter, rawInput any, out
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticCheckedFloatOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -4131,8 +4135,9 @@ func staticCheckedGtePredicateBuildRequest(adapter bamlutils.Adapter, rawInput a
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticCheckedGtePredicateOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -5024,8 +5029,9 @@ func staticCheckedListBuildRequest(adapter bamlutils.Adapter, rawInput any, out 
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticCheckedListOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -5917,8 +5923,9 @@ func staticCheckedNonAsciiLabelBuildRequest(adapter bamlutils.Adapter, rawInput 
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticCheckedNonAsciiLabelOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -6810,8 +6817,9 @@ func staticCheckedOptionalBuildRequest(adapter bamlutils.Adapter, rawInput any, 
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticCheckedOptionalOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -7703,8 +7711,9 @@ func staticCheckedRenamedClassBuildRequest(adapter bamlutils.Adapter, rawInput a
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticCheckedRenamedClassOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -8596,8 +8605,9 @@ func staticCheckedReorderedBuildRequest(adapter bamlutils.Adapter, rawInput any,
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticCheckedReorderedOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -9489,8 +9499,9 @@ func staticCheckedTwoChecksBuildRequest(adapter bamlutils.Adapter, rawInput any,
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticCheckedTwoChecksOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -10382,8 +10393,9 @@ func staticCheckedUnionBuildRequest(adapter bamlutils.Adapter, rawInput any, out
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticCheckedUnionOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -11275,8 +11287,9 @@ func staticCompletionBuildRequest(adapter bamlutils.Adapter, rawInput any, out c
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticCompletionOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -12168,8 +12181,9 @@ func staticCompletionOutputFormatBuildRequest(adapter bamlutils.Adapter, rawInpu
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticCompletionOutputFormatOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -13061,8 +13075,9 @@ func staticEnumArgCanonicalEqBuildRequest(adapter bamlutils.Adapter, rawInput an
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticEnumArgCanonicalEqOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -13954,8 +13969,9 @@ func staticEnumArgMemberEqBuildRequest(adapter bamlutils.Adapter, rawInput any, 
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticEnumArgMemberEqOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -14847,8 +14863,9 @@ func staticEnumCanonicalArgEqBuildRequest(adapter bamlutils.Adapter, rawInput an
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticEnumCanonicalArgEqOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -15726,8 +15743,9 @@ func staticEnumCanonicalEqBuildRequest(adapter bamlutils.Adapter, rawInput any, 
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticEnumCanonicalEqOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -16601,8 +16619,9 @@ func staticEnumCanonicalInMemberListBuildRequest(adapter bamlutils.Adapter, rawI
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticEnumCanonicalInMemberListOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -17476,8 +17495,9 @@ func staticEnumDifferentMemberEqBuildRequest(adapter bamlutils.Adapter, rawInput
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticEnumDifferentMemberEqOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -18351,8 +18371,9 @@ func staticEnumDisplayAliasEqBuildRequest(adapter bamlutils.Adapter, rawInput an
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticEnumDisplayAliasEqOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -19240,8 +19261,9 @@ func staticEnumMemberArgEqBuildRequest(adapter bamlutils.Adapter, rawInput any, 
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticEnumMemberArgEqOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -20119,8 +20141,9 @@ func staticEnumMemberInCanonicalListBuildRequest(adapter bamlutils.Adapter, rawI
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticEnumMemberInCanonicalListOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -20994,8 +21017,9 @@ func staticEnumReverseCanonicalEqBuildRequest(adapter bamlutils.Adapter, rawInpu
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticEnumReverseCanonicalEqOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -21869,8 +21893,9 @@ func staticEnumSameMemberEqBuildRequest(adapter bamlutils.Adapter, rawInput any,
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticEnumSameMemberEqOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -22773,8 +22798,9 @@ func staticMediaImageBuildRequest(adapter bamlutils.Adapter, rawInput any, out c
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticMediaImageOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -23695,8 +23721,9 @@ func staticMediaImageListBuildRequest(adapter bamlutils.Adapter, rawInput any, o
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticMediaImageListOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -24626,8 +24653,9 @@ func staticMediaInClassBuildRequest(adapter bamlutils.Adapter, rawInput any, out
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticMediaInClassOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -25523,8 +25551,9 @@ func staticOutputFormatBuildRequest(adapter bamlutils.Adapter, rawInput any, out
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticOutputFormatOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -26419,8 +26448,9 @@ func staticPrimitiveArgsBuildRequest(adapter bamlutils.Adapter, rawInput any, ou
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticPrimitiveArgsOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -27327,8 +27357,9 @@ func staticRecursiveABuildRequest(adapter bamlutils.Adapter, rawInput any, out c
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticRecursiveAOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -28220,8 +28251,9 @@ func staticRecursiveAliasJsonBuildRequest(adapter bamlutils.Adapter, rawInput an
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticRecursiveAliasJsonOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -29113,8 +29145,9 @@ func staticRecursiveAliasJsonValueBuildRequest(adapter bamlutils.Adapter, rawInp
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticRecursiveAliasJsonValueOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -30006,8 +30039,9 @@ func staticRecursiveAliasJsonValueReorderedBuildRequest(adapter bamlutils.Adapte
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticRecursiveAliasJsonValueReorderedOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -30899,8 +30933,9 @@ func staticRecursiveBBuildRequest(adapter bamlutils.Adapter, rawInput any, out c
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticRecursiveBOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -31792,8 +31827,9 @@ func staticRecursiveLoopBuildRequest(adapter bamlutils.Adapter, rawInput any, ou
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticRecursiveLoopOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -32685,8 +32721,9 @@ func staticRecursiveNodeBuildRequest(adapter bamlutils.Adapter, rawInput any, ou
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticRecursiveNodeOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -33578,8 +33615,9 @@ func staticRecursiveNodeAnnBuildRequest(adapter bamlutils.Adapter, rawInput any,
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticRecursiveNodeAnnOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -34471,8 +34509,9 @@ func staticRenderEnumBuildRequest(adapter bamlutils.Adapter, rawInput any, out c
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticRenderEnumOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -35364,8 +35403,9 @@ func staticRenderListBuildRequest(adapter bamlutils.Adapter, rawInput any, out c
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticRenderListOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -36257,8 +36297,9 @@ func staticRenderPaletteBuildRequest(adapter bamlutils.Adapter, rawInput any, ou
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticRenderPaletteOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -37150,8 +37191,9 @@ func staticRenderPalettesBuildRequest(adapter bamlutils.Adapter, rawInput any, o
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticRenderPalettesOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -38043,8 +38085,9 @@ func staticRenderStringsBuildRequest(adapter bamlutils.Adapter, rawInput any, ou
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticRenderStringsOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -38937,8 +38980,9 @@ func staticRoleChatBuildRequest(adapter bamlutils.Adapter, rawInput any, out cha
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticRoleChatOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -39839,8 +39883,9 @@ func staticStreamAliasEqBuildRequest(adapter bamlutils.Adapter, rawInput any, ou
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticStreamAliasEqOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -40732,8 +40777,9 @@ func staticStreamRenderEnumBuildRequest(adapter bamlutils.Adapter, rawInput any,
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticStreamRenderEnumOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {

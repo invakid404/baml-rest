@@ -48,6 +48,13 @@ type BamlAdapter struct {
 	// text passed to Parse/ParseStream.
 	includeReasoning bool
 
+	// softFinalParse is the per-handler opt-in (dynclient.WithSoftFinalParse)
+	// that softens a final structured-parse miss on a raw-wanted STREAM into a
+	// successful raw-only final instead of a hard error. Default false keeps the
+	// strict final parse. Consumed by the stream router as
+	// StreamConfig.SoftFinalParse (streaming + raw only).
+	softFinalParse bool
+
 	// clientRegistryProvider is the provider of the primary client from
 	// the runtime ClientRegistry override. Empty if no override.
 	clientRegistryProvider string
@@ -175,6 +182,12 @@ func (b *BamlAdapter) SetIncludeReasoning(includeReasoning bool) {
 }
 func (b *BamlAdapter) IncludeReasoning() bool {
 	return b.includeReasoning
+}
+func (b *BamlAdapter) SetSoftFinalParse(softFinalParse bool) {
+	b.softFinalParse = softFinalParse
+}
+func (b *BamlAdapter) SoftFinalParse() bool {
+	return b.softFinalParse
 }
 func (b *BamlAdapter) SetClientRegistry(clientRegistry *bamlutils.ClientRegistry) error {
 	if clientRegistry == nil {

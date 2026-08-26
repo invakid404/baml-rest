@@ -559,8 +559,9 @@ func staticAssertConfidenceBuildRequest(adapter bamlutils.Adapter, rawInput any,
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticAssertConfidenceOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
@@ -1452,8 +1453,9 @@ func staticCheckedConfidenceBuildRequest(adapter bamlutils.Adapter, rawInput any
 		NewMetadataResult: func(md *bamlutils.Metadata) bamlutils.StreamResult {
 			return newStaticCheckedConfidenceOutputMetadata(md)
 		},
-		Provider:    provider,
-		RetryPolicy: retryPolicy,
+		Provider:       provider,
+		RetryPolicy:    retryPolicy,
+		SoftFinalParse: adapter.SoftFinalParse(),
 	}
 	__httpClient := llmhttp.DefaultClient
 	if __c := adapter.HTTPClient(); __c != nil {
