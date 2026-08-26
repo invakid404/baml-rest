@@ -131,6 +131,34 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      - name: Cold-start plan gate (guaranteed cache miss)
+        # M3 — migrated from unit-tests.yml's `Cold start from a guaranteed
+        # miss`. The plan action above restored a live store (or the legacy
+        # fallback) and planned from it; this proves the OTHER path — a total
+        # cache miss — still yields a valid, coverage-complete matrix on the
+        # cold-start mean weight, so a cache expiry can never take the whole
+        # fan-out down. It plans against a path GUARANTEED not to exist (never
+        # the restored store path), which the tool treats as a cold start rather
+        # than an error.
+        #
+        # The binary is already on PATH: the plan action's install-testbucket.sh
+        # prepended its bindir to $GITHUB_PATH for later steps in this job. Same
+        # K, count, node-prefixes and four exclude-module globs as the real plan,
+        # so the cold-start plan is scoped identically. The coverage gate inside
+        # `plan` is what makes this meaningful: it fails loudly if any live
+        # package is left unscheduled.
+        run: |
+          set -euo pipefail
+          testbucket plan \
+            --k "$TESTBUCKET_K" \
+            --count 100 \
+            --store "$RUNNER_TEMP/definitely-not-a-store.json" \
+            --node-prefixes adapters \
+            --exclude-module 'adapters/adapter_*' \
+            --exclude-module 'dynclient/baml-patched' \
+            --exclude-module 'internal/nativebody/nanollmprepare' \
+            --exclude-module 'nativeserve'
+
   # ---------------------------------------------------------------------------
   # 2/3 — TEST. One job per bucket, each running only its own slice.
   test:
@@ -241,6 +269,48 @@ jobs:
 
       - name: Install goimports
         run: go install golang.org/x/tools/cmd/goimports@latest
+
+      - name: Race-enabled compile coverage (no-test packages)
+        # M1 — migrated from unit-tests.yml's `Run Unit Tests (all modules)`.
+        # v0.1.1 schedules only packages that HAVE test files (HasTests=true) and
+        # deliberately skips the rest, so the bucket sweep no longer compiles the
+        # repo's test-free packages under -race. The old serial loop did, as a
+        # side effect of `go test ./...`. This probe restores exactly that
+        # race-enabled compile/link coverage without re-running any test:
+        # `-run '^$'` matches no test, so every package in each module — including
+        # the no-test ones (root cmd/*, internal/*, adapters/common/*,
+        # bamlutils/{promptdescriptor,schemadescriptor}, dynclient's generated
+        # packages, workerplugin/proto, …) — is compiled under -race but nothing
+        # executes.
+        #
+        # It is the SAME module discovery/exclusion loop the old lane used, with
+        # ONE change: the `./bamlutils/*` scheduling exclusion is dropped, so the
+        # two bamlutils no-test packages are covered here too (the old lane split
+        # bamlutils into its own `bamlutils-race` job, which carried no compile
+        # probe of its own). The four REAL module exclusions are unchanged —
+        # pinned adapters, vendored baml-patched, and the two cgo modules kept out
+        # of go.work — matching the bucketed lane's own four exclude-module globs.
+        # GOWORK=off for adapters/common only, exactly as the old loop did, since
+        # common is deliberately outside go.work.
+        #
+        # Runs before the two fresh-tree gates below: like the old test loop it
+        # may append additive sums to go.work.sum in workspace mode, and those
+        # gates already restore go.work.sum before asserting a clean tree.
+        run: |
+          set -euo pipefail
+          find . -name go.mod \
+            -not -path '*/adapters/adapter_*' \
+            -not -path '*/dynclient/baml-patched/*' \
+            -not -path '*/internal/nativebody/nanollmprepare/*' \
+            -not -path '*/nativeserve/*' \
+            -exec dirname {} \; | while read -r dir; do
+            echo "=== Compiling (race) $dir ==="
+            if [ "$dir" = "./adapters/common" ]; then
+              (cd "$dir" && GOWORK=off go test -race -count=1 -run '^$' ./...)
+            else
+              (cd "$dir" && go test -race -count=1 -run '^$' ./...)
+            fi
+          done
 
       - name: Subprocess build + test sanity
         # The default loop above runs everything under the no-tag build
@@ -464,6 +534,38 @@ jobs:
             internal/nativebody/nanollmprepare
             nativeserve
 
+      - name: Validate the freshly recorded store can plan the next run
+        # M2 — migrated from unit-tests.yml's `Show the plan the next PR will
+        # get`. The record action above ingested the measured timings; this
+        # proves the store it just wrote can IMMEDIATELY produce a complete,
+        # coverage-gated plan for the next PR at the real envelope. Unlike the
+        # action's trailing best-effort `whales ... || true`, this is a GATE: a
+        # store that can no longer schedule every live target (a dropped whale, a
+        # discovery mismatch, an incomplete split) fails this master run rather
+        # than silently shipping a bad split to every downstream PR. Placed after
+        # the ingest and BEFORE the cache save, so a store that cannot plan is
+        # never persisted.
+        #
+        # The standalone binary is already on PATH: the record action installed
+        # it via install-testbucket.sh, which prepends its bindir to $GITHUB_PATH
+        # for later steps in this job. Same store path, K, count, node-prefixes
+        # and four exclude-module globs the action used, so the plan is scoped
+        # identically. No --json: the loaded-vs-missing summary and the split
+        # land directly in this job's log. The coverage gate runs inside `plan`
+        # regardless of --json, so a green line here is a real coverage statement.
+        run: |
+          set -euo pipefail
+          echo "planning at the recorded K=$TESTBUCKET_K against the freshly ingested store"
+          testbucket plan \
+            --k "$TESTBUCKET_K" \
+            --count 100 \
+            --store "$RUNNER_TEMP/testbucket-store/test-timings.json" \
+            --node-prefixes adapters \
+            --exclude-module 'adapters/adapter_*' \
+            --exclude-module 'dynclient/baml-patched' \
+            --exclude-module 'internal/nativebody/nanollmprepare' \
+            --exclude-module 'nativeserve'
+
       - name: Save the timing store
         # Writes on a new master commit; on a same-SHA re-run the entry
         # already exists and the action warns instead of overwriting, which
@@ -481,3 +583,120 @@ jobs:
           path: ${{ runner.temp }}/testbucket-store/test-timings.json
           if-no-files-found: warn
           retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # M4 — per-module GOWORK=off published-module sanity matrix.
+  #
+  # Copied VERBATIM from unit-tests.yml's `standalone-modules` job: the bucket
+  # sweep runs six of these modules in workspace mode (and adapters/common
+  # standalone but under the race/count-100 sweep), which masks per-module
+  # go.sum drift, and it does not schedule dynclient/baml-patched at all. Only a
+  # GOWORK=off `go test ./...` from inside each published module proves its own
+  # go.sum is complete for external consumers who never share our go.work.
+  # Per-module GOWORK=off sanity matrix for the modules we publish
+  # release tags for. The job above runs everything under the
+  # workspace, which masks per-module go.sum drift: a missing
+  # `pkg@ver/go.mod` hash in worker/go.sum is silently covered by
+  # go.work.sum during the workspace build, so the failure only
+  # surfaces during release-prep (or for external consumers who
+  # always resolve via GOWORK=off semantics, since they don't share
+  # our go.work). #327 was the most recent miss of this shape: a
+  # stale dynclient/go.sum that only got caught by a maintainer's
+  # manual check during the 0.0.47 release-prep.
+  #
+  # Matrix mirrors release-lib.sh's `release_required_modules`
+  # (scripts/release-lib.sh:19-27). Keep the two in sync if a future
+  # release adds or removes a published module. adapters/adapter_v*
+  # and the root module are excluded for the same reasons
+  # release-lib.sh excludes them (per-adapter BAML pins, workspace-only
+  # respectively).
+  standalone-modules:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - adapters/common
+          - bamlutils
+          - dynclient
+          - dynclient/baml-patched
+          - introspected
+          - worker
+          - workerplugin
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: GOWORK=off go test ./...
+        run: |
+          cd "${{ matrix.module }}"
+          GOWORK=off go test ./... -count=1
+
+  # ---------------------------------------------------------------------------
+  # THE SINGLE STABLE REQUIRED CONTEXT (scope §4). Every other unit-test job in
+  # this workflow has a dynamic name (the six buckets carry timing-weighted
+  # matrix names) or is master-only (`record` skips PRs), so none is a stable
+  # thing branch protection can require. This aggregate is: it FAILS CLOSED
+  # unless every needed job concluded `success`, so a skipped, cancelled, or
+  # failed dependency turns it red. Once PR B deletes unit-tests.yml, this is the
+  # one context to mark required on master.
+  #
+  # `record` is deliberately absent from `needs`: it is master-push-only (its
+  # `if` skips PRs), so requiring it would strand every PR. It stays a master
+  # health gate, not a PR-required context.
+  unit-tests-bucketed-gate:
+    needs: [plan, test, once-only-gates, standalone-modules]
+    # always() so this job runs even when a dependency failed or was skipped —
+    # otherwise a failed upstream would SKIP this gate, and a skipped required
+    # context reads as "not failing" to branch protection, i.e. fails open.
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+
+    steps:
+      - name: Assert every unit-test job succeeded
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          ONCE_ONLY_RESULT: ${{ needs.once-only-gates.result }}
+          STANDALONE_RESULT: ${{ needs.standalone-modules.result }}
+        run: |
+          set -euo pipefail
+          echo "plan=$PLAN_RESULT test=$TEST_RESULT once-only-gates=$ONCE_ONLY_RESULT standalone-modules=$STANDALONE_RESULT"
+          # `test` and `standalone-modules` are matrix jobs; their aggregate
+          # result is `success` only when EVERY cell succeeded, so this covers
+          # all six buckets and all seven standalone cells. Anything other than
+          # `success` (failure / cancelled / skipped) fails the gate closed.
+          fail=0
+          for pair in \
+            "plan:$PLAN_RESULT" \
+            "test:$TEST_RESULT" \
+            "once-only-gates:$ONCE_ONLY_RESULT" \
+            "standalone-modules:$STANDALONE_RESULT"; do
+            name=${pair%%:*}
+            result=${pair#*:}
+            if [ "$result" != "success" ]; then
+              echo "::error::unit-test dependency '$name' concluded '$result' (expected success)"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "unit-tests-bucketed-gate: FAILING closed — not every unit-test job succeeded."
+            exit 1
+          fi
+          echo "unit-tests-bucketed-gate: all unit-test jobs succeeded."
