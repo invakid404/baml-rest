@@ -1209,17 +1209,17 @@ type Adapter interface {
 	// IncludeReasoning returns the per-request opt-in flag. Defaults to
 	// false when no override has been applied.
 	IncludeReasoning() bool
-	// SetSoftFinalParse installs the per-handler opt-in
-	// (dynclient.WithSoftFinalParse) that softens a final structured-parse
-	// miss on a raw-wanted STREAM (StreamModeStreamWithRaw) into a
-	// successful raw-only final instead of a hard error. Default false keeps
-	// the strict final parse. The stream router forwards it verbatim into
+	// SoftFinalParse returns the per-handler soft-final opt-in
+	// (dynclient.WithSoftFinalParse): whether a final structured-parse miss
+	// on a raw-wanted STREAM (StreamModeStreamWithRaw) completes as a
+	// successful raw-only final instead of a hard error. Defaults to false
+	// (strict final parse). The stream router forwards it into
 	// StreamConfig.SoftFinalParse, where the orchestrator gates it on
 	// NeedsPartials && NeedsRaw (streaming only) and never applies it to a
-	// cancellation/deadline.
-	SetSoftFinalParse(softFinalParse bool)
-	// SoftFinalParse returns the per-handler soft-final opt-in flag.
-	// Defaults to false when no override has been applied.
+	// cancellation/deadline. Read-only here — the value is INSTALLED via the
+	// narrow, off-interface softFinalParseSetter (worker.configureAdapter),
+	// mirroring SetDeBAMLRenderer/SetDeBAMLParser, so minimal adapter doubles
+	// that never stream need not implement a setter they would panic on.
 	SoftFinalParse() bool
 	// ClientRegistryProvider returns the provider string of the primary client
 	// from the runtime ClientRegistry override, or empty string if no override.

@@ -219,6 +219,19 @@ type deBAMLParserSetter interface {
 	SetDeBAMLParser(bamlutils.DeBAMLParseFunc)
 }
 
+// softFinalParseSetter is the narrow optional interface the adapter
+// implements to receive the per-handler soft-final opt-in
+// (dynclient.WithSoftFinalParse). Kept OFF bamlutils.Adapter — only the
+// getter SoftFinalParse() is on the interface (the generated stream router
+// reads it) — so minimal adapter doubles that only exercise non-streaming
+// routes (e.g. the direct-parse route double, which embeds bamlutils.Adapter
+// and implements only the setters it uses) need not implement a setter
+// configureAdapter would otherwise dispatch on their nil embed. The generated
+// dynclient/static adapters implement it.
+type softFinalParseSetter interface {
+	SetSoftFinalParse(bool)
+}
+
 // nativeShadowSetter is the narrow optional interface the adapter implements to
 // receive the native one-send SHADOW comparator (de-BAML cutover Slice 4). Kept
 // off the bamlutils.Adapter interface like the renderer/parser setters so test
@@ -476,7 +489,12 @@ func (h *Handler) NativeCapability() NativeCapability {
 func (h *Handler) configureAdapter(adapter bamlutils.Adapter) {
 	adapter.SetHTTPClient(h.httpClient)
 	adapter.SetDeBAMLConfig(h.deBAML)
-	adapter.SetSoftFinalParse(h.softFinalParse)
+	// Installed via the optional interface (not an unconditional call) so
+	// minimal non-streaming adapter doubles that embed a nil bamlutils.Adapter
+	// are skipped rather than dispatching SetSoftFinalParse on the nil embed.
+	if setter, ok := adapter.(softFinalParseSetter); ok {
+		setter.SetSoftFinalParse(h.softFinalParse)
+	}
 	if setter, ok := adapter.(deBAMLRendererSetter); ok {
 		setter.SetDeBAMLRenderer(h.deBAMLRender)
 	}
