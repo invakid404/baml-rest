@@ -124,7 +124,7 @@ require (
 // that are easiest to leave implicit (flipping BOTH mirrored manifest narratives,
 // and materializing the external probe's module + main package before its
 // go get/build/run) — is nativeserve/pin_followup.md, section "The follow-up —
-// OWED". Follow it there; do not reconstruct it from these paragraphs.
+// PERFORMED". Follow it there; do not reconstruct it from these paragraphs.
 //
 // HISTORICAL, SUPERSEDED — the SHAs in this paragraph are not the current pins:
 // during PR #703's review these five were BRANCH-ONLY at 5fdd679c8784 on

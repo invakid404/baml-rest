@@ -95,7 +95,7 @@ exactly the fact an operator reads this manifest to establish.
 resolves the PR HEAD SHA; on `push` to master it resolves the master tip. Because
 `nativeserve/go.mod` now names `7c7bed8291b6`, a MASTER commit, that resolution does not
 depend on any branch continuing to exist — unlike every branch-only cut of this record. The
-`push` run on master is the one that proves durability end to end, and it can now pass: the
+`push` run on master is the one that proves durability end-to-end, and it can now pass: the
 durable delivery state is what this change establishes.
 
 ## The five pinned selections

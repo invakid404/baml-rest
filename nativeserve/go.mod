@@ -29,8 +29,8 @@
 // packages the root's internal/* imports here), so the three first-party requires
 // are pinned to the ORIGIN-RESOLVABLE pseudo-version of a single commit — the one
 // nativeserve/pin_followup.md records and cmd/build's TestFirstPartyPinFollowupIsTracked
-// checks, which is CURRENTLY the de-BAML /parse batch-2 BRANCH tip (STATUS: OUTSTANDING)
-// pending the post-squash re-pin to master, NOT the historical Slice 7.1b master merge
+// checks, which is CURRENTLY the de-BAML /parse batch-2 MASTER squash commit (STATUS:
+// RESOLVED, the post-squash re-pin performed), NOT the historical Slice 7.1b master merge
 // 15b98cf6ebe4 named in the floor notes below — one consistent snapshot that resolves
 // cleanly off a fresh checkout with zero local replacements. The replace directives below
 // are for local development only; Go
@@ -93,7 +93,7 @@
 // that are easiest to leave implicit (flipping BOTH mirrored manifest narratives,
 // and materializing the external probe's module + main package before its
 // go get/build/run) — is nativeserve/pin_followup.md, section "The follow-up —
-// OWED". Follow it there; do not reconstruct it from these paragraphs.
+// PERFORMED". Follow it there; do not reconstruct it from these paragraphs.
 //
 // NOTE (de-BAML /parse UNION-RESIDUAL batch 2): these pins are MASTER-DURABLE and the
 // tracked follow-up in nativeserve/pin_followup.md is therefore STATUS: RESOLVED. They name
