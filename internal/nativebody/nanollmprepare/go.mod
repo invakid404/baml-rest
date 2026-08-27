@@ -21,9 +21,9 @@ go 1.26.5
 require (
 	github.com/boundaryml/baml v0.223.0
 	github.com/invakid404/baml-rest v0.0.48
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260827121714-c011c7e95993
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260827125654-a75a73df084e
 	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260827121714-c011c7e95993
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260827125654-a75a73df084e
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
@@ -140,7 +140,7 @@ require (
 // it to cf03786a1fac (#692 re-pinned to the 062871154d95 tip). Every one of these was a
 // branch-pin-then-re-pin, the precedent THIS batch-2 bump repeats.
 //
-// RIGHT NOW they are BRANCH-ONLY: all five name c011c7e95993, the SOURCE commit of the
+// RIGHT NOW they are BRANCH-ONLY: all five name a75a73df084e, the SOURCE commit of the
 // de-BAML /parse UNION-RESIDUAL batch-2 slice on feat/debaml-parse-batch2. No master commit
 // carries this SAP yet, so there is no durable master pin to name — the branch source
 // commit is the only commit whose internal/debaml is the batch-2 union parser. So

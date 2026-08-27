@@ -94,7 +94,7 @@
 //
 // NOTE (de-BAML /parse UNION-RESIDUAL batch 2): these pins are BRANCH-ONLY right now and
 // the tracked follow-up in nativeserve/pin_followup.md is therefore STATUS: OUTSTANDING.
-// They name c011c7e95993, the SOURCE commit of the batch-2 slice on
+// They name a75a73df084e, the SOURCE commit of the batch-2 slice on
 // feat/debaml-parse-batch2 — no master commit carries this SAP yet, so a durable master
 // pin does not exist to name. This module's serve path runs that SAP: canary/serve.go
 // hands debaml.Parse to execute.DynamicParse and canary/serve_static*.go calls
@@ -154,9 +154,9 @@ go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260827121714-c011c7e95993
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260827121714-c011c7e95993
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260827121714-c011c7e95993
+	github.com/invakid404/baml-rest v0.0.0-20260827125654-a75a73df084e
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260827125654-a75a73df084e
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260827125654-a75a73df084e
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/viktordanov/nanollm-ffi/go v0.4.3

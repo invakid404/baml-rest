@@ -2,9 +2,18 @@
 
 This file is the TRACKED record of whether the five first-party pseudo-version
 selections below point at a **master** commit. **They now do NOT.** They name
-`c011c7e95993`, the SOURCE commit of the de-BAML `/parse` UNION-RESIDUAL batch-2 slice on
-`feat/debaml-parse-batch2` — a BRANCH commit — and the post-squash re-pin runbook in the
+`a75a73df084e`, the latest SOURCE tip of the de-BAML `/parse` UNION-RESIDUAL batch-2 slice
+on `feat/debaml-parse-batch2` — a BRANCH commit — and the post-squash re-pin runbook in the
 last section is **OWED, not yet performed**.
+
+They were re-bumped here from the initial batch-2 source `c011c7e95993`: the Codex review of
+#703 asked for one additional discriminating unit test
+(`TestClassUnion_OptionalField_NoMatchWitness`), which lands in `internal/debaml` — a
+guarded tree the codegen-spine guard hashes — so the five selections follow the standing
+"pins always name the LATEST branch source" rule to the tip that carries it, the tar was
+regenerated and the guard re-baselined. (The added file is `_test.go`, so it does not enter
+the packaged tar and the serve core it describes is byte-unchanged; the re-bump keeps the
+pinned commit's `internal/debaml` tree identical to the guard-frozen checkout.)
 
 This is the expected branch-phase state, entered deliberately: batch 2 edits
 `internal/debaml`, the native SAP the packaged serve core resolves through these pins, and
@@ -28,16 +37,16 @@ CONCRETE, per-change instance of it, which is what the generic comment cannot be
 
 ```
 STATUS: OUTSTANDING
-PINNED-COMMIT: c011c7e95993
-PINNED-STAMP: 20260827121714
+PINNED-COMMIT: a75a73df084e
+PINNED-STAMP: 20260827125654
 REACHABLE-FROM: branch feat/debaml-parse-batch2
 SLICE: de-BAML /parse UNION-RESIDUAL batch 2 — optional-field class-union arm cast (OptionalDefaultFromNoValue score), typed all-arms-failed union verdict (claim / list-drop / class-default-fill by position), proven-union list-element drop, alias nil-safety
-PR: opened, NOT merged (Codex review pending); these pins name the branch source commit c011c7e95993 and are re-pinned to the master squash commit as the immediate post-merge follow-up
+PR: opened, NOT merged (Codex review pending); these pins name the branch source commit a75a73df084e and are re-pinned to the master squash commit as the immediate post-merge follow-up
 ```
 
 ## Why the pins point at the BRANCH source commit for now
 
-`c011c7e95993` is the batch-2 SOURCE commit — the one that carries the changed native SAP
+`a75a73df084e` is the batch-2 SOURCE commit — the one that carries the changed native SAP
 (`internal/debaml`'s union coercion). The packaged serve core is a direct caller of that
 package, so the pinned root module decides what a native claim actually emits; pinning it
 to a commit that lacks the batch-2 union parser would ship a serve core whose answers
@@ -78,7 +87,7 @@ cosmetic disagreement: it is a difference in the bytes a native claim serves, wh
 exactly the fact an operator reads this manifest to establish.
 
 The pins CANNOT point at master until this change is squash-merged: no master commit carries
-the changed SAP. The branch is based on master `ff3012b160aca` (#702), so `c011c7e95993` is
+the changed SAP. The branch is based on master `ff3012b160aca` (#702), so `a75a73df084e` is
 a descendant of the current master — but a descendant is not master, and the squash will
 flatten it out of history just the same, which is why re-pinning to the master squash commit
 is the mandatory immediate follow-up. The Slice 7.1b (#655) incident is the precedent for
@@ -102,11 +111,11 @@ bump is invisible until the out-of-work packaging build fails with
 
 | # | file | module | current selection |
 | --- | --- | --- | --- |
-| 1 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest` | `v0.0.0-20260827121714-c011c7e95993` |
-| 2 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260827121714-c011c7e95993` |
-| 3 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260827121714-c011c7e95993` |
-| 4 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260827121714-c011c7e95993` |
-| 5 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260827121714-c011c7e95993` |
+| 1 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest` | `v0.0.0-20260827125654-a75a73df084e` |
+| 2 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260827125654-a75a73df084e` |
+| 3 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260827125654-a75a73df084e` |
+| 4 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260827125654-a75a73df084e` |
+| 5 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260827125654-a75a73df084e` |
 
 `internal/nativebody/nanollmprepare/go.mod`'s `github.com/invakid404/baml-rest v0.0.48`
 is deliberately NOT in this list: it is a released tag, not a pseudo-version tracking a
@@ -115,14 +124,14 @@ commit, and the module directory-replaces it.
 ## What was done for THIS branch cut (the executed branch-pin runbook)
 
 Steps 0-5 of the runbook below, in order, against the batch-2 source commit
-`c011c7e95993`:
+`a75a73df084e`:
 
 0. **Stamp resolved by Go, off the origin — never hand-computed.** The source commit was
    pushed to `feat/debaml-parse-batch2` FIRST, then
-   `GOWORK=off GOPRIVATE=github.com/invakid404/baml-rest go mod download -json <mod>@c011c7e95993`
-   (equivalently `go list -m -json <mod>@c011c7e95993`) was run for the root, `bamlutils`
-   and `worker`, and Go returned `v0.0.0-20260827121714-c011c7e95993` for the root and
-   `v0.0.49-0.20260827121714-c011c7e95993` for the other two — each keeping its own base
+   `GOWORK=off GOPRIVATE=github.com/invakid404/baml-rest go mod download -json <mod>@a75a73df084e`
+   (equivalently `go list -m -json <mod>@a75a73df084e`) was run for the root, `bamlutils`
+   and `worker`, and Go returned `v0.0.0-20260827125654-a75a73df084e` for the root and
+   `v0.0.49-0.20260827125654-a75a73df084e` for the other two — each keeping its own base
    version. Those strings are used verbatim.
 1. **All five selections re-pointed together**, off the post-#692 master commit
    `062871154d95`, to the branch source commit. The edit touched only `require` lines:
@@ -152,7 +161,7 @@ been executed five times now (#678, #682, #684, #687, #692), and every time the 
 from following it literally rather than from remembering it.
 
 What makes it MANDATORY and IMMEDIATE is not a rule but the squash: the merge flattens
-`c011c7e95993` (and its parents) out of history and the branch is deleted, so until the
+`a75a73df084e` (and its parents) out of history and the branch is deleted, so until the
 re-pin lands the five selections would name a commit that resolves to nothing — the exact
 Slice 7.1b failure this record exists to prevent.
 
