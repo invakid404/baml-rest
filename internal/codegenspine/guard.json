@@ -1,35 +1,35 @@
 {
-  "note": "Pin/tar-independence baseline for the codegen-spine slice: the packaged native-worker tar, the five first-party pseudo-version pins, and the byte content of the three collision-path trees. A codegen-spine (M/P) slice must leave every value here untouched. It is NOT a freeze on master: a sanctioned change to a guarded path — the /parse union burn-down (#689), the /parse union-residual batch 2, a post-squash first-party re-pin — legitimately moves these, and MUST re-run the update flag in the same change, or this guard stays red for everyone. First frozen at M0; re-frozen after #689 + the post-squash re-pin to 062871154d95, and again for the /parse union-residual batch 2 (branch pin at 5fdd679c8784, re-baselined post-squash). Regenerate with: go test ./internal/codegenspine/ -run TestSourceGuard -update-codegenspine-guard",
+  "note": "Pin/tar-independence baseline for the codegen-spine slice: the packaged native-worker tar, the five first-party pseudo-version pins, and the byte content of the three collision-path trees. A codegen-spine (M/P) slice must leave every value here untouched. It is NOT a freeze on master: a sanctioned change to a guarded path — the /parse union burn-down (#689), the /parse union-residual batch 2, a post-squash first-party re-pin — legitimately moves these, and MUST re-run the update flag in the same change, or this guard stays red for everyone. First frozen at M0; re-frozen after #689 + the post-squash re-pin to 062871154d95, and again for the /parse union-residual batch 2 (post-squash re-pin to master commit 7c7bed8291b6). Regenerate with: go test ./internal/codegenspine/ -run TestSourceGuard -update-codegenspine-guard",
   "native_worker_tar": {
     "path": "cmd/build/nativeworker_module.tar",
     "size_bytes": 783360,
-    "sha256": "02ded8675663807bc8324ca5ef6c459a3f56c6f2d57ae289422855726fabe68b"
+    "sha256": "fd95d927a95b9a86256e3ae3476f0dfb36883646b534e7c0c9fc22c3f6406468"
   },
   "first_party_pins": [
     {
       "file": "nativeserve/go.mod",
       "module": "github.com/invakid404/baml-rest",
-      "version": "v0.0.0-20260827131055-5fdd679c8784"
+      "version": "v0.0.0-20260827134815-7c7bed8291b6"
     },
     {
       "file": "nativeserve/go.mod",
       "module": "github.com/invakid404/baml-rest/bamlutils",
-      "version": "v0.0.49-0.20260827131055-5fdd679c8784"
+      "version": "v0.0.49-0.20260827134815-7c7bed8291b6"
     },
     {
       "file": "nativeserve/go.mod",
       "module": "github.com/invakid404/baml-rest/worker",
-      "version": "v0.0.49-0.20260827131055-5fdd679c8784"
+      "version": "v0.0.49-0.20260827134815-7c7bed8291b6"
     },
     {
       "file": "internal/nativebody/nanollmprepare/go.mod",
       "module": "github.com/invakid404/baml-rest/bamlutils",
-      "version": "v0.0.49-0.20260827131055-5fdd679c8784"
+      "version": "v0.0.49-0.20260827134815-7c7bed8291b6"
     },
     {
       "file": "internal/nativebody/nanollmprepare/go.mod",
       "module": "github.com/invakid404/baml-rest/worker",
-      "version": "v0.0.49-0.20260827131055-5fdd679c8784"
+      "version": "v0.0.49-0.20260827134815-7c7bed8291b6"
     }
   ],
   "guarded_trees": [
@@ -41,12 +41,12 @@
     {
       "prefix": "nativeserve",
       "file_count": 90,
-      "sha256": "5cda82fbcfd8e416462629d18e1c8e50d8298f2fbf28fe191e78f07d815be8e0"
+      "sha256": "378158732d7d792960874df42aeb5a460d898b39255e373690d6cf1b5163ed17"
     },
     {
       "prefix": "internal/nativebody/nanollmprepare",
       "file_count": 73,
-      "sha256": "e1ec5c07b04bfba8f0869cc658580dc6ea88b3bbf4c0dbb6fec3f39e8efd45f3"
+      "sha256": "43d22e8c6541e542e8b85c980c2380c2e6d19a942d2895eccca6692d4f0a416c"
     }
   ]
 }
