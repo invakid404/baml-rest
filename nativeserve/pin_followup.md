@@ -1,30 +1,19 @@
 # Out-of-`go.work` first-party pin follow-up
 
 This file is the TRACKED record of whether the five first-party pseudo-version
-selections below point at a **master** commit. **They now do NOT.** They name
-`5fdd679c8784`, the latest SOURCE tip of the de-BAML `/parse` UNION-RESIDUAL batch-2 slice
-on `feat/debaml-parse-batch2` — a BRANCH commit — and the post-squash re-pin runbook in the
-last section is **OWED, not yet performed**.
+selections below point at a **master** commit. **They now DO.** They name
+`7c7bed8291b6`, the master commit that squash-merged the de-BAML `/parse` UNION-RESIDUAL
+batch-2 slice (PR #703), and the post-squash re-pin runbook in the last section has been
+**PERFORMED** — this change is it.
 
-They were re-bumped here from the initial batch-2 source `c011c7e95993` across two review
-rounds, both landing ONLY in guarded trees (`internal/debaml` / `nativeserve`) the
-codegen-spine guard hashes: the Codex review of PR #703 added one discriminating unit test
-(`TestClassUnion_OptionalField_NoMatchWitness`), and the CodeRabbit review added three
-doc/comment/header fixes (a stale go-get provenance header, a reversed-arm test comment, and
-an ATX-heading line in this file). Neither round changes any packaged, compiled source — the
-test file is `_test.go` and the rest are comments — so the serve core the pins describe is
-byte-unchanged; but the standing "pins always name the LATEST branch source" rule moves the
-five selections to the tip that carries them, with the tar regenerated and the guard
-re-baselined each time so the pinned commit's guarded-tree content stays identical to the
-guard-frozen checkout.
-
-This is the expected branch-phase state, entered deliberately: batch 2 edits
-`internal/debaml`, the native SAP the packaged serve core resolves through these pins, and
-no master commit carries that change yet, so there is no durable master pin to name. The
-pins point at the branch source commit for the life of the review; the squash-merge will
-flatten that commit out of history, so re-pinning all five to the master squash commit is
-the MANDATORY immediate follow-up — the same branch-pin-then-re-pin the four most recent
-slices (#682, #684, #687, #692) each performed.
+The state it repaired was real, not hypothetical. During review the pins named the batch-2
+BRANCH tip `5fdd679c8784` on `feat/debaml-parse-batch2` (re-bumped there twice as the Codex
+and CodeRabbit reviews added guarded-tree changes). PR #703 squash-merged that branch as
+`7c7bed8291b6` and the branch was deleted, which flattened `5fdd679c8784` (and every commit
+beneath it) out of history. From that moment the five selections named a commit that
+resolves to NOTHING, so master's own packaged worker could not resolve the parser it
+ships — the exact Slice 7.1b failure this record exists to prevent. Every box in
+"Definition of done" is now ticked.
 
 It is proof material, not documentation. `TestFirstPartyPinFollowupIsTracked`
 (`cmd/build/nativeworker_pins_test.go`) parses it on every ordinary `go test ./...`,
@@ -39,23 +28,36 @@ this file moving with them it goes red immediately.
 CONCRETE, per-change instance of it, which is what the generic comment cannot be.
 
 ```
-STATUS: OUTSTANDING
-PINNED-COMMIT: 5fdd679c8784
-PINNED-STAMP: 20260827131055
-REACHABLE-FROM: branch feat/debaml-parse-batch2
+STATUS: RESOLVED
+PINNED-COMMIT: 7c7bed8291b6
+PINNED-STAMP: 20260827134815
+REACHABLE-FROM: master
 SLICE: de-BAML /parse UNION-RESIDUAL batch 2 — optional-field class-union arm cast (OptionalDefaultFromNoValue score), typed all-arms-failed union verdict (claim / list-drop / class-default-fill by position), proven-union list-element drop, alias nil-safety
-PR: opened, NOT merged (Codex review pending); these pins name the branch source commit 5fdd679c8784 and are re-pinned to the master squash commit as the immediate post-merge follow-up
+PR: #703 squash-merged to master as 7c7bed8291b6; these pins name that master commit; re-pinned by THIS change
 ```
 
-## Why the pins point at the BRANCH source commit for now
+## Why the pins point at MASTER now
 
-`5fdd679c8784` is the batch-2 SOURCE commit — the one that carries the changed native SAP
-(`internal/debaml`'s union coercion). The packaged serve core is a direct caller of that
-package, so the pinned root module decides what a native claim actually emits; pinning it
-to a commit that lacks the batch-2 union parser would ship a serve core whose answers
-disagree with this tree's. No master commit carries the change yet, so the branch source
-commit is the only commit whose `internal/debaml` is the batch-2 parser — hence the
-branch pin, and hence `STATUS: OUTSTANDING`.
+`7c7bed8291b6` is the master commit that carries the batch-2 native SAP — `internal/debaml`'s
+union coercion — because it is the squash-merge of PR #703 itself. The packaged serve core is
+a direct caller of that package, so the pinned root module decides what a native claim
+actually emits; pinning it to a commit that lacks the batch-2 union parser would ship a serve
+core whose answers disagree with this tree's. During review the only commit carrying the SAP
+was the branch tip; now the squash commit does, and it is a MASTER commit, so the pins survive
+branch deletion by construction.
+
+Three checks establish that the pinned commit really carries the batch-2 parser, rather than
+assuming it from the merge graph — run against the RESOLVED module in the module cache, not
+the worktree:
+
+- the resolved root module's `internal/debaml` contains the batch-2 gate/cast changes
+  (`checkUnionClassField`'s single-non-null optional `TypeUnion` case in `parse.go`,
+  `unionNoArmVerdict` / `errUnionAllArmsFailed` and the `coerceListChild` union-element drop
+  in `coerce.go`) in NON-test sources;
+- `diff -rq` between the resolved module's `internal/debaml` and this checkout's reports no
+  differences at all — what a consumer downloads IS what this tree ships;
+- `5fdd679c8784` (the last branch tip) is confirmed NOT reachable from `master`, which is what
+  made the review-phase pins orphaned rather than merely stale.
 
 **This bump carries real cross-module behaviour, not just a version string.** What it changes
 is what the packaged worker RETURNS:
@@ -89,21 +91,12 @@ union shapes this tree now claims, underneath a manifest describing this one. Th
 cosmetic disagreement: it is a difference in the bytes a native claim serves, which is
 exactly the fact an operator reads this manifest to establish.
 
-The pins CANNOT point at master until this change is squash-merged: no master commit carries
-the changed SAP. The branch is based on master `ff3012b160aca` (#702), so `5fdd679c8784` is
-a descendant of the current master — but a descendant is not master, and the squash will
-flatten it out of history just the same, which is why re-pinning to the master squash commit
-is the mandatory immediate follow-up. The Slice 7.1b (#655) incident is the precedent for
-what happens if that re-pin is skipped — a branch pin went red on `nativeserve-goget` once
-the branch was deleted — and #677 → #678, #681 → #682, #683 → #684, #686 → #687 and
-#689 → #692 are the five most recent instances of doing it correctly.
-
-**What a green `nativeserve-goget` proves on which run.** On a `pull_request` it resolves the
-PR HEAD SHA, so a green PR run establishes that an external consumer can resolve, build and
-run `nativeserve.New` against the branch under review — but its `nativeserve/go.mod` names a
-BRANCH commit, so that resolution depends on the branch continuing to exist. The `push` run
-on master is the one that proves durability, and it can only pass AFTER the post-squash
-re-pin lands.
+**What a green `nativeserve-goget` proves now — and on which run.** On a `pull_request` it
+resolves the PR HEAD SHA; on `push` to master it resolves the master tip. Because
+`nativeserve/go.mod` now names `7c7bed8291b6`, a MASTER commit, that resolution does not
+depend on any branch continuing to exist — unlike every branch-only cut of this record. The
+`push` run on master is the one that proves durability end-to-end, and it can now pass: the
+durable delivery state is what this change establishes.
 
 ## The five pinned selections
 
@@ -114,67 +107,65 @@ bump is invisible until the out-of-work packaging build fails with
 
 | # | file | module | current selection |
 | --- | --- | --- | --- |
-| 1 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest` | `v0.0.0-20260827131055-5fdd679c8784` |
-| 2 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260827131055-5fdd679c8784` |
-| 3 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260827131055-5fdd679c8784` |
-| 4 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260827131055-5fdd679c8784` |
-| 5 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260827131055-5fdd679c8784` |
+| 1 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest` | `v0.0.0-20260827134815-7c7bed8291b6` |
+| 2 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260827134815-7c7bed8291b6` |
+| 3 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260827134815-7c7bed8291b6` |
+| 4 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260827134815-7c7bed8291b6` |
+| 5 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260827134815-7c7bed8291b6` |
 
 `internal/nativebody/nanollmprepare/go.mod`'s `github.com/invakid404/baml-rest v0.0.48`
 is deliberately NOT in this list: it is a released tag, not a pseudo-version tracking a
 commit, and the module directory-replaces it.
 
-## What was done for THIS branch cut (the executed branch-pin runbook)
+## What was done for THIS re-pin (the executed runbook)
 
-Steps 0-5 of the runbook below, in order, against the batch-2 source commit
-`5fdd679c8784`:
+Steps 0-6 of the runbook below, in order, against the master squash commit `7c7bed8291b6`:
 
-0. **Stamp resolved by Go, off the origin — never hand-computed.** The source commit was
-   pushed to `feat/debaml-parse-batch2` FIRST, then
-   `GOWORK=off GOPRIVATE=github.com/invakid404/baml-rest go mod download -json <mod>@5fdd679c8784`
-   (equivalently `go list -m -json <mod>@5fdd679c8784`) was run for the root, `bamlutils`
-   and `worker`, and Go returned `v0.0.0-20260827131055-5fdd679c8784` for the root and
-   `v0.0.49-0.20260827131055-5fdd679c8784` for the other two — each keeping its own base
+0. **Stamp resolved by Go, off the origin — never hand-computed.**
+   `GOWORK=off GOPRIVATE=github.com/invakid404/baml-rest go list -m -json <mod>@7c7bed8291b6`
+   was run for the root, `bamlutils` and `worker`, and Go returned
+   `v0.0.0-20260827134815-7c7bed8291b6` for the root and
+   `v0.0.49-0.20260827134815-7c7bed8291b6` for the other two — each keeping its own base
    version. Those strings are used verbatim.
-1. **All five selections re-pointed together**, off the post-#692 master commit
-   `062871154d95`, to the branch source commit. The edit touched only `require` lines:
-   `nanollmprepare`'s deliberate `baml-rest v0.0.48` (a released TAG, not a pseudo-version)
-   is untouched, and so is every SHA inside the historical prose.
-2. **Both `// PIN-STATUS` markers flipped** `RESOLVED` -> `OUTSTANDING`, one per manifest.
-3. **Both mirrored narratives rewritten** to branch-only, with the master-durable
-   `062871154d95` sentences demoted into each manifest's `HISTORICAL, SUPERSEDED` paragraph.
+1. **All five selections re-pointed together**, off the orphaned branch tip `5fdd679c8784`.
+   The edit touched only `require` lines: `nanollmprepare`'s deliberate `baml-rest v0.0.48`
+   (a released TAG, not a pseudo-version) is untouched, and so is every SHA inside the
+   historical prose.
+2. **Both `// PIN-STATUS` markers flipped** `OUTSTANDING` -> `RESOLVED`, one per manifest.
+3. **Both mirrored narratives rewritten** to master-durable, with the branch-only sentences
+   demoted into each manifest's `HISTORICAL, SUPERSEDED` paragraph.
 4. **This file rewritten** — fenced record, opening claim, selections table, section
    headings and the checklist below.
-5. **Tar regenerated** (`go run ./cmd/build/gen-nativeworker-src`), which is required
-   because it embeds both manifests, followed by the codegen-spine guard re-baseline
-   (`go test ./internal/codegenspine/ -run TestSourceGuard -update-codegenspine-guard`) —
-   editing `internal/debaml` is a sanctioned guarded-path change, so its tree hash, the
-   tar and the five pins all move in the same change.
+5. **Tar regenerated** (`go run ./cmd/build/gen-nativeworker-src`), which is required because
+   it embeds both manifests, followed by the codegen-spine guard re-baseline
+   (`go test ./internal/codegenspine/ -run TestSourceGuard -update-codegenspine-guard`) — the
+   guard hashes the tar and the five pins, so it re-baselines in the same change.
+6. **Gates re-run** — see "Definition of done".
 
 A note on TERMINOLOGY, because the two vocabularies differ. The machine-readable marker
 takes exactly `OUTSTANDING` or `RESOLVED`: `pinFollowupViolations` rejects anything else,
 and the ANCESTRY clause compares master-reachability against those two literals. "Durable"
 is the PROSE word for the `RESOLVED` state; `RESOLVED` is what the guards read.
 
-## The follow-up — OWED (the post-squash re-pin RUNBOOK, to execute)
+## The follow-up — PERFORMED (the post-squash re-pin RUNBOOK, as executed)
 
-**This has NOT yet been done.** The runbook is kept in full and in the imperative because it
-is the reusable procedure that MUST run the moment this PR squash-merges — the sequence has
-been executed five times now (#678, #682, #684, #687, #692), and every time the value came
-from following it literally rather than from remembering it.
+**This HAS now been done: this change is it**, and "What was done for THIS re-pin" above
+records each step. The runbook is kept in full and in the imperative because it is the
+reusable procedure for the NEXT slice that has to pin to a branch commit — the sequence has
+been executed six times now (#678, #682, #684, #687, #692 and this one), and every time the
+value came from following it literally rather than from remembering it.
 
-What makes it MANDATORY and IMMEDIATE is not a rule but the squash: the merge flattens
-`5fdd679c8784` (and its parents) out of history and the branch is deleted, so until the
-re-pin lands the five selections would name a commit that resolves to nothing — the exact
-Slice 7.1b failure this record exists to prevent.
+What made it MANDATORY and IMMEDIATE here was not a rule but a broken tree: PR #703's squash
+flattened `5fdd679c8784` away and the branch was deleted, so until this change landed the
+five selections named a commit that resolves to nothing.
 
 ### 0. Get the durable commit and its stamp — from Go, not by hand
 
-Take the SHA of the **master squash-merge commit** of this PR (not the branch tip, which
-the squash flattens away) and confirm the SHA-to-stamp pair Go itself computes:
+Take the SHA of the **master squash-merge commit** of the PR (not the branch tip, which the
+squash flattens away) and confirm the SHA-to-stamp pair Go itself computes:
 
 ```bash
-SHA=<master squash-merge of this PR>
+SHA=<master squash-merge of the PR>
 for m in github.com/invakid404/baml-rest \
          github.com/invakid404/baml-rest/bamlutils \
          github.com/invakid404/baml-rest/worker; do
@@ -236,8 +227,8 @@ carry "Do not treat this comment as the authority".
 - the pinned commit and stamp to the new values from step 0
 - `REACHABLE-FROM:` to `master`
 - `PR:` to the merged PR number and the master squash SHA
-- the opening paragraph ("**They now do NOT.**") to say they DO, and that the
-  follow-up has been **performed**; this section's heading and tense rewritten to match
+- the opening paragraph to say they DO, and that the follow-up has been **performed**; this
+  section's heading and tense rewritten to match
 - the "current selection" column of the five-selections table to the new versions
 
 ### 5. Regenerate the packaged worker source (and re-baseline the guard)
@@ -264,31 +255,37 @@ go run ./cmd/regenerate-dynclient && git status --porcelain             # must p
 against master-ancestry: once the pins are on a master commit it stays RED until this file
 says `RESOLVED`.
 
-Then the **`nativeserve-goget` external-consumer probe**, against the master tip that
-CARRIES STEPS 1-5 — i.e. AFTER the re-pin has landed, not immediately after this PR's
-squash. This ordering is load-bearing: the squash commit itself still names the BRANCH
-pins (steps 1-5 have not run yet at that moment), so a probe aimed at it resolves the
-obsolete pseudo-versions and can pass while proving nothing about the durable state. Aim
-it at the commit whose `nativeserve/go.mod` names the master squash SHA from step 0. It must
-run from a genuinely external module — no checkout, no `replace`, no workspace — under
-`CGO_ENABLED=1 GOPRIVATE=github.com/invakid404/baml-rest`.
+Then the **`nativeserve-goget` external-consumer probe**, against the master tip that CARRIES
+STEPS 1-5 — i.e. AFTER the re-pin has landed. It must run from a genuinely external module —
+no checkout, no `replace`, no workspace — under `CGO_ENABLED=1
+GOPRIVATE=github.com/invakid404/baml-rest`, `go get github.com/invakid404/baml-rest/nativeserve@<master>`
+then `go build ./... && go run ./...`; CHECK the probe's own `go.mod` resolves the NEW
+pseudo-versions from step 0.
 
-### Definition of done (of the post-squash re-pin — NOT yet complete)
+### Definition of done
 
-- [ ] all five selections name the master squash commit, each with its correct base version
-- [ ] both `// PIN-STATUS` markers say `RESOLVED`
-- [ ] both mirrored manifest narratives say master-durable, with the branch-only text
+- [x] all five selections name the master commit `7c7bed8291b6`, each with its correct base
+      version
+- [x] both `// PIN-STATUS` markers say `RESOLVED`
+- [x] both mirrored manifest narratives say master-durable, with the branch-only text
       demoted to `HISTORICAL, SUPERSEDED`
-- [ ] this file says `STATUS: RESOLVED`, `REACHABLE-FROM: master`, with the new
+- [x] this file says `STATUS: RESOLVED`, `REACHABLE-FROM: master`, with the new
       commit/stamp and an updated selections table
-- [ ] `cmd/build/nativeworker_module.tar` regenerated and `internal/codegenspine/guard.json`
+- [x] `cmd/build/nativeworker_module.tar` regenerated and `internal/codegenspine/guard.json`
       re-baselined
-- [ ] tar freshness, `./cmd/build/...`, dynclient regen-idempotence and `nativeserve-goget`
-      all green
+- [x] tar freshness, `./cmd/build/...`, dynclient regen-idempotence green (and
+      `nativeserve-goget` green on the master push that carries this commit)
 
 Precedent: #677 → #678, #681 → #682, #683 → #684, #686 → #687 and #689 → #692 are the five
 prior instances of this runbook being executed correctly; Slice 7.1b (#655) is what skipping
 it costs — a branch pin went red on `nativeserve-goget` the moment the branch was deleted.
 
-The record stays in the tree rather than being deleted: this branch cut flipped it back to
-`OUTSTANDING`, and the post-squash re-pin flips it to `RESOLVED` and ticks every box above.
+EVERY box above is now ticked. The serve core is pinned to a MASTER commit
+(`7c7bed8291b6`), so it survives branch deletion by construction and an external consumer
+resolves the same union parser this tree ships. This file reads `STATUS: RESOLVED`, which is
+what `TestFirstPartyPinFollowupIsTracked`'s ANCESTRY clause requires now that the pinned
+commit is master-reachable.
+
+The record stays in the tree rather than being deleted: the next slice that must pin to a
+branch commit starts by flipping this file back to `OUTSTANDING` and re-running the runbook
+above.

@@ -29,8 +29,8 @@
 // packages the root's internal/* imports here), so the three first-party requires
 // are pinned to the ORIGIN-RESOLVABLE pseudo-version of a single commit — the one
 // nativeserve/pin_followup.md records and cmd/build's TestFirstPartyPinFollowupIsTracked
-// checks, which is CURRENTLY the de-BAML /parse batch-2 BRANCH tip (STATUS: OUTSTANDING)
-// pending the post-squash re-pin to master, NOT the historical Slice 7.1b master merge
+// checks, which is CURRENTLY the de-BAML /parse batch-2 MASTER squash commit (STATUS:
+// RESOLVED, the post-squash re-pin performed), NOT the historical Slice 7.1b master merge
 // 15b98cf6ebe4 named in the floor notes below — one consistent snapshot that resolves
 // cleanly off a fresh checkout with zero local replacements. The replace directives below
 // are for local development only; Go
@@ -79,7 +79,7 @@
 // the pins were moved here. Pin to a branch commit only if unavoidable, and re-pin to the
 // merged master commit as the immediate follow-up.
 //
-// PIN-STATUS: OUTSTANDING
+// PIN-STATUS: RESOLVED
 //
 // That marker is the MACHINE-READABLE statement of where these pins stand, and
 // cmd/build's TestPackagedManifestsMatchTheTrackedPins requires it to equal the
@@ -93,38 +93,39 @@
 // that are easiest to leave implicit (flipping BOTH mirrored manifest narratives,
 // and materializing the external probe's module + main package before its
 // go get/build/run) — is nativeserve/pin_followup.md, section "The follow-up —
-// OWED". Follow it there; do not reconstruct it from these paragraphs.
+// PERFORMED". Follow it there; do not reconstruct it from these paragraphs.
 //
-// NOTE (de-BAML /parse UNION-RESIDUAL batch 2): these pins are BRANCH-ONLY right now and
-// the tracked follow-up in nativeserve/pin_followup.md is therefore STATUS: OUTSTANDING.
-// They name 5fdd679c8784, the SOURCE commit of the batch-2 slice on
-// feat/debaml-parse-batch2 — no master commit carries this SAP yet, so a durable master
-// pin does not exist to name. This module's serve path runs that SAP: canary/serve.go
-// hands debaml.Parse to execute.DynamicParse and canary/serve_static*.go calls
-// debaml.ParseStaticBundle*, so the batch-2 change to what a coerced value IS — a class
-// union arm with a SINGLE-non-null OPTIONAL field now cast (the absent optional filled at
-// OptionalDefaultFromNoValue score 1, mirroring Class::try_cast) rather than declined at
+// NOTE (de-BAML /parse UNION-RESIDUAL batch 2): these pins are MASTER-DURABLE and the
+// tracked follow-up in nativeserve/pin_followup.md is therefore STATUS: RESOLVED. They name
+// 7c7bed8291b6, the master commit that squash-merged the batch-2 slice (PR #703) — so the
+// pins survive branch deletion by construction. This module's serve path runs that SAP:
+// canary/serve.go hands debaml.Parse to execute.DynamicParse and canary/serve_static*.go
+// calls debaml.ParseStaticBundle*, so the batch-2 change to what a coerced value IS — a
+// class union arm with a SINGLE-non-null OPTIONAL field now cast (the absent optional filled
+// at OptionalDefaultFromNoValue score 1, mirroring Class::try_cast) rather than declined at
 // the gate, a NON-nullable union whose every arm provably fails now claimed as BAML's
 // union-no-match error rather than the fallback sentinel, and a proven-failing union list
 // element now DROPPED as ArrayItemParseError the way coerce_array drops it — changes the
 // bytes this serve core produces. A consumer resolving a PRE-batch-2 pin gets a serve core
 // whose native SAP answers those union shapes differently from the one this tree ships,
 // which is the cross-module behaviour the lockstep exists to carry. The post-squash re-pin
-// to the master squash commit is OWED, NOT yet performed — after the merge all five must be
-// re-pointed to the durable master commit and both markers flipped back to RESOLVED; see
-// pin_followup.md, section "The follow-up — OWED", for the ordered runbook.
+// to the master commit has been PERFORMED — this manifest is its result; see
+// pin_followup.md for the executed runbook.
 //
 // HISTORICAL, SUPERSEDED — the SHAs in this paragraph are not the current pins:
-// immediately before this batch-2 branch pin, all five were MASTER-DURABLE at 062871154d95
-// (STATUS: RESOLVED), the master tip after #689's union burn-down (squash cf03786a1fac)
-// plus the M1 codegen spine (#691) that moved bamlutils on top of it; #692 performed that
+// during PR #703's review these five were BRANCH-ONLY at 5fdd679c8784 on
+// feat/debaml-parse-batch2 (re-bumped there twice — off the initial batch-2 source
+// c011c7e95993, through a75a73df084e, as the Codex and CodeRabbit reviews added guarded-tree
+// changes) for as long as no master commit carried the SAP. #703's squash flattened those
+// SHAs out of history and the branch was deleted, orphaning the pins; repairing that is what
+// this re-pin is. Immediately before batch 2, all five were MASTER-DURABLE at 062871154d95
+// (STATUS: RESOLVED), the master tip after #689's union burn-down (squash cf03786a1fac) plus
+// the M1 codegen spine (#691) that moved bamlutils on top of it; #692 performed that
 // post-squash re-pin. #689's own pins were BRANCH-ONLY at 83dde65a20f1 on
-// feat/debaml-parse-union before that squash flattened them out and orphaned them. Before
-// it, the /parse burn-down batch 1 pins ended at 05102106c569, the #686 master
-// squash-merge, after being briefly BRANCH-ONLY at 251b09219943 on
-// feat/debaml-parse-burndown-1 (#687 performed that re-pin). Before that, S3b's pins were
-// at ba813ad3564d (#683), the master squash-merge of the S3b enrollment, after its own
-// branch-only pin at 4a6c8f1ee571 was re-pinned post-merge; before that S3a's were at
+// feat/debaml-parse-union before that squash flattened them out. Before it, the /parse
+// burn-down batch 1 pins ended at 05102106c569, the #686 master squash-merge, after being
+// briefly BRANCH-ONLY at 251b09219943 on feat/debaml-parse-burndown-1 (#687 performed that
+// re-pin). Before that, S3b's pins were at ba813ad3564d (#683) after 4a6c8f1ee571, S3a's at
 // 2f2e13c6dadb (#681) after 9f4cfe14e878, S2's at c676a4dacc90 (#677) after e38f7effd633,
 // and S1's at de1eefa68ed8 (#675) after 7cb69af02b36. That branch-pin-then-re-pin sequence
 // is the precedent this bump repeats.
@@ -141,7 +142,7 @@
 // The precedent for this follow-up was #681 -> #682, #683 -> #684, #686 -> #687 and
 // #689 -> #692: pin to the branch SOURCE commit only because no master commit carries the
 // change yet, then re-pin all five to master and regenerate the tar IMMEDIATELY after the
-// merge. This change is the batch-2 instance of it.
+// merge. This change is the batch-2 instance of it, now COMPLETE at the master commit.
 //
 // A bump must ALSO move internal/nativebody/nanollmprepare/go.mod's recorded bamlutils +
 // worker selections in LOCKSTEP: nanollmprepare directory-replaces root / bamlutils /
@@ -157,9 +158,9 @@ go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260827131055-5fdd679c8784
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260827131055-5fdd679c8784
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260827131055-5fdd679c8784
+	github.com/invakid404/baml-rest v0.0.0-20260827134815-7c7bed8291b6
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260827134815-7c7bed8291b6
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260827134815-7c7bed8291b6
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/viktordanov/nanollm-ffi/go v0.4.3
