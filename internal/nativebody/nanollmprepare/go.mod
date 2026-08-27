@@ -21,9 +21,9 @@ go 1.26.5
 require (
 	github.com/boundaryml/baml v0.223.0
 	github.com/invakid404/baml-rest v0.0.48
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260825064313-062871154d95
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260827121714-c011c7e95993
 	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260825064313-062871154d95
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260827121714-c011c7e95993
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
@@ -112,7 +112,7 @@ require (
 // without recording it here fails the native-worker PACKAGING build (-mod=readonly)
 // with "updates to go.mod needed".
 //
-// PIN-STATUS: RESOLVED
+// PIN-STATUS: OUTSTANDING
 //
 // That marker is the MACHINE-READABLE statement of where these pins stand, and
 // cmd/build's TestPackagedManifestsMatchTheTrackedPins requires it to equal the
@@ -127,28 +127,26 @@ require (
 // OWED". Follow it there; do not reconstruct it from these paragraphs.
 //
 // HISTORICAL, SUPERSEDED — the SHAs in this paragraph are not the current pins:
-// de-BAML Slice 7.2c-3 moved them to the cutover commit, which was BRANCH-ONLY
-// until #672 squash-merged; the serving-cutover S1 change moved all five again,
-// first to its own branch commit and then post-merge to de1eefa68ed8 (#675); S2 did
-// the same, ending at the master squash commit c676a4dacc90 (#677); S3a did the same,
-// briefly BRANCH-ONLY at 9f4cfe14e878 on feat/debaml-s3a-identity before #681
-// squash-merged it to master as 2f2e13c6dadb; S3b did the same, briefly BRANCH-ONLY at
-// 4a6c8f1ee571 on feat/debaml-s3b-enroll before #683 squash-merged it to master as
-// ba813ad3564d; the /parse burn-down batch 1 change did the same, briefly BRANCH-ONLY at
-// 251b09219943 on feat/debaml-parse-burndown-1 before #686 squash-merged it to master as
-// 05102106c569 (#687 performed that re-pin); the /parse UNION burn-down did the same,
-// BRANCH-ONLY at 83dde65a20f1 on feat/debaml-parse-union (re-bumped there off d43120c9de32
-// and 939f5d7ff1f6 as cold-review fixes landed) before #689 squash-merged it to master as
-// cf03786a1fac — a squash that flattened all three of those SHAs away and orphaned the
-// pins, which is what THIS re-pin repairs.
+// immediately before this batch-2 branch pin, all five were MASTER-DURABLE at 062871154d95
+// (STATUS: RESOLVED), the master tip after the /parse UNION burn-down (#689, squash
+// cf03786a1fac) plus the M1 codegen spine (#691) that moved bamlutils on top of it; #692
+// performed that post-squash re-pin. The chain before it: de-BAML Slice 7.2c-3 moved them
+// to a cutover commit BRANCH-ONLY until #672 squash-merged; the serving-cutover S1 change
+// ended at de1eefa68ed8 (#675); S2 at c676a4dacc90 (#677); S3a briefly BRANCH-ONLY at
+// 9f4cfe14e878 before #681 squashed it to 2f2e13c6dadb; S3b briefly BRANCH-ONLY at
+// 4a6c8f1ee571 before #683 squashed it to ba813ad3564d; the /parse burn-down batch 1
+// briefly BRANCH-ONLY at 251b09219943 before #686 squashed it to 05102106c569 (#687
+// re-pinned); the /parse UNION burn-down BRANCH-ONLY at 83dde65a20f1 before #689 squashed
+// it to cf03786a1fac (#692 re-pinned to the 062871154d95 tip). Every one of these was a
+// branch-pin-then-re-pin, the precedent THIS batch-2 bump repeats.
 //
-// RIGHT NOW they are MASTER-DURABLE: all five name 062871154d95, the CURRENT master tip.
-// That tip carries the union SAP — #689's squash cf03786a1fac put internal/debaml there,
-// and the M1 codegen spine (#691) on top left internal/debaml untouched — and it is the
-// commit to name rather than the squash alone, because M1 DID move bamlutils, one of the
-// five pinned modules, so only the tip has a root AND a bamlutils matching this tree. So
-// nativeserve/pin_followup.md reads STATUS: RESOLVED and the post-squash re-pin runbook
-// has been PERFORMED. Do not treat this
+// RIGHT NOW they are BRANCH-ONLY: all five name c011c7e95993, the SOURCE commit of the
+// de-BAML /parse UNION-RESIDUAL batch-2 slice on feat/debaml-parse-batch2. No master commit
+// carries this SAP yet, so there is no durable master pin to name — the branch source
+// commit is the only commit whose internal/debaml is the batch-2 union parser. So
+// nativeserve/pin_followup.md reads STATUS: OUTSTANDING and the post-squash re-pin runbook
+// is OWED, NOT yet performed: after the squash-merge all five must be re-pointed to the
+// durable master commit and both markers flipped back to RESOLVED. Do not treat this
 // comment as the authority — nativeserve/pin_followup.md is the tracked record, and
 // cmd/build's TestFirstPartyPinFollowupIsTracked is what holds the two together: it
 // parses that record and the require directives above on every ordinary
@@ -157,19 +155,18 @@ require (
 // exactly what happened when the S1 text was left here after the S2 bump, and which is
 // why the runbook makes flipping BOTH narratives its own numbered step.
 //
-// The union burn-down changes BOTH sides of the graph. The serve-core side changes the
-// native SAP itself: internal/debaml now threads BAML's array union_variant_hint across
-// list siblings (so a list<multi-arm-union> element resolves on the arm BAML picks rather
-// than declining), scores a class union arm carrying a required list / string-keyed map
-// field, resolves a JSON null into a non-nullable union per ARM KIND (a list arm survives
-// it; a map arm rejects it and the enclosing class default-fills the union's
-// default_value), and spells emitted floats the way the worker boundary does. THIS
-// module's cmd/worker entrypoint is the binary the booted-artifact proofs boot, its shadow
-// comparator hands debaml.Parse the same responses, and the worker module pinned above is
-// where the direct-parse field-order pass lives that makes those bytes comparable to
-// BAML's in the first place. A consumer resolving a PRE-union pin gets a serve core whose
-// parse answers are shaped for the previous cut-line, so the lockstep is carrying real
-// cross-module behaviour rather than a version string.
+// The batch-2 slice changes BOTH sides of the graph. The serve-core side changes the
+// native SAP itself: internal/debaml now casts a class union arm carrying a SINGLE-non-null
+// OPTIONAL field (Class::try_cast fills the absent optional at OptionalDefaultFromNoValue
+// score 1 rather than declining at the gate), claims an all-arms-failed NON-nullable union
+// as BAML's union-no-match error instead of declining, and DROPS a proven-failing union
+// list element (ArrayItemParseError) the way coerce_array drops it. THIS module's cmd/worker
+// entrypoint is the binary the booted-artifact proofs boot, its shadow comparator hands
+// debaml.Parse the same responses, and the worker module pinned above is where the
+// direct-parse field-order pass lives that makes those bytes comparable to BAML's in the
+// first place. A consumer resolving a PRE-batch-2 pin gets a serve core whose parse answers
+// are shaped for the previous cut-line, so the lockstep is carrying real cross-module
+// behaviour rather than a version string.
 //
 // Resolve the root module and every locally-replaced sibling from the checkout
 // (this module is outside go.work, so root's own replaces do not propagate).
