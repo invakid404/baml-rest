@@ -49,12 +49,14 @@ func TestClassUnion_OptionalField_PresentAbsentNull(t *testing.T) {
 }
 
 // TestClassUnion_OptionalField_ScoreObservable is the MUTATE-TO-DIVERGE control for
-// the absent-optional score: it FAILS if OptionalDefaultFromNoValue is treated as
-// score 0 (or no-match). A{a int, b string?} | C{a int} over {"a":1}: A's try_cast
-// scores 1 (absent b), C's scores 0 (exact) — so C, the clean score-0 arm, is the
-// union winner and native emits {"a":1}. If the absent optional were score 0, A (arm
-// 0) would short-circuit as the first score-0 winner and native would emit
-// {"a":1,"b":null} — a DIFFERENT byte output. Order reversal and the index tiebreak
+// the SCORE-0 regression (the no-match half is TestClassUnion_OptionalField_NoMatchWitness):
+// it FAILS if OptionalDefaultFromNoValue is treated as score 0. A{a int, b string?} | C{a
+// int} over {"a":1}: A's try_cast scores 1 (absent b), C's scores 0 (exact) — so C, the
+// clean score-0 arm, is the union winner and native emits {"a":1}. If the absent optional
+// were score 0, A (arm 0) would short-circuit as the first score-0 winner and native would
+// emit {"a":1,"b":null} — a DIFFERENT byte output. (It does NOT catch the no-match
+// mutation: with C's clean score-0 arm present, an absent optional that no-matched instead
+// of scoring 1 still lets C win {"a":1} unchanged.) Order reversal and the index tiebreak
 // are pinned too.
 func TestClassUnion_OptionalField_ScoreObservable(t *testing.T) {
 	// A(score 1) before C(score 0): the clean C wins on score.
@@ -90,6 +92,55 @@ func TestClassUnion_OptionalField_ScoreObservable(t *testing.T) {
 		),
 	}
 	mustParse(t, sTie, `{"u":{"a":1}}`, `{"u":{"a":1,"x":null}}`)
+}
+
+// TestClassUnion_OptionalField_NoMatchWitness is the MUTATE-TO-DIVERGE control for the
+// NO-MATCH regression: it FAILS if tryCastClass's absent-optional branch is replaced with
+// an immediate strict no-match instead of the null-fill at OptionalDefaultFromNoValue
+// (score 1). A{a int, b string?} | map<string,int> over {"a":1}: BOTH arms try_cast the
+// object at score 1 in PHASE 1 — A fills the absent `b` (OptionalDefaultFromNoValue), the
+// map arm does ObjectToMap — and pick_best breaks the score-1 tie by INDEX (class-vs-map
+// hits no special case in array_helper.rs: neither is a JsonToString/FirstMatch scalar and
+// they are not both classes), so the lower-index class arm A WINS and native emits
+// {"a":1,"b":null}. If the absent optional no-matched instead, A would not try_cast at all,
+// the map would be the SOLE phase-1 candidate, and native would emit {"a":1} — a DIFFERENT
+// arm and output (and phase 2 never runs, so the lenient absent-optional fill cannot mask
+// it). The absent-optional null-fill at score 1 is BAML v0.223's Class::try_cast behavior;
+// verified by the frozen-corpus differential (class_union_arm_collection_class_field, whose
+// absent optional BAML fills null at score 1) and, offline, by the mutation itself
+// (applying the no-match branch to tryCastClass makes THIS test emit {"a":1} and fail).
+func TestClassUnion_OptionalField_NoMatchWitness(t *testing.T) {
+	s := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("u", &bamlutils.DynamicProperty{
+			Type: "union",
+			OneOf: []*bamlutils.DynamicTypeSpec{
+				{Ref: "A"},
+				{Type: "map", Keys: &bamlutils.DynamicTypeSpec{Type: "string"}, Values: &bamlutils.DynamicTypeSpec{Type: "int"}},
+			},
+		})),
+		Classes: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("A", &bamlutils.DynamicClass{Properties: props(kv("a", intProp()), kv("b", optProp(&bamlutils.DynamicTypeSpec{Type: "string"})))}),
+		),
+	}
+	// A (class, score 1, index 0) beats the map (score 1, index 1) on the index tiebreak.
+	mustParse(t, s, `{"u":{"a":1}}`, `{"u":{"a":1,"b":null}}`)
+	// Reversed: map is index 0 now, so a score-1 tie would hand it the win — but A's
+	// try_cast is NOT reached (the map, arm 0, try_casts at score 1 and A at score 1, and
+	// index 0 = map wins). This pins that the witness above depends on A being lower-index,
+	// i.e. it is the phase-1 pick_best tie that carries the signal, not arm identity.
+	sRev := &bamlutils.DynamicOutputSchema{
+		Properties: props(kv("u", &bamlutils.DynamicProperty{
+			Type: "union",
+			OneOf: []*bamlutils.DynamicTypeSpec{
+				{Type: "map", Keys: &bamlutils.DynamicTypeSpec{Type: "string"}, Values: &bamlutils.DynamicTypeSpec{Type: "int"}},
+				{Ref: "A"},
+			},
+		})),
+		Classes: bamlutils.MustOrderedMap(
+			bamlutils.OrderedKV("A", &bamlutils.DynamicClass{Properties: props(kv("a", intProp()), kv("b", optProp(&bamlutils.DynamicTypeSpec{Type: "string"})))}),
+		),
+	}
+	mustParse(t, sRev, `{"u":{"a":1}}`, `{"u":{"a":1}}`)
 }
 
 // TestClassUnion_OptionalField_ClaimsAgainstScore1MapArm pins the absent optional
