@@ -27,10 +27,13 @@
 // nanollmprepare module. The root module carries no release TAG (only the
 // submodules bamlutils/worker are tagged, and their tagged versions predate the
 // packages the root's internal/* imports here), so the three first-party requires
-// are pinned to the ORIGIN-RESOLVABLE pseudo-version of the single MASTER commit
-// this module targets (15b98cf6ebe4, the de-BAML Slice 7.1b merge, #655) — one
-// consistent snapshot that resolves cleanly off a fresh checkout with zero local
-// replacements. The replace directives below are for local development only; Go
+// are pinned to the ORIGIN-RESOLVABLE pseudo-version of a single commit — the one
+// nativeserve/pin_followup.md records and cmd/build's TestFirstPartyPinFollowupIsTracked
+// checks, which is CURRENTLY the de-BAML /parse batch-2 BRANCH tip (STATUS: OUTSTANDING)
+// pending the post-squash re-pin to master, NOT the historical Slice 7.1b master merge
+// 15b98cf6ebe4 named in the floor notes below — one consistent snapshot that resolves
+// cleanly off a fresh checkout with zero local replacements. The replace directives below
+// are for local development only; Go
 // ignores a dependency module's replaces, so an external consumer resolves those
 // pseudo-versions itself, DIRECT from the origin repo under GOPRIVATE.
 // When the root module is eventually tagged for a release that includes these

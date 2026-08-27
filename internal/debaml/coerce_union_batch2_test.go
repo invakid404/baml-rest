@@ -124,10 +124,11 @@ func TestClassUnion_OptionalField_NoMatchWitness(t *testing.T) {
 	}
 	// A (class, score 1, index 0) beats the map (score 1, index 1) on the index tiebreak.
 	mustParse(t, s, `{"u":{"a":1}}`, `{"u":{"a":1,"b":null}}`)
-	// Reversed: map is index 0 now, so a score-1 tie would hand it the win — but A's
-	// try_cast is NOT reached (the map, arm 0, try_casts at score 1 and A at score 1, and
-	// index 0 = map wins). This pins that the witness above depends on A being lower-index,
-	// i.e. it is the phase-1 pick_best tie that carries the signal, not arm identity.
+	// Reversed: map is index 0 now. BOTH arms still run — neither try_casts at score 0, so
+	// tryCastUnion collects both (map score 1 via ObjectToMap, A score 1 via the absent
+	// optional) and pickBest breaks the score-1 tie by INDEX: the map, at index 0, wins →
+	// {"a":1}. This pins that the witness above depends on A being LOWER-index — it is the
+	// phase-1 pick_best tie that carries the signal, not arm identity.
 	sRev := &bamlutils.DynamicOutputSchema{
 		Properties: props(kv("u", &bamlutils.DynamicProperty{
 			Type: "union",

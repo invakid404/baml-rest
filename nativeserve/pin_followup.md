@@ -7,7 +7,7 @@ on `feat/debaml-parse-batch2` — a BRANCH commit — and the post-squash re-pin
 last section is **OWED, not yet performed**.
 
 They were re-bumped here from the initial batch-2 source `c011c7e95993`: the Codex review of
-#703 asked for one additional discriminating unit test
+PR #703 asked for one additional discriminating unit test
 (`TestClassUnion_OptionalField_NoMatchWitness`), which lands in `internal/debaml` — a
 guarded tree the codegen-spine guard hashes — so the five selections follow the standing
 "pins always name the LATEST branch source" rule to the tip that carries it, the tar was
