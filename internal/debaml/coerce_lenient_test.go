@@ -162,8 +162,10 @@ func TestLiteralIntUnion_OneLenientSuccess(t *testing.T) {
 	mustParse(t, s, `{"u":2}`, `{"u":2}`)
 	mustParse(t, s, `{"u":"2"}`, `{"u":2}`) // "2"→2 matches only arm 2
 	mustParse(t, s, `{"u":1.6}`, `{"u":2}`) // round→2 matches only arm 2
-	// A value matching NO arm declines (BAML errors / null-defaults).
-	requireUnsupported(t, s, `{"u":"7"}`)
+	// A value matching NO arm: both literal_int arms PROVABLY fail (coerceLiteral
+	// parses "7"→7 and 7≠1, 7≠2 — a provenErr value mismatch), so the non-defaultable
+	// union has no candidate and BAML errors; Batch 2 CLAIMS that error.
+	requireClaimedError(t, s, `{"u":"7"}`)
 }
 
 // TestClassUnion_LenientLeaf_OneSuccess pins that the flat disjoint Book|Car

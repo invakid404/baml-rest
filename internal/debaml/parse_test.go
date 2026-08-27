@@ -576,12 +576,13 @@ func TestParse_LiteralUnionStringExactClaimed(t *testing.T) {
 	s := unionSchema(litStr("small"), litStr("large"))
 	mustParse(t, s, `{"u":"small"}`, `{"u":"small"}`)
 	mustParse(t, s, `{"u":"large"}`, `{"u":"large"}`)
-	// "medium" try_casts to neither literal and match_strings neither in phase 2,
-	// so no arm succeeds → DECLINE (BAML also errors; native falls back).
-	requireUnsupported(t, s, `{"u":"medium"}`)
+	// "medium" try_casts to neither literal and match_strings neither in phase 2, so
+	// every non-null arm is a PROVEN match_string miss and the non-defaultable union
+	// errors; Batch 2 CLAIMS that error (was a conservative decline).
+	requireClaimedError(t, s, `{"u":"medium"}`)
 	// A JSON number try_casts to neither string literal; the phase-2 stringify
-	// (ObjectToString "5") matches neither value → no arm succeeds → DECLINE.
-	requireUnsupported(t, s, `{"u":5}`)
+	// (ObjectToString "5") matches neither value → both arms proven errors → CLAIMED.
+	requireClaimedError(t, s, `{"u":5}`)
 }
 
 func TestParse_LiteralUnionFuzzyStringScored(t *testing.T) {
@@ -623,8 +624,10 @@ func TestParse_LiteralUnionIntExactClaimed(t *testing.T) {
 	)
 	mustParse(t, s, `{"u":1}`, `{"u":1}`)
 	mustParse(t, s, `{"u":2}`, `{"u":2}`)
-	// No literal equals the coerced integer → DECLINE (3 matches neither arm).
-	requireUnsupported(t, s, `{"u":3}`)
+	// No literal equals the coerced integer: both literal_int arms provably fail (a
+	// value mismatch, provenErr), so the non-defaultable union errors and Batch 2
+	// CLAIMS that error (was a conservative decline).
+	requireClaimedError(t, s, `{"u":3}`)
 	// Mcoerce-b: a JSON float rounds and a numeric string parses; the coerced
 	// int equals at most one literal, so the union CLAIMS the lone match.
 	mustParse(t, s, `{"u":2.0}`, `{"u":2}`) // 2.0→2 matches literal 2
@@ -732,15 +735,21 @@ func litFieldClassUnionSchema(lit *bamlutils.DynamicTypeSpec) *bamlutils.Dynamic
 	}
 }
 
-func TestParse_ClassUnionDeclines(t *testing.T) {
+func TestParse_ClassUnionAllArmsFailClaimed(t *testing.T) {
+	// Book{title,pages} | Car{brand,wheels} — both MULTI-field all-required-flat-leaf
+	// classes, so neither can absorb a scalar (implied-key needs one field) nor
+	// default-fill a missing required field. Every input below leaves BOTH arms with a
+	// PROVEN error_missing_required_field (coerceClass returns provenError), so the
+	// non-defaultable union errors and Batch 2 CLAIMS that error rather than declining.
 	s := classUnionSchema()
-	// Missing a required field → DECLINE (BAML may fuzzy-match/fill).
-	requireUnsupported(t, s, `{"u":{"title":"Go"}}`)
-	// Key set matches no variant → DECLINE.
-	requireUnsupported(t, s, `{"u":{"foo":1,"bar":2}}`)
-	// Non-object input → DECLINE (BAML can infer/imply a class from a scalar).
-	requireUnsupported(t, s, `{"u":5}`)
-	requireUnsupported(t, s, `{"u":"Go"}`)
+	// Missing a required field: Book keeps title, misses pages; Car misses all.
+	requireClaimedError(t, s, `{"u":{"title":"Go"}}`)
+	// Key set matches no variant: every required field of both arms is missing.
+	requireClaimedError(t, s, `{"u":{"foo":1,"bar":2}}`)
+	// Non-object input: a multi-field class cannot infer/imply from a scalar, so
+	// every required field stays unfilled → both arms provably error.
+	requireClaimedError(t, s, `{"u":5}`)
+	requireClaimedError(t, s, `{"u":"Go"}`)
 }
 
 // nullableClassUnionSchema is classUnionSchema's nullable sibling: Book | Car |
@@ -942,9 +951,10 @@ func TestParse_ClassUnionCollectionFieldClaimed(t *testing.T) {
 	// beats B (which misses both required fields and is a proven error arm).
 	mustParse(t, s, `{"u":{"title":"Go"}}`, `{"u":{"title":"Go","tags":[]}}`)
 
-	// A class-union arm with an OPTIONAL field is STILL out of scope: BAML's
-	// Class::try_cast fills a missing optional with OptionalDefaultFromNoValue and
-	// succeeds at a NON-zero score, which tryCastClass does not model.
+	// Batch 2: a class-union arm with a SINGLE-non-null OPTIONAL field is IN scope now.
+	// BAML's Class::try_cast fills a missing optional with OptionalDefaultFromNoValue
+	// (score 1) and succeeds, which tryCastClass now models — so A's absent `note`
+	// becomes null and A's non-zero try_cast lands in try_cast_union's pick_best path.
 	optArm := &bamlutils.DynamicOutputSchema{
 		Properties: props(kv("u", &bamlutils.DynamicProperty{
 			Type:  "union",
@@ -961,7 +971,7 @@ func TestParse_ClassUnionCollectionFieldClaimed(t *testing.T) {
 			}),
 		),
 	}
-	requireUnsupported(t, optArm, `{"u":{"title":"Go"}}`)
+	mustParse(t, optArm, `{"u":{"title":"Go"}}`, `{"u":{"title":"Go","note":null}}`)
 }
 
 // TestParse_NullIntoNonNullableUnion pins what a JSON null against a NON-nullable
@@ -1019,9 +1029,11 @@ func TestParse_NullIntoNonNullableUnion(t *testing.T) {
 
 	// The same string|map union as a LIST ELEMENT: nothing default-fills there, BAML
 	// SKIPS the element ([]) — which is only possible because the map arm REJECTED
-	// the null. Native cannot prove a failing union element is a BAML parse error,
-	// so it declines. This is the discriminator: if the map arm had absorbed the
-	// null, BAML would emit [{}] instead.
+	// the null. Batch 2: coerceUnionSafe proves the union error (both arms reject
+	// null, the union is defaultable via the map's {} → provenError), and
+	// coerceListChild consumes that proven union verdict as ArrayItemParseError,
+	// dropping the element — so native now CLAIMS []. This is the discriminator: if
+	// the map arm had absorbed the null, BAML would emit [{}] instead.
 	listOfMapUnion := oneField(&bamlutils.DynamicProperty{
 		Type: "list",
 		Items: &bamlutils.DynamicTypeSpec{
@@ -1034,7 +1046,7 @@ func TestParse_NullIntoNonNullableUnion(t *testing.T) {
 			},
 		},
 	})
-	requireUnsupported(t, listOfMapUnion, `{"u":[null]}`)
+	mustParse(t, listOfMapUnion, `{"u":[null]}`, `{"u":[]}`)
 
 	// A | B where A{items string[]} may default-fill — BAML yields {"items":[]}.
 	// Native treats a class arm as possibly-surviving and declines.

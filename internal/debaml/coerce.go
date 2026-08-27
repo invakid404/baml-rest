@@ -1928,6 +1928,22 @@ func coerceListChild(b *schema.Bundle, elem schema.Type, item value, cf *coerceF
 	if provenListItemError(b, elem, item) {
 		return nil, false, nil, nil // PROVEN parse error → BAML skips via ArrayItemParseError.
 	}
+	// A UNION element whose coercion returned a PROVEN BAML error is a proven
+	// ArrayItemParseError skip: BAML's coerce_union found no Ok candidate (every arm
+	// errored, no null/default survived), so coerce_array records the error and
+	// DROPS the element — a `list<string|map<string,int>>` over [null] becomes [].
+	// provenListItemError deliberately has NO union entry: a union failure is
+	// POSITION-DEPENDENT (a required class field DEFAULT-FILLS the very same error a
+	// list drops — see nullIntoNonNullableUnion), so the proof cannot be re-derived
+	// from elem+item alone; it is the error TYPE (isProvenBamlError — a provenErr
+	// from nullIntoNonNullableUnion / unionNoArmVerdict, or a claimed mismatchError).
+	// It is scoped to UNION elements so no other child's decline path changes, and it
+	// fires only on a PROVEN error — an INDETERMINATE union arm (a null-SURVIVING
+	// list/class arm, or an arm native cannot prove) yields a plain unsupported and
+	// still declines the whole list below (union_null_composite_arm stays fallback).
+	if elem.Kind == schema.TypeUnion && isProvenBamlError(err) {
+		return nil, false, nil, nil
+	}
 	// A declinable error that is NOT a proven parse error: BAML may still SUCCEED
 	// via a deferred Mcoerce-d path (JsonToString / ObjectToString /
 	// ObjectToPrimitive / implied-key / default-fill / array-to-singular / union
@@ -2871,7 +2887,14 @@ func selectUnionArms(narms int, nullable bool, hint *int, arm unionArm) (candida
 		cands = append(cands, nullCandidate(narms))
 	}
 	if len(cands) == 0 {
-		return candidate{}, unsupported("union: no arm succeeded (BAML errors)")
+		// Every arm was a PROVEN BAML error (any indeterminate arm would have
+		// declined the whole union above) and — since a nullable union always
+		// appended the null candidate — this is a NON-nullable union with no
+		// surviving candidate: BAML merges the arm errors and errors. Signal the
+		// caller, which knows the variant types, to build the position-interpretable
+		// union-no-match verdict ([coerceUnionSafeMulti] → [unionNoArmVerdict]). The
+		// signal wraps the fallback sentinel, so an unconverted leak declines safely.
+		return candidate{}, errUnionAllArmsFailed
 	}
 	idx, err := pickBest(true, cands)
 	if err != nil {
@@ -3151,9 +3174,35 @@ func coerceUnionSafeMulti(b *schema.Bundle, variants []schema.Type, input value,
 	w, err := selectUnionArms(len(variants), nullable, cctx.unionHint(), func(i int) (json.RawMessage, *coerceFlags, error) {
 		armF := &coerceFlags{targetIsUnion: true}
 		out, e := coerce(b, variants[i], input, armF, cctx)
+		// ALL-ARMS-FAILED PROOF (non-nullable only). Native's per-kind coercers are
+		// STRICTER than BAML for some values (a non-numeric numeric string, a
+		// wrong-kind scalar), so an arm that native merely DECLINED can be one BAML
+		// PROVABLY errors — provenListItemError re-checks that with the SAME BAML-
+		// faithful proof it uses for a list item (bamlStringNumberFails for a
+		// numeric-string arm, not "native parse failed"). Upgrading such an arm to a
+		// proven error makes the categorizer EXCLUDE it (BAML's Err arm) instead of
+		// declining the whole union, which is what lets an all-arms-failed union
+		// reach the claimed verdict below (scalar_union_no_match). It is GATED to a
+		// non-nullable union — the scope's exact target — so every nullable union's
+		// selection (which already competes against the null candidate) is left
+		// byte-identical. An INDETERMINATE arm (provenListItemError=false — a
+		// non-finite/hex/overflow numeric string, or a map/list/class arm native
+		// cannot prove) is NOT upgraded and still declines the whole union, so a
+		// union with any such arm keeps falling back (the mandatory control).
+		if !nullable && e != nil && declinableChildError(e) && !isProvenBamlError(e) &&
+			!armF.isUncertain() && provenListItemError(b, variants[i], input) {
+			e = provenError(fmt.Sprintf("union arm %d (%s): native declined but BAML provably errors coercing this value (excluded from ranking)", i, variants[i].Kind))
+		}
 		return out, armF, e
 	})
 	if err != nil {
+		if errors.Is(err, errUnionAllArmsFailed) {
+			// Every non-null arm provably failed and no null/default candidate
+			// remained: build the position-interpretable union-no-match verdict from
+			// the variant types (a defaultable union declines as a proven error a
+			// class field / list drops; a non-defaultable union is a claimed error).
+			return nil, unionNoArmVerdict(variants)
+		}
 		return nil, err
 	}
 	setWinnerCf(cf, w)
@@ -3502,14 +3551,17 @@ func tryCastUnionArm(b *schema.Bundle, u *schema.UnionType, input value, cctx *c
 // rendered name — a case-sensitive BamlMap key lookup, NOT the lenient fuzzy
 // matches_string_to_string coerce uses) a subset of the class fields with NO extra
 // key, where every present field's value try_casts (recursively, via tryCastArm)
-// and every field is present. The gate (checkUnionClassVariant) guarantees every
-// field is REQUIRED, so there are no optional fills; the class try_cast's score is
-// therefore its own (empty) conditions plus the SUM of its field try_cast scores
-// (types.rs Class score). For a class of flat-leaf fields that sum is always 0 —
-// hence such an arm is BAML's immediate union winner — but a LIST or MAP field can
-// contribute (a map field's ObjectToMap is 1), and try_cast_union then collects the
-// arm for pick_best instead of short-circuiting. Returning the real score is what
-// keeps those two exits apart.
+// and every REQUIRED field is present. The gate (checkUnionClassVariant) admits
+// flat-leaf, list, string-keyed-map, and SINGLE-non-null OPTIONAL fields; a PRESENT
+// optional recurses through tryCastArm (its union dispatch, incl. explicit null),
+// and an ABSENT optional is a typed `null` at OptionalDefaultFromNoValue (score 1) —
+// so the class try_cast's score is its own (empty) conditions plus the SUM of its
+// field try_cast scores (types.rs Class score). For a class of flat-leaf fields that
+// sum is always 0 — hence such an arm is BAML's immediate union winner — but a LIST /
+// MAP field or a missing OPTIONAL can contribute (a map field's ObjectToMap is 1, an
+// absent optional is 1), and try_cast_union then collects the arm for pick_best
+// instead of short-circuiting. Returning the real score is what keeps those two
+// exits apart.
 //
 // Returns (out, candClass, score, true, nil) on a strict match (emitted in SCHEMA
 // field order under canonical field names, byte-identical to the class's clean
@@ -3569,9 +3621,32 @@ func tryCastClass(b *schema.Bundle, name string, mode schema.StreamingMode, inpu
 	score := 0
 	for j := range cls.Fields {
 		if !present[j] {
-			// The gate guarantees every field is REQUIRED (no optional), so a field
-			// with no input key fails the strict cast (BAML returns None; the lenient
-			// phase would default/error it instead).
+			if isOptional(cls.Fields[j].Type) {
+				// BAML's Class::try_cast fills an ABSENT optional with a typed null
+				// carrying OptionalDefaultFromNoValue + Pending (score 1) and KEEPS
+				// matching — it does NOT return None the way it does for an absent
+				// REQUIRED field (ir_ref/coerce_class.rs). Emit the canonical field
+				// name → null and add score 1, so a class arm with a missing optional
+				// lands in try_cast_union's pick_best sub-path (a NON-zero class
+				// try_cast) rather than short-circuiting at score 0 — which is exactly
+				// how BAML's OptionalDefaultFromNoValue (score.rs = 1) orders it. The
+				// emitted null is byte-identical to coerceClass's absent-optional fill.
+				if !first {
+					buf.WriteByte(',')
+				}
+				first = false
+				key, err := marshalJSON(cls.Fields[j].Name.Name)
+				if err != nil {
+					return nil, candClass, 0, false, err
+				}
+				buf.Write(key)
+				buf.WriteByte(':')
+				buf.WriteString("null")
+				score++ // OptionalDefaultFromNoValue (Pending is score 0)
+				continue
+			}
+			// A REQUIRED field with no input key fails the strict cast (BAML returns
+			// None; the lenient phase would default/error it instead).
 			return nil, candClass, 0, false, nil
 		}
 		fc, matched, err := tryCastArm(b, cls.Fields[j].Type, assigned[j], child)
@@ -3695,6 +3770,45 @@ func isProvenBamlError(err error) bool {
 	}
 	var pe *provenErr
 	return errors.As(err, &pe)
+}
+
+// errUnionAllArmsFailed is selectUnionArms' INTERNAL signal that every non-null arm
+// was a PROVEN BAML error (excluded from ranking) and no null/default candidate
+// remained — BAML's coerce_union merges the arm errors and errors. It WRAPS the
+// fallback sentinel, so if it ever escaped unconverted the parse would safely fall
+// back (the pre-Batch-2 behavior) rather than mis-claim. It is only ever reachable
+// for a NON-nullable union (a nullable one always keeps the null candidate), whose
+// sole caller — [coerceUnionSafeMulti] — converts it into the position-interpretable
+// verdict via [unionNoArmVerdict] (it knows the variant types; selectUnionArms does
+// not).
+var errUnionAllArmsFailed = fmt.Errorf("%w: union: every non-null arm provably failed (internal signal)", bamlutils.ErrDeBAMLParseUnsupported)
+
+// unionNoArmVerdict turns the proven all-arms-failed signal into the error the
+// ENCLOSING position needs, because BAML's own behavior is position-dependent
+// (score §7 risk 3): the SAME union error the top level claims, a list element
+// drops, and a required class field default-fills.
+//
+//   - a DEFAULTABLE union (any arm carries a TypeIR::default_value — a map's `{}`,
+//     a list's `[]`) is a PROVEN error native does NOT claim standalone: a required
+//     class field default-fills it (coerce_class's `Some(Err) => default_value`, via
+//     resolveMatched's isProvenBamlError branch) and a list element drops it
+//     (coerceListChild's union skip) — both keyed on isProvenBamlError — while the
+//     top level falls back (provenErr wraps the sentinel).
+//   - a NON-defaultable union (e.g. `int | bool`) has no default anywhere, so BAML
+//     merges the arm errors and ERRORS. Native CLAIMS the same error: a
+//     mismatchError is a CLAIMED error (it does NOT wrap the sentinel) that
+//     propagates at the top level (scalar_union_no_match) and, as a class field,
+//     errors the class (resolveMatched's isClaimedMismatch branch) — matching BAML's
+//     unparsed-required-field class error — and, as a list element, drops
+//     (isProvenBamlError). It is deliberately NOT the ambiguousMatch/typeMismatch
+//     text; the differential checks status parity only for a claimed error, so the
+//     message is diagnostic.
+func unionNoArmVerdict(variants []schema.Type) error {
+	u := schema.Type{Kind: schema.TypeUnion, Union: &schema.UnionType{Variants: variants}}
+	if _, defaultable := defaultValue(u); defaultable {
+		return provenError("union: every non-null arm provably fails and the union is defaultable (a class field default-fills / a list element drops) — BAML errors the union")
+	}
+	return &mismatchError{msg: "debaml: union: every non-null arm provably fails and the union has no default (BAML merges the arm errors and errors)"}
 }
 
 // typeMismatch reports a conservative JSON-type mismatch as a CLAIMED
