@@ -360,12 +360,27 @@ func TestDeBAMLDirectParseRouteNativeFirst(t *testing.T) {
 }
 
 // routeNativeServeFloor is how many of the corpus's final-parse cases the deployed
-// `/parse/_dynamic` route serves NATIVELY today: 169 of 195. The remaining 26
-// decline — 22 outside the native parser's cut-line, 3 where BAML recovered a
-// non-finite float that cannot be serialized at all, and 1 where both parsers
-// errored and BAML's error text is the one served.
+// `/parse/_dynamic` route serves NATIVELY today: 172 of 195. The remaining 23
+// decline — 18 outside the native parser's cut-line, 3 where BAML recovered a
+// non-finite float that cannot be serialized at all, and 2 where both parsers
+// errored and BAML's error text is the one served (match_string_ambiguous_substring
+// and, as of Batch 2, scalar_union_no_match).
 //
-// The UNION burn-down moved this from 160 (of 186). Nine cases flipped, all in the
+// The Batch-2 union-residual slice moved this from 169: three route-visible BAML
+// successes flipped to native agreement — a class union arm with a SINGLE-non-null
+// OPTIONAL field (class_union_optional_field_arm_stays_fallback), the same boundary
+// through a collection (class_union_arm_collection_class_field_stays_fallback), and a
+// proven-failing string|map union DROPPED as a list element
+// (list_union_map_arm_rejects_null_stays_fallback → {"u":[]}). A fourth in-process
+// flip, scalar_union_no_match_fallback, became a CLAIMED ERROR but stays BAML-served
+// by construction (an errored parse is never native-served), so it adds a second
+// both_error decision instead of a route serve. Nothing was removed from the
+// cut-line: internal/debaml now reproduces BAML's Class::try_cast optional fill
+// (OptionalDefaultFromNoValue score) and its coerce_array element drop for a proven
+// union error, so the byte comparison that gates every native serve simply started
+// agreeing.
+//
+// The UNION burn-down had moved this from 160 (of 186). Nine cases flipped, all in the
 // union family: the three direct list<multi-arm-union> shapes plus the class union
 // with a defaultable-collection arm, and five new fixtures that pin the mechanisms
 // those needed — the array `union_variant_hint` made observable (2^53+1 through
@@ -390,7 +405,7 @@ func TestDeBAMLDirectParseRouteNativeFirst(t *testing.T) {
 //
 // Asserted as a floor, not an equality: raising it is the point of the burn-down,
 // and a corpus that grows should not have to move this number to stay green.
-const routeNativeServeFloor = 169
+const routeNativeServeFloor = 172
 
 // parseRouteNamedFallbacks are the corpus families the native parser is known not
 // to reproduce and that must therefore keep declining at the deployed route. It is
@@ -420,16 +435,18 @@ const routeNativeServeFloor = 169
 // `scalar_union_no_match_fallback` stays listed, and always will: its `want` is a
 // BAML ERROR, and an errored parse is BY CONSTRUCTION never native-served — the
 // bridge returns BAML's own error object (worker/direct_parse_native.go
-// settleBAMLError), so no parser change can move it.
+// settleBAMLError), so no parser change can move it. Batch 2 made native CLAIM that
+// error in-process (a both_error disposition at the route), but the route still
+// serves BAML's error, so it must remain listed.
 //
-// The cold-review fix adds one more: `list_union_map_arm_rejects_null_stays_fallback`
-// is the position where a `string|map` union's null error has nothing to default-fill
-// it (a list ELEMENT), so BAML skips the item and native — unable to prove a failing
-// UNION element is a BAML parse error — declines. Its class-field sibling
-// (`class_field_union_map_arm_null_default_claimed`) is served NATIVELY and must NOT
-// be listed. `class_union_arm_collection_class_field_stays_fallback` joins them: it is
-// the union arm's optional-field boundary one level down, inside a class-valued
-// collection field.
+// The Batch-2 union-residual slice RETIRES three that now serve natively —
+// `class_union_optional_field_arm_stays_fallback`,
+// `class_union_arm_collection_class_field_stays_fallback`, and
+// `list_union_map_arm_rejects_null_stays_fallback` — by reproducing BAML's
+// Class::try_cast optional fill and its proven-union list-element drop; all three are
+// byte-exact native agreements now and must NOT be listed (the guard would fail on
+// them). `union_null_composite_arm_stays_fallback` STAYS: its null-SURVIVING arm makes
+// BAML succeed on a value native cannot reproduce, so it still declines.
 var parseRouteNamedFallbacks = []string{
 	"truncated_final_error",
 	"trailing_commas_nested_object_array",
@@ -439,9 +456,6 @@ var parseRouteNamedFallbacks = []string{
 	"literal_int_hex_spelling_stays_fallback",
 	"primitive_int_array_empty_stays_fallback",
 	"union_null_composite_arm_stays_fallback",
-	"list_union_map_arm_rejects_null_stays_fallback",
-	"class_union_optional_field_arm_stays_fallback",
-	"class_union_arm_collection_class_field_stays_fallback",
 	"baml_error_native_fallback_guard",
 }
 

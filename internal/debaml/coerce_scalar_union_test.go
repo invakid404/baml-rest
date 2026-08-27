@@ -159,14 +159,19 @@ func TestScalarUnion_NullableAllProvenErrorClaimsNull(t *testing.T) {
 	mustParse(t, s, `{"u":5}`, `{"u":null}`)
 }
 
-// TestScalarUnion_NoMatchAndArrayDecline pins the hard guards. A no-match scalar
-// union declines the whole union; an ARRAY-input union arm whose array-to-singular
-// declines an item (native-can't-prove) still declines the whole union (M3d
-// array-to-singular claims only when every item is Ok or a PROVEN error).
+// TestScalarUnion_NoMatchAndArrayDecline pins the all-arms-failed verdict and the
+// array-input guard. int | bool with a non-numeric non-bool string is a PROVEN
+// all-arms-failed non-nullable union — Batch 2 CLAIMS the BAML error
+// (scalar_union_no_match) rather than declining. An ARRAY-input union arm whose
+// array-to-singular declines an item (native-can't-prove) still declines the whole
+// union (M3d array-to-singular claims only when every item is Ok or a PROVEN error).
 func TestScalarUnion_NoMatchAndArrayDecline(t *testing.T) {
-	// int | bool with a non-numeric non-bool string: both arms declineCoerce
-	// (native-can't-prove) -> whole union declines.
-	requireUnsupported(t, primUnion("int", "bool"), `{"u":"hello"}`)
+	// int | bool with a non-numeric non-bool string: the int arm is a PROVEN BAML
+	// error (bamlStringNumberFails("hello")) and the bool arm a PROVEN match_string
+	// miss, so EVERY non-null arm provably fails and the non-defaultable union has no
+	// default candidate -> BAML merges the arm errors and errors, and native CLAIMS
+	// that error (scalar_union_no_match_fallback) instead of declining.
+	requireClaimedError(t, primUnion("int", "bool"), `{"u":"hello"}`)
 	// M3d: ARRAY input to string | int now CLAIMS the INT arm. As a union arm the
 	// int's array-to-singular target IS the union, so its inner pick_best adds
 	// UnionMatch (score 0) not FirstMatch — Int 1 scores just 1 (UnionMatch +
@@ -291,13 +296,13 @@ func TestListUnion_VariantHintIsObservable(t *testing.T) {
 	mustParse(t, s, `{"u":[1,9007199254740993]}`, `{"u":[1,9007199254740993]}`)
 	// No preceding element: no hint, so the ordered pass picks the int arm.
 	mustParse(t, s, `{"u":[9007199254740993]}`, `{"u":[9007199254740993]}`)
-	// An element BAML drops (ArrayItemParseError) is a characterized UNDER-claim,
-	// not a divergence: BAML skips "zz" and — because coerce_array only reassigns
-	// last_union_hint on a SUCCESSFUL element — still resolves index 2 on the float
-	// arm ([1.5, 9007199254740992]). Native's coerceListChild cannot PROVE a failing
-	// UNION element is a BAML parse error rather than a deferred success
-	// (provenListItemError has no union entry), so it declines the whole list. The
-	// hint-carry itself is modeled (coerceList only reassigns `last` on a kept
-	// element); this pins that the decline is the reason, not a wrong answer.
-	requireUnsupported(t, s, `{"u":[1.5,"zz",9007199254740993]}`)
+	// Batch 2: an element BAML drops (ArrayItemParseError) is now REPRODUCED. "zz" is
+	// a PROVEN all-arms-failed union element (int and float both fail via
+	// bamlStringNumberFails), so coerceListChild consumes that proven verdict and
+	// SKIPS the element exactly as coerce_array does — and because coerce_array only
+	// reassigns last_union_hint on a SUCCESSFUL element, the skip leaves element 0's
+	// FLOAT hint in place, so index 2 (9007199254740993) is still resolved on the
+	// float arm (9007199254740992). This is the mandatory "skip does not overwrite the
+	// sibling hint" control: a wrong answer here would be [1.5, 9007199254740993].
+	mustParse(t, s, `{"u":[1.5,"zz",9007199254740993]}`, `{"u":[1.5,9007199254740992]}`)
 }

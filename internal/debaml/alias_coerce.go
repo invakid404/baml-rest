@@ -320,12 +320,15 @@ func tryCastAliasUnion(b *schema.Bundle, prof recAliasProfile, variants []schema
 	if prof.nullable && input.kind == valNull {
 		return aliasValue{kind: akNull}, &coerceFlags{kind: candNull, hasUnionMatch: true}, aliasArmNone, true, nil
 	}
-	// Hint fast path: the previous array sibling's winning arm, tried first.
-	if cctx.hint != nil && *cctx.hint >= 0 && *cctx.hint < len(variants) {
-		if av, f, ok, err := aliasTryCastArm(b, prof, variants[*cctx.hint], input, cctx); err != nil {
+	// Hint fast path: the previous array sibling's winning arm, tried first. Read the
+	// hint through the nil-safe accessor (a nil *coerceCtx is an empty context — a
+	// leaf/unit-probe caller — and carries no hint) so a direct caller that passes
+	// nil does not panic; a non-nil context is byte-for-byte unchanged.
+	if h := cctx.unionHint(); h != nil && *h >= 0 && *h < len(variants) {
+		if av, f, ok, err := aliasTryCastArm(b, prof, variants[*h], input, cctx); err != nil {
 			return aliasValue{}, nil, aliasArmNone, false, err
 		} else if ok && f.score == 0 {
-			return av, f, *cctx.hint, true, nil
+			return av, f, *h, true, nil
 		}
 	}
 	var vals []aliasValue
@@ -372,10 +375,12 @@ func tryCastAliasUnion(b *schema.Bundle, prof recAliasProfile, variants []schema
 // int/float arm). The list arm always succeeds, so there is always at least one
 // candidate.
 func coerceAliasUnion(b *schema.Bundle, prof recAliasProfile, variants []schema.Type, input value, cctx *coerceCtx) (aliasValue, *coerceFlags, int, error) {
-	// Hint fast path.
-	if cctx.hint != nil && *cctx.hint >= 0 && *cctx.hint < len(variants) {
-		if av, f, err := aliasCoerceArm(b, prof, variants[*cctx.hint], input, cctx); err == nil && f.score == 0 && !f.isUncertain() {
-			return av, f, *cctx.hint, nil
+	// Hint fast path. Read the hint through the nil-safe accessor (a nil *coerceCtx is
+	// an empty context and carries no hint), so a direct caller that passes nil does
+	// not panic; a non-nil context is byte-for-byte unchanged.
+	if h := cctx.unionHint(); h != nil && *h >= 0 && *h < len(variants) {
+		if av, f, err := aliasCoerceArm(b, prof, variants[*h], input, cctx); err == nil && f.score == 0 && !f.isUncertain() {
+			return av, f, *h, nil
 		}
 	}
 	var vals []aliasValue

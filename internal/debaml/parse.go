@@ -951,12 +951,15 @@ func checkUnionMapVariant(b *schema.Bundle, v schema.Type) error {
 // MISSES is kept leniently with an unproven-weight MapKeyParseError, and a scored
 // position may not be ranked on a score native cannot prove.
 //
-// A class with ANY optional / union / nested-class / recursive field still declines:
-// a missing OPTIONAL makes BAML's Class::try_cast succeed at a NON-zero score
-// (OptionalDefaultFromNoValue) rather than not match, which tryCastClass does not
-// model, and a nested class/union field's own lenient scoring inside a union is not
-// proven. A zero-field class declines too (its NoFields / empty-object try_cast is
-// unmodeled).
+// A SINGLE-non-null OPTIONAL field (the ordinary `T?` nullable wrapper) IS now
+// admitted when its lone non-null member `T` is itself in the union-arm family:
+// tryCastClass now models BAML's Class::try_cast for an absent optional (a typed
+// `null` at OptionalDefaultFromNoValue, score 1) and its present/explicit-null
+// cases (via tryCastArm's union dispatch). A MULTI-arm optional, a non-nullable
+// multi-union, a nested class, or a recursive field still declines: a nested
+// class/union field's own lenient scoring inside a scored class-inside-a-union is
+// not proven. A zero-field class declines too (its NoFields / empty-object
+// try_cast is unmodeled).
 func checkUnionClassVariant(b *schema.Bundle, v schema.Type) error {
 	return checkUnionClassVariantSeen(b, v, map[schema.ClassKey]struct{}{})
 }
@@ -1003,11 +1006,12 @@ func checkUnionClassVariantSeen(b *schema.Bundle, v schema.Type, walked map[sche
 }
 
 // checkUnionClassField validates ONE field of a class union arm: a flat leaf
-// (primitive scalar / literal / enum), a required LIST, or a required STRING-keyed
-// MAP — the three shapes whose try_cast score AND lenient score native reproduces
-// inside a scored union (see [checkUnionClassVariant]). An OPTIONAL field (a
-// nullable union), a multi-arm union, a nested class, or a recursive alias declines:
-// each one has a try_cast or default path whose union scoring is not proven.
+// (primitive scalar / literal / enum), a required LIST, a required STRING-keyed
+// MAP, or a SINGLE-non-null OPTIONAL wrapper of any of those — the shapes whose
+// try_cast score AND lenient score native reproduces inside a scored union (see
+// [checkUnionClassVariant]). A MULTI-arm union, a nested class, or a recursive
+// alias field declines: each one has a try_cast or default path whose union
+// scoring is not proven.
 //
 // A collection field's ELEMENT / VALUE is checked TWICE, and both are needed.
 // [checkSupportedType] proves it is in the parser's cut-line at all, but it treats a
@@ -1043,8 +1047,26 @@ func checkUnionClassField(b *schema.Bundle, t schema.Type, walked map[schema.Cla
 			return unsupported("class-union variant class has a map field without a value")
 		}
 		return checkUnionCollectionClasses(b, *t.Value, walked)
+	case schema.TypeUnion:
+		// An OPTIONAL field is the ordinary single-non-null nullable wrapper (`T?`
+		// lowers to a nullable union with one non-null variant; null is hoisted to
+		// Nullable). Admit it ONLY when its lone non-null member is itself an
+		// admissible union-arm field — the SAME family rule, one level in — so a
+		// flat-leaf / list / string-keyed-map member is admitted and a nested-class /
+		// multi-arm-union member is not. tryCastClass mirrors BAML's Class::try_cast:
+		// a PRESENT optional recurses into the member (tryCastArm's union dispatch,
+		// incl. the explicit-null score-0 path) and an ABSENT one is a typed `null`
+		// at OptionalDefaultFromNoValue (score 1). Do NOT prove the member via
+		// checkSupportedType: its nullable fast path (`if u.Nullable { return nil }`)
+		// admits null WITHOUT validating the non-null member, so it would smuggle in a
+		// member the union-arm rules reject. walked is threaded through so a
+		// list<recursive-class>? member is still caught by the cycle guard.
+		if t.Union != nil && t.Union.Nullable && len(t.Union.Variants) == 1 {
+			return checkUnionClassField(b, t.Union.Variants[0], walked)
+		}
+		return unsupported("class-union variant class has a multi-arm-union / non-single-optional field (only a single-non-null optional wrapper is modeled inside a union)")
 	default:
-		return unsupported("class-union variant class has an optional / union / nested-class field (only flat leaves and required list/string-keyed-map fields are modeled inside a union)")
+		return unsupported("class-union variant class has a nested-class / recursive-alias field (only flat leaves, required list/string-keyed-map, and single-non-null optional fields are modeled inside a union)")
 	}
 }
 

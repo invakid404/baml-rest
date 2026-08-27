@@ -21,9 +21,10 @@ func TestLiteralUnion_ObjectToPrimitive_OneSuccess(t *testing.T) {
 	s := litIntUnion(1, 2)
 	mustParse(t, s, `{"u":{"value":1}}`, `{"u":1}`) // extract 1 -> matches arm 1 only
 	mustParse(t, s, `{"u":{"any":2}}`, `{"u":2}`)   // key ignored, extract 2 -> arm 2 only
-	// Extracted inner value matches NO arm -> both arms are proven BAML errors,
-	// so the (non-nullable) union has no success and declines.
-	requireUnsupported(t, s, `{"u":{"value":7}}`)
+	// Extracted inner value matches NO arm -> both arms are proven BAML errors, so the
+	// (non-nullable, non-defaultable) union has no success — BAML errors, and Batch 2
+	// CLAIMS that error (was a conservative decline).
+	requireClaimedError(t, s, `{"u":{"value":7}}`)
 }
 
 // TestLiteralUnion_ObjectToString_OneSuccess pins that a homogeneous
@@ -33,8 +34,9 @@ func TestLiteralUnion_ObjectToString_OneSuccess(t *testing.T) {
 	s := unionSchema(litStr("5"), litStr("6"))
 	mustParse(t, s, `{"u":5}`, `{"u":"5"}`) // Display "5" matches literal "5" only
 	mustParse(t, s, `{"u":6}`, `{"u":"6"}`)
-	// Display matches neither literal -> both proven errors -> decline.
-	requireUnsupported(t, s, `{"u":7}`)
+	// Display matches neither literal -> both proven errors -> the non-defaultable
+	// union errors; Batch 2 CLAIMS that error (was a conservative decline).
+	requireClaimedError(t, s, `{"u":7}`)
 }
 
 // TestLiteralUnion_TwoSubstring_Scored pins the M3 pick_best selection: a value

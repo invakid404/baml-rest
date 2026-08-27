@@ -186,13 +186,8 @@ func TestClassUnion_ProvableLosingArmExcluded(t *testing.T) {
 // TestClassUnion_HardGuardsStayFallback pins the load-bearing over-claim guards for
 // M3c class/mixed unions.
 func TestClassUnion_HardGuardsStayFallback(t *testing.T) {
-	// A class arm with an OPTIONAL field declines at the gate (its non-zero try_cast
-	// / default scoring in a union is M3d).
-	optField := abClassUnionSchema(
-		props(kv("a", intProp()), kv("b", optProp(&bamlutils.DynamicTypeSpec{Type: "string"}))),
-		props(kv("c", intProp()), kv("d", strProp())),
-	)
-	requireUnsupported(t, optField, `{"u":{"a":1,"b":"x"}}`)
+	// (A class arm with a SINGLE-non-null OPTIONAL field is no longer a hard guard —
+	// Batch 2 admits it and models its try_cast score; see TestClassUnion_OptionalField.)
 
 	// A class arm with a required LIST or STRING-keyed MAP field is CLAIMED now:
 	// tryCastArray / tryCastMap cover phase 1 (their scores summed into the class
@@ -255,15 +250,16 @@ func TestClassUnion_HardGuardsStayFallback(t *testing.T) {
 // class-valued LIST element / MAP value inside a class-union arm must be held to the
 // SAME union-arm class rules the arm itself is, because checkSupportedType stops at a
 // class REFERENCE (class definitions are validated once over the bundle's class
-// slice, under the ORDINARY field rules). Without checkUnionCollectionClasses,
-// `A{items list<B>}` would admit a `B` carrying an optional / nested-class /
-// multi-arm-union field — the very shapes class_union_optional_field_arm_stays_fallback
-// locks at depth 0 — and BAML's Class::try_cast fills B's missing optional and
-// SUCCEEDS at a NON-zero score where tryCastClass does not match at all, so the two
-// phases disagree about which arms compete.
+// slice, under the ORDINARY field rules). checkUnionCollectionClasses holds every
+// class reachable through the collection to the SAME union-arm rules the arm itself
+// obeys — so a `B` carrying a NESTED-CLASS or multi-arm-union field is still rejected
+// at depth 1, exactly as at depth 0. (Batch 2 admits a SINGLE-non-null OPTIONAL field
+// at both depths — BAML's Class::try_cast fills the missing optional at score 1, which
+// tryCastClass now models — so a B with an optional field is now IN scope.)
 //
 // The restriction is a boundary, not a blanket: a collection of an IN-SCOPE class
-// (all required flat leaves), including a nested list-of-list, still CLAIMS.
+// (all required flat leaves or single-non-null optionals), including a nested
+// list-of-list, still CLAIMS.
 func TestClassUnion_CollectionClassFieldHeldToUnionRules(t *testing.T) {
 	// arm builds Root{u: A|C} with A carrying the given field and C{name string}.
 	arm := func(field string, spec *bamlutils.DynamicProperty, inner bamlutils.OrderedMap[*bamlutils.DynamicProperty]) *bamlutils.DynamicOutputSchema {
@@ -289,17 +285,21 @@ func TestClassUnion_CollectionClassFieldHeldToUnionRules(t *testing.T) {
 		Items: &bamlutils.DynamicTypeSpec{Type: "list", Items: &bamlutils.DynamicTypeSpec{Ref: "B"}},
 	}
 
-	// B with an OPTIONAL field: OUT of scope through a list, a map, and a nested list.
+	// Batch 2: B with a SINGLE-non-null OPTIONAL field is IN scope through a list, a
+	// map, and a nested list — checkUnionCollectionClasses reaches checkUnionClassField,
+	// which now admits the optional wrapper, and tryCastClass fills B's absent `y` with
+	// null (OptionalDefaultFromNoValue) exactly as BAML does (the A arm's non-zero class
+	// try_cast lands in try_cast_union's pick_best sub-path; C rejects the object).
 	bOptional := props(kv("x", intProp()), kv("y", optProp(&bamlutils.DynamicTypeSpec{Type: "string"})))
-	requireUnsupported(t, arm("items", listOfB, bOptional), `{"u":{"items":[{"x":1}]}}`)
-	requireUnsupported(t, arm("m", mapOfB, bOptional), `{"u":{"m":{"k":{"x":1}}}}`)
-	requireUnsupported(t, arm("g", nestedListOfB, bOptional), `{"u":{"g":[[{"x":1}]]}}`)
-	// Even an EMPTY collection declines: the gate is structural, so there is no input
-	// that slips a rejected class through.
-	requireUnsupported(t, arm("items", listOfB, bOptional), `{"u":{"items":[]}}`)
-	requireUnsupported(t, arm("items", listOfB, bOptional), `{"u":{"name":"n"}}`)
+	mustParse(t, arm("items", listOfB, bOptional), `{"u":{"items":[{"x":1}]}}`, `{"u":{"items":[{"x":1,"y":null}]}}`)
+	mustParse(t, arm("m", mapOfB, bOptional), `{"u":{"m":{"k":{"x":1}}}}`, `{"u":{"m":{"k":{"x":1,"y":null}}}}`)
+	mustParse(t, arm("g", nestedListOfB, bOptional), `{"u":{"g":[[{"x":1}]]}}`, `{"u":{"g":[[{"x":1,"y":null}]]}}`)
+	// An EMPTY collection claims (schema admitted; nothing to fill), and the C arm
+	// still wins for its own shape under the B-optional schema.
+	mustParse(t, arm("items", listOfB, bOptional), `{"u":{"items":[]}}`, `{"u":{"items":[]}}`)
+	mustParse(t, arm("items", listOfB, bOptional), `{"u":{"name":"n"}}`, `{"u":{"name":"n"}}`)
 
-	// B with a NESTED-CLASS field is likewise out of scope through the collection.
+	// B with a NESTED-CLASS field is STILL out of scope through the collection.
 	bNested := props(kv("x", intProp()), kv("inner", &bamlutils.DynamicProperty{Ref: "D"}))
 	nestedSchema := arm("items", listOfB, bNested)
 	_ = nestedSchema.Classes.Set("D", &bamlutils.DynamicClass{Properties: props(kv("v", intProp()))})
