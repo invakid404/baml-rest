@@ -522,14 +522,11 @@ func classifyOutputSchema(b schemadescriptor.Bundle) (projectdescriptor.Capabili
 			return code, detail
 		}
 		for j := range c.Fields {
-			// An aliased output field serves under its ALIAS in the native codec,
-			// but a baml_client-generated carrier serves it under its CANONICAL
-			// json tag (e.g. `confidence @alias("score")` -> `json:"confidence"`),
-			// so the two byte streams diverge. Decline until M3b pins the
-			// output-key policy and differentially proves it.
-			if c.Fields[j].Name.Alias != nil {
-				return DeclineUnsupportedOutputShape, "return schema field " + c.Name.Name + "." + c.Fields[j].Name.Name + " is aliased (native output-key policy deferred to M3b)"
-			}
+			// M3b: an @alias on an output field is admitted and IGNORED — BAML
+			// serves the CANONICAL field key and a generated Go struct tags it
+			// canonical (empirically confirmed, scope §2). The emitter keys the
+			// codec by field.Name.Name, so there is no divergence to decline. All
+			// surrounding shape gates still apply via walkType below.
 			if code, detail := walkType(&c.Fields[j].Type, seen); code != "" {
 				return code, detail
 			}
@@ -539,13 +536,9 @@ func classifyOutputSchema(b schemadescriptor.Bundle) (projectdescriptor.Capabili
 		if code, detail := constraintCode(b.Enums[i].Constraints); code != "" {
 			return code, detail
 		}
-		for j := range b.Enums[i].Values {
-			// Same divergence for an aliased enum member (native emits the alias as
-			// the string value; the generated enum emits the canonical member).
-			if b.Enums[i].Values[j].Name.Alias != nil {
-				return DeclineUnsupportedOutputShape, "return schema enum " + b.Enums[i].Name.Name + " member " + b.Enums[i].Values[j].Name.Name + " is aliased (native output-key policy deferred to M3b)"
-			}
-		}
+		// M3b: an @alias on an enum member is admitted and IGNORED — BAML serves
+		// the CANONICAL enum value and a generated enum validates against it
+		// (empirically confirmed, scope §2). The emitter emits canonical constants.
 	}
 	return "", ""
 }
@@ -577,6 +570,19 @@ func walkType(t *schemadescriptor.Type, seen map[*schemadescriptor.Type]bool) (p
 		}
 	case schemadescriptor.TypeEnum, schemadescriptor.TypeClass:
 		return "", "" // named ref; the def is walked at the Bundle level
+	case schemadescriptor.TypeLiteral:
+		// M3b admits a string/int/bool literal (it lowers to its plain Go base;
+		// BAML has no float literal). A nil payload or unknown kind is malformed —
+		// decline rather than admit-then-fail in the emitter.
+		if t.Literal == nil {
+			return DeclineUnsupportedOutputShape, "return schema contains a literal with no value"
+		}
+		switch t.Literal.Kind {
+		case schemadescriptor.LiteralString, schemadescriptor.LiteralInt, schemadescriptor.LiteralBool:
+			return "", ""
+		default:
+			return DeclineUnsupportedOutputShape, "return schema contains an unsupported literal kind " + string(t.Literal.Kind)
+		}
 	case schemadescriptor.TypeList:
 		return walkType(t.Elem, seen)
 	case schemadescriptor.TypeMap:
@@ -595,10 +601,24 @@ func walkType(t *schemadescriptor.Type, seen map[*schemadescriptor.Type]bool) (p
 		return walkType(t.Value, seen)
 	case schemadescriptor.TypeUnion:
 		if t.Union == nil {
-			return "", ""
+			// A union node with a NIL payload (distinct from a non-nil empty
+			// Variants slice below) is malformed — decline rather than admit a shape
+			// the emitter's schemaGoType/buildCarrierPlan reject (keeps admission ==
+			// emission). Not constructible via the descriptor builder.
+			return DeclineUnsupportedOutputShape, "return schema contains a union with no payload"
 		}
-		if len(t.Union.Variants) > 1 {
-			return DeclineUnsupportedOutputShape, "return schema contains a multi-variant union"
+		// M3b admits a multi-arm union whose EVERY arm is otherwise in the M3a+M3b
+		// vocabulary (a union does not launder an unsupported child into
+		// admission). A carrier requires either the optional-of-one `T?` form
+		// (Nullable + exactly one arm, which stays M3a's *T) or a multi-arm union
+		// (>=2 arms). A zero-arm union OR a NON-nullable single-arm union is
+		// malformed for a carrier — decline rather than admit a shape the emitter's
+		// plan cannot name (keeps admission == emission; the emitter's
+		// buildCarrierPlan errors on the same shapes). Neither is constructible
+		// through the descriptor builder's union normalization, but the classifier
+		// must still fail closed rather than admit-then-fail.
+		if len(t.Union.Variants) == 0 || (len(t.Union.Variants) == 1 && !t.Union.Nullable) {
+			return DeclineUnsupportedOutputShape, "return schema contains a malformed union (needs an optional-of-one or a multi-arm union)"
 		}
 		for i := range t.Union.Variants {
 			if code, detail := walkType(&t.Union.Variants[i], seen); code != "" {
@@ -607,7 +627,7 @@ func walkType(t *schemadescriptor.Type, seen map[*schemadescriptor.Type]bool) (p
 		}
 		return "", ""
 	default:
-		// top, literal, tuple, arrow, recursive_alias: outside the M3a class.
+		// top, tuple, arrow, recursive_alias: outside the M3a+M3b class.
 		return DeclineUnsupportedOutputShape, "return schema contains an unsupported type kind " + string(t.Kind)
 	}
 }

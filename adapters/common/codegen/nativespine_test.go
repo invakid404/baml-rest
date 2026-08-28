@@ -105,30 +105,28 @@ func aliasMethod(alias string) projectdescriptor.Method {
 	return m
 }
 
-// TestEmitNativeStaticUnaryAliasCodec proves output fields serialize under their
-// EXACT BAML wire key via the custom codec — even keys a Go struct tag cannot
-// express ("-" would drop the field; "" would fall back to the Go name) (P1-4).
-func TestEmitNativeStaticUnaryAliasCodec(t *testing.T) {
-	dash, err := EmitNativeStaticUnary(aliasMethod("-"), NativeSpineOptions{PackageName: "p"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := string(dash)
-	if strings.Contains(got, "`json:\"-\"`") {
-		t.Error("emitted a json:\"-\" struct tag on an output field — encoding/json would drop it")
-	}
-	// Marshal side carries the exact key; unmarshal side keys on it too (gofmt may
-	// pad the map value, so match the key alone).
-	if !strings.Contains(got, `{"-", v.Text}`) || !strings.Contains(got, `"-":`) {
-		t.Errorf("codec does not carry the exact wire key %q:\n%s", "-", got)
-	}
-
-	empty, err := EmitNativeStaticUnary(aliasMethod(""), NativeSpineOptions{PackageName: "p"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(empty), `{"", v.Text}`) {
-		t.Error("codec does not carry an empty wire key")
+// TestEmitNativeStaticUnaryAliasIgnoredCanonicalOutput proves M3b's canonical
+// output-key policy (scope §2): an @alias on an output field is IGNORED — the
+// codec keys the field by its CANONICAL name (field.Name.Name), never the alias.
+// This holds for exotic aliases a struct tag could not even express ("-", "", a
+// comma, unicode), which must NOT become output tokens.
+func TestEmitNativeStaticUnaryAliasIgnoredCanonicalOutput(t *testing.T) {
+	for _, alias := range []string{"-", "", "a,b", "naïve", "score"} {
+		src, err := EmitNativeStaticUnary(aliasMethod(alias), NativeSpineOptions{PackageName: "p"})
+		if err != nil {
+			t.Fatalf("alias %q: emit: %v", alias, err)
+		}
+		got := string(src)
+		// The canonical field name "text" is the marshal AND unmarshal key.
+		if !strings.Contains(got, `{"text", v.Text}`) || !strings.Contains(got, `"text":`) {
+			t.Errorf("alias %q: codec does not key on the canonical name %q:\n%s", alias, "text", got)
+		}
+		// The alias string is never emitted as a codec key (skip "" which would
+		// match spuriously, and skip "score" which contains no chars that would
+		// only appear as a key — assert the codec key line specifically).
+		if alias != "" && strings.Contains(got, `{"`+alias+`", v.Text}`) {
+			t.Errorf("alias %q leaked into the output codec as a wire key:\n%s", alias, got)
+		}
 	}
 }
 
@@ -251,12 +249,107 @@ func TestEmitNativeStaticUnaryRejectsCodecMethodCollision(t *testing.T) {
 	}
 }
 
-// TestEmitNativeStaticUnaryRejectsDuplicateWireKey proves the emitter backstop
-// rejects two fields of one output class that share a WIRE key (alias or canonical
-// name). Their Go fields differ, so the field-normalization guard passes, but the
-// codec would emit a duplicate map-literal key (a Go compile error) and a doubled
-// JSON key. Here `body @alias("text")` collides with the canonical `text`.
-func TestEmitNativeStaticUnaryRejectsDuplicateWireKey(t *testing.T) {
+// unionField returns a class field of a bare 2-arm union type, used to force a
+// planned OutputUnion1 in the synthetic collision tests.
+func unionField(name string, arms ...sd.Type) sd.ClassField {
+	return sd.ClassField{Name: sd.Name{Name: name}, Type: sd.Type{Kind: sd.TypeUnion, Union: &sd.UnionType{Variants: arms}}}
+}
+
+// TestEmitNativeStaticUnaryRejectsUnionNameCollisions is the emitter backstop for
+// the M3b plan (open risk 4): a planned union carrier's type name or constructor
+// name colliding with a declared output type must fail closed, so the classifier
+// (which delegates to CheckNativeNameCollision) declines EXACTLY what the emitter
+// cannot emit. A synthetic descriptor is used because the BAML parser cannot
+// produce these collisions directly.
+func TestEmitNativeStaticUnaryRejectsUnionNameCollisions(t *testing.T) {
+	prim := func(p sd.PrimitiveKind) sd.Type { return sd.Type{Kind: sd.TypePrimitive, Primitive: p} }
+
+	// Union TYPE-name collision: class "Union1" -> OutputUnion1, colliding with the
+	// planned OutputUnion1 for the string|int field.
+	tc := sampleMethod()
+	tc.Name = "UnionTypeCollide"
+	tc.Args = nil
+	tc.Return.Target = sd.Type{Kind: sd.TypeClass, Name: "Wrap"}
+	tc.Return.Classes = []sd.ClassDef{
+		{Name: sd.Name{Name: "Union1"}, Fields: []sd.ClassField{strField("x", "\x00")}},
+		{Name: sd.Name{Name: "Wrap"}, Fields: []sd.ClassField{
+			unionField("u", prim(sd.PrimitiveString), prim(sd.PrimitiveInt)),
+			{Name: sd.Name{Name: "w"}, Type: sd.Type{Kind: sd.TypeClass, Name: "Union1"}},
+		}},
+	}
+	if _, err := EmitNativeStaticUnary(tc, NativeSpineOptions{PackageName: "p"}); err == nil {
+		t.Error("want error for class Union1 colliding with planned OutputUnion1, got nil")
+	}
+	if err := CheckNativeNameCollision(tc.Name, nil, tc.Return); err == nil {
+		t.Error("classifier preflight must also reject the union type-name collision")
+	}
+
+	// Union CONSTRUCTOR-name collision: class "Union1NewVariant0" ->
+	// OutputUnion1NewVariant0, colliding with the generated constructor.
+	cc := sampleMethod()
+	cc.Name = "UnionCtorCollide"
+	cc.Args = nil
+	cc.Return.Target = sd.Type{Kind: sd.TypeClass, Name: "Wrap"}
+	cc.Return.Classes = []sd.ClassDef{
+		{Name: sd.Name{Name: "Union1NewVariant0"}, Fields: []sd.ClassField{strField("x", "\x00")}},
+		{Name: sd.Name{Name: "Wrap"}, Fields: []sd.ClassField{
+			unionField("u", prim(sd.PrimitiveString), prim(sd.PrimitiveInt)),
+			{Name: sd.Name{Name: "w"}, Type: sd.Type{Kind: sd.TypeClass, Name: "Union1NewVariant0"}},
+		}},
+	}
+	if _, err := EmitNativeStaticUnary(cc, NativeSpineOptions{PackageName: "p"}); err == nil {
+		t.Error("want error for class Union1NewVariant0 colliding with planned constructor, got nil")
+	}
+	if err := CheckNativeNameCollision(cc.Name, nil, cc.Return); err == nil {
+		t.Error("classifier preflight must also reject the union constructor-name collision")
+	}
+}
+
+// TestEmitNativeStaticUnaryRejectsMalformedUnion is the emitter backstop for a
+// union shape the classifier declines and the BAML parser cannot produce: a
+// zero-arm union and a nil-payload literal arm must fail closed at emit time even
+// when the classifier preflight is bypassed (direct emitter call).
+func TestEmitNativeStaticUnaryRejectsMalformedUnion(t *testing.T) {
+	// Nil union payload (distinct from a non-nil empty Variants slice).
+	np := sampleMethod()
+	np.Name = "NilPayload"
+	np.Args = nil
+	np.Return.Target = sd.Type{Kind: sd.TypeUnion, Union: nil}
+	np.Return.Classes = nil
+	if _, err := EmitNativeStaticUnary(np, NativeSpineOptions{PackageName: "p"}); err == nil {
+		t.Error("want error for a nil-payload union target, got nil")
+	}
+
+	// Zero-arm (non-nullable) union target.
+	z := sampleMethod()
+	z.Name = "ZeroArm"
+	z.Args = nil
+	z.Return.Target = sd.Type{Kind: sd.TypeUnion, Union: &sd.UnionType{Variants: nil}}
+	z.Return.Classes = nil
+	if _, err := EmitNativeStaticUnary(z, NativeSpineOptions{PackageName: "p"}); err == nil {
+		t.Error("want error for a zero-arm union target, got nil")
+	}
+
+	// A multi-arm union with a nil-payload literal arm.
+	n := sampleMethod()
+	n.Name = "NilLit"
+	n.Args = nil
+	n.Return.Target = sd.Type{Kind: sd.TypeUnion, Union: &sd.UnionType{Variants: []sd.Type{
+		{Kind: sd.TypePrimitive, Primitive: sd.PrimitiveString},
+		{Kind: sd.TypeLiteral, Literal: nil},
+	}}}
+	n.Return.Classes = nil
+	if _, err := EmitNativeStaticUnary(n, NativeSpineOptions{PackageName: "p"}); err == nil {
+		t.Error("want error for a nil-payload literal union arm, got nil")
+	}
+}
+
+// TestEmitNativeStaticUnaryAliasOntoAnotherCanonicalAdmitted proves the M3b
+// output policy resolves the former M3a "duplicate wire key" case: `body
+// @alias("text")` alongside a canonical `text` field no longer collides, because
+// the alias is IGNORED — the two output keys are the distinct canonical names
+// `body` and `text`. The emit succeeds and emits both canonical keys once.
+func TestEmitNativeStaticUnaryAliasOntoAnotherCanonicalAdmitted(t *testing.T) {
 	m := sampleMethod()
 	m.Name = "WireDup"
 	m.Args = nil
@@ -268,8 +361,18 @@ func TestEmitNativeStaticUnaryRejectsDuplicateWireKey(t *testing.T) {
 			{Name: sd.Name{Name: "text"}, Type: sd.Type{Kind: sd.TypePrimitive, Primitive: sd.PrimitiveString}},
 		},
 	}}
-	if _, err := EmitNativeStaticUnary(m, NativeSpineOptions{PackageName: "p"}); err == nil {
-		t.Error("want error for duplicate wire key across two fields, got nil")
+	src, err := EmitNativeStaticUnary(m, NativeSpineOptions{PackageName: "p"})
+	if err != nil {
+		t.Fatalf("alias-onto-another-canonical must be admitted under M3b canonical output, got: %v", err)
+	}
+	got := string(src)
+	if !strings.Contains(got, `{"body", v.Body}`) || !strings.Contains(got, `{"text", v.Text}`) {
+		t.Errorf("expected distinct canonical keys body+text, got:\n%s", got)
+	}
+	// The alias "text" must NOT double the "text" key: exactly one marshal entry
+	// keyed "text" (v.Text), and none keyed "text" for v.Body.
+	if strings.Contains(got, `{"text", v.Body}`) {
+		t.Errorf("alias leaked: body field emitted under alias key \"text\":\n%s", got)
 	}
 }
 
@@ -301,12 +404,13 @@ func TestEmitNativeStaticUnaryRejectsUndeclaredRef(t *testing.T) {
 	}
 }
 
-// TestEmitNativeStaticUnaryAliasRoundTrip is the required BEHAVIORAL proof (P1-4,
-// fix #2): it COMPILES and EXECUTES the emitted MarshalJSON/UnmarshalJSON and
-// asserts exact wire bytes both directions for a canonical (nil-alias) key, a
-// present-empty-alias key, a "-" key, and a comma key — guarding against a
-// marshal/unmarshal key mismatch that would still compile.
-func TestEmitNativeStaticUnaryAliasRoundTrip(t *testing.T) {
+// TestEmitNativeStaticUnaryAliasCanonicalRoundTrip is the required BEHAVIORAL
+// proof of the M3b canonical output-key policy (scope §2): it COMPILES and
+// EXECUTES the emitted MarshalJSON/UnmarshalJSON and asserts the wire bytes use
+// the CANONICAL field names in both directions, even when the fields carry
+// exotic aliases ("", "-", a comma) that a struct tag could not express — the
+// aliases are ignored and never appear in the bytes.
+func TestEmitNativeStaticUnaryAliasCanonicalRoundTrip(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go not on PATH; skipping behavioral round-trip")
 	}
@@ -317,9 +421,9 @@ func TestEmitNativeStaticUnaryAliasRoundTrip(t *testing.T) {
 		Name: sd.Name{Name: "Reply"},
 		Fields: []sd.ClassField{
 			strField("canon", "\x00"), // nil alias -> canonical "canon"
-			strField("empty", ""),     // present empty alias -> ""
-			strField("dash", "-"),     // "-" (a json:"-" tag would drop the field)
-			strField("comma", "a,b"),  // comma (a struct tag would read it as options)
+			strField("empty", ""),     // present empty alias -> IGNORED, canonical "empty"
+			strField("dash", "-"),     // "-" alias -> IGNORED, canonical "dash"
+			strField("comma", "a,b"),  // comma alias -> IGNORED, canonical "comma"
 		},
 	}}
 	src, err := EmitNativeStaticUnary(m, NativeSpineOptions{PackageName: "rtpkg"})
@@ -327,13 +431,16 @@ func TestEmitNativeStaticUnaryAliasRoundTrip(t *testing.T) {
 		t.Fatalf("emit: %v", err)
 	}
 	rt := "package rtpkg\n\n" +
-		"import (\n\t\"encoding/json\"\n\t\"reflect\"\n\t\"testing\"\n)\n\n" +
+		"import (\n\t\"encoding/json\"\n\t\"reflect\"\n\t\"strings\"\n\t\"testing\"\n)\n\n" +
 		"func TestRoundTrip(t *testing.T) {\n" +
 		"\tv := OutputReply{Canon: \"c\", Empty: \"e\", Dash: \"d\", Comma: \"m\"}\n" +
 		"\tgot, err := json.Marshal(v)\n" +
 		"\tif err != nil { t.Fatal(err) }\n" +
-		"\tconst want = `{\"canon\":\"c\",\"\":\"e\",\"-\":\"d\",\"a,b\":\"m\"}`\n" +
+		"\tconst want = `{\"canon\":\"c\",\"empty\":\"e\",\"dash\":\"d\",\"comma\":\"m\"}`\n" +
 		"\tif string(got) != want { t.Fatalf(\"marshal = %s, want %s\", got, want) }\n" +
+		"\tfor _, alias := range []string{`\"-\"`, `\"a,b\"`} {\n" +
+		"\t\tif strings.Contains(string(got), alias) { t.Fatalf(\"alias %s leaked into output bytes %s\", alias, got) }\n" +
+		"\t}\n" +
 		"\tvar back OutputReply\n" +
 		"\tif err := json.Unmarshal([]byte(want), &back); err != nil { t.Fatal(err) }\n" +
 		"\tif !reflect.DeepEqual(v, back) { t.Fatalf(\"round-trip mismatch: %+v != %+v\", back, v) }\n" +

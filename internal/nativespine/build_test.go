@@ -128,7 +128,37 @@ func TestClassifyOutputSchema(t *testing.T) {
 			Classes: []sd.ClassDef{{Name: sd.Name{Name: "C"}, Constraints: []sd.Constraint{{Level: sd.ConstraintCheck, Expression: "x"}}}},
 		}, DeclineChecks},
 		{"assert constraint on target meta", sd.Bundle{Target: sd.Type{Kind: sd.TypePrimitive, Primitive: sd.PrimitiveString, Meta: sd.TypeMeta{Constraints: []sd.Constraint{{Level: sd.ConstraintAssert, Expression: "x"}}}}}, DeclineAsserts},
-		{"multi-variant union", sd.Bundle{Target: sd.Type{Kind: sd.TypeUnion, Union: &sd.UnionType{Variants: []sd.Type{prim(sd.PrimitiveString), prim(sd.PrimitiveInt)}}}}, DeclineUnsupportedOutputShape},
+		// M3b: a multi-arm union of supported arms is now ADMITTED (it lowers to a
+		// discriminated carrier). A single-nullable-variant union stays M3a's *T.
+		{"multi-variant union of supported arms", sd.Bundle{Target: sd.Type{Kind: sd.TypeUnion, Union: &sd.UnionType{Variants: []sd.Type{prim(sd.PrimitiveString), prim(sd.PrimitiveInt)}}}}, ""},
+		{"multi-variant nullable union", sd.Bundle{Target: sd.Type{Kind: sd.TypeUnion, Union: &sd.UnionType{Nullable: true, Variants: []sd.Type{prim(sd.PrimitiveString), prim(sd.PrimitiveInt)}}}}, ""},
+		// M3b: string/int/bool literals admit (standalone and as union arms).
+		{"standalone string literal", sd.Bundle{Target: sd.Type{Kind: sd.TypeLiteral, Literal: &sd.LiteralValue{Kind: sd.LiteralString, String: "active"}}}, ""},
+		{"standalone int literal", sd.Bundle{Target: sd.Type{Kind: sd.TypeLiteral, Literal: &sd.LiteralValue{Kind: sd.LiteralInt, Int: 7}}}, ""},
+		{"standalone bool literal", sd.Bundle{Target: sd.Type{Kind: sd.TypeLiteral, Literal: &sd.LiteralValue{Kind: sd.LiteralBool, Bool: true}}}, ""},
+		{"same-base literal union", sd.Bundle{Target: sd.Type{Kind: sd.TypeUnion, Union: &sd.UnionType{Variants: []sd.Type{
+			{Kind: sd.TypeLiteral, Literal: &sd.LiteralValue{Kind: sd.LiteralString, String: "a"}},
+			{Kind: sd.TypeLiteral, Literal: &sd.LiteralValue{Kind: sd.LiteralString, String: "b"}},
+		}}}}, ""},
+		// A literal with no value is malformed — decline, never admit-then-fail.
+		{"nil-payload literal", sd.Bundle{Target: sd.Type{Kind: sd.TypeLiteral, Literal: nil}}, DeclineUnsupportedOutputShape},
+		// A union does NOT launder an unsupported arm (media) into admission.
+		{"union with media arm", sd.Bundle{Target: sd.Type{Kind: sd.TypeUnion, Union: &sd.UnionType{Variants: []sd.Type{
+			prim(sd.PrimitiveString),
+			{Kind: sd.TypePrimitive, Primitive: sd.PrimitiveMedia, Media: sd.MediaImage},
+		}}}}, DeclineMediaImage},
+		// A union node with a NIL payload (distinct from the non-nil empty-Variants
+		// zero-arm case below) is malformed — decline rather than admit a shape the
+		// emitter rejects.
+		{"nil-payload union", sd.Bundle{Target: sd.Type{Kind: sd.TypeUnion, Union: nil}}, DeclineUnsupportedOutputShape},
+		// A zero-arm union (non-nil payload, empty Variants) is malformed — decline
+		// rather than emit an arm-less carrier.
+		{"zero-arm union", sd.Bundle{Target: sd.Type{Kind: sd.TypeUnion, Union: &sd.UnionType{Variants: nil}}}, DeclineUnsupportedOutputShape},
+		// A NON-nullable single-arm union is malformed for a carrier (not an
+		// optional-of-one, not multi-arm) — decline, keeping admission == emission
+		// (the emitter's buildCarrierPlan errors on len<2). Not constructible via the
+		// descriptor builder, but the classifier must still fail closed.
+		{"non-nullable single-arm union", sd.Bundle{Target: sd.Type{Kind: sd.TypeUnion, Union: &sd.UnionType{Nullable: false, Variants: []sd.Type{prim(sd.PrimitiveString)}}}}, DeclineUnsupportedOutputShape},
 		// M3a admits a STRING-keyed map (value within the carrier profile); a
 		// non-string-keyed map or a value outside the profile still declines.
 		{"string-keyed map", sd.Bundle{Target: sd.Type{Kind: sd.TypeMap, Key: ptr(prim(sd.PrimitiveString)), Value: ptr(prim(sd.PrimitiveString))}}, ""},
@@ -139,21 +169,27 @@ func TestClassifyOutputSchema(t *testing.T) {
 		{"string-keyed map, nil value type", sd.Bundle{Target: sd.Type{Kind: sd.TypeMap, Key: ptr(prim(sd.PrimitiveString)), Value: nil}}, DeclineUnsupportedOutputShape},
 		{"string-keyed map of media value", sd.Bundle{Target: sd.Type{Kind: sd.TypeMap, Key: ptr(prim(sd.PrimitiveString)), Value: ptr(sd.Type{Kind: sd.TypePrimitive, Primitive: sd.PrimitiveMedia, Media: sd.MediaImage})}}, DeclineMediaImage},
 		{"recursive classes", sd.Bundle{Target: sd.Type{Kind: sd.TypeClass, Name: "C"}, RecursiveClasses: []string{"C"}}, DeclineUnsupportedOutputShape},
-		// An aliased output field/enum member is DECLINED: the native codec would
-		// serve it under the ALIAS, but a baml_client-generated carrier serves it
-		// under the CANONICAL json tag, so the bytes diverge. (Policy deferred to M3b.)
+		// M3b: an aliased output field/enum member is now ADMITTED — the alias is
+		// ingress-only metadata and is IGNORED; the emitter serves the CANONICAL
+		// key/value (empirically confirmed, scope §2). Even an exotic alias admits.
 		{"aliased class field", sd.Bundle{
 			Target: sd.Type{Kind: sd.TypeClass, Name: "C"},
 			Classes: []sd.ClassDef{{Name: sd.Name{Name: "C"}, Fields: []sd.ClassField{
 				{Name: sd.Name{Name: "confidence", Alias: strptr("score")}, Type: prim(sd.PrimitiveFloat)},
 			}}},
-		}, DeclineUnsupportedOutputShape},
+		}, ""},
+		{"exotic aliased class field", sd.Bundle{
+			Target: sd.Type{Kind: sd.TypeClass, Name: "C"},
+			Classes: []sd.ClassDef{{Name: sd.Name{Name: "C"}, Fields: []sd.ClassField{
+				{Name: sd.Name{Name: "confidence", Alias: strptr("")}, Type: prim(sd.PrimitiveFloat)},
+			}}},
+		}, ""},
 		{"aliased enum member", sd.Bundle{
 			Target: sd.Type{Kind: sd.TypeEnum, Name: "E"},
 			Enums: []sd.EnumDef{{Name: sd.Name{Name: "E"}, Values: []sd.EnumValue{
 				{Name: sd.Name{Name: "RED", Alias: strptr("rouge")}},
 			}}},
-		}, DeclineUnsupportedOutputShape},
+		}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
