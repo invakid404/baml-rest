@@ -2,12 +2,15 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/invakid404/baml-rest/adapters/common/codegen"
 	"github.com/invakid404/baml-rest/bamlutils/projectdescriptor"
 	"github.com/invakid404/baml-rest/internal/nativespine"
 )
@@ -736,5 +739,462 @@ func TestNativeSpineStrictMissingDir(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "strict source diagnostics") {
 		t.Errorf("error = %q, want a strict source-diagnostics failure", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M3b: real introspect -> classifier -> codegen pipeline coverage (scope §5A).
+// These drive the REAL parseBamlSourceDir pipeline (not source-grep / not a
+// hand-built descriptor), assert the exact admission/decline map for the M3b
+// vocabulary (multi-arm unions, string/int/bool literals, @alias metadata), and
+// then EMIT the admitted method, compile it in a temp module, and EXECUTE
+// behavioral JSON tests. Descriptor presence alone is not admission.
+// ---------------------------------------------------------------------------
+
+// pipelineProject runs the REAL introspect pipeline and returns the whole
+// Project (so a test can pull an admitted method and emit it).
+func pipelineProject(t *testing.T, sources map[string]string) projectdescriptor.Project {
+	t.Helper()
+	dir := t.TempDir()
+	for name, src := range sources {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	bc := parseBamlSourceDir(dir)
+	proj := nativespine.BuildProjectDescriptor(bc.nativeSourceFacts())
+	if err := proj.Validate(); err != nil {
+		t.Fatalf("descriptor invalid: %v", err)
+	}
+	return proj
+}
+
+// admittedMethodByName returns the admitted method of the given name, failing if
+// it was not admitted.
+func admittedMethodByName(t *testing.T, proj projectdescriptor.Project, name string) projectdescriptor.Method {
+	t.Helper()
+	for i := range proj.Methods {
+		if proj.Methods[i].Name == name {
+			return proj.Methods[i]
+		}
+	}
+	t.Fatalf("method %q was not admitted (methods: %v)", name, methodNames(proj))
+	return projectdescriptor.Method{}
+}
+
+func methodNames(proj projectdescriptor.Project) []string {
+	out := make([]string, 0, len(proj.Methods))
+	for _, m := range proj.Methods {
+		out = append(out, m.Name)
+	}
+	return out
+}
+
+// compileAndRunEmittedCarrier writes the emitted carrier + a behavioral test into
+// a throwaway module (bamlutils resolved via a local replace, repo go.sum reused,
+// fully offline) and runs `go test`. Mirrors the proven cmd/introspect Gate-A
+// temp-module recipe; it respects module boundaries (no adapters/common internal
+// testharness import from the root module).
+func compileAndRunEmittedCarrier(t *testing.T, packageName, emitted, behavioralTest string) {
+	t.Helper()
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go not on PATH; skipping emitted-carrier compile+execute")
+	}
+	repoRoot := gateARepoRoot(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "carrier.go"), []byte(emitted), 0o644); err != nil {
+		t.Fatalf("write carrier.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "carrier_test.go"), []byte(behavioralTest), 0o644); err != nil {
+		t.Fatalf("write carrier_test.go: %v", err)
+	}
+	const bamlutilsPkg = "github.com/invakid404/baml-rest/bamlutils"
+	bamlutilsAbs := filepath.Join(repoRoot, "bamlutils")
+	goMod := fmt.Sprintf("module m3bcarrier\n\ngo %s\n\nrequire %s v0.0.0\n\nreplace %s => %s\n",
+		gateAGoVersion(t, repoRoot), bamlutilsPkg, bamlutilsPkg, filepath.ToSlash(bamlutilsAbs))
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	if sum, err := os.ReadFile(filepath.Join(repoRoot, "go.sum")); err == nil {
+		if err := os.WriteFile(filepath.Join(dir, "go.sum"), sum, 0o644); err != nil {
+			t.Fatalf("write go.sum: %v", err)
+		}
+	}
+	// Import-graph gate on the emitted carrier: no baml_client / BAML / CFFI.
+	assertEmittedCarrierNoCFFI(t, dir)
+
+	cmd := exec.Command("go", "test", "-count=1", ".")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"CGO_ENABLED=0",
+		"GOWORK=off",
+		"GOFLAGS=-mod=mod",
+		"GOPROXY=off",
+		"GOSUMDB=off",
+		"GOTOOLCHAIN=local",
+	)
+	if outBytes, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("emitted carrier behavioral test failed: %v\n%s", err, outBytes)
+	}
+}
+
+// assertEmittedCarrierNoCFFI runs `go list -deps` on the carrier package (NON-test
+// graph) and rejects any baml_client / BAML runtime / CFFI / patched-client path
+// (scope §5C).
+func assertEmittedCarrierNoCFFI(t *testing.T, dir string) {
+	t.Helper()
+	forbidden := []string{"baml_client", "github.com/boundaryml/baml", "dynclient/baml-patched", "language_client_go", "cffi"}
+	cmd := exec.Command("go", "list", "-deps", ".")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"CGO_ENABLED=0", "GOWORK=off", "GOFLAGS=-mod=mod", "GOPROXY=off", "GOSUMDB=off", "GOTOOLCHAIN=local",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go list -deps on emitted carrier: %v\n%s", err, out)
+	}
+	for _, dep := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		for _, bad := range forbidden {
+			if strings.Contains(dep, bad) {
+				t.Errorf("emitted carrier depends on %q (matches forbidden %q)", dep, bad)
+			}
+		}
+	}
+}
+
+// TestNativeSpineM3bAdmissionAndDeclines drives the real pipeline and asserts the
+// exact M3b admission/decline map: multi-arm unions (cross-kind, class/enum arms,
+// nested list/map arms, repeated shapes, nullable), string/int/bool literals and
+// same-base literal unions, and aliased fields/enum members (incl. exotic
+// aliases) are ADMITTED; recursion, media-under-union, tuple, null-only, dynamic,
+// non-string-key map, and unsupported input union/map are DECLINED. One clean
+// M3a method proves no global poisoning.
+func TestNativeSpineM3bAdmissionAndDeclines(t *testing.T) {
+	sources := map[string]string{
+		"clients.baml": goodClient,
+		"types.baml": `
+enum Suit { Hearts @alias("hearts_alias")
+  Spades
+}
+class Aliased { qty int @alias("amount")
+  empt string @alias("")
+  comma string @alias("a,b")
+  uni string @alias("naïve")
+  suit Suit
+}
+class Holder { pick string | int
+  items (string | int)[]
+  lut map<string, string | int>
+}
+class RecA { child RecB }
+class RecB { back RecA }
+class DynClass { f string
+  @@dynamic
+}
+`,
+		"functions.baml": `
+function CrossUnion() -> string | int { client GPT4 prompt #"x"# }
+function StrLitUnion() -> "a" | "b" { client GPT4 prompt #"x"# }
+function IntLitUnion() -> 1 | 2 { client GPT4 prompt #"x"# }
+function BoolLitUnion() -> true | false { client GPT4 prompt #"x"# }
+function StandaloneStr() -> "active" { client GPT4 prompt #"x"# }
+function StandaloneInt() -> 200 { client GPT4 prompt #"x"# }
+function NullableUnion() -> (string | int)? { client GPT4 prompt #"x"# }
+function EnumClassUnion() -> Suit | Aliased { client GPT4 prompt #"x"# }
+function RepeatedUnions() -> Holder { client GPT4 prompt #"x"# }
+function AliasProbe() -> Aliased { client GPT4 prompt #"x"# }
+function CleanM3a() -> string { client GPT4 prompt #"x"# }
+
+function RecReturn() -> RecA { client GPT4 prompt #"x"# }
+function UnionMedia() -> string | image { client GPT4 prompt #"x"# }
+function NullReturn() -> null { client GPT4 prompt #"x"# }
+function TupleReturn() -> (string, int) { client GPT4 prompt #"x"# }
+function DynReturn() -> DynClass { client GPT4 prompt #"x"# }
+function IntKeyMap() -> map<int, string> { client GPT4 prompt #"x"# }
+function UnionInput(x: string | int) -> string { client GPT4 prompt #"{{ x }}"# }
+function MapInput(m: map<string, string>) -> string { client GPT4 prompt #"x"# }
+`,
+	}
+	admitted, declines := pipelineDeclines(t, sources)
+
+	wantAdmitted := []string{
+		"CrossUnion", "StrLitUnion", "IntLitUnion", "BoolLitUnion",
+		"StandaloneStr", "StandaloneInt", "NullableUnion", "EnumClassUnion",
+		"RepeatedUnions", "AliasProbe", "CleanM3a",
+	}
+	for _, name := range wantAdmitted {
+		if !admitted[name] {
+			t.Errorf("%s should be admitted (M3b vocabulary); decline=%q", name, declines[name])
+		}
+	}
+
+	wantDeclines := map[string]string{
+		"RecReturn":   "unsupported_output_shape", // recursive class graph
+		"UnionMedia":  "unsupported_output_shape", // media child under a union (pre-decline context)
+		"NullReturn":  "unsupported_output_shape", // null-only
+		"TupleReturn": "unsupported_output_shape", // tuple
+		// A @@dynamic RETURN class pre-declines in the static-schema builder, named
+		// by reliable OUTPUT context (precise schema_dynamic_class is stamped only
+		// where the winning producer knows it — input class / unused enum / macro
+		// arg; see TestNativeSpinePreDeclineStructural). Either way, dynamic is declined.
+		"DynReturn": "unsupported_output_shape",
+		"IntKeyMap": "unsupported_output_shape", // non-string-key map
+		"UnionInput":  "unsupported_input_shape",  // union INPUT stays declined (output-only slice)
+		"MapInput":    "unsupported_input_shape",  // map input stays declined
+	}
+	for name, code := range wantDeclines {
+		if declines[name] != code {
+			t.Errorf("%s decline = %q, want %q", name, declines[name], code)
+		}
+	}
+}
+
+// TestNativeSpineM3bAliasCanonicalPipeline is the scope §2 real-pipeline
+// deliverable: a `.baml` class with an aliased int field + an enum with an
+// aliased member is admitted, EMITTED, compiled, and executed to prove the
+// carrier serves CANONICAL keys/values, an alias is never an output token, an
+// alias key does not populate the field on direct unmarshal, and an alias enum
+// value is REJECTED on direct unmarshal.
+func TestNativeSpineM3bAliasCanonicalPipeline(t *testing.T) {
+	sources := map[string]string{
+		"clients.baml": goodClient,
+		"types.baml": `
+enum Suit { Hearts @alias("hearts_alias")
+  Spades
+}
+class Aliased { qty int @alias("amount")
+  empt string @alias("")
+  comma string @alias("a,b")
+  uni string @alias("naïve")
+  suit Suit
+}
+`,
+		"functions.baml": `function AliasProbe() -> Aliased { client GPT4 prompt #"x"# }`,
+	}
+	proj := pipelineProject(t, sources)
+	m := admittedMethodByName(t, proj, "AliasProbe")
+
+	src, err := codegen.EmitNativeStaticUnary(m, codegen.NativeSpineOptions{PackageName: "carrier"})
+	if err != nil {
+		t.Fatalf("emit AliasProbe: %v", err)
+	}
+	got := string(src)
+	// Emitted codec keys canonically; no alias string is a codec wire key.
+	for _, want := range []string{`{"qty", v.Qty}`, `OutputSuitHearts OutputSuit = "Hearts"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("emitted carrier missing canonical token %q:\n%s", want, got)
+		}
+	}
+	for _, bad := range []string{`"amount"`, `"hearts_alias"`, `"naïve"`, `"a,b"`} {
+		if strings.Contains(got, bad) {
+			t.Errorf("alias %s leaked into emitted carrier source", bad)
+		}
+	}
+
+	compileAndRunEmittedCarrier(t, "carrier", got, aliasBehavioralTest)
+}
+
+const aliasBehavioralTest = `package carrier
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+func TestAliasCanonicalBehavior(t *testing.T) {
+	v := OutputAliased{Qty: 7, Empt: "E", Comma: "C", Uni: "U", Suit: OutputSuitHearts}
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	for _, want := range []string{` + "`\"qty\":7`" + `, ` + "`\"suit\":\"Hearts\"`" + `} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("canonical token %s missing from %s", want, s)
+		}
+	}
+	for _, bad := range []string{"amount", "hearts_alias"} {
+		if strings.Contains(s, bad) {
+			t.Fatalf("alias %q leaked into output bytes %s", bad, s)
+		}
+	}
+	// Canonical direct unmarshal populates the fields.
+	var back OutputAliased
+	if err := json.Unmarshal([]byte(` + "`{\"qty\":9,\"empt\":\"z\",\"comma\":\"c\",\"uni\":\"u\",\"suit\":\"Hearts\"}`" + `), &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.Qty != 9 || back.Suit != OutputSuitHearts {
+		t.Fatalf("canonical unmarshal = %+v", back)
+	}
+	// A class alias key does NOT populate the field (generated struct tags canonical).
+	var viaAlias OutputAliased
+	if err := json.Unmarshal([]byte(` + "`{\"amount\":9}`" + `), &viaAlias); err != nil {
+		t.Fatal(err)
+	}
+	if viaAlias.Qty != 0 {
+		t.Fatalf("alias key \"amount\" populated the canonical field: qty=%d", viaAlias.Qty)
+	}
+	// An enum ALIAS value is rejected on direct unmarshal; canonical is accepted.
+	var suit OutputSuit
+	if err := json.Unmarshal([]byte(` + "`\"hearts_alias\"`" + `), &suit); err == nil {
+		t.Fatal("enum accepted the alias value \"hearts_alias\"")
+	}
+	if err := json.Unmarshal([]byte(` + "`\"Spades\"`" + `), &suit); err != nil {
+		t.Fatalf("enum rejected canonical \"Spades\": %v", err)
+	}
+}
+`
+
+// TestNativeSpineM3bUnionLiteralPipeline emits a real-pipeline class carrying
+// multi-arm unions + standalone literals, compiles it, and executes behavioral
+// arm-selection / same-base-ambiguity / no-literal-validation proofs.
+func TestNativeSpineM3bUnionLiteralPipeline(t *testing.T) {
+	sources := map[string]string{
+		"clients.baml": goodClient,
+		"types.baml": `class UBox { cross string | int
+  choice "a" | "b"
+  flag true | false
+  status "active"
+  code 200
+}
+`,
+		"functions.baml": `function UnionBox() -> UBox { client GPT4 prompt #"x"# }`,
+	}
+	proj := pipelineProject(t, sources)
+	m := admittedMethodByName(t, proj, "UnionBox")
+
+	src, err := codegen.EmitNativeStaticUnary(m, codegen.NativeSpineOptions{PackageName: "carrier"})
+	if err != nil {
+		t.Fatalf("emit UnionBox: %v", err)
+	}
+	got := string(src)
+	for _, want := range []string{"type OutputUnion1 struct", "type OutputUnion2 struct", "type OutputUnion3 struct"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("emitted carrier missing %q", want)
+		}
+	}
+
+	compileAndRunEmittedCarrier(t, "carrier", got, unionLiteralBehavioralTest)
+}
+
+const unionLiteralBehavioralTest = `package carrier
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestUnionLiteralBehavior(t *testing.T) {
+	// Cross-kind arm selection (cross = string | int -> OutputUnion1).
+	var cross OutputUnion1
+	if err := json.Unmarshal([]byte("7"), &cross); err != nil {
+		t.Fatal(err)
+	}
+	if !cross.IsVariant1() {
+		t.Fatalf("JSON 7 should bind the int arm (v1)")
+	}
+	if err := json.Unmarshal([]byte(` + "`\"hi\"`" + `), &cross); err != nil {
+		t.Fatal(err)
+	}
+	if !cross.IsVariant0() || cross.AsVariant0() == nil || *cross.AsVariant0() != "hi" {
+		t.Fatalf("JSON \"hi\" should bind the string arm (v0)")
+	}
+
+	// Same-base string-literal ambiguity (choice = "a" | "b" -> OutputUnion2):
+	// any string binds the FIRST arm, no value check.
+	var choice OutputUnion2
+	if err := json.Unmarshal([]byte(` + "`\"b\"`" + `), &choice); err != nil {
+		t.Fatal(err)
+	}
+	if !choice.IsVariant0() {
+		t.Fatalf("string \"b\" should bind the FIRST literal arm (v0)")
+	}
+
+	// Same-base bool-literal ambiguity (flag = true | false -> OutputUnion3):
+	// JSON false binds the FIRST (true-declared) arm.
+	var flag OutputUnion3
+	if err := json.Unmarshal([]byte("false"), &flag); err != nil {
+		t.Fatal(err)
+	}
+	if !flag.IsVariant0() || flag.AsVariant0() == nil || *flag.AsVariant0() != false {
+		t.Fatalf("JSON false should bind the FIRST bool arm (v0) holding false")
+	}
+
+	// Unset union marshal errors; a constructed arm marshals to its bare value.
+	var unset OutputUnion1
+	if _, err := json.Marshal(unset); err == nil {
+		t.Fatal("unset union marshaled without error")
+	}
+	if b, err := json.Marshal(OutputUnion1NewVariant0("z")); err != nil || string(b) != ` + "`\"z\"`" + ` {
+		t.Fatalf("constructor marshal = %s, %v", b, err)
+	}
+
+	// Standalone literals are plain bases with NO value validation.
+	var box OutputUBox
+	if err := json.Unmarshal([]byte(` + "`{\"cross\":1,\"choice\":\"a\",\"flag\":true,\"status\":\"anything\",\"code\":999}`" + `), &box); err != nil {
+		t.Fatalf("standalone literal rejected an out-of-literal value: %v", err)
+	}
+	if box.Status != "anything" || box.Code != 999 {
+		t.Fatalf("standalone literals not plain bases: status=%q code=%d", box.Status, box.Code)
+	}
+}
+`
+
+// TestNativeSpineM3bEmitsAdmittedUnionShapes emits (no compile) the admitted
+// union shapes that the behavioral tests do not exercise directly — an enum|class
+// union arm, and a union reachable via a class field, a list element, AND a map
+// value that all DEDUPE to one carrier — proving the plan resolves every reach
+// site and emission succeeds for the full admitted vocabulary.
+func TestNativeSpineM3bEmitsAdmittedUnionShapes(t *testing.T) {
+	sources := map[string]string{
+		"clients.baml": goodClient,
+		"types.baml": `
+enum Suit { Hearts
+  Spades
+}
+class Aliased { qty int @alias("amount")
+  suit Suit
+}
+class Holder { pick string | int
+  items (string | int)[]
+  lut map<string, string | int>
+}
+`,
+		"functions.baml": `
+function EnumClassUnion() -> Suit | Aliased { client GPT4 prompt #"x"# }
+function RepeatedUnions() -> Holder { client GPT4 prompt #"x"# }
+`,
+	}
+	proj := pipelineProject(t, sources)
+
+	// enum|class union at the target: emits OutputUnion1 with enum + class arms.
+	ec := admittedMethodByName(t, proj, "EnumClassUnion")
+	ecSrc, err := codegen.EmitNativeStaticUnary(ec, codegen.NativeSpineOptions{PackageName: "carrier"})
+	if err != nil {
+		t.Fatalf("emit EnumClassUnion: %v", err)
+	}
+	for _, want := range []string{"type OutputUnion1 struct", "type OutputSuit string", "type OutputAliased struct"} {
+		if !strings.Contains(string(ecSrc), want) {
+			t.Errorf("EnumClassUnion carrier missing %q", want)
+		}
+	}
+
+	// One union shape reached via a class field, a list element, and a map value —
+	// all must DEDUPE to a single OutputUnion1 (no OutputUnion2).
+	ru := admittedMethodByName(t, proj, "RepeatedUnions")
+	ruSrc, err := codegen.EmitNativeStaticUnary(ru, codegen.NativeSpineOptions{PackageName: "carrier"})
+	if err != nil {
+		t.Fatalf("emit RepeatedUnions: %v", err)
+	}
+	s := string(ruSrc)
+	if !strings.Contains(s, "type OutputUnion1 struct") {
+		t.Error("RepeatedUnions carrier missing OutputUnion1")
+	}
+	if strings.Contains(s, "type OutputUnion2 struct") {
+		t.Error("union dedupe failed: field/list/map reaches of one shape emitted more than one carrier")
+	}
+	if !strings.Contains(s, "[]OutputUnion1") || !strings.Contains(s, "map[string]OutputUnion1") {
+		t.Errorf("RepeatedUnions carrier missing list/map union bindings:\n%s", s)
 	}
 }

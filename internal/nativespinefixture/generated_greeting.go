@@ -25,7 +25,7 @@ type OutputGreeting struct {
 	Formal bool
 }
 
-// MarshalJSON emits OutputGreeting with each field under its exact BAML wire key.
+// MarshalJSON emits OutputGreeting with each field under its canonical BAML key.
 func (v OutputGreeting) MarshalJSON() ([]byte, error) {
 	return nativeSpineMarshalObject([]nativeSpineField{
 		{"text", v.Text},
@@ -33,7 +33,7 @@ func (v OutputGreeting) MarshalJSON() ([]byte, error) {
 	})
 }
 
-// UnmarshalJSON reads OutputGreeting from each field's exact BAML wire key.
+// UnmarshalJSON reads OutputGreeting from each field's canonical BAML key.
 func (v *OutputGreeting) UnmarshalJSON(data []byte) error {
 	return nativeSpineUnmarshalObject(data, map[string]any{
 		"text":   &v.Text,

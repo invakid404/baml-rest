@@ -13,13 +13,23 @@ package codegen
 //
 // Two faithfulness properties the M1 review required:
 //
-//   - Output carriers serialize the EXACT BAML wire key of every field via a
-//     pure-Go custom JSON codec (nativeSpineMarshalObject/UnmarshalObject), so
-//     arbitrary aliases — "-", "", names with commas, unicode — round-trip
-//     losslessly instead of being mangled by an encoding/json struct tag.
+//   - Output carriers serialize each field under its CANONICAL BAML key via a
+//     pure-Go custom JSON codec (nativeSpineMarshalObject/UnmarshalObject).
+//     BAML serves — and a generated Go struct tags — the canonical field name
+//     and canonical enum value, never an @alias (empirically confirmed, M3b
+//     scope §2); the alias is ingress-only metadata and is never an output
+//     token. The custom codec is retained over a struct tag because a canonical
+//     name can still be a string a struct tag cannot express ("-", "", a comma),
+//     and to keep HTML escaping off to match the serving path.
 //   - Emitted output type names are namespaced with an "Output" prefix so they
 //     can never collide with the fixed generated declarations (Executor,
 //     MethodName, BuildMethod, ErrUnsupportedStreamMode, <Method>Input).
+//
+// M3b extends the carrier vocabulary with multi-arm unions (a discriminated
+// value carrier per union — see nativespine_union.go), string/int/bool literals
+// (a standalone literal lowers to its plain Go base; a literal union arm carries
+// its identity via a no-argument constructor), and @alias metadata (admitted and
+// ignored for output token selection).
 //
 // It is separate from the reflection-driven adapter codegen in this package: it
 // learns the method from the descriptor artifact, never from a reflected
@@ -101,12 +111,12 @@ func CheckNativeNameCollision(methodName string, argNames []string, ret schemade
 		// output class, and Go forbids a field and method with the same name — so
 		// reserve those identifiers in the per-class set alongside the fields.
 		fields := map[string]string{"MarshalJSON": "generated codec method", "UnmarshalJSON": "generated codec method"}
-		// The codec keys its map[string]any / marshals each field by its exact WIRE
-		// key (wireName: alias when present, else canonical name), which is a
-		// different space than the normalized Go field. Two fields can share a wire
-		// key (e.g. a field aliased onto another's name, or two empty aliases) while
-		// having distinct Go fields; that emits a duplicate map-literal key (a Go
-		// compile error) and a doubled JSON key. Reject it here, fail-closed.
+		// The codec keys its map[string]any / marshals each field by its CANONICAL
+		// name (field.Name.Name), never an @alias (aliases are ignored on output).
+		// BAML forbids two fields of a class sharing a canonical name, but the
+		// direct emitter accepts synthetic bundles, so reject a duplicate canonical
+		// key fail-closed (it would emit a duplicate map-literal key — a Go compile
+		// error — and a doubled JSON key).
 		keys := map[string]bool{}
 		for _, f := range c.Fields {
 			fg := strcase.UpperCamelCase(f.Name.Name)
@@ -114,9 +124,9 @@ func CheckNativeNameCollision(methodName string, argNames []string, ret schemade
 				return fmt.Errorf("field %q of class %q normalizes to Go identifier %q, colliding with %s", f.Name.Name, c.Name.Name, fg, what)
 			}
 			fields[fg] = "field " + f.Name.Name
-			k := wireName(f.Name)
+			k := f.Name.Name
 			if keys[k] {
-				return fmt.Errorf("fields of class %q share the wire key %q", c.Name.Name, k)
+				return fmt.Errorf("fields of class %q share the canonical key %q", c.Name.Name, k)
 			}
 			keys[k] = true
 		}
@@ -129,6 +139,25 @@ func CheckNativeNameCollision(methodName string, argNames []string, ret schemade
 		for _, v := range e.Values {
 			if err := claim(enumType+strcase.UpperCamelCase(v.Name.Name), "enum constant of "+e.Name.Name); err != nil {
 				return err
+			}
+		}
+	}
+	// Planned multi-arm union carriers add package-level identifiers: the carrier
+	// type (OutputUnionN) and its per-arm constructors (OutputUnionNNewVariantK).
+	// Claiming them here keeps admission and emission on ONE plan, so a class
+	// named e.g. "Union1" (→ OutputUnion1) is declined as a collision rather than
+	// emitted as a duplicate declaration. A malformed union (unplannable) is left
+	// to classifyOutputSchema / the emitter's own buildCarrierPlan to reject with
+	// its shape code, so a plan-build error here is not turned into a collision.
+	if plan, perr := buildCarrierPlan(ret); perr == nil {
+		for _, u := range plan.unions {
+			if err := claim(u.name, "output union carrier"); err != nil {
+				return err
+			}
+			for i := range u.variants {
+				if err := claim(fmt.Sprintf("%sNewVariant%d", u.name, i), "union constructor of "+u.name); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -176,30 +205,40 @@ func EmitNativeStaticUnary(m projectdescriptor.Method, opts NativeSpineOptions) 
 		return nil, fmt.Errorf("codegen: method %q: %w", m.Name, err)
 	}
 
+	// Plan the reachable multi-arm unions before writing any declaration; a
+	// malformed union (zero-arm) fails closed here even if the classifier
+	// preflight was bypassed (M3b open risk 4).
+	plan, err := buildCarrierPlan(m.Return)
+	if err != nil {
+		return nil, fmt.Errorf("codegen: method %q: %w", m.Name, err)
+	}
+
 	inputStruct := strcase.UpperCamelCase(m.Name + "Input")
 
-	outputBase, err := schemaGoType(m.Return.Target)
+	outputBase, err := schemaGoType(m.Return.Target, plan)
 	if err != nil {
 		return nil, fmt.Errorf("codegen: method %q: output %w", m.Name, err)
 	}
 
 	hasClasses := len(m.Return.Classes) > 0
 	hasEnums := len(m.Return.Enums) > 0
+	hasUnions := len(plan.unions) > 0
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "// Code generated by adapters/common/codegen EmitNativeStaticUnary; DO NOT EDIT.\n\n")
 	fmt.Fprintf(&b, "package %s\n\n", opts.PackageName)
 
 	// Imports: fmt + bamlutils always. bytes when an output class is emitted (its
-	// codec assembles bytes by hand). encoding/json when a class OR an enum is
-	// emitted: the class codec encodes each field with it (HTML escaping off, to
-	// match the serving serializer), and the validating enum codec marshals/
-	// unmarshals its string value with it.
+	// codec assembles bytes by hand). encoding/json when a class, an enum, OR a
+	// union carrier is emitted: the class codec encodes each field with it (HTML
+	// escaping off, to match the serving serializer), the validating enum codec
+	// marshals/unmarshals its string value with it, and the union carrier codec
+	// marshals/unmarshals the selected arm with it (BAML generated-carrier parity).
 	b.WriteString("import (\n")
 	if hasClasses {
 		fmt.Fprintf(&b, "\t%q\n", "bytes")
 	}
-	if hasClasses || hasEnums {
+	if hasClasses || hasEnums || hasUnions {
 		fmt.Fprintf(&b, "\t%q\n", "encoding/json")
 	}
 	fmt.Fprintf(&b, "\t%q\n\n\t%q\n)\n\n", "fmt", bamlutilsPkg)
@@ -228,7 +267,10 @@ func EmitNativeStaticUnary(m projectdescriptor.Method, opts NativeSpineOptions) 
 		if len(e.Values) > 0 {
 			fmt.Fprintf(&b, "const (\n")
 			for _, v := range e.Values {
-				fmt.Fprintf(&b, "\t%s%s %s = %q\n", name, strcase.UpperCamelCase(v.Name.Name), name, wireName(v.Name))
+				// CANONICAL enum value (v.Name.Name), never the alias: BAML serves
+				// canonical enum members and a generated enum validates against them
+				// (empirically confirmed, scope §2). An @alias is metadata only.
+				fmt.Fprintf(&b, "\t%s%s %s = %q\n", name, strcase.UpperCamelCase(v.Name.Name), name, v.Name.Name)
 			}
 			fmt.Fprintf(&b, ")\n\n")
 		}
@@ -240,17 +282,26 @@ func EmitNativeStaticUnary(m projectdescriptor.Method, opts NativeSpineOptions) 
 		fmt.Fprintf(&b, "type %s struct {\n", name)
 		fields := make([]string, 0, len(c.Fields))
 		for _, f := range c.Fields {
-			gt, err := schemaGoType(f.Type)
+			gt, err := schemaGoType(f.Type, plan)
 			if err != nil {
 				return nil, fmt.Errorf("codegen: method %q: class %s field %q %w", m.Name, c.Name.Name, f.Name.Name, err)
 			}
 			goField := strcase.UpperCamelCase(f.Name.Name)
 			fields = append(fields, goField)
-			// No json struct tag: the custom codec below emits the exact wire key.
+			// No json struct tag: the custom codec below emits the canonical key.
 			fmt.Fprintf(&b, "\t%s %s\n", goField, gt)
 		}
 		fmt.Fprintf(&b, "}\n\n")
 		emitClassCodec(&b, name, c.Fields, fields)
+	}
+
+	// Output union carriers, in first-reach plan order (OutputUnion1, ...). A
+	// class field / list element / map value / nested-union arm above binds to
+	// these by name; Go resolves the forward reference at package level.
+	for _, u := range plan.unions {
+		if err := emitUnionCarrier(&b, u, plan); err != nil {
+			return nil, fmt.Errorf("codegen: method %q: %w", m.Name, err)
+		}
 	}
 
 	// Neutral executor seam + boilerplate + registration (+ object-codec helpers
@@ -265,21 +316,26 @@ func EmitNativeStaticUnary(m projectdescriptor.Method, opts NativeSpineOptions) 
 }
 
 // emitClassCodec emits MarshalJSON/UnmarshalJSON for one output class that map
-// each Go field to the EXACT BAML wire key, so arbitrary aliases round-trip.
+// each Go field to its CANONICAL BAML key (field.Name.Name). BAML serves — and a
+// generated Go struct tags — the canonical field name, never an @alias
+// (empirically confirmed, scope §2); the alias is ingress-only metadata and is
+// never an output token. The custom codec is retained (over a struct tag)
+// because a canonical name can still be a string a struct tag cannot express
+// ("-", "", a comma), and to keep HTML escaping off to match the serving path.
 func emitClassCodec(b *strings.Builder, typeName string, schemaFields []schemadescriptor.ClassField, goFields []string) {
-	fmt.Fprintf(b, "// MarshalJSON emits %s with each field under its exact BAML wire key.\n", typeName)
+	fmt.Fprintf(b, "// MarshalJSON emits %s with each field under its canonical BAML key.\n", typeName)
 	fmt.Fprintf(b, "func (v %s) MarshalJSON() ([]byte, error) {\n", typeName)
 	fmt.Fprintf(b, "\treturn nativeSpineMarshalObject([]nativeSpineField{\n")
 	for i, f := range schemaFields {
-		fmt.Fprintf(b, "\t\t{%q, v.%s},\n", wireName(f.Name), goFields[i])
+		fmt.Fprintf(b, "\t\t{%q, v.%s},\n", f.Name.Name, goFields[i])
 	}
 	fmt.Fprintf(b, "\t})\n}\n\n")
 
-	fmt.Fprintf(b, "// UnmarshalJSON reads %s from each field's exact BAML wire key.\n", typeName)
+	fmt.Fprintf(b, "// UnmarshalJSON reads %s from each field's canonical BAML key.\n", typeName)
 	fmt.Fprintf(b, "func (v *%s) UnmarshalJSON(data []byte) error {\n", typeName)
 	fmt.Fprintf(b, "\treturn nativeSpineUnmarshalObject(data, map[string]any{\n")
 	for i, f := range schemaFields {
-		fmt.Fprintf(b, "\t\t%q: &v.%s,\n", wireName(f.Name), goFields[i])
+		fmt.Fprintf(b, "\t\t%q: &v.%s,\n", f.Name.Name, goFields[i])
 	}
 	fmt.Fprintf(b, "\t})\n}\n\n")
 }
@@ -493,22 +549,18 @@ func BuildMethod(exec Executor) (bamlutils.StreamingMethod, bamlutils.ParseMetho
 ` + codec
 }
 
-// wireName returns the JSON wire name for a schemadescriptor.Name: its alias when
-// present (even when empty), else its canonical name.
-func wireName(n schemadescriptor.Name) string {
-	if n.Alias != nil {
-		return *n.Alias
-	}
-	return n.Name
-}
-
 // schemaGoType maps a schemadescriptor output type to a Go type expression,
-// within the M3a final-carrier profile (primitive/enum/class/list/optional/
-// string-keyed map). Class/enum references use the namespaced output type name.
-// Anything else — union (other than the optional T? form), tuple, literal,
-// recursion, media, dynamic — is a fail-closed error; those stay declined by the
-// classifier until their own sub-slice lands.
-func schemaGoType(t schemadescriptor.Type) (string, error) {
+// within the M3a+M3b final-carrier profile (primitive/enum/class/list/optional/
+// string-keyed map/literal/multi-arm union). Class/enum references use the
+// namespaced output type name; a multi-arm union resolves to its planned carrier
+// name (see [carrierPlan]). Anything else — tuple, recursion, media, dynamic — is
+// a fail-closed error; those stay declined by the classifier until their own
+// sub-slice lands.
+//
+// plan supplies the native names for reachable multi-arm unions and MUST be the
+// plan built for this bundle; a nil plan makes any multi-arm union a fail-closed
+// error (the M3a optional `T?` and literal paths do not need it).
+func schemaGoType(t schemadescriptor.Type, plan *carrierPlan) (string, error) {
 	switch t.Kind {
 	case schemadescriptor.TypePrimitive:
 		switch t.Primitive {
@@ -523,13 +575,18 @@ func schemaGoType(t schemadescriptor.Type) (string, error) {
 		default:
 			return "", fmt.Errorf("primitive %q is outside the carrier profile", t.Primitive)
 		}
+	case schemadescriptor.TypeLiteral:
+		// A standalone/arm literal lowers to its ordinary Go base, exactly like
+		// BAML v0.223 generated fields (e.g. both `true` and `false` fields are
+		// plain `bool`). Literal identity is carried only by union construction.
+		return literalGoBase(t.Literal)
 	case schemadescriptor.TypeEnum, schemadescriptor.TypeClass:
 		return outputTypeName(t.Name), nil
 	case schemadescriptor.TypeList:
 		if t.Elem == nil {
 			return "", fmt.Errorf("list has no element type")
 		}
-		elem, err := schemaGoType(*t.Elem)
+		elem, err := schemaGoType(*t.Elem, plan)
 		if err != nil {
 			return "", err
 		}
@@ -544,20 +601,35 @@ func schemaGoType(t schemadescriptor.Type) (string, error) {
 		if t.Key.Kind != schemadescriptor.TypePrimitive || t.Key.Primitive != schemadescriptor.PrimitiveString {
 			return "", fmt.Errorf("only string-keyed maps are in the carrier profile")
 		}
-		val, err := schemaGoType(*t.Value)
+		val, err := schemaGoType(*t.Value, plan)
 		if err != nil {
 			return "", err
 		}
 		return "map[string]" + val, nil
 	case schemadescriptor.TypeUnion:
-		if t.Union != nil && t.Union.Nullable && len(t.Union.Variants) == 1 {
-			inner, err := schemaGoType(t.Union.Variants[0])
+		if t.Union == nil {
+			return "", fmt.Errorf("union has no payload")
+		}
+		// Optional-of-one (`T?`) stays M3a's `*T`.
+		if t.Union.Nullable && len(t.Union.Variants) == 1 {
+			inner, err := schemaGoType(t.Union.Variants[0], plan)
 			if err != nil {
 				return "", err
 			}
 			return "*" + inner, nil
 		}
-		return "", fmt.Errorf("only optional (single nullable variant) unions are in the carrier profile")
+		// Multi-arm union → its planned carrier; nullable multi-arm → *carrier.
+		if len(t.Union.Variants) >= 2 {
+			name, ok := plan.unionName(t.Union.Variants)
+			if !ok {
+				return "", fmt.Errorf("multi-arm union was not planned (admission outran emission)")
+			}
+			if t.Union.Nullable {
+				return "*" + name, nil
+			}
+			return name, nil
+		}
+		return "", fmt.Errorf("union with %d variant(s) is outside the carrier profile", len(t.Union.Variants))
 	default:
 		return "", fmt.Errorf("type kind %q is outside the carrier profile", t.Kind)
 	}
