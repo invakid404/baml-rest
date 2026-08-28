@@ -300,6 +300,9 @@ func TestEmitNativeStaticUnaryRejectsUnionNameCollisions(t *testing.T) {
 	if _, err := EmitNativeStaticUnary(cc, NativeSpineOptions{PackageName: "p"}); err == nil {
 		t.Error("want error for class Union1NewVariant0 colliding with planned constructor, got nil")
 	}
+	if err := CheckNativeNameCollision(cc.Name, nil, cc.Return); err == nil {
+		t.Error("classifier preflight must also reject the union constructor-name collision")
+	}
 }
 
 // TestEmitNativeStaticUnaryRejectsMalformedUnion is the emitter backstop for a
