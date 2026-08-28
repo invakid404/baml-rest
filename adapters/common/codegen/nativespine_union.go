@@ -88,7 +88,10 @@ func buildCarrierPlan(ret schemadescriptor.Bundle) (*carrierPlan, error) {
 			return walk(t.Value)
 		case schemadescriptor.TypeUnion:
 			if t.Union == nil {
-				return nil
+				// A nil union payload is malformed — fail closed here rather than
+				// silently skip it and defer to schemaGoType (keeps the emitter's plan
+				// and type resolution symmetric, and admission == emission).
+				return fmt.Errorf("union node has a nil payload")
 			}
 			// M3a optional-of-one (`T?`) stays `*T`; it is not a union carrier.
 			if t.Union.Nullable && len(t.Union.Variants) == 1 {

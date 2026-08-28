@@ -147,7 +147,12 @@ func TestClassifyOutputSchema(t *testing.T) {
 			prim(sd.PrimitiveString),
 			{Kind: sd.TypePrimitive, Primitive: sd.PrimitiveMedia, Media: sd.MediaImage},
 		}}}}, DeclineMediaImage},
-		// A zero-arm union is malformed — decline rather than emit an arm-less carrier.
+		// A union node with a NIL payload (distinct from the non-nil empty-Variants
+		// zero-arm case below) is malformed — decline rather than admit a shape the
+		// emitter rejects.
+		{"nil-payload union", sd.Bundle{Target: sd.Type{Kind: sd.TypeUnion, Union: nil}}, DeclineUnsupportedOutputShape},
+		// A zero-arm union (non-nil payload, empty Variants) is malformed — decline
+		// rather than emit an arm-less carrier.
 		{"zero-arm union", sd.Bundle{Target: sd.Type{Kind: sd.TypeUnion, Union: &sd.UnionType{Variants: nil}}}, DeclineUnsupportedOutputShape},
 		// A NON-nullable single-arm union is malformed for a carrier (not an
 		// optional-of-one, not multi-arm) — decline, keeping admission == emission

@@ -601,7 +601,11 @@ func walkType(t *schemadescriptor.Type, seen map[*schemadescriptor.Type]bool) (p
 		return walkType(t.Value, seen)
 	case schemadescriptor.TypeUnion:
 		if t.Union == nil {
-			return "", ""
+			// A union node with a NIL payload (distinct from a non-nil empty
+			// Variants slice below) is malformed — decline rather than admit a shape
+			// the emitter's schemaGoType/buildCarrierPlan reject (keeps admission ==
+			// emission). Not constructible via the descriptor builder.
+			return DeclineUnsupportedOutputShape, "return schema contains a union with no payload"
 		}
 		// M3b admits a multi-arm union whose EVERY arm is otherwise in the M3a+M3b
 		// vocabulary (a union does not launder an unsupported child into

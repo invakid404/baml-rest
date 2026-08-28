@@ -307,6 +307,16 @@ func TestEmitNativeStaticUnaryRejectsUnionNameCollisions(t *testing.T) {
 // zero-arm union and a nil-payload literal arm must fail closed at emit time even
 // when the classifier preflight is bypassed (direct emitter call).
 func TestEmitNativeStaticUnaryRejectsMalformedUnion(t *testing.T) {
+	// Nil union payload (distinct from a non-nil empty Variants slice).
+	np := sampleMethod()
+	np.Name = "NilPayload"
+	np.Args = nil
+	np.Return.Target = sd.Type{Kind: sd.TypeUnion, Union: nil}
+	np.Return.Classes = nil
+	if _, err := EmitNativeStaticUnary(np, NativeSpineOptions{PackageName: "p"}); err == nil {
+		t.Error("want error for a nil-payload union target, got nil")
+	}
+
 	// Zero-arm (non-nullable) union target.
 	z := sampleMethod()
 	z.Name = "ZeroArm"
