@@ -106,9 +106,9 @@ func buildCarrierPlan(ret schemadescriptor.Bundle) (*carrierPlan, error) {
 				p.byFingerprint[fp] = name
 				p.unions = append(p.unions, plannedUnion{name: name, variants: t.Union.Variants})
 			}
-			// Descend into arms to discover nested acyclic unions (assigned later
-			// ordinals; recursive edges are declined by the classifier, so this
-			// terminates).
+			// Descend into arms to discover nested unions (assigned later ordinals).
+			// A recursive-alias arm is a leaf here; the alias TARGET is walked once
+			// at the bundle level below, so this terminates.
 			for i := range t.Union.Variants {
 				if err := walk(&t.Union.Variants[i]); err != nil {
 					return err
@@ -116,9 +116,12 @@ func buildCarrierPlan(ret schemadescriptor.Bundle) (*carrierPlan, error) {
 			}
 			return nil
 		default:
-			// primitive, literal, enum, class: leaves for planning purposes (a
-			// class/enum reference is a name; its definition is walked at the
-			// bundle level).
+			// primitive, literal, enum, class, recursive_alias: leaves for planning
+			// purposes. A class/enum/alias reference is a name; a class/enum
+			// definition is walked at the bundle level, and a structural recursive
+			// alias TARGET is walked once at the bundle level (see below), so a
+			// recursive-alias occurrence must NOT re-descend here or the walk would
+			// not terminate.
 			return nil
 		}
 	}
@@ -131,6 +134,15 @@ func buildCarrierPlan(ret schemadescriptor.Bundle) (*carrierPlan, error) {
 			if err := walk(&ret.Classes[ci].Fields[fi].Type); err != nil {
 				return nil, err
 			}
+		}
+	}
+	// M3c: walk each structural recursive alias TARGET so a union reachable ONLY
+	// through an alias (e.g. `Recursive1 = int | Recursive1[]` -> a union carrier)
+	// is planned and named. Each target is walked exactly once; a TypeRecursiveAlias
+	// occurrence inside it is a leaf, so the walk terminates.
+	for ai := range ret.StructuralRecursiveAliases {
+		if err := walk(&ret.StructuralRecursiveAliases[ai].Target); err != nil {
+			return nil, err
 		}
 	}
 	return p, nil
@@ -250,7 +262,7 @@ func resolveUnionArms(u plannedUnion, plan *carrierPlan) ([]unionArm, error) {
 // constructor/setter/predicate/accessor. It mirrors BAML v0.223's generated
 // carrier JSON behavior without any CFFI method/import. It returns an error for
 // an arm it cannot resolve (fail-closed backstop for a direct emitter call).
-func emitUnionCarrier(b *strings.Builder, u plannedUnion, plan *carrierPlan) error {
+func emitUnionCarrier(b *strings.Builder, u plannedUnion, plan *carrierPlan, guardCycles bool) error {
 	arms, err := resolveUnionArms(u, plan)
 	if err != nil {
 		return err
@@ -271,6 +283,11 @@ func emitUnionCarrier(b *strings.Builder, u plannedUnion, plan *carrierPlan) err
 	// serialize).
 	fmt.Fprintf(b, "// MarshalJSON emits the selected arm; an unset/unknown discriminator errors.\n")
 	fmt.Fprintf(b, "func (u %s) MarshalJSON() ([]byte, error) {\n", u.name)
+	if guardCycles {
+		// Recursion-safe: a user-built pointer cycle reachable through a recursive
+		// arm errors here instead of overflowing the stack. Finite values pass.
+		fmt.Fprintf(b, "\tif err := nativeSpineCheckAcyclic(u); err != nil {\n\t\treturn nil, err\n\t}\n")
+	}
 	fmt.Fprintf(b, "\tswitch u.variant {\n")
 	for _, a := range arms {
 		fmt.Fprintf(b, "\tcase %q:\n\t\treturn json.Marshal(u.%s)\n", a.disc, a.field)
