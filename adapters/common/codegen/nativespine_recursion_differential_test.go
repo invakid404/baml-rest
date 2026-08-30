@@ -145,6 +145,7 @@ func TestNativeRecursiveAliasDifferential(t *testing.T) {
 	src := emitDeterministic(t, m, "recaliaspkg")
 
 	for _, want := range []string{
+		"type OutputAw struct",                     // the wrapping class (UpperCamelCase("AW")="Aw")
 		"type OutputRecursive1 = OutputUnion1",     // alias to a value union carrier
 		"variant1 *[]OutputRecursive1",             // Recursive1's recursive list arm
 		"type OutputJsonValue = *OutputUnion2",     // nullable alias -> pointer to union
@@ -252,9 +253,10 @@ func TestNativeRecursiveNegativeControls(t *testing.T) {
 		reason string // substring expected in the decline error
 	}{
 		{
-			// Multi-alias SCC A=[]B, B=[]A -> emits `type OutputA=[]OutputB` /
-			// `type OutputB=[]OutputA`, an invalid recursive Go alias cycle.
-			name: "multi-alias SCC",
+			// A references only B (no self-reference) -> caught by the per-alias
+			// self-reference check (a non-cyclic table entry), NOT the inter-alias
+			// cycle detector.
+			name: "alias references another without self-ref",
 			bundle: sd.Bundle{
 				Version: sd.Version, Target: recAlias("A"),
 				StructuralRecursiveAliases: []sd.RecursiveAliasDef{
@@ -262,7 +264,25 @@ func TestNativeRecursiveNegativeControls(t *testing.T) {
 					{Name: "B", Target: recList(recAlias("A"))},
 				},
 			},
-			reason: "single-alias structural cycle",
+			reason: "does not reference itself",
+		},
+		{
+			// A TRUE multi-alias structural SCC: each alias is itself a valid single
+			// structural self-cycle (A=A[]|B[], B=B[]|A[]) AND they reference each
+			// other, so the per-alias self-reference AND non-structural checks PASS and
+			// the inter-alias findGraphCycle branch is what declines it. Emitting it
+			// would produce `type OutputA` / `type OutputB` referencing each other
+			// through value union carriers whose arms form a real alias<->alias cycle
+			// M2 does not admit. Asserts a message SPECIFIC to the inter-alias branch.
+			name: "multi-alias structural SCC",
+			bundle: sd.Bundle{
+				Version: sd.Version, Target: recAlias("A"),
+				StructuralRecursiveAliases: []sd.RecursiveAliasDef{
+					{Name: "A", Target: recUnion(false, recList(recAlias("A")), recList(recAlias("B")))},
+					{Name: "B", Target: recUnion(false, recList(recAlias("B")), recList(recAlias("A")))},
+				},
+			},
+			reason: "multi-alias structural recursive cycle",
 		},
 		{
 			// Non-cyclic entry wrongly in the structural-alias table.
