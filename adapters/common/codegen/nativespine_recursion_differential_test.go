@@ -276,6 +276,35 @@ func TestNativeRecursiveNegativeControls(t *testing.T) {
 			reason: "does not reference itself",
 		},
 		{
+			// Direct degenerate cycle `type A = A` (self-ref NOT through a list/map)
+			// -> BAML-invalid; must decline, not emit `type OutputA = any`.
+			name: "direct degenerate alias cycle A=A",
+			bundle: sd.Bundle{
+				Version: sd.Version, Target: recAlias("A"),
+				StructuralRecursiveAliases: []sd.RecursiveAliasDef{{Name: "A", Target: recAlias("A")}},
+			},
+			reason: "direct/degenerate",
+		},
+		{
+			// Degenerate cycle through an optional `type A = A?` (union edge, no
+			// list/map) -> BAML-invalid; must decline.
+			name: "degenerate optional alias cycle A=A?",
+			bundle: sd.Bundle{
+				Version: sd.Version, Target: recAlias("A"),
+				StructuralRecursiveAliases: []sd.RecursiveAliasDef{{Name: "A", Target: recOpt(recAlias("A"))}},
+			},
+			reason: "direct/degenerate",
+		},
+		{
+			// The STREAMING-variant envelope flag (Bundle.Stream) -> out of the M3c
+			// non-streaming final-call profile; must decline at both gates.
+			name: "streaming-variant bundle (Bundle.Stream)",
+			bundle: sd.Bundle{
+				Version: sd.Version, Stream: true, Target: recPrim(sd.PrimitiveString),
+			},
+			reason: "streaming variant",
+		},
+		{
 			// TypeClass reference to a name declared only as an ENUM -> would emit a
 			// carrier binding the enum's Go type instead of declining.
 			name: "wrong-kind ref (class names an enum)",
@@ -388,6 +417,87 @@ func TestNativeRecursiveGuardDerivedFromGraph(t *testing.T) {
 		t.Fatal("an acyclic bundle imported reflect for an unneeded cycle guard")
 	}
 }
+
+// recAnyFallbackMethod returns a class whose only recursive-alias field is a
+// pure-container `any` fallback (`items ListNode`, ListNode = ListNode[] ->
+// OutputListNode = []any). The alias itself is acyclic in the Go type graph, but
+// the class custom codec can re-enter through the open-world `any`, so it MUST be
+// guarded.
+func recAnyFallbackMethod() projectdescriptor.Method {
+	return projectdescriptor.Method{
+		Name: "Holder", Class: projectdescriptor.ClassStaticUnary,
+		Return: sd.Bundle{
+			Version: sd.Version, Target: recClass("Holder"),
+			Classes: []sd.ClassDef{{Name: sd.Name{Name: "Holder"}, Fields: []sd.ClassField{
+				{Name: sd.Name{Name: "items"}, Type: recAlias("ListNode")},
+			}}},
+			StructuralRecursiveAliases: []sd.RecursiveAliasDef{
+				{Name: "ListNode", Target: recList(recAlias("ListNode"))},
+			},
+		},
+	}
+}
+
+// TestNativeRecursiveAnyFallbackGuard pins finding 1 (round 2): a class holding
+// only a pure-container `any`-fallback alias field is still cycle-capable through
+// the open-world `any`, so the guard is emitted and a user-built pointer cycle
+// through the `any` marshal-ERRORS instead of overflowing the stack.
+func TestNativeRecursiveAnyFallbackGuard(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go not on PATH; skipping any-fallback guard test")
+	}
+	m := recAnyFallbackMethod()
+	src := emitDeterministic(t, m, "holderpkg")
+	if !strings.Contains(src, "type OutputListNode = []any") {
+		t.Fatal("expected the pure-container any fallback")
+	}
+	if !strings.Contains(src, "nativeSpineCheckAcyclic(v)") {
+		t.Fatal("a class reaching an `any`-fallback alias emitted NO cycle guard (a user cycle through the any would stack-overflow)")
+	}
+	tmp := t.TempDir()
+	testharness.WriteTempModule(t, tmp, src, map[string]string{"any_test.go": recAnyFallbackTestSource})
+	assertNoCFFI(t, tmp)
+	if out, err := testharness.RunGoTest(t, tmp, "TestAnyFallbackCycle"); err != nil {
+		t.Fatalf("any-fallback guard differential failed: %v\n%s", err, out)
+	}
+}
+
+const recAnyFallbackTestSource = `package holderpkg
+
+import (
+	"encoding/json"
+	"testing"
+	"time"
+)
+
+func TestAnyFallbackCycle(t *testing.T) {
+	// Finite value marshals cleanly (the guard is not a false positive).
+	if _, err := json.Marshal(&OutputHolder{Items: []any{"x", float64(1)}}); err != nil {
+		t.Fatalf("finite any-fallback holder failed the guard: %v", err)
+	}
+	// User-built pointer cycle THROUGH the []any fallback: h.Items contains h.
+	h := &OutputHolder{}
+	h.Items = []any{h}
+	done := make(chan error, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				done <- json.Unmarshal(nil, nil) // non-nil error sentinel
+			}
+		}()
+		_, err := json.Marshal(h)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("cyclic marshal through the []any fallback did not error")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("cyclic marshal through the []any fallback hung (guard escaped the any edge)")
+	}
+}
+`
 
 // recMutualMethod is a mutual-class graph broken by a NULLABLE edge (A.b B?, B.a
 // A): B->A is a value edge, A->B is a pointer (nullable), so the Go size is finite

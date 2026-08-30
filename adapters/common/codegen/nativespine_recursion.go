@@ -117,6 +117,13 @@ func CheckNativeCarrierShape(ret schemadescriptor.Bundle) error {
 // EMITTER backstop reject the same shapes (as unsupported_output_shape), and it
 // is the only place either path rejects streaming metadata (M3e territory).
 func checkNoUnsupportedMetadata(ret schemadescriptor.Bundle) error {
+	// Bundle.Stream is the envelope flag marking this as the STREAMING variant of a
+	// method. M3c serves only the non-streaming final-call carrier; a streaming
+	// descriptor is out of profile and must decline at BOTH gates (streaming is
+	// M3e). Rejected before lowering so nothing partial is ever emitted.
+	if ret.Stream {
+		return fmt.Errorf("bundle is the streaming variant (Bundle.Stream=true); streaming is not in the M3c output profile")
+	}
 	var walk func(t schemadescriptor.Type) error
 	walk = func(t schemadescriptor.Type) error {
 		if t.Dynamic {
@@ -216,6 +223,17 @@ func checkStructuralAliasCycles(ret schemadescriptor.Bundle) error {
 		if !refs[a.Name] {
 			return fmt.Errorf("structural recursive alias %q is not a single-alias structural cycle (its target does not reference itself)", a.Name)
 		}
+		// The self-cycle must be STRUCTURAL — mediated by a list or map edge. A
+		// self-reference reachable WITHOUT a list/map (direct `A = A`, or through a
+		// union/optional `A = A?` / `A = A | int`) is a direct/degenerate cycle BAML
+		// rejects as invalid; it must decline rather than emit `type OutputA = any`
+		// (or an invalid inline self-alias). This mirrors BAML's non-structural alias
+		// graph (insert_required_alias_deps, which omits list/map edges).
+		nonStructural := map[string]bool{}
+		collectAliasNameRefsNoContainers(a.Target, aliasNames, nonStructural)
+		if nonStructural[a.Name] {
+			return fmt.Errorf("recursive alias %q forms a direct/degenerate cycle not mediated by a list or map (a structural cycle must recurse through a list or map)", a.Name)
+		}
 		var inter []string
 		for r := range refs {
 			if r != a.Name {
@@ -253,6 +271,26 @@ func collectAliasNameRefs(t schemadescriptor.Type, aliasNames, out map[string]bo
 		if t.Union != nil {
 			for i := range t.Union.Variants {
 				collectAliasNameRefs(t.Union.Variants[i], aliasNames, out)
+			}
+		}
+	}
+}
+
+// collectAliasNameRefsNoContainers records alias names t references through the
+// NON-STRUCTURAL edges only — union and direct references, NOT descending into
+// list elements or map values. It mirrors BAML's insert_required_alias_deps: an
+// alias that references itself here (without a list/map mediating the recursion)
+// is a direct/degenerate cycle BAML rejects, not a structural one.
+func collectAliasNameRefsNoContainers(t schemadescriptor.Type, aliasNames, out map[string]bool) {
+	switch t.Kind {
+	case schemadescriptor.TypeRecursiveAlias:
+		if aliasNames[t.Name] {
+			out[t.Name] = true
+		}
+	case schemadescriptor.TypeUnion:
+		if t.Union != nil {
+			for i := range t.Union.Variants {
+				collectAliasNameRefsNoContainers(t.Union.Variants[i], aliasNames, out)
 			}
 		}
 	}
@@ -499,30 +537,51 @@ func findGraphCycle(nodes []string, edges map[string][]string) bool {
 	return false
 }
 
+// anyCarrierNode is the synthetic OPEN-WORLD sink every `any`-fallback edge points
+// at. `any` can hold a pointer back to a custom-marshaled carrier at runtime, so
+// the static type graph cannot prove acyclicity across it — the sink is treated as
+// inherently cycle-capable (a self-loop), forcing the guard onto any class/union
+// carrier that can reach it.
+const anyCarrierNode = "any"
+
 // carrierGraphIsRecursive reports whether the EMITTED Go carrier graph is
-// recursive — i.e. some class/union/alias carrier is reachable from itself. It is
-// derived STRUCTURALLY from the validated lowered graph (never from the descriptor's
-// RecursiveClasses/StructuralRecursiveAliases metadata, which the emitter must not
-// trust): the marshal cycle guard is emitted exactly when this is true, so a
-// truly-recursive carrier always gets the guard (no stack overflow) and a
-// non-recursive bundle never does (M3a/M3b bytes/source unchanged).
+// recursive from the point of view of the custom-marshaled carriers — i.e. some
+// CLASS or UNION carrier can reach a cycle. It is derived STRUCTURALLY from the
+// validated lowered graph (never from the descriptor's RecursiveClasses/
+// StructuralRecursiveAliases metadata, which the emitter must not trust): the
+// marshal cycle guard is emitted exactly when this is true, so a carrier that can
+// recurse into a user-built pointer cycle always gets the guard (no stack
+// overflow) and a bundle whose carriers cannot never does (M3a/M3b bytes/source
+// unchanged).
 //
-// Nodes are "class:<name>", "union:<carrier>", "alias:<name>"; an edge is a Go
-// reference. A pure-container alias whose recursive occurrence lowered to `any`
-// (`type OutputListNode = []any`) contributes NO self-edge and is correctly NOT
-// recursive; a recursive occurrence surviving through a value union carrier
-// (`type OutputRecursive1 = OutputUnion1`, arm `*[]OutputRecursive1`) forms a real
-// alias<->union cycle. MUST be called with the plan built for ret.
+// Nodes are "class:<name>", "union:<carrier>", "alias:<name>", plus the open-world
+// "any" sink. An edge is a Go reference. Two cycle-capable shapes are caught:
+//
+//   - a recursive occurrence surviving through a value union carrier
+//     (`type OutputRecursive1 = OutputUnion1`, arm `*[]OutputRecursive1`) forms a
+//     real alias<->union cycle;
+//   - a pure-container alias whose recursive occurrence lowered to `any`
+//     (`type OutputListNode = []any`) does NOT self-reference, but a class/union
+//     that reaches that `any` is still cycle-capable — a user can build
+//     `holder.Items = []any{&holder}` and re-enter the custom codec through the
+//     `any` pointer — so the dropped self edges to the `any` sink.
+//
+// MUST be called with the plan built for ret. A bundle with no class/union carrier
+// (e.g. a bare `type OutputListNode = []any` return) has no carrier start node, so
+// it is correctly NOT recursive (its plain `[]any` uses encoding/json's own cycle
+// detection, no custom codec).
 func carrierGraphIsRecursive(ret schemadescriptor.Bundle, plan *carrierPlan) bool {
 	edges := map[string][]string{}
-	var nodes []string
-	add := func(node string, refs map[string]bool) {
-		nodes = append(nodes, node)
+	var carriers []string
+	add := func(node string, refs map[string]bool, isCarrier bool) {
 		out := make([]string, 0, len(refs))
 		for r := range refs {
 			out = append(out, r)
 		}
 		edges[node] = out
+		if isCarrier {
+			carriers = append(carriers, node)
+		}
 	}
 	for i := range ret.Classes {
 		c := &ret.Classes[i]
@@ -530,22 +589,57 @@ func carrierGraphIsRecursive(ret schemadescriptor.Bundle, plan *carrierPlan) boo
 		for j := range c.Fields {
 			collectCarrierGoRefs(c.Fields[j].Type, plan, refs)
 		}
-		add("class:"+c.Name.Name, refs)
+		add("class:"+c.Name.Name, refs, true)
 	}
 	for _, u := range plan.unions {
 		refs := map[string]bool{}
 		for i := range u.variants {
 			collectCarrierGoRefs(u.variants[i], plan, refs)
 		}
-		add("union:"+u.name, refs)
+		add("union:"+u.name, refs, true)
 	}
 	for i := range ret.StructuralRecursiveAliases {
 		a := &ret.StructuralRecursiveAliases[i]
 		refs := map[string]bool{}
 		collectAliasCarrierGoRefs(a.Target, a.Name, !aliasHasConcreteLeaf(a.Target), plan, refs)
-		add("alias:"+a.Name, refs)
+		add("alias:"+a.Name, refs, false)
 	}
-	return findGraphCycle(nodes, edges)
+
+	// A carrier needs the guard iff it can reach a cycle. The open-world "any" sink
+	// counts as reaching a cycle. `safe` caches nodes proven NOT to reach a cycle (a
+	// global property); `onStack` detects a back-edge on the current path.
+	safe := map[string]bool{}
+	var reaches func(n string, onStack map[string]bool) bool
+	reaches = func(n string, onStack map[string]bool) bool {
+		if n == anyCarrierNode {
+			return true
+		}
+		if onStack[n] {
+			return true // back-edge -> cycle
+		}
+		if safe[n] {
+			return false
+		}
+		onStack[n] = true
+		found := false
+		for _, m := range edges[n] {
+			if reaches(m, onStack) {
+				found = true
+				break
+			}
+		}
+		delete(onStack, n)
+		if !found {
+			safe[n] = true
+		}
+		return found
+	}
+	for _, c := range carriers {
+		if reaches(c, map[string]bool{}) {
+			return true
+		}
+	}
+	return false
 }
 
 // collectCarrierGoRefs records the carrier nodes t references at the Go level, as
@@ -587,6 +681,10 @@ func collectAliasCarrierGoRefs(t schemadescriptor.Type, self string, dropSelf bo
 	switch t.Kind {
 	case schemadescriptor.TypeRecursiveAlias:
 		if t.Name == self && dropSelf {
+			// The self-occurrence lowered to `any` (open-world): a carrier reaching
+			// this alias can re-enter its custom codec through the `any` pointer, so
+			// edge to the cycle-capable sink rather than dropping the reference.
+			out[anyCarrierNode] = true
 			return
 		}
 		out["alias:"+t.Name] = true
