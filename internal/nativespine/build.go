@@ -506,12 +506,20 @@ func inputWithinM1Profile(vt promptdescriptor.ResolvedValueType) bool {
 }
 
 // classifyOutputSchema walks the return Bundle for the first feature that blocks
-// ClassStaticUnary. Recursion, then per-type features (dynamic, media,
-// constraints, null, unsupported kinds) in a deterministic walk order.
+// ClassStaticUnary. It runs two passes: (1) a per-type VOCABULARY walk (dynamic,
+// media, constraints, null, unsupported kinds) that yields a PRECISE decline code
+// for the first unsupported reachable child — including a child hidden under a
+// recursive class field or a recursive alias target (recursion cannot launder an
+// unsupported child into admission); then (2) the SHARED emitter-feasibility gate
+// codegen.CheckNativeCarrierShape (reference resolution, union planning,
+// every-type-lowers, and the direct-by-value class-SCC decline), whose failure
+// maps to the coarse unsupported_output_shape.
+//
+// M3c admits valid recursive classes and the structural recursive aliases M2 can
+// describe: the blanket recursion decline is gone. A shape v0.223 itself rejects
+// (a direct by-value class dependency cycle) is caught by CheckNativeCarrierShape,
+// so admission still equals emission.
 func classifyOutputSchema(b schemadescriptor.Bundle) (projectdescriptor.CapabilityCode, string) {
-	if len(b.RecursiveClasses) > 0 || len(b.StructuralRecursiveAliases) > 0 {
-		return DeclineUnsupportedOutputShape, "return schema is recursive"
-	}
 	seen := map[*schemadescriptor.Type]bool{}
 	if code, detail := walkType(&b.Target, seen); code != "" {
 		return code, detail
@@ -539,6 +547,23 @@ func classifyOutputSchema(b schemadescriptor.Bundle) (projectdescriptor.Capabili
 		// M3b: an @alias on an enum member is admitted and IGNORED — BAML serves
 		// the CANONICAL enum value and a generated enum validates against it
 		// (empirically confirmed, scope §2). The emitter emits canonical constants.
+	}
+	// M3c: walk each structural recursive alias TARGET for an unsupported child
+	// (media/check/dynamic/tuple/…) that would otherwise hide behind a
+	// TypeRecursiveAlias reference. A TypeRecursiveAlias node itself is a resolved
+	// name (walkType treats it as a leaf), so this stays finite.
+	for i := range b.StructuralRecursiveAliases {
+		if code, detail := walkType(&b.StructuralRecursiveAliases[i].Target, seen); code != "" {
+			return code, detail
+		}
+	}
+	// Shared emitter-feasibility gate: exactly what EmitNativeStaticUnary's
+	// direct-entry backstop enforces, so the classifier declines precisely what the
+	// emitter cannot render. Its failures are coarse output-shape rejections
+	// (unresolved ref, unplannable union, direct class-value cycle); name
+	// collisions are handled separately by classifyNameCollisions.
+	if err := codegen.CheckNativeCarrierShape(b); err != nil {
+		return DeclineUnsupportedOutputShape, err.Error()
 	}
 	return "", ""
 }
@@ -570,6 +595,12 @@ func walkType(t *schemadescriptor.Type, seen map[*schemadescriptor.Type]bool) (p
 		}
 	case schemadescriptor.TypeEnum, schemadescriptor.TypeClass:
 		return "", "" // named ref; the def is walked at the Bundle level
+	case schemadescriptor.TypeRecursiveAlias:
+		// M3c: a reference to a structural recursive alias. The alias TARGET is
+		// walked at the Bundle level (b.StructuralRecursiveAliases), so treat the
+		// reference as a leaf here — this admits the reference and keeps the walk
+		// finite. The alias name is resolved by CheckNativeCarrierShape.
+		return "", ""
 	case schemadescriptor.TypeLiteral:
 		// M3b admits a string/int/bool literal (it lowers to its plain Go base;
 		// BAML has no float literal). A nil payload or unknown kind is malformed —
@@ -627,7 +658,7 @@ func walkType(t *schemadescriptor.Type, seen map[*schemadescriptor.Type]bool) (p
 		}
 		return "", ""
 	default:
-		// top, tuple, arrow, recursive_alias: outside the M3a+M3b class.
+		// top, tuple, arrow: outside the M3a+M3b+M3c class.
 		return DeclineUnsupportedOutputShape, "return schema contains an unsupported type kind " + string(t.Kind)
 	}
 }

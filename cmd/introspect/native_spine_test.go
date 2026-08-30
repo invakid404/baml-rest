@@ -1198,3 +1198,194 @@ function RepeatedUnions() -> Holder { client GPT4 prompt #"x"# }
 		t.Errorf("RepeatedUnions carrier missing list/map union bindings:\n%s", s)
 	}
 }
+
+// TestNativeSpineM3cRecursionAdmissionAndDeclines is the M3c real-pipeline
+// deliverable (scope §5A): recursive classes and the structural recursive aliases
+// M2 can describe are ADMITTED end to end (parse -> facts ->
+// BuildProjectDescriptor -> classify), while the shapes v0.223 rejects or M3c
+// cannot faithfully emit stay DECLINED with their precise codes.
+func TestNativeSpineM3cRecursionAdmissionAndDeclines(t *testing.T) {
+	sources := map[string]string{
+		"clients.baml": goodClient,
+		"types.baml": `
+type Recursive1 = int | Recursive1[]
+type JSONValue = string | null | int | float | bool | JSONValue[] | map<string, JSONValue>
+type ListNode = ListNode[]
+type StrMap = map<string, StrMap>
+
+class Node { value string
+  next Node?
+  children Node[]
+  byName map<string, Node>
+}
+class Through { value string | Through }
+class TwoAlias { a Recursive1
+  b ListNode
+}
+
+class SelfCycle { me SelfCycle }
+class MutA { child MutB }
+class MutB { back MutA }
+class MediaRec { next MediaRec?
+  pic image
+}
+class CheckRec { next CheckRec?
+  n int @check(pos, {{ this > 0 }})
+}
+`,
+		"functions.baml": `
+function SelfRec() -> Node { client GPT4 prompt #"x"# }
+function ThroughUnion() -> Through { client GPT4 prompt #"x"# }
+function Rec1() -> Recursive1 { client GPT4 prompt #"x"# }
+function JsonVal() -> JSONValue { client GPT4 prompt #"x"# }
+function ListNodeFn() -> ListNode { client GPT4 prompt #"x"# }
+function StrMapFn() -> StrMap { client GPT4 prompt #"x"# }
+function TwoAliasFn() -> TwoAlias { client GPT4 prompt #"x"# }
+
+function SelfCycleFn() -> SelfCycle { client GPT4 prompt #"x"# }
+function MutualFn() -> MutA { client GPT4 prompt #"x"# }
+function MediaRecFn() -> MediaRec { client GPT4 prompt #"x"# }
+function CheckRecFn() -> CheckRec { client GPT4 prompt #"x"# }
+`,
+	}
+	admitted, declines := pipelineDeclines(t, sources)
+
+	wantAdmitted := []string{"SelfRec", "ThroughUnion", "Rec1", "JsonVal", "ListNodeFn", "StrMapFn", "TwoAliasFn"}
+	for _, name := range wantAdmitted {
+		if !admitted[name] {
+			t.Errorf("%s should be admitted (M3c recursion); decline=%q", name, declines[name])
+		}
+	}
+
+	wantDeclines := map[string]string{
+		"SelfCycleFn": "unsupported_output_shape", // direct by-value self-cycle: v0.223 rejects
+		"MutualFn":    "unsupported_output_shape", // direct by-value mutual cycle: v0.223 rejects
+		// A media field in the OUTPUT class pre-declines in the static-schema
+		// builder, named by reliable OUTPUT context (unsupported_output_shape), the
+		// SAME as the existing non-recursive media-in-output decline (see
+		// TestNativeSpineM3bAdmissionAndDeclines' UnionMedia). Recursion does not
+		// launder it into admission — it stays declined; the precise media_* code is
+		// a separate producer-instrumentation follow-up (docs/codegen-spine/04).
+		"MediaRecFn": "unsupported_output_shape",
+		// @check reaches the admitted classifier path (classifyOutputSchema), so a
+		// recursive class carrying a reachable @check declines with its PRECISE code
+		// — recursion does not launder the constraint.
+		"CheckRecFn": "checks",
+	}
+	for name, code := range wantDeclines {
+		if declines[name] != code {
+			t.Errorf("%s decline = %q, want %q", name, declines[name], code)
+		}
+	}
+}
+
+// TestNativeSpineM3cRecursivePipeline is the M3c real-pipeline emit+compile+
+// execute deliverable: a self-recursive class admitted through the actual
+// introspect path is emitted, compiled in a hermetic (no-CFFI) module, and its
+// recursive JSON behavior + pointer-cycle marshal guard are executed.
+func TestNativeSpineM3cRecursivePipeline(t *testing.T) {
+	sources := map[string]string{
+		"clients.baml": goodClient,
+		"types.baml": `class Node { value string
+  next Node?
+  children Node[]
+  byName map<string, Node>
+}
+`,
+		"functions.baml": `function SelfRec() -> Node { client GPT4 prompt #"x"# }`,
+	}
+	proj := pipelineProject(t, sources)
+	m := admittedMethodByName(t, proj, "SelfRec")
+
+	src, err := codegen.EmitNativeStaticUnary(m, codegen.NativeSpineOptions{PackageName: "carrier"})
+	if err != nil {
+		t.Fatalf("emit SelfRec: %v", err)
+	}
+	got := string(src)
+	for _, want := range []string{
+		"Next     *OutputNode",           // self-optional preserves the pointer
+		"Children []OutputNode",          // self-list is a value slice
+		"ByName   map[string]OutputNode", // self-map is a value map
+		"nativeSpineCheckAcyclic(v)",     // recursion-safe marshal guard
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("emitted SelfRec carrier missing %q:\n%s", want, got)
+		}
+	}
+	compileAndRunEmittedCarrier(t, "carrier", got, recursiveBehavioralTest)
+}
+
+const recursiveBehavioralTest = `package carrier
+
+import (
+	"encoding/json"
+	"testing"
+	"time"
+)
+
+func TestRecursiveClassBehavior(t *testing.T) {
+	v := OutputNode{
+		Value:    "root",
+		Next:     &OutputNode{Value: "n1"},
+		Children: []OutputNode{{Value: "c0"}},
+		ByName:   map[string]OutputNode{"k": {Value: "kv"}},
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const golden = "{\"value\":\"root\",\"next\":{\"value\":\"n1\",\"next\":null,\"children\":null,\"byName\":null},\"children\":[{\"value\":\"c0\",\"next\":null,\"children\":null,\"byName\":null}],\"byName\":{\"k\":{\"value\":\"kv\",\"next\":null,\"children\":null,\"byName\":null}}}"
+	if string(b) != golden {
+		t.Fatalf("recursive class JSON != golden\n got:    %s\n golden: %s", b, golden)
+	}
+	// Recursive unmarshal reconstructs the graph; re-marshal is byte-identical.
+	var back OutputNode
+	if err := json.Unmarshal([]byte(golden), &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.Next == nil || back.Next.Value != "n1" || len(back.Children) != 1 || back.ByName["k"].Value != "kv" {
+		t.Fatalf("recursive unmarshal lost structure: %+v", back)
+	}
+	again, err := json.Marshal(back)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(again) != golden {
+		t.Fatalf("recursive round-trip not byte-identical\n got:    %s\n golden: %s", again, golden)
+	}
+
+	// nil vs empty vs populated list distinctions (no omitempty).
+	var nilList OutputNode
+	nb, _ := json.Marshal(nilList)
+	if string(nb) != "{\"value\":\"\",\"next\":null,\"children\":null,\"byName\":null}" {
+		t.Fatalf("nil children/byName must marshal as null: %s", nb)
+	}
+	emptyList := OutputNode{Children: []OutputNode{}, ByName: map[string]OutputNode{}}
+	eb, _ := json.Marshal(emptyList)
+	if string(eb) != "{\"value\":\"\",\"next\":null,\"children\":[],\"byName\":{}}" {
+		t.Fatalf("empty children/byName must marshal as []/{}: %s", eb)
+	}
+
+	// Pointer-cycle marshal guard: a user-built cycle ERRORS (never hangs/overflows).
+	cyc := &OutputNode{Value: "a"}
+	cyc.Next = cyc
+	done := make(chan error, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				done <- json.Unmarshal(nil, nil) // non-nil error sentinel
+			}
+		}()
+		_, err := json.Marshal(cyc)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("cyclic native marshal did not error")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("cyclic native marshal hung (stack-overflow guard failed)")
+	}
+}
+`

@@ -168,7 +168,65 @@ func TestClassifyOutputSchema(t *testing.T) {
 		// rejects it only at emit time (admit-then-fail).
 		{"string-keyed map, nil value type", sd.Bundle{Target: sd.Type{Kind: sd.TypeMap, Key: ptr(prim(sd.PrimitiveString)), Value: nil}}, DeclineUnsupportedOutputShape},
 		{"string-keyed map of media value", sd.Bundle{Target: sd.Type{Kind: sd.TypeMap, Key: ptr(prim(sd.PrimitiveString)), Value: ptr(sd.Type{Kind: sd.TypePrimitive, Primitive: sd.PrimitiveMedia, Media: sd.MediaImage})}}, DeclineMediaImage},
-		{"recursive classes", sd.Bundle{Target: sd.Type{Kind: sd.TypeClass, Name: "C"}, RecursiveClasses: []string{"C"}}, DeclineUnsupportedOutputShape},
+		// M3c: a recursive class reference to an UNDECLARED class still declines
+		// (the shared carrier-shape gate rejects the dangling reference).
+		{"recursive class, undeclared def", sd.Bundle{Target: sd.Type{Kind: sd.TypeClass, Name: "C"}, RecursiveClasses: []string{"C"}}, DeclineUnsupportedOutputShape},
+		// M3c: a VALID self-recursive class (recursion through a nullable/optional
+		// edge -> *OutputC, finite Go size) is now ADMITTED.
+		{"self-optional recursive class", sd.Bundle{
+			Target: sd.Type{Kind: sd.TypeClass, Name: "C"},
+			Classes: []sd.ClassDef{{Name: sd.Name{Name: "C"}, Fields: []sd.ClassField{
+				{Name: sd.Name{Name: "next"}, Type: sd.Type{Kind: sd.TypeUnion, Union: &sd.UnionType{Nullable: true, Variants: []sd.Type{{Kind: sd.TypeClass, Name: "C"}}}}},
+			}}},
+			RecursiveClasses: []string{"C"},
+		}, ""},
+		// M3c: a self-recursive class through a LIST ([]OutputC) is admitted.
+		{"self-list recursive class", sd.Bundle{
+			Target: sd.Type{Kind: sd.TypeClass, Name: "C"},
+			Classes: []sd.ClassDef{{Name: sd.Name{Name: "C"}, Fields: []sd.ClassField{
+				{Name: sd.Name{Name: "kids"}, Type: sd.Type{Kind: sd.TypeList, Elem: ptr(sd.Type{Kind: sd.TypeClass, Name: "C"})}},
+			}}},
+			RecursiveClasses: []string{"C"},
+		}, ""},
+		// M3c: a DIRECT by-value class self-cycle (`class C { self: C }`) is what
+		// v0.223 rejects as a class dependency cycle -> the shared gate DECLINES it
+		// before emission (M2's permissive builder can synthesize such a bundle).
+		{"direct by-value self-cycle class", sd.Bundle{
+			Target: sd.Type{Kind: sd.TypeClass, Name: "C"},
+			Classes: []sd.ClassDef{{Name: sd.Name{Name: "C"}, Fields: []sd.ClassField{
+				{Name: sd.Name{Name: "self"}, Type: sd.Type{Kind: sd.TypeClass, Name: "C"}},
+			}}},
+			RecursiveClasses: []string{"C"},
+		}, DeclineUnsupportedOutputShape},
+		// M3c: a direct by-value MUTUAL class cycle (A.b: B, B.a: A) is likewise
+		// declined.
+		{"direct by-value mutual class cycle", sd.Bundle{
+			Target: sd.Type{Kind: sd.TypeClass, Name: "A"},
+			Classes: []sd.ClassDef{
+				{Name: sd.Name{Name: "A"}, Fields: []sd.ClassField{{Name: sd.Name{Name: "b"}, Type: sd.Type{Kind: sd.TypeClass, Name: "B"}}}},
+				{Name: sd.Name{Name: "B"}, Fields: []sd.ClassField{{Name: sd.Name{Name: "a"}, Type: sd.Type{Kind: sd.TypeClass, Name: "A"}}}},
+			},
+			RecursiveClasses: []string{"A", "B"},
+		}, DeclineUnsupportedOutputShape},
+		// M3c: a pure-container structural recursive alias (`type L = L[]`) is
+		// admitted (it emits `type OutputL = []any`).
+		{"pure-container recursive alias", sd.Bundle{
+			Target:                     sd.Type{Kind: sd.TypeRecursiveAlias, Name: "L", Mode: sd.NonStreaming},
+			StructuralRecursiveAliases: []sd.RecursiveAliasDef{{Name: "L", Target: sd.Type{Kind: sd.TypeList, Elem: ptr(sd.Type{Kind: sd.TypeRecursiveAlias, Name: "L", Mode: sd.NonStreaming})}}},
+		}, ""},
+		// M3c: an unsupported child (media) hidden under a recursive alias target
+		// declines with its PRECISE code (recursion cannot launder it).
+		{"media under recursive alias", sd.Bundle{
+			Target: sd.Type{Kind: sd.TypeRecursiveAlias, Name: "L", Mode: sd.NonStreaming},
+			StructuralRecursiveAliases: []sd.RecursiveAliasDef{{Name: "L", Target: sd.Type{Kind: sd.TypeList, Elem: ptr(sd.Type{Kind: sd.TypeUnion, Union: &sd.UnionType{Variants: []sd.Type{
+				{Kind: sd.TypePrimitive, Primitive: sd.PrimitiveMedia, Media: sd.MediaImage},
+				{Kind: sd.TypeRecursiveAlias, Name: "L", Mode: sd.NonStreaming},
+			}}})}}},
+		}, DeclineMediaImage},
+		// M3c: a TypeRecursiveAlias reference with NO matching definition declines.
+		{"recursive alias, undeclared def", sd.Bundle{
+			Target: sd.Type{Kind: sd.TypeRecursiveAlias, Name: "Missing", Mode: sd.NonStreaming},
+		}, DeclineUnsupportedOutputShape},
 		// M3b: an aliased output field/enum member is now ADMITTED — the alias is
 		// ingress-only metadata and is IGNORED; the emitter serves the CANONICAL
 		// key/value (empirically confirmed, scope §2). Even an exotic alias admits.
