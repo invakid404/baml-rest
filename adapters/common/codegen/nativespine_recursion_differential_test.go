@@ -237,6 +237,247 @@ func TestNativeRecursiveDirectCycleDeclined(t *testing.T) {
 	}
 }
 
+// TestNativeRecursiveNegativeControls pins the decline boundary the SHARED gate
+// must own. Each case is a bundle stock v0.223 rejects or M3c cannot faithfully
+// emit; before the shared gate owned the whole boundary each passed admission and
+// either compile-failed or emitted a wrong/metadata-dropped carrier. Both the
+// gate AND the direct emitter backstop must decline every one.
+func TestNativeRecursiveNegativeControls(t *testing.T) {
+	classC := func(fields ...sd.ClassField) []sd.ClassDef {
+		return []sd.ClassDef{{Name: sd.Name{Name: "C"}, Fields: fields}}
+	}
+	cases := []struct {
+		name   string
+		bundle sd.Bundle
+		reason string // substring expected in the decline error
+	}{
+		{
+			// Multi-alias SCC A=[]B, B=[]A -> emits `type OutputA=[]OutputB` /
+			// `type OutputB=[]OutputA`, an invalid recursive Go alias cycle.
+			name: "multi-alias SCC",
+			bundle: sd.Bundle{
+				Version: sd.Version, Target: recAlias("A"),
+				StructuralRecursiveAliases: []sd.RecursiveAliasDef{
+					{Name: "A", Target: recList(recAlias("B"))},
+					{Name: "B", Target: recList(recAlias("A"))},
+				},
+			},
+			reason: "single-alias structural cycle",
+		},
+		{
+			// Non-cyclic entry wrongly in the structural-alias table.
+			name: "non-cyclic structural alias entry",
+			bundle: sd.Bundle{
+				Version: sd.Version, Target: recAlias("A"),
+				StructuralRecursiveAliases: []sd.RecursiveAliasDef{
+					{Name: "A", Target: recList(recPrim(sd.PrimitiveInt))},
+				},
+			},
+			reason: "does not reference itself",
+		},
+		{
+			// TypeClass reference to a name declared only as an ENUM -> would emit a
+			// carrier binding the enum's Go type instead of declining.
+			name: "wrong-kind ref (class names an enum)",
+			bundle: sd.Bundle{
+				Version: sd.Version, Target: sd.Type{Kind: sd.TypeClass, Name: "E"},
+				Enums: []sd.EnumDef{{Name: sd.Name{Name: "E"}, Values: []sd.EnumValue{{Name: sd.Name{Name: "X"}}}}},
+			},
+			reason: "undeclared class",
+		},
+		{
+			// Streaming-mode class reference against a non-streaming declaration.
+			name: "streaming-mode ref",
+			bundle: sd.Bundle{
+				Version: sd.Version, Target: sd.Type{Kind: sd.TypeClass, Name: "C", Mode: sd.Streaming},
+				Classes: classC(sd.ClassField{Name: sd.Name{Name: "x"}, Type: recPrim(sd.PrimitiveString)}),
+			},
+			reason: "streaming",
+		},
+		{
+			// @stream.* streaming behavior on a field type (silently dropped pre-fix).
+			name: "field streaming behavior",
+			bundle: sd.Bundle{
+				Version: sd.Version, Target: recClass("C"),
+				Classes: classC(sd.ClassField{Name: sd.Name{Name: "x"}, Type: sd.Type{Kind: sd.TypePrimitive, Primitive: sd.PrimitiveString, Meta: sd.TypeMeta{Stream: sd.StreamingBehavior{Done: true}}}}),
+			},
+			reason: "streaming",
+		},
+		{
+			// ClassField.StreamingNeeded (silently dropped pre-fix).
+			name: "field StreamingNeeded",
+			bundle: sd.Bundle{
+				Version: sd.Version, Target: recClass("C"),
+				Classes: classC(sd.ClassField{Name: sd.Name{Name: "x"}, Type: recPrim(sd.PrimitiveString), StreamingNeeded: true}),
+			},
+			reason: "stream",
+		},
+		{
+			// @check under a class (the EMITTER backstop must decline it, not emit a
+			// carrier that drops the constraint).
+			name: "check constraint on a field type",
+			bundle: sd.Bundle{
+				Version: sd.Version, Target: recClass("C"),
+				Classes: classC(sd.ClassField{Name: sd.Name{Name: "x"}, Type: sd.Type{Kind: sd.TypePrimitive, Primitive: sd.PrimitiveInt, Meta: sd.TypeMeta{Constraints: []sd.Constraint{{Level: sd.ConstraintCheck, Expression: "this > 0"}}}}}),
+			},
+			reason: "check",
+		},
+		{
+			// @@dynamic type (the EMITTER backstop must decline it).
+			name: "dynamic type",
+			bundle: sd.Bundle{
+				Version: sd.Version, Target: sd.Type{Kind: sd.TypeClass, Name: "C", Dynamic: true},
+				Classes: classC(sd.ClassField{Name: sd.Name{Name: "x"}, Type: recPrim(sd.PrimitiveString)}),
+			},
+			reason: "dynamic",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := CheckNativeCarrierShape(tc.bundle)
+			if err == nil {
+				t.Fatalf("CheckNativeCarrierShape admitted %s (must decline)", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.reason) {
+				t.Fatalf("decline reason %q does not mention %q", err.Error(), tc.reason)
+			}
+			// The direct emitter backstop must decline the same shape.
+			if _, emitErr := EmitNativeStaticUnary(projectdescriptor.Method{
+				Name: "Neg", Class: projectdescriptor.ClassStaticUnary, Return: tc.bundle,
+			}, NativeSpineOptions{PackageName: "negpkg"}); emitErr == nil {
+				t.Fatalf("EmitNativeStaticUnary emitted %s (must decline)", tc.name)
+			}
+		})
+	}
+}
+
+// TestNativeRecursiveGuardDerivedFromGraph pins finding 4: cycle-guard gating is
+// derived STRUCTURALLY from the lowered graph, never trusted from the descriptor's
+// recursion metadata. Missing metadata on a truly-recursive class must STILL emit
+// the guard (no stack overflow); stray metadata on an acyclic bundle must NOT
+// inject the guard (byte-unchanged non-recursive invariant).
+func TestNativeRecursiveGuardDerivedFromGraph(t *testing.T) {
+	// Truly recursive class with EMPTY RecursiveClasses metadata -> guard required.
+	missing := recClassMethod()
+	missing.Return.RecursiveClasses = nil
+	src, err := EmitNativeStaticUnary(missing, NativeSpineOptions{PackageName: "gpkg"})
+	if err != nil {
+		t.Fatalf("emit (missing metadata): %v", err)
+	}
+	if !strings.Contains(string(src), "nativeSpineCheckAcyclic") {
+		t.Fatal("a truly-recursive class with missing RecursiveClasses metadata emitted NO cycle guard (would stack-overflow on a user pointer cycle)")
+	}
+
+	// Acyclic bundle with STRAY RecursiveClasses metadata -> no guard, no reflect.
+	stray := projectdescriptor.Method{
+		Name: "Acyclic", Class: projectdescriptor.ClassStaticUnary,
+		Return: sd.Bundle{
+			Version: sd.Version, Target: recClass("C"),
+			Classes:          []sd.ClassDef{{Name: sd.Name{Name: "C"}, Fields: []sd.ClassField{{Name: sd.Name{Name: "x"}, Type: recPrim(sd.PrimitiveString)}}}},
+			RecursiveClasses: []string{"C"}, // stray/inconsistent metadata
+		},
+	}
+	src2, err := EmitNativeStaticUnary(stray, NativeSpineOptions{PackageName: "gpkg"})
+	if err != nil {
+		t.Fatalf("emit (stray metadata): %v", err)
+	}
+	if strings.Contains(string(src2), "nativeSpineCheckAcyclic") {
+		t.Fatal("an acyclic bundle with stray RecursiveClasses metadata injected the cycle guard (breaks the byte-unchanged non-recursive invariant)")
+	}
+	if strings.Contains(string(src2), `"reflect"`) {
+		t.Fatal("an acyclic bundle imported reflect for an unneeded cycle guard")
+	}
+}
+
+// recMutualMethod is a mutual-class graph broken by a NULLABLE edge (A.b B?, B.a
+// A): B->A is a value edge, A->B is a pointer (nullable), so the Go size is finite
+// and it is ADMITTED. `A.b` is `*OutputB`; `B.a` is a value `OutputA`.
+func recMutualMethod() projectdescriptor.Method {
+	return projectdescriptor.Method{
+		Name: "Mutual", Class: projectdescriptor.ClassStaticUnary,
+		Return: sd.Bundle{
+			Version: sd.Version, Target: recClass("A"),
+			Classes: []sd.ClassDef{
+				{Name: sd.Name{Name: "A"}, Fields: []sd.ClassField{
+					{Name: sd.Name{Name: "id"}, Type: recPrim(sd.PrimitiveString)},
+					{Name: sd.Name{Name: "b"}, Type: recOpt(recClass("B"))},
+				}},
+				{Name: sd.Name{Name: "B"}, Fields: []sd.ClassField{
+					{Name: sd.Name{Name: "a"}, Type: recClass("A")},
+				}},
+			},
+			RecursiveClasses: []string{"A", "B"},
+		},
+	}
+}
+
+// TestNativeRecursiveMutualClassAdmitted pins the positive pointer-broken mutual
+// class: admitted, `A.b` is `*OutputB` (pointer breaks the size cycle), `B.a` is a
+// VALUE `OutputA`, the guard is emitted (it is genuinely recursive), and it
+// compiles + round-trips.
+func TestNativeRecursiveMutualClassAdmitted(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go not on PATH; skipping mutual-class differential")
+	}
+	m := recMutualMethod()
+	if err := CheckNativeCarrierShape(m.Return); err != nil {
+		t.Fatalf("pointer-broken mutual class wrongly declined: %v", err)
+	}
+	src := emitDeterministic(t, m, "mutualpkg")
+	// Alignment-insensitive (gofmt pads struct fields): `A.b` is a pointer to
+	// OutputB (nullable edge breaks the size cycle), `B.a` is a value OutputA.
+	for _, want := range []string{"*OutputB", "A OutputA", "nativeSpineCheckAcyclic(v)"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("mutual carrier missing %q", want)
+		}
+	}
+	if strings.Contains(src, "A *OutputA") {
+		t.Error("B.a was wrongly pointerized (should be a value OutputA)")
+	}
+	tmp := t.TempDir()
+	testharness.WriteTempModule(t, tmp, src, map[string]string{"mutual_test.go": recMutualTestSource})
+	assertNoCFFI(t, tmp)
+	if out, err := testharness.RunGoTest(t, tmp, "TestRecMutual"); err != nil {
+		t.Fatalf("mutual-class differential failed: %v\n%s", err, out)
+	}
+}
+
+const recMutualTestSource = `package mutualpkg
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/bytedance/sonic"
+)
+
+func TestRecMutual(t *testing.T) {
+	v := OutputA{Id: "a0", B: &OutputB{A: OutputA{Id: "a1"}}}
+	b, err := sonic.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const golden = "{\"id\":\"a0\",\"b\":{\"a\":{\"id\":\"a1\",\"b\":null}}}"
+	if string(b) != golden {
+		t.Fatalf("mutual JSON != golden\n got:    %s\n golden: %s", b, golden)
+	}
+	var back OutputA
+	if err := json.Unmarshal([]byte(golden), &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.B == nil || back.B.A.Id != "a1" {
+		t.Fatalf("mutual unmarshal lost structure: %+v", back)
+	}
+	again, err := sonic.Marshal(back)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(again) != golden {
+		t.Fatalf("mutual round-trip not byte-identical: %s", again)
+	}
+}
+`
+
 // TestNativeRecursiveBareAliasReturnsCompile pins that a method returning a bare
 // structural recursive alias (no wrapping class/enum) emits a compiling carrier —
 // the import gating differs from the class case (no bytes/no object codec; a
@@ -531,15 +772,127 @@ const recAliasTestSource = `package recaliaspkg
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/bytedance/sonic"
 )
 
-// TestRecAlias exercises the emitted alias carriers' JSON behavior. The alias
-// declarations themselves (OutputRecursive1 = OutputUnion1, OutputJsonValue =
+// --- Frozen v0.223 reference carriers: the generated recursive-alias/union JSON
+// --- methods (type_aliases.go + unions.go), transcribed verbatim MINUS the CFFI
+// --- Decode/Encode/BamlTypeName. Recursion is reproduced by the alias being a Go
+// --- alias to a value union carrier (Recursive1) or a pointer-to-union (JSON).
+
+// type Recursive1 = Union2IntOrListRecursive1
+type refRecursive1 = refUnionR1
+type refUnionR1 struct {
+	variant string
+	varInt  *int64
+	varList *[]refRecursive1
+}
+
+func refR1Int(v int64) refUnionR1        { return refUnionR1{variant: "Int", varInt: &v} }
+func refR1List(v []refRecursive1) refUnionR1 { return refUnionR1{variant: "List", varList: &v} }
+
+func (u refUnionR1) MarshalJSON() ([]byte, error) {
+	switch u.variant {
+	case "Int":
+		return json.Marshal(u.varInt)
+	case "List":
+		return json.Marshal(u.varList)
+	}
+	return nil, fmt.Errorf("invalid union variant: %s", u.variant)
+}
+func (u *refUnionR1) UnmarshalJSON(data []byte) error {
+	if err := json.Unmarshal(data, &u.varInt); err == nil {
+		u.variant = "Int"
+		return nil
+	}
+	u.varInt = nil
+	if err := json.Unmarshal(data, &u.varList); err == nil {
+		u.variant = "List"
+		return nil
+	}
+	u.varList = nil
+	return fmt.Errorf("invalid union variant: %s", string(data))
+}
+
+// type JSONValue = *Union...  (nullable alias -> pointer to union). Arm order
+// follows the descriptor: String, Int, Float, Bool, List, Map.
+type refJSON = *refUnionJ
+type refUnionJ struct {
+	variant   string
+	varString *string
+	varInt    *int64
+	varFloat  *float64
+	varBool   *bool
+	varList   *[]refJSON
+	varMap    *map[string]refJSON
+}
+
+func refJString(v string) refUnionJ         { return refUnionJ{variant: "String", varString: &v} }
+func refJInt(v int64) refUnionJ             { return refUnionJ{variant: "Int", varInt: &v} }
+func refJBool(v bool) refUnionJ             { return refUnionJ{variant: "Bool", varBool: &v} }
+func refJList(v []refJSON) refUnionJ        { return refUnionJ{variant: "List", varList: &v} }
+func refJMap(v map[string]refJSON) refUnionJ { return refUnionJ{variant: "Map", varMap: &v} }
+
+func (u refUnionJ) MarshalJSON() ([]byte, error) {
+	switch u.variant {
+	case "String":
+		return json.Marshal(u.varString)
+	case "Int":
+		return json.Marshal(u.varInt)
+	case "Float":
+		return json.Marshal(u.varFloat)
+	case "Bool":
+		return json.Marshal(u.varBool)
+	case "List":
+		return json.Marshal(u.varList)
+	case "Map":
+		return json.Marshal(u.varMap)
+	}
+	return nil, fmt.Errorf("invalid union variant: %s", u.variant)
+}
+func (u *refUnionJ) UnmarshalJSON(data []byte) error {
+	if err := json.Unmarshal(data, &u.varString); err == nil {
+		u.variant = "String"
+		return nil
+	}
+	u.varString = nil
+	if err := json.Unmarshal(data, &u.varInt); err == nil {
+		u.variant = "Int"
+		return nil
+	}
+	u.varInt = nil
+	if err := json.Unmarshal(data, &u.varFloat); err == nil {
+		u.variant = "Float"
+		return nil
+	}
+	u.varFloat = nil
+	if err := json.Unmarshal(data, &u.varBool); err == nil {
+		u.variant = "Bool"
+		return nil
+	}
+	u.varBool = nil
+	if err := json.Unmarshal(data, &u.varList); err == nil {
+		u.variant = "List"
+		return nil
+	}
+	u.varList = nil
+	if err := json.Unmarshal(data, &u.varMap); err == nil {
+		u.variant = "Map"
+		return nil
+	}
+	u.varMap = nil
+	return fmt.Errorf("invalid union variant: %s", string(data))
+}
+
+// TestRecAlias exercises the emitted alias carriers' JSON behavior AND pins it
+// against the frozen v0.223 reference carriers above (byte-equal marshal, nullable
+// null, first-success unmarshal order, and the pure-container any fallback). The
+// alias declarations themselves (OutputRecursive1 = OutputUnion1, OutputJsonValue =
 // *OutputUnion2, OutputListNode = []any, OutputStrMap = map[string]any) are pinned
-// by the emit-string assertions in the parent test; here we prove the RUNTIME JSON.
+// by the emit-string assertions in the parent test.
 func TestRecAlias(t *testing.T) {
 	// Recursive1 int arm.
 	rInt := OutputUnion1NewVariant0(5)
@@ -640,6 +993,77 @@ func TestRecAlias(t *testing.T) {
 	}
 	if string(again) != goldenAW {
 		t.Fatalf("AW round-trip not byte-identical\n got: %s\n want: %s", again, goldenAW)
+	}
+
+	// --- native carrier == frozen v0.223 reference carrier (the real differential).
+	eq := func(label string, nv, rv any) {
+		nb, err := sonic.Marshal(nv)
+		if err != nil {
+			t.Fatalf("%s: native marshal: %v", label, err)
+		}
+		rb, err := sonic.Marshal(rv)
+		if err != nil {
+			t.Fatalf("%s: reference marshal: %v", label, err)
+		}
+		if string(nb) != string(rb) {
+			t.Fatalf("%s: native != v0.223 reference\n native: %s\n ref:    %s", label, nb, rb)
+		}
+	}
+	// Recursive1: nested list arm [5,[6]].
+	eq("Recursive1 list",
+		OutputUnion1NewVariant1([]OutputRecursive1{OutputUnion1NewVariant0(5), OutputUnion1NewVariant1([]OutputRecursive1{OutputUnion1NewVariant0(6)})}),
+		refR1List([]refRecursive1{refR1Int(5), refR1List([]refRecursive1{refR1Int(6)})}))
+	// JSONValue nullable null: nil alias on both marshals to null.
+	var nNil OutputJsonValue
+	var rNil refJSON
+	eq("JSONValue null", nNil, rNil)
+	// JSONValue string / bool / list / map arms.
+	eq("JSONValue string", func() OutputJsonValue { u := OutputUnion2NewVariant0("hi"); return &u }(), func() refJSON { u := refJString("hi"); return &u }())
+	eq("JSONValue bool", func() OutputJsonValue { u := OutputUnion2NewVariant3(true); return &u }(), func() refJSON { u := refJBool(true); return &u }())
+	eq("JSONValue list", func() OutputJsonValue {
+		u := OutputUnion2NewVariant4([]OutputJsonValue{func() OutputJsonValue { v := OutputUnion2NewVariant1(1); return &v }()})
+		return &u
+	}(), func() refJSON {
+		u := refJList([]refJSON{func() refJSON { v := refJInt(1); return &v }()})
+		return &u
+	}())
+	eq("JSONValue map", func() OutputJsonValue {
+		u := OutputUnion2NewVariant5(map[string]OutputJsonValue{"k": func() OutputJsonValue { v := OutputUnion2NewVariant0("v"); return &v }()})
+		return &u
+	}(), func() refJSON {
+		u := refJMap(map[string]refJSON{"k": func() refJSON { v := refJString("v"); return &v }()})
+		return &u
+	}())
+
+	// First-success unmarshal PARITY: native and the reference select the SAME arm
+	// for each input (ambiguous scalars resolve in descriptor arm order).
+	firstSuccess := func(in string, wantNative func(*OutputUnion2) bool, wantRef func(*refUnionJ) bool) {
+		var n OutputUnion2
+		if err := json.Unmarshal([]byte(in), &n); err != nil {
+			t.Fatalf("native unmarshal %s: %v", in, err)
+		}
+		var r refUnionJ
+		if err := json.Unmarshal([]byte(in), &r); err != nil {
+			t.Fatalf("reference unmarshal %s: %v", in, err)
+		}
+		if !wantNative(&n) || !wantRef(&r) {
+			t.Fatalf("first-success arm mismatch for %s: reference selected variant %q", in, r.variant)
+		}
+	}
+	// A JSON int binds Int (arm 1), before Float (arm 2): native variant1, ref "Int".
+	firstSuccess("7", func(n *OutputUnion2) bool { return n.IsVariant1() }, func(r *refUnionJ) bool { return r.variant == "Int" })
+	// A JSON string binds String (arm 0).
+	firstSuccess(` + "`\"z\"`" + `, func(n *OutputUnion2) bool { return n.IsVariant0() }, func(r *refUnionJ) bool { return r.variant == "String" })
+	// A JSON bool binds Bool (arm 3), after string/int/float fail.
+	firstSuccess("true", func(n *OutputUnion2) bool { return n.IsVariant3() }, func(r *refUnionJ) bool { return r.variant == "Bool" })
+
+	// Pure-container any fallback: native OutputListNode/OutputStrMap == plain
+	// []any/map[string]any (BAML's own any fallback), the reference for these.
+	var nList2 OutputListNode = []any{float64(1), []any{float64(2)}}
+	nb, _ := sonic.Marshal(nList2)
+	rb, _ := sonic.Marshal([]any{float64(1), []any{float64(2)}})
+	if string(nb) != string(rb) {
+		t.Fatalf("ListNode any-fallback native != reference []any\n native: %s\n ref: %s", nb, rb)
 	}
 
 	// Sub-slice aliasing is FINITE, not a cycle: nodes[1] shares nodes' backing

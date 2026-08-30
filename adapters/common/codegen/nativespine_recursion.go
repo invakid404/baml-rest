@@ -39,31 +39,47 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/schemadescriptor"
 )
 
-// CheckNativeCarrierShape is the SHARED emitter-feasibility gate. It reports an
-// error when the emitter could not render a faithful, compiling carrier for ret,
-// so the classifier (which maps a failure to unsupported_output_shape) and the
-// direct emitter (which calls it as a backstop) decline EXACTLY the same shapes —
-// one source of truth, no admission/emission drift. Name-collision failures are
-// deliberately NOT covered here; they are mapped to name_collision by
-// CheckNativeNameCollision (a separate, precise code).
+// CheckNativeCarrierShape is the SHARED, AUTHORITATIVE emitter-feasibility gate:
+// it owns the WHOLE output decline boundary so the classifier (which maps a
+// failure to unsupported_output_shape) and the direct emitter (which calls it as
+// its ONLY output backstop) decline EXACTLY the same shapes — one source of
+// truth, no admission/emission drift, and no metadata silently dropped at emit
+// time. Name-collision failures are the one exception, mapped to name_collision
+// by CheckNativeNameCollision (a separate, precise code).
 //
 // It checks, in order:
 //
-//  1. every reachable multi-arm union lowers to a nameable carrier (buildCarrierPlan);
-//  2. every class/enum/recursive-alias reference resolves in the bundle
-//     (validateOutputRefs);
-//  3. every reachable type lowers to a Go expression — the return target, every
-//     class field, every structural-recursive-alias declaration, and every union
-//     arm — so no admitted shape fails in schemaGoType at emit time;
-//  4. the Go declaration graph has finite type size: there is no direct by-value
-//     class SCC (checkNoDirectClassValueCycle). Optional, list, map, and M3b
-//     union-arm pointers break size cycles; a direct class value does not.
+//  1. no out-of-profile METADATA is reachable — @check/@assert constraints,
+//     @@dynamic, or any streaming behavior (Meta.Stream / class Stream /
+//     ClassField.StreamingNeeded / a Streaming Mode). M3c is output-only,
+//     non-streaming final-call; the emitter carries none of these, so admitting
+//     them would silently drop them (checkNoUnsupportedMetadata);
+//  2. every class/enum/recursive-alias reference resolves KIND- and MODE-exactly
+//     (validateOutputRefs) — a TypeClass must name a class, not an enum, and a
+//     streaming reference does not resolve against a non-streaming declaration;
+//  3. every structural recursive alias entry is an M2-supported SINGLE-alias
+//     structural cycle (checkStructuralAliasCycles) — a multi-alias SCC or a
+//     non-cyclic table entry would emit an uncompilable `type A = ... B ...` /
+//     `type B = ... A ...` Go alias cycle;
+//  4. every reachable multi-arm union lowers to a nameable carrier
+//     (buildCarrierPlan);
+//  5. every reachable type lowers to a Go expression — target, class fields,
+//     alias declarations, union arms — so nothing fails in schemaGoType at emit;
+//  6. the Go declaration graph has finite type size: no direct by-value class SCC
+//     (checkNoDirectClassValueCycle). Optional/list/map/union-arm pointers break
+//     size cycles; a direct class value does not.
 func CheckNativeCarrierShape(ret schemadescriptor.Bundle) error {
-	plan, err := buildCarrierPlan(ret)
-	if err != nil {
+	if err := checkNoUnsupportedMetadata(ret); err != nil {
 		return err
 	}
 	if err := validateOutputRefs(ret); err != nil {
+		return err
+	}
+	if err := checkStructuralAliasCycles(ret); err != nil {
+		return err
+	}
+	plan, err := buildCarrierPlan(ret)
+	if err != nil {
 		return err
 	}
 	if _, err := schemaGoType(ret.Target, plan); err != nil {
@@ -93,13 +109,153 @@ func CheckNativeCarrierShape(ret schemadescriptor.Bundle) error {
 	return nil
 }
 
-// bundleHasRecursion reports whether ret carries any recursion representation
-// (recursive classes or structural recursive aliases). It gates the recursion-
-// safe marshal guard: a non-recursive bundle keeps M3a/M3b emission byte-for-byte
-// identical (no guard, no reflect import), so their goldens/differentials are
-// untouched.
-func bundleHasRecursion(ret schemadescriptor.Bundle) bool {
-	return len(ret.RecursiveClasses) > 0 || len(ret.StructuralRecursiveAliases) > 0
+// checkNoUnsupportedMetadata rejects any reachable @check/@assert constraint,
+// @@dynamic type, or streaming behavior — the decline boundary the emitter would
+// otherwise cross by emitting a carrier that silently drops the metadata. The
+// classifier ALSO catches constraints/@@dynamic earlier with their precise codes
+// (checks/asserts/schema_dynamic_class); this shared gate is what makes the
+// EMITTER backstop reject the same shapes (as unsupported_output_shape), and it
+// is the only place either path rejects streaming metadata (M3e territory).
+func checkNoUnsupportedMetadata(ret schemadescriptor.Bundle) error {
+	var walk func(t schemadescriptor.Type) error
+	walk = func(t schemadescriptor.Type) error {
+		if t.Dynamic {
+			return fmt.Errorf("references a @@dynamic type")
+		}
+		for _, c := range t.Meta.Constraints {
+			return fmt.Errorf("carries a @%s constraint", c.Level)
+		}
+		if !t.Meta.Stream.IsZero() {
+			return fmt.Errorf("carries @stream.* streaming behavior (streaming is not in the M3c output profile)")
+		}
+		switch t.Kind {
+		case schemadescriptor.TypeClass, schemadescriptor.TypeRecursiveAlias:
+			if t.Mode == schemadescriptor.Streaming {
+				return fmt.Errorf("references a streaming-mode type %q (streaming is not in the M3c output profile)", t.Name)
+			}
+		case schemadescriptor.TypeList:
+			if t.Elem != nil {
+				return walk(*t.Elem)
+			}
+		case schemadescriptor.TypeMap:
+			if t.Key != nil {
+				if err := walk(*t.Key); err != nil {
+					return err
+				}
+			}
+			if t.Value != nil {
+				return walk(*t.Value)
+			}
+		case schemadescriptor.TypeUnion:
+			if t.Union != nil {
+				for i := range t.Union.Variants {
+					if err := walk(t.Union.Variants[i]); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		return nil
+	}
+	if err := walk(ret.Target); err != nil {
+		return fmt.Errorf("return target %w", err)
+	}
+	for i := range ret.Classes {
+		c := &ret.Classes[i]
+		if c.Mode == schemadescriptor.Streaming {
+			return fmt.Errorf("class %q is a streaming-mode declaration (streaming is not in the M3c output profile)", c.Name.Name)
+		}
+		for _, cc := range c.Constraints {
+			return fmt.Errorf("class %q carries a @%s constraint", c.Name.Name, cc.Level)
+		}
+		if !c.Stream.IsZero() {
+			return fmt.Errorf("class %q carries @@stream.* streaming behavior (streaming is not in the M3c output profile)", c.Name.Name)
+		}
+		for j := range c.Fields {
+			if c.Fields[j].StreamingNeeded {
+				return fmt.Errorf("class %q field %q is @stream-needed (streaming is not in the M3c output profile)", c.Name.Name, c.Fields[j].Name.Name)
+			}
+			if err := walk(c.Fields[j].Type); err != nil {
+				return fmt.Errorf("class %q field %q %w", c.Name.Name, c.Fields[j].Name.Name, err)
+			}
+		}
+	}
+	for i := range ret.Enums {
+		for _, cc := range ret.Enums[i].Constraints {
+			return fmt.Errorf("enum %q carries a @%s constraint", ret.Enums[i].Name.Name, cc.Level)
+		}
+	}
+	for i := range ret.StructuralRecursiveAliases {
+		if err := walk(ret.StructuralRecursiveAliases[i].Target); err != nil {
+			return fmt.Errorf("recursive alias %q target %w", ret.StructuralRecursiveAliases[i].Name, err)
+		}
+	}
+	return nil
+}
+
+// checkStructuralAliasCycles verifies every StructuralRecursiveAliases entry is an
+// M2-supported SINGLE-alias structural cycle: its target references ITSELF (a
+// self-cycle) and it does NOT participate in a cycle with any OTHER alias. A
+// multi-alias SCC (`A = B[]`, `B = A[]`) or a non-cyclic table entry passes
+// reference resolution and lowers (lowerAliasTarget keeps other-alias references
+// named), but emits `type OutputA = []OutputB` / `type OutputB = []OutputA` — an
+// invalid recursive Go alias cycle the compiler rejects — so both must decline.
+// Multiple DISJOINT single-alias self-cycles in one bundle stay admitted.
+func checkStructuralAliasCycles(ret schemadescriptor.Bundle) error {
+	aliasNames := make(map[string]bool, len(ret.StructuralRecursiveAliases))
+	for i := range ret.StructuralRecursiveAliases {
+		aliasNames[ret.StructuralRecursiveAliases[i].Name] = true
+	}
+	names := make([]string, 0, len(ret.StructuralRecursiveAliases))
+	interEdges := make(map[string][]string, len(ret.StructuralRecursiveAliases))
+	for i := range ret.StructuralRecursiveAliases {
+		a := &ret.StructuralRecursiveAliases[i]
+		names = append(names, a.Name)
+		refs := map[string]bool{}
+		collectAliasNameRefs(a.Target, aliasNames, refs)
+		if !refs[a.Name] {
+			return fmt.Errorf("structural recursive alias %q is not a single-alias structural cycle (its target does not reference itself)", a.Name)
+		}
+		var inter []string
+		for r := range refs {
+			if r != a.Name {
+				inter = append(inter, r)
+			}
+		}
+		interEdges[a.Name] = inter
+	}
+	// A cycle in the inter-alias graph (self-references removed) is a multi-alias
+	// structural SCC — unsupported (M2 declines it before a bundle exists).
+	if findGraphCycle(names, interEdges) {
+		return fmt.Errorf("bundle contains a multi-alias structural recursive cycle, which is unsupported (only single-alias structural cycles emit a compiling Go alias)")
+	}
+	return nil
+}
+
+// collectAliasNameRefs records every alias name in aliasNames that t references
+// through ANY construct (list/map/union/optional arms are all transparent here —
+// this is a NAME collector, not a lowering).
+func collectAliasNameRefs(t schemadescriptor.Type, aliasNames, out map[string]bool) {
+	switch t.Kind {
+	case schemadescriptor.TypeRecursiveAlias:
+		if aliasNames[t.Name] {
+			out[t.Name] = true
+		}
+	case schemadescriptor.TypeList:
+		if t.Elem != nil {
+			collectAliasNameRefs(*t.Elem, aliasNames, out)
+		}
+	case schemadescriptor.TypeMap:
+		if t.Value != nil {
+			collectAliasNameRefs(*t.Value, aliasNames, out)
+		}
+	case schemadescriptor.TypeUnion:
+		if t.Union != nil {
+			for i := range t.Union.Variants {
+				collectAliasNameRefs(t.Union.Variants[i], aliasNames, out)
+			}
+		}
+	}
 }
 
 // lowerRecursiveAliasDecl renders the Go type expression for one structural
@@ -309,8 +465,157 @@ func joinArrows(names []string) string {
 	return out
 }
 
+// findGraphCycle reports whether the directed graph (nodes + adjacency) contains
+// any cycle, including a self-loop (a node with an edge to itself). Tri-state DFS
+// over logical string keys.
+func findGraphCycle(nodes []string, edges map[string][]string) bool {
+	const (
+		white = 0
+		gray  = 1
+		black = 2
+	)
+	color := make(map[string]int, len(nodes))
+	var dfs func(n string) bool
+	dfs = func(n string) bool {
+		color[n] = gray
+		for _, m := range edges[n] {
+			switch color[m] {
+			case gray:
+				return true
+			case white:
+				if dfs(m) {
+					return true
+				}
+			}
+		}
+		color[n] = black
+		return false
+	}
+	for _, n := range nodes {
+		if color[n] == white && dfs(n) {
+			return true
+		}
+	}
+	return false
+}
+
+// carrierGraphIsRecursive reports whether the EMITTED Go carrier graph is
+// recursive — i.e. some class/union/alias carrier is reachable from itself. It is
+// derived STRUCTURALLY from the validated lowered graph (never from the descriptor's
+// RecursiveClasses/StructuralRecursiveAliases metadata, which the emitter must not
+// trust): the marshal cycle guard is emitted exactly when this is true, so a
+// truly-recursive carrier always gets the guard (no stack overflow) and a
+// non-recursive bundle never does (M3a/M3b bytes/source unchanged).
+//
+// Nodes are "class:<name>", "union:<carrier>", "alias:<name>"; an edge is a Go
+// reference. A pure-container alias whose recursive occurrence lowered to `any`
+// (`type OutputListNode = []any`) contributes NO self-edge and is correctly NOT
+// recursive; a recursive occurrence surviving through a value union carrier
+// (`type OutputRecursive1 = OutputUnion1`, arm `*[]OutputRecursive1`) forms a real
+// alias<->union cycle. MUST be called with the plan built for ret.
+func carrierGraphIsRecursive(ret schemadescriptor.Bundle, plan *carrierPlan) bool {
+	edges := map[string][]string{}
+	var nodes []string
+	add := func(node string, refs map[string]bool) {
+		nodes = append(nodes, node)
+		out := make([]string, 0, len(refs))
+		for r := range refs {
+			out = append(out, r)
+		}
+		edges[node] = out
+	}
+	for i := range ret.Classes {
+		c := &ret.Classes[i]
+		refs := map[string]bool{}
+		for j := range c.Fields {
+			collectCarrierGoRefs(c.Fields[j].Type, plan, refs)
+		}
+		add("class:"+c.Name.Name, refs)
+	}
+	for _, u := range plan.unions {
+		refs := map[string]bool{}
+		for i := range u.variants {
+			collectCarrierGoRefs(u.variants[i], plan, refs)
+		}
+		add("union:"+u.name, refs)
+	}
+	for i := range ret.StructuralRecursiveAliases {
+		a := &ret.StructuralRecursiveAliases[i]
+		refs := map[string]bool{}
+		collectAliasCarrierGoRefs(a.Target, a.Name, !aliasHasConcreteLeaf(a.Target), plan, refs)
+		add("alias:"+a.Name, refs)
+	}
+	return findGraphCycle(nodes, edges)
+}
+
+// collectCarrierGoRefs records the carrier nodes t references at the Go level, as
+// a class field / union arm lowers it (no self-drop). A class/alias reference and
+// a multi-arm union carrier are node leaves; list/map/optional recurse.
+func collectCarrierGoRefs(t schemadescriptor.Type, plan *carrierPlan, out map[string]bool) {
+	switch t.Kind {
+	case schemadescriptor.TypeClass:
+		out["class:"+t.Name] = true
+	case schemadescriptor.TypeRecursiveAlias:
+		out["alias:"+t.Name] = true
+	case schemadescriptor.TypeList:
+		if t.Elem != nil {
+			collectCarrierGoRefs(*t.Elem, plan, out)
+		}
+	case schemadescriptor.TypeMap:
+		if t.Value != nil {
+			collectCarrierGoRefs(*t.Value, plan, out)
+		}
+	case schemadescriptor.TypeUnion:
+		if t.Union == nil {
+			return
+		}
+		if t.Union.Nullable && len(t.Union.Variants) == 1 {
+			collectCarrierGoRefs(t.Union.Variants[0], plan, out)
+			return
+		}
+		if name, ok := plan.unionName(t.Union.Variants); ok {
+			out["union:"+name] = true
+		}
+	}
+}
+
+// collectAliasCarrierGoRefs mirrors lowerAliasTarget: a self-occurrence dropped to
+// `any` contributes no reference; a multi-arm union resolves to its carrier node
+// (its arms are edges FROM that union node, collected separately). Any other
+// reference matches collectCarrierGoRefs.
+func collectAliasCarrierGoRefs(t schemadescriptor.Type, self string, dropSelf bool, plan *carrierPlan, out map[string]bool) {
+	switch t.Kind {
+	case schemadescriptor.TypeRecursiveAlias:
+		if t.Name == self && dropSelf {
+			return
+		}
+		out["alias:"+t.Name] = true
+	case schemadescriptor.TypeList:
+		if t.Elem != nil {
+			collectAliasCarrierGoRefs(*t.Elem, self, dropSelf, plan, out)
+		}
+	case schemadescriptor.TypeMap:
+		if t.Value != nil {
+			collectAliasCarrierGoRefs(*t.Value, self, dropSelf, plan, out)
+		}
+	case schemadescriptor.TypeUnion:
+		if t.Union == nil {
+			return
+		}
+		if t.Union.Nullable && len(t.Union.Variants) == 1 {
+			collectAliasCarrierGoRefs(t.Union.Variants[0], self, dropSelf, plan, out)
+			return
+		}
+		if name, ok := plan.unionName(t.Union.Variants); ok {
+			out["union:"+name] = true
+		}
+	default:
+		collectCarrierGoRefs(t, plan, out)
+	}
+}
+
 // nativeSpineCycleGuardSource is the recursion-safe marshal guard emitted into a
-// recursive carrier file (gated on bundleHasRecursion + a class/union carrier
+// recursive carrier file (gated on carrierGraphIsRecursive + a class/union carrier
 // existing). It imports reflect. See the package doc: it detects a user-built
 // pointer/slice/map cycle before the custom codec recurses into it, so marshal
 // returns an error instead of overflowing the stack — matching the generated
