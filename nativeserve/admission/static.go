@@ -111,6 +111,7 @@ const (
 	reasonReturnShapeUnproven          Reason = "return_shape_decoder_unproven"
 	reasonStaticDescriptorStricter     Reason = "static_descriptor_stricter"
 	reasonSpineNotExactAlias           Reason = "spine_not_exact_json_alias"
+	reasonSpineRewriteProxyUnverified  Reason = "spine_rewrite_proxy_unverified"
 
 	reasonStaticPromptUnsupported Reason = "static_prompt_unsupported"
 	reasonStaticRenderFailed      Reason = "static_render_failed"
@@ -345,7 +346,21 @@ func AdmitStaticSpineClaim(ctx context.Context, in StaticInput) (*StaticClaim, e
 	// staticPlanCompareObservation), so AdmitStaticSpineClaim runs it explicitly (Codex
 	// review finding 1). SingleLeaf / no-fallback / no-round-robin / no-retry-override
 	// were already enforced by admitStaticThroughPrepare's layer-2 strategy gate.
-	if in.WouldRewriteOrProxy != nil && in.WouldRewriteOrProxy(prep.prepared.URL) {
+	//
+	// This gate is MANDATORY and TOTAL at this EXPORTED boundary, not optional-on-nil: the
+	// spine lane is cohort-gate-EXEMPT, so a caller reaching AdmitStaticSpineClaim directly
+	// with a valid StaticInput but a NIL WouldRewriteOrProxy predicate must NOT be allowed
+	// to claim while the rewrite/proxy check is skipped (CodeRabbit #9 admission-boundary
+	// residual — the call.go default only covers UnaryExecutor.Call). FAIL CLOSED: a nil
+	// predicate means the effective target's rewrite/proxy status could not be verified, so
+	// decline PRE-CLAIM exactly as a positive rewrite/proxy verdict would. UnaryExecutor.Call
+	// always supplies a non-nil predicate (llmhttp.DefaultClient), so this only bites a
+	// direct caller that omitted it.
+	if in.WouldRewriteOrProxy == nil {
+		prep.close()
+		return nil, staticDeclineFromObs(declineStatic(bamlutils.NativeStaticFamilyClient, StageStrategy, reasonSpineRewriteProxyUnverified))
+	}
+	if in.WouldRewriteOrProxy(prep.prepared.URL) {
 		prep.close()
 		return nil, staticDeclineFromObs(declineStatic(bamlutils.NativeStaticFamilyClient, StageStrategy, ReasonURLRewriteOrProxy))
 	}

@@ -361,3 +361,55 @@ func TestSpineOneSendBodyIsV0223(t *testing.T) {
 		t.Errorf("wire body not byte-identical to BAML v0.223:\n--- wire ---\n%s\n--- v0.223 ---\n%s", wireBody, golden.Body)
 	}
 }
+
+// TestAdmitStaticSpineClaimFailsClosedOnNilRewritePredicate proves the rewrite/proxy gate
+// is MANDATORY at the EXPORTED admission boundary, not merely defaulted by
+// UnaryExecutor.Call (CodeRabbit #9 admission-boundary residual). AdmitStaticSpineClaim
+// selects the cohort-gate-EXEMPT spine lane, so a direct caller reaching it with an
+// otherwise-valid StaticInput but a NIL WouldRewriteOrProxy predicate must FAIL CLOSED — a
+// typed pre-socket decline, never a claim. On the pre-fix impl the nil predicate skipped
+// the gate (the check was `!= nil &&`), and the exact-JSON descriptor would CLAIM. The
+// input here is the exact one Call builds (via the executor's own staticInput), with only
+// the predicate nilled, so nothing else about the admission is weakened.
+func TestAdmitStaticSpineClaimFailsClosedOnNilRewritePredicate(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	proj := injectBaseInto(staticOracleProject(t), srv.URL+"/v1")
+	e, err := NewUnaryExecutor(proj, []bamlutils.NativeSpineUnaryBinding{nativespinejsonfixture.Binding()}, nil)
+	if err != nil {
+		t.Fatalf("NewUnaryExecutor: %v", err)
+	}
+	rm, ok := e.registry["StaticRecursiveAliasJSON"]
+	if !ok {
+		t.Fatal("StaticRecursiveAliasJSON not registered")
+	}
+	values, perr := rm.binding.ProjectInput(&nativespinejsonfixture.StaticRecursiveAliasJsonInput{Topic: frozenGoldenInput})
+	if perr != nil {
+		t.Fatalf("ProjectInput: %v", perr)
+	}
+	// The exact StaticInput Call builds (reaches the rewrite/proxy gate through Prepare),
+	// with the predicate nilled — a direct boundary caller that omitted it.
+	in := e.staticInput(rm, values, nil)
+	in.WouldRewriteOrProxy = nil
+
+	claim, aerr := admission.AdmitStaticSpineClaim(context.Background(), in)
+	if claim != nil {
+		claim.Close()
+		t.Fatal("AdmitStaticSpineClaim returned a CLAIM for a nil rewrite/proxy predicate; the cohort-gate-exempt spine lane must FAIL CLOSED at the boundary")
+	}
+	d, ok := aerr.(*admission.StaticDecline)
+	if !ok {
+		t.Fatalf("err = %v (%T), want a pre-socket *admission.StaticDecline", aerr, aerr)
+	}
+	if d.Reason != "spine_rewrite_proxy_unverified" {
+		t.Fatalf("decline reason = %q, want spine_rewrite_proxy_unverified (fail-closed on a nil predicate)", d.Reason)
+	}
+	if hits != 0 {
+		t.Fatalf("provider request count = %d, want 0 (the fail-closed decline is pre-socket)", hits)
+	}
+}
