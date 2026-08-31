@@ -234,9 +234,17 @@ func TestCancelBeforeAfterClaim(t *testing.T) {
 			t.Fatal("handler was never released to its no-response return after cancel()")
 		}
 
-		// (5) the call deterministically failed after the claim — the handler wrote no
-		// response, so success was never on the table.
-		got := <-done
+		// (5) read the result — BOUNDED (CodeRabbit wave-5): if the call never returns, fail
+		// HERE rather than blocking to the package timeout. The deferred unwind (cancel +
+		// release + abort) runs on this t.Fatal, so nothing leaks. The call is
+		// deterministically failed-after-claim — the handler wrote no response, so success
+		// was never on the table.
+		var got struct{ res bamlutils.NativeSpineUnaryResult }
+		select {
+		case got = <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the cancelled call never returned a result")
+		}
 		if got.res.Disposition != bamlutils.NativeSpineFailedAfterClaim {
 			t.Fatalf("disposition = %v (err %v), want failed_after_claim", got.res.Disposition, got.res.Err)
 		}
