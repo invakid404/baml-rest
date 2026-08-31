@@ -134,7 +134,7 @@ var _ bamlutils.NativeSpineUnaryExecutor = (*UnaryExecutor)(nil)
 // finding 2: the constructor takes the whole Project, not pre-reconstructed methods,
 // so registration validates against the actual project facts). For each binding it
 // finds the admitted method in the Project, reconstructs + validates the scalar
-// descriptor (internal/nativespine.ReconstructFunction — which FAILS on project
+// descriptor (this package's unexported reconstructFunction — which FAILS on project
 // version / templates / client retry-policy / strategy rather than stripping them),
 // then REJECTS, before serving begins:
 //

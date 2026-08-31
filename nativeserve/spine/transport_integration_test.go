@@ -267,24 +267,36 @@ func capturePlanNoSend(t *testing.T, e *UnaryExecutor, method string, input any)
 	return pm, pu, pb, ph
 }
 
-// assertSemanticHeadersMatchGolden checks every golden header (except BAML's own
-// transport-only baml-original-url, which nanollm never emits) is present on the plan
-// with the same value (case-insensitive name).
+// assertSemanticHeadersMatchGolden proves the plan's semantic header MULTISET equals the
+// frozen v0.223 golden's EXACTLY — every name+value pair, INCLUDING duplicates, compared
+// in BOTH directions, so an ADDITIONAL native header, a DUPLICATE plan header, or a
+// MISSING header all fail (review-3 finding 2: the earlier subset check collapsed
+// duplicates into a one-value map and iterated only the golden headers). Header name
+// casing and order are HTTP-insignificant and not compared (the pairs are lower-cased and
+// sorted); BAML's own transport-only baml-original-url is dropped from both sides —
+// nanollm never emits it, and it is the one documented exemption. Proving the semantic
+// header set EQUAL (not merely a superset of the golden) is what justifies omitting the
+// runtime BAML plan-compare on the spine path.
 func assertSemanticHeadersMatchGolden(t *testing.T, plan, golden [][2]string) {
 	t.Helper()
 	exempt := map[string]bool{"baml-original-url": true}
-	have := map[string]string{}
-	for _, kv := range plan {
-		have[strings.ToLower(kv[0])] = kv[1]
+	canon := func(hs [][2]string) []string {
+		out := make([]string, 0, len(hs))
+		for _, kv := range hs {
+			n := strings.ToLower(kv[0])
+			if exempt[n] {
+				continue
+			}
+			// NUL separates name from value so no name/value pair can alias another.
+			out = append(out, n+"\x00"+kv[1])
+		}
+		slices.Sort(out)
+		return out
 	}
-	for _, kv := range golden {
-		n := strings.ToLower(kv[0])
-		if exempt[n] {
-			continue
-		}
-		if have[n] != kv[1] {
-			t.Errorf("header %q: plan=%q golden(v0.223)=%q", n, have[n], kv[1])
-		}
+	got, want := canon(plan), canon(golden)
+	if !slices.Equal(got, want) {
+		t.Errorf("semantic header multiset differs from BAML v0.223 golden (extra / duplicate / missing header):\n--- plan ---\n%s\n--- v0.223 ---\n%s",
+			strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
 

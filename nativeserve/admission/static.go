@@ -1010,15 +1010,29 @@ func checkArgBinder(declared []promptdescriptor.Argument, binderOrder []string, 
 }
 
 // CheckStaticClientCohort runs the SAME static-client cohort checks the call-time
-// admission applies (admitStaticThroughPrepare layer 5: provider + NormalizeStaticClient
-// + staticTransport, plus the body-affecting check BuildOpenAIChat/SupportsOpenAIChat
-// enforces), WITHOUT a render or socket — so a REGISTRATION-time gate can decline
-// exactly what Call would, keeping registration/call/direct-parse in lockstep for a
-// cohort-forbidden client descriptor (Codex review finding 2). It reuses the identical
-// shared nativebody.NormalizeStaticClient + staticTransport functions. It declines a
-// non-openai provider, a non-literal or escaped model, ANY body-affecting client option
-// (request_body / tools / temperature / ...), and a non-literal or absent base_url /
-// api_key. Returns nil when the client is inside the exact cohort.
+// admission applies (admitStaticThroughPrepare layer 5), WITHOUT a render or socket — so
+// a REGISTRATION-time gate declines exactly what Call would, keeping
+// registration/call/direct-parse in lockstep for a cohort-forbidden client descriptor
+// (Codex review findings 2 + 3-#1). The three checks mirror the three layer-5 gates:
+//
+//  1. the method/request provider gate (Call's `in.Provider != "openai"`);
+//  2. the ACTUAL call-time client predicate on the NORMALIZED INTENT — the identical
+//     nativebody.SupportsOpenAIChat / BuildOpenAIChat gate — covering the intent's OWN
+//     provider, a resolved literal VALID-UTF-8 target model, and no body-affecting
+//     option; and
+//  3. the literal base_url + api_key transport (Call's staticTransport, consumed by
+//     nanollm.New).
+//
+// Gate 2 is the fix for review-3 finding 1: the earlier version checked only the passed
+// `provider` argument (the METHOD provider) and intent.BodyAffecting, never the
+// NORMALIZED intent's own provider or model validity. A validated Project may pair
+// Method.Provider=="openai" with a SELECTED ClientConfig whose Provider!="openai" (the
+// manifest validator does not force them to agree), or a literal model that is not valid
+// UTF-8 — NormalizeStaticClient passes both through, and only BuildOpenAIChat declines
+// them at Call. Running SupportsOpenAIChat here on the intent closes that
+// register-admits / call-declines divergence. A canned valid completion prompt satisfies
+// supportsRendered, so the only decline SupportsOpenAIChat can surface here is the client
+// gate. Returns nil when the client is inside the exact cohort.
 func CheckStaticClientCohort(provider string, cfg promptdescriptor.ClientConfig) error {
 	if provider != "openai" {
 		return fmt.Errorf("client cohort: provider is %q, only openai is proven", provider)
@@ -1027,8 +1041,9 @@ func CheckStaticClientCohort(provider string, cfg promptdescriptor.ClientConfig)
 	if cerr != nil {
 		return fmt.Errorf("client cohort: static client unsupported: %w", cerr)
 	}
-	if len(intent.BodyAffecting) != 0 {
-		return fmt.Errorf("client cohort: client carries %d body-affecting option(s) (e.g. %q); the exact cohort forbids a request body / body option", len(intent.BodyAffecting), intent.BodyAffecting[0].Key)
+	probe := &nativeprompt.RenderedPrompt{Kind: nativeprompt.KindCompletion, Completion: staticAlias}
+	if err := nativebody.SupportsOpenAIChat(probe, intent); err != nil {
+		return fmt.Errorf("client cohort: selected client is outside the exact cohort: %w", err)
 	}
 	if _, _, terr := staticTransport(cfg); terr != "" {
 		return fmt.Errorf("client cohort: transport option %s", terr)

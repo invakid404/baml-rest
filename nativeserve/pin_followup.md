@@ -37,7 +37,7 @@ STATUS: OUTSTANDING
 PINNED-COMMIT: 7c4124736044
 PINNED-STAMP: 20260831132239
 REACHABLE-FROM: feat/debaml-execbridge-u1 (branch source tip; NOT master)
-SLICE: ExecBridge-U1 — production native unary executor / population bridge for the exact five-arm direct JSON recursive alias (neutral bamlutils binding/executor contract, emitted scalar projector + strict decoder, internal/nativespine reconstruction, nativeserve/spine executor + nativeserve/admission.AdmitStaticSpineClaim); no generated BAML or CFFI on the emitted/runtime path
+SLICE: ExecBridge-U1 — production native unary executor / population bridge for the exact five-arm direct JSON recursive alias (neutral bamlutils binding/executor contract, emitted scalar projector + strict decoder, nativeserve/spine's unexported reconstructFunction, nativeserve/spine executor + nativeserve/admission.AdmitStaticSpineClaim); no generated BAML or CFFI on the emitted/runtime path
 PR: feat/debaml-execbridge-u1 (this PR); pins name the branch source commit 7c4124736044; re-pin to the master squash commit is OWED post-merge
 ```
 

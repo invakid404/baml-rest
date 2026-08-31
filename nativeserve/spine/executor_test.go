@@ -9,6 +9,7 @@ import (
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/projectdescriptor"
+	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
 	"github.com/invakid404/baml-rest/bamlutils/schemadescriptor"
 	"github.com/invakid404/baml-rest/internal/nativespinejsonfixture"
 	"github.com/invakid404/baml-rest/nativeserve/spine"
@@ -39,12 +40,22 @@ func TestNewUnaryExecutor_AdmitsExactJSONAlias(t *testing.T) {
 	}
 }
 
-// TestRegistrationDeclineMatrix is the complete registration/zero-socket negative
-// matrix (Codex review finding 5). Every non-cohort shape/input/cohort/binding fact
-// is REJECTED before any executor is built — so no socket is even possible. Each row
-// must fail on the current tip; the JSON-alias predicate, the required-scalar gate,
-// the project/client cohort gate (templates/retry/strategy), the descriptor envelope,
-// and the binding checks are all exercised.
+// TestRegistrationDeclineMatrix is the registration/zero-socket negative matrix. EVERY
+// row feeds a Project whose Method SURVIVES the upstream source classifier and reaches
+// NewUnaryExecutor.register(), where it is declined by a REGISTRATION gate — so the
+// matrix is genuine registration-gate/discrimination evidence, not a proof that a
+// binding for an absent method is rejected (review-3 finding 3). Source-built rows use
+// shapes the classifier admits (the totality predicate / required-scalar / project-cohort
+// negatives); mutation-built rows (mutatedJSONProject) inject a cohort-forbidden fact the
+// source classifier cannot express onto the ADMITTED JSON project, so the Method survives
+// to the constructor and the SPINE gate is what refuses it.
+//
+// Two of the mutation rows target the value this slice's client-cohort fix ADDED and
+// ADMIT on the pre-fix tip (selected_client_non_openai, invalid_utf8_model — the earlier
+// CheckStaticClientCohort checked only the method-provider argument + body-affecting
+// options, never the NORMALIZED intent's own provider or model validity); they DECLINE
+// now, in lockstep with Call's BuildOpenAIChat (review-3 finding 1). Every row opens ZERO
+// sockets (the constructor never dials).
 func TestRegistrationDeclineMatrix(t *testing.T) {
 	const jsonType = "type JSON = int | string | bool | JSON[] | map<string, JSON>"
 
@@ -64,8 +75,8 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 		{"reordered_alias",
 			projectFromCorpus(t, corpus("type JsonValueReordered = float | int | bool | string | null | JsonValueReordered[] | map<string, JsonValueReordered>", `function F(topic: string) -> JsonValueReordered { client C prompt #"{{ topic }}"# }`)),
 			jsonAliasBinding("F"), "JSON alias cohort"},
-		{"wrapper_alias", // wraps the exact family in extra structure -> not the bare `JSON`
-			projectFromCorpus(t, corpus(jsonType, `function F(topic: string) -> JSON[] { client C prompt #"{{ topic }}"# }`)),
+		{"wrapper_alias", // a NAMED alias whose DEFINITION wraps the exact family (JSON[]) -> not the bare `JSON`
+			projectFromCorpus(t, corpus(jsonType+"\ntype WrappedJson = JSON[]", `function F(topic: string) -> WrappedJson { client C prompt #"{{ topic }}"# }`)),
 			jsonAliasBinding("F"), "JSON alias cohort"},
 		{"class_return",
 			projectFromCorpus(t, corpus("class Wrap { x string }", `function F(topic: string) -> Wrap { client C prompt #"{{ topic }}"# }`)),
@@ -89,28 +100,50 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 			}),
 			jsonAliasBinding(), "JSON alias cohort"},
 
-		// --- input shape negatives ---------------------------------------------
+		// --- input shape negatives (requiredScalarInputs at REGISTRATION) --------
+		// nullable + list inputs SURVIVE the source classifier and reach register(),
+		// where requiredScalarInputs refuses them (the classifier admits these input
+		// shapes; the spine's required-scalar gate is what declines them).
 		{"nullable_scalar_input",
 			projectFromCorpus(t, corpus(jsonType, `function F(topic: string?) -> JSON { client C prompt #"{{ topic }}"# }`)),
 			jsonAliasBinding("F"), "is nullable"},
 		{"list_input",
 			projectFromCorpus(t, corpus(jsonType, `function F(tags: string[]) -> JSON { client C prompt #"{{ tags }}"# }`)),
 			jsonAliasBinding("F"), "required-scalar cohort"},
-		// class / enum / map / media inputs are declined by the M1 classifier itself,
-		// so the method never reaches the project — the binding names a non-admitted
-		// method (still a pre-socket registration decline).
-		{"class_input",
-			projectFromCorpus(t, corpus(jsonType+"\nclass In { x string }", `function F(c: In) -> JSON { client C prompt #"{{ c }}"# }`)),
-			jsonAliasBinding("F"), "did not admit"},
-		{"enum_input",
-			projectFromCorpus(t, corpus(jsonType+"\nenum Col {\n  R\n  G\n}", `function F(c: Col) -> JSON { client C prompt #"{{ c }}"# }`)),
-			jsonAliasBinding("F"), "did not admit"},
-		{"map_input",
-			projectFromCorpus(t, corpus(jsonType, `function F(m: map<string, string>) -> JSON { client C prompt #"{{ m }}"# }`)),
-			jsonAliasBinding("F"), "did not admit"},
-		{"media_input",
-			projectFromCorpus(t, corpus(jsonType, `function F(img: image) -> JSON { client C prompt #"{{ img }}"# }`)),
-			jsonAliasBinding("F"), "did not admit"},
+		// A class/enum/map/media input is removed by the SOURCE classifier and never
+		// reaches the constructor, so injecting a non-scalar (class) type DIRECTLY onto
+		// the admitted method's argument edge is the only way to exercise the spine's
+		// requiredScalarInputs gate on a non-scalar input that SURVIVES to register()
+		// (review-3 finding 3).
+		{"nonscalar_class_input_survives",
+			mutatedJSONProject(t, func(p *projectdescriptor.Project) {
+				p.Methods[0].Args[0].Type = promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueClass, ClassName: "Ghost"}
+			}),
+			jsonAliasBinding(), "required-scalar cohort"},
+
+		// --- static-client cohort at REGISTRATION (review-3 finding 1) -----------
+		// Both mutate the ADMITTED JSON project so the Method survives to register();
+		// both ADMITTED on the pre-fix tip and DECLINE now, because registration runs
+		// the ACTUAL call-time client predicate (SupportsOpenAIChat) on the NORMALIZED
+		// intent — its OWN provider and model validity — exactly as Call's BuildOpenAIChat.
+		{"selected_client_non_openai", // Method.Provider=="openai" but the SELECTED client's provider is not
+			mutatedJSONProject(t, func(p *projectdescriptor.Project) {
+				for i := range p.Clients {
+					if p.Clients[i].Config.Name == p.Methods[0].Client {
+						p.Clients[i].Config.Provider = "anthropic"
+					}
+				}
+			}),
+			jsonAliasBinding(), "not the proven openai"},
+		{"invalid_utf8_model", // a literal model that is not valid UTF-8: NormalizeStaticClient passes it, BuildOpenAIChat/Call declines it
+			mutatedJSONProject(t, func(p *projectdescriptor.Project) {
+				for i := range p.Clients {
+					if p.Clients[i].Config.Name == p.Methods[0].Client {
+						p.Clients[i].Config.Model.Value = "gpt-\xff\xfe"
+					}
+				}
+			}),
+			jsonAliasBinding(), "valid UTF-8"},
 
 		// --- project / client cohort negatives ---------------------------------
 		{"template_project",
@@ -138,7 +171,7 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 			mutatedJSONProject(t, func(p *projectdescriptor.Project) {
 				p.Clients[0].Config.RequestBodyPresent = true
 			}),
-			jsonAliasBinding(), "body-affecting option"},
+			jsonAliasBinding(), "request_body option"},
 
 		// --- descriptor envelope + version fences -------------------------------
 		{"project_version_mismatch",
