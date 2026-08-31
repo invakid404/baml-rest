@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
@@ -163,8 +164,16 @@ func TestCancelBeforeAfterClaim(t *testing.T) {
 
 		// Wait until the request has actually ENTERED the socket (handler reached), then
 		// cancel while it is in flight — deterministic, not a fixed sleep that can race a
-		// loaded runner into a pre-claim cancel (CodeRabbit #7).
-		<-entered
+		// loaded runner into a pre-claim cancel (CodeRabbit #7). Bound the wait: if the
+		// request finishes or errors BEFORE the handler runs, fail HERE with a clear
+		// message instead of blocking to the package test timeout (CodeRabbit #2 follow-on).
+		select {
+		case <-entered:
+		case got := <-done:
+			t.Fatalf("request completed (disposition %v, err %v) before entering the socket handler; cannot exercise cancel-after-claim", got.res.Disposition, got.res.Err)
+		case <-time.After(10 * time.Second):
+			t.Fatal("timed out waiting for the request to enter the socket handler")
+		}
 		cancel()
 		close(release)
 

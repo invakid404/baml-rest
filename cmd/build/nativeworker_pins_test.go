@@ -247,10 +247,11 @@ func (r pinFollowupRecord) lists(file, module string) bool {
 	return r.enumerated[file+"|"+module]
 }
 
-// pinFollowupFence delimits the record's DESIGNATED metadata block. The keys the guard
-// reads are taken from inside it and from nowhere else. The opening fence may carry a
-// CommonMark info string (a language tag) which the parser matches by prefix; the closing
-// fence is bare.
+// pinFollowupFence is the minimum backtick run (three) that delimits the record's
+// DESIGNATED metadata block. The keys the guard reads are taken from inside it and from
+// nowhere else. The opening fence is a run of >= 3 backticks optionally followed by a
+// CommonMark info string (a language tag); the closing fence is a BARE run of at least the
+// opener's length (see parsePinFollowup / leadingBackticks).
 const pinFollowupFence = "```"
 
 // pinFollowupRequiredKeys are the metadata keys the guard reads. They must ALL be present
@@ -309,25 +310,39 @@ func readPinFollowup(t *testing.T, repoRoot string) pinFollowupRecord {
 // reason: it is checked by BOTH exact row count and per-pair presence, so neither an
 // extra row nor a duplicate standing in for a missing one survives
 // ([pinFollowupViolations]).
+// leadingBackticks returns the length of the run of backtick characters at the start of s.
+func leadingBackticks(s string) int {
+	n := 0
+	for n < len(s) && s[n] == '`' {
+		n++
+	}
+	return n
+}
+
 func parsePinFollowup(src string) (pinFollowupRecord, error) {
 	rec := pinFollowupRecord{fields: map[string]string{}, enumerated: map[string]bool{}}
 	lines := strings.Split(src, "\n")
 
-	// Locate the designated metadata block: the FIRST fenced region. The OPENING fence
-	// MAY carry a CommonMark info string (a language tag, e.g. ```text — markdownlint
-	// MD040), so it is matched by prefix; the CLOSING fence is bare. This only relaxes
-	// which line opens the block — the block boundaries stay exact and the out-of-block
-	// key check below is unchanged, so the metadata-hiding guard is not weakened.
-	open, close := -1, -1
+	// Locate the designated metadata block: the FIRST fenced region. Track the OPENING
+	// fence's backtick-run LENGTH (>= 3, optionally followed by a CommonMark info string
+	// such as ```text for markdownlint MD040), and require the CLOSING fence to be a BARE
+	// run of AT LEAST that many backticks. A SHORTER bare run (e.g. a ``` line inside a
+	// ```` block) does NOT close the region, so a longer opener can never be terminated
+	// early and the guard can never parse metadata from the wrong region (CodeRabbit #3).
+	// The block boundaries stay exact and the out-of-block key check below is unchanged, so
+	// the metadata-hiding guard is not weakened.
+	open, close, openLen := -1, -1, 0
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
+		nb := leadingBackticks(trimmed)
 		if open < 0 {
-			if strings.HasPrefix(trimmed, pinFollowupFence) {
-				open = i
+			if nb >= 3 {
+				open, openLen = i, nb
 			}
 			continue
 		}
-		if trimmed == pinFollowupFence {
+		// A closing fence is a BARE run (only backticks) of at least the opener's length.
+		if nb >= openLen && strings.TrimLeft(trimmed, "`") == "" {
 			close = i
 			break
 		}
@@ -636,6 +651,38 @@ const pinFollowupDoc = "# record\n" +
 	"| # | file | module | selection |\n" +
 	"| --- | --- | --- | --- |\n" +
 	"| 1 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest` | `v0.0.0-x` |\n"
+
+// TestPinFollowupParserHandlesLongerFence is the regression for CodeRabbit #3: the parser
+// tracks the OPENING fence's backtick-run LENGTH and requires a matching-length BARE
+// closer. A metadata block delimited by FOUR backticks must be read correctly — closed by
+// its own four-backtick fence, never by a shorter (three-backtick) line — so a longer
+// opener can never be terminated early into the wrong metadata region. Under the pre-fix
+// parser (prefix-matched opener + bare-3 closer) this four-backtick block failed to parse
+// with "never closed", because it searched only for a bare THREE-backtick close.
+func TestPinFollowupParserHandlesLongerFence(t *testing.T) {
+	const fence4 = "````"
+	doc := "# record\n\n" +
+		fence4 + "text\n" + // four-backtick opener + a CommonMark info string
+		"STATUS: OUTSTANDING\n" +
+		"PINNED-COMMIT: 4168895ed76d\n" +
+		"PINNED-STAMP: 20260814142858\n" +
+		fence4 + "\n" // four-backtick close — a bare three-backtick line would NOT close it
+	rec, err := parsePinFollowup(doc)
+	if err != nil {
+		t.Fatalf("a four-backtick metadata block did not parse: %v", err)
+	}
+	if rec.fields["STATUS"] != "OUTSTANDING" || rec.fields["PINNED-COMMIT"] != "4168895ed76d" || rec.fields["PINNED-STAMP"] != "20260814142858" {
+		t.Fatalf("four-backtick block parsed to %v", rec.fields)
+	}
+
+	// The complement: a FOUR-backtick opener closed only by a THREE-backtick line is NOT
+	// closed (the shorter run cannot terminate the longer fence), so the block is
+	// unterminated rather than truncated into the wrong region.
+	tooShortClose := "# record\n\n" + fence4 + "\nSTATUS: OUTSTANDING\n" + pinFollowupFence + "\n"
+	if _, err := parsePinFollowup(tooShortClose); err == nil || !strings.Contains(err.Error(), "never closed") {
+		t.Fatalf("a four-backtick block closed only by three backticks: err = %v, want 'never closed'", err)
+	}
+}
 
 // TestPinFollowupParserIsStrict is the PARSER-level mutation control, and it is paired
 // with the strict decoder rather than optional: strict decoding without a biting control

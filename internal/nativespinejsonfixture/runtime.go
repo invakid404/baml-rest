@@ -2,6 +2,7 @@ package nativespinejsonfixture
 
 import (
 	"context"
+	"reflect"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 )
@@ -24,16 +25,36 @@ type NativeRuntime struct {
 // production spine executor in the integration test; the runtime never makes a BAML
 // request or parse call).
 func NewNativeRuntime(exec bamlutils.NativeSpineUnaryExecutor) *NativeRuntime {
-	if exec == nil {
-		// A nil executor would defer the failure to the emitted Impl goroutine (a
-		// nil-interface Call panics and kills the process); reject it here, at
-		// construction, so a misbuilt runtime fails loudly and locally (CodeRabbit #3).
+	if executorIsNil(exec) {
+		// A nil executor would defer the failure to the emitted Impl goroutine (Call/Parse
+		// on a nil receiver panics and kills the process); reject it here, at construction,
+		// so a misbuilt runtime fails loudly and locally. This catches BOTH an untyped nil
+		// interface AND a TYPED-NIL (e.g. a (*spine.UnaryExecutor)(nil) boxed in the
+		// interface — non-nil interface, nil underlying pointer), which a plain `exec == nil`
+		// misses (CodeRabbit #3 + follow-on).
 		panic("nativespinejsonfixture: NewNativeRuntime requires a non-nil executor")
 	}
 	sm, pm := BuildMethod(exec)
 	return &NativeRuntime{
 		methods:      map[string]bamlutils.StreamingMethod{MethodName: sm},
 		parseMethods: map[string]bamlutils.ParseMethod{MethodName: pm},
+	}
+}
+
+// executorIsNil reports whether exec is an untyped nil interface OR a typed-nil of a
+// nilable dynamic kind (pointer/func/map/chan/slice/interface) — either of which would
+// panic on the first method dispatch. It is the guard NewNativeRuntime uses so a
+// (*UnaryExecutor)(nil) is rejected at construction, not at dispatch.
+func executorIsNil(exec bamlutils.NativeSpineUnaryExecutor) bool {
+	if exec == nil {
+		return true
+	}
+	v := reflect.ValueOf(exec)
+	switch v.Kind() {
+	case reflect.Ptr, reflect.Func, reflect.Map, reflect.Chan, reflect.Slice, reflect.Interface, reflect.UnsafePointer:
+		return v.IsNil()
+	default:
+		return false
 	}
 }
 

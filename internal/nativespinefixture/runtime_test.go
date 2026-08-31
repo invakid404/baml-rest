@@ -60,6 +60,25 @@ func drain(ch <-chan *workerplugin.StreamResult) []*workerplugin.StreamResult {
 	return out
 }
 
+// TestNewNativeRuntimeRejectsNilExecutor proves the constructor rejects BOTH an untyped
+// nil interface AND a TYPED-NIL executor (a nil *fakeExecutor boxed in the interface —
+// non-nil interface, nil pointer), which a plain `exec == nil` misses and which would
+// panic on the first Call/Parse dispatch (CodeRabbit #1 follow-on). The typed-nil case
+// FAILS on the pre-fix `exec == nil` guard (no construction-time panic).
+func TestNewNativeRuntimeRejectsNilExecutor(t *testing.T) {
+	assertPanics := func(name string, exec bamlutils.NativeSpineUnaryExecutor) {
+		defer func() {
+			if recover() == nil {
+				t.Errorf("%s: NewNativeRuntime did not panic on a nil executor", name)
+			}
+		}()
+		_ = NewNativeRuntime(exec)
+	}
+	assertPanics("untyped nil", nil)
+	var typedNil *fakeExecutor
+	assertPanics("typed nil *fakeExecutor", typedNil)
+}
+
 // TestNativeRuntimeWorkerContract drives the full worker.Runtime contract through
 // worker.Handler with fake executor + adapter — no socket, no pool, no parser
 // ownership: boot, registration, unknown-method error, typed JSON input, unary
