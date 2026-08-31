@@ -41,7 +41,7 @@
     {
       "prefix": "nativeserve",
       "file_count": 101,
-      "sha256": "d94d05ff874a0f175c1811a8564ecd5a31cf470d401a5c342fcf2fc647afc9da"
+      "sha256": "c3b09cb7dda4821206fc3f5c70720916357a159f2e5496d162348126f8b0e1f5"
     },
     {
       "prefix": "internal/nativebody/nanollmprepare",

@@ -45,19 +45,20 @@ func TestNewUnaryExecutor_AdmitsExactJSONAlias(t *testing.T) {
 // constructor runs proj.Validate() FIRST (executor.go), so the version + capability-
 // manifest-consistency rows decline THERE, before the register() loop even starts; every
 // other row passes Validate and is declined inside register() (review-4 finding 1). Each
-// row carries two truthful labels, and both are VERIFIED, not just asserted in prose:
+// row carries two labels, and the test CONSUMES both — it does not merely assert them in
+// prose:
 //
 //   - layer: the exact gate that declines it — "validate:*" (before the register loop) or
-//     "register:*". The loop checks it: a "validate:*" row MUST fail proj.Validate(); a
-//     "register:*" row MUST pass Validate (so its decline necessarily happens inside
-//     register()). A mislabelled row fails the test.
-//   - kind: "regression" for a row that ADMITTED on a pre-fix tip because it exercises a
-//     gate one of this slice's review fixes ADDED (so it discriminates that tip), or
+//     "register:*". The loop CHECKS it per row: a "validate:*" row MUST fail
+//     proj.Validate(); a "register:*" row MUST pass Validate (so its decline necessarily
+//     happens inside register()). A mislabelled row fails the test.
+//   - kind: "regression" for a row that exercises a gate one of this slice's review fixes
+//     ADDED (so it ADMITTED on the corresponding pre-fix tip and discriminates it), or
 //     "coverage" for a row documenting a gate that was ALREADY present (it would decline
-//     on the pre-fix tip too — comprehensive coverage, not a regression).
+//     on the pre-fix tip too). The invariant AFTER the loop consumes every kind and PINS
+//     the exact regression-name set, so the classification cannot silently drift.
 //
-// The genuine regressions (kind=="regression"), each proven by neutralising the added
-// gate in-session:
+// The rows labelled kind=="regression" (and the gate each one exercises):
 //   - selected_client_non_openai, invalid_utf8_model — the cycle-3 client-cohort fix:
 //     CheckStaticClientCohort now runs SupportsOpenAIChat on the NORMALIZED intent, so a
 //     selected-client provider / invalid-UTF-8-model divergence that ADMITTED on the
@@ -65,6 +66,11 @@ func TestNewUnaryExecutor_AdmitsExactJSONAlias(t *testing.T) {
 //   - body_option_client_survives, capability_manifest_corruption — the review-2
 //     registration client-cohort + capability-manifest gates; ADMITTED on the earlier
 //     pre-cohort-gate tip, decline since review-2.
+//
+// This test does NOT re-open those pre-fix tips: it pins the classification (below), not
+// the admit-on-pre-fix behaviour. That behaviour for the two cycle-3 rows was checked at
+// FIX TIME by neutralising the SupportsOpenAIChat gate — a fix-time verification, not a
+// committed assertion.
 //
 // Every other row is COVERAGE of a pre-existing gate — the totality predicate, the
 // required-scalar gate, reconstructFunction's project/client cohort, the descriptor
