@@ -79,7 +79,7 @@
 // the pins were moved here. Pin to a branch commit only if unavoidable, and re-pin to the
 // merged master commit as the immediate follow-up.
 //
-// PIN-STATUS: RESOLVED
+// PIN-STATUS: OUTSTANDING
 //
 // That marker is the MACHINE-READABLE statement of where these pins stand, and
 // cmd/build's TestPackagedManifestsMatchTheTrackedPins requires it to equal the
@@ -95,25 +95,25 @@
 // go get/build/run) — is nativeserve/pin_followup.md, section "The follow-up —
 // PERFORMED". Follow it there; do not reconstruct it from these paragraphs.
 //
-// NOTE (de-BAML /parse UNION-RESIDUAL batch 2): these pins are MASTER-DURABLE and the
-// tracked follow-up in nativeserve/pin_followup.md is therefore STATUS: RESOLVED. They name
-// 7c7bed8291b6, the master commit that squash-merged the batch-2 slice (PR #703) — so the
-// pins survive branch deletion by construction. This module's serve path runs that SAP:
-// canary/serve.go hands debaml.Parse to execute.DynamicParse and canary/serve_static*.go
-// calls debaml.ParseStaticBundle*, so the batch-2 change to what a coerced value IS — a
-// class union arm with a SINGLE-non-null OPTIONAL field now cast (the absent optional filled
-// at OptionalDefaultFromNoValue score 1, mirroring Class::try_cast) rather than declined at
-// the gate, a NON-nullable union whose every arm provably fails now claimed as BAML's
-// union-no-match error rather than the fallback sentinel, and a proven-failing union list
-// element now DROPPED as ArrayItemParseError the way coerce_array drops it — changes the
-// bytes this serve core produces. A consumer resolving a PRE-batch-2 pin gets a serve core
-// whose native SAP answers those union shapes differently from the one this tree ships,
-// which is the cross-module behaviour the lockstep exists to carry. The post-squash re-pin
-// to the master commit has been PERFORMED — this manifest is its result; see
-// pin_followup.md for the executed runbook.
+// NOTE (ExecBridge-U1 — production native unary executor/population bridge): these pins are
+// BRANCH-ONLY and the tracked follow-up in nativeserve/pin_followup.md is therefore
+// STATUS: OUTSTANDING. They name 222a05b219f1, the branch SOURCE commit on
+// feat/debaml-execbridge-u1 that carries the U1 guarded-tree change — no master commit
+// carries it yet. This module's serve path gains a new BAML-free spine unary lane
+// (nativeserve/spine's UnaryExecutor + nativeserve/admission's AdmitStaticSpineClaim), which
+// depends on the NEW neutral contract in bamlutils (bamlutils.NativeSpineUnaryExecutor /
+// NativeSpineUnaryBinding / tri-state result) and the reconstruction in the root module
+// (internal/nativespine.ReconstructFunction). A consumer resolving a PRE-U1 pin gets a
+// root/bamlutils that lacks those symbols, so this module would not even build against it —
+// which is exactly why the pins must name a commit that carries the U1 source, and why the
+// selection is a lockstep set. The post-squash re-pin to the eventual MASTER commit is OWED
+// (the orchestrator drives it after merge); a branch-tip pin is not final delivery, so this
+// record stays OUTSTANDING until then. See pin_followup.md for the runbook.
 //
 // HISTORICAL, SUPERSEDED — the SHAs in this paragraph are not the current pins:
-// during PR #703's review these five were BRANCH-ONLY at 5fdd679c8784 on
+// immediately before U1, all five were MASTER-DURABLE at 7c7bed8291b6 (STATUS: RESOLVED),
+// the master commit that squash-merged the de-BAML /parse UNION-RESIDUAL batch-2 slice
+// (PR #703); #703 was itself briefly BRANCH-ONLY at 5fdd679c8784 on
 // feat/debaml-parse-batch2 (re-bumped there twice — off the initial batch-2 source
 // c011c7e95993, through a75a73df084e, as the Codex and CodeRabbit reviews added guarded-tree
 // changes) for as long as no master commit carried the SAP. #703's squash flattened those
@@ -130,19 +130,22 @@
 // and S1's at de1eefa68ed8 (#675) after 7cb69af02b36. That branch-pin-then-re-pin sequence
 // is the precedent this bump repeats.
 //
-// This bump carries real cross-module behaviour, not a version string. The ROOT side
-// changes internal/debaml's union coercion — the native SAP this module's canary serves
-// from — on three counts: a class union arm may now carry a single-non-null OPTIONAL field
-// (Class::try_cast fills the absent optional at a non-zero OptionalDefaultFromNoValue
-// score), an all-arms-failed NON-nullable union is claimed as BAML's error instead of
-// declined, and a proven-failing union list element is dropped (ArrayItemParseError) the
-// way coerce_array drops it. A consumer resolving a PRE-batch-2 pin gets a serve core whose
-// parse answers are shaped for the previous cut-line.
+// This bump carries real cross-module behaviour, not a version string. The U1 change adds a
+// new NEUTRAL contract in bamlutils (NativeSpineUnaryExecutor / NativeSpineUnaryBinding /
+// tri-state result + typed capability decline) and a root-module reconstruction
+// (internal/nativespine.ReconstructFunction) that this module's new spine serve lane
+// (nativeserve/spine + nativeserve/admission.AdmitStaticSpineClaim) is built directly on top
+// of. A consumer resolving a PRE-U1 pin gets a root/bamlutils/worker that predates those
+// symbols, so this module fails to compile against it — the lockstep is not cosmetic here,
+// it is a build precondition. The emitted/runtime spine path itself remains free of
+// generated BAML and BAML CFFI (proven by go list -deps over the emitted modules and the
+// spine package); nanollm FFI is the intended native engine and is permitted.
 //
-// The precedent for this follow-up was #681 -> #682, #683 -> #684, #686 -> #687 and
-// #689 -> #692: pin to the branch SOURCE commit only because no master commit carries the
-// change yet, then re-pin all five to master and regenerate the tar IMMEDIATELY after the
-// merge. This change is the batch-2 instance of it, now COMPLETE at the master commit.
+// The precedent for this follow-up was #681 -> #682, #683 -> #684, #686 -> #687,
+// #689 -> #692 and #703's batch-2 re-pin: pin to the branch SOURCE commit only because no
+// master commit carries the change yet, then re-pin all five to master and regenerate the
+// tar IMMEDIATELY after the merge. This change is the U1 branch-pin instance of it; the
+// re-pin to master is OWED (STATUS: OUTSTANDING) and the orchestrator drives it post-squash.
 //
 // A bump must ALSO move internal/nativebody/nanollmprepare/go.mod's recorded bamlutils +
 // worker selections in LOCKSTEP: nanollmprepare directory-replaces root / bamlutils /
@@ -158,9 +161,9 @@ go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260827134815-7c7bed8291b6
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260827134815-7c7bed8291b6
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260827134815-7c7bed8291b6
+	github.com/invakid404/baml-rest v0.0.0-20260831111005-222a05b219f1
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260831111005-222a05b219f1
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260831111005-222a05b219f1
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
