@@ -1009,6 +1009,33 @@ func checkArgBinder(declared []promptdescriptor.Argument, binderOrder []string, 
 	return ""
 }
 
+// CheckStaticClientCohort runs the SAME static-client cohort checks the call-time
+// admission applies (admitStaticThroughPrepare layer 5: provider + NormalizeStaticClient
+// + staticTransport, plus the body-affecting check BuildOpenAIChat/SupportsOpenAIChat
+// enforces), WITHOUT a render or socket — so a REGISTRATION-time gate can decline
+// exactly what Call would, keeping registration/call/direct-parse in lockstep for a
+// cohort-forbidden client descriptor (Codex review finding 2). It reuses the identical
+// shared nativebody.NormalizeStaticClient + staticTransport functions. It declines a
+// non-openai provider, a non-literal or escaped model, ANY body-affecting client option
+// (request_body / tools / temperature / ...), and a non-literal or absent base_url /
+// api_key. Returns nil when the client is inside the exact cohort.
+func CheckStaticClientCohort(provider string, cfg promptdescriptor.ClientConfig) error {
+	if provider != "openai" {
+		return fmt.Errorf("client cohort: provider is %q, only openai is proven", provider)
+	}
+	intent, cerr := nativebody.NormalizeStaticClient(cfg, staticAlias, false)
+	if cerr != nil {
+		return fmt.Errorf("client cohort: static client unsupported: %w", cerr)
+	}
+	if len(intent.BodyAffecting) != 0 {
+		return fmt.Errorf("client cohort: client carries %d body-affecting option(s) (e.g. %q); the exact cohort forbids a request body / body option", len(intent.BodyAffecting), intent.BodyAffecting[0].Key)
+	}
+	if _, _, terr := staticTransport(cfg); terr != "" {
+		return fmt.Errorf("client cohort: transport option %s", terr)
+	}
+	return nil
+}
+
 // staticTransport extracts the descriptor client's base_url + api_key as build-time
 // LITERALS for the no-send nanollm client. Both must be string literals (an env.X
 // reference is a runtime value native cannot reproduce build-time), and base_url

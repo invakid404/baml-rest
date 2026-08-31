@@ -1,0 +1,19 @@
+{
+  "method": "POST",
+  "url": "https://static-oracle.invalid/v1/chat/completions",
+  "body": "{\"model\":\"fake-static-oracle-model\",\"messages\":[{\"role\":\"system\",\"content\":[{\"type\":\"text\",\"text\":\"Summarize arbitrary json as arbitrary JSON.\\nJSON = int or string or bool or JSON[] or map\u003cstring, JSON\u003e\\n\\nAnswer in JSON using this schema: JSON\"}]}]}",
+  "headers": [
+    [
+      "authorization",
+      "Bearer fake-static-oracle-key"
+    ],
+    [
+      "baml-original-url",
+      "https://static-oracle.invalid/v1"
+    ],
+    [
+      "content-type",
+      "application/json"
+    ]
+  ]
+}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/projectdescriptor"
+	"github.com/invakid404/baml-rest/bamlutils/schemadescriptor"
 	"github.com/invakid404/baml-rest/internal/nativespinejsonfixture"
 	"github.com/invakid404/baml-rest/nativeserve/spine"
 )
@@ -46,11 +47,6 @@ func TestNewUnaryExecutor_AdmitsExactJSONAlias(t *testing.T) {
 // and the binding checks are all exercised.
 func TestRegistrationDeclineMatrix(t *testing.T) {
 	const jsonType = "type JSON = int | string | bool | JSON[] | map<string, JSON>"
-	pos := jsonAliasProject(t)
-
-	// A valid project whose descriptor version is corrupted (envelope version case).
-	badVersion := jsonAliasProject(t)
-	badVersion.Version = projectdescriptor.Version + 99
 
 	cases := []struct {
 		name    string
@@ -62,8 +58,14 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 		{"jsonvalue_alias",
 			projectFromCorpus(t, corpus("type JsonValue = int | float | bool | string | null | JsonValue[] | map<string, JsonValue>", `function F(topic: string) -> JsonValue { client C prompt #"{{ topic }}"# }`)),
 			jsonAliasBinding("F"), "JSON alias cohort"},
+		{"renamed_exact_alias", // same five arms, different name -> not the pinned `JSON`
+			projectFromCorpus(t, corpus("type Blob = int | string | bool | Blob[] | map<string, Blob>", `function F(topic: string) -> Blob { client C prompt #"{{ topic }}"# }`)),
+			jsonAliasBinding("F"), "JSON alias cohort"},
 		{"reordered_alias",
 			projectFromCorpus(t, corpus("type JsonValueReordered = float | int | bool | string | null | JsonValueReordered[] | map<string, JsonValueReordered>", `function F(topic: string) -> JsonValueReordered { client C prompt #"{{ topic }}"# }`)),
+			jsonAliasBinding("F"), "JSON alias cohort"},
+		{"wrapper_alias", // wraps the exact family in extra structure -> not the bare `JSON`
+			projectFromCorpus(t, corpus(jsonType, `function F(topic: string) -> JSON[] { client C prompt #"{{ topic }}"# }`)),
 			jsonAliasBinding("F"), "JSON alias cohort"},
 		{"class_return",
 			projectFromCorpus(t, corpus("class Wrap { x string }", `function F(topic: string) -> Wrap { client C prompt #"{{ topic }}"# }`)),
@@ -74,6 +76,18 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 		{"scalar_return",
 			projectFromCorpus(t, corpus("", `function F(topic: string) -> string { client C prompt #"{{ topic }}"# }`)),
 			jsonAliasBinding("F"), "JSON alias cohort"},
+		// A @assert constraint and a @stream annotation on the exact family (injected
+		// directly — BAML forbids them on this alias) both leave the exact fingerprint.
+		{"constraint_on_alias",
+			mutatedJSONProject(t, func(p *projectdescriptor.Project) {
+				p.Methods[0].Return.Target.Meta.Constraints = []schemadescriptor.Constraint{{Level: schemadescriptor.ConstraintAssert, Expression: "true"}}
+			}),
+			jsonAliasBinding(), "JSON alias cohort"},
+		{"stream_annotation_on_alias",
+			mutatedJSONProject(t, func(p *projectdescriptor.Project) {
+				p.Methods[0].Return.Target.Meta.Stream = schemadescriptor.StreamingBehavior{Done: true}
+			}),
+			jsonAliasBinding(), "JSON alias cohort"},
 
 		// --- input shape negatives ---------------------------------------------
 		{"nullable_scalar_input",
@@ -89,7 +103,13 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 			projectFromCorpus(t, corpus(jsonType+"\nclass In { x string }", `function F(c: In) -> JSON { client C prompt #"{{ c }}"# }`)),
 			jsonAliasBinding("F"), "did not admit"},
 		{"enum_input",
-			projectFromCorpus(t, corpus(jsonType+"\nenum Col { R G }", `function F(c: Col) -> JSON { client C prompt #"{{ c }}"# }`)),
+			projectFromCorpus(t, corpus(jsonType+"\nenum Col {\n  R\n  G\n}", `function F(c: Col) -> JSON { client C prompt #"{{ c }}"# }`)),
+			jsonAliasBinding("F"), "did not admit"},
+		{"map_input",
+			projectFromCorpus(t, corpus(jsonType, `function F(m: map<string, string>) -> JSON { client C prompt #"{{ m }}"# }`)),
+			jsonAliasBinding("F"), "did not admit"},
+		{"media_input",
+			projectFromCorpus(t, corpus(jsonType, `function F(img: image) -> JSON { client C prompt #"{{ img }}"# }`)),
 			jsonAliasBinding("F"), "did not admit"},
 
 		// --- project / client cohort negatives ---------------------------------
@@ -109,34 +129,65 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 				"functions.baml": `function F(topic: string) -> JSON { client R prompt #"{{ topic }}"# }`,
 			}),
 			jsonAliasBinding("F"), "forbids retries"},
-		// A body-affecting client option / a strategy client / a non-openai provider
-		// are declined by the M1 classifier -> method not in the project.
-		{"body_option_client",
-			projectFromCorpus(t, map[string]string{
-				"clients.baml":   "client<llm> T {\n  provider openai\n  options { model \"gpt-4o-mini\" api_key \"sk-x\" base_url \"http://127.0.0.1:0/v1\" temperature 0.5 }\n}\n",
-				"types.baml":     jsonType,
-				"functions.baml": `function F(topic: string) -> JSON { client T prompt #"{{ topic }}"# }`,
+		// A body-affecting client option injected DIRECTLY onto the admitted JSON
+		// project's client — the Method survives to the constructor (the source
+		// classifier never sees it), so this exercises the REGISTRATION client-cohort
+		// gate that Call uses (finding 2), unlike a body option in source (which the
+		// classifier removes upstream).
+		{"body_option_client_survives",
+			mutatedJSONProject(t, func(p *projectdescriptor.Project) {
+				p.Clients[0].Config.RequestBodyPresent = true
 			}),
-			jsonAliasBinding("F"), "did not admit"},
+			jsonAliasBinding(), "body-affecting option"},
 
-		// --- descriptor envelope ------------------------------------------------
-		{"descriptor_version_mismatch", badVersion, jsonAliasBinding(), "descriptor version"},
+		// --- descriptor envelope + version fences -------------------------------
+		{"project_version_mismatch",
+			mutatedJSONProject(t, func(p *projectdescriptor.Project) { p.Version += 99 }),
+			jsonAliasBinding(), "project version"},
+		{"prompt_descriptor_version_mismatch",
+			mutatedJSONProject(t, func(p *projectdescriptor.Project) { p.PromptDescriptorVersion += 99 }),
+			jsonAliasBinding(), "prompt-descriptor version"},
+		{"schema_version_mismatch",
+			mutatedJSONProject(t, func(p *projectdescriptor.Project) { p.SchemaVersion += 99 }),
+			jsonAliasBinding(), "schema version"},
+		{"return_method_mismatch",
+			mutatedJSONProject(t, func(p *projectdescriptor.Project) { p.Methods[0].Return.Method = "Other" }),
+			jsonAliasBinding(), "return names method"},
+		{"return_stream_mismatch",
+			mutatedJSONProject(t, func(p *projectdescriptor.Project) { p.Methods[0].Return.Stream = true }),
+			jsonAliasBinding(), "streaming variant"},
+		{"capability_manifest_corruption",
+			mutatedJSONProject(t, func(p *projectdescriptor.Project) {
+				for i := range p.Capabilities {
+					if p.Capabilities[i].Method == jsonAliasMethod {
+						p.Capabilities[i].Admitted = false
+					}
+				}
+			}),
+			jsonAliasBinding(), "capability"},
 
 		// --- binding-level ------------------------------------------------------
-		{"nil_project_input", pos, bamlutils.NativeSpineUnaryBinding{Method: jsonAliasMethod, ProjectInput: nil, DecodeFinal: jsonAliasBinding().DecodeFinal}, "ProjectInput is nil"},
-		{"nil_decode_final", pos, bamlutils.NativeSpineUnaryBinding{Method: jsonAliasMethod, ProjectInput: jsonAliasBinding().ProjectInput, DecodeFinal: nil}, "DecodeFinal is nil"},
-		{"binding_name_mismatch", pos, renameBinding(jsonAliasBinding(), "Other"), "did not admit"},
+		{"nil_project_input", jsonAliasProject(t), bamlutils.NativeSpineUnaryBinding{Method: jsonAliasMethod, ProjectInput: nil, DecodeFinal: jsonAliasBinding().DecodeFinal}, "ProjectInput is nil"},
+		{"nil_decode_final", jsonAliasProject(t), bamlutils.NativeSpineUnaryBinding{Method: jsonAliasMethod, ProjectInput: jsonAliasBinding().ProjectInput, DecodeFinal: nil}, "DecodeFinal is nil"},
+		{"binding_name_mismatch", jsonAliasProject(t), renameBinding(jsonAliasBinding(), "Other"), "did not admit"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := newExec(t, tc.proj, tc.binding)
+			// Per-row zero-socket proof: point the project's client at a counting
+			// loopback and assert the failed construction opens NO socket (the
+			// constructor is pure — no nanollm New/Prepare — so it never dials).
+			url, count := newCountingServer(t)
+			_, err := newExec(t, injectBaseURL(t, tc.proj, url), tc.binding)
 			declinesOn(t, err, tc.want)
+			if count() != 0 {
+				t.Fatalf("registration opened %d sockets, want 0", count())
+			}
 		})
 	}
 
 	// Duplicate method: two bindings for the same admitted method.
-	if _, err := newExec(t, pos, jsonAliasBinding(), jsonAliasBinding()); err == nil || !strings.Contains(err.Error(), "duplicate method") {
+	if _, err := newExec(t, jsonAliasProject(t), jsonAliasBinding(), jsonAliasBinding()); err == nil || !strings.Contains(err.Error(), "duplicate method") {
 		t.Fatalf("duplicate registration error = %v, want 'duplicate method'", err)
 	}
 }

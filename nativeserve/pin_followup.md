@@ -10,12 +10,15 @@ orchestrator drives it after this PR squash-merges to master.
 
 This is the expected mid-slice state, not a defect: U1 changes non-test source under the
 guarded `nativeserve` tree (a new BAML-free spine unary serve lane), and that serve core
-depends on NEW symbols in the root module and `bamlutils` (the neutral
-`NativeSpineUnaryExecutor`/`NativeSpineUnaryBinding` contract and
-`internal/nativespine.ReconstructFunction`). A consumer resolving a PRE-U1 pin gets a
-root/bamlutils that lacks those symbols, so the pinned commit MUST carry the U1 source —
-which the branch commit `cdf4a635ebd5` does and no master commit yet does. A branch-tip pin
-is not final delivery; the re-pin to the master squash commit is what makes it durable.
+is built on the NEW neutral contract in `bamlutils` — `NativeSpineUnaryExecutor` /
+`NativeSpineUnaryBinding` and the tri-state result. (The scalar-descriptor reconstruction
+the runtime also needs now lives INSIDE `nativeserve/spine` itself, as the unexported
+`reconstructFunction`, so the production serve package stays a thin lane free of the
+codegen toolchain — it is carried by the branch tip, not the pinned root.) A consumer
+resolving a PRE-U1 pin gets a `bamlutils` that lacks that contract, so the pinned commit
+MUST carry the U1 source — which the branch commit `cdf4a635ebd5` does and no master commit
+yet does. A branch-tip pin is not final delivery; the re-pin to the master squash commit is
+what makes it durable.
 
 It is proof material, not documentation. `TestFirstPartyPinFollowupIsTracked`
 (`cmd/build/nativeworker_pins_test.go`) parses it on every ordinary `go test ./...`,
@@ -41,18 +44,20 @@ PR: feat/debaml-execbridge-u1 (this PR); pins name the branch source commit cdf4
 ## Why the pins point at the branch source commit (not master yet)
 
 `cdf4a635ebd5` is the branch commit on `feat/debaml-execbridge-u1` that carries the U1
-guarded-tree change. The packaged serve core is built directly on top of the NEW U1 symbols
-in the root module and `bamlutils`, so the pinned modules decide whether the serve core even
-compiles: `nativeserve/spine` imports `bamlutils.NativeSpineUnaryExecutor` /
-`NativeSpineUnaryBinding` (the neutral binding/executor contract, new in this slice), the
-tri-state result, and `nativeserve/admission.AdmitStaticSpineClaim` reuses the shared static
-admission building blocks minus the BAML plan-compare oracle. The reconstruction the runtime
-consumes (`internal/nativespine.ReconstructFunction`) is likewise new. Pinning root/bamlutils
-to any PRE-U1 commit would resolve a module that lacks those symbols, so the out-of-work
-packaging build (`-mod=readonly`) and the external consumer would both fail to compile the
-serve core. No MASTER commit carries the U1 source yet, so the pins MUST name the branch
-source commit; the re-pin to the eventual master squash commit is what makes delivery durable
-and is OWED (the orchestrator drives it).
+guarded-tree change. The packaged serve core is built directly on top of the NEW U1 contract
+in `bamlutils`, so the pinned modules decide whether the serve core even compiles:
+`nativeserve/spine` imports `bamlutils.NativeSpineUnaryExecutor` / `NativeSpineUnaryBinding`
+(the neutral binding/executor contract + tri-state result, new in this slice), and
+`nativeserve/admission.AdmitStaticSpineClaim` reuses the shared static admission building
+blocks minus the BAML plan-compare oracle. The scalar-descriptor reconstruction the runtime
+also needs is NOT a root symbol — it lives inside `nativeserve/spine` itself (the unexported
+`reconstructFunction`), so it rides in the branch tip rather than the pinned root, and keeps
+the production serve package free of the codegen toolchain. Pinning `bamlutils` to any PRE-U1
+commit would resolve a module that lacks the new contract, so the out-of-work packaging build
+(`-mod=readonly`) and the external consumer would both fail to compile the serve core. No
+MASTER commit carries the U1 source yet, so the pins MUST name the branch source commit; the
+re-pin to the eventual master squash commit is what makes delivery durable and is OWED (the
+orchestrator drives it).
 
 The emitted/runtime spine path itself contains no generated BAML and no BAML CFFI — proven
 mechanically by `go list -deps` over every emitted hermetic module

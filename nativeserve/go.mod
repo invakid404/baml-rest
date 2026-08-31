@@ -102,9 +102,11 @@
 // carries it yet. This module's serve path gains a new BAML-free spine unary lane
 // (nativeserve/spine's UnaryExecutor + nativeserve/admission's AdmitStaticSpineClaim), which
 // depends on the NEW neutral contract in bamlutils (bamlutils.NativeSpineUnaryExecutor /
-// NativeSpineUnaryBinding / tri-state result) and the reconstruction in the root module
-// (internal/nativespine.ReconstructFunction). A consumer resolving a PRE-U1 pin gets a
-// root/bamlutils that lacks those symbols, so this module would not even build against it —
+// NativeSpineUnaryBinding / tri-state result). (The scalar-descriptor reconstruction the
+// runtime also needs lives INSIDE nativeserve/spine as the unexported reconstructFunction —
+// not a root symbol — so it rides in this module, keeping the serve package free of the
+// codegen toolchain.) A consumer resolving a PRE-U1 pin gets a bamlutils that lacks that
+// contract, so this module would not even build against it —
 // which is exactly why the pins must name a commit that carries the U1 source, and why the
 // selection is a lockstep set. The post-squash re-pin to the eventual MASTER commit is OWED
 // (the orchestrator drives it after merge); a branch-tip pin is not final delivery, so this
@@ -132,11 +134,12 @@
 //
 // This bump carries real cross-module behaviour, not a version string. The U1 change adds a
 // new NEUTRAL contract in bamlutils (NativeSpineUnaryExecutor / NativeSpineUnaryBinding /
-// tri-state result + typed capability decline) and a root-module reconstruction
-// (internal/nativespine.ReconstructFunction) that this module's new spine serve lane
+// tri-state result + typed capability decline) that this module's new spine serve lane
 // (nativeserve/spine + nativeserve/admission.AdmitStaticSpineClaim) is built directly on top
-// of. A consumer resolving a PRE-U1 pin gets a root/bamlutils/worker that predates those
-// symbols, so this module fails to compile against it — the lockstep is not cosmetic here,
+// of; the scalar-descriptor reconstruction the runtime consumes lives inside nativeserve/spine
+// itself (the unexported reconstructFunction), not in the root module. A consumer resolving a
+// PRE-U1 pin gets a bamlutils/worker that predates that contract, so this module fails to
+// compile against it — the lockstep is not cosmetic here,
 // it is a build precondition. The emitted/runtime spine path itself remains free of
 // generated BAML and BAML CFFI (proven by go list -deps over the emitted modules and the
 // spine package); nanollm FFI is the intended native engine and is permitted.

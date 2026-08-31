@@ -2,7 +2,10 @@ package spine_test
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -148,3 +151,28 @@ func (a *testAdapter) SetRoundRobinAdvancer(adv bamlutils.RoundRobinAdvancer) { 
 func (a *testAdapter) RoundRobinAdvancer() bamlutils.RoundRobinAdvancer       { return a.rrAdvancer }
 
 var _ bamlutils.Adapter = (*testAdapter)(nil)
+
+// newCountingServer stands up a loopback HTTP server with a request counter. It is
+// used to prove REGISTRATION declines open ZERO sockets — the constructor is pure
+// (no nanollm New/Prepare), so a project pointed at this server never reaches it.
+func newCountingServer(t *testing.T) (url string, count func() int) {
+	t.Helper()
+	var n atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL + "/v1", func() int { return int(n.Load()) }
+}
+
+// mutatedJSONProject returns a FRESH admitted JSON-alias project with mut applied — for
+// registration negatives whose mutation must survive to the constructor (the source
+// classifier cannot express it), e.g. a body-affecting client option, a corrupted
+// envelope/version/capability record.
+func mutatedJSONProject(t *testing.T, mut func(p *projectdescriptor.Project)) projectdescriptor.Project {
+	t.Helper()
+	p := jsonAliasProject(t)
+	mut(&p)
+	return p
+}

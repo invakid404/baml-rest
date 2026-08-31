@@ -154,6 +154,15 @@ func NewUnaryExecutor(proj projectdescriptor.Project, bindings []bamlutils.Nativ
 	if exec == nil {
 		exec = llmhttp.NewExactExecutor(nil)
 	}
+	// Validate the whole Project FIRST (Codex review finding 1): the descriptor +
+	// prompt-descriptor + schema versions, the method/client/retry/strategy/template
+	// invariants, AND the capability manifest (every retained method covered exactly
+	// once and agreeing with its admit/decline outcome). A mismatched version or a
+	// missing/duplicate/inconsistent capability record is a hard error here — it never
+	// reaches registration.
+	if err := proj.Validate(); err != nil {
+		return nil, fmt.Errorf("nativespine: invalid project descriptor: %w", err)
+	}
 	e := &UnaryExecutor{
 		registry:   make(map[string]*registeredMethod, len(bindings)),
 		exec:       exec,
@@ -164,8 +173,12 @@ func NewUnaryExecutor(proj projectdescriptor.Project, bindings []bamlutils.Nativ
 	for _, m := range proj.Methods {
 		byName[m.Name] = m
 	}
+	capByName := make(map[string]projectdescriptor.MethodCapability, len(proj.Capabilities))
+	for _, c := range proj.Capabilities {
+		capByName[c.Method] = c
+	}
 	for i := range bindings {
-		if err := e.register(proj, byName, bindings[i]); err != nil {
+		if err := e.register(proj, byName, capByName, bindings[i]); err != nil {
 			return nil, err
 		}
 	}
@@ -184,7 +197,7 @@ func (e *UnaryExecutor) Methods() []string {
 	return out
 }
 
-func (e *UnaryExecutor) register(proj projectdescriptor.Project, byName map[string]projectdescriptor.Method, b bamlutils.NativeSpineUnaryBinding) error {
+func (e *UnaryExecutor) register(proj projectdescriptor.Project, byName map[string]projectdescriptor.Method, capByName map[string]projectdescriptor.MethodCapability, b bamlutils.NativeSpineUnaryBinding) error {
 	if b.Method == "" {
 		return fmt.Errorf("nativespine: register: binding has no method name")
 	}
@@ -200,6 +213,16 @@ func (e *UnaryExecutor) register(proj projectdescriptor.Project, byName map[stri
 	m, ok := byName[b.Method]
 	if !ok {
 		return fmt.Errorf("nativespine: register %q: binding names a method the project did not admit (name mismatch or declined method)", b.Method)
+	}
+	// The method's capability record must exist, be admitted, and not be blocked
+	// (finding 1). proj.Validate already proved the manifest is consistent; this is the
+	// explicit per-method read the cohort requires.
+	mc, ok := capByName[b.Method]
+	if !ok {
+		return fmt.Errorf("nativespine: register %q: no capability record in the project manifest", b.Method)
+	}
+	if !mc.Admitted || mc.Blocked != "" {
+		return fmt.Errorf("nativespine: register %q: capability record is not admitted (admitted=%v blocked=%q)", b.Method, mc.Admitted, mc.Blocked)
 	}
 	// Reconstruct + validate the project/client cohort facts (version, templates,
 	// client retry-policy, strategy) — fails rather than strips (finding 2).
@@ -221,6 +244,14 @@ func (e *UnaryExecutor) register(proj projectdescriptor.Project, byName map[stri
 	}
 	if fn.Return.Stream {
 		return fmt.Errorf("nativespine: register %q: return is the streaming variant; only unary final-call is admitted", b.Method)
+	}
+	// Static-client cohort (finding 2): run the SAME shared client checks Call's
+	// admission uses (provider, literal model, no body-affecting option, literal
+	// base_url/api_key) so registration declines exactly what Call declines — a
+	// cohort-forbidden client descriptor (a request body / body option / non-openai
+	// leaf / non-literal model / non-literal transport) never registers.
+	if err := admission.CheckStaticClientCohort(fn.Provider, fn.ClientConfig); err != nil {
+		return fmt.Errorf("nativespine: register %q: %w", b.Method, err)
 	}
 	if err := requiredScalarInputs(fn); err != nil {
 		return fmt.Errorf("nativespine: register %q: %w", b.Method, err)
