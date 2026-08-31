@@ -136,22 +136,66 @@ func TestCancelBeforeAfterClaim(t *testing.T) {
 	})
 
 	// --- cancel after claim: terminal failure, no fallback, one entered socket ---
+	//
+	// Every handoff below is an EXPLICIT happens-before — never a sleep, never a
+	// simultaneous fire (CodeRabbit wave-4). The chain is:
+	//
+	//	claim → handler entered (`entered`) → test cancels the call → test releases the
+	//	handler (`release`) → handler returns WITHOUT writing any response (`observed`) →
+	//	test reads the result (`done`).
+	//
+	// The disposition is deterministic because the handler NEVER writes a success response:
+	// once released (which the test does only AFTER cancelling), it returns with no body, so
+	// the client can only observe its own context.Canceled or an empty/invalid response —
+	// never OutcomeStructured — and there is no cancel-vs-response race to lose. (Removing
+	// the response path is stronger than waiting for a server-side cancellation observation:
+	// this transport aborts the call client-side without closing the loopback connection, so
+	// the handler's r.Context() is never cancelled.) A single deferred unwind (cancel +
+	// release + abort, each idempotent) guarantees NO goroutine leaks past the subtest on ANY
+	// exit path, including a t.Fatal.
 	t.Run("cancel_after_claim", func(t *testing.T) {
-		release := make(chan struct{})
-		entered := make(chan struct{}, 1)
+		var (
+			entered  = make(chan struct{}, 1)
+			release  = make(chan struct{})
+			observed = make(chan struct{})
+			abort    = make(chan struct{})
+
+			releaseOnce, abortOnce, observeOnce sync.Once
+		)
+		releaseNow := func() { releaseOnce.Do(func() { close(release) }) }
+		abortNow := func() { abortOnce.Do(func() { close(abort) }) }
+
 		lb := newLoopback(t, func(w http.ResponseWriter, r *http.Request) {
-			// Signal that the socket was actually ENTERED (the handler was reached). A
-			// buffered non-blocking send is safe even if the handler somehow ran twice
-			// (the spine sends exactly once, which the count()==1 assertion also checks).
+			// Announce socket entry (buffered non-blocking send; safe on a stray re-run —
+			// the count()==1 assertion also proves the spine sends exactly once).
 			select {
 			case entered <- struct{}{}:
 			default:
 			}
-			<-release // block until the caller cancels
-			okChatCompletion(w, `{"k":1}`)
+			// Wait until the test releases us (it cancels the call FIRST), or the test aborts.
+			select {
+			case <-release:
+			case <-abort:
+				return
+			}
+			// The test cancelled the call BEFORE releasing us, so there is NO valid response
+			// to serve: return WITHOUT writing a body. Because the handler never writes a
+			// success, the client can only observe its own context.Canceled or an
+			// empty/invalid response — never OutcomeStructured — so the disposition is
+			// DETERMINISTICALLY failed-after-claim, with no cancel-vs-response race. (This is
+			// strictly stronger than the "observe cancellation server-side, then respond"
+			// ordering: this transport aborts the call CLIENT-side without closing the
+			// loopback connection, so r.Context() is never cancelled here — eliminating the
+			// response path is the reliable guarantee, not waiting for r.Context().Done().)
+			observeOnce.Do(func() { close(observed) })
 		})
 		e := execFor(t, lb.baseURL(), nativespinejsonfixture.Binding())
 		ctx, cancel := context.WithCancel(context.Background())
+
+		// Single unwind point: on EVERY exit path (including a t.Fatal's Goexit) cancel the
+		// in-flight call and release/abort the handler, so no goroutine leaks. Each closer is
+		// idempotent, so the normal-path cancel/release and this defer never conflict.
+		defer func() { cancel(); releaseNow(); abortNow() }()
 
 		done := make(chan struct{ res bamlutils.NativeSpineUnaryResult }, 1)
 		go func() {
@@ -163,34 +207,35 @@ func TestCancelBeforeAfterClaim(t *testing.T) {
 			done <- struct{ res bamlutils.NativeSpineUnaryResult }{r}
 		}()
 
-		// releaseNow unblocks the handler (which parks on <-release) exactly once, so the
-		// normal-path release and a failure-path release never double-close (CodeRabbit
-		// wave-3). cancel() is already idempotent.
-		var releaseOnce sync.Once
-		releaseNow := func() { releaseOnce.Do(func() { close(release) }) }
-
-		// Wait until the request has actually ENTERED the socket (handler reached), then
-		// cancel while it is in flight — deterministic, not a fixed sleep that can race a
-		// loaded runner into a pre-claim cancel (CodeRabbit #7). Bound the wait: if the
-		// request finishes or errors BEFORE the handler runs, fail HERE with a clear
-		// message instead of blocking to the package test timeout (CodeRabbit #2 follow-on).
-		// On the FAILURE branches, cancel + release BEFORE t.Fatal so the in-flight request
-		// (parked in ExecuteWithHeartbeat) and the handler goroutine unwind cleanly rather
-		// than leaking past the aborted test (CodeRabbit wave-3).
+		// (1) claim → socket entered. Bound the wait: if the request finishes or errors
+		// BEFORE the handler runs, fail HERE instead of blocking to the package timeout
+		// (CodeRabbit #2). The deferred unwind handles cleanup on these failure branches.
 		select {
 		case <-entered:
 		case got := <-done:
-			cancel()
-			releaseNow()
 			t.Fatalf("request completed (disposition %v, err %v) before entering the socket handler; cannot exercise cancel-after-claim", got.res.Disposition, got.res.Err)
 		case <-time.After(10 * time.Second):
-			cancel()
-			releaseNow()
 			t.Fatal("timed out waiting for the request to enter the socket handler")
 		}
+
+		// (2) cancel the in-flight call, THEN (3) release the handler — an explicit
+		// happens-before (cancel strictly precedes release), never a simultaneous fire, so
+		// the handler is only ever released into its no-response return AFTER the call is
+		// already cancelled.
 		cancel()
 		releaseNow()
 
+		// (4) wait until the handler has reached its NO-RESPONSE return (it wrote nothing) —
+		// the ordering guarantee that the response path is closed before we read the result.
+		// Bound it so a regression fails locally rather than hanging.
+		select {
+		case <-observed:
+		case <-time.After(10 * time.Second):
+			t.Fatal("handler was never released to its no-response return after cancel()")
+		}
+
+		// (5) the call deterministically failed after the claim — the handler wrote no
+		// response, so success was never on the table.
 		got := <-done
 		if got.res.Disposition != bamlutils.NativeSpineFailedAfterClaim {
 			t.Fatalf("disposition = %v (err %v), want failed_after_claim", got.res.Disposition, got.res.Err)
