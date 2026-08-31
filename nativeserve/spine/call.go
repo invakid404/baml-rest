@@ -48,12 +48,29 @@ func (e *UnaryExecutor) Call(ctx context.Context, method string, input any) (res
 		return e.declined(err, stagePreflight, reasonContextCancelled)
 	}
 
+	// Read the REQUEST-SCOPED routing/orchestration facts off the adapter the worker
+	// configured (the emitted BuildMethod passes the adapter as this Call's context)
+	// and DECLINE PRE-SOCKET when any cohort-forbidden fact is present — matching the
+	// generated-static lane's admission boundary in lockstep (Codex review finding 1).
+	// The exact cohort serves only the descriptor's default client with no request
+	// override, so a caller-supplied client_registry or dynamic output schema declines
+	// here; retry/round-robin/rewrite-proxy decline inside admission (see staticInput).
+	ad, _ := ctx.(bamlutils.Adapter)
+	if ad != nil {
+		if ad.OriginalClientRegistry() != nil {
+			return e.declined(errClientRegistry, stageAdmission, reasonClientRegistry)
+		}
+		if ad.DeBAMLOutputSchema() != nil {
+			return e.declined(errDynamicSchema, stageAdmission, reasonDynamicSchema)
+		}
+	}
+
 	values, perr := rm.binding.ProjectInput(input)
 	if perr != nil {
 		return e.declined(perr, stageProject, reasonProjectInputErr)
 	}
 
-	claim, aerr := e.admitClaim(ctx, e.staticInput(rm, values))
+	claim, aerr := e.admitClaim(ctx, e.staticInput(rm, values, ad))
 	if aerr != nil {
 		var d *admission.StaticDecline
 		if errors.As(aerr, &d) {
@@ -163,14 +180,14 @@ func (e *UnaryExecutor) Parse(ctx context.Context, method string, raw string) (a
 // constants; the SPINE lane bypasses the dynamic-rollout cohort gate (its admission
 // is its own registration-time totality gate). checkArgBinder proves the projected
 // vector's names/order match the descriptor exactly.
-func (e *UnaryExecutor) staticInput(rm *registeredMethod, values []promptdescriptor.ArgumentValue) admission.StaticInput {
+func (e *UnaryExecutor) staticInput(rm *registeredMethod, values []promptdescriptor.ArgumentValue, ad bamlutils.Adapter) admission.StaticInput {
 	args := make(map[string]any, len(values))
 	order := make([]string, 0, len(values))
 	for _, v := range values {
 		args[v.Name] = v.Value
 		order = append(order, v.Name)
 	}
-	return admission.StaticInput{
+	in := admission.StaticInput{
 		WorkerCapable:       true,
 		RequestAPIPresent:   true,
 		OnBuildRequestRoute: true,
@@ -186,6 +203,22 @@ func (e *UnaryExecutor) staticInput(rm *registeredMethod, values []promptdescrip
 		Provider:            rm.fn.Provider,
 		SpineLane:           true,
 	}
+	// Request-scoped orchestration facts (Codex review finding 1). A request retry
+	// override or a round-robin advancer declines at admission's strategy gate; a
+	// rewrite/proxy on the effective send target declines pre-claim inside
+	// AdmitStaticSpineClaim against the prepared URL (the check the omitted BAML
+	// plan-compare used to own). A caller registry / dynamic schema already declined
+	// in Call before this point, so Registry stays nil here.
+	if ad != nil {
+		in.HasRequestRetryOverride = ad.RetryConfig() != nil
+		in.HasRoundRobin = ad.RoundRobinAdvancer() != nil
+		hc := ad.HTTPClient()
+		if hc == nil {
+			hc = llmhttp.DefaultClient
+		}
+		in.WouldRewriteOrProxy = hc.WouldRewriteOrProxy
+	}
+	return in
 }
 
 func (e *UnaryExecutor) declined(err error, stage, reason string) bamlutils.NativeSpineUnaryResult {

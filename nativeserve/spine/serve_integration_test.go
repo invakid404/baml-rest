@@ -10,7 +10,6 @@ import (
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/internal/nativespinejsonfixture"
-	"github.com/invakid404/baml-rest/nativeserve/spine"
 	"github.com/invakid404/baml-rest/workerplugin"
 )
 
@@ -40,11 +39,7 @@ func TestRealPopulation_CallAndParse(t *testing.T) {
 		okChatCompletion(w, modelText)
 	})
 
-	fn := reconstructJSONAlias(t, lb.baseURL())
-	exec, err := spine.NewUnaryExecutor(jsonAliasMethods(fn), nil)
-	if err != nil {
-		t.Fatalf("NewUnaryExecutor: %v", err)
-	}
+	exec := newJSONExec(t, lb.baseURL(), nil)
 	h := newHandler(t, exec)
 	ctx := context.Background()
 

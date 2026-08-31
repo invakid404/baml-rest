@@ -31,7 +31,9 @@ import (
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
+	"github.com/invakid404/baml-rest/bamlutils/projectdescriptor"
 	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
+	"github.com/invakid404/baml-rest/bamlutils/schemadescriptor"
 	"github.com/invakid404/baml-rest/internal/debaml"
 	"github.com/invakid404/baml-rest/internal/schema"
 	"github.com/invakid404/baml-rest/nativeserve/admission"
@@ -53,6 +55,8 @@ const (
 	reasonUnsupportedMethod = "method_not_registered"
 	reasonContextCancelled  = "context_cancelled"
 	reasonProjectInputErr   = "project_input_error"
+	reasonClientRegistry    = "client_registry_present"
+	reasonDynamicSchema     = "dynamic_output_schema_present"
 	reasonPlannerError      = "planner_error"
 	reasonPlanExpired       = "plan_expired"
 	reasonPanic             = "panic"
@@ -66,18 +70,12 @@ const (
 )
 
 var (
-	errPlanExpired  = errors.New("nativespine: prepared plan expired before the socket")
-	errMalformed2xx = errors.New("nativespine: provider returned a 2xx body the translator could not parse")
-	errParseDecline = errors.New("nativespine: native final parser declined the response shape (no BAML fallback on this cohort)")
+	errPlanExpired    = errors.New("nativespine: prepared plan expired before the socket")
+	errMalformed2xx   = errors.New("nativespine: provider returned a 2xx body the translator could not parse")
+	errParseDecline   = errors.New("nativespine: native final parser declined the response shape (no BAML fallback on this cohort)")
+	errClientRegistry = errors.New("nativespine: request carries a client_registry; the exact cohort serves only the descriptor's default client")
+	errDynamicSchema  = errors.New("nativespine: request carries a dynamic output schema; the exact cohort is static-only")
 )
-
-// SpineMethod is one neutral registration the runtime is built from: the reconstructed
-// scalar-only descriptor (internal/nativespine.ReconstructFunction) and the emitted
-// binding (the emitted package's Binding()). No nanollm type, no generated BAML type.
-type SpineMethod struct {
-	Function promptdescriptor.Function
-	Binding  bamlutils.NativeSpineUnaryBinding
-}
 
 // registeredMethod is one immutable, validated registry entry: the reconstructed
 // descriptor, its lowered Return Bundle (the native static SAP surface), and the
@@ -131,25 +129,43 @@ type UnaryExecutor struct {
 // compile-time assertion the executor satisfies the neutral contract.
 var _ bamlutils.NativeSpineUnaryExecutor = (*UnaryExecutor)(nil)
 
-// NewUnaryExecutor builds an immutable executor over the given methods. It REJECTS,
-// before serving begins: a duplicate or missing method name, a binding/descriptor
-// name mismatch, a nil ProjectInput/DecodeFinal callback, an input outside the
-// required-scalar cohort, a Return that does not lower, and anything the ONE
-// root-owned totality predicate (debaml.SupportsNativeStaticStreamBundle — the exact
-// five-arm `JSON` alias) declines. A nil exec uses the hardened default exact
-// executor. Callback-before-claim: both closures are resolved and validated here.
-func NewUnaryExecutor(methods []SpineMethod, exec *llmhttp.ExactExecutor) (*UnaryExecutor, error) {
+// NewUnaryExecutor builds an immutable executor over the VALIDATED
+// projectdescriptor.Project plus the emitted per-method bindings (Codex review
+// finding 2: the constructor takes the whole Project, not pre-reconstructed methods,
+// so registration validates against the actual project facts). For each binding it
+// finds the admitted method in the Project, reconstructs + validates the scalar
+// descriptor (internal/nativespine.ReconstructFunction — which FAILS on project
+// version / templates / client retry-policy / strategy rather than stripping them),
+// then REJECTS, before serving begins:
+//
+//   - a binding naming a method the Project did not admit;
+//   - a duplicate method, a binding/descriptor name mismatch, a nil
+//     ProjectInput/DecodeFinal callback;
+//   - a descriptor-envelope mismatch (return method/version, or a streaming return) —
+//     so registration, call, and direct parse agree in lockstep (finding 3);
+//   - an input outside the required-scalar cohort;
+//   - a Return that does not lower, and anything the ONE root-owned totality predicate
+//     (debaml.SupportsNativeStaticStreamBundle — the exact five-arm `JSON` alias)
+//     declines.
+//
+// A nil exec uses the hardened default exact executor. Callback-before-claim: both
+// closures are resolved and validated here.
+func NewUnaryExecutor(proj projectdescriptor.Project, bindings []bamlutils.NativeSpineUnaryBinding, exec *llmhttp.ExactExecutor) (*UnaryExecutor, error) {
 	if exec == nil {
 		exec = llmhttp.NewExactExecutor(nil)
 	}
 	e := &UnaryExecutor{
-		registry:   make(map[string]*registeredMethod, len(methods)),
+		registry:   make(map[string]*registeredMethod, len(bindings)),
 		exec:       exec,
 		metrics:    &Metrics{},
 		admitClaim: admission.AdmitStaticSpineClaim,
 	}
-	for i := range methods {
-		if err := e.register(methods[i]); err != nil {
+	byName := make(map[string]projectdescriptor.Method, len(proj.Methods))
+	for _, m := range proj.Methods {
+		byName[m.Name] = m
+	}
+	for i := range bindings {
+		if err := e.register(proj, byName, bindings[i]); err != nil {
 			return nil, err
 		}
 	}
@@ -168,37 +184,57 @@ func (e *UnaryExecutor) Methods() []string {
 	return out
 }
 
-func (e *UnaryExecutor) register(m SpineMethod) error {
-	fn := m.Function
-	b := m.Binding
-	if fn.Method == "" {
-		return fmt.Errorf("nativespine: register: descriptor has no method name")
-	}
-	if b.Method != fn.Method {
-		return fmt.Errorf("nativespine: register %q: binding names method %q (binding/descriptor name mismatch)", fn.Method, b.Method)
+func (e *UnaryExecutor) register(proj projectdescriptor.Project, byName map[string]projectdescriptor.Method, b bamlutils.NativeSpineUnaryBinding) error {
+	if b.Method == "" {
+		return fmt.Errorf("nativespine: register: binding has no method name")
 	}
 	if b.ProjectInput == nil {
-		return fmt.Errorf("nativespine: register %q: binding ProjectInput is nil (callback-before-claim)", fn.Method)
+		return fmt.Errorf("nativespine: register %q: binding ProjectInput is nil (callback-before-claim)", b.Method)
 	}
 	if b.DecodeFinal == nil {
-		return fmt.Errorf("nativespine: register %q: binding DecodeFinal is nil (callback-before-claim)", fn.Method)
+		return fmt.Errorf("nativespine: register %q: binding DecodeFinal is nil (callback-before-claim)", b.Method)
 	}
-	if _, dup := e.registry[fn.Method]; dup {
-		return fmt.Errorf("nativespine: register %q: duplicate method", fn.Method)
+	if _, dup := e.registry[b.Method]; dup {
+		return fmt.Errorf("nativespine: register %q: duplicate method", b.Method)
+	}
+	m, ok := byName[b.Method]
+	if !ok {
+		return fmt.Errorf("nativespine: register %q: binding names a method the project did not admit (name mismatch or declined method)", b.Method)
+	}
+	// Reconstruct + validate the project/client cohort facts (version, templates,
+	// client retry-policy, strategy) — fails rather than strips (finding 2).
+	fn, err := reconstructFunction(proj, m)
+	if err != nil {
+		return fmt.Errorf("nativespine: register %q: %w", b.Method, err)
+	}
+	// Descriptor envelope lockstep (finding 3): registration rejects the same envelope
+	// mismatches the call-time admission does, so a method rejected by call can never be
+	// accepted by direct parse (which trusts the registry).
+	if fn.Version != promptdescriptor.Version {
+		return fmt.Errorf("nativespine: register %q: descriptor version %d, want %d", b.Method, fn.Version, promptdescriptor.Version)
+	}
+	if fn.Return.Version != schemadescriptor.Version {
+		return fmt.Errorf("nativespine: register %q: return schema version %d, want %d", b.Method, fn.Return.Version, schemadescriptor.Version)
+	}
+	if fn.Return.Method != fn.Method {
+		return fmt.Errorf("nativespine: register %q: return names method %q (envelope mismatch)", b.Method, fn.Return.Method)
+	}
+	if fn.Return.Stream {
+		return fmt.Errorf("nativespine: register %q: return is the streaming variant; only unary final-call is admitted", b.Method)
 	}
 	if err := requiredScalarInputs(fn); err != nil {
-		return fmt.Errorf("nativespine: register %q: %w", fn.Method, err)
+		return fmt.Errorf("nativespine: register %q: %w", b.Method, err)
 	}
 	bundle, err := schema.FromStaticDescriptor(fn.Return)
 	if err != nil {
-		return fmt.Errorf("nativespine: register %q: lower return bundle: %w", fn.Method, err)
+		return fmt.Errorf("nativespine: register %q: lower return bundle: %w", b.Method, err)
 	}
 	// The ONE root-owned totality predicate — the exact five-arm `JSON` alias family —
 	// controls registration in lockstep with call and direct parse.
 	if err := debaml.SupportsNativeStaticStreamBundle(bundle); err != nil {
-		return fmt.Errorf("nativespine: register %q: not the exact five-arm JSON alias cohort: %w", fn.Method, err)
+		return fmt.Errorf("nativespine: register %q: not the exact five-arm JSON alias cohort: %w", b.Method, err)
 	}
-	e.registry[fn.Method] = &registeredMethod{fn: fn, bundle: bundle, binding: b}
+	e.registry[b.Method] = &registeredMethod{fn: fn, bundle: bundle, binding: b}
 	return nil
 }
 

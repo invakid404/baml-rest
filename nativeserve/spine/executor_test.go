@@ -8,177 +8,242 @@ import (
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
-	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
-	"github.com/invakid404/baml-rest/internal/nativespine"
+	"github.com/invakid404/baml-rest/bamlutils/projectdescriptor"
 	"github.com/invakid404/baml-rest/internal/nativespinejsonfixture"
 	"github.com/invakid404/baml-rest/nativeserve/spine"
 )
 
-const jsonAliasMethodName = "StaticRecursiveAliasJSON"
-
-// reconstructFromCorpus builds the project from a .baml corpus and reconstructs the
-// named admitted method's descriptor. It is pure-Go (no nanollm) test support.
-func reconstructFromCorpus(t *testing.T, corpus map[string]string, method string) promptdescriptor.Function {
+// newExec builds the executor over proj + the given bindings (nil exec = default).
+func newExec(t *testing.T, proj projectdescriptor.Project, bindings ...bamlutils.NativeSpineUnaryBinding) (*spine.UnaryExecutor, error) {
 	t.Helper()
-	proj, err := nativespine.BuildFromSource(corpus)
+	return spine.NewUnaryExecutor(proj, bindings, nil)
+}
+
+// jsonAliasExec builds the admitted JSON-alias executor (the positive).
+func jsonAliasExec(t *testing.T) *spine.UnaryExecutor {
+	t.Helper()
+	e, err := newExec(t, jsonAliasProject(t), jsonAliasBinding())
 	if err != nil {
-		t.Fatalf("BuildFromSource: %v", err)
+		t.Fatalf("NewUnaryExecutor: %v", err)
 	}
-	for _, m := range proj.Methods {
-		if m.Name == method {
-			fn, err := nativespine.ReconstructFunction(proj, m)
-			if err != nil {
-				t.Fatalf("ReconstructFunction(%s): %v", method, err)
-			}
-			return fn
-		}
-	}
-	var declines []string
-	for _, d := range proj.Diagnostics {
-		declines = append(declines, string(d.Method)+"="+string(d.Code))
-	}
-	t.Fatalf("%s not admitted (declines: %s)", method, strings.Join(declines, ","))
-	return promptdescriptor.Function{}
-}
-
-// jsonAliasFunction is the admitted five-arm JSON alias descriptor (the positive).
-func jsonAliasFunction(t *testing.T) promptdescriptor.Function {
-	t.Helper()
-	return reconstructFromCorpus(t, nativespine.JSONAliasFixtureSources, jsonAliasMethodName)
-}
-
-// jsonAliasBinding returns the emitted JSON-alias binding, optionally renamed to
-// match a corpus method (all decline-table corpora name their function "F").
-func jsonAliasBinding(name ...string) bamlutils.NativeSpineUnaryBinding {
-	b := nativespinejsonfixture.Binding()
-	if len(name) > 0 {
-		b.Method = name[0]
-	}
-	return b
-}
-
-// clientBlock is the shared client for the decline-table corpora.
-const clientBlock = `client<llm> C {
-  provider openai
-  options { model "gpt-4o-mini" api_key "sk-x" base_url "http://127.0.0.1:0/v1" }
-}
-`
-
-func corpus(types, fn string) map[string]string {
-	return map[string]string{
-		"clients.baml":   clientBlock,
-		"types.baml":     types,
-		"functions.baml": fn,
-	}
+	return e
 }
 
 // TestNewUnaryExecutor_AdmitsExactJSONAlias proves the positive registers.
 func TestNewUnaryExecutor_AdmitsExactJSONAlias(t *testing.T) {
-	e, err := spine.NewUnaryExecutor([]spine.SpineMethod{{Function: jsonAliasFunction(t), Binding: jsonAliasBinding()}}, nil)
-	if err != nil {
-		t.Fatalf("NewUnaryExecutor: %v", err)
-	}
+	e := jsonAliasExec(t)
 	got := e.Methods()
-	if len(got) != 1 || got[0] != jsonAliasMethodName {
-		t.Fatalf("Methods() = %v, want [%s]", got, jsonAliasMethodName)
+	if len(got) != 1 || got[0] != jsonAliasMethod {
+		t.Fatalf("Methods() = %v, want [%s]", got, jsonAliasMethod)
 	}
 }
 
-// TestRegistrationDeclineTable proves the registry REJECTS every non-cohort shape
-// before serving begins — the lockstep totality gate (debaml.SupportsNativeStaticStreamBundle)
-// and the required-scalar input gate, plus the callback/name/duplicate/version checks.
-// Emittable is not population-admitted.
-func TestRegistrationDeclineTable(t *testing.T) {
-	pos := jsonAliasFunction(t)
+// TestRegistrationDeclineMatrix is the complete registration/zero-socket negative
+// matrix (Codex review finding 5). Every non-cohort shape/input/cohort/binding fact
+// is REJECTED before any executor is built — so no socket is even possible. Each row
+// must fail on the current tip; the JSON-alias predicate, the required-scalar gate,
+// the project/client cohort gate (templates/retry/strategy), the descriptor envelope,
+// and the binding checks are all exercised.
+func TestRegistrationDeclineMatrix(t *testing.T) {
+	const jsonType = "type JSON = int | string | bool | JSON[] | map<string, JSON>"
+	pos := jsonAliasProject(t)
 
-	// Corpus-driven output/input negatives (the classifier admits these recursive
-	// aliases / classes / list inputs; the spine registry declines them).
-	jsonValue := corpus(
-		"type JsonValue = int | float | bool | string | null | JsonValue[] | map<string, JsonValue>",
-		`function F(topic: string) -> JsonValue { client C prompt #"{{ topic }}"# }`)
-	reordered := corpus(
-		"type JsonValueReordered = float | int | bool | string | null | JsonValueReordered[] | map<string, JsonValueReordered>",
-		`function F(topic: string) -> JsonValueReordered { client C prompt #"{{ topic }}"# }`)
-	classRet := corpus(
-		"class Wrap { x string }",
-		`function F(topic: string) -> Wrap { client C prompt #"{{ topic }}"# }`)
-	scalarRet := corpus("", `function F(topic: string) -> string { client C prompt #"{{ topic }}"# }`)
-	listInput := corpus(
-		"type JSON = int | string | bool | JSON[] | map<string, JSON>",
-		`function F(tags: string[]) -> JSON { client C prompt #"{{ tags }}"# }`)
+	// A valid project whose descriptor version is corrupted (envelope version case).
+	badVersion := jsonAliasProject(t)
+	badVersion.Version = projectdescriptor.Version + 99
 
 	cases := []struct {
-		name string
-		m    spine.SpineMethod
-		want string // substring of the registration error
+		name    string
+		proj    projectdescriptor.Project
+		binding bamlutils.NativeSpineUnaryBinding
+		want    string
 	}{
-		{"jsonvalue_alias", method(reconstructFromCorpus(t, jsonValue, "F"), jsonAliasBinding("F")), "JSON alias cohort"},
-		{"reordered_alias", method(reconstructFromCorpus(t, reordered, "F"), jsonAliasBinding("F")), "JSON alias cohort"},
-		{"class_return", method(reconstructFromCorpus(t, classRet, "F"), jsonAliasBinding("F")), "JSON alias cohort"},
-		{"scalar_return", method(reconstructFromCorpus(t, scalarRet, "F"), jsonAliasBinding("F")), "JSON alias cohort"},
-		{"non_scalar_list_input", method(reconstructFromCorpus(t, listInput, "F"), jsonAliasBinding("F")), "required-scalar cohort"},
-		{"nil_project_input", spine.SpineMethod{Function: pos, Binding: bamlutils.NativeSpineUnaryBinding{Method: pos.Method, ProjectInput: nil, DecodeFinal: jsonAliasBinding().DecodeFinal}}, "ProjectInput is nil"},
-		{"nil_decode_final", spine.SpineMethod{Function: pos, Binding: bamlutils.NativeSpineUnaryBinding{Method: pos.Method, ProjectInput: jsonAliasBinding().ProjectInput, DecodeFinal: nil}}, "DecodeFinal is nil"},
-		{"binding_name_mismatch", spine.SpineMethod{Function: pos, Binding: renameBinding(jsonAliasBinding(), "Other")}, "name mismatch"},
+		// --- output shape negatives (the totality predicate) --------------------
+		{"jsonvalue_alias",
+			projectFromCorpus(t, corpus("type JsonValue = int | float | bool | string | null | JsonValue[] | map<string, JsonValue>", `function F(topic: string) -> JsonValue { client C prompt #"{{ topic }}"# }`)),
+			jsonAliasBinding("F"), "JSON alias cohort"},
+		{"reordered_alias",
+			projectFromCorpus(t, corpus("type JsonValueReordered = float | int | bool | string | null | JsonValueReordered[] | map<string, JsonValueReordered>", `function F(topic: string) -> JsonValueReordered { client C prompt #"{{ topic }}"# }`)),
+			jsonAliasBinding("F"), "JSON alias cohort"},
+		{"class_return",
+			projectFromCorpus(t, corpus("class Wrap { x string }", `function F(topic: string) -> Wrap { client C prompt #"{{ topic }}"# }`)),
+			jsonAliasBinding("F"), "JSON alias cohort"},
+		{"enum_return",
+			projectFromCorpus(t, corpus("enum E {\n  A\n  B\n}", `function F(topic: string) -> E { client C prompt #"{{ topic }}"# }`)),
+			jsonAliasBinding("F"), "JSON alias cohort"},
+		{"scalar_return",
+			projectFromCorpus(t, corpus("", `function F(topic: string) -> string { client C prompt #"{{ topic }}"# }`)),
+			jsonAliasBinding("F"), "JSON alias cohort"},
+
+		// --- input shape negatives ---------------------------------------------
+		{"nullable_scalar_input",
+			projectFromCorpus(t, corpus(jsonType, `function F(topic: string?) -> JSON { client C prompt #"{{ topic }}"# }`)),
+			jsonAliasBinding("F"), "is nullable"},
+		{"list_input",
+			projectFromCorpus(t, corpus(jsonType, `function F(tags: string[]) -> JSON { client C prompt #"{{ tags }}"# }`)),
+			jsonAliasBinding("F"), "required-scalar cohort"},
+		// class / enum / map / media inputs are declined by the M1 classifier itself,
+		// so the method never reaches the project — the binding names a non-admitted
+		// method (still a pre-socket registration decline).
+		{"class_input",
+			projectFromCorpus(t, corpus(jsonType+"\nclass In { x string }", `function F(c: In) -> JSON { client C prompt #"{{ c }}"# }`)),
+			jsonAliasBinding("F"), "did not admit"},
+		{"enum_input",
+			projectFromCorpus(t, corpus(jsonType+"\nenum Col { R G }", `function F(c: Col) -> JSON { client C prompt #"{{ c }}"# }`)),
+			jsonAliasBinding("F"), "did not admit"},
+
+		// --- project / client cohort negatives ---------------------------------
+		{"template_project",
+			projectFromCorpus(t, map[string]string{
+				"clients.baml":   clientBlock,
+				"types.baml":     jsonType,
+				"macros.baml":    `template_string Hdr(n: string) #"Hi {{ n }}"#`,
+				"functions.baml": `function F(topic: string) -> JSON { client C prompt #"{{ topic }}"# }`,
+			}),
+			jsonAliasBinding("F"), "template-free"},
+		{"retry_policy_client",
+			projectFromCorpus(t, map[string]string{
+				"clients.baml":   "client<llm> R {\n  provider openai\n  retry_policy Retry1\n  options { model \"gpt-4o-mini\" api_key \"sk-x\" base_url \"http://127.0.0.1:0/v1\" }\n}\n",
+				"retries.baml":   "retry_policy Retry1 {\n  max_retries 3\n  strategy { type constant_delay delay_ms 200 }\n}\n",
+				"types.baml":     jsonType,
+				"functions.baml": `function F(topic: string) -> JSON { client R prompt #"{{ topic }}"# }`,
+			}),
+			jsonAliasBinding("F"), "forbids retries"},
+		// A body-affecting client option / a strategy client / a non-openai provider
+		// are declined by the M1 classifier -> method not in the project.
+		{"body_option_client",
+			projectFromCorpus(t, map[string]string{
+				"clients.baml":   "client<llm> T {\n  provider openai\n  options { model \"gpt-4o-mini\" api_key \"sk-x\" base_url \"http://127.0.0.1:0/v1\" temperature 0.5 }\n}\n",
+				"types.baml":     jsonType,
+				"functions.baml": `function F(topic: string) -> JSON { client T prompt #"{{ topic }}"# }`,
+			}),
+			jsonAliasBinding("F"), "did not admit"},
+
+		// --- descriptor envelope ------------------------------------------------
+		{"descriptor_version_mismatch", badVersion, jsonAliasBinding(), "descriptor version"},
+
+		// --- binding-level ------------------------------------------------------
+		{"nil_project_input", pos, bamlutils.NativeSpineUnaryBinding{Method: jsonAliasMethod, ProjectInput: nil, DecodeFinal: jsonAliasBinding().DecodeFinal}, "ProjectInput is nil"},
+		{"nil_decode_final", pos, bamlutils.NativeSpineUnaryBinding{Method: jsonAliasMethod, ProjectInput: jsonAliasBinding().ProjectInput, DecodeFinal: nil}, "DecodeFinal is nil"},
+		{"binding_name_mismatch", pos, renameBinding(jsonAliasBinding(), "Other"), "did not admit"},
 	}
+
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := spine.NewUnaryExecutor([]spine.SpineMethod{tc.m}, nil)
-			if err == nil {
-				t.Fatalf("NewUnaryExecutor admitted %s, want rejection", tc.name)
-			}
-			if !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("%s: error %q, want substring %q", tc.name, err, tc.want)
-			}
+			_, err := newExec(t, tc.proj, tc.binding)
+			declinesOn(t, err, tc.want)
 		})
 	}
 
-	// Duplicate method: two admitted positives with the same name.
-	if _, err := spine.NewUnaryExecutor([]spine.SpineMethod{
-		{Function: pos, Binding: jsonAliasBinding()},
-		{Function: pos, Binding: jsonAliasBinding()},
-	}, nil); err == nil || !strings.Contains(err.Error(), "duplicate method") {
+	// Duplicate method: two bindings for the same admitted method.
+	if _, err := newExec(t, pos, jsonAliasBinding(), jsonAliasBinding()); err == nil || !strings.Contains(err.Error(), "duplicate method") {
 		t.Fatalf("duplicate registration error = %v, want 'duplicate method'", err)
 	}
 }
 
-// method pairs a reconstructed function with the JSON-alias binding renamed to the
-// function's method name (the corpora all name their function "F").
-func method(fn promptdescriptor.Function, b bamlutils.NativeSpineUnaryBinding) spine.SpineMethod {
-	return spine.SpineMethod{Function: fn, Binding: b}
-}
-
-func renameBinding(b bamlutils.NativeSpineUnaryBinding, name string) bamlutils.NativeSpineUnaryBinding {
-	b.Method = name
-	return b
-}
-
-// TestCarrierRoundTripParity replays a corpus of canonical JSON values through the
-// socket-free parse route (native exact-JSON final parse -> canonical JSON -> emitted
-// DecodeStaticAliasFinal[OutputJson]) and re-marshals the concrete carrier, asserting
-// byte-identical round-trips. Each input is already in the native canonical form
-// (sorted keys, no whitespace), so a faithful carrier reproduces it exactly. This is
-// the carrier half of the frozen-v0.223 parity: ParseStaticBundleUnaryCall's byte
-// equivalence to stock v0.223 is proven by the internal/debaml + staticoracle
-// differentials this lane reuses unchanged.
-func TestCarrierRoundTripParity(t *testing.T) {
-	e, err := spine.NewUnaryExecutor([]spine.SpineMethod{{Function: jsonAliasFunction(t), Binding: jsonAliasBinding()}}, nil)
-	if err != nil {
-		t.Fatalf("NewUnaryExecutor: %v", err)
+// TestRequestScopedFactsDeclinePreSocket proves the executor reads request-scoped
+// routing/orchestration facts off the adapter and DECLINES pre-socket, opening zero
+// sockets (Codex review finding 1). Each of these facts is cohort-forbidden and
+// declines before any nanollm work.
+func TestRequestScopedFactsDeclinePreSocket(t *testing.T) {
+	rows := []struct {
+		name   string
+		mutate func(*testAdapter)
+	}{
+		{"client_registry", func(a *testAdapter) { _ = a.SetClientRegistry(&bamlutils.ClientRegistry{}) }},
+		{"dynamic_output_schema", func(a *testAdapter) { a.SetDeBAMLOutputSchema(&bamlutils.DynamicOutputSchema{}) }},
+		{"request_retry_override", func(a *testAdapter) { a.SetRetryConfig(&bamlutils.RetryConfig{MaxRetries: 2}) }},
+		{"round_robin_advancer", func(a *testAdapter) { a.SetRoundRobinAdvancer(stubAdvancer{}) }},
 	}
+	for _, tc := range rows {
+		t.Run(tc.name, func(t *testing.T) {
+			e := jsonAliasExec(t)
+			ad := newTestAdapter()
+			tc.mutate(ad)
+			res := e.Call(ad, jsonAliasMethod, &nativespinejsonfixture.StaticRecursiveAliasJsonInput{Topic: "x"})
+			if res.Disposition != bamlutils.NativeSpineDeclinedPreSocket {
+				t.Fatalf("disposition = %v (reason %q), want declined_pre_socket", res.Disposition, res.Reason)
+			}
+			if snap := e.Metrics().Snapshot(); snap.Sockets != 0 || snap.Claims != 0 || snap.Failures != 0 {
+				t.Fatalf("metrics = %+v, want zero sockets/claims/failures", snap)
+			}
+		})
+	}
+}
+
+// stubAdvancer is a no-op round-robin advancer for the finding-1 test.
+type stubAdvancer struct{}
+
+func (stubAdvancer) Advance(string, int) (int, error) { return 0, nil }
+
+// TestCallRegistryMissDeclinesPreSocket proves an unregistered method Call declines
+// pre-socket with the typed capability error and zero sockets.
+func TestCallRegistryMissDeclinesPreSocket(t *testing.T) {
+	e := jsonAliasExec(t)
+	res := e.Call(context.Background(), "Nope", &nativespinejsonfixture.StaticRecursiveAliasJsonInput{Topic: "x"})
+	if res.Disposition != bamlutils.NativeSpineDeclinedPreSocket {
+		t.Fatalf("disposition = %v, want declined_pre_socket", res.Disposition)
+	}
+	var typed *bamlutils.NativeSpineUnsupportedMethodError
+	if !errors.As(res.Err, &typed) {
+		t.Fatalf("decline err = %v (%T), want *NativeSpineUnsupportedMethodError", res.Err, res.Err)
+	}
+	if snap := e.Metrics().Snapshot(); snap.Sockets != 0 || snap.Claims != 0 || snap.Declines != 1 {
+		t.Fatalf("metrics = %+v, want zero sockets/claims and one decline", snap)
+	}
+}
+
+// TestParseRoute proves the socket-free parse route: an admitted method natively
+// parses+decodes raw into the concrete carrier; an unadmitted method returns the typed
+// capability decline; malformed raw is an ORDINARY parse error (not a capability decline).
+func TestParseRoute(t *testing.T) {
+	e := jsonAliasExec(t)
+	ctx := context.Background()
+
+	out, err := e.Parse(ctx, jsonAliasMethod, `[1,"two",true]`)
+	if err != nil {
+		t.Fatalf("Parse(admitted): %v", err)
+	}
+	carrier, ok := out.(nativespinejsonfixture.OutputJson)
+	if !ok {
+		t.Fatalf("parse output type = %T, want nativespinejsonfixture.OutputJson", out)
+	}
+	if !carrier.IsVariant3() {
+		b, _ := json.Marshal(carrier)
+		t.Fatalf("parsed carrier is not the list arm: %s", b)
+	}
+
+	if _, err := e.Parse(ctx, "Nope", `1`); err == nil {
+		t.Fatal("Parse(unadmitted) succeeded, want typed decline")
+	} else {
+		var typed *bamlutils.NativeSpineUnsupportedMethodError
+		if !errors.As(err, &typed) {
+			t.Fatalf("Parse(unadmitted) err = %v (%T), want *NativeSpineUnsupportedMethodError", err, err)
+		}
+	}
+
+	if _, err := e.Parse(ctx, jsonAliasMethod, `not json at all !!!`); err == nil {
+		t.Fatal("Parse(malformed) succeeded, want parse error")
+	} else {
+		var typed *bamlutils.NativeSpineUnsupportedMethodError
+		if errors.As(err, &typed) {
+			t.Fatalf("Parse(malformed) returned a capability decline (%v); malformed raw for an admitted method must be an ordinary parse error", err)
+		}
+	}
+}
+
+// TestCarrierRoundTripParity replays canonical JSON values through the socket-free
+// parse route + emitted carrier re-marshal, asserting byte-identical round-trips (the
+// carrier half of the frozen-v0.223 parity; ParseStaticBundleUnaryCall's byte
+// equivalence is the reused internal/debaml + staticoracle differential).
+func TestCarrierRoundTripParity(t *testing.T) {
+	e := jsonAliasExec(t)
 	ctx := context.Background()
 	for _, canonical := range []string{
-		`1`,
-		`"hello"`,
-		`true`,
-		`[1,"two",true]`,
-		`{"k":1}`,
-		`{"a":[1,2],"b":{"c":3}}`,
-		`[]`,
-		`[[1],[2,3]]`,
-		`{"nested":{"deep":[true,false]}}`,
+		`1`, `"hello"`, `true`, `[1,"two",true]`, `{"k":1}`,
+		`{"a":[1,2],"b":{"c":3}}`, `[]`, `[[1],[2,3]]`, `{"nested":{"deep":[true,false]}}`,
 	} {
-		out, err := e.Parse(ctx, jsonAliasMethodName, canonical)
+		out, err := e.Parse(ctx, jsonAliasMethod, canonical)
 		if err != nil {
 			t.Errorf("Parse(%s): %v", canonical, err)
 			continue
@@ -196,9 +261,7 @@ func TestCarrierRoundTripParity(t *testing.T) {
 
 // fallbackComposite is the OUTER injected transition composite: an executor that
 // wraps the inner spine executor and may invoke a fallback/oracle ONLY on a matched
-// pre-socket decline. A Succeeded or FailedAfterClaim result passes through UNCHANGED
-// — the composite never falls back after the claim. It proves the ownership boundary
-// the emitted module never sees (the module knows nothing about any oracle).
+// pre-socket decline. Succeeded / FailedAfterClaim pass through UNCHANGED.
 type fallbackComposite struct {
 	inner         bamlutils.NativeSpineUnaryExecutor
 	fallbackCalls int
@@ -211,7 +274,6 @@ func (c *fallbackComposite) Call(ctx context.Context, method string, input any) 
 		c.fallbackCalls++
 		return bamlutils.SucceededSpineResult(c.fallbackFinal)
 	}
-	// Succeeded / FailedAfterClaim: terminal — pass through, NEVER fall back.
 	return r
 }
 
@@ -223,10 +285,7 @@ func (c *fallbackComposite) Parse(ctx context.Context, method string, raw string
 // invokes the fallback EXACTLY once on a pre-socket decline (registry miss), and the
 // inner spine executor opened no socket.
 func TestFallbackCompositeInvokesOnceOnlyOnPreSocketDecline(t *testing.T) {
-	inner, err := spine.NewUnaryExecutor([]spine.SpineMethod{{Function: jsonAliasFunction(t), Binding: jsonAliasBinding()}}, nil)
-	if err != nil {
-		t.Fatalf("NewUnaryExecutor: %v", err)
-	}
+	inner := jsonAliasExec(t)
 	comp := &fallbackComposite{inner: inner, fallbackFinal: "fallback-served"}
 	res := comp.Call(context.Background(), "Unregistered", &nativespinejsonfixture.StaticRecursiveAliasJsonInput{Topic: "x"})
 	if comp.fallbackCalls != 1 {
@@ -237,90 +296,5 @@ func TestFallbackCompositeInvokesOnceOnlyOnPreSocketDecline(t *testing.T) {
 	}
 	if snap := inner.Metrics().Snapshot(); snap.Sockets != 0 {
 		t.Fatalf("inner opened %d sockets on a pre-socket decline, want 0", snap.Sockets)
-	}
-}
-
-// TestCallRegistryMissDeclinesPreSocket proves an unregistered method Call declines
-// pre-socket with the typed capability error and zero sockets.
-func TestCallRegistryMissDeclinesPreSocket(t *testing.T) {
-	e, err := spine.NewUnaryExecutor([]spine.SpineMethod{{Function: jsonAliasFunction(t), Binding: jsonAliasBinding()}}, nil)
-	if err != nil {
-		t.Fatalf("NewUnaryExecutor: %v", err)
-	}
-	res := e.Call(context.Background(), "Nope", &nativespinejsonfixture.StaticRecursiveAliasJsonInput{Topic: "x"})
-	if res.Disposition != bamlutils.NativeSpineDeclinedPreSocket {
-		t.Fatalf("disposition = %v, want declined_pre_socket", res.Disposition)
-	}
-	var typed *bamlutils.NativeSpineUnsupportedMethodError
-	if !errors.As(res.Err, &typed) {
-		t.Fatalf("decline err = %v (%T), want *NativeSpineUnsupportedMethodError", res.Err, res.Err)
-	}
-	if snap := e.Metrics().Snapshot(); snap.Sockets != 0 || snap.Claims != 0 || snap.Declines != 1 {
-		t.Fatalf("metrics = %+v, want zero sockets/claims and one decline", snap)
-	}
-}
-
-// TestCallProviderDeclinesPreSocket proves a per-call admission decline (a non-openai
-// provider) is a pre-socket decline with zero sockets — reached before any nanollm work.
-func TestCallProviderDeclinesPreSocket(t *testing.T) {
-	fn := jsonAliasFunction(t)
-	fn.Provider = "anthropic"
-	fn.ClientConfig.Provider = "anthropic"
-	e, err := spine.NewUnaryExecutor([]spine.SpineMethod{{Function: fn, Binding: jsonAliasBinding()}}, nil)
-	if err != nil {
-		t.Fatalf("NewUnaryExecutor: %v", err)
-	}
-	res := e.Call(context.Background(), jsonAliasMethodName, &nativespinejsonfixture.StaticRecursiveAliasJsonInput{Topic: "x"})
-	if res.Disposition != bamlutils.NativeSpineDeclinedPreSocket {
-		t.Fatalf("disposition = %v (reason %q), want declined_pre_socket", res.Disposition, res.Reason)
-	}
-	if snap := e.Metrics().Snapshot(); snap.Sockets != 0 || snap.Claims != 0 || snap.Failures != 0 {
-		t.Fatalf("metrics = %+v, want zero sockets/claims/failures", snap)
-	}
-}
-
-// TestParseRoute proves the socket-free parse route: an admitted method natively
-// parses+decodes raw into the concrete carrier; an unadmitted method returns the typed
-// capability decline; malformed raw is an ORDINARY parse error (not a capability decline).
-func TestParseRoute(t *testing.T) {
-	e, err := spine.NewUnaryExecutor([]spine.SpineMethod{{Function: jsonAliasFunction(t), Binding: jsonAliasBinding()}}, nil)
-	if err != nil {
-		t.Fatalf("NewUnaryExecutor: %v", err)
-	}
-	ctx := context.Background()
-
-	// Admitted method: raw model text -> native final parse -> emitted carrier.
-	out, err := e.Parse(ctx, jsonAliasMethodName, `[1,"two",true]`)
-	if err != nil {
-		t.Fatalf("Parse(admitted): %v", err)
-	}
-	carrier, ok := out.(nativespinejsonfixture.OutputJson)
-	if !ok {
-		t.Fatalf("parse output type = %T, want nativespinejsonfixture.OutputJson", out)
-	}
-	if !carrier.IsVariant3() { // top-level JSON array -> list arm
-		b, _ := json.Marshal(carrier)
-		t.Fatalf("parsed carrier is not the list arm: %s", b)
-	}
-
-	// Unadmitted method: typed capability decline.
-	if _, err := e.Parse(ctx, "Nope", `1`); err == nil {
-		t.Fatal("Parse(unadmitted) succeeded, want typed decline")
-	} else {
-		var typed *bamlutils.NativeSpineUnsupportedMethodError
-		if !errors.As(err, &typed) {
-			t.Fatalf("Parse(unadmitted) err = %v (%T), want *NativeSpineUnsupportedMethodError", err, err)
-		}
-	}
-
-	// Malformed raw for an admitted method: an ordinary terminal parse error, NOT a
-	// capability decline.
-	if _, err := e.Parse(ctx, jsonAliasMethodName, `not json at all !!!`); err == nil {
-		t.Fatal("Parse(malformed) succeeded, want parse error")
-	} else {
-		var typed *bamlutils.NativeSpineUnsupportedMethodError
-		if errors.As(err, &typed) {
-			t.Fatalf("Parse(malformed) returned a capability decline (%v); malformed raw for an admitted method must be an ordinary parse error", err)
-		}
 	}
 }

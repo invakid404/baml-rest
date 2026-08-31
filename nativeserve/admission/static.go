@@ -344,6 +344,17 @@ func AdmitStaticSpineClaim(ctx context.Context, in StaticInput) (*StaticClaim, e
 	if dec != nil {
 		return nil, staticDeclineFromObs(*dec)
 	}
+	// A send-path rewrite/proxy on the EFFECTIVE target would make the frozen-oracle
+	// exact-transport evidence meaningless (the request would go elsewhere), so decline
+	// pre-claim against the prepared URL. The spine omits the BAML plan-compare, which
+	// is where the dynamic/static observe lanes run this check (static.go
+	// staticPlanCompareObservation), so AdmitStaticSpineClaim runs it explicitly (Codex
+	// review finding 1). SingleLeaf / no-fallback / no-round-robin / no-retry-override
+	// were already enforced by admitStaticThroughPrepare's layer-2 strategy gate.
+	if in.WouldRewriteOrProxy != nil && in.WouldRewriteOrProxy(prep.prepared.URL) {
+		prep.close()
+		return nil, staticDeclineFromObs(declineStatic(bamlutils.NativeStaticFamilyClient, StageStrategy, ReasonURLRewriteOrProxy))
+	}
 	// The ONE root-owned totality gate: the exact five-arm `JSON` alias family. It is
 	// strictly narrower than admittedStaticReturnShape (it excludes the FINAL-served
 	// JsonValue and every other alias/shape), so a non-exact-alias descriptor that

@@ -19,18 +19,13 @@ func TestMapAttemptUnknownOutcomeFailsAfterClaim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildFromSource: %v", err)
 	}
-	var m = proj.Methods[0]
-	fn, err := nativespine.ReconstructFunction(proj, m)
-	if err != nil {
-		t.Fatalf("ReconstructFunction: %v", err)
-	}
-	e, err := NewUnaryExecutor([]SpineMethod{{Function: fn, Binding: nativespinejsonfixture.Binding()}}, nil)
+	e, err := NewUnaryExecutor(proj, []bamlutils.NativeSpineUnaryBinding{nativespinejsonfixture.Binding()}, nil)
 	if err != nil {
 		t.Fatalf("NewUnaryExecutor: %v", err)
 	}
-	rm := e.registry[m.Name]
+	rm := e.registry["StaticRecursiveAliasJSON"]
 	if rm == nil {
-		t.Fatalf("method %q not registered", m.Name)
+		t.Fatalf("method not registered")
 	}
 
 	// An outcome value outside {Structured, ParseDeclined, ProviderError, InvalidBody}.

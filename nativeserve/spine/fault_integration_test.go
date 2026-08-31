@@ -4,15 +4,14 @@ package spine_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
+	"github.com/invakid404/baml-rest/bamlutils/urlrewrite"
 	"github.com/invakid404/baml-rest/internal/nativespinejsonfixture"
 	"github.com/invakid404/baml-rest/nativeserve/spine"
 )
@@ -21,12 +20,7 @@ import (
 // given binding (the emitted one, or a custom fault-injecting one).
 func execFor(t *testing.T, baseURL string, binding bamlutils.NativeSpineUnaryBinding) *spine.UnaryExecutor {
 	t.Helper()
-	fn := reconstructJSONAlias(t, baseURL)
-	e, err := spine.NewUnaryExecutor([]spine.SpineMethod{{Function: fn, Binding: binding}}, nil)
-	if err != nil {
-		t.Fatalf("NewUnaryExecutor: %v", err)
-	}
-	return e
+	return newJSONExec(t, baseURL, nil, binding)
 }
 
 // callThroughComposite drives one Call through a fallback composite so the same
@@ -34,7 +28,7 @@ func execFor(t *testing.T, baseURL string, binding bamlutils.NativeSpineUnaryBin
 // NOT invoked after the claim".
 func callThroughComposite(ctx context.Context, e *spine.UnaryExecutor) (bamlutils.NativeSpineUnaryResult, int) {
 	comp := &fallbackComposite{inner: e, fallbackFinal: "must-not-be-served"}
-	res := comp.Call(ctx, jsonAliasMethodName, &nativespinejsonfixture.StaticRecursiveAliasJsonInput{Topic: "weather"})
+	res := comp.Call(ctx, jsonAliasMethod, &nativespinejsonfixture.StaticRecursiveAliasJsonInput{Topic: "weather"})
 	return res, comp.fallbackCalls
 }
 
@@ -120,7 +114,7 @@ func TestCancelBeforeAfterClaim(t *testing.T) {
 
 		// The INNER executor declines pre-socket (the composite masks that to a fallback
 		// success, which is exactly the fallback-legal behaviour we assert next).
-		inner := e.Call(ctx, jsonAliasMethodName, &nativespinejsonfixture.StaticRecursiveAliasJsonInput{Topic: "weather"})
+		inner := e.Call(ctx, jsonAliasMethod, &nativespinejsonfixture.StaticRecursiveAliasJsonInput{Topic: "weather"})
 		if inner.Disposition != bamlutils.NativeSpineDeclinedPreSocket {
 			t.Fatalf("inner disposition = %v, want declined_pre_socket", inner.Disposition)
 		}
@@ -153,7 +147,7 @@ func TestCancelBeforeAfterClaim(t *testing.T) {
 		done := make(chan struct{ res bamlutils.NativeSpineUnaryResult }, 1)
 		go func() {
 			comp := &fallbackComposite{inner: e, fallbackFinal: "must-not-be-served"}
-			r := comp.Call(ctx, jsonAliasMethodName, &nativespinejsonfixture.StaticRecursiveAliasJsonInput{Topic: "weather"})
+			r := comp.Call(ctx, jsonAliasMethod, &nativespinejsonfixture.StaticRecursiveAliasJsonInput{Topic: "weather"})
 			if comp.fallbackCalls != 0 {
 				t.Errorf("fallback invoked %d times after the claim, want 0", comp.fallbackCalls)
 			}
@@ -200,56 +194,27 @@ func TestConnectionFailureAfterClaim(t *testing.T) {
 	}
 }
 
-// TestOneSendExactTransport proves an admitted call opens EXACTLY one provider socket
-// and the wire request carries the literal test model/key/base URL and no unapproved
-// body field — the exact-transport contract, over the reused nanollm exact plan.
-func TestOneSendExactTransport(t *testing.T) {
-	type captured struct {
-		method string
-		path   string
-		auth   string
-		body   []byte
-	}
-	var rec captured
-	lb := newLoopback(t, func(w http.ResponseWriter, r *http.Request) {
-		buf, _ := io.ReadAll(r.Body)
-		rec = captured{method: r.Method, path: r.URL.Path, auth: r.Header.Get("Authorization"), body: buf}
-		okChatCompletion(w, `{"k":1}`)
-	})
+// TestRewriteProxyDeclinesPreClaim proves the finding-1 rewrite/proxy gate: an
+// adapter whose HTTP client would rewrite the outbound URL declines PRE-CLAIM (the
+// check the omitted BAML plan-compare used to own), opening zero sockets. The check
+// runs against the prepared URL, so nanollm Prepare has run but no socket opened.
+func TestRewriteProxyDeclinesPreClaim(t *testing.T) {
+	lb := newLoopback(t, func(w http.ResponseWriter, r *http.Request) { okChatCompletion(w, `{"k":1}`) })
 	e := execFor(t, lb.baseURL(), nativespinejsonfixture.Binding())
-	res, _ := callThroughComposite(context.Background(), e)
-	if res.Disposition != bamlutils.NativeSpineSucceeded {
-		t.Fatalf("disposition = %v (err %v), want succeeded", res.Disposition, res.Err)
-	}
 
-	if lb.count() != 1 {
-		t.Fatalf("provider request count = %d, want exactly 1", lb.count())
+	ad := newTestAdapter()
+	// Any non-empty rewrite rule makes WouldRewriteOrProxy report true.
+	ad.httpClient = llmhttp.NewClientWithOptions(llmhttp.ClientOptions{
+		RewriteRules: []urlrewrite.Rule{{From: "https://upstream.example/", To: "http://elsewhere.local/"}},
+	})
+	res := e.Call(ad, jsonAliasMethod, &nativespinejsonfixture.StaticRecursiveAliasJsonInput{Topic: "weather"})
+	if res.Disposition != bamlutils.NativeSpineDeclinedPreSocket {
+		t.Fatalf("disposition = %v (reason %q), want declined_pre_socket", res.Disposition, res.Reason)
 	}
-	if rec.method != http.MethodPost {
-		t.Errorf("method = %q, want POST", rec.method)
+	if lb.count() != 0 {
+		t.Fatalf("provider request count = %d, want 0 (rewrite/proxy declines pre-socket)", lb.count())
 	}
-	if rec.auth != "Bearer sk-execbridge-u1-not-a-real-secret" {
-		t.Errorf("Authorization header mismatch (the literal test api_key is on the wire)")
-	}
-	// No unapproved body field: exactly model + messages, with the literal model.
-	var body map[string]json.RawMessage
-	if err := json.Unmarshal(rec.body, &body); err != nil {
-		t.Fatalf("request body is not JSON: %v (%s)", err, rec.body)
-	}
-	if len(body) != 2 {
-		t.Fatalf("request body has %d top-level keys, want exactly 2 (model, messages): %s", len(body), rec.body)
-	}
-	for _, k := range []string{"model", "messages"} {
-		if _, ok := body[k]; !ok {
-			t.Errorf("request body missing %q key: %s", k, rec.body)
-		}
-	}
-	var model string
-	_ = json.Unmarshal(body["model"], &model)
-	if model != "gpt-4o-mini" {
-		t.Errorf("wire model = %q, want the literal gpt-4o-mini", model)
-	}
-	if !strings.Contains(string(rec.body), "Return a JSON document describing weather") {
-		t.Errorf("rendered prompt not on the wire: %s", rec.body)
+	if snap := e.Metrics().Snapshot(); snap.Sockets != 0 || snap.Claims != 0 || snap.Failures != 0 {
+		t.Fatalf("metrics = %+v, want zero sockets/claims/failures", snap)
 	}
 }

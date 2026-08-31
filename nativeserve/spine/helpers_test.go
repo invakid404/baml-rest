@@ -10,15 +10,12 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/invakid404/baml-rest/bamlutils/projectdescriptor"
-	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
-	"github.com/invakid404/baml-rest/internal/nativespine"
+	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/internal/nativespinejsonfixture"
 	"github.com/invakid404/baml-rest/nativeserve/spine"
 	"github.com/invakid404/baml-rest/worker"
 )
-
-const jsonAliasMethod = "StaticRecursiveAliasJSON"
 
 // loopback is a loopback OpenAI-compatible provider with a request-count spy. Its
 // handler is fully caller-controlled so a test can serve a canned success, a fault,
@@ -59,59 +56,25 @@ func okChatCompletion(w http.ResponseWriter, content string) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
-// reconstructJSONAlias builds the ExecBridge-U1 JSON-alias project from source,
-// reconstructs the StaticRecursiveAliasJSON function, and points its client's
-// base_url at baseURL (the descriptor otherwise carries the corpus placeholder URL).
-func reconstructJSONAlias(t *testing.T, baseURL string) promptdescriptor.Function {
+// newJSONExec builds the production spine executor over the admitted JSON-alias
+// project with base_url pointed at baseURL and the given emitted binding (default =
+// nativespinejsonfixture.Binding). exec is the exact executor (nil = default).
+func newJSONExec(t *testing.T, baseURL string, exec *llmhttp.ExactExecutor, binding ...bamlutils.NativeSpineUnaryBinding) *spine.UnaryExecutor {
 	t.Helper()
-	proj, err := nativespine.BuildFromSource(nativespine.JSONAliasFixtureSources)
+	proj := injectBaseURL(t, jsonAliasProject(t), baseURL)
+	b := nativespinejsonfixture.Binding()
+	if len(binding) > 0 {
+		b = binding[0]
+	}
+	e, err := spine.NewUnaryExecutor(proj, []bamlutils.NativeSpineUnaryBinding{b}, exec)
 	if err != nil {
-		t.Fatalf("BuildFromSource: %v", err)
+		t.Fatalf("NewUnaryExecutor: %v", err)
 	}
-	var m projectdescriptor.Method
-	for _, mm := range proj.Methods {
-		if mm.Name == jsonAliasMethod {
-			m = mm
-		}
-	}
-	if m.Name == "" {
-		t.Fatalf("%s not admitted (methods=%d diagnostics=%d)", jsonAliasMethod, len(proj.Methods), len(proj.Diagnostics))
-	}
-	fn, err := nativespine.ReconstructFunction(proj, m)
-	if err != nil {
-		t.Fatalf("ReconstructFunction: %v", err)
-	}
-	return withBaseURL(t, fn, baseURL)
+	return e
 }
 
-// withBaseURL returns a copy of fn whose client base_url transport option is set to
-// baseURL (the loopback), mirroring how the static-serve integration test injects its
-// loopback URL. It fails if the descriptor carries no base_url option to override.
-func withBaseURL(t *testing.T, fn promptdescriptor.Function, baseURL string) promptdescriptor.Function {
-	t.Helper()
-	opts := make([]promptdescriptor.ClientOption, len(fn.ClientConfig.TransportOptions))
-	copy(opts, fn.ClientConfig.TransportOptions)
-	found := false
-	for i := range opts {
-		if opts[i].Key == "base_url" {
-			opts[i].Value = promptdescriptor.OptionValue{Kind: promptdescriptor.OptionString, String: baseURL}
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("descriptor client carries no base_url transport option to override")
-	}
-	fn.ClientConfig.TransportOptions = opts
-	return fn
-}
-
-// jsonAliasMethods pairs the reconstructed descriptor with the emitted binding.
-func jsonAliasMethods(fn promptdescriptor.Function) []spine.SpineMethod {
-	return []spine.SpineMethod{{Function: fn, Binding: nativespinejsonfixture.Binding()}}
-}
-
-// newHandler builds the production spine executor over the given methods and wraps it
-// in the emitted JSON-alias runtime + a worker.Handler.
+// newHandler wraps the spine executor in the emitted JSON-alias runtime + a
+// worker.Handler (the production dispatch path that passes the adapter into Call).
 func newHandler(t *testing.T, exec *spine.UnaryExecutor) *worker.Handler {
 	t.Helper()
 	rt := nativespinejsonfixture.NewNativeRuntime(exec)
