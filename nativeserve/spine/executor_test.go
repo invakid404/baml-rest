@@ -240,8 +240,42 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 		{"binding_name_mismatch", jsonAliasProject(t), renameBinding(jsonAliasBinding(), "Other"), "did not admit", "register:binding", "coverage"},
 	}
 
+	// layerWants maps each SUB-gate label to the decline substring(s) its rows may carry,
+	// so `layer` and `want` are checked for mutual consistency — not just the
+	// validate/register PREFIX (CodeRabbit #10). A row mislabelled with the wrong
+	// sub-gate (e.g. a totality row tagged register:binding) fails: its `want` is not in
+	// the tagged sub-gate's set. Every layer used by a row above must appear here.
+	layerWants := map[string][]string{
+		"validate:version":        {"project version", "prompt-descriptor version", "schema version"},
+		"validate:capability":     {"capability"},
+		"register:totality":       {"JSON alias cohort"},
+		"register:required-scalar": {"is nullable", "required-scalar cohort"},
+		"register:client-cohort":  {"not the proven openai", "valid UTF-8", "request_body option"},
+		"register:reconstruct":    {"template-free", "forbids retries"},
+		"register:envelope":       {"return names method", "streaming variant"},
+		"register:binding":        {"ProjectInput is nil", "DecodeFinal is nil", "did not admit"},
+	}
+
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Sub-gate consistency (CodeRabbit #10): the row's `want` must be one the
+			// tagged `layer` can produce, so a mislabelled sub-gate cannot pass by only
+			// matching the validate/register prefix below.
+			allowed, known := layerWants[tc.layer]
+			if !known {
+				t.Fatalf("row %q has layer %q with no expected-want set (add it to layerWants)", tc.name, tc.layer)
+			}
+			okWant := false
+			for _, w := range allowed {
+				if w == tc.want {
+					okWant = true
+					break
+				}
+			}
+			if !okWant {
+				t.Fatalf("row %q layer %q expects want in %v, but the row's want is %q — layer/want mismatch (mislabelled sub-gate?)", tc.name, tc.layer, allowed, tc.want)
+			}
+
 			// Per-row zero-socket proof: point the project's client at a counting
 			// loopback and assert the failed construction opens NO socket (the
 			// constructor is pure — no nanollm New/Prepare — so it never dials).

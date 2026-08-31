@@ -7,18 +7,32 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/internal/nativespinejsonfixture"
 	"github.com/invakid404/baml-rest/workerplugin"
 )
 
-func drain(ch <-chan *workerplugin.StreamResult) []*workerplugin.StreamResult {
+// drain collects every StreamResult until the channel closes, bounded by a deadline so a
+// producer that never closes the channel fails HERE with a clear message instead of
+// hanging until the package test timeout (CodeRabbit #8).
+func drain(t *testing.T, ch <-chan *workerplugin.StreamResult) []*workerplugin.StreamResult {
+	t.Helper()
 	var out []*workerplugin.StreamResult
-	for r := range ch {
-		out = append(out, r)
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case r, ok := <-ch:
+			if !ok {
+				return out
+			}
+			out = append(out, r)
+		case <-deadline:
+			t.Fatalf("stream channel did not close within 10s after %d result(s) — the producer never closed it", len(out))
+			return out
+		}
 	}
-	return out
 }
 
 // TestRealPopulation_CallAndParse drives the FULL real-population path end to end
@@ -48,7 +62,7 @@ func TestRealPopulation_CallAndParse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CallStream: %v", err)
 	}
-	results := drain(ch)
+	results := drain(t, ch)
 	if len(results) != 1 {
 		t.Fatalf("want 1 stream result, got %d", len(results))
 	}

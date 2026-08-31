@@ -25,6 +25,12 @@ type NativeRuntime struct {
 // production spine executor in the real-population integration test); the runtime
 // never makes a BAML request or parse call.
 func NewNativeRuntime(exec bamlutils.NativeSpineUnaryExecutor) *NativeRuntime {
+	if exec == nil {
+		// A nil executor would defer the failure to the emitted Impl goroutine (a
+		// nil-interface Call panics and kills the process); reject it here, at
+		// construction, so a misbuilt runtime fails loudly and locally (CodeRabbit #3).
+		panic("nativespinefixture: NewNativeRuntime requires a non-nil executor")
+	}
 	sm, pm := BuildMethod(exec)
 	return &NativeRuntime{
 		methods:      map[string]bamlutils.StreamingMethod{MethodName: sm},

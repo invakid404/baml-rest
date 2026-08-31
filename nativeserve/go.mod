@@ -29,10 +29,11 @@
 // packages the root's internal/* imports here), so the three first-party requires
 // are pinned to the ORIGIN-RESOLVABLE pseudo-version of a single commit — the one
 // nativeserve/pin_followup.md records and cmd/build's TestFirstPartyPinFollowupIsTracked
-// checks, which is CURRENTLY the de-BAML /parse batch-2 MASTER squash commit (STATUS:
-// RESOLVED, the post-squash re-pin performed), NOT the historical Slice 7.1b master merge
-// 15b98cf6ebe4 named in the floor notes below — one consistent snapshot that resolves
-// cleanly off a fresh checkout with zero local replacements. The replace directives below
+// checks, which is CURRENTLY the ExecBridge-U1 BRANCH source commit (STATUS:
+// OUTSTANDING — the post-squash re-pin to the eventual master squash commit is still
+// OWED; see the PIN-STATUS block below and pin_followup.md), NOT the historical Slice
+// 7.1b master merge 15b98cf6ebe4 named in the floor notes below — one consistent snapshot
+// that resolves cleanly off a fresh checkout with zero local replacements. The replace directives below
 // are for local development only; Go
 // ignores a dependency module's replaces, so an external consumer resolves those
 // pseudo-versions itself, DIRECT from the origin repo under GOPRIVATE.

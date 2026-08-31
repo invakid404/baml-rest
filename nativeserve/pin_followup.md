@@ -32,7 +32,7 @@ must read `OUTSTANDING`, and once the re-pin lands on master it must be flipped 
 `nativeserve/go.mod`'s BUMP RULE header states the general rule. This file is the
 CONCRETE, per-change instance of it, which is what the generic comment cannot be.
 
-```
+```text
 STATUS: OUTSTANDING
 PINNED-COMMIT: 8427c6315563
 PINNED-STAMP: 20260831140315

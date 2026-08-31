@@ -7,7 +7,6 @@ import (
 	"errors"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
@@ -137,7 +136,15 @@ func TestCancelBeforeAfterClaim(t *testing.T) {
 	// --- cancel after claim: terminal failure, no fallback, one entered socket ---
 	t.Run("cancel_after_claim", func(t *testing.T) {
 		release := make(chan struct{})
+		entered := make(chan struct{}, 1)
 		lb := newLoopback(t, func(w http.ResponseWriter, r *http.Request) {
+			// Signal that the socket was actually ENTERED (the handler was reached). A
+			// buffered non-blocking send is safe even if the handler somehow ran twice
+			// (the spine sends exactly once, which the count()==1 assertion also checks).
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
 			<-release // block until the caller cancels
 			okChatCompletion(w, `{"k":1}`)
 		})
@@ -154,8 +161,10 @@ func TestCancelBeforeAfterClaim(t *testing.T) {
 			done <- struct{ res bamlutils.NativeSpineUnaryResult }{r}
 		}()
 
-		// Give the request time to enter the socket, then cancel while it is in flight.
-		time.Sleep(150 * time.Millisecond)
+		// Wait until the request has actually ENTERED the socket (handler reached), then
+		// cancel while it is in flight — deterministic, not a fixed sleep that can race a
+		// loaded runner into a pre-claim cancel (CodeRabbit #7).
+		<-entered
 		cancel()
 		close(release)
 
@@ -216,5 +225,34 @@ func TestRewriteProxyDeclinesPreClaim(t *testing.T) {
 	}
 	if snap := e.Metrics().Snapshot(); snap.Sockets != 0 || snap.Claims != 0 || snap.Failures != 0 {
 		t.Fatalf("metrics = %+v, want zero sockets/claims/failures", snap)
+	}
+}
+
+// TestGlobalRewriteProxyDeclinesPlainContext proves the rewrite/proxy gate runs even on a
+// PLAIN-context call with NO adapter-configured client: a GLOBAL rewrite/proxy rule on
+// llmhttp.DefaultClient still declines pre-socket, so a global rule can never silently
+// route a native send elsewhere. Before CodeRabbit #9, staticInput left
+// WouldRewriteOrProxy nil when ad==nil, so AdmitStaticSpineClaim SKIPPED the gate.
+func TestGlobalRewriteProxyDeclinesPlainContext(t *testing.T) {
+	lb := newLoopback(t, func(w http.ResponseWriter, r *http.Request) { okChatCompletion(w, `{"k":1}`) })
+	e := execFor(t, lb.baseURL(), nativespinejsonfixture.Binding())
+
+	// Install a global rewrite rule on the process-default client (restored after).
+	orig := llmhttp.DefaultClient
+	t.Cleanup(func() { llmhttp.DefaultClient = orig })
+	llmhttp.DefaultClient = llmhttp.NewClientWithOptions(llmhttp.ClientOptions{
+		RewriteRules: []urlrewrite.Rule{{From: "https://upstream.example/", To: "http://elsewhere.local/"}},
+	})
+
+	// PLAIN context.Background() — no adapter, so the gate falls back to DefaultClient.
+	res := e.Call(context.Background(), jsonAliasMethod, &nativespinejsonfixture.StaticRecursiveAliasJsonInput{Topic: "weather"})
+	if res.Disposition != bamlutils.NativeSpineDeclinedPreSocket {
+		t.Fatalf("disposition = %v (reason %q), want declined_pre_socket", res.Disposition, res.Reason)
+	}
+	if lb.count() != 0 {
+		t.Fatalf("provider request count = %d, want 0 (a global rewrite/proxy rule must decline pre-socket)", lb.count())
+	}
+	if snap := e.Metrics().Snapshot(); snap.Sockets != 0 || snap.Claims != 0 {
+		t.Fatalf("metrics = %+v, want zero sockets/claims", snap)
 	}
 }

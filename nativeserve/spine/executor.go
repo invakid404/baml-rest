@@ -27,6 +27,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync/atomic"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -194,6 +195,9 @@ func (e *UnaryExecutor) Methods() []string {
 	for name := range e.registry {
 		out = append(out, name)
 	}
+	// Map iteration order is randomized; sort so the result is deterministic and matches
+	// the "sorted set" the doc promises (CodeRabbit #6).
+	sort.Strings(out)
 	return out
 }
 

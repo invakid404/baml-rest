@@ -945,6 +945,20 @@ func buildStaticValueExpr(b *strings.Builder, fieldExpr string, vt promptdescrip
 		fmt.Fprintf(b, "\t\t%s = append(%s, %s)\n", itemsVar, itemsVar, elemExpr)
 		fmt.Fprintf(b, "\t}\n")
 		listVar := seed + "List"
+		if vt.Nullable {
+			// A NULLABLE list's carrier field is a slice (valueGoType keeps ValueList as
+			// []T, never *[]T), so a NIL slice is the source `null` and a non-nil slice —
+			// INCLUDING a non-nil empty one — is `[]`. Project them distinctly: nil to
+			// StaticNull, non-nil to the StaticList built above. Without this, a nil slice
+			// would fall through to StaticList{Items: []} and silently rewrite null -> [].
+			fmt.Fprintf(b, "\tvar %s promptdescriptor.StaticValue\n", listVar)
+			fmt.Fprintf(b, "\tif %s == nil {\n", fieldExpr)
+			fmt.Fprintf(b, "\t\t%s = promptdescriptor.StaticValue{Kind: promptdescriptor.StaticNull}\n", listVar)
+			fmt.Fprintf(b, "\t} else {\n")
+			fmt.Fprintf(b, "\t\t%s = promptdescriptor.StaticValue{Kind: promptdescriptor.StaticList, Items: %s}\n", listVar, itemsVar)
+			fmt.Fprintf(b, "\t}\n")
+			return listVar, nil
+		}
 		fmt.Fprintf(b, "\t%s := promptdescriptor.StaticValue{Kind: promptdescriptor.StaticList, Items: %s}\n", listVar, itemsVar)
 		return listVar, nil
 	default:

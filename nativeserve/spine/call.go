@@ -201,8 +201,14 @@ func (e *UnaryExecutor) staticInput(rm *registeredMethod, values []promptdescrip
 		Mode:                bamlutils.NativeStaticModeFinal,
 		SingleLeaf:          true,
 		Provider:            rm.fn.Provider,
-		SpineLane:           true,
 	}
+	// The rewrite/proxy gate must ALWAYS run, even on a PLAIN-context call with no
+	// adapter-configured client: default the predicate to the process-global
+	// llmhttp.DefaultClient (which knows the global rewrite/proxy rules) so
+	// AdmitStaticSpineClaim can never SKIP the gate and let a global rewrite/proxy rule
+	// route a native send elsewhere (CodeRabbit #9). An adapter-configured HTTP client,
+	// when present, OVERRIDES the default below.
+	in.WouldRewriteOrProxy = llmhttp.DefaultClient.WouldRewriteOrProxy
 	// Request-scoped orchestration facts (Codex review finding 1). A request retry
 	// override or a round-robin advancer declines at admission's strategy gate; a
 	// rewrite/proxy on the effective send target declines pre-claim inside
@@ -212,11 +218,9 @@ func (e *UnaryExecutor) staticInput(rm *registeredMethod, values []promptdescrip
 	if ad != nil {
 		in.HasRequestRetryOverride = ad.RetryConfig() != nil
 		in.HasRoundRobin = ad.RoundRobinAdvancer() != nil
-		hc := ad.HTTPClient()
-		if hc == nil {
-			hc = llmhttp.DefaultClient
+		if hc := ad.HTTPClient(); hc != nil {
+			in.WouldRewriteOrProxy = hc.WouldRewriteOrProxy
 		}
-		in.WouldRewriteOrProxy = hc.WouldRewriteOrProxy
 	}
 	return in
 }

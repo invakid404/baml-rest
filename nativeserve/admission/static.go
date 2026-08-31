@@ -192,16 +192,6 @@ type StaticInput struct {
 	// [Input]. Production leaves both halves zero, so every static request resolves
 	// to CohortNone and declines with cohort_not_enrolled before any native work.
 	Cohort CohortInput
-
-	// SpineLane marks the ExecBridge-U1 codegen-spine unary lane (AdmitStaticSpineClaim).
-	// This lane has its OWN registration-time admission — a root-owned totality gate
-	// over the emitted exact-JSON cohort, resolved before any request — so it does not
-	// consult the dynamic-rollout default-deny cohort manifest (layer 1b), which the
-	// bridge deliberately must NOT widen. It is FALSE for every existing observe/serve
-	// caller, so their layer-1b behaviour is byte-unchanged. It never relaxes any other
-	// gate: mode, orchestration plan, descriptor envelope, arg binder, prompt render,
-	// client normalize and nanollm Prepare all still apply.
-	SpineLane bool
 }
 
 // StaticObservation is the tri-state observation AdmitStatic records before forcing
@@ -257,7 +247,7 @@ func (p *staticPrepared) close() {
 // proven no-send static chain (SupportsStatic -> RenderStatic -> NormalizeStaticClient
 // -> BuildOpenAIChat -> nanollm Prepare -> BAML Request.<Method> compare) elsewhere.
 func AdmitStatic(ctx context.Context, in StaticInput) StaticObservation {
-	prep, dec := admitStaticThroughPrepare(ctx, in)
+	prep, dec := admitStaticThroughPrepare(ctx, in, false)
 	if dec != nil {
 		return *dec
 	}
@@ -275,7 +265,7 @@ func AdmitStatic(ctx context.Context, in StaticInput) StaticObservation {
 // (the engine is closed before returning), so the caller runs BAML for the same
 // call in the same request — the exact tri-state pre-claim boundary.
 func AdmitStaticClaim(ctx context.Context, in StaticInput) (*StaticClaim, error) {
-	prep, dec := admitStaticThroughPrepare(ctx, in)
+	prep, dec := admitStaticThroughPrepare(ctx, in, false)
 	if dec != nil {
 		return nil, staticDeclineFromObs(*dec)
 	}
@@ -333,14 +323,18 @@ func AdmitStaticClaim(ctx context.Context, in StaticInput) (*StaticClaim, error)
 //     is OMITTED by design: the spine module carries no generated BAML plan closure,
 //     and frozen v0.223 oracle evidence replaces it for this exact cohort.
 //
-// The spine lane's layer-1b cohort gate is skipped (SpineLane) because this lane has
-// its own registration-time admission. Every pre-claim decline still guarantees NO
-// socket occurred (the engine is closed before returning). On a full pass it returns
-// a *StaticClaim that keeps the request-scoped nanollm engine alive for exactly one
-// RoundTrip; every decline returns a typed *StaticDecline.
+// The spine lane's layer-1b cohort gate is skipped because this lane has its own
+// registration-time admission. The lane is selected by an INTERNAL parameter to
+// admitStaticThroughPrepare, NOT a caller-settable StaticInput field, so ONLY this entry
+// point can skip the cohort gate — a caller of AdmitStatic/AdmitStaticParse/
+// AdmitStaticClaim cannot opt into the skip (CodeRabbit #4; the same "the surface is the
+// LANE's constant, never a caller field" rule the neighbouring gate states). Every
+// pre-claim decline still guarantees NO socket occurred (the engine is closed before
+// returning). On a full pass it returns a *StaticClaim that keeps the request-scoped
+// nanollm engine alive for exactly one RoundTrip; every decline returns a typed
+// *StaticDecline.
 func AdmitStaticSpineClaim(ctx context.Context, in StaticInput) (*StaticClaim, error) {
-	in.SpineLane = true
-	prep, dec := admitStaticThroughPrepare(ctx, in)
+	prep, dec := admitStaticThroughPrepare(ctx, in, true)
 	if dec != nil {
 		return nil, staticDeclineFromObs(*dec)
 	}
@@ -384,7 +378,7 @@ func AdmitStaticSpineClaim(ctx context.Context, in StaticInput) (*StaticClaim, e
 // (the caller decides whether to close or claim it); on any gate decline it returns
 // a *StaticObservation and leaves NO engine open. It performs NO plan compare and
 // opens NO socket.
-func admitStaticThroughPrepare(ctx context.Context, in StaticInput) (*staticPrepared, *StaticObservation) {
+func admitStaticThroughPrepare(ctx context.Context, in StaticInput, spineLane bool) (*staticPrepared, *StaticObservation) {
 	decline := func(family bamlutils.NativeStaticObserveFamily, stage Stage, reason Reason) (*staticPrepared, *StaticObservation) {
 		o := declineStatic(family, stage, reason)
 		return nil, &o
@@ -432,7 +426,8 @@ func admitStaticThroughPrepare(ctx context.Context, in StaticInput) (*staticPrep
 	// evaluate it. It runs before the orchestration-plan, descriptor, render,
 	// client-normalize and nanollm New/Prepare work below, so a non-enrolled static
 	// configuration costs ZERO native work and provably opens no socket. The surface
-	// is the LANE's constant, never a caller field. It only NARROWS.
+	// is the LANE's constant (the internal spineLane parameter), never a caller field.
+	// It only NARROWS.
 	//
 	// The bounded observe FAMILY is `capability`: like the flag/route/build rows just
 	// above, this is a deployment-level refusal, and the precision lives in the
@@ -444,7 +439,7 @@ func admitStaticThroughPrepare(ctx context.Context, in StaticInput) (*staticPrep
 	// the dynamic cohort manifest. cohort stays CohortNone, carried out for telemetry.
 	// Every non-spine caller keeps the gate exactly.
 	cohort := CohortNone
-	if !in.SpineLane {
+	if !spineLane {
 		c, cd := admitCohort(SurfaceStaticCall, in.Cohort)
 		if cd != nil {
 			return decline(bamlutils.NativeStaticFamilyCapability, cd.Stage, cd.Reason)
