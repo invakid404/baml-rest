@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -162,20 +163,33 @@ func TestCancelBeforeAfterClaim(t *testing.T) {
 			done <- struct{ res bamlutils.NativeSpineUnaryResult }{r}
 		}()
 
+		// releaseNow unblocks the handler (which parks on <-release) exactly once, so the
+		// normal-path release and a failure-path release never double-close (CodeRabbit
+		// wave-3). cancel() is already idempotent.
+		var releaseOnce sync.Once
+		releaseNow := func() { releaseOnce.Do(func() { close(release) }) }
+
 		// Wait until the request has actually ENTERED the socket (handler reached), then
 		// cancel while it is in flight — deterministic, not a fixed sleep that can race a
 		// loaded runner into a pre-claim cancel (CodeRabbit #7). Bound the wait: if the
 		// request finishes or errors BEFORE the handler runs, fail HERE with a clear
 		// message instead of blocking to the package test timeout (CodeRabbit #2 follow-on).
+		// On the FAILURE branches, cancel + release BEFORE t.Fatal so the in-flight request
+		// (parked in ExecuteWithHeartbeat) and the handler goroutine unwind cleanly rather
+		// than leaking past the aborted test (CodeRabbit wave-3).
 		select {
 		case <-entered:
 		case got := <-done:
+			cancel()
+			releaseNow()
 			t.Fatalf("request completed (disposition %v, err %v) before entering the socket handler; cannot exercise cancel-after-claim", got.res.Disposition, got.res.Err)
 		case <-time.After(10 * time.Second):
+			cancel()
+			releaseNow()
 			t.Fatal("timed out waiting for the request to enter the socket handler")
 		}
 		cancel()
-		close(release)
+		releaseNow()
 
 		got := <-done
 		if got.res.Disposition != bamlutils.NativeSpineFailedAfterClaim {
