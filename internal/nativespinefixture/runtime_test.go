@@ -15,8 +15,14 @@ import (
 // The fixture runtime satisfies the production worker.Runtime contract.
 var _ worker.Runtime = (*NativeRuntime)(nil)
 
-// fakeExecutor is the neutral injected executor for M1 — no BAML request/parse,
-// no socket. It records what it was called with and returns canned results.
+// The fake executor satisfies the neutral executor contract the emitted BuildMethod
+// drives.
+var _ bamlutils.NativeSpineUnaryExecutor = (*fakeExecutor)(nil)
+
+// fakeExecutor is the neutral injected executor for the fixture — no BAML
+// request/parse, no socket. It records what it was called with and returns canned
+// tri-state results (a canned callErr surfaces as a terminal failed-after-claim,
+// which the worker bridge frames as an error either way).
 type fakeExecutor struct {
 	callInput   any
 	callResult  any
@@ -28,16 +34,16 @@ type fakeExecutor struct {
 	parseCount  int
 }
 
-func (e *fakeExecutor) Call(_ string, input any) (any, error) {
+func (e *fakeExecutor) Call(_ context.Context, _ string, input any) bamlutils.NativeSpineUnaryResult {
 	e.callCount++
 	e.callInput = input
 	if e.callErr != nil {
-		return nil, e.callErr
+		return bamlutils.FailedAfterClaimSpineResult(e.callErr, "test", "call_err")
 	}
-	return e.callResult, nil
+	return bamlutils.SucceededSpineResult(e.callResult)
 }
 
-func (e *fakeExecutor) Parse(_ string, raw string) (any, error) {
+func (e *fakeExecutor) Parse(_ context.Context, _ string, raw string) (any, error) {
 	e.parseCount++
 	e.parseRaw = raw
 	if e.parseErr != nil {

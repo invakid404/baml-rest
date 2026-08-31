@@ -21,8 +21,10 @@ type NativeRuntime struct {
 }
 
 // NewNativeRuntime builds the runtime from an injected executor. The executor is
-// neutral (a fake in M1); the runtime never makes a BAML request or parse call.
-func NewNativeRuntime(exec Executor) *NativeRuntime {
+// the neutral bamlutils.NativeSpineUnaryExecutor (a fake in the fixture tests, the
+// production spine executor in the real-population integration test); the runtime
+// never makes a BAML request or parse call.
+func NewNativeRuntime(exec bamlutils.NativeSpineUnaryExecutor) *NativeRuntime {
 	sm, pm := BuildMethod(exec)
 	return &NativeRuntime{
 		methods:      map[string]bamlutils.StreamingMethod{MethodName: sm},

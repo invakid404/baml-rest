@@ -161,6 +161,7 @@ require (
 	github.com/invakid404/baml-rest v0.0.0-20260827134815-7c7bed8291b6
 	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260827134815-7c7bed8291b6
 	github.com/invakid404/baml-rest/worker v0.0.49-0.20260827134815-7c7bed8291b6
+	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/viktordanov/nanollm-ffi/go v0.4.3
@@ -191,12 +192,14 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/cloudwego/gjson v0.1.1 // indirect
+	github.com/dave/jennifer v1.7.1 // indirect
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/hashicorp/go-hclog v1.6.3 // indirect
 	github.com/hashicorp/go-plugin v1.8.0 // indirect
 	github.com/hashicorp/yamux v0.1.2 // indirect
-	github.com/invakid404/baml-rest/workerplugin v0.0.48 // indirect
+	github.com/invakid404/baml-rest/adapters/common v0.0.48 // indirect
+	github.com/invakid404/baml-rest/introspected v0.0.48 // indirect
 	github.com/invakid404/minijinja-go/v2 v2.16.0-baml.6 // indirect
 	github.com/klauspost/compress v1.19.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
@@ -207,6 +210,7 @@ require (
 	github.com/prometheus/common v0.69.0 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
+	github.com/stoewer/go-strcase v1.3.1 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect

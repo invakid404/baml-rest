@@ -1,0 +1,224 @@
+// Package spine is the ExecBridge-U1 production codegen-spine unary executor: the
+// thin ownership/adaptation lane that attaches the emitted hermetic carriers to the
+// EXISTING native machinery — nativeprompt render, nativebody NormalizeStaticClient,
+// nanollm Prepare, execute.RunAttempt's exact one-send, debaml.ParseStaticBundleUnaryCall,
+// and the emitted bamlutils.DecodeStaticAliasFinal decoder — WITHOUT any generated
+// BAML or CFFI on the emitted/runtime path.
+//
+// It is not a second native stack. Admission reuses nativeserve/admission's
+// AdmitStaticSpineClaim (the shared static building blocks minus the BAML plan-compare
+// oracle); the single send reuses execute.RunAttempt / llmhttp.ExactExecutor; the
+// final parse reuses internal/debaml. The only new logic is an immutable method
+// registry built from the reconstructed scalar descriptor + emitted bindings, gated
+// by the ONE root-owned totality predicate debaml.SupportsNativeStaticStreamBundle,
+// and the tri-state claim discipline (declined-pre-socket / succeeded /
+// failed-after-claim) mapped onto the neutral bamlutils.NativeSpineUnaryResult.
+//
+// COHORT: exactly the proven direct five-arm `JSON` recursive alias, unary final call
+// + direct parse only; inputs required string/int/float/bool scalars only. Emittable
+// is not population-admitted — every other shape declines at registration or, if not
+// registered, at Call with a typed pre-socket decline and zero sockets.
+//
+// Default-deny: this runtime is constructible + exercisable, but it changes no
+// default worker selection or cohort enrollment (that is U1b).
+package spine
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync/atomic"
+
+	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
+	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
+	"github.com/invakid404/baml-rest/internal/debaml"
+	"github.com/invakid404/baml-rest/internal/schema"
+	"github.com/invakid404/baml-rest/nativeserve/admission"
+)
+
+// Bounded, secret-free stage/reason tokens for the neutral tri-state result.
+const (
+	stageRegistry  = "registry"
+	stagePreflight = "preflight"
+	stageProject   = "project_input"
+	stageAdmission = "admission"
+	stagePlanner   = "planner"
+	stageServe     = "serve"
+	stageTransport = "transport"
+	stageProvider  = "provider"
+	stageParse     = "parse"
+	stageDecode    = "decode"
+
+	reasonUnsupportedMethod = "method_not_registered"
+	reasonContextCancelled  = "context_cancelled"
+	reasonProjectInputErr   = "project_input_error"
+	reasonPlannerError      = "planner_error"
+	reasonPlanExpired       = "plan_expired"
+	reasonPanic             = "panic"
+	reasonTransportError    = "transport_error"
+	reasonProviderError     = "provider_error"
+	reasonInvalidBody       = "malformed_2xx_body"
+	reasonNativeParse       = "native_parse_error"
+	reasonParseDeclined     = "native_parse_declined"
+	reasonDecodeError       = "carrier_decode_error"
+	reasonUnknownOutcome    = "unknown_attempt_outcome"
+)
+
+var (
+	errPlanExpired  = errors.New("nativespine: prepared plan expired before the socket")
+	errMalformed2xx = errors.New("nativespine: provider returned a 2xx body the translator could not parse")
+	errParseDecline = errors.New("nativespine: native final parser declined the response shape (no BAML fallback on this cohort)")
+)
+
+// SpineMethod is one neutral registration the runtime is built from: the reconstructed
+// scalar-only descriptor (internal/nativespine.ReconstructFunction) and the emitted
+// binding (the emitted package's Binding()). No nanollm type, no generated BAML type.
+type SpineMethod struct {
+	Function promptdescriptor.Function
+	Binding  bamlutils.NativeSpineUnaryBinding
+}
+
+// registeredMethod is one immutable, validated registry entry: the reconstructed
+// descriptor, its lowered Return Bundle (the native static SAP surface), and the
+// emitted projector/decoder. All resolved at registration time.
+type registeredMethod struct {
+	fn      promptdescriptor.Function
+	bundle  *schema.Bundle
+	binding bamlutils.NativeSpineUnaryBinding
+}
+
+// Metrics is a minimal, bounded observability counter set for the executor. Every
+// counter uses a bounded label (the disposition), never a content-derived value. It
+// is atomic so the executor may be driven concurrently.
+type Metrics struct {
+	declines  atomic.Int64
+	claims    atomic.Int64
+	sockets   atomic.Int64
+	successes atomic.Int64
+	failures  atomic.Int64
+}
+
+// MetricsSnapshot is a point-in-time read of the executor's bounded counters.
+type MetricsSnapshot struct {
+	Declines, Claims, Sockets, Successes, Failures int64
+}
+
+// Snapshot returns the current counter values.
+func (m *Metrics) Snapshot() MetricsSnapshot {
+	return MetricsSnapshot{
+		Declines:  m.declines.Load(),
+		Claims:    m.claims.Load(),
+		Sockets:   m.sockets.Load(),
+		Successes: m.successes.Load(),
+		Failures:  m.failures.Load(),
+	}
+}
+
+// UnaryExecutor is the production bamlutils.NativeSpineUnaryExecutor over the exact
+// five-arm `JSON` cohort. It is immutable after construction.
+type UnaryExecutor struct {
+	registry map[string]*registeredMethod
+	exec     *llmhttp.ExactExecutor
+	metrics  *Metrics
+	// admitClaim is the pre-socket admission step, defaulting to
+	// admission.AdmitStaticSpineClaim. It is a field only so gated tests can inject a
+	// synthetic claim to drive the post-claim fault matrix deterministically; every
+	// production constructor leaves the default.
+	admitClaim func(ctx context.Context, in admission.StaticInput) (*admission.StaticClaim, error)
+}
+
+// compile-time assertion the executor satisfies the neutral contract.
+var _ bamlutils.NativeSpineUnaryExecutor = (*UnaryExecutor)(nil)
+
+// NewUnaryExecutor builds an immutable executor over the given methods. It REJECTS,
+// before serving begins: a duplicate or missing method name, a binding/descriptor
+// name mismatch, a nil ProjectInput/DecodeFinal callback, an input outside the
+// required-scalar cohort, a Return that does not lower, and anything the ONE
+// root-owned totality predicate (debaml.SupportsNativeStaticStreamBundle — the exact
+// five-arm `JSON` alias) declines. A nil exec uses the hardened default exact
+// executor. Callback-before-claim: both closures are resolved and validated here.
+func NewUnaryExecutor(methods []SpineMethod, exec *llmhttp.ExactExecutor) (*UnaryExecutor, error) {
+	if exec == nil {
+		exec = llmhttp.NewExactExecutor(nil)
+	}
+	e := &UnaryExecutor{
+		registry:   make(map[string]*registeredMethod, len(methods)),
+		exec:       exec,
+		metrics:    &Metrics{},
+		admitClaim: admission.AdmitStaticSpineClaim,
+	}
+	for i := range methods {
+		if err := e.register(methods[i]); err != nil {
+			return nil, err
+		}
+	}
+	return e, nil
+}
+
+// Metrics returns the executor's bounded counter set.
+func (e *UnaryExecutor) Metrics() *Metrics { return e.metrics }
+
+// Methods returns the sorted set of admitted method names (registration proof).
+func (e *UnaryExecutor) Methods() []string {
+	out := make([]string, 0, len(e.registry))
+	for name := range e.registry {
+		out = append(out, name)
+	}
+	return out
+}
+
+func (e *UnaryExecutor) register(m SpineMethod) error {
+	fn := m.Function
+	b := m.Binding
+	if fn.Method == "" {
+		return fmt.Errorf("nativespine: register: descriptor has no method name")
+	}
+	if b.Method != fn.Method {
+		return fmt.Errorf("nativespine: register %q: binding names method %q (binding/descriptor name mismatch)", fn.Method, b.Method)
+	}
+	if b.ProjectInput == nil {
+		return fmt.Errorf("nativespine: register %q: binding ProjectInput is nil (callback-before-claim)", fn.Method)
+	}
+	if b.DecodeFinal == nil {
+		return fmt.Errorf("nativespine: register %q: binding DecodeFinal is nil (callback-before-claim)", fn.Method)
+	}
+	if _, dup := e.registry[fn.Method]; dup {
+		return fmt.Errorf("nativespine: register %q: duplicate method", fn.Method)
+	}
+	if err := requiredScalarInputs(fn); err != nil {
+		return fmt.Errorf("nativespine: register %q: %w", fn.Method, err)
+	}
+	bundle, err := schema.FromStaticDescriptor(fn.Return)
+	if err != nil {
+		return fmt.Errorf("nativespine: register %q: lower return bundle: %w", fn.Method, err)
+	}
+	// The ONE root-owned totality predicate — the exact five-arm `JSON` alias family —
+	// controls registration in lockstep with call and direct parse.
+	if err := debaml.SupportsNativeStaticStreamBundle(bundle); err != nil {
+		return fmt.Errorf("nativespine: register %q: not the exact five-arm JSON alias cohort: %w", fn.Method, err)
+	}
+	e.registry[fn.Method] = &registeredMethod{fn: fn, bundle: bundle, binding: b}
+	return nil
+}
+
+// requiredScalarInputs enforces the ExecBridge-U1 input cohort: every argument is a
+// required (non-nullable) string/int/float/bool scalar. No nullable, list, class,
+// enum, map, union, or media input.
+func requiredScalarInputs(fn promptdescriptor.Function) error {
+	for _, a := range fn.Args {
+		if a.ValueType == nil {
+			return fmt.Errorf("argument %q has no resolved value type", a.Name)
+		}
+		vt := *a.ValueType
+		if vt.Nullable {
+			return fmt.Errorf("argument %q is nullable (only required scalars are admitted)", a.Name)
+		}
+		switch vt.Kind {
+		case promptdescriptor.ValueString, promptdescriptor.ValueInt, promptdescriptor.ValueFloat, promptdescriptor.ValueBool:
+		default:
+			return fmt.Errorf("argument %q uses input kind %q outside the required-scalar cohort", a.Name, vt.Kind)
+		}
+	}
+	return nil
+}

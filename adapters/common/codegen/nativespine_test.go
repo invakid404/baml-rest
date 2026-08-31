@@ -71,8 +71,13 @@ func TestEmitNativeStaticUnary(t *testing.T) {
 		"func (v OutputGreeting) MarshalJSON",
 		"nativeSpineMarshalObject", // pure-Go alias-faithful codec (P1-4)
 		`{"text", v.Text}`,         // exact wire key
-		"type Executor interface",
-		"func BuildMethod(exec Executor)",
+		// ExecBridge-U1: neutral executor contract + emitted registration.
+		"func BuildMethod(exec bamlutils.NativeSpineUnaryExecutor)",
+		`"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"`,
+		"func Binding() bamlutils.NativeSpineUnaryBinding",
+		"func projectInput(input any) ([]promptdescriptor.ArgumentValue, error)",
+		"func decodeFinal(canonicalJSON []byte) (any, error)",
+		"bamlutils.DecodeStaticFinal[OutputGreeting]", // class return -> generic strict decoder
 		"bamlutils.StreamModeCall",
 	} {
 		if !strings.Contains(got, want) {

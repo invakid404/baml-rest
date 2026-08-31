@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
 )
 
 // MethodName is the canonical BAML method this file serves.
@@ -39,16 +40,6 @@ func (v *OutputGreeting) UnmarshalJSON(data []byte) error {
 		"text":   &v.Text,
 		"formal": &v.Formal,
 	})
-}
-
-// Executor is the neutral injected execution seam. M1 injects a fake; the real
-// native request/parse executor arrives in a later milestone. It is NOT a BAML
-// request or parse call.
-type Executor interface {
-	// Call runs the unary final call and returns the final output Go value.
-	Call(method string, input any) (any, error)
-	// Parse coerces raw text into the method's output Go value.
-	Parse(method string, raw string) (any, error)
 }
 
 // ErrUnsupportedStreamMode is the stable decline returned when a mode other than
@@ -84,12 +75,17 @@ func (r errorResult) Metadata() *bamlutils.Metadata    { return nil }
 func (r errorResult) Release()                         {}
 
 // BuildMethod returns the StreamingMethod and ParseMethod registrations for
-// MethodName, driven by exec. The StreamingMethod admits unary call mode only
-// and declines every other mode with ErrUnsupportedStreamMode; neither closure
-// makes a BAML request or parse call. A successful executor result is delivered
-// as one final frame; an executor error as one error frame — both flow through
-// the existing worker stream bridge and envelope.
-func BuildMethod(exec Executor) (bamlutils.StreamingMethod, bamlutils.ParseMethod) {
+// MethodName, driven by exec (a neutral bamlutils.NativeSpineUnaryExecutor). The
+// StreamingMethod admits unary call mode only and declines every other mode with
+// ErrUnsupportedStreamMode; neither closure makes a BAML request or parse call. The
+// adapter (a bamlutils.Adapter embeds context.Context) is passed as the executor
+// call context so a cancelled request is observed inside the executor. A succeeded
+// result is delivered as one final frame; a pre-socket decline or a terminal
+// failed-after-claim result as one error frame carrying its typed error — both flow
+// through the existing worker stream bridge and envelope. The module never falls
+// back: an outer composite executor (if any) intercepts a matched pre-socket decline
+// BEFORE this closure sees it, so this module knows nothing about any oracle.
+func BuildMethod(exec bamlutils.NativeSpineUnaryExecutor) (bamlutils.StreamingMethod, bamlutils.ParseMethod) {
 	sm := bamlutils.StreamingMethod{
 		MakeInput:        func() any { return new(GreetInput) },
 		MakeOutput:       func() any { return new(OutputGreeting) },
@@ -105,10 +101,13 @@ func BuildMethod(exec Executor) (bamlutils.StreamingMethod, bamlutils.ParseMetho
 			go func() {
 				defer close(ch)
 				var res bamlutils.StreamResult
-				if final, err := exec.Call(MethodName, input); err != nil {
-					res = errorResult{err: err}
+				out := exec.Call(adapter, MethodName, input)
+				if out.Disposition == bamlutils.NativeSpineSucceeded {
+					res = finalResult{final: out.Final}
 				} else {
-					res = finalResult{final: final}
+					// A pre-socket decline (typed capability decline) or a terminal
+					// failed-after-claim: both surface as one error frame. Never a resend.
+					res = errorResult{err: out.Err}
 				}
 				select {
 				case ch <- res:
@@ -121,7 +120,7 @@ func BuildMethod(exec Executor) (bamlutils.StreamingMethod, bamlutils.ParseMetho
 	pm := bamlutils.ParseMethod{
 		MakeOutput: func() any { return new(OutputGreeting) },
 		Impl: func(adapter bamlutils.Adapter, raw string) (any, error) {
-			return exec.Parse(MethodName, raw)
+			return exec.Parse(adapter, MethodName, raw)
 		},
 		StreamImpl: nil,
 	}
@@ -200,4 +199,36 @@ func nativeSpineUnmarshalObject(data []byte, dst map[string]any) error {
 		}
 	}
 	return nil
+}
+
+// projectInput lowers the typed input carrier into the ordered projected
+// argument vector (exact type assertions, direct fields, canonical BAML names as
+// literals — no reflection, JSON round-trip, or map iteration).
+func projectInput(input any) ([]promptdescriptor.ArgumentValue, error) {
+	in, ok := input.(*GreetInput)
+	if !ok {
+		return nil, fmt.Errorf("nativespine: %s: input has Go type %T, want *GreetInput", MethodName, input)
+	}
+	_ = in
+	values := make([]promptdescriptor.ArgumentValue, 0, 2)
+	values = append(values, promptdescriptor.ArgumentValue{Name: "name", Value: promptdescriptor.StaticValue{Kind: promptdescriptor.StaticString, String: in.Name}})
+	values = append(values, promptdescriptor.ArgumentValue{Name: "formal", Value: promptdescriptor.StaticValue{Kind: promptdescriptor.StaticBool, Bool: in.Formal}})
+	return values, nil
+}
+
+// decodeFinal strictly decodes the native canonical JSON into the emitted output
+// carrier via the proven bamlutils core (NO generated BAML, NO CFFI).
+func decodeFinal(canonicalJSON []byte) (any, error) {
+	return bamlutils.DecodeStaticFinal[OutputGreeting](canonicalJSON)
+}
+
+// Binding returns the neutral per-method registration the production runtime
+// consumes: MethodName plus the reflection-free projector and strict decoder,
+// both resolved here at registration time (non-nil).
+func Binding() bamlutils.NativeSpineUnaryBinding {
+	return bamlutils.NativeSpineUnaryBinding{
+		Method:       MethodName,
+		ProjectInput: projectInput,
+		DecodeFinal:  decodeFinal,
+	}
 }

@@ -509,13 +509,29 @@ func TestEveryAdmissionEntryPointIsCohortGated(t *testing.T) {
 		"AdmitStaticStreamClaim": true,
 		"AdmitDirectParse":       true,
 	}
+	// spineLaneExempt is the ONE deliberate, DOCUMENTED exception to the
+	// dynamic-rollout cohort gate: the ExecBridge-U1 codegen-spine unary lane
+	// (AdmitStaticSpineClaim). It does NOT run admitCohort because it is a SEPARATE
+	// default-deny lane whose admission is its own root-owned totality predicate
+	// (debaml.SupportsNativeStaticStreamBundle — the exact five-arm JSON alias)
+	// resolved at REGISTRATION, and it is wired into NO default worker in U1 (U1b owns
+	// any packaged-worker cutover + a separately-reviewed cohort enrollment). U1 must
+	// NOT widen the dynamic cohort manifest, and enrolling a static cohort to satisfy
+	// this gate would do exactly that. It STAYS discoverable here — renaming it to dodge
+	// the scan is the evasion this guard forbids — so the exemption is explicit and
+	// reviewed; its default-deny is proven separately by TestSpineLaneSkipsDynamicCohortGate
+	// (this package, showing it declines at a NON-cohort stage where the cohort-gated
+	// lanes decline at cohort) and the nativeserve/spine registration-gate tests.
+	spineLaneExempt := map[string]bool{
+		"AdmitStaticSpineClaim": true,
+	}
 	found := map[string]bool{}
 	for _, ep := range admissionEntryPoints(packageAST(t)) {
 		if isSyntheticClaimBuilder(ep.name) {
 			continue
 		}
 		found[ep.name] = true
-		if !covered[ep.name] {
+		if !covered[ep.name] && !spineLaneExempt[ep.name] {
 			t.Errorf("%s declares exported admission entry point %s (receiver %q), which no cohort-gate proof drives. "+
 				"Add it to TestDynamicLanesDeclinePreNativeWork / TestStaticLanesDeclinePreNativeWork and to this table.",
 				ep.file, ep.name, ep.receiver)
@@ -530,6 +546,54 @@ func TestEveryAdmissionEntryPointIsCohortGated(t *testing.T) {
 		if !found[name] {
 			t.Errorf("the coverage table names %s but the package no longer declares it — remove the stale entry", name)
 		}
+	}
+	// A stale exemption is a silent hole: if the spine lane is renamed/removed, the
+	// exemption must go with it rather than silently excuse a future same-named entry.
+	for name := range spineLaneExempt {
+		if !found[name] {
+			t.Errorf("the spine-lane exemption names %s but the package no longer declares it — remove the stale exemption", name)
+		}
+	}
+}
+
+// TestSpineLaneSkipsDynamicCohortGate is the compensating proof for the ONE cohort-gate
+// exemption (AdmitStaticSpineClaim): where the cohort-gated static claim lane declines at
+// the (cohort, cohort_not_enrolled) gate, the spine lane deliberately SKIPS it (SpineLane)
+// and declines at a LATER, non-cohort stage — its default-deny being its own
+// registration-time totality predicate, not the dynamic-rollout manifest. If a future
+// change routed the spine lane back through admitCohort, this test would go red (it would
+// decline at the cohort gate), and if it removed the skip's effect the two lanes would no
+// longer differ.
+func TestSpineLaneSkipsDynamicCohortGate(t *testing.T) {
+	ctx := context.Background()
+	// Reaches layer 1b (the cohort gate) with an unenrolled CohortNone identity.
+	base := StaticInput{
+		WorkerCapable:       true,
+		RequestAPIPresent:   true,
+		OnBuildRequestRoute: true,
+		FlagEnabled:         true,
+		RouteKind:           RouteKindStatic,
+		Method:              "M",
+		Mode:                bamlutils.NativeStaticModeFinal,
+		SingleLeaf:          true,
+	}
+
+	// The cohort-gated lane declines AT the cohort gate.
+	if _, err := AdmitStaticClaim(ctx, base); true {
+		assertStaticCohortDecline(t, "AdmitStaticClaim", err)
+	}
+
+	// The spine lane declines, but NEVER at the cohort gate — it skipped it by design.
+	claim, err := AdmitStaticSpineClaim(ctx, base)
+	if claim != nil {
+		t.Fatal("AdmitStaticSpineClaim returned a claim alongside a decline")
+	}
+	d, ok := err.(*StaticDecline)
+	if !ok {
+		t.Fatalf("AdmitStaticSpineClaim: err = %v (%T), want *StaticDecline", err, err)
+	}
+	if d.Stage == string(StageCohort) {
+		t.Fatalf("spine lane declined at the dynamic cohort gate (%s, %s); it must skip it and be default-deny by its own registration-time totality gate", d.Stage, d.Reason)
 	}
 }
 

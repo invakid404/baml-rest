@@ -110,6 +110,7 @@ const (
 	reasonReturnBundleFinalUnsupported Reason = "return_bundle_native_final_unsupported"
 	reasonReturnShapeUnproven          Reason = "return_shape_decoder_unproven"
 	reasonStaticDescriptorStricter     Reason = "static_descriptor_stricter"
+	reasonSpineNotExactAlias           Reason = "spine_not_exact_json_alias"
 
 	reasonStaticPromptUnsupported Reason = "static_prompt_unsupported"
 	reasonStaticRenderFailed      Reason = "static_render_failed"
@@ -191,6 +192,16 @@ type StaticInput struct {
 	// [Input]. Production leaves both halves zero, so every static request resolves
 	// to CohortNone and declines with cohort_not_enrolled before any native work.
 	Cohort CohortInput
+
+	// SpineLane marks the ExecBridge-U1 codegen-spine unary lane (AdmitStaticSpineClaim).
+	// This lane has its OWN registration-time admission — a root-owned totality gate
+	// over the emitted exact-JSON cohort, resolved before any request — so it does not
+	// consult the dynamic-rollout default-deny cohort manifest (layer 1b), which the
+	// bridge deliberately must NOT widen. It is FALSE for every existing observe/serve
+	// caller, so their layer-1b behaviour is byte-unchanged. It never relaxes any other
+	// gate: mode, orchestration plan, descriptor envelope, arg binder, prompt render,
+	// client normalize and nanollm Prepare all still apply.
+	SpineLane bool
 }
 
 // StaticObservation is the tri-state observation AdmitStatic records before forcing
@@ -306,6 +317,55 @@ func AdmitStaticClaim(ctx context.Context, in StaticInput) (*StaticClaim, error)
 	}, nil
 }
 
+// AdmitStaticSpineClaim is the ExecBridge-U1 codegen-spine unary admission entry. It
+// reuses the SAME pre-socket predicate as [AdmitStaticClaim] (admitStaticThroughPrepare:
+// mode gate, orchestration plan, descriptor envelope, arg binder, Return-Bundle
+// lower/support, RenderStatic, canonical body, nanollm New/Prepare) with TWO
+// substitutions for the hermetic, oracle-free spine cohort:
+//
+//   - the return-shape gate is the ONE root-owned totality predicate
+//     debaml.SupportsNativeStaticStreamBundle — the exact five-arm `JSON` recursive
+//     alias family — NOT admittedStaticReturnShape (which is the wider serve-decoder
+//     set including JsonValue). The SAME predicate controls registration, call, and
+//     direct parse in lockstep, and proves the admitted final parser cannot make a
+//     support/value decline after the claim (see internal/debaml).
+//   - the strict BAML `Request.<Method>` plan compare (staticPlanCompareObservation)
+//     is OMITTED by design: the spine module carries no generated BAML plan closure,
+//     and frozen v0.223 oracle evidence replaces it for this exact cohort.
+//
+// The spine lane's layer-1b cohort gate is skipped (SpineLane) because this lane has
+// its own registration-time admission. Every pre-claim decline still guarantees NO
+// socket occurred (the engine is closed before returning). On a full pass it returns
+// a *StaticClaim that keeps the request-scoped nanollm engine alive for exactly one
+// RoundTrip; every decline returns a typed *StaticDecline.
+func AdmitStaticSpineClaim(ctx context.Context, in StaticInput) (*StaticClaim, error) {
+	in.SpineLane = true
+	prep, dec := admitStaticThroughPrepare(ctx, in)
+	if dec != nil {
+		return nil, staticDeclineFromObs(*dec)
+	}
+	// The ONE root-owned totality gate: the exact five-arm `JSON` alias family. It is
+	// strictly narrower than admittedStaticReturnShape (it excludes the FINAL-served
+	// JsonValue and every other alias/shape), so a non-exact-alias descriptor that
+	// passed the shared final-support gate inside admitStaticThroughPrepare still
+	// declines here PRE-CLAIM (no socket) and the outer policy serves it.
+	if err := debaml.SupportsNativeStaticStreamBundle(prep.bundle); err != nil {
+		prep.close()
+		return nil, staticDeclineFromObs(declineStatic(bamlutils.NativeStaticFamilyDescriptorEnvelope, StagePrompt, reasonSpineNotExactAlias))
+	}
+	// No BAML plan compare — frozen v0.223 oracle evidence stands in for this exact
+	// cohort. Transfer ownership of the kept-alive engine to the claim.
+	return &StaticClaim{
+		client:       prep.client,
+		Prepared:     prep.prepared,
+		Bundle:       prep.bundle,
+		ExactRequest: prep.exactRequest,
+		Alias:        prep.alias,
+		Surface:      SurfaceStaticCall,
+		Cohort:       prep.cohort,
+	}, nil
+}
+
 // admitStaticThroughPrepare runs the static predicate layers 1-6 (build/flag/route,
 // mode, orchestration plan, descriptor envelope + arg binder, Return-Bundle
 // lower/support, static prompt render, client normalize + canonical body, nanollm
@@ -367,9 +427,18 @@ func admitStaticThroughPrepare(ctx context.Context, in StaticInput) (*staticPrep
 	// above, this is a deployment-level refusal, and the precision lives in the
 	// (cohort, cohort_not_enrolled) stage/reason pair rather than in a new
 	// cross-module enum value.
-	cohort, cd := admitCohort(SurfaceStaticCall, in.Cohort)
-	if cd != nil {
-		return decline(bamlutils.NativeStaticFamilyCapability, cd.Stage, cd.Reason)
+	// The ExecBridge-U1 spine lane skips the dynamic-rollout default-deny cohort gate:
+	// it is a separate lane whose admission is its own root-owned totality gate over
+	// the emitted exact-JSON cohort (resolved at registration), and it must NOT widen
+	// the dynamic cohort manifest. cohort stays CohortNone, carried out for telemetry.
+	// Every non-spine caller keeps the gate exactly.
+	cohort := CohortNone
+	if !in.SpineLane {
+		c, cd := admitCohort(SurfaceStaticCall, in.Cohort)
+		if cd != nil {
+			return decline(bamlutils.NativeStaticFamilyCapability, cd.Stage, cd.Reason)
+		}
+		cohort = c
 	}
 
 	// --- Layer 2: whole orchestration plan + selected-child facts -----------
