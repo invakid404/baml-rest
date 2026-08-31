@@ -2,7 +2,7 @@
 
 This file is the TRACKED record of whether the five first-party pseudo-version
 selections below point at a **master** commit. **They do NOT yet.** They name
-`cdf4a635ebd5`, the branch SOURCE commit on `feat/debaml-execbridge-u1` that carries the
+`7c4124736044`, the branch SOURCE commit on `feat/debaml-execbridge-u1` that carries the
 ExecBridge-U1 guarded-tree change (a production native unary executor / population bridge).
 No master commit carries that change yet, so the pins are **BRANCH-ONLY** and this record is
 **STATUS: OUTSTANDING**. The post-squash re-pin runbook in the last section is **OWED** — the
@@ -16,7 +16,7 @@ the runtime also needs now lives INSIDE `nativeserve/spine` itself, as the unexp
 `reconstructFunction`, so the production serve package stays a thin lane free of the
 codegen toolchain — it is carried by the branch tip, not the pinned root.) A consumer
 resolving a PRE-U1 pin gets a `bamlutils` that lacks that contract, so the pinned commit
-MUST carry the U1 source — which the branch commit `cdf4a635ebd5` does and no master commit
+MUST carry the U1 source — which the branch commit `7c4124736044` does and no master commit
 yet does. A branch-tip pin is not final delivery; the re-pin to the master squash commit is
 what makes it durable.
 
@@ -34,16 +34,16 @@ CONCRETE, per-change instance of it, which is what the generic comment cannot be
 
 ```
 STATUS: OUTSTANDING
-PINNED-COMMIT: cdf4a635ebd5
-PINNED-STAMP: 20260831122125
+PINNED-COMMIT: 7c4124736044
+PINNED-STAMP: 20260831132239
 REACHABLE-FROM: feat/debaml-execbridge-u1 (branch source tip; NOT master)
 SLICE: ExecBridge-U1 — production native unary executor / population bridge for the exact five-arm direct JSON recursive alias (neutral bamlutils binding/executor contract, emitted scalar projector + strict decoder, internal/nativespine reconstruction, nativeserve/spine executor + nativeserve/admission.AdmitStaticSpineClaim); no generated BAML or CFFI on the emitted/runtime path
-PR: feat/debaml-execbridge-u1 (this PR); pins name the branch source commit cdf4a635ebd5; re-pin to the master squash commit is OWED post-merge
+PR: feat/debaml-execbridge-u1 (this PR); pins name the branch source commit 7c4124736044; re-pin to the master squash commit is OWED post-merge
 ```
 
 ## Why the pins point at the branch source commit (not master yet)
 
-`cdf4a635ebd5` is the branch commit on `feat/debaml-execbridge-u1` that carries the U1
+`7c4124736044` is the branch commit on `feat/debaml-execbridge-u1` that carries the U1
 guarded-tree change. The packaged serve core is built directly on top of the NEW U1 contract
 in `bamlutils`, so the pinned modules decide whether the serve core even compiles:
 `nativeserve/spine` imports `bamlutils.NativeSpineUnaryExecutor` / `NativeSpineUnaryBinding`
@@ -69,7 +69,7 @@ provider engine and is permitted; it is not BAML CFFI.
 **What a green `nativeserve-goget` proves on which run.** On a `pull_request` it resolves the
 PR HEAD SHA; on `push` to master it resolves the master tip. While the pins name a BRANCH
 commit, the `pull_request` run is what proves the branch delivery resolves (the PR HEAD's
-`nativeserve/go.mod` names `cdf4a635ebd5`, which is fetchable as long as the branch exists).
+`nativeserve/go.mod` names `7c4124736044`, which is fetchable as long as the branch exists).
 The `push`-to-master durability run only becomes meaningful AFTER the post-squash re-pin names
 a master commit — which is exactly the OWED follow-up this record tracks. A branch-only pin
 going red on the master `push` run the instant the branch is deleted is the Slice 7.1b failure
@@ -84,11 +84,11 @@ bump is invisible until the out-of-work packaging build fails with
 
 | # | file | module | current selection |
 | --- | --- | --- | --- |
-| 1 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest` | `v0.0.0-20260831122125-cdf4a635ebd5` |
-| 2 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260831122125-cdf4a635ebd5` |
-| 3 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260831122125-cdf4a635ebd5` |
-| 4 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260831122125-cdf4a635ebd5` |
-| 5 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260831122125-cdf4a635ebd5` |
+| 1 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest` | `v0.0.0-20260831132239-7c4124736044` |
+| 2 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260831132239-7c4124736044` |
+| 3 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260831132239-7c4124736044` |
+| 4 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260831132239-7c4124736044` |
+| 5 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260831132239-7c4124736044` |
 
 `internal/nativebody/nanollmprepare/go.mod`'s `github.com/invakid404/baml-rest v0.0.48`
 is deliberately NOT in this list: it is a released tag, not a pseudo-version tracking a
@@ -98,15 +98,15 @@ commit, and the module directory-replaces it.
 
 The runbook below is written for the post-squash re-pin to a MASTER commit (the OWED
 follow-up). U1's BRANCH pin executed the same steps against the branch source commit
-`cdf4a635ebd5` instead, and left the record `OUTSTANDING`:
+`7c4124736044` instead, and left the record `OUTSTANDING`:
 
 0. **Stamp resolved by Go, off the origin — never hand-computed.** After the source commit was
    pushed to the branch, `GOWORK=off GOPRIVATE=github.com/invakid404/baml-rest GOPROXY=direct
-   go mod download -json <mod>@cdf4a635ebd5` was run for the root, `bamlutils` and `worker`,
-   and Go returned `v0.0.0-20260831122125-cdf4a635ebd5` for the root and
-   `v0.0.49-0.20260831122125-cdf4a635ebd5` for the other two — each keeping its own base
+   go mod download -json <mod>@7c4124736044` was run for the root, `bamlutils` and `worker`,
+   and Go returned `v0.0.0-20260831132239-7c4124736044` for the root and
+   `v0.0.49-0.20260831132239-7c4124736044` for the other two — each keeping its own base
    version. Those strings are used verbatim.
-1. **All five selections re-pointed together** to `cdf4a635ebd5`. The edit touched only
+1. **All five selections re-pointed together** to `7c4124736044`. The edit touched only
    `require` lines: `nanollmprepare`'s deliberate `baml-rest v0.0.48` (a released TAG, not a
    pseudo-version) is untouched, and so is every SHA inside the historical prose.
 2. **Both `// PIN-STATUS` markers flipped** `RESOLVED` -> `OUTSTANDING`, one per manifest.
@@ -131,7 +131,7 @@ is the PROSE word for the `RESOLVED` state; `RESOLVED` is what the guards read.
 
 ## The follow-up — OWED (the post-squash re-pin RUNBOOK, to execute after merge)
 
-**This has NOT yet been done for U1: the pins are BRANCH-ONLY** at `cdf4a635ebd5` and the
+**This has NOT yet been done for U1: the pins are BRANCH-ONLY** at `7c4124736044` and the
 re-pin to the eventual master squash commit is OWED (the orchestrator drives it after merge).
 "What was done for THIS branch pin" above records the branch-pin steps that were executed; the
 runbook here is the post-squash version to run against the master commit. It is kept in full
@@ -250,7 +250,7 @@ pseudo-versions from step 0.
 
 DONE for the U1 BRANCH pin (this change):
 
-- [x] all five selections name the branch source commit `cdf4a635ebd5`, each with its correct
+- [x] all five selections name the branch source commit `7c4124736044`, each with its correct
       base version
 - [x] both `// PIN-STATUS` markers say `OUTSTANDING`
 - [x] both mirrored manifest narratives say BRANCH-ONLY, with the prior master-durable batch-2
@@ -274,7 +274,7 @@ Precedent: #677 → #678, #681 → #682, #683 → #684, #686 → #687, #689 → 
 prior instances of this runbook being executed correctly; Slice 7.1b (#655) is what skipping
 it costs — a branch pin went red on `nativeserve-goget` the moment the branch was deleted.
 
-While the pins name the BRANCH commit `cdf4a635ebd5`, this file reads `STATUS: OUTSTANDING`,
+While the pins name the BRANCH commit `7c4124736044`, this file reads `STATUS: OUTSTANDING`,
 which is what `TestFirstPartyPinFollowupIsTracked`'s ANCESTRY clause requires (a branch-only
 commit is not master-reachable). The record stays in the tree; the OWED post-squash re-pin
 flips it to `RESOLVED`.

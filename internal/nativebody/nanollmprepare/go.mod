@@ -21,9 +21,9 @@ go 1.26.5
 require (
 	github.com/boundaryml/baml v0.223.0
 	github.com/invakid404/baml-rest v0.0.48
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260831122125-cdf4a635ebd5
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260831132239-7c4124736044
 	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260831122125-cdf4a635ebd5
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260831132239-7c4124736044
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
@@ -145,7 +145,7 @@ require (
 // it to cf03786a1fac (#692 re-pinned to the 062871154d95 tip). Every one of these was a
 // branch-pin-then-re-pin, the precedent THIS U1 bump repeats.
 //
-// RIGHT NOW they are BRANCH-ONLY: all five name cdf4a635ebd5, the branch SOURCE commit on
+// RIGHT NOW they are BRANCH-ONLY: all five name 7c4124736044, the branch SOURCE commit on
 // feat/debaml-execbridge-u1 that carries the ExecBridge-U1 guarded-tree change — no master
 // commit carries it yet. nanollmprepare directory-replaces root/bamlutils/worker/nativeserve,
 // so only the version STRINGS reach MVS, and they must move in lockstep with nativeserve's so

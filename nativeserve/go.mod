@@ -97,7 +97,7 @@
 //
 // NOTE (ExecBridge-U1 — production native unary executor/population bridge): these pins are
 // BRANCH-ONLY and the tracked follow-up in nativeserve/pin_followup.md is therefore
-// STATUS: OUTSTANDING. They name cdf4a635ebd5, the branch SOURCE commit on
+// STATUS: OUTSTANDING. They name 7c4124736044, the branch SOURCE commit on
 // feat/debaml-execbridge-u1 that carries the U1 guarded-tree change — no master commit
 // carries it yet. This module's serve path gains a new BAML-free spine unary lane
 // (nativeserve/spine's UnaryExecutor + nativeserve/admission's AdmitStaticSpineClaim), which
@@ -164,9 +164,9 @@ go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260831122125-cdf4a635ebd5
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260831122125-cdf4a635ebd5
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260831122125-cdf4a635ebd5
+	github.com/invakid404/baml-rest v0.0.0-20260831132239-7c4124736044
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260831132239-7c4124736044
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260831132239-7c4124736044
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2

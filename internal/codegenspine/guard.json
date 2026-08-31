@@ -1,35 +1,35 @@
 {
-  "note": "Pin/tar-independence baseline for the codegen-spine slice: the packaged native-worker tar, the five first-party pseudo-version pins, and the byte content of the three collision-path trees. A codegen-spine (M/P) slice must leave every value here untouched. It is NOT a freeze on master: a sanctioned change to a guarded path — the /parse union burn-down (#689), the /parse union-residual batch 2, ExecBridge-U1's spine serve lane under nativeserve, a post-squash first-party re-pin — legitimately moves these, and MUST re-run the update flag in the same change, or this guard stays red for everyone. First frozen at M0; re-frozen after #689 + the post-squash re-pin to 062871154d95, again for the /parse union-residual batch 2 (post-squash re-pin to master commit 7c7bed8291b6), and again for ExecBridge-U1 — the production native unary executor/population bridge that adds a BAML-free spine serve lane under nativeserve (BRANCH pin to cdf4a635ebd5; post-squash re-pin OWED). Regenerate with: go test ./internal/codegenspine/ -run TestSourceGuard -update-codegenspine-guard",
+  "note": "Pin/tar-independence baseline for the codegen-spine slice: the packaged native-worker tar, the five first-party pseudo-version pins, and the byte content of the three collision-path trees. A codegen-spine (M/P) slice must leave every value here untouched. It is NOT a freeze on master: a sanctioned change to a guarded path — the /parse union burn-down (#689), the /parse union-residual batch 2, ExecBridge-U1's spine serve lane under nativeserve, a post-squash first-party re-pin — legitimately moves these, and MUST re-run the update flag in the same change, or this guard stays red for everyone. First frozen at M0; re-frozen after #689 + the post-squash re-pin to 062871154d95, again for the /parse union-residual batch 2 (post-squash re-pin to master commit 7c7bed8291b6), and again for ExecBridge-U1 — the production native unary executor/population bridge that adds a BAML-free spine serve lane under nativeserve (BRANCH pin to 7c4124736044; post-squash re-pin OWED). Regenerate with: go test ./internal/codegenspine/ -run TestSourceGuard -update-codegenspine-guard",
   "native_worker_tar": {
     "path": "cmd/build/nativeworker_module.tar",
-    "size_bytes": 818688,
-    "sha256": "309c7f7db423a8d0417a820569a3bab71842a61b5bbc9e1de6529198e395bd39"
+    "size_bytes": 822784,
+    "sha256": "3399bd9940dd895052a5267d4b68cf6f2a3ab29bd11b1a8bb4c1a87f8fae3253"
   },
   "first_party_pins": [
     {
       "file": "nativeserve/go.mod",
       "module": "github.com/invakid404/baml-rest",
-      "version": "v0.0.0-20260831122125-cdf4a635ebd5"
+      "version": "v0.0.0-20260831132239-7c4124736044"
     },
     {
       "file": "nativeserve/go.mod",
       "module": "github.com/invakid404/baml-rest/bamlutils",
-      "version": "v0.0.49-0.20260831122125-cdf4a635ebd5"
+      "version": "v0.0.49-0.20260831132239-7c4124736044"
     },
     {
       "file": "nativeserve/go.mod",
       "module": "github.com/invakid404/baml-rest/worker",
-      "version": "v0.0.49-0.20260831122125-cdf4a635ebd5"
+      "version": "v0.0.49-0.20260831132239-7c4124736044"
     },
     {
       "file": "internal/nativebody/nanollmprepare/go.mod",
       "module": "github.com/invakid404/baml-rest/bamlutils",
-      "version": "v0.0.49-0.20260831122125-cdf4a635ebd5"
+      "version": "v0.0.49-0.20260831132239-7c4124736044"
     },
     {
       "file": "internal/nativebody/nanollmprepare/go.mod",
       "module": "github.com/invakid404/baml-rest/worker",
-      "version": "v0.0.49-0.20260831122125-cdf4a635ebd5"
+      "version": "v0.0.49-0.20260831132239-7c4124736044"
     }
   ],
   "guarded_trees": [
@@ -40,13 +40,13 @@
     },
     {
       "prefix": "nativeserve",
-      "file_count": 100,
-      "sha256": "5d92562f8c5554b6ae92584b13fcff7788743602ae127b677b1cfbe50dca01ea"
+      "file_count": 101,
+      "sha256": "92b64414c6bafee861ab33242e22a77a1aeb0eab3d33278651735ebdc476601a"
     },
     {
       "prefix": "internal/nativebody/nanollmprepare",
       "file_count": 73,
-      "sha256": "52ffa95cb81fa0d5a63a233a49d90999f35cef39cc6061da698922a567ca5439"
+      "sha256": "91249904752aa5f8f52cdfe3e3089db7e1c93e7d8bb7358487ed6cddf91157ab"
     }
   ]
 }
