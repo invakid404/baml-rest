@@ -40,22 +40,38 @@ func TestNewUnaryExecutor_AdmitsExactJSONAlias(t *testing.T) {
 	}
 }
 
-// TestRegistrationDeclineMatrix is the registration/zero-socket negative matrix. EVERY
-// row feeds a Project whose Method SURVIVES the upstream source classifier and reaches
-// NewUnaryExecutor.register(), where it is declined by a REGISTRATION gate — so the
-// matrix is genuine registration-gate/discrimination evidence, not a proof that a
-// binding for an absent method is rejected (review-3 finding 3). Source-built rows use
-// shapes the classifier admits (the totality predicate / required-scalar / project-cohort
-// negatives); mutation-built rows (mutatedJSONProject) inject a cohort-forbidden fact the
-// source classifier cannot express onto the ADMITTED JSON project, so the Method survives
-// to the constructor and the SPINE gate is what refuses it.
+// TestRegistrationDeclineMatrix is the negative admission matrix for NewUnaryExecutor,
+// with a per-row zero-socket proof. It does NOT claim every row reaches register(): the
+// constructor runs proj.Validate() FIRST (executor.go), so the version + capability-
+// manifest-consistency rows decline THERE, before the register() loop even starts; every
+// other row passes Validate and is declined inside register() (review-4 finding 1). Each
+// row carries two truthful labels, and both are VERIFIED, not just asserted in prose:
 //
-// Two of the mutation rows target the value this slice's client-cohort fix ADDED and
-// ADMIT on the pre-fix tip (selected_client_non_openai, invalid_utf8_model — the earlier
-// CheckStaticClientCohort checked only the method-provider argument + body-affecting
-// options, never the NORMALIZED intent's own provider or model validity); they DECLINE
-// now, in lockstep with Call's BuildOpenAIChat (review-3 finding 1). Every row opens ZERO
-// sockets (the constructor never dials).
+//   - layer: the exact gate that declines it — "validate:*" (before the register loop) or
+//     "register:*". The loop checks it: a "validate:*" row MUST fail proj.Validate(); a
+//     "register:*" row MUST pass Validate (so its decline necessarily happens inside
+//     register()). A mislabelled row fails the test.
+//   - kind: "regression" for a row that ADMITTED on a pre-fix tip because it exercises a
+//     gate one of this slice's review fixes ADDED (so it discriminates that tip), or
+//     "coverage" for a row documenting a gate that was ALREADY present (it would decline
+//     on the pre-fix tip too — comprehensive coverage, not a regression).
+//
+// The genuine regressions (kind=="regression"), each proven by neutralising the added
+// gate in-session:
+//   - selected_client_non_openai, invalid_utf8_model — the cycle-3 client-cohort fix:
+//     CheckStaticClientCohort now runs SupportsOpenAIChat on the NORMALIZED intent, so a
+//     selected-client provider / invalid-UTF-8-model divergence that ADMITTED on the
+//     pre-fix tip bdd586e0 now declines, in lockstep with Call's BuildOpenAIChat.
+//   - body_option_client_survives, capability_manifest_corruption — the review-2
+//     registration client-cohort + capability-manifest gates; ADMITTED on the earlier
+//     pre-cohort-gate tip, decline since review-2.
+//
+// Every other row is COVERAGE of a pre-existing gate — the totality predicate, the
+// required-scalar gate, reconstructFunction's project/client cohort, the descriptor
+// envelope, proj.Validate's version checks, or the binding checks — and would decline on
+// the pre-fix tip too. Method survival (mutation rows inject a fact the source classifier
+// cannot express onto the ADMITTED project) and the real wrapping alias are retained.
+// Every row opens ZERO sockets (the constructor is pure — no nanollm New/Prepare).
 func TestRegistrationDeclineMatrix(t *testing.T) {
 	const jsonType = "type JSON = int | string | bool | JSON[] | map<string, JSON>"
 
@@ -64,68 +80,75 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 		proj    projectdescriptor.Project
 		binding bamlutils.NativeSpineUnaryBinding
 		want    string
+		layer   string // exact declining gate: "validate:*" (before the register loop) or "register:*"
+		kind    string // "regression" (a gate a review fix ADDED — admits on the pre-fix tip) or "coverage" (a pre-existing gate)
 	}{
-		// --- output shape negatives (the totality predicate) --------------------
+		// --- output shape negatives — register:totality (PRE-EXISTING gate) ------
 		{"jsonvalue_alias",
 			projectFromCorpus(t, corpus("type JsonValue = int | float | bool | string | null | JsonValue[] | map<string, JsonValue>", `function F(topic: string) -> JsonValue { client C prompt #"{{ topic }}"# }`)),
-			jsonAliasBinding("F"), "JSON alias cohort"},
+			jsonAliasBinding("F"), "JSON alias cohort", "register:totality", "coverage"},
 		{"renamed_exact_alias", // same five arms, different name -> not the pinned `JSON`
 			projectFromCorpus(t, corpus("type Blob = int | string | bool | Blob[] | map<string, Blob>", `function F(topic: string) -> Blob { client C prompt #"{{ topic }}"# }`)),
-			jsonAliasBinding("F"), "JSON alias cohort"},
+			jsonAliasBinding("F"), "JSON alias cohort", "register:totality", "coverage"},
 		{"reordered_alias",
 			projectFromCorpus(t, corpus("type JsonValueReordered = float | int | bool | string | null | JsonValueReordered[] | map<string, JsonValueReordered>", `function F(topic: string) -> JsonValueReordered { client C prompt #"{{ topic }}"# }`)),
-			jsonAliasBinding("F"), "JSON alias cohort"},
+			jsonAliasBinding("F"), "JSON alias cohort", "register:totality", "coverage"},
 		{"wrapper_alias", // a NAMED alias whose DEFINITION wraps the exact family (JSON[]) -> not the bare `JSON`
 			projectFromCorpus(t, corpus(jsonType+"\ntype WrappedJson = JSON[]", `function F(topic: string) -> WrappedJson { client C prompt #"{{ topic }}"# }`)),
-			jsonAliasBinding("F"), "JSON alias cohort"},
+			jsonAliasBinding("F"), "JSON alias cohort", "register:totality", "coverage"},
 		{"class_return",
 			projectFromCorpus(t, corpus("class Wrap { x string }", `function F(topic: string) -> Wrap { client C prompt #"{{ topic }}"# }`)),
-			jsonAliasBinding("F"), "JSON alias cohort"},
+			jsonAliasBinding("F"), "JSON alias cohort", "register:totality", "coverage"},
 		{"enum_return",
 			projectFromCorpus(t, corpus("enum E {\n  A\n  B\n}", `function F(topic: string) -> E { client C prompt #"{{ topic }}"# }`)),
-			jsonAliasBinding("F"), "JSON alias cohort"},
+			jsonAliasBinding("F"), "JSON alias cohort", "register:totality", "coverage"},
 		{"scalar_return",
 			projectFromCorpus(t, corpus("", `function F(topic: string) -> string { client C prompt #"{{ topic }}"# }`)),
-			jsonAliasBinding("F"), "JSON alias cohort"},
+			jsonAliasBinding("F"), "JSON alias cohort", "register:totality", "coverage"},
 		// A @assert constraint and a @stream annotation on the exact family (injected
 		// directly — BAML forbids them on this alias) both leave the exact fingerprint.
 		{"constraint_on_alias",
 			mutatedJSONProject(t, func(p *projectdescriptor.Project) {
 				p.Methods[0].Return.Target.Meta.Constraints = []schemadescriptor.Constraint{{Level: schemadescriptor.ConstraintAssert, Expression: "true"}}
 			}),
-			jsonAliasBinding(), "JSON alias cohort"},
+			jsonAliasBinding(), "JSON alias cohort", "register:totality", "coverage"},
 		{"stream_annotation_on_alias",
 			mutatedJSONProject(t, func(p *projectdescriptor.Project) {
 				p.Methods[0].Return.Target.Meta.Stream = schemadescriptor.StreamingBehavior{Done: true}
 			}),
-			jsonAliasBinding(), "JSON alias cohort"},
+			jsonAliasBinding(), "JSON alias cohort", "register:totality", "coverage"},
 
-		// --- input shape negatives (requiredScalarInputs at REGISTRATION) --------
+		// --- input shape negatives — register:required-scalar (PRE-EXISTING gate) -
 		// nullable + list inputs SURVIVE the source classifier and reach register(),
 		// where requiredScalarInputs refuses them (the classifier admits these input
 		// shapes; the spine's required-scalar gate is what declines them).
 		{"nullable_scalar_input",
 			projectFromCorpus(t, corpus(jsonType, `function F(topic: string?) -> JSON { client C prompt #"{{ topic }}"# }`)),
-			jsonAliasBinding("F"), "is nullable"},
+			jsonAliasBinding("F"), "is nullable", "register:required-scalar", "coverage"},
 		{"list_input",
 			projectFromCorpus(t, corpus(jsonType, `function F(tags: string[]) -> JSON { client C prompt #"{{ tags }}"# }`)),
-			jsonAliasBinding("F"), "required-scalar cohort"},
+			jsonAliasBinding("F"), "required-scalar cohort", "register:required-scalar", "coverage"},
 		// A class/enum/map/media input is removed by the SOURCE classifier and never
 		// reaches the constructor, so injecting a non-scalar (class) type DIRECTLY onto
 		// the admitted method's argument edge is the only way to exercise the spine's
 		// requiredScalarInputs gate on a non-scalar input that SURVIVES to register()
-		// (review-3 finding 3).
+		// (review-3 finding 3). requiredScalarInputs is a PRE-EXISTING gate, so this is
+		// coverage, not a regression.
 		{"nonscalar_class_input_survives",
 			mutatedJSONProject(t, func(p *projectdescriptor.Project) {
 				p.Methods[0].Args[0].Type = promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueClass, ClassName: "Ghost"}
 			}),
-			jsonAliasBinding(), "required-scalar cohort"},
+			jsonAliasBinding(), "required-scalar cohort", "register:required-scalar", "coverage"},
 
-		// --- static-client cohort at REGISTRATION (review-3 finding 1) -----------
-		// Both mutate the ADMITTED JSON project so the Method survives to register();
-		// both ADMITTED on the pre-fix tip and DECLINE now, because registration runs
-		// the ACTUAL call-time client predicate (SupportsOpenAIChat) on the NORMALIZED
-		// intent — its OWN provider and model validity — exactly as Call's BuildOpenAIChat.
+		// --- static-client cohort — register:client-cohort ----------------------
+		// selected_client_non_openai + invalid_utf8_model are the cycle-3 REGRESSIONS
+		// (review-3 finding 1): both mutate the ADMITTED JSON project so the Method
+		// survives to register(); both ADMITTED on the pre-fix tip bdd586e0 (the earlier
+		// CheckStaticClientCohort checked only the method-provider argument + body-
+		// affecting options, never the NORMALIZED intent's own provider or model
+		// validity), and DECLINE now because registration runs the ACTUAL call-time
+		// client predicate (SupportsOpenAIChat) on the intent — exactly as Call's
+		// BuildOpenAIChat.
 		{"selected_client_non_openai", // Method.Provider=="openai" but the SELECTED client's provider is not
 			mutatedJSONProject(t, func(p *projectdescriptor.Project) {
 				for i := range p.Clients {
@@ -134,7 +157,7 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 					}
 				}
 			}),
-			jsonAliasBinding(), "not the proven openai"},
+			jsonAliasBinding(), "not the proven openai", "register:client-cohort", "regression"},
 		{"invalid_utf8_model", // a literal model that is not valid UTF-8: NormalizeStaticClient passes it, BuildOpenAIChat/Call declines it
 			mutatedJSONProject(t, func(p *projectdescriptor.Project) {
 				for i := range p.Clients {
@@ -143,9 +166,9 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 					}
 				}
 			}),
-			jsonAliasBinding(), "valid UTF-8"},
+			jsonAliasBinding(), "valid UTF-8", "register:client-cohort", "regression"},
 
-		// --- project / client cohort negatives ---------------------------------
+		// --- project / client cohort — register:reconstruct (PRE-EXISTING gate) --
 		{"template_project",
 			projectFromCorpus(t, map[string]string{
 				"clients.baml":   clientBlock,
@@ -153,7 +176,7 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 				"macros.baml":    `template_string Hdr(n: string) #"Hi {{ n }}"#`,
 				"functions.baml": `function F(topic: string) -> JSON { client C prompt #"{{ topic }}"# }`,
 			}),
-			jsonAliasBinding("F"), "template-free"},
+			jsonAliasBinding("F"), "template-free", "register:reconstruct", "coverage"},
 		{"retry_policy_client",
 			projectFromCorpus(t, map[string]string{
 				"clients.baml":   "client<llm> R {\n  provider openai\n  retry_policy Retry1\n  options { model \"gpt-4o-mini\" api_key \"sk-x\" base_url \"http://127.0.0.1:0/v1\" }\n}\n",
@@ -161,34 +184,40 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 				"types.baml":     jsonType,
 				"functions.baml": `function F(topic: string) -> JSON { client R prompt #"{{ topic }}"# }`,
 			}),
-			jsonAliasBinding("F"), "forbids retries"},
+			jsonAliasBinding("F"), "forbids retries", "register:reconstruct", "coverage"},
 		// A body-affecting client option injected DIRECTLY onto the admitted JSON
 		// project's client — the Method survives to the constructor (the source
 		// classifier never sees it), so this exercises the REGISTRATION client-cohort
-		// gate that Call uses (finding 2), unlike a body option in source (which the
-		// classifier removes upstream).
+		// gate that Call uses. That gate was ADDED in review-2, so this is a genuine
+		// regression against the earlier pre-cohort-gate tip.
 		{"body_option_client_survives",
 			mutatedJSONProject(t, func(p *projectdescriptor.Project) {
 				p.Clients[0].Config.RequestBodyPresent = true
 			}),
-			jsonAliasBinding(), "request_body option"},
+			jsonAliasBinding(), "request_body option", "register:client-cohort", "regression"},
 
-		// --- descriptor envelope + version fences -------------------------------
-		{"project_version_mismatch",
-			mutatedJSONProject(t, func(p *projectdescriptor.Project) { p.Version += 99 }),
-			jsonAliasBinding(), "project version"},
-		{"prompt_descriptor_version_mismatch",
-			mutatedJSONProject(t, func(p *projectdescriptor.Project) { p.PromptDescriptorVersion += 99 }),
-			jsonAliasBinding(), "prompt-descriptor version"},
-		{"schema_version_mismatch",
-			mutatedJSONProject(t, func(p *projectdescriptor.Project) { p.SchemaVersion += 99 }),
-			jsonAliasBinding(), "schema version"},
+		// --- descriptor envelope — register:envelope (PRE-EXISTING gate) ---------
 		{"return_method_mismatch",
 			mutatedJSONProject(t, func(p *projectdescriptor.Project) { p.Methods[0].Return.Method = "Other" }),
-			jsonAliasBinding(), "return names method"},
+			jsonAliasBinding(), "return names method", "register:envelope", "coverage"},
 		{"return_stream_mismatch",
 			mutatedJSONProject(t, func(p *projectdescriptor.Project) { p.Methods[0].Return.Stream = true }),
-			jsonAliasBinding(), "streaming variant"},
+			jsonAliasBinding(), "streaming variant", "register:envelope", "coverage"},
+
+		// --- version fences — validate:version (proj.Validate, BEFORE register) --
+		{"project_version_mismatch",
+			mutatedJSONProject(t, func(p *projectdescriptor.Project) { p.Version += 99 }),
+			jsonAliasBinding(), "project version", "validate:version", "coverage"},
+		{"prompt_descriptor_version_mismatch",
+			mutatedJSONProject(t, func(p *projectdescriptor.Project) { p.PromptDescriptorVersion += 99 }),
+			jsonAliasBinding(), "prompt-descriptor version", "validate:version", "coverage"},
+		{"schema_version_mismatch",
+			mutatedJSONProject(t, func(p *projectdescriptor.Project) { p.SchemaVersion += 99 }),
+			jsonAliasBinding(), "schema version", "validate:version", "coverage"},
+		// The capability manifest is consulted by proj.Validate() (before register): a
+		// method admitted in Methods but marked admitted=false in the manifest is an
+		// inconsistency Validate rejects. proj.Validate() was ADDED in review-2, so this
+		// is a genuine regression against the pre-Validate tip.
 		{"capability_manifest_corruption",
 			mutatedJSONProject(t, func(p *projectdescriptor.Project) {
 				for i := range p.Capabilities {
@@ -197,12 +226,12 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 					}
 				}
 			}),
-			jsonAliasBinding(), "capability"},
+			jsonAliasBinding(), "capability", "validate:capability", "regression"},
 
-		// --- binding-level ------------------------------------------------------
-		{"nil_project_input", jsonAliasProject(t), bamlutils.NativeSpineUnaryBinding{Method: jsonAliasMethod, ProjectInput: nil, DecodeFinal: jsonAliasBinding().DecodeFinal}, "ProjectInput is nil"},
-		{"nil_decode_final", jsonAliasProject(t), bamlutils.NativeSpineUnaryBinding{Method: jsonAliasMethod, ProjectInput: jsonAliasBinding().ProjectInput, DecodeFinal: nil}, "DecodeFinal is nil"},
-		{"binding_name_mismatch", jsonAliasProject(t), renameBinding(jsonAliasBinding(), "Other"), "did not admit"},
+		// --- binding-level — register:binding (PRE-EXISTING gate) ---------------
+		{"nil_project_input", jsonAliasProject(t), bamlutils.NativeSpineUnaryBinding{Method: jsonAliasMethod, ProjectInput: nil, DecodeFinal: jsonAliasBinding().DecodeFinal}, "ProjectInput is nil", "register:binding", "coverage"},
+		{"nil_decode_final", jsonAliasProject(t), bamlutils.NativeSpineUnaryBinding{Method: jsonAliasMethod, ProjectInput: jsonAliasBinding().ProjectInput, DecodeFinal: nil}, "DecodeFinal is nil", "register:binding", "coverage"},
+		{"binding_name_mismatch", jsonAliasProject(t), renameBinding(jsonAliasBinding(), "Other"), "did not admit", "register:binding", "coverage"},
 	}
 
 	for _, tc := range cases {
@@ -211,12 +240,58 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 			// loopback and assert the failed construction opens NO socket (the
 			// constructor is pure — no nanollm New/Prepare — so it never dials).
 			url, count := newCountingServer(t)
-			_, err := newExec(t, injectBaseURL(t, tc.proj, url), tc.binding)
+			proj := injectBaseURL(t, tc.proj, url)
+			// Verify the `layer` claim (review-4 finding 1): a validate:* row must be
+			// rejected by proj.Validate() BEFORE the register loop; a register:* row must
+			// PASS Validate, so its decline necessarily happens inside register(). A
+			// mislabelled row fails here, so the matrix cannot over-claim which layer
+			// declines a row. (injectBaseURL only rewrites base_url, which Validate does
+			// not inspect, so this Validate result is the constructor's.)
+			validateErr := proj.Validate()
+			switch {
+			case strings.HasPrefix(tc.layer, "validate"):
+				if validateErr == nil {
+					t.Fatalf("row %q is labelled layer %q but proj.Validate() passed — it does NOT decline before register()", tc.name, tc.layer)
+				}
+			case strings.HasPrefix(tc.layer, "register"):
+				if validateErr != nil {
+					t.Fatalf("row %q is labelled layer %q (reaches register) but proj.Validate() rejected it first: %v", tc.name, tc.layer, validateErr)
+				}
+			default:
+				t.Fatalf("row %q has an unclassified layer %q", tc.name, tc.layer)
+			}
+			_, err := newExec(t, proj, tc.binding)
 			declinesOn(t, err, tc.want)
 			if count() != 0 {
 				t.Fatalf("registration opened %d sockets, want 0", count())
 			}
 		})
+	}
+
+	// The `kind` label is CONSUMED here so the regression classification is a checked
+	// invariant, not dead prose: exactly these four rows are the genuine pre-fix
+	// regressions (the gates this slice's review fixes added — cycle-3's client-cohort
+	// intent predicate and review-2's registration cohort + capability-manifest gates).
+	// Every other row is coverage of a pre-existing gate. If a future edit relabels a row
+	// or adds a regression without updating this set, the test fails.
+	gotRegressions := map[string]bool{}
+	for _, tc := range cases {
+		switch tc.kind {
+		case "regression":
+			gotRegressions[tc.name] = true
+		case "coverage":
+		default:
+			t.Fatalf("row %q has an unclassified kind %q", tc.name, tc.kind)
+		}
+	}
+	wantRegressions := []string{"selected_client_non_openai", "invalid_utf8_model", "body_option_client_survives", "capability_manifest_corruption"}
+	if len(gotRegressions) != len(wantRegressions) {
+		t.Fatalf("regression rows = %v, want exactly %v", gotRegressions, wantRegressions)
+	}
+	for _, n := range wantRegressions {
+		if !gotRegressions[n] {
+			t.Fatalf("expected row %q to be labelled kind=regression", n)
+		}
 	}
 
 	// Duplicate method: two bindings for the same admitted method.
