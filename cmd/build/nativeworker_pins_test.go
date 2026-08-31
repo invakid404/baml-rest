@@ -248,7 +248,9 @@ func (r pinFollowupRecord) lists(file, module string) bool {
 }
 
 // pinFollowupFence delimits the record's DESIGNATED metadata block. The keys the guard
-// reads are taken from inside it and from nowhere else.
+// reads are taken from inside it and from nowhere else. The opening fence may carry a
+// CommonMark info string (a language tag) which the parser matches by prefix; the closing
+// fence is bare.
 const pinFollowupFence = "```"
 
 // pinFollowupRequiredKeys are the metadata keys the guard reads. They must ALL be present
@@ -311,18 +313,24 @@ func parsePinFollowup(src string) (pinFollowupRecord, error) {
 	rec := pinFollowupRecord{fields: map[string]string{}, enumerated: map[string]bool{}}
 	lines := strings.Split(src, "\n")
 
-	// Locate the designated metadata block: the FIRST fenced region.
+	// Locate the designated metadata block: the FIRST fenced region. The OPENING fence
+	// MAY carry a CommonMark info string (a language tag, e.g. ```text — markdownlint
+	// MD040), so it is matched by prefix; the CLOSING fence is bare. This only relaxes
+	// which line opens the block — the block boundaries stay exact and the out-of-block
+	// key check below is unchanged, so the metadata-hiding guard is not weakened.
 	open, close := -1, -1
 	for i, line := range lines {
-		if strings.TrimSpace(line) != pinFollowupFence {
-			continue
-		}
+		trimmed := strings.TrimSpace(line)
 		if open < 0 {
-			open = i
+			if strings.HasPrefix(trimmed, pinFollowupFence) {
+				open = i
+			}
 			continue
 		}
-		close = i
-		break
+		if trimmed == pinFollowupFence {
+			close = i
+			break
+		}
 	}
 	if open < 0 {
 		return rec, fmt.Errorf("no fenced metadata block (%s) — the guard reads STATUS/PINNED-COMMIT/"+

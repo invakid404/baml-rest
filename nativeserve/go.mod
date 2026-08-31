@@ -94,11 +94,11 @@
 // that are easiest to leave implicit (flipping BOTH mirrored manifest narratives,
 // and materializing the external probe's module + main package before its
 // go get/build/run) — is nativeserve/pin_followup.md, section "The follow-up —
-// PERFORMED". Follow it there; do not reconstruct it from these paragraphs.
+// OWED". Follow it there; do not reconstruct it from these paragraphs.
 //
 // NOTE (ExecBridge-U1 — production native unary executor/population bridge): these pins are
 // BRANCH-ONLY and the tracked follow-up in nativeserve/pin_followup.md is therefore
-// STATUS: OUTSTANDING. They name 8427c6315563, the branch SOURCE commit on
+// STATUS: OUTSTANDING. They name a65c511e5c53, the branch SOURCE commit on
 // feat/debaml-execbridge-u1 that carries the U1 guarded-tree change — no master commit
 // carries it yet. This module's serve path gains a new BAML-free spine unary lane
 // (nativeserve/spine's UnaryExecutor + nativeserve/admission's AdmitStaticSpineClaim), which
@@ -165,9 +165,9 @@ go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260831140315-8427c6315563
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260831140315-8427c6315563
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260831140315-8427c6315563
+	github.com/invakid404/baml-rest v0.0.0-20260831153443-a65c511e5c53
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260831153443-a65c511e5c53
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260831153443-a65c511e5c53
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
