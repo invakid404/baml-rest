@@ -114,6 +114,22 @@ var nonWorkerEntrypoints = map[string]string{
 		"it boots no worker and cmd/build/build.sh cannot ship it as an artifact",
 }
 
+// nativeOnlyEntrypoints names isolated-module commands that ARE deployable
+// native_capable workers but boot through internal/nativeonlyboot rather than
+// internal/workerboot (ExecBridge-U1b). They are the all-on/all-off native-only
+// artifact: there is no BAML runtime, no BAML fallback, and therefore no
+// BAML_REST_USE_DEBAML flag-off contract to satisfy — artifact selection is the
+// one gate. They are still deployable (build.sh names them under NATIVE_WORKER_PKG),
+// so this guard classifies them, and it CHECKS the classification: a native-only
+// entrypoint must NOT call workerboot.Run (that would drag in the root generated
+// package / rootruntime / introspected the artifact exists to exclude), and it MUST
+// call nativeonlyboot.Run.
+var nativeOnlyEntrypoints = map[string]string{
+	"worker-nativeonly": "the ExecBridge-U1b native-only packaged worker: boots + serves the exact-JSON " +
+		"cohort with ZERO BAML/CFFI in its runtime graph via nativeonlyboot.Run; no BAML runtime, no " +
+		"BAML fallback, no BAML_REST_USE_DEBAML flag (artifact selection is the one all-on/all-off gate)",
+}
+
 // nativeInjectionFields returns the Options field names through which a native
 // engine can enter a worker: every func-typed field (the factories and
 // NativeInit) and every interface-typed field (NativeCapability). The remaining
@@ -231,6 +247,13 @@ func TestNativeCapableEntrypointSetIsComplete(t *testing.T) {
 	for _, e := range nativeCapableEntrypoints() {
 		declared[e.dir] = true
 	}
+	// Native-only workers (ExecBridge-U1b) are ALSO shippable native_capable
+	// artifacts and so must be classified; they are checked separately below
+	// because they satisfy a native-only invariant (nativeonlyboot, no BAML
+	// fallback) rather than the workerboot flag-off contract.
+	for dir := range nativeOnlyEntrypoints {
+		declared[dir] = true
+	}
 
 	entries, err := os.ReadDir(nativeWorkerModuleCmdDir)
 	if err != nil {
@@ -292,6 +315,32 @@ func TestNativeCapableEntrypointSetIsComplete(t *testing.T) {
 		}
 		if declared[dir] && !named {
 			t.Errorf("the guard classifies cmd/%s but build.sh no longer names it; artifact selection and this guard have drifted", dir)
+		}
+	}
+}
+
+// TestNativeOnlyEntrypointsAreBAMLFree checks the native-only classification the
+// way the exemption above is checked: each declared native-only entrypoint must
+// exist, must NOT call workerboot.Run (which would drag in the root generated
+// package / rootruntime / introspected the native-only artifact exists to
+// exclude), and MUST call nativeonlyboot.Run (so it is a real native-only worker,
+// not a stale label). Whole-graph BAML absence is proven by the packaged
+// go-list-deps gate beside the command; this is the cheap source-level guard that
+// runs in the ordinary unit lane.
+func TestNativeOnlyEntrypointsAreBAMLFree(t *testing.T) {
+	for dir := range nativeOnlyEntrypoints {
+		path := filepath.Join(nativeWorkerModuleCmdDir, dir, "main.go")
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Errorf("native-only entrypoint cmd/%s: %v — drop the stale classification if it no longer exists", dir, err)
+			continue
+		}
+		text := string(src)
+		if strings.Contains(text, "workerboot.Run(") {
+			t.Errorf("cmd/%s is classified native-only but calls workerboot.Run; the native-only artifact must boot via nativeonlyboot.Run so it links no rootruntime/introspected/root-baml_rest", dir)
+		}
+		if !strings.Contains(text, "nativeonlyboot.Run(") {
+			t.Errorf("cmd/%s is classified native-only but does not call nativeonlyboot.Run; it is not a native-only worker", dir)
 		}
 	}
 }
