@@ -29,11 +29,11 @@
 // packages the root's internal/* imports here), so the three first-party requires
 // are pinned to the ORIGIN-RESOLVABLE pseudo-version of a single commit — the one
 // nativeserve/pin_followup.md records and cmd/build's TestFirstPartyPinFollowupIsTracked
-// checks, which is CURRENTLY the ExecBridge-U1 BRANCH source commit (STATUS:
-// OUTSTANDING — the post-squash re-pin to the eventual master squash commit is still
-// OWED; see the PIN-STATUS block below and pin_followup.md), NOT the historical Slice
-// 7.1b master merge 15b98cf6ebe4 named in the floor notes below — one consistent snapshot
-// that resolves cleanly off a fresh checkout with zero local replacements. The replace directives below
+// checks, which is CURRENTLY the ExecBridge-U1 MASTER squash commit 7ddbb39fd3db (STATUS:
+// RESOLVED — the post-squash re-pin has been PERFORMED; see the PIN-STATUS block below and
+// pin_followup.md), NOT the historical Slice 7.1b master merge 15b98cf6ebe4 named in the floor
+// notes below — one consistent snapshot that resolves cleanly off a fresh checkout with zero
+// local replacements. The replace directives below
 // are for local development only; Go
 // ignores a dependency module's replaces, so an external consumer resolves those
 // pseudo-versions itself, DIRECT from the origin repo under GOPRIVATE.
@@ -80,13 +80,13 @@
 // the pins were moved here. Pin to a branch commit only if unavoidable, and re-pin to the
 // merged master commit as the immediate follow-up.
 //
-// PIN-STATUS: OUTSTANDING
+// PIN-STATUS: RESOLVED
 //
 // That marker is the MACHINE-READABLE statement of where these pins stand, and
 // cmd/build's TestPackagedManifestsMatchTheTrackedPins requires it to equal the
 // STATUS in nativeserve/pin_followup.md — inside the packaged tar as well as
 // here. It exists because prose is not auditable: a reviewer grepping this file
-// for `ba813ad3564d` or `RESOLVED` hits the HISTORICAL sentences below and can
+// for `f35489fc2463` or `OUTSTANDING` hits the HISTORICAL sentences below and can
 // reasonably conclude the pins are elsewhere than they are. Read the marker, not
 // the paragraphs.
 //
@@ -97,24 +97,25 @@
 // OWED". Follow it there; do not reconstruct it from these paragraphs.
 //
 // NOTE (ExecBridge-U1 — production native unary executor/population bridge): these pins are
-// BRANCH-ONLY and the tracked follow-up in nativeserve/pin_followup.md is therefore
-// STATUS: OUTSTANDING. They name f35489fc2463, the branch SOURCE commit on
-// feat/debaml-execbridge-u1 that carries the U1 guarded-tree change — no master commit
-// carries it yet. This module's serve path gains a new BAML-free spine unary lane
-// (nativeserve/spine's UnaryExecutor + nativeserve/admission's AdmitStaticSpineClaim), which
-// depends on the NEW neutral contract in bamlutils (bamlutils.NativeSpineUnaryExecutor /
+// MASTER-DURABLE and the tracked follow-up in nativeserve/pin_followup.md is therefore
+// STATUS: RESOLVED. They name 7ddbb39fd3db, the MASTER squash-merge commit of PR #708 that
+// carries the U1 guarded-tree change. This module's serve path gains a new BAML-free spine
+// unary lane (nativeserve/spine's UnaryExecutor + nativeserve/admission's AdmitStaticSpineClaim),
+// which depends on the NEW neutral contract in bamlutils (bamlutils.NativeSpineUnaryExecutor /
 // NativeSpineUnaryBinding / tri-state result). (The scalar-descriptor reconstruction the
 // runtime also needs lives INSIDE nativeserve/spine as the unexported reconstructFunction —
 // not a root symbol — so it rides in this module, keeping the serve package free of the
 // codegen toolchain.) A consumer resolving a PRE-U1 pin gets a bamlutils that lacks that
 // contract, so this module would not even build against it —
 // which is exactly why the pins must name a commit that carries the U1 source, and why the
-// selection is a lockstep set. The post-squash re-pin to the eventual MASTER commit is OWED
-// (the orchestrator drives it after merge); a branch-tip pin is not final delivery, so this
-// record stays OUTSTANDING until then. See pin_followup.md for the runbook.
+// selection is a lockstep set. The post-squash re-pin to the MASTER commit 7ddbb39fd3db has
+// been PERFORMED; this record is durable. See pin_followup.md for the runbook.
 //
 // HISTORICAL, SUPERSEDED — the SHAs in this paragraph are not the current pins:
-// immediately before U1, all five were MASTER-DURABLE at 7c7bed8291b6 (STATUS: RESOLVED),
+// U1's pins were briefly BRANCH-ONLY at f35489fc2463 on feat/debaml-execbridge-u1 (STATUS:
+// OUTSTANDING) for as long as no master commit carried the U1 spine contract; PR #708's squash
+// flattened that SHA out of history and the branch was deleted, and this re-pin to 7ddbb39fd3db
+// is what made delivery durable. Immediately before U1, all five were MASTER-DURABLE at 7c7bed8291b6 (STATUS: RESOLVED),
 // the master commit that squash-merged the de-BAML /parse UNION-RESIDUAL batch-2 slice
 // (PR #703); #703 was itself briefly BRANCH-ONLY at 5fdd679c8784 on
 // feat/debaml-parse-batch2 (re-bumped there twice — off the initial batch-2 source
@@ -148,8 +149,9 @@
 // The precedent for this follow-up was #681 -> #682, #683 -> #684, #686 -> #687,
 // #689 -> #692 and #703's batch-2 re-pin: pin to the branch SOURCE commit only because no
 // master commit carries the change yet, then re-pin all five to master and regenerate the
-// tar IMMEDIATELY after the merge. This change is the U1 branch-pin instance of it; the
-// re-pin to master is OWED (STATUS: OUTSTANDING) and the orchestrator drives it post-squash.
+// tar IMMEDIATELY after the merge. This change is the U1 post-squash re-pin instance of it:
+// PR #708 squash-merged to master 7ddbb39fd3db, and all five pins were re-pointed there
+// (STATUS: RESOLVED) with the tar regenerated in the same change.
 //
 // A bump must ALSO move internal/nativebody/nanollmprepare/go.mod's recorded bamlutils +
 // worker selections in LOCKSTEP: nanollmprepare directory-replaces root / bamlutils /
@@ -165,9 +167,9 @@ go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260831161026-f35489fc2463
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260831161026-f35489fc2463
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260831161026-f35489fc2463
+	github.com/invakid404/baml-rest v0.0.0-20260901085119-7ddbb39fd3db
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260901085119-7ddbb39fd3db
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260901085119-7ddbb39fd3db
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
