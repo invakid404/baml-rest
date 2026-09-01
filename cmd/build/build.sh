@@ -202,6 +202,35 @@ case "${SHADOW_WORKER}" in
         ;;
 esac
 
+# ExecBridge-U1b: the NATIVE-ONLY worker selection. It is a single all-on/all-off
+# gate: on, it builds cmd/worker-nativeonly (a subprocess worker with ZERO
+# BAML/CFFI in its runtime graph) instead of the standard cmd/worker; off, nothing
+# below changes. It is SUBPROCESS-only and native_capable, so it is mutually
+# exclusive with the SHADOW profile and with an in-process build, and it cannot be
+# combined with an explicit NATIVE_WORKER=false.
+NATIVE_ONLY_WORKER="${NATIVE_ONLY_WORKER:-false}"
+case "${NATIVE_ONLY_WORKER}" in
+    true|false) ;;
+    *)
+        echo "ERROR: NATIVE_ONLY_WORKER must be exactly \"true\" or \"false\" (got \"${NATIVE_ONLY_WORKER}\")" >&2
+        exit 1
+        ;;
+esac
+if [ "${NATIVE_ONLY_WORKER}" = "true" ]; then
+    if [ "${SHADOW_WORKER}" = "true" ]; then
+        echo "ERROR: NATIVE_ONLY_WORKER=true is mutually exclusive with SHADOW_WORKER=true" >&2
+        exit 1
+    fi
+    if [ "${SUBPROCESS:-true}" != "true" ]; then
+        echo "ERROR: NATIVE_ONLY_WORKER=true requires SUBPROCESS=true — the native-only worker is a subprocess artifact (the host stays zero-nanollm/CGO-free)" >&2
+        exit 1
+    fi
+    if [ "${NATIVE_WORKER_REQUEST}" = "false" ]; then
+        echo "ERROR: NATIVE_ONLY_WORKER=true conflicts with NATIVE_WORKER=false — the native-only worker IS native_capable" >&2
+        exit 1
+    fi
+fi
+
 # The native worker is a SUBPROCESS-only capability by construction: nanollm
 # links only into the worker subprocess, never the host. An in-process build has
 # no separate worker process, so honouring NATIVE_WORKER there would mean linking
@@ -269,7 +298,11 @@ fi
 # standard artifact, so the exclusion is now written out: a shadow worker still
 # installs no stream serve factory, and tagging its host would arm the pool's
 # stream-retry suppression against a worker that cannot serve a stream.
-if [ "${NATIVE_WORKER}" = "true" ] && [ "${SHADOW_WORKER}" != "true" ]; then
+# The NATIVE-ONLY worker (ExecBridge-U1b) is ALSO excluded: its admitted cohort is
+# unary final-call only (stream mode declines pre-socket), so its embedded worker
+# cannot serve a native stream and the host must not arm stream-retry suppression
+# for it.
+if [ "${NATIVE_WORKER}" = "true" ] && [ "${SHADOW_WORKER}" != "true" ] && [ "${NATIVE_ONLY_WORKER:-false}" != "true" ]; then
     BUILD_TAGS="${BUILD_TAGS:+${BUILD_TAGS},}nativestreamserve"
 fi
 # De-BAML serving cutover S2: tag the HOST build with the ARTIFACT PROFILE, so
@@ -281,6 +314,15 @@ fi
 # at startup, so the tag and the stamp cannot drift apart silently.
 if [ "${ARTIFACT_PROFILE}" = "native_capable" ]; then
     BUILD_TAGS="${BUILD_TAGS:+${BUILD_TAGS},}nativeworkerartifact"
+fi
+# ExecBridge-U1b: the native-only worker compiles the GENERATED registry (emitted
+# below by cmd/gen-native-spine-worker) under this tag; without it the committed
+# fail-loud stub (nativegenerated/generated_off.go) is selected instead. The host
+# serve build carries the tag too (it is inert there — no root file is gated on it),
+# so the same GO_BUILD_TAGS drives both builds and the axis is visible in the
+# attested artifact ID.
+if [ "${NATIVE_ONLY_WORKER:-false}" = "true" ]; then
+    BUILD_TAGS="${BUILD_TAGS:+${BUILD_TAGS},}debamlnativeonlygenerated"
 fi
 GO_BUILD_TAGS=""
 if [ -n "${BUILD_TAGS}" ]; then
@@ -402,6 +444,7 @@ if [ "${ARTIFACT_PROFILE_DRY_RUN:-false}" = "true" ]; then
     echo "artifact_source_bundle_digest=${ARTIFACT_SOURCE_BUNDLE_DIGEST}"
     echo "native_worker=${NATIVE_WORKER}"
     echo "shadow_worker=${SHADOW_WORKER}"
+    echo "native_only_worker=${NATIVE_ONLY_WORKER}"
     echo "subprocess=${SUBPROCESS:-true}"
     echo "build_tags=${BUILD_TAGS}"
     exit 0
@@ -806,10 +849,15 @@ NATIVE_WORKER_PKG=""
 ARTIFACT_WORKER_PKG=""
 if [ "${SUBPROCESS:-true}" = "true" ]; then
     if [ "${ARTIFACT_PROFILE}" = "native_capable" ]; then
-        # Two isolated-module worker profiles; SHADOW takes precedence (it is the
-        # no-send comparator build, not the serve build).
+        # Isolated-module worker profiles. NATIVE_ONLY (ExecBridge-U1b) takes highest
+        # precedence, then SHADOW (no-send comparator), then the standard serve worker.
+        # The distinct package makes the attested artifact ID distinct via
+        # Inputs.WorkerPackage — no third artifact profile is needed (native_capable
+        # stays a true derived fact for the native-only worker).
         NATIVE_WORKER_PKG="./cmd/worker/"
-        if [ "${SHADOW_WORKER}" = "true" ]; then
+        if [ "${NATIVE_ONLY_WORKER:-false}" = "true" ]; then
+            NATIVE_WORKER_PKG="./cmd/worker-nativeonly/"
+        elif [ "${SHADOW_WORKER}" = "true" ]; then
             NATIVE_WORKER_PKG="./cmd/worker-shadow/"
         fi
         ARTIFACT_WORKER_PKG="nanollmprepare:${NATIVE_WORKER_PKG}"
@@ -914,26 +962,104 @@ if [ "${SUBPROCESS:-true}" = "true" ]; then
         # main module) needs the overlay: nativeserve is a DEPENDENCY here, and Go
         # ignores a dependency module's replace directives, so its own trimmed-target
         # replaces never dangle and it needs no baml_client (it imports none).
-        echo "Overlaying isolated worker module go.mod (baml_client + BAML selection)..."
-        NATIVE_WORKER_OVERLAY_ARGS=(
-            --module-dir internal/nativebody/nanollmprepare
-            --baml-client ../../../baml_client
-            --baml-version "${BAML_VERSION}"
-        )
-        if [ -n "${CUSTOM_BAML_GO_LIB:-}" ]; then
-            NATIVE_WORKER_OVERLAY_ARGS+=(--custom-baml-lib "${CUSTOM_BAML_GO_LIB}")
-        fi
-        go run ./cmd/build/nativeworker-overlay "${NATIVE_WORKER_OVERLAY_ARGS[@]}"
+        if [ "${NATIVE_ONLY_WORKER:-false}" = "true" ]; then
+            # ExecBridge-U1b: the NATIVE-ONLY worker. Overlay in native-only mode —
+            # ONLY the generic missing-replace cleanup, NO baml_client / BAML wiring —
+            # then generate the deployment-specific native registry and build the
+            # BAML-free command. The overlay's mode is validated mutually exclusive
+            # with the BAML mode, so this path can never silently gain baml_client.
+            echo "Overlaying isolated worker module go.mod (native-only: missing-replace cleanup only, NO BAML wiring)..."
+            go run ./cmd/build/nativeworker-overlay \
+                --module-dir internal/nativebody/nanollmprepare \
+                --native-only
 
-        echo "Building BAML+nanollm worker binary (${NATIVE_WORKER_PKG}, from isolated nanollmprepare module)..."
-        WORKER_OUT="$(pwd)/cmd/serve/worker"
-        (
-            cd internal/nativebody/nanollmprepare
-            # -mod=mod so the overlay's baml_client (local) transitive deps and any
-            # aligned BAML version can populate this module's go.sum during the
-            # build; the root module's go.sum is never consulted (GOWORK=off).
-            GOWORK=off GOFLAGS=-mod=mod CGO_ENABLED=1 go build ${GO_BUILD_TAGS} ${WORKER_LDFLAGS:+-ldflags "${WORKER_LDFLAGS}"} -o "${WORKER_OUT}" "${NATIVE_WORKER_PKG}"
-        )
+            # Emit the project's own codegen-spine descriptor and generate the native
+            # registry into the extracted tree. Generation cleans its output dir first,
+            # so a method removed since the last build cannot survive as a stale
+            # registration. The committed generated_off.go stub is left in place and is
+            # excluded by the debamlnativeonlygenerated tag below.
+            echo "Emitting native-spine project descriptor..."
+            go run ./cmd/introspect \
+                --native-spine-descriptors ./nativeworker_descriptors.json \
+                --baml-src-dir ./baml_src
+            echo "Generating native-only worker registry (cmd/gen-native-spine-worker)..."
+            go run ./cmd/gen-native-spine-worker \
+                --descriptors ./nativeworker_descriptors.json \
+                --out-dir internal/nativebody/nanollmprepare/nativegenerated
+
+            # Whole-command DEPENDENCY GATE against the exact package/tags built into
+            # cmd/serve/worker: the packaged native-only command must link NO BAML,
+            # CFFI, dynclient, rootruntime, introspected, workerboot, or the root
+            # generated baml_rest package. This is defense-in-depth for the standalone
+            # go-list-deps test; a red here fails the build before it embeds anything.
+            echo "Running native-only worker dependency gate (go list -deps -tags=${BUILD_TAGS})..."
+            NATIVE_ONLY_DEPS="$(mktemp)"
+            (
+                cd internal/nativebody/nanollmprepare
+                GOWORK=off go list -deps -tags="${BUILD_TAGS}" ./cmd/worker-nativeonly
+            ) > "${NATIVE_ONLY_DEPS}"
+            if [ ! -s "${NATIVE_ONLY_DEPS}" ]; then
+                echo "ERROR: native-only dependency gate produced no output (wrong package/tags?)" >&2
+                exit 1
+            fi
+            if grep -Eq 'baml_client|github\.com/boundaryml/baml|github\.com/invakid404/baml-rest/dynclient|dynclient/baml-patched|language_client_go|github\.com/invakid404/baml-rest/internal/rootruntime|github\.com/invakid404/baml-rest/introspected|github\.com/invakid404/baml-rest/internal/workerboot|^github\.com/invakid404/baml-rest$' "${NATIVE_ONLY_DEPS}"; then
+                echo "ERROR: the native-only worker's compiled dependency graph contains a forbidden BAML/CFFI/dynclient/rootruntime/introspected/workerboot/root-baml_rest dependency:" >&2
+                grep -E 'baml_client|github\.com/boundaryml/baml|github\.com/invakid404/baml-rest/dynclient|dynclient/baml-patched|language_client_go|github\.com/invakid404/baml-rest/internal/rootruntime|github\.com/invakid404/baml-rest/introspected|github\.com/invakid404/baml-rest/internal/workerboot|^github\.com/invakid404/baml-rest$' "${NATIVE_ONLY_DEPS}" >&2
+                rm -f "${NATIVE_ONLY_DEPS}"
+                exit 1
+            fi
+            # POSITIVE-dep assertions — the SAME set TestNativeOnlyWorkerHasNoBAML
+            # requires. Denylist-absent + non-empty is not enough: a non-empty but
+            # inert/wrong command graph (the wrong package, a truncated list) would pass
+            # by absence. Require every load-bearing dependency to be present so this
+            # packaged build gate proves the graph is the RIGHT one.
+            for want in \
+                'github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/cmd/worker-nativeonly' \
+                'github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/nativeonlyboot' \
+                'github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/nativegenerated' \
+                'github.com/invakid404/baml-rest/nativeserve/spine' \
+                'github.com/invakid404/baml-rest/worker' \
+                'github.com/invakid404/baml-rest/workerplugin' \
+                'github.com/viktordanov/nanollm-ffi/go'; do
+                if ! grep -qxF "${want}" "${NATIVE_ONLY_DEPS}"; then
+                    echo "ERROR: the native-only worker's dependency graph is MISSING the required positive dependency ${want}; the packaged gate must not pass by absence (wrong package/tags or an inert graph)" >&2
+                    rm -f "${NATIVE_ONLY_DEPS}"
+                    exit 1
+                fi
+            done
+            rm -f "${NATIVE_ONLY_DEPS}"
+
+            echo "Building native-only worker binary (${NATIVE_WORKER_PKG}, BAML-free, from isolated nanollmprepare module)..."
+            WORKER_OUT="$(pwd)/cmd/serve/worker"
+            (
+                cd internal/nativebody/nanollmprepare
+                # -mod=mod so the build may populate this module's go.sum for any
+                # transitive dep the generated registry pulls; the root module's go.sum
+                # is never consulted (GOWORK=off). CGO for the nanollm archive.
+                GOWORK=off GOFLAGS=-mod=mod CGO_ENABLED=1 go build ${GO_BUILD_TAGS} ${WORKER_LDFLAGS:+-ldflags "${WORKER_LDFLAGS}"} -o "${WORKER_OUT}" "${NATIVE_WORKER_PKG}"
+            )
+        else
+            echo "Overlaying isolated worker module go.mod (baml_client + BAML selection)..."
+            NATIVE_WORKER_OVERLAY_ARGS=(
+                --module-dir internal/nativebody/nanollmprepare
+                --baml-client ../../../baml_client
+                --baml-version "${BAML_VERSION}"
+            )
+            if [ -n "${CUSTOM_BAML_GO_LIB:-}" ]; then
+                NATIVE_WORKER_OVERLAY_ARGS+=(--custom-baml-lib "${CUSTOM_BAML_GO_LIB}")
+            fi
+            go run ./cmd/build/nativeworker-overlay "${NATIVE_WORKER_OVERLAY_ARGS[@]}"
+
+            echo "Building BAML+nanollm worker binary (${NATIVE_WORKER_PKG}, from isolated nanollmprepare module)..."
+            WORKER_OUT="$(pwd)/cmd/serve/worker"
+            (
+                cd internal/nativebody/nanollmprepare
+                # -mod=mod so the overlay's baml_client (local) transitive deps and any
+                # aligned BAML version can populate this module's go.sum during the
+                # build; the root module's go.sum is never consulted (GOWORK=off).
+                GOWORK=off GOFLAGS=-mod=mod CGO_ENABLED=1 go build ${GO_BUILD_TAGS} ${WORKER_LDFLAGS:+-ldflags "${WORKER_LDFLAGS}"} -o "${WORKER_OUT}" "${NATIVE_WORKER_PKG}"
+            )
+        fi
     else
         # The explicit ROLLBACK artifact: the BAML-only worker from the root
         # module (imports baml, loads its shared library; no nanollm). This is

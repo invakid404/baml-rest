@@ -197,14 +197,18 @@ func TestCancelBeforeAfterClaim(t *testing.T) {
 		// idempotent, so the normal-path cancel/release and this defer never conflict.
 		defer func() { cancel(); releaseNow(); abortNow() }()
 
-		done := make(chan struct{ res bamlutils.NativeSpineUnaryResult }, 1)
+		done := make(chan struct {
+			res bamlutils.NativeSpineUnaryResult
+		}, 1)
 		go func() {
 			comp := &fallbackComposite{inner: e, fallbackFinal: "must-not-be-served"}
 			r := comp.Call(ctx, jsonAliasMethod, &nativespinejsonfixture.StaticRecursiveAliasJsonInput{Topic: "weather"})
 			if comp.fallbackCalls != 0 {
 				t.Errorf("fallback invoked %d times after the claim, want 0", comp.fallbackCalls)
 			}
-			done <- struct{ res bamlutils.NativeSpineUnaryResult }{r}
+			done <- struct {
+				res bamlutils.NativeSpineUnaryResult
+			}{r}
 		}()
 
 		// (1) claim → socket entered. Bound the wait: if the request finishes or errors
@@ -239,7 +243,9 @@ func TestCancelBeforeAfterClaim(t *testing.T) {
 		// release + abort) runs on this t.Fatal, so nothing leaks. The call is
 		// deterministically failed-after-claim — the handler wrote no response, so success
 		// was never on the table.
-		var got struct{ res bamlutils.NativeSpineUnaryResult }
+		var got struct {
+			res bamlutils.NativeSpineUnaryResult
+		}
 		select {
 		case got = <-done:
 		case <-time.After(10 * time.Second):

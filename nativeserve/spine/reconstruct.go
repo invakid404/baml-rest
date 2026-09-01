@@ -21,9 +21,23 @@ import (
 // config) so the reconstructed Function is exactly what the existing native
 // render/prepare admission path consumes.
 //
-// It DECLINES (returns an error) when any of these cohort-forbidden facts is present:
+// It returns a classified *reconstructError, splitting two kinds of failure:
 //
-//   - the project descriptor version is not the current version;
+// CORRUPTION (corrupt=true — a HARD boot failure, never a silent omission), an
+// INCONSISTENT descriptor. Most of these are facts proj.Validate does not catch; the
+// project-version bullet is a defensive backstop proj.Validate also proves:
+//
+//   - an admitted method whose class is not static-unary;
+//   - a project descriptor version that is not the current version (a backstop —
+//     proj.Validate already rejects this before reconstruction);
+//   - a method whose default client is ABSENT from the project Clients graph — a
+//     dangling direct client, or a Strategies entry whose wrapper Client is missing
+//     (BuildClientGraph always inserts the wrapper into Clients, so its absence is
+//     corruption, not a legitimate strategy). Resolved before any population exit.
+//
+// A POPULATION decline (corrupt=false — the method is well-formed but outside the
+// exact cohort, so it is omitted from the native-only registry):
+//
 //   - the project declares ANY template_string (macro): BAML injects the project
 //     macro set into every function's prompt, so a templated project's render is not
 //     the template-free render this cohort proves — even for a method that does not
@@ -36,22 +50,39 @@ import (
 // gate are the registry's own (see register); this function owns the project/client
 // facts that only the Project carries. It does NOT widen the M1 classifier — it
 // NARROWS registration to the exact population cohort.
-func reconstructFunction(proj projectdescriptor.Project, m projectdescriptor.Method) (promptdescriptor.Function, error) {
+func reconstructFunction(proj projectdescriptor.Project, m projectdescriptor.Method) (promptdescriptor.Function, *reconstructError) {
+	// A method that is admitted (in proj.Methods) yet not static-unary, or a project
+	// whose descriptor version is wrong, is an INCONSISTENT descriptor — structural
+	// corruption, not a population fact — so it is a HARD failure.
+	// proj.Validate proves the version, so this is a defensive backstop.
 	if m.Class != projectdescriptor.ClassStaticUnary {
-		return promptdescriptor.Function{}, fmt.Errorf("class is %q, want %q", m.Class, projectdescriptor.ClassStaticUnary)
+		return promptdescriptor.Function{}, corruptReconstruct(fmt.Errorf("class is %q, want %q", m.Class, projectdescriptor.ClassStaticUnary))
 	}
 	if proj.Version != projectdescriptor.Version {
-		return promptdescriptor.Function{}, fmt.Errorf("project descriptor version %d, want %d", proj.Version, projectdescriptor.Version)
+		return promptdescriptor.Function{}, corruptReconstruct(fmt.Errorf("project descriptor version %d, want %d", proj.Version, projectdescriptor.Version))
 	}
-	if len(proj.Templates) != 0 {
-		return promptdescriptor.Function{}, fmt.Errorf("project declares %d template_string(s); the exact cohort requires a template-free project (BAML injects the project macro set into every prompt)", len(proj.Templates))
-	}
-	if err := validateClientCohort(proj, m); err != nil {
-		return promptdescriptor.Function{}, err
-	}
+	// STRUCTURAL, resolved BEFORE any population exit: the method's default client must
+	// be present in the project client graph. BuildClientGraph inserts EVERY client —
+	// a fallback/round-robin strategy WRAPPER included — into Clients (and additionally
+	// registers the strategy in Strategies under the same name), so a client absent from
+	// Clients is a shape the graph never emits: an INCONSISTENT descriptor Project.Validate
+	// does not catch (it checks client NAME uniqueness, not that every method's client is
+	// defined). It is a HARD failure, checked first so a corrupt candidate — e.g. a
+	// Strategies entry whose wrapper Client is missing — can never be masked by a
+	// population miss below (a templated project, a retry/strategy fact).
 	cfg, err := clientConfigFor(proj, m)
 	if err != nil {
-		return promptdescriptor.Function{}, err
+		return promptdescriptor.Function{}, corruptReconstruct(err)
+	}
+	// POPULATION facts: the client resolves, so the method is well-formed but outside the
+	// exact cohort — a cohort miss (omitted), not corruption. A templated project, or a
+	// retrying / fallback / round-robin strategy client (whose wrapper is present in
+	// Clients AND registered in Strategies).
+	if len(proj.Templates) != 0 {
+		return promptdescriptor.Function{}, populationReconstruct(fmt.Errorf("project declares %d template_string(s); the exact cohort requires a template-free project (BAML injects the project macro set into every prompt)", len(proj.Templates)))
+	}
+	if err := validateClientCohort(proj, m); err != nil {
+		return promptdescriptor.Function{}, populationReconstruct(err)
 	}
 	args := make([]promptdescriptor.Argument, 0, len(m.Args))
 	for i := range m.Args {
@@ -69,6 +100,28 @@ func reconstructFunction(proj projectdescriptor.Project, m projectdescriptor.Met
 		Macros:       nil,
 		ClientConfig: cfg,
 	}, nil
+}
+
+// reconstructError distinguishes a reconstruction failure that is a POPULATION
+// decline (the method is well-formed but outside the exact cohort — a templated
+// project, a retrying/strategy client) from one that is structural CORRUPTION (an
+// inconsistent descriptor — a client the project graph does not contain, a
+// non-static-unary admitted method). classifyBinding maps the former to a cohort
+// miss (omitted from the native-only registry) and the latter to a HARD boot
+// failure, so a corrupt candidate can never be silently downgraded to a miss.
+type reconstructError struct {
+	corrupt bool
+	err     error
+}
+
+func (e *reconstructError) Error() string { return e.err.Error() }
+func (e *reconstructError) Unwrap() error { return e.err }
+
+func populationReconstruct(err error) *reconstructError {
+	return &reconstructError{corrupt: false, err: err}
+}
+func corruptReconstruct(err error) *reconstructError {
+	return &reconstructError{corrupt: true, err: err}
 }
 
 // validateClientCohort declines the method if its resolved default client carries a

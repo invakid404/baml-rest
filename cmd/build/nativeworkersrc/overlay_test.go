@@ -223,3 +223,106 @@ replace github.com/example/enotdir => ../../../blocker/child
 		t.Error("overlay must not drop a replace on a non-ENOENT stat error")
 	}
 }
+
+// setupNativeOnlyContext lays out a native-only build context whose isolated
+// nanollmprepare go.mod mirrors the REAL manifest — crucially it carries the DIRECT
+// `github.com/boundaryml/baml` require the production manifest has
+// (internal/nativebody/nanollmprepare/go.mod), plus present + missing filesystem
+// replaces. Using the real manifest shape is the point: a synthetic fixture that
+// omits the require makes "no BoundaryML require" prove a precondition rather than
+// the packaged overlay's actual output.
+func setupNativeOnlyContext(t *testing.T) (root, moduleDir string) {
+	t.Helper()
+	root = t.TempDir()
+	moduleDir = filepath.Join(root, "internal", "nativebody", "nanollmprepare")
+	for _, name := range []string{"bamlutils", "worker", "nativeserve"} {
+		writeGoMod(t, filepath.Join(root, name), "module github.com/invakid404/baml-rest/"+name+"\n\ngo 1.26.5\n")
+	}
+	writeGoMod(t, root, "module github.com/invakid404/baml-rest\n\ngo 1.26.5\n")
+	writeGoMod(t, moduleDir, `module github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare
+
+go 1.26.5
+
+require (
+	github.com/boundaryml/baml v0.223.0
+	github.com/invakid404/baml-rest v0.0.48
+	github.com/invakid404/baml-rest/bamlutils v0.0.48
+	github.com/invakid404/baml-rest/worker v0.0.48
+	github.com/invakid404/baml-rest/nativeserve v0.0.0-00010101000000-000000000000
+	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
+	github.com/invakid404/baml-rest/dynclient/baml-patched v0.0.48
+)
+
+replace (
+	github.com/invakid404/baml-rest => ../../../
+	github.com/invakid404/baml-rest/bamlutils => ../../../bamlutils
+	github.com/invakid404/baml-rest/worker => ../../../worker
+	github.com/invakid404/baml-rest/nativeserve => ../../../nativeserve
+	github.com/invakid404/baml-rest/dynclient => ../../../dynclient
+	github.com/invakid404/baml-rest/dynclient/baml-patched => ../../../dynclient/baml-patched
+)
+`)
+	return root, moduleDir
+}
+
+// TestApplyNativeOnlyOverlay proves the PACKAGED production invariant against a
+// manifest with the real direct github.com/boundaryml/baml require: the native-only
+// overlay does ONLY the missing-replace cleanup and injects no BAML wiring. The
+// pre-existing require is LEFT as-is (cleanup-only never removes a non-dangling
+// require), but the overlay adds NO baml_client require/replace and NO
+// boundaryml/baml REPLACE (no SELECT). The command still does not IMPORT
+// boundaryml/baml — proven separately by the whole-command go-list-deps gate
+// (TestNativeOnlyWorkerHasNoBAML / the build.sh gate) — so an unused require is
+// inert. This tests the packaged overlay output, not a synthetic precondition.
+func TestApplyNativeOnlyOverlay(t *testing.T) {
+	_, moduleDir := setupNativeOnlyContext(t)
+
+	// The real manifest carries the direct require BEFORE the overlay runs — the
+	// precondition the earlier synthetic fixture was missing.
+	before := parseResult(t, moduleDir)
+	if !hasRequire(before, bamlModulePath) {
+		t.Fatalf("fixture precondition: the manifest must carry the direct %s require the real one has", bamlModulePath)
+	}
+
+	if err := ApplyNativeOnlyOverlay(moduleDir); err != nil {
+		t.Fatalf("ApplyNativeOnlyOverlay: %v", err)
+	}
+	mf := parseResult(t, moduleDir)
+
+	// The pre-existing boundaryml/baml REQUIRE is LEFT as-is (cleanup-only overlay).
+	if !hasRequire(mf, bamlModulePath) {
+		t.Errorf("native-only overlay removed the pre-existing %s require; the cleanup-only overlay must leave it in place", bamlModulePath)
+	}
+	// But it adds NO baml_client require/replace and NO boundaryml/baml SELECT
+	// (replace) — no BAML wiring is injected.
+	if hasRequire(mf, BAMLClientModulePath) {
+		t.Error("native-only overlay must NOT add a baml_client require")
+	}
+	if _, ok := hasReplace(mf, BAMLClientModulePath); ok {
+		t.Error("native-only overlay must NOT add a baml_client replace")
+	}
+	if _, ok := hasReplace(mf, bamlModulePath); ok {
+		t.Error("native-only overlay must NOT add a github.com/boundaryml/baml replace (no SELECT)")
+	}
+
+	// Missing-target replaces (dynclient, baml-patched) dropped.
+	for _, gone := range []string{
+		"github.com/invakid404/baml-rest/dynclient",
+		"github.com/invakid404/baml-rest/dynclient/baml-patched",
+	} {
+		if _, ok := hasReplace(mf, gone); ok {
+			t.Errorf("expected replace for missing target %s to be dropped", gone)
+		}
+	}
+	// Present-target replaces (root, bamlutils, worker, nativeserve) kept.
+	for _, kept := range []string{
+		"github.com/invakid404/baml-rest",
+		"github.com/invakid404/baml-rest/bamlutils",
+		"github.com/invakid404/baml-rest/worker",
+		"github.com/invakid404/baml-rest/nativeserve",
+	} {
+		if _, ok := hasReplace(mf, kept); !ok {
+			t.Errorf("expected replace for present target %s to be kept", kept)
+		}
+	}
+}

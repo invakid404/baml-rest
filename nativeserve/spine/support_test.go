@@ -122,12 +122,15 @@ type testAdapter struct {
 
 func newTestAdapter() *testAdapter { return &testAdapter{Context: context.Background()} }
 
-func (a *testAdapter) SetClientRegistry(r *bamlutils.ClientRegistry) error { a.registry = r; return nil }
-func (a *testAdapter) SetTypeBuilder(*bamlutils.TypeBuilder) error         { return nil }
-func (a *testAdapter) SetStreamMode(m bamlutils.StreamMode)                { a.streamMode = m }
-func (a *testAdapter) StreamMode() bamlutils.StreamMode                    { return a.streamMode }
-func (a *testAdapter) SetLogger(bamlutils.Logger)                          {}
-func (a *testAdapter) Logger() bamlutils.Logger                            { return nil }
+func (a *testAdapter) SetClientRegistry(r *bamlutils.ClientRegistry) error {
+	a.registry = r
+	return nil
+}
+func (a *testAdapter) SetTypeBuilder(*bamlutils.TypeBuilder) error { return nil }
+func (a *testAdapter) SetStreamMode(m bamlutils.StreamMode)        { a.streamMode = m }
+func (a *testAdapter) StreamMode() bamlutils.StreamMode            { return a.streamMode }
+func (a *testAdapter) SetLogger(bamlutils.Logger)                  {}
+func (a *testAdapter) Logger() bamlutils.Logger                    { return nil }
 func (a *testAdapter) NewMediaFromURL(bamlutils.MediaKind, string, *string) (any, error) {
 	return nil, nil
 }
@@ -136,14 +139,14 @@ func (a *testAdapter) NewMediaFromBase64(bamlutils.MediaKind, string, *string) (
 }
 func (a *testAdapter) SetRetryConfig(c *bamlutils.RetryConfig)                { a.retry = c }
 func (a *testAdapter) RetryConfig() *bamlutils.RetryConfig                    { return a.retry }
-func (a *testAdapter) SetIncludeReasoning(bool)                              {}
-func (a *testAdapter) IncludeReasoning() bool                                { return false }
-func (a *testAdapter) SoftFinalParse() bool                                  { return false }
-func (a *testAdapter) ClientRegistryProvider() string                        { return "" }
-func (a *testAdapter) OriginalClientRegistry() *bamlutils.ClientRegistry     { return a.registry }
-func (a *testAdapter) HTTPClient() *llmhttp.Client                           { return a.httpClient }
-func (a *testAdapter) SetHTTPClient(c *llmhttp.Client)                       { a.httpClient = c }
-func (a *testAdapter) SetDeBAMLConfig(bamlutils.DeBAMLConfig)                {}
+func (a *testAdapter) SetIncludeReasoning(bool)                               {}
+func (a *testAdapter) IncludeReasoning() bool                                 { return false }
+func (a *testAdapter) SoftFinalParse() bool                                   { return false }
+func (a *testAdapter) ClientRegistryProvider() string                         { return "" }
+func (a *testAdapter) OriginalClientRegistry() *bamlutils.ClientRegistry      { return a.registry }
+func (a *testAdapter) HTTPClient() *llmhttp.Client                            { return a.httpClient }
+func (a *testAdapter) SetHTTPClient(c *llmhttp.Client)                        { a.httpClient = c }
+func (a *testAdapter) SetDeBAMLConfig(bamlutils.DeBAMLConfig)                 {}
 func (a *testAdapter) DeBAMLConfig() bamlutils.DeBAMLConfig                   { return bamlutils.DeBAMLConfig{} }
 func (a *testAdapter) SetDeBAMLOutputSchema(s *bamlutils.DynamicOutputSchema) { a.outputSchema = s }
 func (a *testAdapter) DeBAMLOutputSchema() *bamlutils.DynamicOutputSchema     { return a.outputSchema }

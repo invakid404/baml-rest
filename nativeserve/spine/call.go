@@ -167,6 +167,16 @@ func (e *UnaryExecutor) Parse(ctx context.Context, method string, raw string) (a
 	if !ok {
 		return nil, &bamlutils.NativeSpineUnsupportedMethodError{Method: method, Reason: reasonUnsupportedMethod}
 	}
+	// A caller-supplied dynamic output schema would change the parse target, but this
+	// route parses against the descriptor's fixed cohort schema. Reject it here — as the
+	// Call route does — so a non-cohort parse request FAILS rather than being silently
+	// parsed under the wrong (cohort) schema. The emitted parse binding passes the
+	// request adapter as ctx; a plain-context parse (no adapter) carries no override.
+	if ad, ok := ctx.(bamlutils.Adapter); ok && ad != nil {
+		if ad.DeBAMLOutputSchema() != nil {
+			return nil, errDynamicSchema
+		}
+	}
 	parsed, err := debaml.ParseStaticBundleUnaryCall(ctx, rm.bundle, raw)
 	if err != nil {
 		// Ordinary terminal parse error for an admitted method — NOT a capability decline.
@@ -209,15 +219,21 @@ func (e *UnaryExecutor) staticInput(rm *registeredMethod, values []promptdescrip
 	// route a native send elsewhere (CodeRabbit #9). An adapter-configured HTTP client,
 	// when present, OVERRIDES the default below.
 	in.WouldRewriteOrProxy = llmhttp.DefaultClient.WouldRewriteOrProxy
-	// Request-scoped orchestration facts (Codex review finding 1). A request retry
-	// override or a round-robin advancer declines at admission's strategy gate; a
-	// rewrite/proxy on the effective send target declines pre-claim inside
-	// AdmitStaticSpineClaim against the prepared URL (the check the omitted BAML
-	// plan-compare used to own). A caller registry / dynamic schema already declined
-	// in Call before this point, so Registry stays nil here.
+	// HasRoundRobin / HasFallbackChain are a property of the SELECTED CLIENT's plan, not
+	// of request infrastructure. An admitted method's client is a proven single resolved
+	// leaf — registration declines a fallback / round-robin strategy client as an
+	// out-of-cohort miss and omits it — so both are false here. They must NOT be derived
+	// from a shared-state RoundRobinAdvancer: the worker installs an advancer on EVERY
+	// request that carries a request id, which a pooled deployment always supplies, so
+	// deriving HasRoundRobin from advancer presence would decline every request to the
+	// admitted direct-client method under a normal pool + shared-state deployment.
+	//
+	// The genuinely request-scoped facts that decline an admitted method pre-socket are
+	// a caller-supplied per-request retry override (RetryConfig, set only when the caller
+	// passes one) and a rewrite/proxy on the effective send target. A caller registry /
+	// dynamic schema already declined in Call before this point, so Registry stays nil.
 	if ad != nil {
 		in.HasRequestRetryOverride = ad.RetryConfig() != nil
-		in.HasRoundRobin = ad.RoundRobinAdvancer() != nil
 		if hc := ad.HTTPClient(); hc != nil {
 			in.WouldRewriteOrProxy = hc.WouldRewriteOrProxy
 		}

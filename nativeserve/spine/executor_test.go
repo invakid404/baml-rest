@@ -246,14 +246,14 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 	// sub-gate (e.g. a totality row tagged register:binding) fails: its `want` is not in
 	// the tagged sub-gate's set. Every layer used by a row above must appear here.
 	layerWants := map[string][]string{
-		"validate:version":        {"project version", "prompt-descriptor version", "schema version"},
-		"validate:capability":     {"capability"},
-		"register:totality":       {"JSON alias cohort"},
+		"validate:version":         {"project version", "prompt-descriptor version", "schema version"},
+		"validate:capability":      {"capability"},
+		"register:totality":        {"JSON alias cohort"},
 		"register:required-scalar": {"is nullable", "required-scalar cohort"},
-		"register:client-cohort":  {"not the proven openai", "valid UTF-8", "request_body option"},
-		"register:reconstruct":    {"template-free", "forbids retries"},
-		"register:envelope":       {"return names method", "streaming variant"},
-		"register:binding":        {"ProjectInput is nil", "DecodeFinal is nil", "did not admit"},
+		"register:client-cohort":   {"not the proven openai", "valid UTF-8", "request_body option"},
+		"register:reconstruct":     {"template-free", "forbids retries"},
+		"register:envelope":        {"return names method", "streaming variant"},
+		"register:binding":         {"ProjectInput is nil", "DecodeFinal is nil", "did not admit"},
 	}
 
 	for _, tc := range cases {
@@ -342,8 +342,13 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 
 // TestRequestScopedFactsDeclinePreSocket proves the executor reads request-scoped
 // routing/orchestration facts off the adapter and DECLINES pre-socket, opening zero
-// sockets (Codex review finding 1). Each of these facts is cohort-forbidden and
-// declines before any nanollm work.
+// sockets. Each of these facts is cohort-forbidden and declines before any nanollm
+// work. A bare round-robin Advancer is deliberately NOT such a fact: the worker
+// installs one on every request that carries a request id, so its presence is
+// pool/shared-state infrastructure, not the selected client's plan. That an advancer
+// alone still SERVES is proven by the serve-under-advancer E2E; that an ACTUAL
+// round-robin/fallback strategy client is declined is proven by the strategy-client
+// omission test.
 func TestRequestScopedFactsDeclinePreSocket(t *testing.T) {
 	rows := []struct {
 		name   string
@@ -352,7 +357,6 @@ func TestRequestScopedFactsDeclinePreSocket(t *testing.T) {
 		{"client_registry", func(a *testAdapter) { _ = a.SetClientRegistry(&bamlutils.ClientRegistry{}) }},
 		{"dynamic_output_schema", func(a *testAdapter) { a.SetDeBAMLOutputSchema(&bamlutils.DynamicOutputSchema{}) }},
 		{"request_retry_override", func(a *testAdapter) { a.SetRetryConfig(&bamlutils.RetryConfig{MaxRetries: 2}) }},
-		{"round_robin_advancer", func(a *testAdapter) { a.SetRoundRobinAdvancer(stubAdvancer{}) }},
 	}
 	for _, tc := range rows {
 		t.Run(tc.name, func(t *testing.T) {
@@ -369,11 +373,6 @@ func TestRequestScopedFactsDeclinePreSocket(t *testing.T) {
 		})
 	}
 }
-
-// stubAdvancer is a no-op round-robin advancer for the finding-1 test.
-type stubAdvancer struct{}
-
-func (stubAdvancer) Advance(string, int) (int, error) { return 0, nil }
 
 // TestCallRegistryMissDeclinesPreSocket proves an unregistered method Call declines
 // pre-socket with the typed capability error and zero sockets.
@@ -428,6 +427,22 @@ func TestParseRoute(t *testing.T) {
 		if errors.As(err, &typed) {
 			t.Fatalf("Parse(malformed) returned a capability decline (%v); malformed raw for an admitted method must be an ordinary parse error", err)
 		}
+	}
+}
+
+// TestParseRejectsDynamicOutputSchema proves the socket-free parse route declines a
+// request carrying a dynamic output-schema override rather than parsing under the fixed
+// cohort schema — in lockstep with the Call route's request-scoped-fact gate. A
+// plain-context parse (no adapter override) still succeeds.
+func TestParseRejectsDynamicOutputSchema(t *testing.T) {
+	e := jsonAliasExec(t)
+	ad := newTestAdapter()
+	ad.SetDeBAMLOutputSchema(&bamlutils.DynamicOutputSchema{})
+	if _, err := e.Parse(ad, jsonAliasMethod, `[1,"two",true]`); err == nil || !strings.Contains(err.Error(), "dynamic output schema") {
+		t.Fatalf("Parse with a dynamic output schema: err = %v, want a dynamic-output-schema decline", err)
+	}
+	if _, err := e.Parse(context.Background(), jsonAliasMethod, `[1,"two",true]`); err != nil {
+		t.Fatalf("plain-context Parse (no override) must still succeed: %v", err)
 	}
 }
 

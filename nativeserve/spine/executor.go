@@ -201,76 +201,158 @@ func (e *UnaryExecutor) Methods() []string {
 	return out
 }
 
+// rejectionKind distinguishes the TWO reasons classifyBinding can reject a
+// candidate binding, which is the split the deletion-substrate design (§3.A.2 /
+// §4) turns on:
+//
+//   - rejectHard: the registration/descriptor is CORRUPT or INCONSISTENT — an
+//     invalid project, a binding naming a method the project did not admit, a
+//     missing/blocked capability record, a nil callback, or a descriptor-envelope
+//     mismatch. NewUnaryExecutor and NewWorkerRuntime BOTH fail boot on it: a
+//     corrupt candidate is never quietly omitted.
+//   - rejectCohortMiss: the binding is well-formed but its method is simply
+//     OUTSIDE the exact U1 population — a non-required-scalar input, a
+//     cohort-forbidden client/strategy/options, or a Return the totality predicate
+//     declines. The strict NewUnaryExecutor still rejects it (its callers pass only
+//     methods they mean to serve); NewWorkerRuntime OMITS it from the runtime
+//     registry so later slices grow the cohort by widening this classifier without
+//     touching the bootstrap.
+type rejectionKind int
+
+const (
+	rejectHard rejectionKind = iota
+	rejectCohortMiss
+)
+
+// bindingRejection is a classified rejection: an error plus which of the two
+// kinds it is. It implements error so the strict register path can return it
+// unchanged (preserving the exact messages the executor tests pin).
+type bindingRejection struct {
+	kind rejectionKind
+	err  error
+}
+
+func (r *bindingRejection) Error() string { return r.err.Error() }
+func (r *bindingRejection) Unwrap() error { return r.err }
+
+func hardReject(err error) *bindingRejection { return &bindingRejection{kind: rejectHard, err: err} }
+func cohortMiss(err error) *bindingRejection {
+	return &bindingRejection{kind: rejectCohortMiss, err: err}
+}
+
+// register is the STRICT explicit-binding registration NewUnaryExecutor uses: a
+// candidate that is either hard-corrupt OR an expected cohort miss is an error,
+// because a NewUnaryExecutor caller passes only the bindings it means to serve.
+// NewWorkerRuntime instead consults classifyBinding directly so it can omit
+// cohort misses while still failing on hard corruption (§3.A.2).
 func (e *UnaryExecutor) register(proj projectdescriptor.Project, byName map[string]projectdescriptor.Method, capByName map[string]projectdescriptor.MethodCapability, b bamlutils.NativeSpineUnaryBinding) error {
-	if b.Method == "" {
-		return fmt.Errorf("nativespine: register: binding has no method name")
-	}
-	if b.ProjectInput == nil {
-		return fmt.Errorf("nativespine: register %q: binding ProjectInput is nil (callback-before-claim)", b.Method)
-	}
-	if b.DecodeFinal == nil {
-		return fmt.Errorf("nativespine: register %q: binding DecodeFinal is nil (callback-before-claim)", b.Method)
-	}
 	if _, dup := e.registry[b.Method]; dup {
 		return fmt.Errorf("nativespine: register %q: duplicate method", b.Method)
 	}
+	rm, rej := classifyBinding(proj, byName, capByName, b)
+	if rej != nil {
+		return rej.err
+	}
+	e.registry[b.Method] = rm
+	return nil
+}
+
+// classifyBinding is the SINGLE population owner: it validates one candidate
+// binding against the whole project and returns either the resolved registry
+// entry (accepted) or a classified rejection (hard corruption vs expected cohort
+// miss). It is the ONE place the reconstruction, envelope, client, input, and
+// totality checks live, so the executor, NewWorkerRuntime, and the build
+// generator cannot invent three subtly different definitions of the deletion
+// frontier. It does NOT check for duplicates — that is each caller's own concern
+// (register reads its live registry; NewWorkerRuntime dedupes across candidates).
+func classifyBinding(proj projectdescriptor.Project, byName map[string]projectdescriptor.Method, capByName map[string]projectdescriptor.MethodCapability, b bamlutils.NativeSpineUnaryBinding) (*registeredMethod, *bindingRejection) {
+	if b.Method == "" {
+		return nil, hardReject(fmt.Errorf("nativespine: register: binding has no method name"))
+	}
+	if b.ProjectInput == nil {
+		return nil, hardReject(fmt.Errorf("nativespine: register %q: binding ProjectInput is nil (callback-before-claim)", b.Method))
+	}
+	if b.DecodeFinal == nil {
+		return nil, hardReject(fmt.Errorf("nativespine: register %q: binding DecodeFinal is nil (callback-before-claim)", b.Method))
+	}
 	m, ok := byName[b.Method]
 	if !ok {
-		return fmt.Errorf("nativespine: register %q: binding names a method the project did not admit (name mismatch or declined method)", b.Method)
+		return nil, hardReject(fmt.Errorf("nativespine: register %q: binding names a method the project did not admit (name mismatch or declined method)", b.Method))
 	}
 	// The method's capability record must exist, be admitted, and not be blocked
 	// (finding 1). proj.Validate already proved the manifest is consistent; this is the
-	// explicit per-method read the cohort requires.
+	// explicit per-method read the cohort requires. An inconsistent record is
+	// CORRUPTION (hard), not a cohort miss.
 	mc, ok := capByName[b.Method]
 	if !ok {
-		return fmt.Errorf("nativespine: register %q: no capability record in the project manifest", b.Method)
+		return nil, hardReject(fmt.Errorf("nativespine: register %q: no capability record in the project manifest", b.Method))
 	}
 	if !mc.Admitted || mc.Blocked != "" {
-		return fmt.Errorf("nativespine: register %q: capability record is not admitted (admitted=%v blocked=%q)", b.Method, mc.Admitted, mc.Blocked)
+		return nil, hardReject(fmt.Errorf("nativespine: register %q: capability record is not admitted (admitted=%v blocked=%q)", b.Method, mc.Admitted, mc.Blocked))
 	}
 	// Reconstruct + validate the project/client cohort facts (version, templates,
 	// client retry-policy, strategy) — fails rather than strips (finding 2).
-	fn, err := reconstructFunction(proj, m)
-	if err != nil {
-		return fmt.Errorf("nativespine: register %q: %w", b.Method, err)
+	// reconstructFunction distinguishes POPULATION facts (templated project,
+	// retrying/strategy client — an expected cohort miss) from structural CORRUPTION
+	// (a client absent from the project graph, a non-static-unary admitted method —
+	// a HARD boot failure). A corrupt candidate must never be silently downgraded to
+	// a miss and omitted.
+	fn, rerr := reconstructFunction(proj, m)
+	if rerr != nil {
+		wrapped := fmt.Errorf("nativespine: register %q: %w", b.Method, rerr)
+		if rerr.corrupt {
+			return nil, hardReject(wrapped)
+		}
+		return nil, cohortMiss(wrapped)
 	}
 	// Descriptor envelope lockstep (finding 3): registration rejects the same envelope
 	// mismatches the call-time admission does, so a method rejected by call can never be
-	// accepted by direct parse (which trusts the registry).
+	// accepted by direct parse (which trusts the registry). An envelope mismatch is an
+	// INCONSISTENT descriptor (hard), never a benign cohort miss.
 	if fn.Version != promptdescriptor.Version {
-		return fmt.Errorf("nativespine: register %q: descriptor version %d, want %d", b.Method, fn.Version, promptdescriptor.Version)
+		return nil, hardReject(fmt.Errorf("nativespine: register %q: descriptor version %d, want %d", b.Method, fn.Version, promptdescriptor.Version))
 	}
 	if fn.Return.Version != schemadescriptor.Version {
-		return fmt.Errorf("nativespine: register %q: return schema version %d, want %d", b.Method, fn.Return.Version, schemadescriptor.Version)
+		return nil, hardReject(fmt.Errorf("nativespine: register %q: return schema version %d, want %d", b.Method, fn.Return.Version, schemadescriptor.Version))
 	}
 	if fn.Return.Method != fn.Method {
-		return fmt.Errorf("nativespine: register %q: return names method %q (envelope mismatch)", b.Method, fn.Return.Method)
+		return nil, hardReject(fmt.Errorf("nativespine: register %q: return names method %q (envelope mismatch)", b.Method, fn.Return.Method))
 	}
 	if fn.Return.Stream {
-		return fmt.Errorf("nativespine: register %q: return is the streaming variant; only unary final-call is admitted", b.Method)
+		return nil, hardReject(fmt.Errorf("nativespine: register %q: return is the streaming variant; only unary final-call is admitted", b.Method))
 	}
-	// Static-client cohort (finding 2): run the SAME shared client checks Call's
-	// admission uses (provider, literal model, no body-affecting option, literal
-	// base_url/api_key) so registration declines exactly what Call declines — a
-	// cohort-forbidden client descriptor (a request body / body option / non-openai
-	// leaf / non-literal model / non-literal transport) never registers.
-	if err := admission.CheckStaticClientCohort(fn.Provider, fn.ClientConfig); err != nil {
-		return fmt.Errorf("nativespine: register %q: %w", b.Method, err)
-	}
-	if err := requiredScalarInputs(fn); err != nil {
-		return fmt.Errorf("nativespine: register %q: %w", b.Method, err)
-	}
+	// The return descriptor must LOWER before any population classification.
+	// schema.FromStaticDescriptor re-validates the whole return-type graph — the
+	// descriptor version, every enum string, required child payloads, and (via
+	// Bundle.Validate) cross-reference self-containment: dangling references, unknown
+	// enums, inline cycles, duplicate rendered names, and map-key legality. proj.Validate
+	// checks NONE of these, and none are population facts — a well-formed but
+	// out-of-cohort return lowers successfully and is declined below by the totality
+	// predicate. A lowering failure is therefore an INCONSISTENT descriptor (structural
+	// corruption), so it is a HARD boot failure, never a silent cohort-miss omission.
 	bundle, err := schema.FromStaticDescriptor(fn.Return)
 	if err != nil {
-		return fmt.Errorf("nativespine: register %q: lower return bundle: %w", b.Method, err)
+		return nil, hardReject(fmt.Errorf("nativespine: register %q: lower return bundle: %w", b.Method, err))
+	}
+	// Static-client cohort: run the SAME shared client checks Call's admission uses
+	// (provider, literal model, no body-affecting option, literal base_url/api_key) so
+	// registration declines exactly what Call declines — a cohort-forbidden client
+	// descriptor (a request body / body option / non-openai leaf / non-literal model /
+	// non-literal transport) never registers. It is a cohort miss (unsupported client),
+	// not corruption.
+	if err := admission.CheckStaticClientCohort(fn.Provider, fn.ClientConfig); err != nil {
+		return nil, cohortMiss(fmt.Errorf("nativespine: register %q: %w", b.Method, err))
+	}
+	if err := requiredScalarInputs(fn); err != nil {
+		return nil, cohortMiss(fmt.Errorf("nativespine: register %q: %w", b.Method, err))
 	}
 	// The ONE root-owned totality predicate — the exact five-arm `JSON` alias family —
-	// controls registration in lockstep with call and direct parse.
+	// controls registration in lockstep with call and direct parse. A Return that
+	// lowers cleanly but is outside that family is a cohort miss.
 	if err := debaml.SupportsNativeStaticStreamBundle(bundle); err != nil {
-		return fmt.Errorf("nativespine: register %q: not the exact five-arm JSON alias cohort: %w", b.Method, err)
+		return nil, cohortMiss(fmt.Errorf("nativespine: register %q: not the exact five-arm JSON alias cohort: %w", b.Method, err))
 	}
-	e.registry[b.Method] = &registeredMethod{fn: fn, bundle: bundle, binding: b}
-	return nil
+	return &registeredMethod{fn: fn, bundle: bundle, binding: b}, nil
 }
 
 // requiredScalarInputs enforces the ExecBridge-U1 input cohort: every argument is a

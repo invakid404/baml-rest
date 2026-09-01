@@ -29,10 +29,11 @@
 // packages the root's internal/* imports here), so the three first-party requires
 // are pinned to the ORIGIN-RESOLVABLE pseudo-version of a single commit — the one
 // nativeserve/pin_followup.md records and cmd/build's TestFirstPartyPinFollowupIsTracked
-// checks, which is CURRENTLY the ExecBridge-U1 MASTER squash commit 7ddbb39fd3db (STATUS:
-// RESOLVED — the post-squash re-pin has been PERFORMED; see the PIN-STATUS block below and
-// pin_followup.md), NOT the historical Slice 7.1b master merge 15b98cf6ebe4 named in the floor
-// notes below — one consistent snapshot that resolves cleanly off a fresh checkout with zero
+// checks, which is CURRENTLY the ExecBridge-U1b BRANCH source commit 9a67ca3741a7 (STATUS:
+// OUTSTANDING — a branch-only pin; the post-squash re-pin to the U1b master squash commit is
+// the mandatory follow-up, see the PIN-STATUS block below and pin_followup.md), NOT the
+// historical Slice 7.1b master merge 15b98cf6ebe4 named in the floor notes below — one
+// consistent snapshot that resolves cleanly off a fresh checkout with zero
 // local replacements. The replace directives below
 // are for local development only; Go
 // ignores a dependency module's replaces, so an external consumer resolves those
@@ -80,7 +81,7 @@
 // the pins were moved here. Pin to a branch commit only if unavoidable, and re-pin to the
 // merged master commit as the immediate follow-up.
 //
-// PIN-STATUS: RESOLVED
+// PIN-STATUS: OUTSTANDING
 //
 // That marker is the MACHINE-READABLE statement of where these pins stand, and
 // cmd/build's TestPackagedManifestsMatchTheTrackedPins requires it to equal the
@@ -96,26 +97,26 @@
 // go get/build/run) — is nativeserve/pin_followup.md, section "The follow-up —
 // OWED". Follow it there; do not reconstruct it from these paragraphs.
 //
-// NOTE (ExecBridge-U1 — production native unary executor/population bridge): these pins are
-// MASTER-DURABLE and the tracked follow-up in nativeserve/pin_followup.md is therefore
-// STATUS: RESOLVED. They name 7ddbb39fd3db, the MASTER squash-merge commit of PR #708 that
-// carries the U1 guarded-tree change. This module's serve path gains a new BAML-free spine
-// unary lane (nativeserve/spine's UnaryExecutor + nativeserve/admission's AdmitStaticSpineClaim),
-// which depends on the NEW neutral contract in bamlutils (bamlutils.NativeSpineUnaryExecutor /
-// NativeSpineUnaryBinding / tri-state result). (The scalar-descriptor reconstruction the
-// runtime also needs lives INSIDE nativeserve/spine as the unexported reconstructFunction —
-// not a root symbol — so it rides in this module, keeping the serve package free of the
-// codegen toolchain.) A consumer resolving a PRE-U1 pin gets a bamlutils that lacks that
-// contract, so this module would not even build against it —
-// which is exactly why the pins must name a commit that carries the U1 source, and why the
-// selection is a lockstep set. The post-squash re-pin to the MASTER commit 7ddbb39fd3db has
-// been PERFORMED; this record is durable. See pin_followup.md for the runbook.
+// NOTE (ExecBridge-U1b — native-only packaged worker): these pins are BRANCH-ONLY and the
+// tracked follow-up in nativeserve/pin_followup.md is therefore STATUS: OUTSTANDING. They name
+// 9a67ca3741a7, the U1b SOURCE commit on feat/debaml-execbridge-u1b that carries the U1b
+// guarded-tree change. This module gains the reusable native-only runtime factory
+// (nativeserve/spine's NewWorkerRuntime + the single population classifier + the promoted pure
+// adapter), and nativeserve/spine now returns a worker.Runtime — the BAML-free join the
+// native-only packaged worker (cmd/worker-nativeonly) boots on. The U1b nativeserve source
+// still builds against the U1 bamlutils/worker contract (no new root symbol is introduced), but
+// the guarded-tree source has moved, so the pins must name a commit that carries THIS change and
+// the selection is a lockstep set. This is a branch-only pin because no master commit carries
+// U1b yet; the post-squash re-pin to the U1b MASTER squash commit is the mandatory follow-up.
+// See pin_followup.md for the runbook.
 //
 // HISTORICAL, SUPERSEDED — the SHAs in this paragraph are not the current pins:
-// U1's pins were briefly BRANCH-ONLY at f35489fc2463 on feat/debaml-execbridge-u1 (STATUS:
-// OUTSTANDING) for as long as no master commit carried the U1 spine contract; PR #708's squash
-// flattened that SHA out of history and the branch was deleted, and this re-pin to 7ddbb39fd3db
-// is what made delivery durable. Immediately before U1, all five were MASTER-DURABLE at 7c7bed8291b6 (STATUS: RESOLVED),
+// Immediately before U1b, all five were MASTER-DURABLE at 7ddbb39fd3db (STATUS: RESOLVED), the
+// MASTER squash-merge commit of PR #708 that carried the ExecBridge-U1 spine unary lane +
+// the new bamlutils NativeSpineUnaryExecutor / NativeSpineUnaryBinding / tri-state contract; U1's
+// pins were briefly BRANCH-ONLY at f35489fc2463 on feat/debaml-execbridge-u1 (STATUS: OUTSTANDING)
+// until #708 squash-merged and #709 re-pinned to 7ddbb39fd3db. Immediately before U1, all five
+// were MASTER-DURABLE at 7c7bed8291b6 (STATUS: RESOLVED),
 // the master commit that squash-merged the de-BAML /parse UNION-RESIDUAL batch-2 slice
 // (PR #703); #703 was itself briefly BRANCH-ONLY at 5fdd679c8784 on
 // feat/debaml-parse-batch2 (re-bumped there twice — off the initial batch-2 source
@@ -147,11 +148,11 @@
 // spine package); nanollm FFI is the intended native engine and is permitted.
 //
 // The precedent for this follow-up was #681 -> #682, #683 -> #684, #686 -> #687,
-// #689 -> #692 and #703's batch-2 re-pin: pin to the branch SOURCE commit only because no
-// master commit carries the change yet, then re-pin all five to master and regenerate the
-// tar IMMEDIATELY after the merge. This change is the U1 post-squash re-pin instance of it:
-// PR #708 squash-merged to master 7ddbb39fd3db, and all five pins were re-pointed there
-// (STATUS: RESOLVED) with the tar regenerated in the same change.
+// #689 -> #692, #703's batch-2 re-pin, and U1's #708 -> #709: pin to the branch SOURCE commit
+// only because no master commit carries the change yet, then re-pin all five to master and
+// regenerate the tar IMMEDIATELY after the merge. This change is the U1b BRANCH-pin instance of
+// it: all five pins name the U1b source commit 9a67ca3741a7 (STATUS: OUTSTANDING) with the tar
+// regenerated in the same change; the post-squash re-pin to the U1b master commit is OWED.
 //
 // A bump must ALSO move internal/nativebody/nanollmprepare/go.mod's recorded bamlutils +
 // worker selections in LOCKSTEP: nanollmprepare directory-replaces root / bamlutils /
@@ -167,9 +168,9 @@ go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260901085119-7ddbb39fd3db
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260901085119-7ddbb39fd3db
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260901085119-7ddbb39fd3db
+	github.com/invakid404/baml-rest v0.0.0-20260901184028-9a67ca3741a7
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260901184028-9a67ca3741a7
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260901184028-9a67ca3741a7
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2

@@ -106,7 +106,7 @@ func TestDockerfileRendersRealProvenance(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rendered := renderDockerfile(t, dockerfileTemplateArgsFor(
 				"0.223.0", "v0.219.0", "", "", tc.protoc,
-				false, false, false, tc.nativeWorker, tc.bamlSource, prov))
+				false, false, false, tc.nativeWorker, false, tc.bamlSource, prov))
 
 			// No key anywhere may be unrendered — not just the provenance pair.
 			// A future key added to the template and forgotten in this map fails
@@ -151,7 +151,7 @@ func TestDockerfileRendersRealProvenance(t *testing.T) {
 func TestDockerfileBAMLSourceBranchNeedsItsOwnKeys(t *testing.T) {
 	prov := realProvenance(t)
 	args := dockerfileTemplateArgsFor("0.223.0", "v0.219.0", "", "", "v1.36.12",
-		false, false, false, true, true, prov)
+		false, false, false, true, false, true, prov)
 	delete(args, "protocGenGoVersion")
 
 	rendered := renderDockerfile(t, args)
@@ -166,7 +166,7 @@ func TestDockerfileBAMLSourceBranchNeedsItsOwnKeys(t *testing.T) {
 // a plausible-looking string that only fails much later, inside a container build.
 func TestDockerfileMissingProvenanceKeyRendersNoValue(t *testing.T) {
 	prov := realProvenance(t)
-	args := dockerfileTemplateArgsFor("0.223.0", "v0.219.0", "", "", "", false, false, false, true, false, prov)
+	args := dockerfileTemplateArgsFor("0.223.0", "v0.219.0", "", "", "", false, false, false, true, false, false, prov)
 	delete(args, "artifactSourceBundleDigest")
 
 	rendered := renderDockerfile(t, args)
@@ -290,7 +290,7 @@ func TestBuildScriptAcceptsTheUnsetSentinel(t *testing.T) {
 func TestBuildScriptAcceptsRenderedProvenance(t *testing.T) {
 	prov := realProvenance(t)
 	rendered := renderDockerfile(t, dockerfileTemplateArgsFor(
-		"0.223.0", "v0.219.0", "", "", "", false, false, false, true, false, prov))
+		"0.223.0", "v0.219.0", "", "", "", false, false, false, true, false, false, prov))
 	digest := envDigestRe.FindStringSubmatch(rendered)[1]
 	revision := envRevisionRe.FindStringSubmatch(rendered)[1]
 

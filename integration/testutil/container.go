@@ -129,6 +129,22 @@ type SetupOptions struct {
 	// SUBPROCESS from the go build invocation.
 	InProcess bool
 
+	// NativeWorker, when true, builds the STANDARD native_capable artifact — the
+	// isolated nanollmprepare worker (nanollmprepare:./cmd/worker/) with nanollm
+	// linked (CGO) — instead of the BAML-only rollback root worker. It requires
+	// BAMLSource (or a prebuilt custom BAML go lib) because the generated baml_client
+	// the isolated worker compiles needs the patched BAML runtime (OrderedFields
+	// et al.), which the overlay only wires from the custom/source BAML. The
+	// authoritative flag-off gate for ExecBridge-U1b sets this true (with
+	// NativeOnlyWorker false) to prove U1b left the STANDARD artifact green.
+	NativeWorker bool
+
+	// NativeOnlyWorker, when true, selects the ExecBridge-U1b native-only artifact
+	// (nanollmprepare:./cmd/worker-nativeonly/), BAML-free. Mutually exclusive with
+	// the BAML-only rollback selection; forwarded to build.sh as NATIVE_ONLY_WORKER.
+	// The standard flag-off gate leaves it false.
+	NativeOnlyWorker bool
+
 	// RuntimeEnv adds arbitrary environment variables to the baml-rest
 	// container. Used by tests that need to configure runtime-only features
 	// (e.g. BAML_REST_CLIENT_DEFAULTS) that the shared test env does not set.
@@ -740,15 +756,20 @@ type dockerfileTemplateData struct {
 	artifactSourceRevision     string // release revision, or the explicit "unset" sentinel
 	artifactSourceBundleDigest string // digest of the baml_rest sources copied into the image
 
-	// NOTE: there is deliberately no nativeWorker field. de-BAML serving cutover
-	// S2 made the native-capable worker the STANDARD artifact for a production
-	// build (cmd/build --native-worker now defaults to true), but the isolated
-	// nanollmprepare worker needs CGO and a linked nanollm archive, which these
-	// containers do not carry. The Dockerfile template writes NATIVE_WORKER
-	// explicitly in BOTH directions, so omitting the key here renders
-	// NATIVE_WORKER="false" and this harness keeps building the BAML-only worker,
-	// exactly as it did before S2. The isolated worker's own build/boot coverage
-	// is the gated nanollm-prepare / nanollm-send lanes.
+	// nativeWorker selects the STANDARD native_capable isolated worker
+	// (nanollmprepare:./cmd/worker/) instead of the BAML-only rollback root worker.
+	// Default false keeps the historical harness behaviour (BAML-only worker), so
+	// the ordinary integration matrix is unchanged. The ExecBridge-U1b authoritative
+	// flag-off leg sets it true (with a --baml-source build so the isolated worker's
+	// baml_client resolves the patched BAML runtime) to prove U1b left the standard
+	// artifact green. The Dockerfile template writes NATIVE_WORKER explicitly in both
+	// directions, so a false value still renders NATIVE_WORKER="false".
+	nativeWorker bool
+
+	// nativeOnlyWorker selects the ExecBridge-U1b native-only artifact
+	// (nanollmprepare:./cmd/worker-nativeonly/), BAML-free. Default false; rendered
+	// explicitly in both directions by the template.
+	nativeOnlyWorker bool
 }
 
 // MarshalMap converts the template data to a map for template execution
@@ -766,6 +787,8 @@ func (d dockerfileTemplateData) toMap() map[string]any {
 		"protocGenGoVersion": d.protocGenGoVersion,
 		"unaryServer":        d.unaryServer,
 		"inProcess":          d.inProcess,
+		"nativeWorker":       d.nativeWorker,
+		"nativeOnlyWorker":   d.nativeOnlyWorker,
 
 		"artifactSourceRevision":     d.artifactSourceRevision,
 		"artifactSourceBundleDigest": d.artifactSourceBundleDigest,
@@ -831,6 +854,11 @@ func dockerfileTemplateDataFor(opts SetupOptions) (dockerfileTemplateData, error
 		noCustomBamlLib:   true,            // Integration tests don't use custom BAML lib
 		unaryServer:       opts.UnaryServer,
 		inProcess:         opts.InProcess,
+		// A native-only selection implies the native worker: build.sh rejects
+		// NATIVE_ONLY_WORKER=true with NATIVE_WORKER=false, so setting only
+		// NativeOnlyWorker must still emit NATIVE_WORKER=true.
+		nativeWorker:     opts.NativeWorker || opts.NativeOnlyWorker,
+		nativeOnlyWorker: opts.NativeOnlyWorker,
 
 		artifactSourceRevision:     artifactRevision,
 		artifactSourceBundleDigest: artifactBundleDigest,
