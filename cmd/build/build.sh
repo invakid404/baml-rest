@@ -1008,6 +1008,25 @@ if [ "${SUBPROCESS:-true}" = "true" ]; then
                 rm -f "${NATIVE_ONLY_DEPS}"
                 exit 1
             fi
+            # POSITIVE-dep assertions — the SAME set TestNativeOnlyWorkerHasNoBAML
+            # requires. Denylist-absent + non-empty is not enough: a non-empty but
+            # inert/wrong command graph (the wrong package, a truncated list) would pass
+            # by absence. Require every load-bearing dependency to be present so this
+            # packaged build gate proves the graph is the RIGHT one.
+            for want in \
+                'github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/cmd/worker-nativeonly' \
+                'github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/nativeonlyboot' \
+                'github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/nativegenerated' \
+                'github.com/invakid404/baml-rest/nativeserve/spine' \
+                'github.com/invakid404/baml-rest/worker' \
+                'github.com/invakid404/baml-rest/workerplugin' \
+                'github.com/viktordanov/nanollm-ffi/go'; do
+                if ! grep -qxF "${want}" "${NATIVE_ONLY_DEPS}"; then
+                    echo "ERROR: the native-only worker's dependency graph is MISSING the required positive dependency ${want}; the packaged gate must not pass by absence (wrong package/tags or an inert graph)" >&2
+                    rm -f "${NATIVE_ONLY_DEPS}"
+                    exit 1
+                fi
+            done
             rm -f "${NATIVE_ONLY_DEPS}"
 
             echo "Building native-only worker binary (${NATIVE_WORKER_PKG}, BAML-free, from isolated nanollmprepare module)..."

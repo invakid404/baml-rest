@@ -260,11 +260,13 @@ func renderAggregate(emitted []emittedMethod) ([]byte, error) {
 	return formatted, nil
 }
 
-// cleanOutputDir removes every prior generated artifact from outDir — the
-// aggregate file, the embedded descriptor, and every generated subpackage
-// directory — so a method removed since the last generation cannot survive as a
-// stale registration. The committed stub (generated_off.go) is left in place, and
-// a non-existent outDir is not an error.
+// cleanOutputDir removes EVERY prior artifact from outDir except exactly the
+// committed stub (generated_off.go), so a method removed since the last generation
+// — and any stale generated file from a previous layout or naming scheme (a
+// root-level generated .go, an old aggregate name, a renamed subpackage) — cannot
+// survive and compile into the registry package. Removing only a
+// known-name allowlist left every OTHER file behind; this removes everything but
+// the one file the source checkout owns. A non-existent outDir is not an error.
 func cleanOutputDir(outDir string) error {
 	entries, err := os.ReadDir(outDir)
 	if err != nil {
@@ -275,20 +277,14 @@ func cleanOutputDir(outDir string) error {
 	}
 	for _, e := range entries {
 		name := e.Name()
-		if e.IsDir() {
-			// Every generated subpackage lives in its own directory; there are no other
-			// legitimate directories under the registry package.
-			if err := os.RemoveAll(filepath.Join(outDir, name)); err != nil {
-				return fmt.Errorf("gen-native-spine-worker: remove stale subpackage %q: %w", name, err)
-			}
+		if name == stubFileName {
+			// The committed fail-loud stub (tag-gated OFF) is the ONE file the source
+			// checkout owns; everything else in this directory is generated output.
 			continue
 		}
-		if name == aggregateFileName || name == projectJSONFileName {
-			if err := os.Remove(filepath.Join(outDir, name)); err != nil {
-				return fmt.Errorf("gen-native-spine-worker: remove stale %q: %w", name, err)
-			}
+		if err := os.RemoveAll(filepath.Join(outDir, name)); err != nil {
+			return fmt.Errorf("gen-native-spine-worker: remove stale output %q: %w", name, err)
 		}
-		// generated_off.go (the committed stub) and anything else are left untouched.
 	}
 	return nil
 }

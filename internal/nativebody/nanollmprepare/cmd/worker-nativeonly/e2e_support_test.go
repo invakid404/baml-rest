@@ -20,6 +20,7 @@ package main
 // a C toolchain.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -28,7 +29,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -133,6 +136,8 @@ func generateAndBuild() (func(), error) {
 		cleanupTmp()
 		return nil, err
 	}
+	// Two clients: the admitted strict-OpenAI oracle, and a non-OpenAI (anthropic)
+	// client used by a candidate the spine classifier declines.
 	clients := fmt.Sprintf(`client<llm> JSONOracle {
   provider openai
   options {
@@ -141,11 +146,39 @@ func generateAndBuild() (func(), error) {
     base_url %q
   }
 }
+
+client<llm> AnthropicOracle {
+  provider anthropic
+  options {
+    model "claude-3-5-sonnet-latest"
+    api_key "sk-ant-execbridge-u1b-not-a-real-secret"
+  }
+}
 `, providerURL)
+	// Three static-unary methods are introspected + emitted as candidates, but only
+	// StaticRecursiveAliasJSON is IN the exact U1 cohort. The other two are
+	// generated candidates OUTSIDE U1 (a non-JSON-alias return, and a non-OpenAI
+	// client), so NewWorkerRuntime's classifier OMITS them at boot — the default-deny
+	// frontier the booted decline table exercises.
+	functions := `function StaticRecursiveAliasJSON(topic: string) -> JSON {
+  client JSONOracle
+  prompt #"Return a JSON document describing {{ topic }}."#
+}
+
+function NonCohortStringReturn(topic: string) -> string {
+  client JSONOracle
+  prompt #"Return a string describing {{ topic }}."#
+}
+
+function NonOpenAIProviderMethod(topic: string) -> JSON {
+  client AnthropicOracle
+  prompt #"Return a JSON document describing {{ topic }}."#
+}
+`
 	files := map[string]string{
 		"clients.baml":   clients,
 		"types.baml":     "type JSON = int | string | bool | JSON[] | map<string, JSON>\n",
-		"functions.baml": "function StaticRecursiveAliasJSON(topic: string) -> JSON {\n  client JSONOracle\n  prompt #\"Return a JSON document describing {{ topic }}.\"#\n}\n",
+		"functions.baml": functions,
 	}
 	for name, body := range files {
 		if err := os.WriteFile(filepath.Join(bamlSrc, name), []byte(body), 0o644); err != nil {
@@ -190,22 +223,19 @@ func generateAndBuild() (func(), error) {
 	}, nil
 }
 
-// removeGeneratedRegistry deletes the generated aggregate, embedded descriptor,
-// and every generated subpackage directory, leaving the committed stub in place.
+// removeGeneratedRegistry deletes every generated artifact, leaving only the
+// committed stub — mirroring the generator's own clean-first invariant, so the
+// working tree is restored byte-for-byte after the test.
 func removeGeneratedRegistry(dir string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
 	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() {
-			_ = os.RemoveAll(filepath.Join(dir, name))
+		if e.Name() == "generated_off.go" {
 			continue
 		}
-		if name == "generated.go" || name == "project.json" {
-			_ = os.Remove(filepath.Join(dir, name))
-		}
+		_ = os.RemoveAll(filepath.Join(dir, e.Name()))
 	}
 }
 
@@ -225,13 +255,39 @@ func runGo(dir string, env []string, args ...string) (string, error) {
 type bootedWorker struct {
 	worker workerplugin.Worker
 	kill   func()
+	stderr *syncBuffer
+}
+
+// syncBuffer is a concurrency-safe sink for the worker subprocess's stderr.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // bootWorker launches the built native-only binary through the real go-plugin
 // handshake — the same handshake config, protocol, and dial options the pool uses
 // — and dispenses the worker. It is a REAL booted command, not an in-process
 // handler.
-func bootWorker(t *testing.T) *bootedWorker {
+//
+// It ALWAYS hosts a real brokered shared-state store (SharedStateImpl), so the
+// go-plugin dispense performs the full AttachSharedState handshake exactly as the
+// pool does. A dispense that returns without error therefore
+// proves the shared-state attach succeeded; the round-robin decline row further
+// proves the attached advancer is live (it is non-nil only when the attach
+// completed AND the request carries a request id). extraEnv is passed to the
+// worker subprocess (e.g. BAML_REST_BASE_URL_REWRITES for the rewrite/proxy row).
+func bootWorker(t *testing.T, extraEnv ...string) *bootedWorker {
 	t.Helper()
 	if nativeOnlyBin == "" {
 		t.Fatal("native-only binary was not built (TestMain setup failed)")
@@ -240,13 +296,23 @@ func bootWorker(t *testing.T) *bootedWorker {
 	cmd.Env = append(os.Environ(),
 		workerplugin.Handshake.MagicCookieKey+"="+workerplugin.Handshake.MagicCookieValue,
 	)
+	cmd.Env = append(cmd.Env, extraEnv...)
+
+	stderr := &syncBuffer{}
+	// Host a real shared-state store so the AttachSharedState handshake runs.
+	wp := &workerplugin.WorkerPlugin{
+		SharedStateImpl: workerplugin.NewSharedStateServer(
+			workerplugin.NewSharedStateStore(func(string) uint64 { return 0 })),
+	}
 	client := goplugin.NewClient(&goplugin.ClientConfig{
 		HandshakeConfig:  workerplugin.Handshake,
-		Plugins:          map[string]goplugin.Plugin{"worker": &workerplugin.WorkerPlugin{}},
+		Plugins:          map[string]goplugin.Plugin{"worker": wp},
 		Cmd:              cmd,
 		AllowedProtocols: []goplugin.Protocol{goplugin.ProtocolGRPC},
 		GRPCDialOptions:  workerplugin.GRPCDialOptions(),
 		Logger:           hclog.NewNullLogger(),
+		Stderr:           stderr,
+		SyncStderr:       stderr,
 		StartTimeout:     60 * time.Second,
 	})
 	var once sync.Once
@@ -259,13 +325,36 @@ func bootWorker(t *testing.T) *bootedWorker {
 	}
 	raw, err := rpc.Dispense("worker")
 	if err != nil {
-		t.Fatalf("dispense worker: %v", err)
+		t.Fatalf("dispense worker (AttachSharedState handshake): %v\nstderr:\n%s", err, stderr.String())
 	}
 	w, ok := raw.(workerplugin.Worker)
 	if !ok {
 		t.Fatalf("dispensed %T, not a workerplugin.Worker", raw)
 	}
-	return &bootedWorker{worker: w, kill: kill}
+	return &bootedWorker{worker: w, kill: kill, stderr: stderr}
+}
+
+// admittedMethodCount waits (bounded) for the worker's startup diagnostic and
+// returns the bounded admitted-method count it reports — the structurally
+// observable deletion frontier. It proves candidates OUTSIDE the U1 cohort were
+// omitted at boot (default-deny), not merely declined at call time.
+func admittedMethodCount(t *testing.T, b *bootedWorker) int {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	re := regexp.MustCompile(`"admitted_method_count":(\d+)`)
+	for {
+		if m := re.FindStringSubmatch(b.stderr.String()); m != nil {
+			n, err := strconv.Atoi(m[1])
+			if err != nil {
+				t.Fatalf("bad admitted_method_count %q: %v", m[1], err)
+			}
+			return n
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no admitted_method_count in worker stderr:\n%s", b.stderr.String())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // drainFinal collects stream results until the channel closes (bounded).

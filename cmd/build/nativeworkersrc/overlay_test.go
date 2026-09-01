@@ -224,10 +224,13 @@ replace github.com/example/enotdir => ../../../blocker/child
 	}
 }
 
-// setupNativeOnlyContext lays out a native-only build context that mirrors the
-// real isolated nanollmprepare module: present + missing filesystem replaces, and
-// crucially NO github.com/boundaryml/baml require and NO baml_client — the
-// native-only worker links neither.
+// setupNativeOnlyContext lays out a native-only build context whose isolated
+// nanollmprepare go.mod mirrors the REAL manifest — crucially it carries the DIRECT
+// `github.com/boundaryml/baml` require the production manifest has
+// (internal/nativebody/nanollmprepare/go.mod), plus present + missing filesystem
+// replaces. Using the real manifest shape is the point: a synthetic fixture that
+// omits the require makes "no BoundaryML require" prove a precondition rather than
+// the packaged overlay's actual output.
 func setupNativeOnlyContext(t *testing.T) (root, moduleDir string) {
 	t.Helper()
 	root = t.TempDir()
@@ -241,6 +244,7 @@ func setupNativeOnlyContext(t *testing.T) (root, moduleDir string) {
 go 1.26.5
 
 require (
+	github.com/boundaryml/baml v0.223.0
 	github.com/invakid404/baml-rest v0.0.48
 	github.com/invakid404/baml-rest/bamlutils v0.0.48
 	github.com/invakid404/baml-rest/worker v0.0.48
@@ -261,30 +265,44 @@ replace (
 	return root, moduleDir
 }
 
-// TestApplyNativeOnlyOverlay proves the native-only overlay does ONLY the
-// missing-replace cleanup and injects NO BAML: no baml_client require/replace and
-// no github.com/boundaryml/baml require — the invariant that keeps the native-only
-// artifact BAML-free even if a future build-script edit is wrong.
+// TestApplyNativeOnlyOverlay proves the PACKAGED production invariant against a
+// manifest with the real direct github.com/boundaryml/baml require: the native-only
+// overlay does ONLY the missing-replace cleanup and injects no BAML wiring. The
+// pre-existing require is LEFT as-is (cleanup-only never removes a non-dangling
+// require), but the overlay adds NO baml_client require/replace and NO
+// boundaryml/baml REPLACE (no SELECT). The command still does not IMPORT
+// boundaryml/baml — proven separately by the whole-command go-list-deps gate
+// (TestNativeOnlyWorkerHasNoBAML / the build.sh gate) — so an unused require is
+// inert. This tests the packaged overlay output, not a synthetic precondition.
 func TestApplyNativeOnlyOverlay(t *testing.T) {
 	_, moduleDir := setupNativeOnlyContext(t)
+
+	// The real manifest carries the direct require BEFORE the overlay runs — the
+	// precondition the earlier synthetic fixture was missing.
+	before := parseResult(t, moduleDir)
+	if !hasRequire(before, bamlModulePath) {
+		t.Fatalf("fixture precondition: the manifest must carry the direct %s require the real one has", bamlModulePath)
+	}
 
 	if err := ApplyNativeOnlyOverlay(moduleDir); err != nil {
 		t.Fatalf("ApplyNativeOnlyOverlay: %v", err)
 	}
 	mf := parseResult(t, moduleDir)
 
-	// NO BAML wiring was added.
+	// The pre-existing boundaryml/baml REQUIRE is LEFT as-is (cleanup-only overlay).
+	if !hasRequire(mf, bamlModulePath) {
+		t.Errorf("native-only overlay removed the pre-existing %s require; the cleanup-only overlay must leave it in place", bamlModulePath)
+	}
+	// But it adds NO baml_client require/replace and NO boundaryml/baml SELECT
+	// (replace) — no BAML wiring is injected.
 	if hasRequire(mf, BAMLClientModulePath) {
 		t.Error("native-only overlay must NOT add a baml_client require")
 	}
 	if _, ok := hasReplace(mf, BAMLClientModulePath); ok {
 		t.Error("native-only overlay must NOT add a baml_client replace")
 	}
-	if hasRequire(mf, bamlModulePath) {
-		t.Error("native-only overlay must NOT add a github.com/boundaryml/baml require")
-	}
 	if _, ok := hasReplace(mf, bamlModulePath); ok {
-		t.Error("native-only overlay must NOT add a github.com/boundaryml/baml replace")
+		t.Error("native-only overlay must NOT add a github.com/boundaryml/baml replace (no SELECT)")
 	}
 
 	// Missing-target replaces (dynclient, baml-patched) dropped.

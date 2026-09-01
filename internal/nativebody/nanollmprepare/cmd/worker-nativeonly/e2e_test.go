@@ -25,6 +25,15 @@ func TestNativeOnlyWorker_BootCallParse(t *testing.T) {
 	bw := bootWorker(t)
 	ctx := context.Background()
 
+	// --- Default-deny at boot ---------------------------------------------------
+	// The fixture emits THREE candidates (the JSON alias + a non-cohort string
+	// return + a non-OpenAI client), but the classifier admits only the exact-cohort
+	// method, so the booted runtime reports exactly one admitted method — the other
+	// two candidates were omitted at boot, not merely declined at call time.
+	if n := admittedMethodCount(t, bw); n != 1 {
+		t.Fatalf("admitted_method_count = %d, want exactly 1 (the two non-cohort candidates must be omitted at boot)", n)
+	}
+
 	// --- Call route (one real provider request) --------------------------------
 	ch, err := bw.worker.CallStream(ctx, nativeOnlyMethod, callInput("weather"), bamlutils.StreamModeCall)
 	if err != nil {
@@ -134,6 +143,68 @@ func TestNativeOnlyWorker_EverythingElseDeclines(t *testing.T) {
 			t.Fatalf("unregistered parse opened a socket")
 		}
 	})
+
+	// A GENERATED candidate OUTSIDE the U1 cohort (a non-JSON-alias return) was
+	// omitted at boot by the classifier, so it does not exist to the handler —
+	// default-deny at the deletion frontier, not a call-time decline.
+	t.Run("generated_candidate_outside_u1_non_alias_return", func(t *testing.T) {
+		before := hits()
+		assertCallDeclines(t, bw, ctx, "NonCohortStringReturn", callInput("x"), bamlutils.StreamModeCall)
+		if hits() != before {
+			t.Fatalf("non-cohort candidate call opened a socket")
+		}
+	})
+	// A candidate with an UNSUPPORTED (non-OpenAI) client was likewise omitted.
+	t.Run("unsupported_provider_client_candidate", func(t *testing.T) {
+		before := hits()
+		assertCallDeclines(t, bw, ctx, "NonOpenAIProviderMethod", callInput("x"), bamlutils.StreamModeCall)
+		if hits() != before {
+			t.Fatalf("unsupported-client candidate call opened a socket")
+		}
+	})
+	// A round-robin/fallback strategy fact reaches admission via the request-scoped
+	// advancer, which is live only because bootWorker attached shared state AND the
+	// request carries a request id. The admitted method declines at the strategy
+	// gate, pre-socket. (This transitively proves the AttachSharedState handshake
+	// succeeded: without it the advancer would be nil and the call would SERVE.)
+	t.Run("round_robin_strategy_declines_pre_socket", func(t *testing.T) {
+		before := hits()
+		rrCtx := workerplugin.WithRequestID(ctx, "u1b-round-robin-request-id")
+		assertCallDeclines(t, bw, rrCtx, nativeOnlyMethod, callInput("weather"), bamlutils.StreamModeCall)
+		if hits() != before {
+			t.Fatalf("round-robin decline opened a provider socket: hits %d -> %d", before, hits())
+		}
+	})
+	// A request cancelled before the native claim reaches no provider.
+	t.Run("cancelled_before_claim", func(t *testing.T) {
+		before := hits()
+		cctx, cancel := context.WithCancel(ctx)
+		cancel()
+		assertCallDeclines(t, bw, cctx, nativeOnlyMethod, callInput("weather"), bamlutils.StreamModeCall)
+		if hits() != before {
+			t.Fatalf("cancelled-before-claim opened a provider socket: hits %d -> %d", before, hits())
+		}
+	})
+}
+
+// TestNativeOnlyWorker_RewriteProxyTargetDeclines boots a worker whose base-URL
+// rewrite rules would divert the admitted method's send target, and proves the
+// admitted call declines PRE-SOCKET (the exact cohort refuses a request whose
+// effective target would be rewritten/proxied) — a booted-artifact acceptance case.
+func TestNativeOnlyWorker_RewriteProxyTargetDeclines(t *testing.T) {
+	hits := setProviderHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError) // must never be reached
+	})
+	// Rewrite the loopback host so the prepared send URL would be diverted; the
+	// admission rewrite/proxy gate declines before any socket.
+	bw := bootWorker(t, "BAML_REST_BASE_URL_REWRITES=127.0.0.1=10.255.255.1")
+	ctx := context.Background()
+
+	before := hits()
+	assertCallDeclines(t, bw, ctx, nativeOnlyMethod, callInput("weather"), bamlutils.StreamModeCall)
+	if hits() != before {
+		t.Fatalf("rewrite/proxy-target decline opened a provider socket: hits %d -> %d", before, hits())
+	}
 }
 
 // TestNativeOnlyWorker_PostClaimFailureIsTerminal proves a provider failure AFTER

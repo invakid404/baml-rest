@@ -100,8 +100,15 @@ func NewWorkerRuntime(proj projectdescriptor.Project, candidates []UnaryRegistra
 		}
 		// A duplicate candidate method is a corrupt candidate list (the generator
 		// must emit each method once); fail boot rather than silently dropping one.
-		if c.Binding.Method != "" && seen[c.Binding.Method] {
-			return nil, fmt.Errorf("nativespine: duplicate candidate method %q", c.Binding.Method)
+		// Record every non-empty candidate name BEFORE classification, so a duplicate
+		// is a hard failure regardless of whether either copy is accepted or is an
+		// out-of-cohort miss — a cohort-miss `continue` must never let a duplicate
+		// slip past this check.
+		if c.Binding.Method != "" {
+			if seen[c.Binding.Method] {
+				return nil, fmt.Errorf("nativespine: duplicate candidate method %q", c.Binding.Method)
+			}
+			seen[c.Binding.Method] = true
 		}
 		_, rej := classifyBinding(proj, byName, capByName, c.Binding)
 		if rej != nil {
@@ -112,9 +119,6 @@ func NewWorkerRuntime(proj projectdescriptor.Project, candidates []UnaryRegistra
 			// widening point — a later slice that admits this shape flips it to accepted
 			// with no bootstrap change.
 			continue
-		}
-		if c.Binding.Method != "" {
-			seen[c.Binding.Method] = true
 		}
 		accepted = append(accepted, c)
 	}

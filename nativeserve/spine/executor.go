@@ -291,12 +291,19 @@ func classifyBinding(proj projectdescriptor.Project, byName map[string]projectde
 		return nil, hardReject(fmt.Errorf("nativespine: register %q: capability record is not admitted (admitted=%v blocked=%q)", b.Method, mc.Admitted, mc.Blocked))
 	}
 	// Reconstruct + validate the project/client cohort facts (version, templates,
-	// client retry-policy, strategy) — fails rather than strips (finding 2). These
-	// are POPULATION facts (templated project, retrying/strategy client), so a
-	// failure is an expected cohort miss, not corruption.
-	fn, err := reconstructFunction(proj, m)
-	if err != nil {
-		return nil, cohortMiss(fmt.Errorf("nativespine: register %q: %w", b.Method, err))
+	// client retry-policy, strategy) — fails rather than strips (finding 2).
+	// reconstructFunction distinguishes POPULATION facts (templated project,
+	// retrying/strategy client — an expected cohort miss) from structural CORRUPTION
+	// (a client absent from the project graph, a non-static-unary admitted method —
+	// a HARD boot failure). A corrupt candidate must never be silently downgraded to
+	// a miss and omitted.
+	fn, rerr := reconstructFunction(proj, m)
+	if rerr != nil {
+		wrapped := fmt.Errorf("nativespine: register %q: %w", b.Method, rerr)
+		if rerr.corrupt {
+			return nil, hardReject(wrapped)
+		}
+		return nil, cohortMiss(wrapped)
 	}
 	// Descriptor envelope lockstep (finding 3): registration rejects the same envelope
 	// mismatches the call-time admission does, so a method rejected by call can never be

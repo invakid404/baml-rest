@@ -157,7 +157,9 @@ func TestGenerateCleansStaleOutput(t *testing.T) {
 	out := t.TempDir()
 
 	// Pre-seed the output dir with a stale generated subpackage, a stale aggregate,
-	// and a committed stub that MUST survive.
+	// a stale ROOT-LEVEL generated .go from a previous layout (an allowlist-only
+	// clean would leave it behind to compile into the package), and a committed stub
+	// that MUST survive.
 	staleDir := filepath.Join(out, "mremovedmethod_0011223344ff")
 	if err := os.MkdirAll(staleDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -166,6 +168,14 @@ func TestGenerateCleansStaleOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(out, aggregateFileName), []byte("// stale\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	staleRootGo := filepath.Join(out, "stale_root_from_old_layout.go")
+	if err := os.WriteFile(staleRootGo, []byte("//go:build debamlnativeonlygenerated\n\npackage nativegenerated\n\nfunc StaleLeftover() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	staleProjJSON := filepath.Join(out, projectJSONFileName)
+	if err := os.WriteFile(staleProjJSON, []byte("{stale}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	stub := filepath.Join(out, stubFileName)
@@ -179,6 +189,9 @@ func TestGenerateCleansStaleOutput(t *testing.T) {
 
 	if _, err := os.Stat(staleDir); !os.IsNotExist(err) {
 		t.Errorf("stale subpackage survived generation (err=%v) — a removed method must not linger", err)
+	}
+	if _, err := os.Stat(staleRootGo); !os.IsNotExist(err) {
+		t.Errorf("stale ROOT-LEVEL generated .go survived generation (err=%v) — it would compile into nativegenerated", err)
 	}
 	if b, err := os.ReadFile(stub); err != nil || string(b) != "// committed stub\n" {
 		t.Errorf("committed stub was disturbed (bytes=%q err=%v) — generation must leave generated_off.go untouched", b, err)

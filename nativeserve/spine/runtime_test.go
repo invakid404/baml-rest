@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/invakid404/baml-rest/bamlutils/projectdescriptor"
 	"github.com/invakid404/baml-rest/internal/nativespinejsonfixture"
 	"github.com/invakid404/baml-rest/nativeserve/spine"
 )
@@ -130,6 +131,78 @@ func TestNewWorkerRuntime_DuplicateCandidateFails(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "duplicate candidate") {
 		t.Fatalf("error = %v, want a duplicate-candidate failure", err)
 	}
+}
+
+// TestNewWorkerRuntime_DuplicateCohortMissFailsBoot proves two candidates for the
+// SAME out-of-cohort method are a hard duplicate failure even though each on its own
+// is a cohort miss — a cohort-miss `continue` must never let a corrupt duplicate
+// list slip past while another candidate is accepted and the worker boots.
+func TestNewWorkerRuntime_DuplicateCohortMissFailsBoot(t *testing.T) {
+	proj := projectFromCorpus(t, corpus(aliasType, strings.Join([]string{
+		`function StaticRecursiveAliasJSON(topic: string) -> JSON { client C prompt #"{{ topic }}"# }`,
+		`function PlainString(topic: string) -> string { client C prompt #"{{ topic }}"# }`,
+	}, "\n")))
+	admitted := spine.UnaryRegistration{
+		Binding:     renameBinding(nativespinejsonfixture.Binding(), "StaticRecursiveAliasJSON"),
+		BuildMethod: nativespinejsonfixture.BuildMethod,
+	}
+	miss := spine.UnaryRegistration{
+		Binding:     renameBinding(nativespinejsonfixture.Binding(), "PlainString"),
+		BuildMethod: nativespinejsonfixture.BuildMethod,
+	}
+	_, err := spine.NewWorkerRuntime(proj, []spine.UnaryRegistration{admitted, miss, miss}, nil)
+	if err == nil || !strings.Contains(err.Error(), "duplicate candidate") {
+		t.Fatalf("error = %v, want a duplicate-candidate hard failure for a repeated cohort-miss method", err)
+	}
+}
+
+// TestNewWorkerRuntime_HardFailsOnCorruptClientReference proves a candidate whose
+// project method references a client ABSENT from the project client graph is
+// structural corruption (Project.Validate does not catch it), so it must fail boot
+// HARD — never be downgraded to a cohort miss and omitted. Proven both for a lone
+// corrupt candidate AND mixed with a valid one.
+func TestNewWorkerRuntime_HardFailsOnCorruptClientReference(t *testing.T) {
+	const ghost = "GhostClientNotInGraph"
+
+	t.Run("lone_corrupt_candidate", func(t *testing.T) {
+		proj := mutatedJSONProject(t, func(p *projectdescriptor.Project) {
+			for i := range p.Methods {
+				p.Methods[i].Client = ghost
+			}
+		})
+		_, err := spine.NewWorkerRuntime(proj, []spine.UnaryRegistration{jsonAliasReg()}, nil)
+		if err == nil || !strings.Contains(err.Error(), "not present in the project client graph") {
+			t.Fatalf("error = %v, want a hard client-reference-corruption failure", err)
+		}
+		if strings.Contains(err.Error(), "empty accepted cohort") {
+			t.Fatalf("corrupt candidate was downgraded to a cohort miss (empty cohort): %v", err)
+		}
+	})
+
+	t.Run("mixed_valid_plus_corrupt", func(t *testing.T) {
+		proj := mutatedJSONProject(t, func(p *projectdescriptor.Project) {
+			corrupt := p.Methods[0]
+			corrupt.Name = "CorruptClientRef"
+			corrupt.Client = ghost // absent from the client graph
+			corrupt.Return.Method = "CorruptClientRef"
+			p.Methods = append(p.Methods, corrupt)
+			cap := p.Capabilities[0]
+			cap.Method = "CorruptClientRef"
+			p.Capabilities = append(p.Capabilities, cap)
+		})
+		valid := jsonAliasReg() // StaticRecursiveAliasJSON — would be accepted
+		corrupt := spine.UnaryRegistration{
+			Binding:     renameBinding(nativespinejsonfixture.Binding(), "CorruptClientRef"),
+			BuildMethod: nativespinejsonfixture.BuildMethod,
+		}
+		_, err := spine.NewWorkerRuntime(proj, []spine.UnaryRegistration{valid, corrupt}, nil)
+		if err == nil {
+			t.Fatalf("NewWorkerRuntime BOOTED with a corrupt candidate present; a corrupt candidate must fail boot, not be omitted")
+		}
+		if !strings.Contains(err.Error(), "not present in the project client graph") {
+			t.Fatalf("error = %v, want the client-reference-corruption hard failure", err)
+		}
+	})
 }
 
 // TestNewWorkerRuntime_HardFailures proves genuine corruption fails boot (never a

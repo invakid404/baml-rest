@@ -246,14 +246,14 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 	// sub-gate (e.g. a totality row tagged register:binding) fails: its `want` is not in
 	// the tagged sub-gate's set. Every layer used by a row above must appear here.
 	layerWants := map[string][]string{
-		"validate:version":        {"project version", "prompt-descriptor version", "schema version"},
-		"validate:capability":     {"capability"},
-		"register:totality":       {"JSON alias cohort"},
+		"validate:version":         {"project version", "prompt-descriptor version", "schema version"},
+		"validate:capability":      {"capability"},
+		"register:totality":        {"JSON alias cohort"},
 		"register:required-scalar": {"is nullable", "required-scalar cohort"},
-		"register:client-cohort":  {"not the proven openai", "valid UTF-8", "request_body option"},
-		"register:reconstruct":    {"template-free", "forbids retries"},
-		"register:envelope":       {"return names method", "streaming variant"},
-		"register:binding":        {"ProjectInput is nil", "DecodeFinal is nil", "did not admit"},
+		"register:client-cohort":   {"not the proven openai", "valid UTF-8", "request_body option"},
+		"register:reconstruct":     {"template-free", "forbids retries"},
+		"register:envelope":        {"return names method", "streaming variant"},
+		"register:binding":         {"ProjectInput is nil", "DecodeFinal is nil", "did not admit"},
 	}
 
 	for _, tc := range cases {

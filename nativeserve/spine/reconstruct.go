@@ -36,22 +36,32 @@ import (
 // gate are the registry's own (see register); this function owns the project/client
 // facts that only the Project carries. It does NOT widen the M1 classifier — it
 // NARROWS registration to the exact population cohort.
-func reconstructFunction(proj projectdescriptor.Project, m projectdescriptor.Method) (promptdescriptor.Function, error) {
+func reconstructFunction(proj projectdescriptor.Project, m projectdescriptor.Method) (promptdescriptor.Function, *reconstructError) {
+	// A method that is admitted (in proj.Methods) yet not static-unary, or a project
+	// whose descriptor version is wrong, is an INCONSISTENT descriptor — structural
+	// corruption, not a population fact — so it is a HARD failure.
+	// proj.Validate proves the version, so this is a defensive backstop.
 	if m.Class != projectdescriptor.ClassStaticUnary {
-		return promptdescriptor.Function{}, fmt.Errorf("class is %q, want %q", m.Class, projectdescriptor.ClassStaticUnary)
+		return promptdescriptor.Function{}, corruptReconstruct(fmt.Errorf("class is %q, want %q", m.Class, projectdescriptor.ClassStaticUnary))
 	}
 	if proj.Version != projectdescriptor.Version {
-		return promptdescriptor.Function{}, fmt.Errorf("project descriptor version %d, want %d", proj.Version, projectdescriptor.Version)
+		return promptdescriptor.Function{}, corruptReconstruct(fmt.Errorf("project descriptor version %d, want %d", proj.Version, projectdescriptor.Version))
 	}
+	// A templated project and a retrying/strategy client are POPULATION facts (the
+	// method is well-formed but outside the exact cohort), so they are cohort misses.
 	if len(proj.Templates) != 0 {
-		return promptdescriptor.Function{}, fmt.Errorf("project declares %d template_string(s); the exact cohort requires a template-free project (BAML injects the project macro set into every prompt)", len(proj.Templates))
+		return promptdescriptor.Function{}, populationReconstruct(fmt.Errorf("project declares %d template_string(s); the exact cohort requires a template-free project (BAML injects the project macro set into every prompt)", len(proj.Templates)))
 	}
 	if err := validateClientCohort(proj, m); err != nil {
-		return promptdescriptor.Function{}, err
+		return promptdescriptor.Function{}, populationReconstruct(err)
 	}
+	// A method whose default client is ABSENT from the project client graph is a
+	// structural inconsistency Project.Validate does not catch (it validates client
+	// NAME uniqueness, not that every method's client is defined) — a corrupt
+	// descriptor, so a HARD failure, never a silent omission.
 	cfg, err := clientConfigFor(proj, m)
 	if err != nil {
-		return promptdescriptor.Function{}, err
+		return promptdescriptor.Function{}, corruptReconstruct(err)
 	}
 	args := make([]promptdescriptor.Argument, 0, len(m.Args))
 	for i := range m.Args {
@@ -69,6 +79,28 @@ func reconstructFunction(proj projectdescriptor.Project, m projectdescriptor.Met
 		Macros:       nil,
 		ClientConfig: cfg,
 	}, nil
+}
+
+// reconstructError distinguishes a reconstruction failure that is a POPULATION
+// decline (the method is well-formed but outside the exact cohort — a templated
+// project, a retrying/strategy client) from one that is structural CORRUPTION (an
+// inconsistent descriptor — a client the project graph does not contain, a
+// non-static-unary admitted method). classifyBinding maps the former to a cohort
+// miss (omitted from the native-only registry) and the latter to a HARD boot
+// failure, so a corrupt candidate can never be silently downgraded to a miss.
+type reconstructError struct {
+	corrupt bool
+	err     error
+}
+
+func (e *reconstructError) Error() string { return e.err.Error() }
+func (e *reconstructError) Unwrap() error { return e.err }
+
+func populationReconstruct(err error) *reconstructError {
+	return &reconstructError{corrupt: false, err: err}
+}
+func corruptReconstruct(err error) *reconstructError {
+	return &reconstructError{corrupt: true, err: err}
 }
 
 // validateClientCohort declines the method if its resolved default client carries a
