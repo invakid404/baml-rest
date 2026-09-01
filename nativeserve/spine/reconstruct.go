@@ -24,10 +24,12 @@ import (
 // It returns a classified *reconstructError, splitting two kinds of failure:
 //
 // CORRUPTION (corrupt=true — a HARD boot failure, never a silent omission), an
-// INCONSISTENT descriptor proj.Validate does not catch:
+// INCONSISTENT descriptor. Most of these are facts proj.Validate does not catch; the
+// project-version bullet is a defensive backstop proj.Validate also proves:
 //
 //   - an admitted method whose class is not static-unary;
-//   - a project descriptor version that is not the current version;
+//   - a project descriptor version that is not the current version (a backstop —
+//     proj.Validate already rejects this before reconstruction);
 //   - a method whose default client is ABSENT from the project Clients graph — a
 //     dangling direct client, or a Strategies entry whose wrapper Client is missing
 //     (BuildClientGraph always inserts the wrapper into Clients, so its absence is

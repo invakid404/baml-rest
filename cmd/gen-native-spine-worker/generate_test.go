@@ -191,10 +191,8 @@ func TestGenerateCleansStaleOutput(t *testing.T) {
 	if err := os.WriteFile(staleProjJSON, []byte("{stale}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	seedStub(t, out)
 	stub := filepath.Join(out, stubFileName)
-	if err := os.WriteFile(stub, []byte("// committed stub\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 
 	if err := Generate(data, out, defaultRegistryPackagePath); err != nil {
 		t.Fatalf("Generate: %v", err)
