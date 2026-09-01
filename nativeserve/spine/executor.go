@@ -321,25 +321,34 @@ func classifyBinding(proj projectdescriptor.Project, byName map[string]projectde
 	if fn.Return.Stream {
 		return nil, hardReject(fmt.Errorf("nativespine: register %q: return is the streaming variant; only unary final-call is admitted", b.Method))
 	}
-	// Static-client cohort (finding 2): run the SAME shared client checks Call's
-	// admission uses (provider, literal model, no body-affecting option, literal
-	// base_url/api_key) so registration declines exactly what Call declines — a
-	// cohort-forbidden client descriptor (a request body / body option / non-openai
-	// leaf / non-literal model / non-literal transport) never registers. It is a
-	// cohort miss (unsupported client), not corruption.
+	// The return descriptor must LOWER before any population classification.
+	// schema.FromStaticDescriptor re-validates the whole return-type graph — the
+	// descriptor version, every enum string, required child payloads, and (via
+	// Bundle.Validate) cross-reference self-containment: dangling references, unknown
+	// enums, inline cycles, duplicate rendered names, and map-key legality. proj.Validate
+	// checks NONE of these, and none are population facts — a well-formed but
+	// out-of-cohort return lowers successfully and is declined below by the totality
+	// predicate. A lowering failure is therefore an INCONSISTENT descriptor (structural
+	// corruption), so it is a HARD boot failure, never a silent cohort-miss omission.
+	bundle, err := schema.FromStaticDescriptor(fn.Return)
+	if err != nil {
+		return nil, hardReject(fmt.Errorf("nativespine: register %q: lower return bundle: %w", b.Method, err))
+	}
+	// Static-client cohort: run the SAME shared client checks Call's admission uses
+	// (provider, literal model, no body-affecting option, literal base_url/api_key) so
+	// registration declines exactly what Call declines — a cohort-forbidden client
+	// descriptor (a request body / body option / non-openai leaf / non-literal model /
+	// non-literal transport) never registers. It is a cohort miss (unsupported client),
+	// not corruption.
 	if err := admission.CheckStaticClientCohort(fn.Provider, fn.ClientConfig); err != nil {
 		return nil, cohortMiss(fmt.Errorf("nativespine: register %q: %w", b.Method, err))
 	}
 	if err := requiredScalarInputs(fn); err != nil {
 		return nil, cohortMiss(fmt.Errorf("nativespine: register %q: %w", b.Method, err))
 	}
-	bundle, err := schema.FromStaticDescriptor(fn.Return)
-	if err != nil {
-		return nil, cohortMiss(fmt.Errorf("nativespine: register %q: lower return bundle: %w", b.Method, err))
-	}
 	// The ONE root-owned totality predicate — the exact five-arm `JSON` alias family —
-	// controls registration in lockstep with call and direct parse. A Return outside
-	// that family is a cohort miss.
+	// controls registration in lockstep with call and direct parse. A Return that
+	// lowers cleanly but is outside that family is a cohort miss.
 	if err := debaml.SupportsNativeStaticStreamBundle(bundle); err != nil {
 		return nil, cohortMiss(fmt.Errorf("nativespine: register %q: not the exact five-arm JSON alias cohort: %w", b.Method, err))
 	}

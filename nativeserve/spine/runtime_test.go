@@ -205,6 +205,89 @@ func TestNewWorkerRuntime_HardFailsOnCorruptClientReference(t *testing.T) {
 	})
 }
 
+// TestNewWorkerRuntime_HardFailsOnDanglingReturnReference proves a candidate whose
+// return descriptor references a type absent from its own bundle is structural
+// corruption that schema.FromStaticDescriptor (via Bundle.Validate) rejects and
+// proj.Validate does NOT — so it must fail boot HARD, never be downgraded to a cohort
+// miss and omitted. Proven mixed with a valid candidate: the worker must not boot
+// serving only the valid method while silently dropping the corrupt one.
+func TestNewWorkerRuntime_HardFailsOnDanglingReturnReference(t *testing.T) {
+	proj := mutatedJSONProject(t, func(p *projectdescriptor.Project) {
+		corrupt := p.Methods[0]
+		corrupt.Name = "DanglingReturnRef"
+		// Keep the envelope (return method/version) consistent so the failure is the
+		// return-type lowering, not the envelope guard. Drop the recursive-alias
+		// definitions the return still references, leaving a dangling cross-reference.
+		corrupt.Return.Method = "DanglingReturnRef"
+		corrupt.Return.StructuralRecursiveAliases = nil
+		p.Methods = append(p.Methods, corrupt)
+		cap := p.Capabilities[0]
+		cap.Method = "DanglingReturnRef"
+		p.Capabilities = append(p.Capabilities, cap)
+	})
+	valid := jsonAliasReg() // StaticRecursiveAliasJSON — would be accepted
+	corrupt := spine.UnaryRegistration{
+		Binding:     renameBinding(nativespinejsonfixture.Binding(), "DanglingReturnRef"),
+		BuildMethod: nativespinejsonfixture.BuildMethod,
+	}
+	_, err := spine.NewWorkerRuntime(proj, []spine.UnaryRegistration{valid, corrupt}, nil)
+	if err == nil {
+		t.Fatalf("NewWorkerRuntime BOOTED with a dangling-return-reference candidate; structural return corruption must fail boot, not be omitted")
+	}
+	if !strings.Contains(err.Error(), "lower return bundle") {
+		t.Fatalf("error = %v, want the return-lowering hard failure", err)
+	}
+	if strings.Contains(err.Error(), "empty accepted cohort") {
+		t.Fatalf("corrupt candidate was downgraded to a cohort miss (empty cohort): %v", err)
+	}
+}
+
+// TestNewWorkerRuntime_RoundRobinStrategyClientIsOmitted proves the GENUINE
+// round-robin fact — a method whose default client is an actual round-robin strategy —
+// is a population decline: omitted at boot (NOT a hard failure, and NOT because a
+// shared-state advancer is attached). Mixed with a valid candidate, the worker boots
+// serving only the valid direct-client method.
+func TestNewWorkerRuntime_RoundRobinStrategyClientIsOmitted(t *testing.T) {
+	proj := mutatedJSONProject(t, func(p *projectdescriptor.Project) {
+		leafClient := p.Methods[0].Client
+		rr := p.Methods[0]
+		rr.Name = "RoundRobinMethod"
+		rr.Client = "RRStrategy"
+		rr.Return.Method = "RoundRobinMethod"
+		p.Methods = append(p.Methods, rr)
+		p.Strategies = append(p.Strategies, projectdescriptor.Strategy{
+			Name:     "RRStrategy",
+			Kind:     projectdescriptor.StrategyRoundRobin,
+			Children: []string{leafClient},
+		})
+		cap := p.Capabilities[0]
+		cap.Method = "RoundRobinMethod"
+		p.Capabilities = append(p.Capabilities, cap)
+	})
+	valid := jsonAliasReg()
+	rr := spine.UnaryRegistration{
+		Binding:     renameBinding(nativespinejsonfixture.Binding(), "RoundRobinMethod"),
+		BuildMethod: nativespinejsonfixture.BuildMethod,
+	}
+	rt, err := spine.NewWorkerRuntime(proj, []spine.UnaryRegistration{valid, rr}, nil)
+	if err != nil {
+		t.Fatalf("a round-robin strategy method must be OMITTED (population miss), not fail boot or empty the cohort: %v", err)
+	}
+	namer, ok := rt.(runtimeWorkerNamer)
+	if !ok {
+		t.Fatalf("runtime %T does not expose MethodNames", rt)
+	}
+	names := namer.MethodNames()
+	if len(names) != 1 {
+		t.Fatalf("admitted methods = %v, want exactly the valid direct-client method (round-robin strategy method omitted)", names)
+	}
+	for _, n := range names {
+		if n == "RoundRobinMethod" {
+			t.Fatalf("round-robin strategy method was admitted; it must be omitted as a population miss")
+		}
+	}
+}
+
 // TestNewWorkerRuntime_HardFailures proves genuine corruption fails boot (never a
 // silent omission): a candidate naming a method the project did not admit, a nil
 // BuildMethod, and a nil projector callback.

@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"net/http"
+	"slices"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -25,11 +26,21 @@ func TestNativeOnlyWorker_BootCallParse(t *testing.T) {
 	bw := bootWorker(t)
 	ctx := context.Background()
 
-	// --- Default-deny at boot ---------------------------------------------------
-	// The fixture emits THREE candidates (the JSON alias + a non-cohort string
-	// return + a non-OpenAI client), but the classifier admits only the exact-cohort
-	// method, so the booted runtime reports exactly one admitted method — the other
-	// two candidates were omitted at boot, not merely declined at call time.
+	// --- Default-deny at boot: GENERATED then DECLINED --------------------------
+	// The fixture declares THREE static-unary methods that codegen/M1 all admit into
+	// the generated candidate set — the exact JSON alias, a non-alias (string) return,
+	// and a retry-policy client method. Proving both halves distinguishes a
+	// generate-then-decline from a candidate that was never generated: the emitted
+	// descriptor must carry all three names...
+	gen := generatedCandidateNames(t)
+	for _, want := range []string{"StaticRecursiveAliasJSON", "NonCohortStringReturn", "RetryPolicyMethod"} {
+		if !slices.Contains(gen, want) {
+			t.Fatalf("generated candidate %q missing from the emitted descriptor %v; the generate-then-decline proof is vacuous if a candidate was never generated", want, gen)
+		}
+	}
+	// ...while the booted runtime admits exactly ONE. The other two were GENERATED but
+	// declined at admission (a non-alias return and a retry-policy client), then omitted
+	// at boot — not merely absent.
 	if n := admittedMethodCount(t, bw); n != 1 {
 		t.Fatalf("admitted_method_count = %d, want exactly 1 (the two non-cohort candidates must be omitted at boot)", n)
 	}
@@ -76,6 +87,42 @@ func TestNativeOnlyWorker_BootCallParse(t *testing.T) {
 	}
 	if len(metrics) == 0 {
 		t.Fatalf("GetMetrics returned no metric families; the artifact-profile collectors must register")
+	}
+}
+
+// TestNativeOnlyWorker_ServesUnderPooledSharedStateAndRequestID is the availability
+// regression for the round-robin advancer. A pool attaches shared state to the worker
+// and supplies a request id on EVERY request, so the worker installs a LIVE round-robin
+// advancer on every call. The admitted direct-client method must STILL serve — its
+// client is a proven single resolved leaf, not a round-robin strategy — with exactly
+// one provider hit. Deriving the round-robin decline from advancer presence rather than
+// from the selected client's plan would reject 100% of pooled production traffic.
+func TestNativeOnlyWorker_ServesUnderPooledSharedStateAndRequestID(t *testing.T) {
+	const modelText = `{"k":1}`
+	hits := setProviderHandler(func(w http.ResponseWriter, r *http.Request) {
+		okChatCompletion(w, modelText)
+	})
+	bw := bootWorker(t) // hosts a real shared-state store: the AttachSharedState handshake runs
+	// The production-style context: a request id makes the shared-state round-robin
+	// advancer live for this call, exactly as pool.CallStream does on every request.
+	ctx := workerplugin.WithRequestID(context.Background(), "u1b-pooled-request-id")
+
+	ch, err := bw.worker.CallStream(ctx, nativeOnlyMethod, callInput("weather"), bamlutils.StreamModeCall)
+	if err != nil {
+		t.Fatalf("CallStream: %v", err)
+	}
+	results := drainFinal(t, ch)
+	if len(results) != 1 {
+		t.Fatalf("want 1 stream result, got %d: %+v", len(results), results)
+	}
+	if results[0].Error != nil {
+		t.Fatalf("admitted direct-client method declined under a live advancer + request id (the availability bug): %v", results[0].Error)
+	}
+	if got := string(results[0].Data); got != modelText {
+		t.Fatalf("serve envelope = %s, want canonical %s", got, modelText)
+	}
+	if hits() != 1 {
+		t.Fatalf("provider hit count = %d, want exactly 1 (served under a live advancer, no strategy-gate decline)", hits())
 	}
 }
 
@@ -154,25 +201,13 @@ func TestNativeOnlyWorker_EverythingElseDeclines(t *testing.T) {
 			t.Fatalf("non-cohort candidate call opened a socket")
 		}
 	})
-	// A candidate with an UNSUPPORTED (non-OpenAI) client was likewise omitted.
-	t.Run("unsupported_provider_client_candidate", func(t *testing.T) {
+	// A retry-policy client candidate (M1-generated, U1-declined at admission) was
+	// likewise omitted at boot, so it does not exist to the handler.
+	t.Run("retry_policy_client_candidate", func(t *testing.T) {
 		before := hits()
-		assertCallDeclines(t, bw, ctx, "NonOpenAIProviderMethod", callInput("x"), bamlutils.StreamModeCall)
+		assertCallDeclines(t, bw, ctx, "RetryPolicyMethod", callInput("x"), bamlutils.StreamModeCall)
 		if hits() != before {
-			t.Fatalf("unsupported-client candidate call opened a socket")
-		}
-	})
-	// A round-robin/fallback strategy fact reaches admission via the request-scoped
-	// advancer, which is live only because bootWorker attached shared state AND the
-	// request carries a request id. The admitted method declines at the strategy
-	// gate, pre-socket. (This transitively proves the AttachSharedState handshake
-	// succeeded: without it the advancer would be nil and the call would SERVE.)
-	t.Run("round_robin_strategy_declines_pre_socket", func(t *testing.T) {
-		before := hits()
-		rrCtx := workerplugin.WithRequestID(ctx, "u1b-round-robin-request-id")
-		assertCallDeclines(t, bw, rrCtx, nativeOnlyMethod, callInput("weather"), bamlutils.StreamModeCall)
-		if hits() != before {
-			t.Fatalf("round-robin decline opened a provider socket: hits %d -> %d", before, hits())
+			t.Fatalf("retry-policy candidate call opened a socket")
 		}
 	})
 	// A request cancelled before the native claim reaches no provider.

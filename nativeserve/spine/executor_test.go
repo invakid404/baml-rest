@@ -342,8 +342,13 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 
 // TestRequestScopedFactsDeclinePreSocket proves the executor reads request-scoped
 // routing/orchestration facts off the adapter and DECLINES pre-socket, opening zero
-// sockets (Codex review finding 1). Each of these facts is cohort-forbidden and
-// declines before any nanollm work.
+// sockets. Each of these facts is cohort-forbidden and declines before any nanollm
+// work. A bare round-robin Advancer is deliberately NOT such a fact: the worker
+// installs one on every request that carries a request id, so its presence is
+// pool/shared-state infrastructure, not the selected client's plan. That an advancer
+// alone still SERVES is proven by the serve-under-advancer E2E; that an ACTUAL
+// round-robin/fallback strategy client is declined is proven by the strategy-client
+// omission test.
 func TestRequestScopedFactsDeclinePreSocket(t *testing.T) {
 	rows := []struct {
 		name   string
@@ -352,7 +357,6 @@ func TestRequestScopedFactsDeclinePreSocket(t *testing.T) {
 		{"client_registry", func(a *testAdapter) { _ = a.SetClientRegistry(&bamlutils.ClientRegistry{}) }},
 		{"dynamic_output_schema", func(a *testAdapter) { a.SetDeBAMLOutputSchema(&bamlutils.DynamicOutputSchema{}) }},
 		{"request_retry_override", func(a *testAdapter) { a.SetRetryConfig(&bamlutils.RetryConfig{MaxRetries: 2}) }},
-		{"round_robin_advancer", func(a *testAdapter) { a.SetRoundRobinAdvancer(stubAdvancer{}) }},
 	}
 	for _, tc := range rows {
 		t.Run(tc.name, func(t *testing.T) {
@@ -369,11 +373,6 @@ func TestRequestScopedFactsDeclinePreSocket(t *testing.T) {
 		})
 	}
 }
-
-// stubAdvancer is a no-op round-robin advancer for the finding-1 test.
-type stubAdvancer struct{}
-
-func (stubAdvancer) Advance(string, int) (int, error) { return 0, nil }
 
 // TestCallRegistryMissDeclinesPreSocket proves an unregistered method Call declines
 // pre-socket with the typed capability error and zero sockets.

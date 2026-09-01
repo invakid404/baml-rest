@@ -40,6 +40,7 @@ import (
 	"github.com/hashicorp/go-hclog"
 	goplugin "github.com/hashicorp/go-plugin"
 
+	"github.com/invakid404/baml-rest/bamlutils/projectdescriptor"
 	"github.com/invakid404/baml-rest/workerplugin"
 )
 
@@ -51,6 +52,10 @@ const nativeOnlyBuildTags = "subprocess,debamlnativeonlygenerated"
 var (
 	// nativeOnlyBin is the built native-only worker binary (set by TestMain).
 	nativeOnlyBin string
+	// generatedProjectJSON is the path to the generated deployment descriptor
+	// (nativegenerated/project.json) the generator emitted; its Methods are the
+	// generated candidate set before the runtime classifier runs (set by TestMain).
+	generatedProjectJSON string
 	// providerURL is the loopback provider base_url baked into the descriptor.
 	providerURL string
 	// providerHits counts every request the loopback provider receives.
@@ -136,8 +141,11 @@ func generateAndBuild() (func(), error) {
 		cleanupTmp()
 		return nil, err
 	}
-	// Two clients: the admitted strict-OpenAI oracle, and a non-OpenAI (anthropic)
-	// client used by a candidate the spine classifier declines.
+	// Two OpenAI clients: the admitted strict oracle, and one carrying a retry_policy —
+	// a client shape codegen/M1 ADMITS into Project.Methods (a single OpenAI leaf) but
+	// the U1 executor DECLINES at admission (the exact cohort forbids retries). This is
+	// the point of the retry candidate: a non-OpenAI client would be rejected before
+	// Project.Methods and never generated, so it could not prove a generate-then-decline.
 	clients := fmt.Sprintf(`client<llm> JSONOracle {
   provider openai
   options {
@@ -147,19 +155,26 @@ func generateAndBuild() (func(), error) {
   }
 }
 
-client<llm> AnthropicOracle {
-  provider anthropic
+retry_policy U1bRetry {
+  max_retries 2
+  strategy { type constant_delay delay_ms 100 }
+}
+
+client<llm> RetryingOracle {
+  provider openai
+  retry_policy U1bRetry
   options {
-    model "claude-3-5-sonnet-latest"
-    api_key "sk-ant-execbridge-u1b-not-a-real-secret"
+    model "gpt-4o-mini"
+    api_key "sk-execbridge-u1b-not-a-real-secret"
+    base_url %q
   }
 }
-`, providerURL)
+`, providerURL, providerURL)
 	// Three static-unary methods are introspected + emitted as candidates, but only
-	// StaticRecursiveAliasJSON is IN the exact U1 cohort. The other two are
-	// generated candidates OUTSIDE U1 (a non-JSON-alias return, and a non-OpenAI
-	// client), so NewWorkerRuntime's classifier OMITS them at boot — the default-deny
-	// frontier the booted decline table exercises.
+	// StaticRecursiveAliasJSON is IN the exact U1 cohort. The other two are generated
+	// candidates OUTSIDE U1 — a non-JSON-alias (string) return, and a retry-policy
+	// client — that M1 admits into Project.Methods but the runtime classifier DECLINES
+	// at admission, so NewWorkerRuntime OMITS them at boot.
 	functions := `function StaticRecursiveAliasJSON(topic: string) -> JSON {
   client JSONOracle
   prompt #"Return a JSON document describing {{ topic }}."#
@@ -170,8 +185,8 @@ function NonCohortStringReturn(topic: string) -> string {
   prompt #"Return a string describing {{ topic }}."#
 }
 
-function NonOpenAIProviderMethod(topic: string) -> JSON {
-  client AnthropicOracle
+function RetryPolicyMethod(topic: string) -> JSON {
+  client RetryingOracle
   prompt #"Return a JSON document describing {{ topic }}."#
 }
 `
@@ -203,6 +218,9 @@ function NonOpenAIProviderMethod(topic: string) -> JSON {
 		return nil, fmt.Errorf("gen-native-spine-worker: %w\n%s", err, out)
 	}
 	cleanupGen := func() { removeGeneratedRegistry(nativeGenDir) }
+	// The emitted deployment descriptor: its Methods are the generated candidate set
+	// (every codegen-admitted static-unary method), before the runtime classifier runs.
+	generatedProjectJSON = filepath.Join(nativeGenDir, "project.json")
 
 	// Build the real command with the same GOWORK=off + CGO + tags as build.sh.
 	// Use -mod=readonly (not build.sh's -mod=mod) because this builds IN PLACE in the
@@ -355,6 +373,33 @@ func admittedMethodCount(t *testing.T, b *bootedWorker) int {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// generatedCandidateNames reads the emitted deployment descriptor and returns the
+// names of every generated (codegen-admitted) static-unary candidate — the set BEFORE
+// the runtime classifier runs. Paired with admittedMethodCount it distinguishes a
+// candidate that was GENERATED then declined at admission from one that was never
+// generated at all (an unknown-method lookup).
+func generatedCandidateNames(t *testing.T) []string {
+	t.Helper()
+	if generatedProjectJSON == "" {
+		t.Fatal("generated project.json path not set (TestMain setup failed)")
+	}
+	raw, err := os.ReadFile(generatedProjectJSON)
+	if err != nil {
+		t.Fatalf("read generated project.json: %v", err)
+	}
+	var proj projectdescriptor.Project
+	if err := json.Unmarshal(raw, &proj); err != nil {
+		t.Fatalf("unmarshal generated project.json: %v", err)
+	}
+	var names []string
+	for _, m := range proj.Methods {
+		if m.Class == projectdescriptor.ClassStaticUnary {
+			names = append(names, m.Name)
+		}
+	}
+	return names
 }
 
 // drainFinal collects stream results until the channel closes (bounded).
