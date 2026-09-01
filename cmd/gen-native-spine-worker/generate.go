@@ -278,13 +278,17 @@ var generatedSubpackageDir = regexp.MustCompile(`^m[a-z0-9]*_[0-9a-f]{12}$`)
 // rather than deleting files this generator does not own. It then removes only entries
 // whose shape this generator produces — a subpackage directory matching
 // generatedSubpackageDir, or a .go source / project.json — so an unexpected directory
-// or a non-generated file (README, go.mod, .gitignore, ...) is left untouched. A
-// non-existent outDir is not an error.
+// or a non-generated file (README, go.mod, .gitignore, ...) is left untouched.
+//
+// A NON-EXISTENT outDir is refused for the same reason: it carries no committed stub,
+// so generating into it would create a stubless registry package — the very state the
+// stub guard exists to prevent. The registry package is committed (stub included), so
+// a missing directory is a mistyped --out-dir, never a legitimate first-run.
 func cleanOutputDir(outDir string) error {
 	entries, err := os.ReadDir(outDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return fmt.Errorf("gen-native-spine-worker: refusing to generate into %q: the directory does not exist, so the committed %s that marks the native-only registry package is absent (check --out-dir)", outDir, stubFileName)
 		}
 		return fmt.Errorf("gen-native-spine-worker: read output dir: %w", err)
 	}

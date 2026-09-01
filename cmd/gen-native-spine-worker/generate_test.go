@@ -225,6 +225,73 @@ func TestGenerateCleansStaleOutput(t *testing.T) {
 	}
 }
 
+// TestCleanOutputDirRefusesMissingDir proves a non-existent output directory is
+// refused, not silently accepted: it carries no committed stub, so generating into it
+// would create a stubless registry package (a mistyped --out-dir).
+func TestCleanOutputDirRefusesMissingDir(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	if err := cleanOutputDir(missing); err == nil {
+		t.Fatalf("cleanOutputDir accepted a non-existent dir; it must be refused (no committed stub)")
+	}
+	// And the full Generate path must not create the stubless directory.
+	if err := Generate(jsonAliasDescriptorJSON(t), missing, defaultRegistryPackagePath); err == nil {
+		t.Fatalf("Generate accepted a non-existent --out-dir; it must refuse rather than create a stubless registry")
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Fatalf("Generate created the refused directory %q (err=%v)", missing, err)
+	}
+}
+
+// TestCleanOutputDirRefusesStublessDir proves an existing directory that lacks the
+// committed stub is refused, and that the refusal deletes nothing (foreign files
+// survive).
+func TestCleanOutputDirRefusesStublessDir(t *testing.T) {
+	dir := t.TempDir() // exists, no stub
+	readme := filepath.Join(dir, "README.md")
+	if err := os.WriteFile(readme, []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanOutputDir(dir); err == nil {
+		t.Fatalf("cleanOutputDir accepted a stubless dir; a dir without the committed stub is not the registry package and must be refused")
+	}
+	if _, err := os.Stat(readme); err != nil {
+		t.Fatalf("cleanOutputDir deleted a foreign file in a refused dir: %v", err)
+	}
+}
+
+// TestCleanOutputDirPreservesForeignFiles proves that inside a valid (stub-bearing)
+// registry directory, files this generator never emits are preserved while stale
+// generated output is removed.
+func TestCleanOutputDirPreservesForeignFiles(t *testing.T) {
+	dir := t.TempDir()
+	seedStub(t, dir)
+	foreign := map[string]string{"README.md": "readme\n", ".gitignore": "*.tmp\n", "go.mod": "module x\n"}
+	for name, body := range foreign {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A stale generated artifact that MUST be removed.
+	if err := os.WriteFile(filepath.Join(dir, aggregateFileName), []byte("// stale\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanOutputDir(dir); err != nil {
+		t.Fatalf("cleanOutputDir: %v", err)
+	}
+	for name, want := range foreign {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil || string(b) != want {
+			t.Errorf("foreign file %q was not preserved (bytes=%q err=%v)", name, b, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, aggregateFileName)); !os.IsNotExist(err) {
+		t.Errorf("stale aggregate survived (err=%v)", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, stubFileName)); err != nil || string(b) != "// committed stub\n" {
+		t.Errorf("committed stub was disturbed (bytes=%q err=%v)", b, err)
+	}
+}
+
 // TestSubpackageNameIsCollisionProof proves the subpackage name is a valid Go
 // identifier that includes a hash suffix (not only a sanitized method name), so
 // two methods that sanitize to the same string still land in distinct packages.

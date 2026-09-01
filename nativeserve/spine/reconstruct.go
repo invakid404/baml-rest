@@ -28,7 +28,10 @@ import (
 //
 //   - an admitted method whose class is not static-unary;
 //   - a project descriptor version that is not the current version;
-//   - a method whose default client is ABSENT from the project client graph.
+//   - a method whose default client is ABSENT from the project Clients graph — a
+//     dangling direct client, or a Strategies entry whose wrapper Client is missing
+//     (BuildClientGraph always inserts the wrapper into Clients, so its absence is
+//     corruption, not a legitimate strategy). Resolved before any population exit.
 //
 // A POPULATION decline (corrupt=false — the method is well-formed but outside the
 // exact cohort, so it is omitted from the native-only registry):
@@ -56,21 +59,28 @@ func reconstructFunction(proj projectdescriptor.Project, m projectdescriptor.Met
 	if proj.Version != projectdescriptor.Version {
 		return promptdescriptor.Function{}, corruptReconstruct(fmt.Errorf("project descriptor version %d, want %d", proj.Version, projectdescriptor.Version))
 	}
-	// A templated project and a retrying/strategy client are POPULATION facts (the
-	// method is well-formed but outside the exact cohort), so they are cohort misses.
+	// STRUCTURAL, resolved BEFORE any population exit: the method's default client must
+	// be present in the project client graph. BuildClientGraph inserts EVERY client —
+	// a fallback/round-robin strategy WRAPPER included — into Clients (and additionally
+	// registers the strategy in Strategies under the same name), so a client absent from
+	// Clients is a shape the graph never emits: an INCONSISTENT descriptor Project.Validate
+	// does not catch (it checks client NAME uniqueness, not that every method's client is
+	// defined). It is a HARD failure, checked first so a corrupt candidate — e.g. a
+	// Strategies entry whose wrapper Client is missing — can never be masked by a
+	// population miss below (a templated project, a retry/strategy fact).
+	cfg, err := clientConfigFor(proj, m)
+	if err != nil {
+		return promptdescriptor.Function{}, corruptReconstruct(err)
+	}
+	// POPULATION facts: the client resolves, so the method is well-formed but outside the
+	// exact cohort — a cohort miss (omitted), not corruption. A templated project, or a
+	// retrying / fallback / round-robin strategy client (whose wrapper is present in
+	// Clients AND registered in Strategies).
 	if len(proj.Templates) != 0 {
 		return promptdescriptor.Function{}, populationReconstruct(fmt.Errorf("project declares %d template_string(s); the exact cohort requires a template-free project (BAML injects the project macro set into every prompt)", len(proj.Templates)))
 	}
 	if err := validateClientCohort(proj, m); err != nil {
 		return promptdescriptor.Function{}, populationReconstruct(err)
-	}
-	// A method whose default client is ABSENT from the project client graph is a
-	// structural inconsistency Project.Validate does not catch (it validates client
-	// NAME uniqueness, not that every method's client is defined) — a corrupt
-	// descriptor, so a HARD failure, never a silent omission.
-	cfg, err := clientConfigFor(proj, m)
-	if err != nil {
-		return promptdescriptor.Function{}, corruptReconstruct(err)
 	}
 	args := make([]promptdescriptor.Argument, 0, len(m.Args))
 	for i := range m.Args {

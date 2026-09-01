@@ -243,24 +243,31 @@ func TestNewWorkerRuntime_HardFailsOnDanglingReturnReference(t *testing.T) {
 	}
 }
 
-// TestNewWorkerRuntime_RoundRobinStrategyClientIsOmitted proves the GENUINE
-// round-robin fact — a method whose default client is an actual round-robin strategy —
-// is a population decline: omitted at boot (NOT a hard failure, and NOT because a
-// shared-state advancer is attached). Mixed with a valid candidate, the worker boots
-// serving only the valid direct-client method.
+// TestNewWorkerRuntime_RoundRobinStrategyClientIsOmitted proves a WELL-FORMED
+// round-robin strategy method — its client is a strategy WRAPPER present in Clients
+// (as BuildClientGraph always emits) AND registered in Strategies — is a population
+// decline: omitted at boot (NOT a hard failure, and NOT because a shared-state advancer
+// is attached). Mixed with a valid candidate, the worker boots serving only the valid
+// direct-client method.
 func TestNewWorkerRuntime_RoundRobinStrategyClientIsOmitted(t *testing.T) {
 	proj := mutatedJSONProject(t, func(p *projectdescriptor.Project) {
 		leafClient := p.Methods[0].Client
-		rr := p.Methods[0]
-		rr.Name = "RoundRobinMethod"
-		rr.Client = "RRStrategy"
-		rr.Return.Method = "RoundRobinMethod"
-		p.Methods = append(p.Methods, rr)
+		// The strategy WRAPPER's own Clients entry (BuildClientGraph inserts every
+		// client — strategy wrappers included — into Clients), so the method's client
+		// RESOLVES and it is an out-of-cohort population miss, not corruption.
+		wrapper := p.Clients[0]
+		wrapper.Config.Name = "RRStrategy"
+		p.Clients = append(p.Clients, wrapper)
 		p.Strategies = append(p.Strategies, projectdescriptor.Strategy{
 			Name:     "RRStrategy",
 			Kind:     projectdescriptor.StrategyRoundRobin,
 			Children: []string{leafClient},
 		})
+		rr := p.Methods[0]
+		rr.Name = "RoundRobinMethod"
+		rr.Client = "RRStrategy"
+		rr.Return.Method = "RoundRobinMethod"
+		p.Methods = append(p.Methods, rr)
 		cap := p.Capabilities[0]
 		cap.Method = "RoundRobinMethod"
 		p.Capabilities = append(p.Capabilities, cap)
@@ -272,7 +279,7 @@ func TestNewWorkerRuntime_RoundRobinStrategyClientIsOmitted(t *testing.T) {
 	}
 	rt, err := spine.NewWorkerRuntime(proj, []spine.UnaryRegistration{valid, rr}, nil)
 	if err != nil {
-		t.Fatalf("a round-robin strategy method must be OMITTED (population miss), not fail boot or empty the cohort: %v", err)
+		t.Fatalf("a WELL-FORMED round-robin strategy method (wrapper present in Clients) must be OMITTED (population miss), not fail boot or empty the cohort: %v", err)
 	}
 	namer, ok := rt.(runtimeWorkerNamer)
 	if !ok {
@@ -286,6 +293,47 @@ func TestNewWorkerRuntime_RoundRobinStrategyClientIsOmitted(t *testing.T) {
 		if n == "RoundRobinMethod" {
 			t.Fatalf("round-robin strategy method was admitted; it must be omitted as a population miss")
 		}
+	}
+}
+
+// TestNewWorkerRuntime_HardFailsOnStrategyWithoutClientWrapper proves the CORRUPT
+// counterpart: a method whose client names a Strategies entry that has NO matching
+// Client wrapper in Clients — a shape BuildClientGraph never emits (it inserts every
+// client, strategy wrappers included, into Clients) — must fail boot HARD, never be
+// omitted as a population miss. Proven mixed with a valid candidate.
+func TestNewWorkerRuntime_HardFailsOnStrategyWithoutClientWrapper(t *testing.T) {
+	proj := mutatedJSONProject(t, func(p *projectdescriptor.Project) {
+		leafClient := p.Methods[0].Client
+		// A Strategies entry with NO corresponding Clients wrapper — structural
+		// corruption, not a legitimate strategy.
+		p.Strategies = append(p.Strategies, projectdescriptor.Strategy{
+			Name:     "GhostStrategyNoWrapper",
+			Kind:     projectdescriptor.StrategyRoundRobin,
+			Children: []string{leafClient},
+		})
+		corrupt := p.Methods[0]
+		corrupt.Name = "CorruptStrategyRef"
+		corrupt.Client = "GhostStrategyNoWrapper" // in Strategies, absent from Clients
+		corrupt.Return.Method = "CorruptStrategyRef"
+		p.Methods = append(p.Methods, corrupt)
+		cap := p.Capabilities[0]
+		cap.Method = "CorruptStrategyRef"
+		p.Capabilities = append(p.Capabilities, cap)
+	})
+	valid := jsonAliasReg()
+	corrupt := spine.UnaryRegistration{
+		Binding:     renameBinding(nativespinejsonfixture.Binding(), "CorruptStrategyRef"),
+		BuildMethod: nativespinejsonfixture.BuildMethod,
+	}
+	_, err := spine.NewWorkerRuntime(proj, []spine.UnaryRegistration{valid, corrupt}, nil)
+	if err == nil {
+		t.Fatalf("NewWorkerRuntime BOOTED with a strategy-without-wrapper candidate; a Strategies entry whose Client is absent from the graph is corruption and must fail boot, not be omitted")
+	}
+	if !strings.Contains(err.Error(), "not present in the project client graph") {
+		t.Fatalf("error = %v, want the client-reference-corruption hard failure", err)
+	}
+	if strings.Contains(err.Error(), "empty accepted cohort") {
+		t.Fatalf("corrupt candidate was downgraded to a cohort miss (empty cohort): %v", err)
 	}
 }
 
