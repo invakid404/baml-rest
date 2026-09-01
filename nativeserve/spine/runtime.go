@@ -144,6 +144,16 @@ func NewWorkerRuntime(proj projectdescriptor.Project, candidates []UnaryRegistra
 	for i := range accepted {
 		sm, pm := accepted[i].BuildMethod(exec)
 		name := accepted[i].Binding.Method
+		// A builder that returns an incomplete method would boot a runtime that panics
+		// on the first matching request (a nil Impl/constructor is a nil-func call). Fail
+		// boot instead — callback-before-claim, in lockstep with the nil-BuildMethod
+		// guard above.
+		if sm.Impl == nil || sm.MakeInput == nil || sm.MakeOutput == nil {
+			return nil, fmt.Errorf("nativespine: candidate %q built an incomplete StreamingMethod (nil Impl/MakeInput/MakeOutput)", name)
+		}
+		if pm.Impl == nil || pm.MakeOutput == nil {
+			return nil, fmt.Errorf("nativespine: candidate %q built an incomplete ParseMethod (nil Impl/MakeOutput)", name)
+		}
 		methods[name] = sm
 		parseMethods[name] = pm
 	}

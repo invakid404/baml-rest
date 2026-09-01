@@ -20,7 +20,6 @@ package nativeonlyboot
 
 import (
 	"context"
-	"errors"
 	"os"
 	"time"
 
@@ -216,10 +215,6 @@ func Run(rt worker.Runtime, capability worker.NativeCapability, nativeInit func(
 		Logger: logger,
 	})
 }
-
-// ErrNilRuntime is retained for callers that want to assert the nil-runtime
-// contract without booting; Run itself exits the process rather than returning.
-var ErrNilRuntime = errors.New("nativeonlyboot: nil runtime")
 
 // grpcSharedStateHook adapts the brokered pb.SharedStateClient to the worker
 // package's SharedStateHook seam. It lives here (with the bootstrap) rather than in

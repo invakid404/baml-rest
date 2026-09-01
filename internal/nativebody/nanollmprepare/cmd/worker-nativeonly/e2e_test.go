@@ -145,7 +145,6 @@ func TestNativeOnlyWorker_EverythingElseDeclines(t *testing.T) {
 		input []byte
 		mode  bamlutils.StreamMode
 	}{
-		{"unknown_method_is_call_declined", nil, bamlutils.StreamModeCall}, // handled separately below
 		{"stream_mode", callInput("x"), bamlutils.StreamModeStream},
 		{"stream_with_raw_mode", callInput("x"), bamlutils.StreamModeStreamWithRaw},
 		{"call_with_raw_mode", callInput("x"), bamlutils.StreamModeCallWithRaw},
@@ -154,9 +153,6 @@ func TestNativeOnlyWorker_EverythingElseDeclines(t *testing.T) {
 		{"retry_override", []byte(`{"topic":"x","__baml_options__":{"retry":{}}}`), bamlutils.StreamModeCall},
 	}
 	for _, tc := range callCases {
-		if tc.name == "unknown_method_is_call_declined" {
-			continue
-		}
 		t.Run(tc.name, func(t *testing.T) {
 			before := hits()
 			assertCallDeclines(t, bw, ctx, nativeOnlyMethod, tc.input, tc.mode)

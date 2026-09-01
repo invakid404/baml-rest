@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/projectdescriptor"
 	"github.com/invakid404/baml-rest/internal/nativespinejsonfixture"
 	"github.com/invakid404/baml-rest/nativeserve/spine"
@@ -285,6 +286,23 @@ func TestNewWorkerRuntime_RoundRobinStrategyClientIsOmitted(t *testing.T) {
 		if n == "RoundRobinMethod" {
 			t.Fatalf("round-robin strategy method was admitted; it must be omitted as a population miss")
 		}
+	}
+}
+
+// TestNewWorkerRuntime_IncompleteBuiltMethodFailsBoot proves a builder that returns an
+// incomplete StreamingMethod/ParseMethod (a nil required callback) fails boot rather
+// than publishing a method map that panics on the first matching request.
+func TestNewWorkerRuntime_IncompleteBuiltMethodFailsBoot(t *testing.T) {
+	proj := jsonAliasProject(t)
+	reg := jsonAliasReg()
+	reg.BuildMethod = func(bamlutils.NativeSpineUnaryExecutor) (bamlutils.StreamingMethod, bamlutils.ParseMethod) {
+		// A builder that forgets the required callbacks: a runtime that published this
+		// would panic on the first request instead of failing boot.
+		return bamlutils.StreamingMethod{}, bamlutils.ParseMethod{}
+	}
+	_, err := spine.NewWorkerRuntime(proj, []spine.UnaryRegistration{reg}, nil)
+	if err == nil || !strings.Contains(err.Error(), "incomplete") {
+		t.Fatalf("error = %v, want an incomplete-built-method boot failure", err)
 	}
 }
 

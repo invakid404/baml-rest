@@ -31,6 +31,7 @@ import (
 	"go/format"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -260,13 +261,25 @@ func renderAggregate(emitted []emittedMethod) ([]byte, error) {
 	return formatted, nil
 }
 
-// cleanOutputDir removes EVERY prior artifact from outDir except exactly the
-// committed stub (generated_off.go), so a method removed since the last generation
-// — and any stale generated file from a previous layout or naming scheme (a
-// root-level generated .go, an old aggregate name, a renamed subpackage) — cannot
-// survive and compile into the registry package. Removing only a
-// known-name allowlist left every OTHER file behind; this removes everything but
-// the one file the source checkout owns. A non-existent outDir is not an error.
+// generatedSubpackageDir matches the exact shape subpackageDirName emits ("m" +
+// sanitized-lowercase name + "_" + 12 hex chars of the name's SHA-256), so the cleaner
+// removes only subpackage directories THIS generator created — never one an operator
+// happened to place under the output path.
+var generatedSubpackageDir = regexp.MustCompile(`^m[a-z0-9]*_[0-9a-f]{12}$`)
+
+// cleanOutputDir removes the generator's OWN prior artifacts from outDir — the
+// aggregate file, the embedded descriptor, every generated subpackage directory, and
+// any stale root-level generated .go from an earlier layout — while leaving the
+// committed stub (generated_off.go) and anything this generator never emits.
+//
+// It first requires the committed stub to be present. outDir is the dedicated
+// native-only registry package, whose ONLY checked-in file is that stub; a missing
+// stub means outDir is not that package (a mistyped --out-dir), so cleaning is REFUSED
+// rather than deleting files this generator does not own. It then removes only entries
+// whose shape this generator produces — a subpackage directory matching
+// generatedSubpackageDir, or a .go source / project.json — so an unexpected directory
+// or a non-generated file (README, go.mod, .gitignore, ...) is left untouched. A
+// non-existent outDir is not an error.
 func cleanOutputDir(outDir string) error {
 	entries, err := os.ReadDir(outDir)
 	if err != nil {
@@ -275,15 +288,39 @@ func cleanOutputDir(outDir string) error {
 		}
 		return fmt.Errorf("gen-native-spine-worker: read output dir: %w", err)
 	}
+	stubPresent := false
+	for _, e := range entries {
+		if !e.IsDir() && e.Name() == stubFileName {
+			stubPresent = true
+			break
+		}
+	}
+	if !stubPresent {
+		return fmt.Errorf("gen-native-spine-worker: refusing to clean %q: the committed %s is absent, so this is not the native-only registry package (check --out-dir)", outDir, stubFileName)
+	}
 	for _, e := range entries {
 		name := e.Name()
 		if name == stubFileName {
 			// The committed fail-loud stub (tag-gated OFF) is the ONE file the source
-			// checkout owns; everything else in this directory is generated output.
+			// checkout owns.
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(outDir, name)); err != nil {
-			return fmt.Errorf("gen-native-spine-worker: remove stale output %q: %w", name, err)
+		if e.IsDir() {
+			if !generatedSubpackageDir.MatchString(name) {
+				continue // not a directory this generator emitted; leave it in place
+			}
+			if err := os.RemoveAll(filepath.Join(outDir, name)); err != nil {
+				return fmt.Errorf("gen-native-spine-worker: remove stale subpackage %q: %w", name, err)
+			}
+			continue
+		}
+		// The registry package is generated-only, so any .go but the stub — including a
+		// root-level one from a previous layout — is stale generated output; project.json
+		// is the embedded descriptor. Any other file is left untouched.
+		if strings.HasSuffix(name, ".go") || name == projectJSONFileName {
+			if err := os.Remove(filepath.Join(outDir, name)); err != nil {
+				return fmt.Errorf("gen-native-spine-worker: remove stale output %q: %w", name, err)
+			}
 		}
 	}
 	return nil

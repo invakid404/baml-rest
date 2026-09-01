@@ -854,8 +854,11 @@ func dockerfileTemplateDataFor(opts SetupOptions) (dockerfileTemplateData, error
 		noCustomBamlLib:   true,            // Integration tests don't use custom BAML lib
 		unaryServer:       opts.UnaryServer,
 		inProcess:         opts.InProcess,
-		nativeWorker:      opts.NativeWorker,
-		nativeOnlyWorker:  opts.NativeOnlyWorker,
+		// A native-only selection implies the native worker: build.sh rejects
+		// NATIVE_ONLY_WORKER=true with NATIVE_WORKER=false, so setting only
+		// NativeOnlyWorker must still emit NATIVE_WORKER=true.
+		nativeWorker:     opts.NativeWorker || opts.NativeOnlyWorker,
+		nativeOnlyWorker: opts.NativeOnlyWorker,
 
 		artifactSourceRevision:     artifactRevision,
 		artifactSourceBundleDigest: artifactBundleDigest,

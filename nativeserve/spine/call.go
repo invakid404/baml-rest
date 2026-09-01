@@ -167,6 +167,16 @@ func (e *UnaryExecutor) Parse(ctx context.Context, method string, raw string) (a
 	if !ok {
 		return nil, &bamlutils.NativeSpineUnsupportedMethodError{Method: method, Reason: reasonUnsupportedMethod}
 	}
+	// A caller-supplied dynamic output schema would change the parse target, but this
+	// route parses against the descriptor's fixed cohort schema. Reject it here — as the
+	// Call route does — so a non-cohort parse request FAILS rather than being silently
+	// parsed under the wrong (cohort) schema. The emitted parse binding passes the
+	// request adapter as ctx; a plain-context parse (no adapter) carries no override.
+	if ad, ok := ctx.(bamlutils.Adapter); ok && ad != nil {
+		if ad.DeBAMLOutputSchema() != nil {
+			return nil, errDynamicSchema
+		}
+	}
 	parsed, err := debaml.ParseStaticBundleUnaryCall(ctx, rm.bundle, raw)
 	if err != nil {
 		// Ordinary terminal parse error for an admitted method — NOT a capability decline.

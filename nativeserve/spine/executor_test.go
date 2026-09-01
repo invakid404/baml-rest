@@ -430,6 +430,22 @@ func TestParseRoute(t *testing.T) {
 	}
 }
 
+// TestParseRejectsDynamicOutputSchema proves the socket-free parse route declines a
+// request carrying a dynamic output-schema override rather than parsing under the fixed
+// cohort schema — in lockstep with the Call route's request-scoped-fact gate. A
+// plain-context parse (no adapter override) still succeeds.
+func TestParseRejectsDynamicOutputSchema(t *testing.T) {
+	e := jsonAliasExec(t)
+	ad := newTestAdapter()
+	ad.SetDeBAMLOutputSchema(&bamlutils.DynamicOutputSchema{})
+	if _, err := e.Parse(ad, jsonAliasMethod, `[1,"two",true]`); err == nil || !strings.Contains(err.Error(), "dynamic output schema") {
+		t.Fatalf("Parse with a dynamic output schema: err = %v, want a dynamic-output-schema decline", err)
+	}
+	if _, err := e.Parse(context.Background(), jsonAliasMethod, `[1,"two",true]`); err != nil {
+		t.Fatalf("plain-context Parse (no override) must still succeed: %v", err)
+	}
+}
+
 // TestCarrierRoundTripParity replays canonical JSON values through the socket-free
 // parse route + emitted carrier re-marshal, asserting byte-identical round-trips (the
 // carrier half of the frozen-v0.223 parity; ParseStaticBundleUnaryCall's byte

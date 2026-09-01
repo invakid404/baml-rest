@@ -21,9 +21,18 @@ import (
 // config) so the reconstructed Function is exactly what the existing native
 // render/prepare admission path consumes.
 //
-// It DECLINES (returns an error) when any of these cohort-forbidden facts is present:
+// It returns a classified *reconstructError, splitting two kinds of failure:
 //
-//   - the project descriptor version is not the current version;
+// CORRUPTION (corrupt=true — a HARD boot failure, never a silent omission), an
+// INCONSISTENT descriptor proj.Validate does not catch:
+//
+//   - an admitted method whose class is not static-unary;
+//   - a project descriptor version that is not the current version;
+//   - a method whose default client is ABSENT from the project client graph.
+//
+// A POPULATION decline (corrupt=false — the method is well-formed but outside the
+// exact cohort, so it is omitted from the native-only registry):
+//
 //   - the project declares ANY template_string (macro): BAML injects the project
 //     macro set into every function's prompt, so a templated project's render is not
 //     the template-free render this cohort proves — even for a method that does not

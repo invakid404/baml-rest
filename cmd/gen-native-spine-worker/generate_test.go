@@ -62,9 +62,20 @@ func collectTree(t *testing.T, root string) map[string][]byte {
 	return out
 }
 
+// seedStub writes the committed fail-loud stub into dir, mirroring the real
+// nativegenerated package (whose only checked-in file is generated_off.go). The
+// generator's cleaner requires it to be present before it will delete siblings.
+func seedStub(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, stubFileName), []byte("// committed stub\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestGenerateEmitsAdmittedRegistry(t *testing.T) {
 	data := jsonAliasDescriptorJSON(t)
 	out := t.TempDir()
+	seedStub(t, out)
 	if err := Generate(data, out, defaultRegistryPackagePath); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -130,6 +141,8 @@ func TestGenerateIsDeterministic(t *testing.T) {
 	data := jsonAliasDescriptorJSON(t)
 	a := t.TempDir()
 	b := t.TempDir()
+	seedStub(t, a)
+	seedStub(t, b)
 	if err := Generate(data, a, defaultRegistryPackagePath); err != nil {
 		t.Fatalf("Generate(a): %v", err)
 	}
@@ -201,6 +214,15 @@ func TestGenerateCleansStaleOutput(t *testing.T) {
 	if err != nil || strings.Contains(string(agg), "stale") {
 		t.Errorf("aggregate was not regenerated (err=%v)", err)
 	}
+	// The stale embedded descriptor was replaced with the fresh one (project.json is a
+	// stale-regeneration artifact too, not merely the aggregate).
+	proj, err := os.ReadFile(filepath.Join(out, projectJSONFileName))
+	if err != nil || strings.Contains(string(proj), "stale") {
+		t.Errorf("project.json was not regenerated (err=%v)", err)
+	}
+	if !strings.Contains(string(proj), "StaticRecursiveAliasJSON") {
+		t.Errorf("regenerated project.json does not carry the admitted method descriptor")
+	}
 }
 
 // TestSubpackageNameIsCollisionProof proves the subpackage name is a valid Go
@@ -235,8 +257,15 @@ func TestGenerateRejectsEmptyCandidateProject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Generate(data, t.TempDir(), defaultRegistryPackagePath); err == nil {
+	// Assert the specific candidate-free refusal, not merely any error: a method-less
+	// project can also fail earlier in proj.Validate(), which would pass this test
+	// without reaching the intended candidate-free branch.
+	err = Generate(data, t.TempDir(), defaultRegistryPackagePath)
+	if err == nil {
 		t.Fatalf("Generate accepted a candidate-free project, want refusal")
+	}
+	if !strings.Contains(err.Error(), "no codegen-admitted static-unary method") {
+		t.Fatalf("error = %v, want the candidate-free refusal", err)
 	}
 }
 
