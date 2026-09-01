@@ -132,9 +132,9 @@ is the PROSE word for the `RESOLVED` state; `RESOLVED` is what the guards read.
 re-pin to the master squash commit has been PERFORMED. "What was done for THIS master re-pin"
 above records the steps that were executed against the master commit; the runbook here is that
 same procedure, kept in full and in the imperative because it is the reusable sequence — it has
-been executed eight times now (#678, #682, #684, #687, #692, #703 and — post-merge — this one,
-PR #708), and every time the value came from following it literally rather than from remembering
-it.
+been executed eight times now (#678, #682, #684, #687, #692, #703, #708 and — post-merge — this
+one, PR #709), and every time the value came from following it literally rather than from
+remembering it.
 
 What makes it MANDATORY and IMMEDIATE after merge is the same failure mode as always: a squash
 flattens the branch source commit out of history and the branch is deleted, so until the
