@@ -110,6 +110,8 @@ const (
 	reasonReturnBundleFinalUnsupported Reason = "return_bundle_native_final_unsupported"
 	reasonReturnShapeUnproven          Reason = "return_shape_decoder_unproven"
 	reasonStaticDescriptorStricter     Reason = "static_descriptor_stricter"
+	reasonSpineNotExactAlias           Reason = "spine_not_exact_json_alias"
+	reasonSpineRewriteProxyUnverified  Reason = "spine_rewrite_proxy_unverified"
 
 	reasonStaticPromptUnsupported Reason = "static_prompt_unsupported"
 	reasonStaticRenderFailed      Reason = "static_render_failed"
@@ -246,7 +248,7 @@ func (p *staticPrepared) close() {
 // proven no-send static chain (SupportsStatic -> RenderStatic -> NormalizeStaticClient
 // -> BuildOpenAIChat -> nanollm Prepare -> BAML Request.<Method> compare) elsewhere.
 func AdmitStatic(ctx context.Context, in StaticInput) StaticObservation {
-	prep, dec := admitStaticThroughPrepare(ctx, in)
+	prep, dec := admitStaticThroughPrepare(ctx, in, false)
 	if dec != nil {
 		return *dec
 	}
@@ -264,7 +266,7 @@ func AdmitStatic(ctx context.Context, in StaticInput) StaticObservation {
 // (the engine is closed before returning), so the caller runs BAML for the same
 // call in the same request — the exact tri-state pre-claim boundary.
 func AdmitStaticClaim(ctx context.Context, in StaticInput) (*StaticClaim, error) {
-	prep, dec := admitStaticThroughPrepare(ctx, in)
+	prep, dec := admitStaticThroughPrepare(ctx, in, false)
 	if dec != nil {
 		return nil, staticDeclineFromObs(*dec)
 	}
@@ -306,6 +308,84 @@ func AdmitStaticClaim(ctx context.Context, in StaticInput) (*StaticClaim, error)
 	}, nil
 }
 
+// AdmitStaticSpineClaim is the ExecBridge-U1 codegen-spine unary admission entry. It
+// reuses the SAME pre-socket predicate as [AdmitStaticClaim] (admitStaticThroughPrepare:
+// mode gate, orchestration plan, descriptor envelope, arg binder, Return-Bundle
+// lower/support, RenderStatic, canonical body, nanollm New/Prepare) with TWO
+// substitutions for the hermetic, oracle-free spine cohort:
+//
+//   - the return-shape gate is the ONE root-owned totality predicate
+//     debaml.SupportsNativeStaticStreamBundle — the exact five-arm `JSON` recursive
+//     alias family — NOT admittedStaticReturnShape (which is the wider serve-decoder
+//     set including JsonValue). The SAME predicate controls registration, call, and
+//     direct parse in lockstep, and proves the admitted final parser cannot make a
+//     support/value decline after the claim (see internal/debaml).
+//   - the strict BAML `Request.<Method>` plan compare (staticPlanCompareObservation)
+//     is OMITTED by design: the spine module carries no generated BAML plan closure,
+//     and frozen v0.223 oracle evidence replaces it for this exact cohort.
+//
+// The spine lane's layer-1b cohort gate is skipped because this lane has its own
+// registration-time admission. The lane is selected by an INTERNAL parameter to
+// admitStaticThroughPrepare, NOT a caller-settable StaticInput field, so ONLY this entry
+// point can skip the cohort gate — a caller of AdmitStatic/AdmitStaticParse/
+// AdmitStaticClaim cannot opt into the skip (CodeRabbit #4; the same "the surface is the
+// LANE's constant, never a caller field" rule the neighbouring gate states). Every
+// pre-claim decline still guarantees NO socket occurred (the engine is closed before
+// returning). On a full pass it returns a *StaticClaim that keeps the request-scoped
+// nanollm engine alive for exactly one RoundTrip; every decline returns a typed
+// *StaticDecline.
+func AdmitStaticSpineClaim(ctx context.Context, in StaticInput) (*StaticClaim, error) {
+	prep, dec := admitStaticThroughPrepare(ctx, in, true)
+	if dec != nil {
+		return nil, staticDeclineFromObs(*dec)
+	}
+	// A send-path rewrite/proxy on the EFFECTIVE target would make the frozen-oracle
+	// exact-transport evidence meaningless (the request would go elsewhere), so decline
+	// pre-claim against the prepared URL. The spine omits the BAML plan-compare, which
+	// is where the dynamic/static observe lanes run this check (static.go
+	// staticPlanCompareObservation), so AdmitStaticSpineClaim runs it explicitly (Codex
+	// review finding 1). SingleLeaf / no-fallback / no-round-robin / no-retry-override
+	// were already enforced by admitStaticThroughPrepare's layer-2 strategy gate.
+	//
+	// This gate is MANDATORY and TOTAL at this EXPORTED boundary, not optional-on-nil: the
+	// spine lane is cohort-gate-EXEMPT, so a caller reaching AdmitStaticSpineClaim directly
+	// with a valid StaticInput but a NIL WouldRewriteOrProxy predicate must NOT be allowed
+	// to claim while the rewrite/proxy check is skipped (CodeRabbit #9 admission-boundary
+	// residual — the call.go default only covers UnaryExecutor.Call). FAIL CLOSED: a nil
+	// predicate means the effective target's rewrite/proxy status could not be verified, so
+	// decline PRE-CLAIM exactly as a positive rewrite/proxy verdict would. UnaryExecutor.Call
+	// always supplies a non-nil predicate (llmhttp.DefaultClient), so this only bites a
+	// direct caller that omitted it.
+	if in.WouldRewriteOrProxy == nil {
+		prep.close()
+		return nil, staticDeclineFromObs(declineStatic(bamlutils.NativeStaticFamilyClient, StageStrategy, reasonSpineRewriteProxyUnverified))
+	}
+	if in.WouldRewriteOrProxy(prep.prepared.URL) {
+		prep.close()
+		return nil, staticDeclineFromObs(declineStatic(bamlutils.NativeStaticFamilyClient, StageStrategy, ReasonURLRewriteOrProxy))
+	}
+	// The ONE root-owned totality gate: the exact five-arm `JSON` alias family. It is
+	// strictly narrower than admittedStaticReturnShape (it excludes the FINAL-served
+	// JsonValue and every other alias/shape), so a non-exact-alias descriptor that
+	// passed the shared final-support gate inside admitStaticThroughPrepare still
+	// declines here PRE-CLAIM (no socket) and the outer policy serves it.
+	if err := debaml.SupportsNativeStaticStreamBundle(prep.bundle); err != nil {
+		prep.close()
+		return nil, staticDeclineFromObs(declineStatic(bamlutils.NativeStaticFamilyDescriptorEnvelope, StagePrompt, reasonSpineNotExactAlias))
+	}
+	// No BAML plan compare — frozen v0.223 oracle evidence stands in for this exact
+	// cohort. Transfer ownership of the kept-alive engine to the claim.
+	return &StaticClaim{
+		client:       prep.client,
+		Prepared:     prep.prepared,
+		Bundle:       prep.bundle,
+		ExactRequest: prep.exactRequest,
+		Alias:        prep.alias,
+		Surface:      SurfaceStaticCall,
+		Cohort:       prep.cohort,
+	}, nil
+}
+
 // admitStaticThroughPrepare runs the static predicate layers 1-6 (build/flag/route,
 // mode, orchestration plan, descriptor envelope + arg binder, Return-Bundle
 // lower/support, static prompt render, client normalize + canonical body, nanollm
@@ -313,7 +393,7 @@ func AdmitStaticClaim(ctx context.Context, in StaticInput) (*StaticClaim, error)
 // (the caller decides whether to close or claim it); on any gate decline it returns
 // a *StaticObservation and leaves NO engine open. It performs NO plan compare and
 // opens NO socket.
-func admitStaticThroughPrepare(ctx context.Context, in StaticInput) (*staticPrepared, *StaticObservation) {
+func admitStaticThroughPrepare(ctx context.Context, in StaticInput, spineLane bool) (*staticPrepared, *StaticObservation) {
 	decline := func(family bamlutils.NativeStaticObserveFamily, stage Stage, reason Reason) (*staticPrepared, *StaticObservation) {
 		o := declineStatic(family, stage, reason)
 		return nil, &o
@@ -361,15 +441,25 @@ func admitStaticThroughPrepare(ctx context.Context, in StaticInput) (*staticPrep
 	// evaluate it. It runs before the orchestration-plan, descriptor, render,
 	// client-normalize and nanollm New/Prepare work below, so a non-enrolled static
 	// configuration costs ZERO native work and provably opens no socket. The surface
-	// is the LANE's constant, never a caller field. It only NARROWS.
+	// is the LANE's constant (the internal spineLane parameter), never a caller field.
+	// It only NARROWS.
 	//
 	// The bounded observe FAMILY is `capability`: like the flag/route/build rows just
 	// above, this is a deployment-level refusal, and the precision lives in the
 	// (cohort, cohort_not_enrolled) stage/reason pair rather than in a new
 	// cross-module enum value.
-	cohort, cd := admitCohort(SurfaceStaticCall, in.Cohort)
-	if cd != nil {
-		return decline(bamlutils.NativeStaticFamilyCapability, cd.Stage, cd.Reason)
+	// The ExecBridge-U1 spine lane skips the dynamic-rollout default-deny cohort gate:
+	// it is a separate lane whose admission is its own root-owned totality gate over
+	// the emitted exact-JSON cohort (resolved at registration), and it must NOT widen
+	// the dynamic cohort manifest. cohort stays CohortNone, carried out for telemetry.
+	// Every non-spine caller keeps the gate exactly.
+	cohort := CohortNone
+	if !spineLane {
+		c, cd := admitCohort(SurfaceStaticCall, in.Cohort)
+		if cd != nil {
+			return decline(bamlutils.NativeStaticFamilyCapability, cd.Stage, cd.Reason)
+		}
+		cohort = c
 	}
 
 	// --- Layer 2: whole orchestration plan + selected-child facts -----------
@@ -927,6 +1017,48 @@ func checkArgBinder(declared []promptdescriptor.Argument, binderOrder []string, 
 		}
 	}
 	return ""
+}
+
+// CheckStaticClientCohort runs the SAME static-client cohort checks the call-time
+// admission applies (admitStaticThroughPrepare layer 5), WITHOUT a render or socket — so
+// a REGISTRATION-time gate declines exactly what Call would, keeping
+// registration/call/direct-parse in lockstep for a cohort-forbidden client descriptor
+// (Codex review findings 2 + 3-#1). The three checks mirror the three layer-5 gates:
+//
+//  1. the method/request provider gate (Call's `in.Provider != "openai"`);
+//  2. the ACTUAL call-time client predicate on the NORMALIZED INTENT — the identical
+//     nativebody.SupportsOpenAIChat / BuildOpenAIChat gate — covering the intent's OWN
+//     provider, a resolved literal VALID-UTF-8 target model, and no body-affecting
+//     option; and
+//  3. the literal base_url + api_key transport (Call's staticTransport, consumed by
+//     nanollm.New).
+//
+// Gate 2 is the fix for review-3 finding 1: the earlier version checked only the passed
+// `provider` argument (the METHOD provider) and intent.BodyAffecting, never the
+// NORMALIZED intent's own provider or model validity. A validated Project may pair
+// Method.Provider=="openai" with a SELECTED ClientConfig whose Provider!="openai" (the
+// manifest validator does not force them to agree), or a literal model that is not valid
+// UTF-8 — NormalizeStaticClient passes both through, and only BuildOpenAIChat declines
+// them at Call. Running SupportsOpenAIChat here on the intent closes that
+// register-admits / call-declines divergence. A canned valid completion prompt satisfies
+// supportsRendered, so the only decline SupportsOpenAIChat can surface here is the client
+// gate. Returns nil when the client is inside the exact cohort.
+func CheckStaticClientCohort(provider string, cfg promptdescriptor.ClientConfig) error {
+	if provider != "openai" {
+		return fmt.Errorf("client cohort: provider is %q, only openai is proven", provider)
+	}
+	intent, cerr := nativebody.NormalizeStaticClient(cfg, staticAlias, false)
+	if cerr != nil {
+		return fmt.Errorf("client cohort: static client unsupported: %w", cerr)
+	}
+	probe := &nativeprompt.RenderedPrompt{Kind: nativeprompt.KindCompletion, Completion: staticAlias}
+	if err := nativebody.SupportsOpenAIChat(probe, intent); err != nil {
+		return fmt.Errorf("client cohort: selected client is outside the exact cohort: %w", err)
+	}
+	if _, _, terr := staticTransport(cfg); terr != "" {
+		return fmt.Errorf("client cohort: transport option %s", terr)
+	}
+	return nil
 }
 
 // staticTransport extracts the descriptor client's base_url + api_key as build-time

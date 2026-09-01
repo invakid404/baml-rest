@@ -21,9 +21,9 @@ go 1.26.5
 require (
 	github.com/boundaryml/baml v0.223.0
 	github.com/invakid404/baml-rest v0.0.48
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260827134815-7c7bed8291b6
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260831161026-f35489fc2463
 	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260827134815-7c7bed8291b6
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260831161026-f35489fc2463
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
@@ -112,7 +112,7 @@ require (
 // without recording it here fails the native-worker PACKAGING build (-mod=readonly)
 // with "updates to go.mod needed".
 //
-// PIN-STATUS: RESOLVED
+// PIN-STATUS: OUTSTANDING
 //
 // That marker is the MACHINE-READABLE statement of where these pins stand, and
 // cmd/build's TestPackagedManifestsMatchTheTrackedPins requires it to equal the
@@ -124,14 +124,15 @@ require (
 // that are easiest to leave implicit (flipping BOTH mirrored manifest narratives,
 // and materializing the external probe's module + main package before its
 // go get/build/run) — is nativeserve/pin_followup.md, section "The follow-up —
-// PERFORMED". Follow it there; do not reconstruct it from these paragraphs.
+// OWED". Follow it there; do not reconstruct it from these paragraphs.
 //
 // HISTORICAL, SUPERSEDED — the SHAs in this paragraph are not the current pins:
-// during PR #703's review these five were BRANCH-ONLY at 5fdd679c8784 on
+// immediately before U1, all five were MASTER-DURABLE at 7c7bed8291b6 (STATUS: RESOLVED), the
+// master commit that squash-merged the de-BAML /parse UNION-RESIDUAL batch-2 slice (PR #703);
+// during that PR's review they were BRANCH-ONLY at 5fdd679c8784 on
 // feat/debaml-parse-batch2 (re-bumped there twice off the initial batch-2 source
-// c011c7e95993, through a75a73df084e, as the Codex and CodeRabbit reviews added guarded-tree
-// changes) until #703 squash-merged to 7c7bed8291b6 and the branch was deleted, orphaning
-// them — which is what THIS re-pin repairs. Immediately before batch 2, all five were
+// c011c7e95993, through a75a73df084e) until #703 squash-merged to 7c7bed8291b6 and the branch
+// was deleted. Immediately before batch 2, all five were
 // MASTER-DURABLE at 062871154d95 (STATUS: RESOLVED), the master tip after the /parse UNION
 // burn-down (#689, squash cf03786a1fac) plus the M1 codegen spine (#691) that moved bamlutils
 // on top of it; #692 performed that post-squash re-pin. The chain before it: de-BAML Slice
@@ -142,13 +143,16 @@ require (
 // batch 1 briefly BRANCH-ONLY at 251b09219943 before #686 squashed it to 05102106c569 (#687
 // re-pinned); the /parse UNION burn-down BRANCH-ONLY at 83dde65a20f1 before #689 squashed
 // it to cf03786a1fac (#692 re-pinned to the 062871154d95 tip). Every one of these was a
-// branch-pin-then-re-pin, the precedent THIS batch-2 bump repeats.
+// branch-pin-then-re-pin, the precedent THIS U1 bump repeats.
 //
-// RIGHT NOW they are MASTER-DURABLE: all five name 7c7bed8291b6, the master commit that
-// squash-merged the de-BAML /parse UNION-RESIDUAL batch-2 slice (PR #703), so they survive
-// branch deletion by construction and an external consumer resolves the same batch-2 union
-// parser this tree ships. So nativeserve/pin_followup.md reads STATUS: RESOLVED and the
-// post-squash re-pin runbook has been PERFORMED. Do not treat this
+// RIGHT NOW they are BRANCH-ONLY: all five name f35489fc2463, the branch SOURCE commit on
+// feat/debaml-execbridge-u1 that carries the ExecBridge-U1 guarded-tree change — no master
+// commit carries it yet. nanollmprepare directory-replaces root/bamlutils/worker/nativeserve,
+// so only the version STRINGS reach MVS, and they must move in lockstep with nativeserve's so
+// the out-of-work packaging build resolves the U1 serve core (whose spine lane depends on the
+// new bamlutils NativeSpineUnaryExecutor contract). So nativeserve/pin_followup.md reads
+// STATUS: OUTSTANDING and the post-squash re-pin to the eventual master commit is OWED — the
+// orchestrator drives it after merge. Do not treat this
 // comment as the authority — nativeserve/pin_followup.md is the tracked record, and
 // cmd/build's TestFirstPartyPinFollowupIsTracked is what holds the two together: it
 // parses that record and the require directives above on every ordinary

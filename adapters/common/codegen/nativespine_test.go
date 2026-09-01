@@ -71,8 +71,13 @@ func TestEmitNativeStaticUnary(t *testing.T) {
 		"func (v OutputGreeting) MarshalJSON",
 		"nativeSpineMarshalObject", // pure-Go alias-faithful codec (P1-4)
 		`{"text", v.Text}`,         // exact wire key
-		"type Executor interface",
-		"func BuildMethod(exec Executor)",
+		// ExecBridge-U1: neutral executor contract + emitted registration.
+		"func BuildMethod(exec bamlutils.NativeSpineUnaryExecutor)",
+		`"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"`,
+		"func Binding() bamlutils.NativeSpineUnaryBinding",
+		"func projectInput(input any) ([]promptdescriptor.ArgumentValue, error)",
+		"func decodeFinal(canonicalJSON []byte) (any, error)",
+		"bamlutils.DecodeStaticFinal[OutputGreeting]", // class return -> generic strict decoder
 		"bamlutils.StreamModeCall",
 	} {
 		if !strings.Contains(got, want) {
@@ -158,6 +163,63 @@ func TestEmitNativeStaticUnaryCompiles(t *testing.T) {
 	tmp := t.TempDir()
 	testharness.WriteTempModule(t, tmp, string(src), nil)
 	testharness.RunGoBuild(t, tmp) // fails the test on any duplicate-decl / codec compile error
+}
+
+// TestEmitNativeStaticUnaryNullableListProjectsNullVsEmpty proves the input projector
+// keeps a NULLABLE list's `null` distinct from `[]` (CodeRabbit #1): a nil slice projects
+// to StaticNull, a non-nil slice — even an empty one — to a StaticList. A NON-nullable
+// list emits the plain StaticList with no nil branch. The scalar-only spine cohort
+// declines list inputs at registration, but the emitter must still be faithful, so this
+// exercises the emitter directly (not the runtime). The nullable emission is type-checked
+// by a real go build.
+func TestEmitNativeStaticUnaryNullableListProjectsNullVsEmpty(t *testing.T) {
+	listMethod := func(nullable bool) projectdescriptor.Method {
+		m := sampleMethod()
+		m.Prompt = "Tags {{ tags }}"
+		m.Args = []projectdescriptor.Argument{{
+			Name: "tags",
+			Type: promptdescriptor.ResolvedValueType{
+				Kind:     promptdescriptor.ValueList,
+				Nullable: nullable,
+				Elem:     &promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString},
+			},
+		}}
+		return m
+	}
+
+	// Nullable: the projector branches on nil -> StaticNull, else StaticList.
+	nsrc, err := EmitNativeStaticUnary(listMethod(true), NativeSpineOptions{PackageName: "p"})
+	if err != nil {
+		t.Fatalf("emit nullable list: %v", err)
+	}
+	ns := string(nsrc)
+	for _, want := range []string{"if in.Tags == nil {", "promptdescriptor.StaticNull", "promptdescriptor.StaticList"} {
+		if !strings.Contains(ns, want) {
+			t.Errorf("nullable-list projector missing %q:\n%s", want, ns)
+		}
+	}
+	// Real type-check of the emitted nullable-list projector.
+	if _, err := exec.LookPath("go"); err == nil {
+		tmp := t.TempDir()
+		testharness.WriteTempModule(t, tmp, ns, nil)
+		testharness.RunGoBuild(t, tmp)
+	}
+
+	// Non-nullable: a plain StaticList and NO nil->StaticNull branch for the list field.
+	src, err := EmitNativeStaticUnary(listMethod(false), NativeSpineOptions{PackageName: "p"})
+	if err != nil {
+		t.Fatalf("emit non-nullable list: %v", err)
+	}
+	s := string(src)
+	if !strings.Contains(s, "promptdescriptor.StaticList") {
+		t.Errorf("non-nullable-list projector missing StaticList:\n%s", s)
+	}
+	if strings.Contains(s, "if in.Tags == nil {") {
+		t.Errorf("non-nullable-list projector must NOT nil-check the list field (only nullable lists distinguish null):\n%s", s)
+	}
+	if strings.Contains(s, "promptdescriptor.StaticNull") {
+		t.Errorf("non-nullable-list projector must not emit StaticNull:\n%s", s)
+	}
 }
 
 func strField(name, alias string) sd.ClassField {
