@@ -1,0 +1,77 @@
+//go:build nanollm_integration
+
+package main
+
+import (
+	"os/exec"
+	"strings"
+	"testing"
+)
+
+// forbiddenDeps are the import paths the packaged native-only command MUST NOT
+// reach — the deletion-substrate invariant. Matched as substrings, except the
+// root generated package which is the module path exactly.
+var forbiddenDeps = []string{
+	"baml_client",
+	"github.com/boundaryml/baml",
+	"github.com/invakid404/baml-rest/dynclient",
+	"dynclient/baml-patched",
+	"language_client_go",
+	"github.com/invakid404/baml-rest/internal/rootruntime",
+	"github.com/invakid404/baml-rest/introspected",
+	"github.com/invakid404/baml-rest/internal/workerboot",
+}
+
+// positiveDeps must be present so an empty/wrong go-list output cannot pass this
+// gate by absence.
+var positiveDeps = []string{
+	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/cmd/worker-nativeonly",
+	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/nativeonlyboot",
+	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/nativegenerated",
+	"github.com/invakid404/baml-rest/nativeserve/spine",
+	"github.com/invakid404/baml-rest/worker",
+	"github.com/invakid404/baml-rest/workerplugin",
+	"github.com/viktordanov/nanollm-ffi/go",
+}
+
+// TestNativeOnlyWorkerHasNoBAML is the whole packaged-command dependency gate. It
+// runs `GOWORK=off go list -deps` against the EXACT command package and tags built
+// into cmd/serve/worker, and fails on any BAML/CFFI/dynclient/rootruntime/
+// introspected/workerboot/root-baml_rest dependency. TestMain has already generated
+// the deployment registry, so the debamlnativeonlygenerated build sees the real
+// aggregate. This is the acceptance gate; the container build runs the same check.
+func TestNativeOnlyWorkerHasNoBAML(t *testing.T) {
+	_, moduleRoot := repoPaths()
+	cmd := exec.Command("go", "list", "-deps", "-tags="+nativeOnlyBuildTags, "./cmd/worker-nativeonly")
+	cmd.Dir = moduleRoot
+	cmd.Env = append(cmd.Environ(), "GOWORK=off")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go list -deps: %v\n%s", err, out)
+	}
+	trimmed := strings.TrimSpace(string(out))
+	if trimmed == "" {
+		t.Fatal("go list -deps returned no dependencies (wrong package/tags?)")
+	}
+	deps := strings.Split(trimmed, "\n")
+	depSet := make(map[string]bool, len(deps))
+	for _, d := range deps {
+		d = strings.TrimSpace(d)
+		depSet[d] = true
+		// The root generated baml_rest package is the module path EXACTLY; matching
+		// it as a substring would reject every first-party dependency.
+		if d == "github.com/invakid404/baml-rest" {
+			t.Errorf("native-only command reaches the root generated baml_rest package %q", d)
+		}
+		for _, bad := range forbiddenDeps {
+			if strings.Contains(d, bad) {
+				t.Errorf("native-only command depends on %q (matches forbidden %q)", d, bad)
+			}
+		}
+	}
+	for _, want := range positiveDeps {
+		if !depSet[want] {
+			t.Errorf("native-only command is missing expected dependency %q (an empty/wrong list must not pass by absence)", want)
+		}
+	}
+}

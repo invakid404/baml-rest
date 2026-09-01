@@ -223,3 +223,88 @@ replace github.com/example/enotdir => ../../../blocker/child
 		t.Error("overlay must not drop a replace on a non-ENOENT stat error")
 	}
 }
+
+// setupNativeOnlyContext lays out a native-only build context that mirrors the
+// real isolated nanollmprepare module: present + missing filesystem replaces, and
+// crucially NO github.com/boundaryml/baml require and NO baml_client — the
+// native-only worker links neither.
+func setupNativeOnlyContext(t *testing.T) (root, moduleDir string) {
+	t.Helper()
+	root = t.TempDir()
+	moduleDir = filepath.Join(root, "internal", "nativebody", "nanollmprepare")
+	for _, name := range []string{"bamlutils", "worker", "nativeserve"} {
+		writeGoMod(t, filepath.Join(root, name), "module github.com/invakid404/baml-rest/"+name+"\n\ngo 1.26.5\n")
+	}
+	writeGoMod(t, root, "module github.com/invakid404/baml-rest\n\ngo 1.26.5\n")
+	writeGoMod(t, moduleDir, `module github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare
+
+go 1.26.5
+
+require (
+	github.com/invakid404/baml-rest v0.0.48
+	github.com/invakid404/baml-rest/bamlutils v0.0.48
+	github.com/invakid404/baml-rest/worker v0.0.48
+	github.com/invakid404/baml-rest/nativeserve v0.0.0-00010101000000-000000000000
+	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
+	github.com/invakid404/baml-rest/dynclient/baml-patched v0.0.48
+)
+
+replace (
+	github.com/invakid404/baml-rest => ../../../
+	github.com/invakid404/baml-rest/bamlutils => ../../../bamlutils
+	github.com/invakid404/baml-rest/worker => ../../../worker
+	github.com/invakid404/baml-rest/nativeserve => ../../../nativeserve
+	github.com/invakid404/baml-rest/dynclient => ../../../dynclient
+	github.com/invakid404/baml-rest/dynclient/baml-patched => ../../../dynclient/baml-patched
+)
+`)
+	return root, moduleDir
+}
+
+// TestApplyNativeOnlyOverlay proves the native-only overlay does ONLY the
+// missing-replace cleanup and injects NO BAML: no baml_client require/replace and
+// no github.com/boundaryml/baml require — the invariant that keeps the native-only
+// artifact BAML-free even if a future build-script edit is wrong.
+func TestApplyNativeOnlyOverlay(t *testing.T) {
+	_, moduleDir := setupNativeOnlyContext(t)
+
+	if err := ApplyNativeOnlyOverlay(moduleDir); err != nil {
+		t.Fatalf("ApplyNativeOnlyOverlay: %v", err)
+	}
+	mf := parseResult(t, moduleDir)
+
+	// NO BAML wiring was added.
+	if hasRequire(mf, BAMLClientModulePath) {
+		t.Error("native-only overlay must NOT add a baml_client require")
+	}
+	if _, ok := hasReplace(mf, BAMLClientModulePath); ok {
+		t.Error("native-only overlay must NOT add a baml_client replace")
+	}
+	if hasRequire(mf, bamlModulePath) {
+		t.Error("native-only overlay must NOT add a github.com/boundaryml/baml require")
+	}
+	if _, ok := hasReplace(mf, bamlModulePath); ok {
+		t.Error("native-only overlay must NOT add a github.com/boundaryml/baml replace")
+	}
+
+	// Missing-target replaces (dynclient, baml-patched) dropped.
+	for _, gone := range []string{
+		"github.com/invakid404/baml-rest/dynclient",
+		"github.com/invakid404/baml-rest/dynclient/baml-patched",
+	} {
+		if _, ok := hasReplace(mf, gone); ok {
+			t.Errorf("expected replace for missing target %s to be dropped", gone)
+		}
+	}
+	// Present-target replaces (root, bamlutils, worker, nativeserve) kept.
+	for _, kept := range []string{
+		"github.com/invakid404/baml-rest",
+		"github.com/invakid404/baml-rest/bamlutils",
+		"github.com/invakid404/baml-rest/worker",
+		"github.com/invakid404/baml-rest/nativeserve",
+	} {
+		if _, ok := hasReplace(mf, kept); !ok {
+			t.Errorf("expected replace for present target %s to be kept", kept)
+		}
+	}
+}

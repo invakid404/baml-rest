@@ -1,0 +1,180 @@
+//go:build nanollm_integration
+
+package main
+
+import (
+	"context"
+	"net/http"
+	"testing"
+
+	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/workerplugin"
+)
+
+// TestNativeOnlyWorker_BootCallParse is the booted-command acceptance proof: the
+// REAL ./cmd/worker-nativeonly binary, dispensed over go-plugin, serves the exact
+// five-arm JSON alias method with one provider hit and exact canonical bytes, and
+// its socket-free /parse route returns the same bytes with the hit count unchanged.
+// Health and metrics RPCs prove compatibility with the real pool/plugin bootstrap.
+func TestNativeOnlyWorker_BootCallParse(t *testing.T) {
+	const modelText = `{"k":1}`
+	hits := setProviderHandler(func(w http.ResponseWriter, r *http.Request) {
+		okChatCompletion(w, modelText)
+	})
+
+	bw := bootWorker(t)
+	ctx := context.Background()
+
+	// --- Call route (one real provider request) --------------------------------
+	ch, err := bw.worker.CallStream(ctx, nativeOnlyMethod, callInput("weather"), bamlutils.StreamModeCall)
+	if err != nil {
+		t.Fatalf("CallStream: %v", err)
+	}
+	results := drainFinal(t, ch)
+	if len(results) != 1 {
+		t.Fatalf("want 1 stream result, got %d: %+v", len(results), results)
+	}
+	if results[0].Error != nil {
+		t.Fatalf("unexpected error frame: %v", results[0].Error)
+	}
+	if got := string(results[0].Data); got != modelText {
+		t.Fatalf("call envelope = %s, want canonical %s", got, modelText)
+	}
+	if hits() != 1 {
+		t.Fatalf("provider hit count = %d, want exactly 1 (one send, no retry/fallback)", hits())
+	}
+
+	// --- Parse route (zero sockets) --------------------------------------------
+	before := hits()
+	pres, err := bw.worker.Parse(ctx, nativeOnlyMethod, parseInput(modelText))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := string(pres.Data); got != modelText {
+		t.Fatalf("parse result = %s, want %s", got, modelText)
+	}
+	if hits() != before {
+		t.Fatalf("parse route opened a socket: hits %d -> %d", before, hits())
+	}
+
+	// --- Health + metrics (pool/plugin compatibility) --------------------------
+	if ok, err := bw.worker.Health(ctx); err != nil || !ok {
+		t.Fatalf("Health = (%v, %v), want (true, nil)", ok, err)
+	}
+	metrics, err := bw.worker.GetMetrics(ctx)
+	if err != nil {
+		t.Fatalf("GetMetrics: %v", err)
+	}
+	if len(metrics) == 0 {
+		t.Fatalf("GetMetrics returned no metric families; the artifact-profile collectors must register")
+	}
+}
+
+// TestNativeOnlyWorker_EverythingElseDeclines boots the same artifact and proves
+// every non-cohort request declines with ZERO provider sockets: there is no BAML
+// fallback, so a pre-socket decline is a terminal caller-visible error with zero
+// provider hits.
+func TestNativeOnlyWorker_EverythingElseDeclines(t *testing.T) {
+	hits := setProviderHandler(func(w http.ResponseWriter, r *http.Request) {
+		// The provider must NEVER be reached on any decline path; if it is, surface
+		// it as a 500 so the assertion below (hits==0) fails loudly.
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	bw := bootWorker(t)
+	ctx := context.Background()
+
+	// Call-route declines: (input, streamMode).
+	callCases := []struct {
+		name  string
+		input []byte
+		mode  bamlutils.StreamMode
+	}{
+		{"unknown_method_is_call_declined", nil, bamlutils.StreamModeCall}, // handled separately below
+		{"stream_mode", callInput("x"), bamlutils.StreamModeStream},
+		{"stream_with_raw_mode", callInput("x"), bamlutils.StreamModeStreamWithRaw},
+		{"call_with_raw_mode", callInput("x"), bamlutils.StreamModeCallWithRaw},
+		{"caller_client_registry", []byte(`{"topic":"x","__baml_options__":{"client_registry":{"clients":[]}}}`), bamlutils.StreamModeCall},
+		{"dynamic_output_schema", []byte(`{"topic":"x","__baml_options__":{"output_schema":{}}}`), bamlutils.StreamModeCall},
+		{"retry_override", []byte(`{"topic":"x","__baml_options__":{"retry":{}}}`), bamlutils.StreamModeCall},
+	}
+	for _, tc := range callCases {
+		if tc.name == "unknown_method_is_call_declined" {
+			continue
+		}
+		t.Run(tc.name, func(t *testing.T) {
+			before := hits()
+			assertCallDeclines(t, bw, ctx, nativeOnlyMethod, tc.input, tc.mode)
+			if hits() != before {
+				t.Fatalf("decline %q opened a provider socket: hits %d -> %d", tc.name, before, hits())
+			}
+		})
+	}
+
+	// Unknown / dynamic method: neither call nor parse reaches a socket.
+	t.Run("unknown_method_call", func(t *testing.T) {
+		before := hits()
+		assertCallDeclines(t, bw, ctx, "NoSuchMethod", callInput("x"), bamlutils.StreamModeCall)
+		if hits() != before {
+			t.Fatalf("unknown-method call opened a socket")
+		}
+	})
+	t.Run("dynamic_method_name_call", func(t *testing.T) {
+		before := hits()
+		assertCallDeclines(t, bw, ctx, "Baml_Rest_Dynamic", callInput("x"), bamlutils.StreamModeCall)
+		if hits() != before {
+			t.Fatalf("dynamic-method call opened a socket")
+		}
+	})
+	t.Run("unregistered_direct_parse", func(t *testing.T) {
+		before := hits()
+		if _, err := bw.worker.Parse(ctx, "NoSuchMethod", parseInput(`{"k":1}`)); err == nil {
+			t.Fatalf("Parse of an unregistered method must return an error")
+		}
+		if hits() != before {
+			t.Fatalf("unregistered parse opened a socket")
+		}
+	})
+}
+
+// TestNativeOnlyWorker_PostClaimFailureIsTerminal proves a provider failure AFTER
+// the native claim is terminal and produces exactly ONE provider hit — the no-resend
+// boundary (there is no BAML fallback to try again).
+func TestNativeOnlyWorker_PostClaimFailureIsTerminal(t *testing.T) {
+	hits := setProviderHandler(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"boom"}`, http.StatusInternalServerError)
+	})
+	bw := bootWorker(t)
+	ctx := context.Background()
+
+	ch, err := bw.worker.CallStream(ctx, nativeOnlyMethod, callInput("weather"), bamlutils.StreamModeCall)
+	if err != nil {
+		t.Fatalf("CallStream: %v", err)
+	}
+	results := drainFinal(t, ch)
+	if len(results) != 1 || results[0].Error == nil {
+		t.Fatalf("want exactly one terminal error frame, got %+v", results)
+	}
+	if hits() != 1 {
+		t.Fatalf("post-claim provider failure produced %d hits, want exactly 1 (no resend)", hits())
+	}
+}
+
+// assertCallDeclines drives CallStream and asserts the request did NOT succeed:
+// either CallStream returns an error, or the single stream frame is an error frame.
+// It never asserts a socket count itself — the caller brackets it with hit checks.
+func assertCallDeclines(t *testing.T, bw *bootedWorker, ctx context.Context, method string, input []byte, mode bamlutils.StreamMode) {
+	t.Helper()
+	ch, err := bw.worker.CallStream(ctx, method, input, mode)
+	if err != nil {
+		return // declined before a stream even opened
+	}
+	results := drainFinal(t, ch)
+	for _, r := range results {
+		if r.Kind == workerplugin.StreamResultKindFinal && r.Error == nil {
+			t.Fatalf("expected a decline, got a successful final frame: %s", r.Data)
+		}
+	}
+	if len(results) == 0 {
+		t.Fatalf("expected a decline error frame, got no frames")
+	}
+}

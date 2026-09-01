@@ -88,6 +88,11 @@ func TestRunAcceptsTheRealBuildSelections(t *testing.T) {
 	}{
 		{"standard artifact", "native_capable", "nanollmprepare:./cmd/worker/", "subprocess,nativestreamserve,nativeworkerartifact", "true"},
 		{"shadow artifact", "native_capable", "nanollmprepare:./cmd/worker-shadow/", "subprocess,nativeworkerartifact", "true"},
+		// ExecBridge-U1b: the native-only worker is native_capable (a true derived
+		// fact — it links the native engine) and is distinguished from the standard
+		// native artifact only by its WorkerPackage and the debamlnativeonlygenerated
+		// build tag, so no new artifact profile is introduced.
+		{"native-only artifact", "native_capable", "nanollmprepare:./cmd/worker-nativeonly/", "subprocess,nativeworkerartifact,debamlnativeonlygenerated", "true"},
 		{"rollback artifact", "baml_only", "root:./cmd/worker/", "subprocess", "true"},
 		{"in-process artifact", "baml_only", "", "", "false"},
 	} {

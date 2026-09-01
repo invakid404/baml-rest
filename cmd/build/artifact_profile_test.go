@@ -23,11 +23,12 @@ import (
 
 // artifactSelection is the parsed dry-run output.
 type artifactSelection struct {
-	profile      string
-	nativeWorker string
-	shadowWorker string
-	subprocess   string
-	buildTags    []string
+	profile          string
+	nativeWorker     string
+	shadowWorker     string
+	nativeOnlyWorker string
+	subprocess       string
+	buildTags        []string
 	// de-BAML S2 artifact-ID provenance, as build.sh resolved and validated it.
 	sourceRevision     string
 	sourceBundleDigest string
@@ -65,6 +66,8 @@ func runBuildScript(t *testing.T, env map[string]string) artifactSelection {
 			sel.nativeWorker = value
 		case "shadow_worker":
 			sel.shadowWorker = value
+		case "native_only_worker":
+			sel.nativeOnlyWorker = value
 		case "subprocess":
 			sel.subprocess = value
 		case "artifact_source_revision":
@@ -238,6 +241,87 @@ func TestArtifactSelectorsAreStrictlyDecoded(t *testing.T) {
 		sel := runBuildScript(t, env)
 		if sel.profile != "native_capable" {
 			t.Errorf("empty selector %v gave artifact_profile = %q, want the standard native_capable", env, sel.profile)
+		}
+	}
+}
+
+// TestNativeOnlyWorkerIsSelectableAndTaggedGenerated is the ExecBridge-U1b
+// selection contract: NATIVE_ONLY_WORKER=true selects the BAML-free native-only
+// worker. It is native_capable (it links the native engine), it carries the
+// debamlnativeonlygenerated tag (so the generated registry, not the fail-loud
+// stub, compiles), and it is NOT a stream-serve profile (its cohort is unary
+// final-call only), so the host must not arm stream-retry suppression for it.
+func TestNativeOnlyWorkerIsSelectableAndTaggedGenerated(t *testing.T) {
+	sel := runBuildScript(t, map[string]string{"NATIVE_ONLY_WORKER": "true"})
+	if sel.profile != "native_capable" {
+		t.Errorf("native-only artifact_profile = %q, want native_capable", sel.profile)
+	}
+	if sel.nativeOnlyWorker != "true" {
+		t.Errorf("native_only_worker = %q, want true", sel.nativeOnlyWorker)
+	}
+	if !sel.hasTag("debamlnativeonlygenerated") {
+		t.Errorf("native-only build tags %v lack debamlnativeonlygenerated; the fail-loud stub would compile instead of the generated registry", sel.buildTags)
+	}
+	if !sel.hasTag("nativeworkerartifact") {
+		t.Errorf("native-only build tags %v lack nativeworkerartifact", sel.buildTags)
+	}
+	if sel.hasTag("nativestreamserve") {
+		t.Errorf("native-only build tags %v include nativestreamserve; the native-only cohort serves no streams, so the host must not suppress stream retries", sel.buildTags)
+	}
+}
+
+// TestNativeOnlyWorkerFlagOffIsUnchanged proves --native-only-worker=false leaves
+// the standard artifact selection exactly as it was: the native-only tag is
+// absent and the standard native-capable/stream-serve artifact is selected.
+func TestNativeOnlyWorkerFlagOffIsUnchanged(t *testing.T) {
+	for _, env := range []map[string]string{
+		nil,
+		{"NATIVE_ONLY_WORKER": "false"},
+		{"NATIVE_ONLY_WORKER": ""}, // empty == unset == false
+	} {
+		sel := runBuildScript(t, env)
+		if sel.nativeOnlyWorker != "false" {
+			t.Errorf("env %v: native_only_worker = %q, want false", env, sel.nativeOnlyWorker)
+		}
+		if sel.hasTag("debamlnativeonlygenerated") {
+			t.Errorf("env %v: standard build tags %v must not include debamlnativeonlygenerated", env, sel.buildTags)
+		}
+		// The standard artifact is unchanged: native_capable + stream serve.
+		if sel.profile != "native_capable" || !sel.hasTag("nativestreamserve") {
+			t.Errorf("env %v: flag-off build changed the standard artifact (profile=%q tags=%v)", env, sel.profile, sel.buildTags)
+		}
+	}
+}
+
+// TestNativeOnlyWorkerRejectsContradictions pins the mutual exclusions: the
+// native-only worker is a native_capable subprocess artifact, so it cannot be
+// combined with the shadow profile, an in-process build, or NATIVE_WORKER=false —
+// all rejected BEFORE any build work.
+func TestNativeOnlyWorkerRejectsContradictions(t *testing.T) {
+	for _, env := range []map[string]string{
+		{"NATIVE_ONLY_WORKER": "true", "SHADOW_WORKER": "true"},
+		{"NATIVE_ONLY_WORKER": "true", "SUBPROCESS": "false"},
+		{"NATIVE_ONLY_WORKER": "true", "NATIVE_WORKER": "false"},
+	} {
+		out, err := execBuildScript(t, env)
+		if err == nil {
+			t.Errorf("build.sh accepted a contradictory native-only selection %v:\n%s", env, out)
+		}
+	}
+}
+
+// TestNativeOnlyWorkerIsStrictlyDecoded pins that NATIVE_ONLY_WORKER is decoded
+// strictly like the other artifact selectors: a typo fails the build.
+func TestNativeOnlyWorkerIsStrictlyDecoded(t *testing.T) {
+	for _, env := range []map[string]string{
+		{"NATIVE_ONLY_WORKER": "yes"},
+		{"NATIVE_ONLY_WORKER": "1"},
+		{"NATIVE_ONLY_WORKER": "TRUE"},
+		{"NATIVE_ONLY_WORKER": "off"},
+	} {
+		out, err := execBuildScript(t, env)
+		if err == nil {
+			t.Errorf("build.sh accepted a non-boolean NATIVE_ONLY_WORKER %v:\n%s", env, out)
 		}
 	}
 }

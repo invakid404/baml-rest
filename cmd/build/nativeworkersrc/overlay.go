@@ -72,7 +72,12 @@ func isFilesystemReplace(r *modfile.Replace) bool {
 	return r.New.Version == "" && r.New.Path != ""
 }
 
-// ApplyOverlay rewrites moduleDir/go.mod in place per OverlayOptions.
+// ApplyOverlay rewrites moduleDir/go.mod in place per OverlayOptions. This is the
+// BAML (full-worker) overlay mode: it performs the generic missing-replace
+// cleanup AND the two BAML operations (add the generated baml_client, select
+// github.com/boundaryml/baml). It is MUTUALLY EXCLUSIVE with ApplyNativeOnlyOverlay
+// — the native-only worker never links baml_client or BAML, so mixing the two
+// would silently inject BAML into an artifact whose whole point is to have none.
 func ApplyOverlay(moduleDir string, opts OverlayOptions) error {
 	if opts.BAMLClientPath == "" {
 		return fmt.Errorf("nativeworkersrc: BAMLClientPath is required")
@@ -89,20 +94,98 @@ func ApplyOverlay(moduleDir string, opts OverlayOptions) error {
 	}
 
 	gomodPath := filepath.Join(moduleDir, "go.mod")
-	data, err := os.ReadFile(gomodPath)
+	mf, err := parseModFile(gomodPath)
 	if err != nil {
 		return err
 	}
-	mf, err := modfile.Parse(gomodPath, data, nil)
-	if err != nil {
-		return fmt.Errorf("nativeworkersrc: parsing %s: %w", gomodPath, err)
+
+	// (1) The generic missing-replace cleanup (shared with the native-only mode).
+	if err := dropMissingFilesystemReplaces(mf, moduleDir); err != nil {
+		return err
 	}
 
-	// (1) Drop filesystem replaces whose target is absent in this build context,
-	// plus the matching require. Collect first (mutating while ranging is unsafe).
-	// Only a genuinely-absent target (os.IsNotExist) is dropped — a permission or
-	// other I/O stat error is NOT evidence of absence, so it is returned rather
-	// than silently dropping a still-valid replace and corrupting the module graph.
+	// (2) BAML operation A — add the generated baml_client as a local
+	// require+replace so the worker resolves the freshly generated client across
+	// the nested-module boundary.
+	if err := mf.AddRequire(BAMLClientModulePath, "v0.0.0"); err != nil {
+		return fmt.Errorf("nativeworkersrc: adding baml_client require: %w", err)
+	}
+	if err := mf.AddReplace(BAMLClientModulePath, "", opts.BAMLClientPath, ""); err != nil {
+		return fmt.Errorf("nativeworkersrc: adding baml_client replace: %w", err)
+	}
+
+	// (3) BAML operation B — align/select stock BAML with the build's selection.
+	if opts.CustomBAMLLibPath != "" {
+		if err := mf.AddReplace(bamlModulePath, "", opts.CustomBAMLLibPath, ""); err != nil {
+			return fmt.Errorf("nativeworkersrc: adding custom BAML replace: %w", err)
+		}
+	} else if v := strings.TrimSpace(opts.BAMLVersion); v != "" {
+		if !strings.HasPrefix(v, "v") {
+			v = "v" + v
+		}
+		if err := mf.AddRequire(bamlModulePath, v); err != nil {
+			return fmt.Errorf("nativeworkersrc: aligning BAML version: %w", err)
+		}
+	}
+
+	return writeModFile(gomodPath, mf)
+}
+
+// ApplyNativeOnlyOverlay rewrites moduleDir/go.mod in place for the ExecBridge-U1b
+// NATIVE-ONLY worker. It performs ONLY the generic missing-replace cleanup, and it
+// deliberately SKIPS both BAML operations ApplyOverlay does: it neither adds the
+// generated baml_client require/replace NOR selects github.com/boundaryml/baml. The
+// native-only worker's compiled graph is BAML-free (proven by the whole-command
+// dependency gate), so wiring baml_client/BAML into its module graph would be the
+// exact "helpful module wiring" §8 warns against — a require that a later import
+// could quietly start using.
+//
+// It is MUTUALLY EXCLUSIVE with ApplyOverlay; the CLI validates that the two modes
+// are never both requested, so a future build-script typo cannot silently inject
+// BAML into the native-only artifact.
+func ApplyNativeOnlyOverlay(moduleDir string) error {
+	gomodPath := filepath.Join(moduleDir, "go.mod")
+	mf, err := parseModFile(gomodPath)
+	if err != nil {
+		return err
+	}
+	if err := dropMissingFilesystemReplaces(mf, moduleDir); err != nil {
+		return err
+	}
+	return writeModFile(gomodPath, mf)
+}
+
+// parseModFile reads and parses a go.mod.
+func parseModFile(gomodPath string) (*modfile.File, error) {
+	data, err := os.ReadFile(gomodPath)
+	if err != nil {
+		return nil, err
+	}
+	mf, err := modfile.Parse(gomodPath, data, nil)
+	if err != nil {
+		return nil, fmt.Errorf("nativeworkersrc: parsing %s: %w", gomodPath, err)
+	}
+	return mf, nil
+}
+
+// writeModFile cleans, formats, and writes a modfile back in place.
+func writeModFile(gomodPath string, mf *modfile.File) error {
+	mf.Cleanup()
+	out, err := mf.Format()
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(gomodPath, out, 0o644)
+}
+
+// dropMissingFilesystemReplaces drops every filesystem-path replace whose target
+// is absent in this build context, plus the matching require. Collect first
+// (mutating while ranging is unsafe). Only a genuinely-absent target
+// (os.IsNotExist) is dropped — a permission or other I/O stat error is NOT
+// evidence of absence, so it is returned rather than silently dropping a
+// still-valid replace and corrupting the module graph. It is the ONE overlay
+// operation shared between the BAML and native-only modes.
+func dropMissingFilesystemReplaces(mf *modfile.File, moduleDir string) error {
 	var dropMissing []string
 	for _, r := range mf.Replace {
 		if !isFilesystemReplace(r) {
@@ -124,33 +207,5 @@ func ApplyOverlay(moduleDir string, opts OverlayOptions) error {
 		_ = mf.DropReplace(modPath, "")
 		_ = mf.DropRequire(modPath)
 	}
-
-	// (2) Add the generated baml_client as a local require+replace.
-	if err := mf.AddRequire(BAMLClientModulePath, "v0.0.0"); err != nil {
-		return fmt.Errorf("nativeworkersrc: adding baml_client require: %w", err)
-	}
-	if err := mf.AddReplace(BAMLClientModulePath, "", opts.BAMLClientPath, ""); err != nil {
-		return fmt.Errorf("nativeworkersrc: adding baml_client replace: %w", err)
-	}
-
-	// (3) Align stock BAML with the build's selection.
-	if opts.CustomBAMLLibPath != "" {
-		if err := mf.AddReplace(bamlModulePath, "", opts.CustomBAMLLibPath, ""); err != nil {
-			return fmt.Errorf("nativeworkersrc: adding custom BAML replace: %w", err)
-		}
-	} else if v := strings.TrimSpace(opts.BAMLVersion); v != "" {
-		if !strings.HasPrefix(v, "v") {
-			v = "v" + v
-		}
-		if err := mf.AddRequire(bamlModulePath, v); err != nil {
-			return fmt.Errorf("nativeworkersrc: aligning BAML version: %w", err)
-		}
-	}
-
-	mf.Cleanup()
-	out, err := mf.Format()
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(gomodPath, out, 0o644)
+	return nil
 }

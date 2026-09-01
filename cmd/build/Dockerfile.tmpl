@@ -149,6 +149,18 @@ ENV NATIVE_WORKER="true"
 # standard artifact from a rollback build.
 ENV NATIVE_WORKER="false"
 {{- end }}
+{{- if .nativeOnlyWorker }}
+# ExecBridge-U1b: the NATIVE-ONLY artifact — the subprocess worker
+# (cmd/worker-nativeonly) that boots and serves the exact-JSON cohort with ZERO
+# BAML/CFFI in its runtime graph. build.sh generates the deployment-specific
+# native registry, builds with the debamlnativeonlygenerated tag, and uses the
+# native-only overlay (no baml_client / BAML wiring).
+ENV NATIVE_ONLY_WORKER="true"
+{{- else }}
+# ExecBridge-U1b: not the native-only artifact. Written out explicitly (never left
+# unset) so this axis is visible in the image and never silently defaults.
+ENV NATIVE_ONLY_WORKER="false"
+{{- end }}
 # de-BAML serving cutover S2 artifact-ID provenance: the release revision this
 # build was told it is of, and a content digest over the embedded source bundle
 # copied into this image. Both are folded into the stamped release artifact ID, so

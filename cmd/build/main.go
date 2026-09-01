@@ -163,21 +163,22 @@ const (
 )
 
 var (
-	targetImage     string
-	buildMode       string
-	outputPath      string
-	bamlVersion     string
-	keepSource      string
-	platform        string
-	customBamlLib   string
-	customBamlGoLib string
-	bamlSource      string
-	debugBuild      bool
-	unaryServer     bool
-	inProcess       bool
-	nativeWorker    bool
-	bamlOnlyWorker  bool
-	sourceRevision  string
+	targetImage      string
+	buildMode        string
+	outputPath       string
+	bamlVersion      string
+	keepSource       string
+	platform         string
+	customBamlLib    string
+	customBamlGoLib  string
+	bamlSource       string
+	debugBuild       bool
+	unaryServer      bool
+	inProcess        bool
+	nativeWorker     bool
+	bamlOnlyWorker   bool
+	nativeOnlyWorker bool
+	sourceRevision   string
 	// artifactProvenance is resolved once per invocation and threaded to build.sh
 	// as the de-BAML S2 artifact-ID provenance. Package-level (like the flags
 	// above) so both build modes read the same resolved values rather than
@@ -221,6 +222,7 @@ func init() {
 	rootCmd.Flags().BoolVar(&inProcess, "inprocess", false, "Build a single-process server with the BAML worker linked in (no go-plugin subprocess)")
 	rootCmd.Flags().BoolVar(&nativeWorker, "native-worker", true, "Build the subprocess worker with nanollm linked (BAML+nanollm) from the isolated nanollmprepare module. This is the STANDARD deployable artifact (de-BAML serving cutover S2). Subprocess only; the host stays zero-nanollm/CGO-free. It serves nothing natively until a cohort is enrolled, and BAML_REST_USE_DEBAML=false makes it a total BAML revert. Use --baml-only-rollback-worker to select the rollback artifact instead")
 	rootCmd.Flags().BoolVar(&bamlOnlyWorker, "baml-only-rollback-worker", false, "Select the explicit ROLLBACK artifact: the zero-options BAML-only root cmd/worker, which links no native engine at all. Equivalent to --native-worker=false; named separately so a rollback build is an explicit, greppable choice rather than a negated default (de-BAML serving cutover S2)")
+	rootCmd.Flags().BoolVar(&nativeOnlyWorker, "native-only-worker", false, "Select the ExecBridge-U1b NATIVE-ONLY artifact: the subprocess worker (cmd/worker-nativeonly) that boots and serves the exact-JSON cohort with ZERO BAML/CFFI in its runtime graph. The deployment-specific native registry is generated at build time and compiled with the debamlnativeonlygenerated tag. Subprocess-only, native_capable, mutually exclusive with --baml-only-rollback-worker, --inprocess, and shadow. Also reads BAML_REST_NATIVE_ONLY_WORKER. DARK: there is no traffic weight, canary, or cohort manifest — a method outside the cohort declines pre-socket with no BAML fallback")
 	rootCmd.Flags().StringVar(&sourceRevision, "source-revision", "", "Release revision (commit SHA or tag) this build is of. Recorded in the artifact attestation and folded into the release artifact ID, so two releases are distinguishable. Also reads BAML_REST_SOURCE_REVISION; when neither is set the attestation records the revision as \"unset\" (the source-bundle and native-worker-tar content digests still identify the build)")
 	rootCmd.Flags().StringVar(&bamlSource, "baml-source", "", "Path to local BAML source repository for building from unreleased versions")
 	rootCmd.Flags().BoolVar(&prettyLogs, "pretty", false, "Use pretty console logging instead of structured JSON")
@@ -239,6 +241,7 @@ func init() {
 	_ = viper.BindPFlag("inprocess", rootCmd.Flags().Lookup("inprocess"))
 	_ = viper.BindPFlag("native-worker", rootCmd.Flags().Lookup("native-worker"))
 	_ = viper.BindPFlag("baml-only-rollback-worker", rootCmd.Flags().Lookup("baml-only-rollback-worker"))
+	_ = viper.BindPFlag("native-only-worker", rootCmd.Flags().Lookup("native-only-worker"))
 	_ = viper.BindPFlag("source-revision", rootCmd.Flags().Lookup("source-revision"))
 	_ = viper.BindPFlag("baml-source", rootCmd.Flags().Lookup("baml-source"))
 }
@@ -289,6 +292,21 @@ var rootCmd = &cobra.Command{
 		if selErr != nil {
 			return selErr
 		}
+		// ExecBridge-U1b native-only selector, decoded STRICTLY like the other two
+		// artifact selectors (a silent viper cast would let a typo pick the wrong
+		// artifact).
+		nativeOnlyWorker, _, selErr = resolveBoolSelector(boolSelectorInputs{
+			Name:          "native-only-worker",
+			EnvKey:        "BAML_REST_NATIVE_ONLY_WORKER",
+			FlagChanged:   cmd.Flags().Changed("native-only-worker"),
+			FlagValue:     nativeOnlyWorker,
+			ConfigValue:   viper.Get("native-only-worker"),
+			ConfigPresent: viper.InConfig("native-only-worker"),
+			Default:       false,
+		})
+		if selErr != nil {
+			return selErr
+		}
 		sourceRevision = viper.GetString("source-revision")
 		bamlSource = viper.GetString("baml-source")
 
@@ -315,6 +333,29 @@ var rootCmd = &cobra.Command{
 				return fmt.Errorf("--baml-only-rollback-worker conflicts with an explicit --native-worker=true: pick exactly one artifact profile (the standard native-capable worker, or the BAML-only rollback worker)")
 			}
 			nativeWorker = false
+		}
+
+		// ExecBridge-U1b — the NATIVE-ONLY artifact selection. It is one all-on/all-off
+		// gate: on, it builds the BAML-free cmd/worker-nativeonly and embeds it as the
+		// whole pool's worker; off, nothing here perturbs the existing selection. It is
+		// SUBPROCESS-ONLY and native_capable, so it is mutually exclusive with the
+		// BAML-only rollback artifact and with --inprocess; and because it IS a
+		// native-capable subprocess worker (a different package, not a different
+		// profile), an explicit --native-worker=false contradicts it. These are
+		// build-config errors, not coin flips.
+		if nativeOnlyWorker {
+			if bamlOnlyWorker {
+				return fmt.Errorf("--native-only-worker conflicts with --baml-only-rollback-worker: the native-only worker is native_capable, the rollback worker links no native engine — pick exactly one")
+			}
+			if inProcess {
+				return fmt.Errorf("--native-only-worker is incompatible with --inprocess: the native-only worker is a subprocess artifact (the host stays zero-nanollm/CGO-free)")
+			}
+			if nativeWorkerExplicit && !nativeWorker {
+				return fmt.Errorf("--native-only-worker conflicts with an explicit --native-worker=false: the native-only worker IS a native-capable subprocess worker")
+			}
+			// The native-only worker is native_capable by construction; ensure the
+			// downstream profile derivation selects native_capable.
+			nativeWorker = true
 		}
 
 		// Validate mode
@@ -613,7 +654,7 @@ func buildDocker(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 
 	dockerfileTemplateArgs := dockerfileTemplateArgsFor(
 		bamlVersion, adapterVersion, keepSource, formatRewriteRulesForEnv(rewriteRules), protocGenGoVersion,
-		debugBuild, unaryServer, inProcess, nativeWorker, bamlSource != "", artifactProvenance)
+		debugBuild, unaryServer, inProcess, nativeWorker, nativeOnlyWorker, bamlSource != "", artifactProvenance)
 	if err = dockerfileTemplate.Execute(&dockerfileOut, dockerfileTemplateArgs); err != nil {
 		return fmt.Errorf("failed to render Dockerfile template: %w", err)
 	}
@@ -1069,6 +1110,15 @@ func buildNative(bamlSrcPath, bamlVersion, adapterVersion string, keepSource str
 		env = append(env, "NATIVE_WORKER=true")
 	} else {
 		env = append(env, "NATIVE_WORKER=false")
+	}
+	// ExecBridge-U1b native-only selection, threaded explicitly in both directions.
+	// When true, build.sh builds cmd/worker-nativeonly (BAML-free) instead of the
+	// standard cmd/worker, generates the deployment-specific registry, and uses the
+	// native-only overlay. false leaves the standard selection untouched.
+	if nativeOnlyWorker {
+		env = append(env, "NATIVE_ONLY_WORKER=true")
+	} else {
+		env = append(env, "NATIVE_ONLY_WORKER=false")
 	}
 	// de-BAML serving cutover S2 artifact-ID provenance, threaded so the stamped
 	// release artifact ID identifies THIS source rather than only the build axes.
@@ -1978,19 +2028,20 @@ func parseStrictBool(s string) (bool, error) {
 // whose completeness nobody can check.
 func dockerfileTemplateArgsFor(
 	bamlVersion, adapterVersion, keepSource, baseURLRewrites, protocGenGoVersion string,
-	debugBuild, unaryServer, inProcess, nativeWorker, bamlSource bool,
+	debugBuild, unaryServer, inProcess, nativeWorker, nativeOnlyWorker, bamlSource bool,
 	provenance artifactProvenanceRecord,
 ) map[string]interface{} {
 	args := map[string]interface{}{
-		"bamlVersion":     bamlVersion,
-		"adapterVersion":  adapterVersion,
-		"keepSource":      keepSource,
-		"debugBuild":      debugBuild,
-		"unaryServer":     unaryServer,
-		"inProcess":       inProcess,
-		"nativeWorker":    nativeWorker,
-		"bamlSource":      bamlSource,
-		"baseURLRewrites": baseURLRewrites,
+		"bamlVersion":      bamlVersion,
+		"adapterVersion":   adapterVersion,
+		"keepSource":       keepSource,
+		"debugBuild":       debugBuild,
+		"unaryServer":      unaryServer,
+		"inProcess":        inProcess,
+		"nativeWorker":     nativeWorker,
+		"nativeOnlyWorker": nativeOnlyWorker,
+		"bamlSource":       bamlSource,
+		"baseURLRewrites":  baseURLRewrites,
 		// de-BAML serving cutover S2 artifact-ID provenance. Every renderer of
 		// this template must supply both; see the doc comment above.
 		"artifactSourceRevision":     provenance.Revision,
