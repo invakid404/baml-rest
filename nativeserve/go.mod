@@ -94,8 +94,8 @@
 // The COMPLETE post-squash re-pin runbook — every ordered step, including the two
 // that are easiest to leave implicit (flipping BOTH mirrored manifest narratives,
 // and materializing the external probe's module + main package before its
-// go get/build/run) — is nativeserve/pin_followup.md, section "The follow-up —
-// OWED". Follow it there; do not reconstruct it from these paragraphs.
+// go get/build/run) — is nativeserve/pin_followup.md's post-squash re-pin runbook
+// section. Follow it there; do not reconstruct it from these paragraphs.
 //
 // NOTE (ExecBridge-U1b — native-only packaged worker): these pins are MASTER-DURABLE and the
 // tracked follow-up in nativeserve/pin_followup.md is therefore STATUS: RESOLVED. They name

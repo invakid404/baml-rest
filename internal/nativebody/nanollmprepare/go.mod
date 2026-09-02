@@ -123,8 +123,8 @@ require (
 // The COMPLETE post-squash re-pin runbook — every ordered step, including the two
 // that are easiest to leave implicit (flipping BOTH mirrored manifest narratives,
 // and materializing the external probe's module + main package before its
-// go get/build/run) — is nativeserve/pin_followup.md, section "The follow-up —
-// OWED". Follow it there; do not reconstruct it from these paragraphs.
+// go get/build/run) — is nativeserve/pin_followup.md's post-squash re-pin runbook
+// section. Follow it there; do not reconstruct it from these paragraphs.
 //
 // HISTORICAL, SUPERSEDED — the SHAs in this paragraph are not the current pins:
 // Immediately before U1b, all five were MASTER-DURABLE at 7ddbb39fd3db (STATUS: RESOLVED), the
