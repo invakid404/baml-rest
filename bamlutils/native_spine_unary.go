@@ -220,6 +220,60 @@ type NativeSpineUnaryOracleResult struct {
 	RawDiagnostic string
 	Stage         string
 	Reason        string
+
+	// Observations are the bounded, secret-free metric facts the outer standard composite
+	// replays into the worker's de-BAML metric series. They are carried out on EVERY path
+	// (including a post-claim panic), so evidence for plan-match, exact-one-socket,
+	// same-response facets, and drift is never lost.
+	Observations NativeSpineUnaryOracleObservations
+}
+
+// NativeStaticServeOutcome is a neutral, bounded mirror of the serve-outcome the standard
+// composite records via its admission metrics (RecordServeOutcome). NativeStaticOutcomeNone
+// means no claimed terminal happened (a pre-socket decline).
+type NativeStaticServeOutcome uint8
+
+const (
+	NativeStaticOutcomeNone NativeStaticServeOutcome = iota
+	NativeStaticOutcomeSuccess
+	NativeStaticOutcomeParseError
+	NativeStaticOutcomeParseDecline
+	NativeStaticOutcomeTranslateError
+	NativeStaticOutcomeProviderError
+	NativeStaticOutcomeTransportError
+)
+
+// NativeSpineUnaryOracleObservations are the bounded, secret-free facts a CallWithOracle
+// carries out so the standard composite can replay the worker's de-BAML metric series
+// without re-deriving them. Every field is false/zero on a pre-admission decline (no plan
+// compare, no socket). None of them carries a content-derived value.
+type NativeSpineUnaryOracleObservations struct {
+	// PlanCompareRan: the live BAML plan compare executed; PlanMatched: it byte-matched
+	// (which is why the attempt CLAIMED). A plan-mismatch decline sets ran=true, matched=false.
+	PlanCompareRan bool
+	PlanMatched    bool
+	// SocketOpened: the single provider RoundTrip was attempted (== claimed);
+	// SocketResponded: the socket returned a response (vs a transport failure).
+	SocketOpened    bool
+	SocketResponded bool
+	// SameResponseOracleRan: the structured same-response BAML oracle was ENTERED. It is set
+	// before the parser runs, so a parser panic does not lose the phase.
+	SameResponseOracleRan bool
+	// ErrorCompareRecorded / ErrorCompareMatch: the FieldError response-compare and its result.
+	ErrorCompareRecorded bool
+	ErrorCompareMatch    bool
+	// StructuredBranchServed: a served structured result (translate/assistant/raw/reasoning =
+	// true, structured/order = the compare booleans below).
+	StructuredBranchServed bool
+	StructuredMatch        bool
+	OrderMatch             bool
+	// ParseDeclineServed: a served parse-decline result (translate = true, structured/order =
+	// false).
+	ParseDeclineServed bool
+	// Fallback: the served final came from the same-bytes BAML parse (drift / parse-decline).
+	Fallback bool
+	// ServeOutcome: the bounded serve-outcome classification for RecordServeOutcome.
+	ServeOutcome NativeStaticServeOutcome
 }
 
 // DeclinedOracleResult builds a NativeSpineDeclinedPreSocket oracle result carrying the

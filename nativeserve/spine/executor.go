@@ -80,6 +80,12 @@ var (
 	errDynamicSchema  = errors.New("nativespine: request carries a dynamic output schema; the exact cohort is static-only")
 	errNoBAMLPlan     = errors.New("nativespine: oracle call requires a BAML no-send plan closure; the standard composite must supply BuildBAMLRequest before the claim")
 	errNoBAMLParse    = errors.New("nativespine: oracle call requires a BAML same-bytes parse closure; the standard composite must supply BAMLOnlyParse before the claim")
+	// errPanicBeforeClaim / errPanicAfterClaim are BOUNDED, secret-free panic sentinels.
+	// The recovered value is NEVER interpolated into them: on the standard default path the
+	// adapter propagates the terminal error to the outer policy, so an arbitrary/sensitive
+	// panic payload must not escape (matching the legacy canary's bounded errNativeServePanic).
+	errPanicBeforeClaim = errors.New("nativespine: recovered a panic before the claim (no socket opened)")
+	errPanicAfterClaim  = errors.New("nativespine: recovered a panic after the claim")
 )
 
 // registeredMethod is one immutable, validated registry entry: the reconstructed

@@ -186,7 +186,14 @@ func (s *Server) ServeStatic(ctx context.Context, inv bamlutils.NativeStaticInvo
 // [staticoracle.Resolve]; this method replays the returned bounded facet observations
 // into the exact metrics the static serve path recorded inline before the extraction.
 func (s *Server) mapStaticAttempt(ctx context.Context, inv bamlutils.NativeStaticInvocation, bundle *schema.Bundle, res *execute.AttemptResult, aerr error) bamlutils.NativeStaticServeResult {
-	r := staticoracle.Resolve(ctx, bundle, res, aerr, inv.BAMLOnlyParse)
+	r := staticoracle.Resolve(ctx, bundle, res, aerr, inv.BAMLOnlyParse, func() {
+		// PANIC-SAFE: record the same-response phase the instant the structured oracle is
+		// entered, BEFORE the parser — a BAMLOnlyParse panic unwinds to ServeStatic's guard
+		// without Resolve returning, so recording it post-return (as before) would lose it,
+		// which is exactly what master avoided.
+		cohort := admission.ResolveCohort(admission.SurfaceStaticCall, s.staticCohortInput(inv))
+		s.metrics.RecordAdmissionPhase(admission.SurfaceStaticCall, cohort, admission.PhaseSameResponseOracle)
+	})
 	s.recordStaticOracleMetrics(inv, r)
 	if r.Served {
 		return bamlutils.NativeStaticServeResult{
@@ -206,13 +213,9 @@ func (s *Server) mapStaticAttempt(ctx context.Context, inv bamlutils.NativeStati
 // resolver records nothing itself; the canary path owns its own phase/winner/facet
 // series (the spine composite records its own separate bounded set).
 func (s *Server) recordStaticOracleMetrics(inv bamlutils.NativeStaticInvocation, r staticoracle.Result) {
-	if r.SameResponseOracleRan {
-		// The strict same-response oracle ran: BAML's `Parse.<Method>` over the SAME bytes
-		// the ONE native provider request returned. Its own phase, so a BAML parse win is
-		// never conflated with a BAML transport win.
-		cohort := admission.ResolveCohort(admission.SurfaceStaticCall, s.staticCohortInput(inv))
-		s.metrics.RecordAdmissionPhase(admission.SurfaceStaticCall, cohort, admission.PhaseSameResponseOracle)
-	}
+	// NOTE: PhaseSameResponseOracle is recorded by the panic-safe onStructuredOracle hook
+	// passed to staticoracle.Resolve (before the parser), NOT here — so a parser panic that
+	// prevents Resolve from returning (and thus this replay) still records the phase.
 	if r.ErrorCompareRecorded {
 		cmp := admission.ResponseCompareMismatch
 		if r.ErrorCompareMatch {

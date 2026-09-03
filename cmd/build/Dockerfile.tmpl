@@ -135,10 +135,14 @@ ENV SUBPROCESS="false"
 ENV SUBPROCESS="true"
 {{- end }}
 {{- if .nativeWorker }}
-# de-BAML serving cutover S2: the STANDARD deployable artifact — the worker built
-# from the isolated nanollmprepare module, which links the native engine and CAN
-# serve natively once a cohort is enrolled. With the S1 cohort policy empty it
-# serves nothing natively, and BAML_REST_USE_DEBAML=false makes it do no native
+# de-BAML serving cutover S2 + ExecBridge-U1c: the STANDARD deployable artifact — the
+# worker built from the isolated nanollmprepare module, which links the native engine
+# and compiles the generated native spine registry (debamlnativespinegenerated tag). Its
+# serveProfileOptions installs the oracle composite, which DEFAULT-SELECTS the exact U1
+# structural population (the direct five-arm JSON alias, required scalar inputs,
+# literal-OpenAI default client) natively through a live BAML plan-compare + same-bytes
+# oracle — NO enrollment; every near-miss declines pre-socket to BAML. The dynamic lanes
+# still gate on the fe-v1 enrollment. BAML_REST_USE_DEBAML=false makes it do no native
 # work at all.
 ENV NATIVE_WORKER="true"
 {{- else }}

@@ -366,17 +366,31 @@ func AdmitStaticSpineOracleClaim(ctx context.Context, in StaticInput) (*StaticCl
 	if dec != nil {
 		return nil, dec
 	}
+	// prep is a live request-scoped nanollm engine now owned by THIS function. Close it on
+	// ANY non-transfer exit — a plan mismatch/decline, OR a PANIC from the live
+	// BuildBAMLRequest callback inside staticPlanCompareObservation (a caller-supplied
+	// closure): the panic unwinds to CallWithOracle's pre-claim decline guard, and without
+	// this defer the engine would leak, contradicting "the client is NEVER left open on a
+	// decline". prep.close() is idempotent, so this is safe even alongside the totality
+	// helper's own guard.
+	transferred := false
+	defer func() {
+		if !transferred {
+			prep.close()
+		}
+	}()
 	// LIVE BAML plan compare (the standard-worker oracle rail): build BAML's `Request.<Method>`
 	// plan WITHOUT sending and require a byte match before the claim. A nil/failed builder,
 	// a send-path rewrite/proxy, a snapshot error, or a plan mismatch all close the kept-alive
 	// engine (no socket) and decline so the outer composite runs BAML for the same call.
 	obs := staticPlanCompareObservation(ctx, in, prep)
 	if obs.Observation != bamlutils.NativeStaticObserveWouldAdmit {
-		prep.close()
 		return nil, staticDeclineFromObs(obs)
 	}
 	// Would-admit: transfer ownership of the kept-alive engine to the claim.
-	return staticClaimFrom(prep), nil
+	claim := staticClaimFrom(prep)
+	transferred = true
+	return claim, nil
 }
 
 // admitSpineThroughTotality is the shared exact-spine pre-claim portion both spine
@@ -400,16 +414,24 @@ func admitSpineThroughTotality(ctx context.Context, in StaticInput) (*staticPrep
 	if dec != nil {
 		return nil, staticDeclineFromObs(*dec)
 	}
+	// prep is a live engine from here. Close it on ANY non-transfer exit — a decline OR a
+	// PANIC from the caller-supplied rewrite/proxy predicate or the totality gate — so a
+	// decline never leaks the request-scoped nanollm client. On success it is transferred to
+	// the caller (transferred = true).
+	transferred := false
+	defer func() {
+		if !transferred {
+			prep.close()
+		}
+	}()
 	// A send-path rewrite/proxy on the EFFECTIVE target would make the exact-transport
 	// evidence meaningless (the request would go elsewhere), so decline pre-claim against
 	// the prepared URL. SingleLeaf / no-fallback / no-round-robin / no-retry-override were
 	// already enforced by admitStaticThroughPrepare's layer-2 strategy gate.
 	if in.WouldRewriteOrProxy == nil {
-		prep.close()
 		return nil, staticDeclineFromObs(declineStatic(bamlutils.NativeStaticFamilyClient, StageStrategy, reasonSpineRewriteProxyUnverified))
 	}
 	if in.WouldRewriteOrProxy(prep.prepared.URL) {
-		prep.close()
 		return nil, staticDeclineFromObs(declineStatic(bamlutils.NativeStaticFamilyClient, StageStrategy, ReasonURLRewriteOrProxy))
 	}
 	// The ONE root-owned totality gate: the exact five-arm `JSON` alias family. It is
@@ -418,9 +440,9 @@ func admitSpineThroughTotality(ctx context.Context, in StaticInput) (*staticPrep
 	// passed the shared final-support gate inside admitStaticThroughPrepare still
 	// declines here PRE-CLAIM (no socket) and the outer policy serves it.
 	if err := debaml.SupportsNativeStaticStreamBundle(prep.bundle); err != nil {
-		prep.close()
 		return nil, staticDeclineFromObs(declineStatic(bamlutils.NativeStaticFamilyDescriptorEnvelope, StagePrompt, reasonSpineNotExactAlias))
 	}
+	transferred = true
 	return prep, nil
 }
 

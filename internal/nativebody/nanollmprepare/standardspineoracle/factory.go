@@ -89,7 +89,7 @@ func NewStaticServeFromExecutor(reg prometheus.Registerer, exec bamlutils.Native
 	}
 	return func(ctx context.Context, inv bamlutils.NativeStaticInvocation) bamlutils.NativeStaticServeResult {
 		res := exec.CallWithOracle(ctx, inv)
-		recordOracle(m, pop, res)
+		recordOracle(m, pop, inv, res)
 		return adaptOracleResult(res)
 	}, nil
 }
@@ -136,20 +136,25 @@ func adaptOracleResult(res bamlutils.NativeSpineUnaryOracleResult) bamlutils.Nat
 	}
 }
 
-// recordOracle records the reused bounded phase/winner series + the bounded population
-// counter for one composite result. The cohort is CohortNone: the U1 lane is a code-owned
-// totality with NO enrollment, so it never fabricates a productionEnrollments() row.
-func recordOracle(m *admission.Metrics, pop *prometheus.CounterVec, res bamlutils.NativeSpineUnaryOracleResult) {
+// recordOracle replays the bounded observations CallWithOracle carried out into the SAME
+// worker de-BAML metric series the canary static serve path records — plan compare, native
+// socket, per-facet response compare, fallback, serve outcome, and the same-response phase —
+// plus the population/phase/winner series. The cohort is CohortNone: the U1 lane is a
+// code-owned totality with NO enrollment, so it never fabricates a productionEnrollments()
+// row. The observations are carried even across a post-claim panic, so the plan-match /
+// one-socket / same-response / drift evidence the scope requires is never absent.
+func recordOracle(m *admission.Metrics, pop *prometheus.CounterVec, inv bamlutils.NativeStaticInvocation, res bamlutils.NativeSpineUnaryOracleResult) {
 	surface, cohort := admission.SurfaceStaticCall, admission.CohortNone
+	obs := res.Observations
+
+	// Population + phase(claimed)/winner.
 	switch res.Disposition {
 	case bamlutils.NativeSpineDeclinedPreSocket:
 		pop.WithLabelValues(populationExactJSONU1, dispDeclined).Inc()
 		m.RecordPreclaimDecline(surface, cohort)
 	case bamlutils.NativeSpineSucceeded:
 		pop.WithLabelValues(populationExactJSONU1, dispSucceeded).Inc()
-		// A success always ran the same-response oracle over the one provider response.
 		m.RecordAdmissionPhase(surface, cohort, admission.PhaseClaimed)
-		m.RecordAdmissionPhase(surface, cohort, admission.PhaseSameResponseOracle)
 		m.RecordPostclaimTerminal(surface, cohort, oracleWinner(res.WinnerEngine))
 	default:
 		// Failed-after-claim (or a fail-closed unknown disposition): a socket may have
@@ -157,6 +162,86 @@ func recordOracle(m *admission.Metrics, pop *prometheus.CounterVec, res bamlutil
 		pop.WithLabelValues(populationExactJSONU1, dispFailed).Inc()
 		m.RecordAdmissionPhase(surface, cohort, admission.PhaseClaimed)
 		m.RecordPostclaimTerminal(surface, cohort, admission.WinnerFailure)
+	}
+
+	// The same-response oracle PHASE — recorded from the panic-safe observation (set before
+	// the parser), so a parser panic that fails the request still records the phase.
+	if obs.SameResponseOracleRan {
+		m.RecordAdmissionPhase(surface, cohort, admission.PhaseSameResponseOracle)
+	}
+	// Live BAML plan-compare evidence (whole-plan byte match, recorded under the meta field).
+	if obs.PlanCompareRan {
+		result := admission.PlanCompareMismatch
+		if obs.PlanMatched {
+			result = admission.PlanCompareMatch
+		}
+		m.RecordPlanCompare(result, admission.PlanCompareFieldMeta)
+	}
+	// Exactly-one native socket.
+	if obs.SocketOpened {
+		outcome := admission.NativeSocketTransportError
+		if obs.SocketResponded {
+			outcome = admission.NativeSocketResponded
+		}
+		m.RecordNativeSocket(outcome)
+	}
+	// Same-response per-facet compares (mirroring the canary path exactly).
+	if obs.ErrorCompareRecorded {
+		recordResponse(m, obs.ErrorCompareMatch, admission.ResponseCompareFieldError)
+	}
+	if obs.StructuredBranchServed {
+		recordResponse(m, true, admission.ResponseCompareFieldTranslate)
+		recordResponse(m, true, admission.ResponseCompareFieldAssistant)
+		recordResponse(m, true, admission.ResponseCompareFieldRaw)
+		recordResponse(m, true, admission.ResponseCompareFieldReasoning)
+		recordResponse(m, obs.StructuredMatch, admission.ResponseCompareFieldStructured)
+		recordResponse(m, obs.OrderMatch, admission.ResponseCompareFieldOrder)
+	}
+	if obs.ParseDeclineServed {
+		recordResponse(m, true, admission.ResponseCompareFieldTranslate)
+		recordResponse(m, false, admission.ResponseCompareFieldStructured)
+		recordResponse(m, false, admission.ResponseCompareFieldOrder)
+	}
+	if obs.Fallback {
+		m.RecordFallback(admission.FallbackParseOnly)
+	}
+	// Serve outcome (attempts_total). None on a pre-socket decline; a claimed panic with no
+	// resolver outcome records internal_error.
+	if outcome, ok := mapServeOutcome(obs.ServeOutcome); ok {
+		m.RecordServeOutcome(admission.ModeCall, inv.Provider, outcome)
+	} else if res.Disposition == bamlutils.NativeSpineFailedAfterClaim {
+		m.RecordServeOutcome(admission.ModeCall, inv.Provider, admission.OutcomeInternalError)
+	}
+}
+
+// recordResponse folds a per-facet match/mismatch into the response-compare metric,
+// mirroring canary.Server.recordResponse.
+func recordResponse(m *admission.Metrics, match bool, field admission.ResponseCompareField) {
+	result := admission.ResponseCompareMismatch
+	if match {
+		result = admission.ResponseCompareMatch
+	}
+	m.RecordResponseCompare(result, field)
+}
+
+// mapServeOutcome maps the neutral bounded serve-outcome onto the admission serve outcome.
+// The second return is false for NativeStaticOutcomeNone (a pre-socket decline records none).
+func mapServeOutcome(o bamlutils.NativeStaticServeOutcome) (admission.Outcome, bool) {
+	switch o {
+	case bamlutils.NativeStaticOutcomeSuccess:
+		return admission.OutcomeSuccess, true
+	case bamlutils.NativeStaticOutcomeParseDecline:
+		return admission.OutcomeParseDecline, true
+	case bamlutils.NativeStaticOutcomeParseError:
+		return admission.OutcomeParseError, true
+	case bamlutils.NativeStaticOutcomeTranslateError:
+		return admission.OutcomeTranslateError, true
+	case bamlutils.NativeStaticOutcomeProviderError:
+		return admission.OutcomeProviderError, true
+	case bamlutils.NativeStaticOutcomeTransportError:
+		return admission.OutcomeTransportError, true
+	default:
+		return admission.Outcome(""), false
 	}
 }
 

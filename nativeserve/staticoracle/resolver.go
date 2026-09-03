@@ -126,7 +126,12 @@ type Result struct {
 // already returned. A nil res with a non-nil aerr is a transport failure; every path is
 // terminal (success or typed failure) — there is no decline here, because the caller
 // already CLAIMED the attempt.
-func Resolve(ctx context.Context, bundle *schema.Bundle, res *execute.AttemptResult, aerr error, bamlOnlyParse BAMLOnlyParse) Result {
+//
+// onStructuredOracle, if non-nil, is a PANIC-SAFE hook invoked the instant the structured
+// same-response oracle is ENTERED — BEFORE bamlOnlyParse runs. The caller records
+// PhaseSameResponseOracle in it, so a parser panic (which unwinds without Resolve
+// returning) never loses the phase.
+func Resolve(ctx context.Context, bundle *schema.Bundle, res *execute.AttemptResult, aerr error, bamlOnlyParse BAMLOnlyParse, onStructuredOracle func()) Result {
 	if aerr != nil {
 		if isContextErr(aerr) {
 			return failResult(OutcomeTransportError, aerr, "")
@@ -159,9 +164,13 @@ func Resolve(ctx context.Context, bundle *schema.Bundle, res *execute.AttemptRes
 	case execute.OutcomeParseDeclined:
 		return resolveParseOnly(ctx, res, bamlOnlyParse)
 	case execute.OutcomeStructured:
-		return resolveStructured(ctx, bundle, res, bamlOnlyParse)
+		return resolveStructured(ctx, bundle, res, bamlOnlyParse, onStructuredOracle)
 	default:
-		return failResult(OutcomeParseError, fmt.Errorf("nativeserve/staticoracle: unexpected static attempt outcome %v", res.Outcome), "")
+		// DEFENSIVE / unreachable. The error bytes are preserved as the legacy canary
+		// envelope ("nativeserve/canary: …") so canary.ServeStatic stays byte-for-byte
+		// unchanged; the spine composite never produces an unknown outcome, so it never
+		// surfaces this string.
+		return failResult(OutcomeParseError, fmt.Errorf("nativeserve/canary: unexpected static attempt outcome %v", res.Outcome), "")
 	}
 }
 
@@ -169,7 +178,12 @@ func Resolve(ctx context.Context, bundle *schema.Bundle, res *execute.AttemptRes
 // clean native structured claim: on a structured/order MATCH it serves the native
 // flattened JSON, on drift it serves the BAML parse of the same bytes (still one
 // provider request). A nil/errored BAML parse of those bytes is compatibility-terminal.
-func resolveStructured(ctx context.Context, bundle *schema.Bundle, res *execute.AttemptResult, bamlOnlyParse BAMLOnlyParse) Result {
+func resolveStructured(ctx context.Context, bundle *schema.Bundle, res *execute.AttemptResult, bamlOnlyParse BAMLOnlyParse, onStructuredOracle func()) Result {
+	// PANIC-SAFE phase entry: fire the hook (record PhaseSameResponseOracle) BEFORE the
+	// nil-check + the parser, so a parser panic cannot lose the phase.
+	if onStructuredOracle != nil {
+		onStructuredOracle()
+	}
 	r := Result{SameResponseOracleRan: true}
 	if bamlOnlyParse == nil {
 		r.Outcome = OutcomeParseError

@@ -13,17 +13,19 @@ post-squash re-pin runbook in the last section is the MANDATORY, IMMEDIATE follo
 once the PR squash-merges — it is OWED, not yet performed.
 
 U1c changes non-test source under BOTH guarded trees — `nativeserve` (the
-reusable native-only runtime factory + the single population classifier + the
-promoted pure adapter; `nativeserve/spine` now returns a `worker.Runtime`) and
-`internal/nativebody/nanollmprepare` (the `nativeonlyboot` bootstrap, the
-`cmd/worker-nativeonly` entrypoint, the committed `nativegenerated/generated_off.go`
-stub, and the isolated go.mod pin bump) — plus the opaque worker tar and
-root-module build/generation code. The pins must therefore name a commit that
-carries THIS change: an external consumer resolving nativeserve off the branch
-tip needs a snapshot whose five first-party selections are self-consistent with
-the U1b source. The U1b nativeserve source still compiles against the U1
-`bamlutils`/`worker` contract (U1b introduces no new root symbol), but the
-guarded-tree source moved, so the lockstep set must move with it.
+oracle-capable spine `CallWithOracle` + `NewPopulationExecutor` sharing `Call`'s
+core, the live-oracle admission entry `AdmitStaticSpineOracleClaim`, and the
+factored same-response `nativeserve/staticoracle` core both the canary static serve
+path and the spine oracle reuse) and `internal/nativebody/nanollmprepare` (the
+standard-only `standardspineoracle` composite, the generated aggregate's `NewExecutor`,
+the `serveProfileOptions()` factory swap, and the isolated go.mod pin bump) — plus the
+opaque worker tar and root-module build/generation code. The pins must therefore name a
+commit that carries THIS change: an external consumer resolving nativeserve off the
+branch tip needs a snapshot whose five first-party selections are self-consistent with
+the U1c source. Unlike U1b, the U1c nativeserve source DEPENDS on a NEW `bamlutils`
+symbol — the neutral `NativeSpineUnaryOracleExecutor` / `NativeSpineUnaryOracleResult`
+contract — so a consumer resolving a PRE-U1c `bamlutils` fails to compile this module:
+the lockstep is a build precondition, not cosmetic, and the set must move together.
 
 It is proof material, not documentation. `TestFirstPartyPinFollowupIsTracked`
 (`cmd/build/nativeworker_pins_test.go`) parses it on every ordinary `go test ./...`,
