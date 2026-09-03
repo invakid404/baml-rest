@@ -3,7 +3,6 @@ package staticoracle
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -128,15 +127,21 @@ func TestResolve_NilBAMLParseIsOutputParseError(t *testing.T) {
 
 // TestResolve_UnknownOutcomePreservesCanaryErrorBytes pins P3-7: the defensive
 // unknown-outcome path keeps the legacy "nativeserve/canary: …" bytes so canary.ServeStatic
-// stays byte-for-byte unchanged.
+// stays byte-for-byte unchanged. The comparison is EXACT — prefix AND the Stringer-rendered
+// outcome suffix (execute.Outcome.String() renders 99 as "Outcome(99)") — because a
+// strings.Contains check omitting the suffix would let the "nativeserve/staticoracle:" prefix
+// the extraction briefly produced (the P3-7 defect), or any other envelope-byte drift, pass.
 func TestResolve_UnknownOutcomePreservesCanaryErrorBytes(t *testing.T) {
 	res := &execute.AttemptResult{Outcome: execute.Outcome(99)}
 	r := Resolve(context.Background(), nil, res, nil, parse(``, nil), nil)
 	if r.Served {
 		t.Fatal("an unknown outcome must be a failure")
 	}
-	const want = "nativeserve/canary: unexpected static attempt outcome"
-	if r.Err == nil || !strings.Contains(r.Err.Error(), want) {
-		t.Errorf("err = %v, want it to contain %q (byte-for-byte canary compatibility)", r.Err, want)
+	if r.Err == nil {
+		t.Fatal("an unknown outcome produced no error")
+	}
+	const want = "nativeserve/canary: unexpected static attempt outcome Outcome(99)"
+	if got := r.Err.Error(); got != want {
+		t.Errorf("err = %q, want EXACTLY %q (byte-for-byte canary compatibility)", got, want)
 	}
 }

@@ -252,6 +252,47 @@ func TestCallWithOracle_LiveOracle_PanickingPlanBuilderDeclinesZeroSocket(t *tes
 	}
 }
 
+// TestAdmitStaticSpineOracleClaim_PanickingPlanBuilderClosesPrepExactlyOnce pins P2-4
+// OBSERVABLY: a PANIC from the live BuildBAMLRequest inside the plan compare closes the
+// request-scoped nanollm engine EXACTLY once — no leak, no double-close. It drives the REAL
+// admission entry with a CloseObserver seam, because a zero provider-hit / zero-socket count
+// stays zero whether or not prep leaks; only a close COUNTER detects the P2-4 leak. Reverting
+// the close-on-panic defer in AdmitStaticSpineOracleClaim makes this count 0 and fails.
+func TestAdmitStaticSpineOracleClaim_PanickingPlanBuilderClosesPrepExactlyOnce(t *testing.T) {
+	lb := newOracleLoopback(t, func(w http.ResponseWriter, r *http.Request) { okJSONContent(w, `{"weather":"sunny"}`) })
+	e, _ := liveOracle(t, lb.baseURL())
+
+	rm := e.registry[nativespinejsonfixture.MethodName]
+	if rm == nil {
+		t.Fatal("the jsonalias method is not registered")
+	}
+	values, err := nativespinejsonfixture.Binding().ProjectInput(&nativespinejsonfixture.StaticRecursiveAliasJsonInput{Topic: "weather"})
+	if err != nil {
+		t.Fatalf("ProjectInput: %v", err)
+	}
+	// A real production-shaped admission input reaching the plan compare, with a panicking
+	// plan builder and the test close observer.
+	in := e.oracleStaticInput(rm, bamlutils.NativeStaticInvocation{
+		Method: nativespinejsonfixture.MethodName, Values: values,
+		Mode: bamlutils.NativeStaticModeFinal, Provider: "openai", SingleLeaf: true,
+		BuildBAMLRequest: func(context.Context) (*llmhttp.Request, error) { panic("plan-builder panic: " + secretPayload) },
+	})
+	closes := 0
+	in.CloseObserver = func() { closes++ }
+
+	func() {
+		defer func() { _ = recover() }()
+		_, _ = admission.AdmitStaticSpineOracleClaim(context.Background(), in)
+		t.Error("AdmitStaticSpineOracleClaim returned despite a panicking plan builder")
+	}()
+	if closes != 1 {
+		t.Errorf("prepared client closed %d times on the BuildBAMLRequest panic path, want EXACTLY 1 (no leak, no double-close)", closes)
+	}
+	if lb.hits != 0 {
+		t.Errorf("provider hits = %d, want 0 (the panic is pre-socket)", lb.hits)
+	}
+}
+
 // TestCallWithOracle_LiveOracle_PostClaimPanicIsBoundedAndKeepsPhase pins P2-5/P2-6: a
 // BAMLOnlyParse that PANICS after the claim is a bounded terminal failure — the recovered
 // value is dropped from the public error, and the same-response phase is still recorded

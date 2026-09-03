@@ -145,81 +145,224 @@ func sumCounter(t *testing.T, reg *prometheus.Registry, name string, want map[st
 	return sum
 }
 
-// TestRecordOracle proves the composite replays the FULL bounded metric series — plan
-// compare, native socket, per-facet response compare, fallback, serve outcome, and the
-// same-response phase — plus population/phase/winner, all under CohortNone (no enrollment),
-// from the observations CallWithOracle carries out.
+// metric family names recordOracle writes into.
+const (
+	mPop      = "debaml_native_static_population_total"
+	mPhase    = "baml_rest_debaml_admission_phase_total"
+	mWinner   = "baml_rest_debaml_winner_total"
+	mPlan     = "baml_rest_debaml_plan_compare_total"
+	mSocket   = "baml_rest_debaml_native_sockets_total"
+	mResp     = "baml_rest_debaml_response_compare_total"
+	mFallback = "baml_rest_debaml_fallback_total"
+	mAttempts = "baml_rest_debaml_attempts_total"
+)
+
+// TestRecordOracle proves — on a FRESH registry per scenario, so before/after deltas are
+// exact — that the composite replays EXACTLY the bounded de-BAML series
+// CallWithOracle's observations describe, for every terminal shape: a native-win match, a
+// same-bytes drift, a provider fault, a transport fault, a BAML-parse error, a post-claim
+// parser panic (observations carried THROUGH the panic), a plan-mismatch pre-socket decline,
+// and a near-miss pre-socket decline. Each scenario asserts (a) every EXPECTED cell is
+// exactly one — under the enrollment-free surface=static_call/cohort=none attribution — and
+// (b) each metric family's TOTAL equals the expected count, so a MISSING or DOUBLE-COUNTED
+// failure-path metric (the pre-fix defect: population/phase/winner only, no plan/socket/
+// response/fallback/attempts) cannot pass.
 func TestRecordOracle(t *testing.T) {
-	reg := prometheus.NewRegistry()
-	m, err := admission.NewMetrics(reg)
-	if err != nil {
-		t.Fatalf("NewMetrics: %v", err)
-	}
-	pop, err := registerPopulationCounter(reg)
-	if err != nil {
-		t.Fatalf("registerPopulationCounter: %v", err)
-	}
-	inv := bamlutils.NativeStaticInvocation{Provider: "openai"}
-
-	// A NATIVE-WIN success carries full observations: plan matched, one responded socket,
-	// same-response oracle entered, structured/order match, serve outcome success.
-	nativeWin := bamlutils.SucceededOracleResult([]byte(`1`), "", "", bamlutils.NativeStaticServeEngineNative)
-	nativeWin.Observations = bamlutils.NativeSpineUnaryOracleObservations{
-		PlanCompareRan: true, PlanMatched: true,
-		SocketOpened: true, SocketResponded: true,
-		SameResponseOracleRan: true,
-		ErrorCompareRecorded:  true, ErrorCompareMatch: true,
-		StructuredBranchServed: true, StructuredMatch: true, OrderMatch: true,
-		ServeOutcome: bamlutils.NativeStaticOutcomeSuccess,
-	}
-	recordOracle(m, pop, inv, nativeWin)
-
-	checks := []struct {
-		what   string
-		name   string
-		want   map[string]string
-		expect float64
-	}{
-		{"population succeeded", "debaml_native_static_population_total", map[string]string{"population": populationExactJSONU1, "disposition": dispSucceeded}, 1},
-		{"plan_compare match", "baml_rest_debaml_plan_compare_total", map[string]string{"result": "match"}, 1},
-		{"native_sockets responded", "baml_rest_debaml_native_sockets_total", map[string]string{"outcome": "responded"}, 1},
-		{"phase same_response_oracle", "baml_rest_debaml_admission_phase_total", map[string]string{"surface": "static_call", "phase": "same_response_oracle"}, 1},
-		{"phase claimed", "baml_rest_debaml_admission_phase_total", map[string]string{"surface": "static_call", "phase": "claimed"}, 1},
-		{"winner native", "baml_rest_debaml_winner_total", map[string]string{"surface": "static_call", "winner": "native"}, 1},
-		{"attempts success", "baml_rest_debaml_attempts_total", map[string]string{"outcome": "success"}, 1},
-		{"response_compare structured match", "baml_rest_debaml_response_compare_total", map[string]string{"field": "structured", "result": "match"}, 1},
-	}
-	for _, c := range checks {
-		if got := sumCounter(t, reg, c.name, c.want); got != c.expect {
-			t.Errorf("native-win %s (%s%v) = %v, want %v", c.what, c.name, c.want, got, c.expect)
+	// sc is the enrollment-free attribution subset every phase/winner cell must carry.
+	sc := func(extra map[string]string) map[string]string {
+		out := map[string]string{"surface": "static_call", "cohort": "none"}
+		for k, v := range extra {
+			out[k] = v
 		}
+		return out
 	}
-	// No enrollment cohort was fabricated: the winner/phase carry cohort=none, never fe_v1.
-	if got := sumCounter(t, reg, "baml_rest_debaml_winner_total", map[string]string{"surface": "static_call", "cohort": "fe_v1"}); got != 0 {
-		t.Errorf("composite fabricated an enrollment cohort: winner{fe_v1} = %v", got)
+	// fullMatchObs is a native-win observation set; scenarios derive from it.
+	succ := func(engine string, obs bamlutils.NativeSpineUnaryOracleObservations) bamlutils.NativeSpineUnaryOracleResult {
+		r := bamlutils.SucceededOracleResult([]byte(`1`), "", "", engine)
+		r.Observations = obs
+		return r
+	}
+	fail := func(obs bamlutils.NativeSpineUnaryOracleObservations) bamlutils.NativeSpineUnaryOracleResult {
+		r := bamlutils.FailedAfterClaimOracleResult(errors.New("x"), "provider", "provider_error", "")
+		r.Observations = obs
+		return r
+	}
+	decline := func(planRan, matched bool) bamlutils.NativeSpineUnaryOracleResult {
+		r := bamlutils.DeclinedOracleResult(errors.New("d"), "strategy", "not_single_leaf")
+		r.Observations = bamlutils.NativeSpineUnaryOracleObservations{PlanCompareRan: planRan, PlanMatched: matched}
+		return r
 	}
 
-	// A DRIFT success records fallback (the same-bytes BAML parse won).
-	drift := bamlutils.SucceededOracleResult([]byte(`2`), "", "", bamlutils.NativeStaticServeEngineBAMLParse)
-	drift.Observations = bamlutils.NativeSpineUnaryOracleObservations{
-		PlanCompareRan: true, PlanMatched: true, SocketOpened: true, SocketResponded: true,
-		SameResponseOracleRan: true, StructuredBranchServed: true, Fallback: true,
-		ServeOutcome: bamlutils.NativeStaticOutcomeSuccess,
+	type cell struct {
+		name   string
+		labels map[string]string
 	}
-	recordOracle(m, pop, inv, drift)
-	if got := sumCounter(t, reg, "baml_rest_debaml_fallback_total", nil); got != 1 {
-		t.Errorf("fallback_total = %v after one drift, want 1", got)
+	scenarios := []struct {
+		name   string
+		res    bamlutils.NativeSpineUnaryOracleResult
+		ones   []cell         // cells that must each equal exactly 1
+		totals map[string]int // family -> exact total across the whole series
+	}{
+		{
+			name: "native win match",
+			res: succ(bamlutils.NativeStaticServeEngineNative, bamlutils.NativeSpineUnaryOracleObservations{
+				PlanCompareRan: true, PlanMatched: true, SocketOpened: true, SocketResponded: true,
+				SameResponseOracleRan: true, ErrorCompareRecorded: true, ErrorCompareMatch: true,
+				StructuredBranchServed: true, StructuredMatch: true, OrderMatch: true,
+				ServeOutcome: bamlutils.NativeStaticOutcomeSuccess,
+			}),
+			ones: []cell{
+				{mPop, map[string]string{"population": populationExactJSONU1, "disposition": dispSucceeded}},
+				{mPhase, sc(map[string]string{"phase": "claimed"})},
+				{mPhase, sc(map[string]string{"phase": "postclaim_terminal"})},
+				{mPhase, sc(map[string]string{"phase": "same_response_oracle"})},
+				{mWinner, sc(map[string]string{"winner": "native"})},
+				{mPlan, map[string]string{"result": "match", "field": "meta"}},
+				{mSocket, map[string]string{"flag": "on", "outcome": "responded"}},
+				{mResp, map[string]string{"field": "structured", "result": "match"}},
+				{mResp, map[string]string{"field": "order", "result": "match"}},
+				{mResp, map[string]string{"field": "error", "result": "match"}},
+				{mAttempts, map[string]string{"outcome": "success"}},
+			},
+			totals: map[string]int{mPop: 1, mPhase: 3, mWinner: 1, mPlan: 1, mSocket: 1, mResp: 7, mFallback: 0, mAttempts: 1},
+		},
+		{
+			name: "same-bytes drift",
+			res: succ(bamlutils.NativeStaticServeEngineBAMLParse, bamlutils.NativeSpineUnaryOracleObservations{
+				PlanCompareRan: true, PlanMatched: true, SocketOpened: true, SocketResponded: true,
+				SameResponseOracleRan: true, ErrorCompareRecorded: true, ErrorCompareMatch: true,
+				StructuredBranchServed: true, StructuredMatch: false, OrderMatch: true, Fallback: true,
+				ServeOutcome: bamlutils.NativeStaticOutcomeSuccess,
+			}),
+			ones: []cell{
+				{mPop, map[string]string{"population": populationExactJSONU1, "disposition": dispSucceeded}},
+				{mWinner, sc(map[string]string{"winner": "baml_parse_same_response"})},
+				{mPhase, sc(map[string]string{"phase": "same_response_oracle"})},
+				{mPlan, map[string]string{"result": "match", "field": "meta"}},
+				{mSocket, map[string]string{"flag": "on", "outcome": "responded"}},
+				{mResp, map[string]string{"field": "structured", "result": "mismatch"}},
+				{mResp, map[string]string{"field": "order", "result": "match"}},
+				{mFallback, map[string]string{"kind": "parse_only"}},
+				{mAttempts, map[string]string{"outcome": "success"}},
+			},
+			totals: map[string]int{mPop: 1, mPhase: 3, mWinner: 1, mPlan: 1, mSocket: 1, mResp: 7, mFallback: 1, mAttempts: 1},
+		},
+		{
+			name: "provider fault",
+			res: fail(bamlutils.NativeSpineUnaryOracleObservations{
+				PlanCompareRan: true, PlanMatched: true, SocketOpened: true, SocketResponded: true,
+				ServeOutcome: bamlutils.NativeStaticOutcomeProviderError,
+			}),
+			ones: []cell{
+				{mPop, map[string]string{"population": populationExactJSONU1, "disposition": dispFailed}},
+				{mWinner, sc(map[string]string{"winner": "failure"})},
+				{mPlan, map[string]string{"result": "match", "field": "meta"}},
+				{mSocket, map[string]string{"flag": "on", "outcome": "responded"}},
+				{mAttempts, map[string]string{"outcome": "provider_error"}},
+			},
+			totals: map[string]int{mPop: 1, mPhase: 2, mWinner: 1, mPlan: 1, mSocket: 1, mResp: 0, mFallback: 0, mAttempts: 1},
+		},
+		{
+			name: "transport fault",
+			res: fail(bamlutils.NativeSpineUnaryOracleObservations{
+				PlanCompareRan: true, PlanMatched: true, SocketOpened: true, SocketResponded: false,
+				ServeOutcome: bamlutils.NativeStaticOutcomeTransportError,
+			}),
+			ones: []cell{
+				{mPop, map[string]string{"population": populationExactJSONU1, "disposition": dispFailed}},
+				{mSocket, map[string]string{"flag": "on", "outcome": "transport_error"}},
+				{mAttempts, map[string]string{"outcome": "transport_error"}},
+			},
+			totals: map[string]int{mPop: 1, mPhase: 2, mWinner: 1, mPlan: 1, mSocket: 1, mResp: 0, mFallback: 0, mAttempts: 1},
+		},
+		{
+			name: "baml parse error",
+			res: fail(bamlutils.NativeSpineUnaryOracleObservations{
+				PlanCompareRan: true, PlanMatched: true, SocketOpened: true, SocketResponded: true,
+				SameResponseOracleRan: true, ErrorCompareRecorded: true, ErrorCompareMatch: false,
+				ServeOutcome: bamlutils.NativeStaticOutcomeParseError,
+			}),
+			ones: []cell{
+				{mPop, map[string]string{"population": populationExactJSONU1, "disposition": dispFailed}},
+				{mPhase, sc(map[string]string{"phase": "same_response_oracle"})},
+				{mResp, map[string]string{"field": "error", "result": "mismatch"}},
+				{mAttempts, map[string]string{"outcome": "parse_error"}},
+			},
+			totals: map[string]int{mPop: 1, mPhase: 3, mWinner: 1, mPlan: 1, mSocket: 1, mResp: 1, mFallback: 0, mAttempts: 1},
+		},
+		{
+			// Post-claim parser panic: obs carry PlanCompareRan/SameResponseOracleRan set BEFORE
+			// the panic and NO ServeOutcome (Resolve never returned), so the composite records
+			// attempts{internal_error} via the failed-after-claim fallback — the phase survives.
+			name: "parser panic",
+			res: fail(bamlutils.NativeSpineUnaryOracleObservations{
+				PlanCompareRan: true, PlanMatched: true, SocketOpened: true, SocketResponded: true,
+				SameResponseOracleRan: true, ServeOutcome: bamlutils.NativeStaticOutcomeNone,
+			}),
+			ones: []cell{
+				{mPop, map[string]string{"population": populationExactJSONU1, "disposition": dispFailed}},
+				{mPhase, sc(map[string]string{"phase": "same_response_oracle"})},
+				{mWinner, sc(map[string]string{"winner": "failure"})},
+				{mSocket, map[string]string{"flag": "on", "outcome": "responded"}},
+				{mAttempts, map[string]string{"outcome": "internal_error"}},
+			},
+			totals: map[string]int{mPop: 1, mPhase: 3, mWinner: 1, mPlan: 1, mSocket: 1, mResp: 0, mFallback: 0, mAttempts: 1},
+		},
+		{
+			name: "plan-mismatch decline",
+			res:  decline(true, false),
+			ones: []cell{
+				{mPop, map[string]string{"population": populationExactJSONU1, "disposition": dispDeclined}},
+				{mPhase, sc(map[string]string{"phase": "preclaim_decline"})},
+				{mWinner, sc(map[string]string{"winner": "baml_transport"})},
+				{mPlan, map[string]string{"result": "mismatch", "field": "meta"}},
+			},
+			totals: map[string]int{mPop: 1, mPhase: 1, mWinner: 1, mPlan: 1, mSocket: 0, mResp: 0, mFallback: 0, mAttempts: 0},
+		},
+		{
+			name: "near-miss decline",
+			res:  decline(false, false),
+			ones: []cell{
+				{mPop, map[string]string{"population": populationExactJSONU1, "disposition": dispDeclined}},
+				{mPhase, sc(map[string]string{"phase": "preclaim_decline"})},
+				{mWinner, sc(map[string]string{"winner": "baml_transport"})},
+			},
+			totals: map[string]int{mPop: 1, mPhase: 1, mWinner: 1, mPlan: 0, mSocket: 0, mResp: 0, mFallback: 0, mAttempts: 0},
+		},
 	}
 
-	// A pre-socket DECLINE records population(declined) + a preclaim phase, and opens NO
-	// socket / runs NO plan compare.
-	recordOracle(m, pop, inv, bamlutils.DeclinedOracleResult(errors.New("d"), "registry", "method_not_registered"))
-	if got := counterValue(t, reg, "debaml_native_static_population_total", map[string]string{"population": populationExactJSONU1, "disposition": dispDeclined}); got != 1 {
-		t.Errorf("population declined = %v, want 1", got)
-	}
-	// Two claimed attempts opened sockets; the decline opened none.
-	if got := sumCounter(t, reg, "baml_rest_debaml_native_sockets_total", nil); got != 2 {
-		t.Errorf("native_sockets_total = %v, want 2 (the decline opened no socket)", got)
+	inv := bamlutils.NativeStaticInvocation{Provider: "openai"}
+	for _, s := range scenarios {
+		t.Run(s.name, func(t *testing.T) {
+			reg := prometheus.NewRegistry()
+			m, err := admission.NewMetrics(reg)
+			if err != nil {
+				t.Fatalf("NewMetrics: %v", err)
+			}
+			pop, err := registerPopulationCounter(reg)
+			if err != nil {
+				t.Fatalf("registerPopulationCounter: %v", err)
+			}
+			recordOracle(m, pop, inv, s.res)
+
+			for _, c := range s.ones {
+				if got := sumCounter(t, reg, c.name, c.labels); got != 1 {
+					t.Errorf("%s cell %v = %v, want exactly 1", c.name, c.labels, got)
+				}
+			}
+			for name, want := range s.totals {
+				if got := sumCounter(t, reg, name, nil); got != float64(want) {
+					t.Errorf("%s TOTAL = %v, want %d (no missing/double-counted cell)", name, got, want)
+				}
+			}
+			// Enrollment-free: nothing under a fe_v1 cohort, ever.
+			if got := sumCounter(t, reg, mWinner, map[string]string{"cohort": "fe_v1"}); got != 0 {
+				t.Errorf("composite fabricated an enrollment cohort: winner{fe_v1} = %v", got)
+			}
+			if got := sumCounter(t, reg, mPhase, map[string]string{"cohort": "fe_v1"}); got != 0 {
+				t.Errorf("composite fabricated an enrollment cohort: phase{fe_v1} = %v", got)
+			}
+		})
 	}
 }
 

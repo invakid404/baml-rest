@@ -24,6 +24,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -67,6 +69,127 @@ func spineServeFixture(t *testing.T) (bamlutils.NativeStaticServeFunc, *spine.Un
 		return inner(ctx, inv)
 	}
 	return fn, exec, &calls
+}
+
+// fixtureBamlSrcSpineServe builds the spine-backed serve func over an executor whose baked
+// native plan for StaticRecursiveAliasJSON BYTE-MATCHES the fixture's live BAML plan — by
+// building the spine from the FIXTURE's OWN baml_src (the StaticOracleClient project at the
+// :17654 loopback), NOT JSONAliasFixtureSources, which mismatches on client/model/prompt by
+// design. This is the in-process analog of scripts/build-s3b-static-fixture-artifact.sh
+// (introspect over the same baml_src), so native CAN win here and a single-fact near-miss
+// flip through the real adapter seam is DISCRIMINATING (the pre-fix synthesizing code would
+// claim on the match).
+func fixtureBamlSrcSpineServe(t *testing.T) (bamlutils.NativeStaticServeFunc, *spine.UnaryExecutor, *int) {
+	t.Helper()
+	dir := filepath.Join("..", "..", "..", "nativeprompt", "testdata", "staticserve_fixture", "baml_src")
+	sources := map[string]string{}
+	for _, name := range []string{"clients.baml", "types.baml", "functions.baml"} {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("read fixture baml_src %s: %v", name, err)
+		}
+		sources[name] = string(b)
+	}
+	proj, err := nativespine.BuildFromSource(sources)
+	if err != nil {
+		t.Fatalf("BuildFromSource(fixture baml_src): %v", err)
+	}
+	exec, err := spine.NewPopulationExecutor(proj, []spine.UnaryRegistration{
+		{Binding: nativespinejsonfixture.Binding(), BuildMethod: nativespinejsonfixture.BuildMethod},
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewPopulationExecutor(fixture baml_src): %v", err)
+	}
+	inner, err := standardspineoracle.NewStaticServeFromExecutor(prometheus.NewRegistry(), exec)
+	if err != nil {
+		t.Fatalf("NewStaticServeFromExecutor: %v", err)
+	}
+	calls := 0
+	fn := func(ctx context.Context, inv bamlutils.NativeStaticInvocation) bamlutils.NativeStaticServeResult {
+		calls++
+		return inner(ctx, inv)
+	}
+	return fn, exec, &calls
+}
+
+// driveStaticRecursiveAliasJSON drives the U1 method through the generated seam and drains
+// its stream to the final value (or the first stream error).
+func driveStaticRecursiveAliasJSON(t *testing.T, a bamlutils.Adapter, topic string) (any, error) {
+	t.Helper()
+	ch, err := fixture.StaticRecursiveAliasJSON(a, &fixture.StaticRecursiveAliasJsonInput{Topic: topic})
+	if err != nil {
+		return nil, err
+	}
+	var final any
+	var drainErr error
+	for r := range ch {
+		switch r.Kind() {
+		case bamlutils.StreamResultKindFinal:
+			final = r.Final()
+		case bamlutils.StreamResultKindError:
+			drainErr = r.Error()
+		}
+		r.Release()
+	}
+	return final, drainErr
+}
+
+// TestSpineComposite_MatchingPlanNativeWins is the POSITIVE control for the near-miss below:
+// with the fixture's own baml_src baked into the spine, the live BAML plan compare MATCHES,
+// so the exact-U1 request CLAIMS and native serves the one socket (no BAML fallback). This is
+// what makes the call-with-raw near-miss discriminating — proving native WOULD win absent the
+// one flipped fact.
+func TestSpineComposite_MatchingPlanNativeWins(t *testing.T) {
+	serveFn, exec, calls := fixtureBamlSrcSpineServe(t)
+	server := newFixtureServer(t, http.StatusOK, openAIJSONMap())
+	defer server.close()
+	a := buildFixtureAdapterWithServe(t, serveFn, true) // StreamModeCall: final, no raw
+
+	final, drainErr := driveStaticRecursiveAliasJSON(t, a, "weather")
+	if drainErr != nil {
+		t.Fatalf("StaticRecursiveAliasJSON through the matching-plan spine composite errored: %v", drainErr)
+	}
+	if *calls != 1 {
+		t.Fatalf("spine serve func invoked %d times, want exactly 1", *calls)
+	}
+	if snap := exec.Metrics().Snapshot(); snap.Claims != 1 || snap.Sockets != 1 || snap.Successes != 1 || snap.Declines != 0 {
+		t.Errorf("spine metrics = %+v; want a native WIN (claims=1 sockets=1 successes=1 declines=0) — the fixture-baml_src plan must byte-match", snap)
+	}
+	if got := server.count.Load(); got != 1 {
+		t.Fatalf("provider saw %d requests, want exactly 1 (native's single socket, no BAML resend)", got)
+	}
+	if final == nil {
+		t.Fatal("final is nil; native should have served the decoded JSON")
+	}
+}
+
+// TestSpineComposite_CallWithRawNearMissDeclinesToBAML drives a call-with-raw NEAR-MISS
+// through the REAL generated seam (installNativeStaticCall reads adapter.StreamMode().
+// NeedsRaw() -> inv.Raw, adapter-authoritative). Even though the baked plan MATCHES (native
+// would otherwise win, per the positive control), the forwarded raw fact declines at the MODE
+// gate PRE-SOCKET, and BAML serves the one request. This BITES the pre-fix synthesizing code,
+// which dropped inv.Raw, reached the matching plan, CLAIMED, and opened a native socket.
+func TestSpineComposite_CallWithRawNearMissDeclinesToBAML(t *testing.T) {
+	serveFn, exec, calls := fixtureBamlSrcSpineServe(t)
+	server := newFixtureServer(t, http.StatusOK, openAIJSONMap())
+	defer server.close()
+	a := buildFixtureAdapterWithServe(t, serveFn, true)
+	// The ONLY change vs the native-win control: the adapter reports /call-with-raw.
+	a.(*fwadapter.BamlAdapter).SetStreamMode(bamlutils.StreamModeCallWithRaw)
+
+	_, drainErr := driveStaticRecursiveAliasJSON(t, a, "weather")
+	if drainErr != nil {
+		t.Fatalf("call-with-raw through the spine composite errored: %v", drainErr)
+	}
+	if *calls != 1 {
+		t.Fatalf("spine serve func invoked %d times, want exactly 1", *calls)
+	}
+	if snap := exec.Metrics().Snapshot(); snap.Sockets != 0 || snap.Claims != 0 || snap.Declines != 1 {
+		t.Errorf("spine metrics = %+v; want a pre-socket MODE-gate decline (sockets=0 claims=0 declines=1). A native socket here means the raw fact was NOT forwarded — the pre-fix defect.", snap)
+	}
+	if got := server.count.Load(); got != 1 {
+		t.Fatalf("provider saw %d requests, want exactly 1 (raw near-miss declined pre-socket; BAML served)", got)
+	}
 }
 
 // buildFixtureAdapterWithServe mirrors buildFixtureAdapter but installs an arbitrary
