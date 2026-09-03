@@ -21,9 +21,9 @@ go 1.26.5
 require (
 	github.com/boundaryml/baml v0.223.0
 	github.com/invakid404/baml-rest v0.0.48
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260903095054-ae3900c1a0ff
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260903134144-56d5473a1bdb
 	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260903095054-ae3900c1a0ff
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260903134144-56d5473a1bdb
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
@@ -112,7 +112,7 @@ require (
 // without recording it here fails the native-worker PACKAGING build (-mod=readonly)
 // with "updates to go.mod needed".
 //
-// PIN-STATUS: OUTSTANDING
+// PIN-STATUS: RESOLVED
 //
 // That marker is the MACHINE-READABLE statement of where these pins stand, and
 // cmd/build's TestPackagedManifestsMatchTheTrackedPins requires it to equal the
@@ -153,15 +153,15 @@ require (
 // it to cf03786a1fac (#692 re-pinned to the 062871154d95 tip). Every one of these was a
 // branch-pin-then-re-pin, the precedent THIS U1 bump repeats.
 //
-// RIGHT NOW they are BRANCH-ONLY: all five name ae3900c1a0ff, the U1c guarded-source commit on
-// feat/debaml-execbridge-u1c that carries the ExecBridge-U1c guarded-tree change — no master
-// commit carries it yet. nanollmprepare directory-replaces root/bamlutils/worker/nativeserve, so
-// only the version STRINGS reach MVS, and they must move in lockstep with nativeserve's so the
-// out-of-work packaging build resolves the U1c source (nativeserve/spine's CallWithOracle +
-// NewPopulationExecutor, the AdmitStaticSpineOracleClaim + staticoracle cores, and
-// nanollmprepare's standardspineoracle composite + generated NewExecutor). So
-// nativeserve/pin_followup.md reads STATUS: OUTSTANDING and the post-squash re-pin to the U1c
-// master squash commit is the MANDATORY, IMMEDIATE follow-up once the PR merges. Do not treat
+// RIGHT NOW they are MASTER-DURABLE: all five name 56d5473a1bdb, the MASTER squash-merge commit
+// of PR #713 that carries the ExecBridge-U1c guarded-tree change. nanollmprepare
+// directory-replaces root/bamlutils/worker/nativeserve, so only the version STRINGS reach MVS,
+// and they must move in lockstep with nativeserve's so the out-of-work packaging build resolves
+// the U1c source (nativeserve/spine's CallWithOracle + NewPopulationExecutor, the
+// AdmitStaticSpineOracleClaim + staticoracle cores, and nanollmprepare's standardspineoracle
+// composite + generated NewExecutor). So nativeserve/pin_followup.md reads STATUS: RESOLVED and
+// the post-squash re-pin to the U1c master squash commit — the MANDATORY follow-up after the PR
+// merged — has been PERFORMED. Do not treat
 // this comment as the authority — nativeserve/pin_followup.md is the tracked record, and
 // cmd/build's TestFirstPartyPinFollowupIsTracked is what holds the two together: it
 // parses that record and the require directives above on every ordinary

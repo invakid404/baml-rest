@@ -83,7 +83,7 @@
 // the pins were moved here. Pin to a branch commit only if unavoidable, and re-pin to the
 // merged master commit as the immediate follow-up.
 //
-// PIN-STATUS: OUTSTANDING
+// PIN-STATUS: RESOLVED
 //
 // That marker is the MACHINE-READABLE statement of where these pins stand, and
 // cmd/build's TestPackagedManifestsMatchTheTrackedPins requires it to equal the
@@ -99,19 +99,19 @@
 // go get/build/run) — is nativeserve/pin_followup.md's post-squash re-pin runbook
 // section. Follow it there; do not reconstruct it from these paragraphs.
 //
-// NOTE (ExecBridge-U1c — live-oracle standard composite): these pins are BRANCH-ONLY and the
-// tracked follow-up in nativeserve/pin_followup.md is therefore STATUS: OUTSTANDING. They name
-// ae3900c1a0ff, the U1c guarded-source commit on feat/debaml-execbridge-u1c — no master commit
-// carries the U1c change yet. This module gains the oracle-capable spine (nativeserve/spine's
-// CallWithOracle + NewPopulationExecutor sharing Call's core), the live-oracle admission entry
+// NOTE (ExecBridge-U1c — live-oracle standard composite): these pins are MASTER-DURABLE and the
+// tracked follow-up in nativeserve/pin_followup.md is therefore STATUS: RESOLVED. They name
+// 56d5473a1bdb, the MASTER squash-merge commit of PR #713 that carries the U1c change. This
+// module gains the oracle-capable spine (nativeserve/spine's CallWithOracle +
+// NewPopulationExecutor sharing Call's core), the live-oracle admission entry
 // (nativeserve/admission.AdmitStaticSpineOracleClaim), and the factored same-response static
 // oracle (nativeserve/staticoracle) that both the canary static serve path and the spine oracle
 // reuse. The U1c nativeserve source depends on a NEW bamlutils symbol — the neutral
 // NativeSpineUnaryOracleExecutor / NativeSpineUnaryOracleResult contract — so a consumer
 // resolving a PRE-U1c bamlutils fails to compile this module; the lockstep is a build
-// precondition, not cosmetic. The post-squash re-pin to the U1c MASTER squash commit is the
-// MANDATORY, IMMEDIATE follow-up once the PR merges (the orchestrator's job); until then this is
-// a branch-only pin. See pin_followup.md for the record.
+// precondition, not cosmetic. The post-squash re-pin to this master squash commit was the
+// MANDATORY follow-up after the PR merged and has been PERFORMED (see pin_followup.md's
+// post-squash re-pin runbook section for the executed record).
 //
 // HISTORICAL, SUPERSEDED — the SHAs in this paragraph are not the current pins:
 // Immediately before U1c, all five were MASTER-DURABLE at 8fe27577082c (STATUS: RESOLVED), the
@@ -158,9 +158,9 @@
 // #689 -> #692, #703's batch-2 re-pin, U1's #708 -> #709, and U1b's #711 post-squash re-pin: pin
 // to the branch SOURCE commit only because no master commit carries the change yet, then re-pin
 // all five to master and regenerate the tar IMMEDIATELY after the merge. This change is the U1c
-// BRANCH-ONLY pin instance of it: all five pins name the U1c source commit ae3900c1a0ff (STATUS:
-// OUTSTANDING) with the tar regenerated in the same change; the post-squash re-pin to master is
-// the mandatory follow-up the record tracks.
+// MASTER re-pin instance of it: all five pins name the U1c master squash commit 56d5473a1bdb
+// (STATUS: RESOLVED) with the tar regenerated in the same change; it repaired the branch-only
+// ae3900c1a0ff pin the moment PR #713 squash-merged.
 //
 // A bump must ALSO move internal/nativebody/nanollmprepare/go.mod's recorded bamlutils +
 // worker selections in LOCKSTEP: nanollmprepare directory-replaces root / bamlutils /
@@ -176,9 +176,9 @@ go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260903095054-ae3900c1a0ff
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260903095054-ae3900c1a0ff
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260903095054-ae3900c1a0ff
+	github.com/invakid404/baml-rest v0.0.0-20260903134144-56d5473a1bdb
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260903134144-56d5473a1bdb
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260903134144-56d5473a1bdb
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2

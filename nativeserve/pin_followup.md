@@ -1,16 +1,15 @@
 # Out-of-`go.work` first-party pin follow-up
 
 This file is the TRACKED record of whether the five first-party pseudo-version
-selections below point at a **master** commit. **They DO NOT (yet).** They name
-`ae3900c1a0ff`, the U1c guarded-source commit on the branch
-`feat/debaml-execbridge-u1c` that carries the ExecBridge-U1c guarded-tree change (the
-live-oracle standard composite: `nativeserve/spine.CallWithOracle` +
-`NewPopulationExecutor`, `nativeserve/admission.AdmitStaticSpineOracleClaim`, the
-`nativeserve/staticoracle` same-response core, and `nanollmprepare`'s
-`standardspineoracle` composite + generated `NewExecutor`). No master commit carries it
-yet, so the pins are **BRANCH-ONLY** and this record is **STATUS: OUTSTANDING**. The
-post-squash re-pin runbook in the last section is the MANDATORY, IMMEDIATE follow-up
-once the PR squash-merges — it is OWED, not yet performed.
+selections below point at a **master** commit. **They DO.** They name
+`56d5473a1bdb`, the MASTER squash-merge commit of the ExecBridge-U1c PR (#713), which
+carries the ExecBridge-U1c guarded-tree change (the live-oracle standard composite:
+`nativeserve/spine.CallWithOracle` + `NewPopulationExecutor`,
+`nativeserve/admission.AdmitStaticSpineOracleClaim`, the `nativeserve/staticoracle`
+same-response core, and `nanollmprepare`'s `standardspineoracle` composite + generated
+`NewExecutor`). That commit is master-reachable, so the pins are **MASTER-DURABLE** and
+this record is **STATUS: RESOLVED**. The post-squash re-pin runbook in the last section
+has been PERFORMED — it was the U1c branch pin's mandatory follow-up, now complete.
 
 U1c changes non-test source under BOTH guarded trees — `nativeserve` (the
 oracle-capable spine `CallWithOracle` + `NewPopulationExecutor` sharing `Call`'s
@@ -41,30 +40,31 @@ lands on master it must be flipped to `RESOLVED`.
 CONCRETE, per-change instance of it, which is what the generic comment cannot be.
 
 ```text
-STATUS: OUTSTANDING
-PINNED-COMMIT: ae3900c1a0ff
-PINNED-STAMP: 20260903095054
-REACHABLE-FROM: feat/debaml-execbridge-u1c
+STATUS: RESOLVED
+PINNED-COMMIT: 56d5473a1bdb
+PINNED-STAMP: 20260903134144
+REACHABLE-FROM: master
 SLICE: ExecBridge-U1c — live-oracle standard composite: default-select the exact U1 structural population through the generated spine under a BAML plan-compare + same-bytes oracle (nativeserve/spine CallWithOracle + NewPopulationExecutor sharing Call's core; nativeserve/admission AdmitStaticSpineOracleClaim; nativeserve/staticoracle same-response core; nanollmprepare standardspineoracle composite + generated NewExecutor + serveProfileOptions factory swap; profile-neutral debamlnativespinegenerated tag compiled into both native-capable workers)
-PR: (pending) feat/debaml-execbridge-u1c — post-squash re-pin to the U1c master squash commit is OWED
+PR: #713 — squash-merged to master as 56d5473a1bdb; post-squash re-pin to the U1c master squash commit PERFORMED
 ```
 
-## Why the pins name the U1c branch source commit (for now)
+## Why the pins name the U1c master squash commit
 
-`ae3900c1a0ff` is the U1c guarded-source commit on `feat/debaml-execbridge-u1c` that
-carries the guarded-tree change. The packaged tar (`cmd/build/nativeworker_module.tar`)
-embeds both out-of-work modules' source AND their go.mods, so the pins the tar ships
-are the pins an external `nativeserve-goget` consumer resolves. Pinning `nativeserve` /
-`nanollmprepare` to a PRE-U1c commit would ship a snapshot whose bamlutils lacks the
+`56d5473a1bdb` is the master squash-merge commit of PR #713 that carries the
+guarded-tree change. The packaged tar (`cmd/build/nativeworker_module.tar`) embeds both
+out-of-work modules' source AND their go.mods, so the pins the tar ships are the pins an
+external `nativeserve-goget` consumer resolves. Pinning `nativeserve` / `nanollmprepare`
+to a PRE-U1c commit would ship a snapshot whose bamlutils lacks the
 `NativeSpineUnaryOracleExecutor` contract the U1c nativeserve source links, so the
 packaged worker could not be assembled from it. The pins name the commit that has the
 source, and the selection is a lockstep set.
 
-They name a BRANCH commit only because no master commit carries U1c yet. The Slice 7.1b
-failure (#655) is what skipping the post-squash re-pin costs — a branch pin went red on
-`nativeserve-goget` the moment the branch was deleted — which is why the re-pin to the
-master squash commit is the MANDATORY, IMMEDIATE follow-up once this PR merges (see the
-runbook below).
+They named a BRANCH commit (`ae3900c1a0ff`) only while no master commit carried U1c; now
+that PR #713 has squash-merged, all five are re-pinned to the master squash. The Slice
+7.1b failure (#655) is what skipping this post-squash re-pin would have cost — a branch
+pin went red on `nativeserve-goget` the moment the branch was deleted — which is why the
+re-pin to the master squash commit was the MANDATORY, IMMEDIATE follow-up after merge
+(the runbook below, now performed).
 
 The emitted/runtime spine path itself contains no generated BAML and no BAML CFFI —
 proven mechanically by `go list -deps` over the production factory package
@@ -83,31 +83,32 @@ bump is invisible until the out-of-work packaging build fails with
 
 | # | file | module | current selection |
 | --- | --- | --- | --- |
-| 1 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest` | `v0.0.0-20260903095054-ae3900c1a0ff` |
-| 2 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260903095054-ae3900c1a0ff` |
-| 3 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260903095054-ae3900c1a0ff` |
-| 4 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260903095054-ae3900c1a0ff` |
-| 5 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260903095054-ae3900c1a0ff` |
+| 1 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest` | `v0.0.0-20260903134144-56d5473a1bdb` |
+| 2 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260903134144-56d5473a1bdb` |
+| 3 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260903134144-56d5473a1bdb` |
+| 4 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260903134144-56d5473a1bdb` |
+| 5 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260903134144-56d5473a1bdb` |
 
 `internal/nativebody/nanollmprepare/go.mod`'s `github.com/invakid404/baml-rest v0.0.48`
 is deliberately NOT in this list: it is a released tag, not a pseudo-version tracking a
 commit, and the module directory-replaces it.
 
-## What was done for THIS branch pin (the executed steps)
+## What was done for THIS master re-pin (the executed steps)
 
-The BRANCH pin below points all five selections at the U1c source commit and sets the
-record `OUTSTANDING`; the post-squash re-pin to master is OWED (the runbook follows).
+The re-pin below points all five selections at the U1c MASTER squash commit and sets the
+record `RESOLVED`; the branch pin's OWED follow-up is now PERFORMED.
 
-1. **All five selections pointed together** to `ae3900c1a0ff` (Go-formula stamp
-   `20260903095054`, computed via `go mod download -json` per runbook step 0). The edit
-   touched only `require` lines; `nanollmprepare`'s deliberate `baml-rest v0.0.48` (a
-   released TAG) is untouched, and so is every SHA inside the historical prose.
-2. **Both `// PIN-STATUS` markers set** to `OUTSTANDING`, one per manifest.
-3. **Both mirrored narratives rewritten** to BRANCH-ONLY naming the U1c source commit,
-   with the U1b master `8fe27577082c` sentences demoted to HISTORICAL.
-4. **This file updated** — fenced record (`OUTSTANDING`, the U1c commit/stamp,
-   `REACHABLE-FROM: feat/debaml-execbridge-u1c`), opening claim, selections table, this
-   section.
+1. **All five selections re-pointed together** to `56d5473a1bdb` (Go-formula stamp
+   `20260903134144`). The edit touched only `require` lines; `nanollmprepare`'s
+   deliberate `baml-rest v0.0.48` (a released TAG) is untouched, and so is every SHA
+   inside the historical prose.
+2. **Both `// PIN-STATUS` markers flipped** from `OUTSTANDING` to `RESOLVED`, one per
+   manifest.
+3. **Both mirrored narratives rewritten** to MASTER-DURABLE naming the U1c master squash
+   commit `56d5473a1bdb`, with the branch-only `ae3900c1a0ff` sentences demoted to
+   HISTORICAL.
+4. **This file updated** — fenced record (`RESOLVED`, the U1c master commit/stamp,
+   `REACHABLE-FROM: master`), opening claim, selections table, this section.
 5. **Tar regenerated** (`go run ./cmd/build/gen-nativeworker-src`), which is required
    because it embeds both manifests, followed by the codegen-spine guard re-baseline
    (`go test ./internal/codegenspine/ -run TestSourceGuard -update-codegenspine-guard`)
@@ -121,14 +122,15 @@ anything else, and the ANCESTRY clause compares master-reachability against thos
 literals. "Durable" is the PROSE word for the `RESOLVED` state; `RESOLVED` is what the
 guards read.
 
-## The follow-up — OWED (the post-squash re-pin RUNBOOK the orchestrator runs after merge)
+## The follow-up — PERFORMED (the post-squash re-pin RUNBOOK, executed after merge)
 
-**This is NOT yet done for U1c: the pins are BRANCH-ONLY** at `ae3900c1a0ff`. What makes
+**This has been done for U1c: the pins are MASTER-DURABLE** at `56d5473a1bdb`. What made
 the post-squash re-pin MANDATORY and IMMEDIATE after merge is the same failure mode as
 always: a squash flattens the branch source commit out of history and the branch is
 deleted, so until the re-pin lands the five selections would name a commit that resolves
-to nothing. The ordered steps below are the runbook the ORCHESTRATOR follows once the
-U1c PR squash-merges (do NOT pin to a master commit before then).
+to nothing. The ordered steps below are the runbook the ORCHESTRATOR followed once the
+U1c PR (#713) squash-merged; it is retained as the executed record and as the template
+for the next slice.
 
 ### 0. Get the durable commit and its stamp — from Go, not by hand
 
@@ -221,7 +223,7 @@ pseudo-versions from step 0.
 
 ### Definition of done
 
-DONE for the U1c BRANCH pin (this change):
+DONE for the U1c BRANCH pin (the prior change, superseded by the master re-pin below):
 
 - [x] point all five selections at the U1c SOURCE commit `ae3900c1a0ff` (Go-formula
       stamp `20260903095054`), each with its correct base version
@@ -234,14 +236,21 @@ DONE for the U1c BRANCH pin (this change):
 - [x] tar freshness, `./cmd/build/...` (incl. `TestFirstPartyPinFollowupIsTracked`),
       codegenspine guard green
 
-OWED post-squash for the U1c MASTER re-pin (the orchestrator's follow-up after merge):
+DONE post-squash for the U1c MASTER re-pin (THIS change, after PR #713 squash-merged):
 
-- [ ] re-point all five selections to the U1c MASTER squash commit (Go-formula stamp
-      from `go mod download`), flip both markers + this file to `RESOLVED`,
-      `REACHABLE-FROM: master`, regenerate the tar + re-baseline the guard, and rerun
-      the pin/tar/guard gates (`nativeserve-goget` runs in CI against the master tip)
+- [x] re-point all five selections to the U1c MASTER squash commit `56d5473a1bdb`
+      (Go-formula stamp `20260903134144`), each with its correct base version
+- [x] flip both `// PIN-STATUS` markers + this file to `RESOLVED`,
+      `REACHABLE-FROM: master`
+- [x] rewrite both narratives to master-durable naming `56d5473a1bdb`; demote the
+      branch-only `ae3900c1a0ff` text to `HISTORICAL, SUPERSEDED`
+- [x] `cmd/build/nativeworker_module.tar` regenerated and
+      `internal/codegenspine/guard.json` re-baselined
+- [x] pin/tar/guard gates green (`TestFirstPartyPinFollowupIsTracked` now sees a
+      master-reachable pin ⇒ RESOLVED); `nativeserve-goget` runs in CI against master
 
 Precedent: #677 → #678, #681 → #682, #683 → #684, #686 → #687, #689 → #692, #703,
-U1's #708 → #709, and U1b's #711 post-squash re-pin are the prior instances of this
-runbook being executed correctly; Slice 7.1b (#655) is what skipping it costs — a
-branch pin went red on `nativeserve-goget` the moment the branch was deleted.
+U1's #708 → #709, U1b's #711 post-squash re-pin, and U1c's #713 post-squash re-pin (this
+change) are the instances of this runbook being executed correctly; Slice 7.1b (#655) is
+what skipping it costs — a branch pin went red on `nativeserve-goget` the moment the
+branch was deleted.
