@@ -2,8 +2,8 @@
   "note": "Pin/tar-independence baseline for the codegen-spine slice: the packaged native-worker tar, the five first-party pseudo-version pins, and the byte content of the three collision-path trees. A codegen-spine (M/P) slice must leave every value here untouched. It is NOT a freeze on master: a sanctioned change to a guarded path — the /parse union burn-down (#689), the /parse union-residual batch 2, ExecBridge-U1's spine serve lane under nativeserve, ExecBridge-U1b's native-only packaged worker, a post-squash first-party re-pin — legitimately moves these, and MUST re-run the update flag in the same change, or this guard stays red for everyone. First frozen at M0; re-frozen after #689 + the post-squash re-pin to 062871154d95, again for the /parse union-residual batch 2 (post-squash re-pin to master commit 7c7bed8291b6), again for ExecBridge-U1 — the production native unary executor/population bridge that adds a BAML-free spine serve lane under nativeserve (post-squash re-pin to master commit 7ddbb39fd3db), and again for ExecBridge-U1b — the native-only packaged worker that adds the reusable nativeserve/spine.NewWorkerRuntime factory + population classifier and the BAML-free nanollmprepare nativeonlyboot / cmd/worker-nativeonly (post-squash re-pin to master commit 8fe27577082c). Regenerate with: go test ./internal/codegenspine/ -run TestSourceGuard -update-codegenspine-guard",
   "native_worker_tar": {
     "path": "cmd/build/nativeworker_module.tar",
-    "size_bytes": 911360,
-    "sha256": "f5abd61df8faf473601180dae01b029fb6555364a8ef8888316da411a9397bee"
+    "size_bytes": 911872,
+    "sha256": "4a73c7ec52a796da69aa4fad91f5043b859a5f5033467f593a6efc39de04f9f0"
   },
   "first_party_pins": [
     {
@@ -41,12 +41,12 @@
     {
       "prefix": "nativeserve",
       "file_count": 109,
-      "sha256": "96aa15b41b1c3eb6cff1362f8f3fa724ff822471c61a4ba0a0188202c53a0db5"
+      "sha256": "9d25366d60167a989f06dc76a3488653625cf00ef46748d69a3f958918873a62"
     },
     {
       "prefix": "internal/nativebody/nanollmprepare",
       "file_count": 83,
-      "sha256": "c28bcf89f7aea8a8036a6416713d2df3ac37a2654da110f8d30bb25d6afa81bc"
+      "sha256": "df92c4b1a7877027caae995593e0712b002415dfe70c5add448942537c4dd7f3"
     }
   ]
 }
