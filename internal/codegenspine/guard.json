@@ -2,8 +2,8 @@
   "note": "Pin/tar-independence baseline for the codegen-spine slice: the packaged native-worker tar, the five first-party pseudo-version pins, and the byte content of the three collision-path trees. A codegen-spine (M/P) slice must leave every value here untouched. It is NOT a freeze on master: a sanctioned change to a guarded path — the /parse union burn-down (#689), the /parse union-residual batch 2, ExecBridge-U1's spine serve lane under nativeserve, ExecBridge-U1b's native-only packaged worker, a post-squash first-party re-pin — legitimately moves these, and MUST re-run the update flag in the same change, or this guard stays red for everyone. First frozen at M0; re-frozen after #689 + the post-squash re-pin to 062871154d95, again for the /parse union-residual batch 2 (post-squash re-pin to master commit 7c7bed8291b6), again for ExecBridge-U1 — the production native unary executor/population bridge that adds a BAML-free spine serve lane under nativeserve (post-squash re-pin to master commit 7ddbb39fd3db), and again for ExecBridge-U1b — the native-only packaged worker that adds the reusable nativeserve/spine.NewWorkerRuntime factory + population classifier and the BAML-free nanollmprepare nativeonlyboot / cmd/worker-nativeonly (post-squash re-pin to master commit 8fe27577082c). Regenerate with: go test ./internal/codegenspine/ -run TestSourceGuard -update-codegenspine-guard",
   "native_worker_tar": {
     "path": "cmd/build/nativeworker_module.tar",
-    "size_bytes": 902656,
-    "sha256": "97253b28b8faa3122aab0a1fe70fefa7da2d83bb0a09ebae900fee0064ce03d6"
+    "size_bytes": 911360,
+    "sha256": "f5abd61df8faf473601180dae01b029fb6555364a8ef8888316da411a9397bee"
   },
   "first_party_pins": [
     {
@@ -40,13 +40,13 @@
     },
     {
       "prefix": "nativeserve",
-      "file_count": 108,
-      "sha256": "60272b1209c1884cc704338ff631f6eb67f94582bb89d2735b8d83b627d1f098"
+      "file_count": 109,
+      "sha256": "b40cfd0a6ba48d50fba8d671e7fc40cbb25a89c292830d825515ebc6ca3de7c7"
     },
     {
       "prefix": "internal/nativebody/nanollmprepare",
       "file_count": 83,
-      "sha256": "6c41cc7945873d05975d0a5360705b8c06870aad18dfb187c345dfa50d4737ca"
+      "sha256": "c28bcf89f7aea8a8036a6416713d2df3ac37a2654da110f8d30bb25d6afa81bc"
     }
   ]
 }
