@@ -31,7 +31,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,9 +39,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/invakid404/baml-rest/bamlutils/projectdescriptor"
-	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
-	"github.com/invakid404/baml-rest/bamlutils/schemadescriptor"
 	"github.com/invakid404/baml-rest/workerplugin"
 )
 
@@ -78,30 +74,13 @@ func generateEmptyNativeSpineRegistry(t *testing.T) {
 	root := repoRootDir(t)
 	genDir := filepath.Join(root, "internal", "nativebody", "nanollmprepare", "nativegenerated")
 
-	// A minimal, VALID, candidate-free project descriptor, built from the real version
-	// constants (no hard-coding) so --allow-empty accepts it and yields an all-decline
-	// NewExecutor.
-	proj := projectdescriptor.Project{
-		Version:                 projectdescriptor.Version,
-		PromptDescriptorVersion: promptdescriptor.Version,
-		SchemaVersion:           schemadescriptor.Version,
-	}
-	data, err := json.Marshal(proj)
-	if err != nil {
-		t.Fatalf("marshal empty project descriptor: %v", err)
-	}
-	descPath := filepath.Join(t.TempDir(), "empty-project.json")
-	if err := os.WriteFile(descPath, data, 0o644); err != nil {
-		t.Fatalf("write empty project descriptor: %v", err)
-	}
-
 	// gen-native-spine-worker is a ROOT-module command; run it from the repo root under
-	// the workspace (it needs no CGO). It writes generated.go + project.json into the
-	// committed registry package (whose only checked-in file is the stub).
+	// the workspace (it needs no CGO). --empty writes an all-decline generated.go +
+	// project.json into the committed registry package (whose only checked-in file is the
+	// stub) from a minimal valid project.
 	gen := exec.Command("go", "run", "./cmd/gen-native-spine-worker",
-		"--descriptors", descPath,
-		"--out-dir", "internal/nativebody/nanollmprepare/nativegenerated",
-		"--allow-empty")
+		"--empty",
+		"--out-dir", "internal/nativebody/nanollmprepare/nativegenerated")
 	gen.Dir = root
 	if out, err := gen.CombinedOutput(); err != nil {
 		t.Fatalf("generating empty native spine registry: %v\n%s", err, out)
