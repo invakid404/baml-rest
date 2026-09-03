@@ -2,6 +2,9 @@ package standardspineoracle
 
 import (
 	"errors"
+	"reflect"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -111,38 +114,49 @@ func TestOracleWinner(t *testing.T) {
 	}
 }
 
-// sumCounter sums every CounterVec cell whose labels CONTAIN the wanted subset (partial
-// match), by name — for metrics with more labels than the assertion pins. A nil/empty want
-// sums the whole series.
-func sumCounter(t *testing.T, reg *prometheus.Registry, name string, want map[string]string) float64 {
+// cellKey canonicalizes a label set as sorted "k=v" joined by "," so a metric cell is
+// identified by its COMPLETE label set, regardless of map order.
+func cellKey(labels map[string]string) string {
+	ks := make([]string, 0, len(labels))
+	for k := range labels {
+		ks = append(ks, k)
+	}
+	sort.Strings(ks)
+	parts := make([]string, len(ks))
+	for i, k := range ks {
+		parts[i] = k + "=" + labels[k]
+	}
+	return strings.Join(parts, ",")
+}
+
+// gatherFamily returns every NON-ZERO cell of one metric family as cellKey->value (skipping
+// the zero cells NewMetrics pre-initializes). Comparing this whole map against a complete
+// expected map rejects a missing, dropped, duplicated, RELABELED, or unexpected label cell —
+// not merely a wrong family total, which a one-line relabel leaves untouched.
+func gatherFamily(t *testing.T, reg *prometheus.Registry, name string) map[string]float64 {
 	t.Helper()
 	fams, err := reg.Gather()
 	if err != nil {
 		t.Fatalf("gather: %v", err)
 	}
-	var sum float64
+	out := map[string]float64{}
 	for _, mf := range fams {
 		if mf.GetName() != name {
 			continue
 		}
 		for _, m := range mf.GetMetric() {
-			got := map[string]string{}
+			v := m.GetCounter().GetValue()
+			if v == 0 {
+				continue
+			}
+			labels := map[string]string{}
 			for _, lp := range m.GetLabel() {
-				got[lp.GetName()] = lp.GetValue()
+				labels[lp.GetName()] = lp.GetValue()
 			}
-			match := true
-			for k, v := range want {
-				if got[k] != v {
-					match = false
-					break
-				}
-			}
-			if match {
-				sum += m.GetCounter().GetValue()
-			}
+			out[cellKey(labels)] = v
 		}
 	}
-	return sum
+	return out
 }
 
 // metric family names recordOracle writes into.
@@ -162,21 +176,44 @@ const (
 // CallWithOracle's observations describe, for every terminal shape: a native-win match, a
 // same-bytes drift, a provider fault, a transport fault, a BAML-parse error, a post-claim
 // parser panic (observations carried THROUGH the panic), a plan-mismatch pre-socket decline,
-// and a near-miss pre-socket decline. Each scenario asserts (a) every EXPECTED cell is
-// exactly one — under the enrollment-free surface=static_call/cohort=none attribution — and
-// (b) each metric family's TOTAL equals the expected count, so a MISSING or DOUBLE-COUNTED
-// failure-path metric (the pre-fix defect: population/phase/winner only, no plan/socket/
-// response/fallback/attempts) cannot pass.
+// and a near-miss pre-socket decline. Each scenario compares the COMPLETE per-label cell map
+// of every metric family against the exact expected map — so a missing, dropped, duplicated,
+// RELABELED (e.g. response_compare field assistant->raw), or unexpected cell fails, not merely
+// a wrong family total (which a one-line relabel leaves unchanged). Enrollment-freeness
+// (surface=static_call/cohort=none, never fe_v1) is enforced by the same exact compare: any
+// fe_v1 cell is an unexpected cell.
 func TestRecordOracle(t *testing.T) {
-	// sc is the enrollment-free attribution subset every phase/winner cell must carry.
-	sc := func(extra map[string]string) map[string]string {
-		out := map[string]string{"surface": "static_call", "cohort": "none"}
-		for k, v := range extra {
-			out[k] = v
-		}
-		return out
+	// Full-label-set builders for each family's cells (every label the family carries).
+	popl := func(disp string) map[string]string {
+		return map[string]string{"population": populationExactJSONU1, "disposition": disp}
 	}
-	// fullMatchObs is a native-win observation set; scenarios derive from it.
+	sc := func(phase string) map[string]string {
+		return map[string]string{"surface": "static_call", "cohort": "none", "phase": phase}
+	}
+	scw := func(winner string) map[string]string {
+		return map[string]string{"surface": "static_call", "cohort": "none", "winner": winner}
+	}
+	plan := func(result string) map[string]string { return map[string]string{"result": result, "field": "meta"} }
+	sock := func(outcome string) map[string]string { return map[string]string{"flag": "on", "outcome": outcome} }
+	resp := func(field, result string) map[string]string {
+		return map[string]string{"field": field, "result": result}
+	}
+	att := func(outcome string) map[string]string {
+		return map[string]string{"mode": "call", "engine": "native", "provider": "openai", "outcome": outcome}
+	}
+	fb := map[string]string{"kind": "parse_only"}
+	// respBranch is the 7-cell response-compare map for a served structured branch: the four
+	// native-owned facets + error always match; structured/order vary per scenario.
+	respBranch := func(structured, order string) map[string]float64 {
+		return map[string]float64{
+			cellKey(resp("translate", "match")): 1, cellKey(resp("assistant", "match")): 1,
+			cellKey(resp("raw", "match")): 1, cellKey(resp("reasoning", "match")): 1,
+			cellKey(resp("error", "match")):         1,
+			cellKey(resp("structured", structured)): 1, cellKey(resp("order", order)): 1,
+		}
+	}
+	one := func(labels map[string]string) map[string]float64 { return map[string]float64{cellKey(labels): 1} }
+
 	succ := func(engine string, obs bamlutils.NativeSpineUnaryOracleObservations) bamlutils.NativeSpineUnaryOracleResult {
 		r := bamlutils.SucceededOracleResult([]byte(`1`), "", "", engine)
 		r.Observations = obs
@@ -193,15 +230,12 @@ func TestRecordOracle(t *testing.T) {
 		return r
 	}
 
-	type cell struct {
-		name   string
-		labels map[string]string
-	}
+	// want is the COMPLETE non-zero cell map per family; an absent family means "no cell".
+	type want map[string]map[string]float64
 	scenarios := []struct {
-		name   string
-		res    bamlutils.NativeSpineUnaryOracleResult
-		ones   []cell         // cells that must each equal exactly 1
-		totals map[string]int // family -> exact total across the whole series
+		name string
+		res  bamlutils.NativeSpineUnaryOracleResult
+		want want
 	}{
 		{
 			name: "native win match",
@@ -211,20 +245,15 @@ func TestRecordOracle(t *testing.T) {
 				StructuredBranchServed: true, StructuredMatch: true, OrderMatch: true,
 				ServeOutcome: bamlutils.NativeStaticOutcomeSuccess,
 			}),
-			ones: []cell{
-				{mPop, map[string]string{"population": populationExactJSONU1, "disposition": dispSucceeded}},
-				{mPhase, sc(map[string]string{"phase": "claimed"})},
-				{mPhase, sc(map[string]string{"phase": "postclaim_terminal"})},
-				{mPhase, sc(map[string]string{"phase": "same_response_oracle"})},
-				{mWinner, sc(map[string]string{"winner": "native"})},
-				{mPlan, map[string]string{"result": "match", "field": "meta"}},
-				{mSocket, map[string]string{"flag": "on", "outcome": "responded"}},
-				{mResp, map[string]string{"field": "structured", "result": "match"}},
-				{mResp, map[string]string{"field": "order", "result": "match"}},
-				{mResp, map[string]string{"field": "error", "result": "match"}},
-				{mAttempts, map[string]string{"outcome": "success"}},
+			want: want{
+				mPop:      one(popl(dispSucceeded)),
+				mPhase:    {cellKey(sc("claimed")): 1, cellKey(sc("postclaim_terminal")): 1, cellKey(sc("same_response_oracle")): 1},
+				mWinner:   one(scw("native")),
+				mPlan:     one(plan("match")),
+				mSocket:   one(sock("responded")),
+				mResp:     respBranch("match", "match"),
+				mAttempts: one(att("success")),
 			},
-			totals: map[string]int{mPop: 1, mPhase: 3, mWinner: 1, mPlan: 1, mSocket: 1, mResp: 7, mFallback: 0, mAttempts: 1},
 		},
 		{
 			name: "same-bytes drift",
@@ -234,18 +263,16 @@ func TestRecordOracle(t *testing.T) {
 				StructuredBranchServed: true, StructuredMatch: false, OrderMatch: true, Fallback: true,
 				ServeOutcome: bamlutils.NativeStaticOutcomeSuccess,
 			}),
-			ones: []cell{
-				{mPop, map[string]string{"population": populationExactJSONU1, "disposition": dispSucceeded}},
-				{mWinner, sc(map[string]string{"winner": "baml_parse_same_response"})},
-				{mPhase, sc(map[string]string{"phase": "same_response_oracle"})},
-				{mPlan, map[string]string{"result": "match", "field": "meta"}},
-				{mSocket, map[string]string{"flag": "on", "outcome": "responded"}},
-				{mResp, map[string]string{"field": "structured", "result": "mismatch"}},
-				{mResp, map[string]string{"field": "order", "result": "match"}},
-				{mFallback, map[string]string{"kind": "parse_only"}},
-				{mAttempts, map[string]string{"outcome": "success"}},
+			want: want{
+				mPop:      one(popl(dispSucceeded)),
+				mPhase:    {cellKey(sc("claimed")): 1, cellKey(sc("postclaim_terminal")): 1, cellKey(sc("same_response_oracle")): 1},
+				mWinner:   one(scw("baml_parse_same_response")),
+				mPlan:     one(plan("match")),
+				mSocket:   one(sock("responded")),
+				mResp:     respBranch("mismatch", "match"),
+				mFallback: one(fb),
+				mAttempts: one(att("success")),
 			},
-			totals: map[string]int{mPop: 1, mPhase: 3, mWinner: 1, mPlan: 1, mSocket: 1, mResp: 7, mFallback: 1, mAttempts: 1},
 		},
 		{
 			name: "provider fault",
@@ -253,14 +280,14 @@ func TestRecordOracle(t *testing.T) {
 				PlanCompareRan: true, PlanMatched: true, SocketOpened: true, SocketResponded: true,
 				ServeOutcome: bamlutils.NativeStaticOutcomeProviderError,
 			}),
-			ones: []cell{
-				{mPop, map[string]string{"population": populationExactJSONU1, "disposition": dispFailed}},
-				{mWinner, sc(map[string]string{"winner": "failure"})},
-				{mPlan, map[string]string{"result": "match", "field": "meta"}},
-				{mSocket, map[string]string{"flag": "on", "outcome": "responded"}},
-				{mAttempts, map[string]string{"outcome": "provider_error"}},
+			want: want{
+				mPop:      one(popl(dispFailed)),
+				mPhase:    {cellKey(sc("claimed")): 1, cellKey(sc("postclaim_terminal")): 1},
+				mWinner:   one(scw("failure")),
+				mPlan:     one(plan("match")),
+				mSocket:   one(sock("responded")),
+				mAttempts: one(att("provider_error")),
 			},
-			totals: map[string]int{mPop: 1, mPhase: 2, mWinner: 1, mPlan: 1, mSocket: 1, mResp: 0, mFallback: 0, mAttempts: 1},
 		},
 		{
 			name: "transport fault",
@@ -268,12 +295,14 @@ func TestRecordOracle(t *testing.T) {
 				PlanCompareRan: true, PlanMatched: true, SocketOpened: true, SocketResponded: false,
 				ServeOutcome: bamlutils.NativeStaticOutcomeTransportError,
 			}),
-			ones: []cell{
-				{mPop, map[string]string{"population": populationExactJSONU1, "disposition": dispFailed}},
-				{mSocket, map[string]string{"flag": "on", "outcome": "transport_error"}},
-				{mAttempts, map[string]string{"outcome": "transport_error"}},
+			want: want{
+				mPop:      one(popl(dispFailed)),
+				mPhase:    {cellKey(sc("claimed")): 1, cellKey(sc("postclaim_terminal")): 1},
+				mWinner:   one(scw("failure")),
+				mPlan:     one(plan("match")),
+				mSocket:   one(sock("transport_error")),
+				mAttempts: one(att("transport_error")),
 			},
-			totals: map[string]int{mPop: 1, mPhase: 2, mWinner: 1, mPlan: 1, mSocket: 1, mResp: 0, mFallback: 0, mAttempts: 1},
 		},
 		{
 			name: "baml parse error",
@@ -282,13 +311,15 @@ func TestRecordOracle(t *testing.T) {
 				SameResponseOracleRan: true, ErrorCompareRecorded: true, ErrorCompareMatch: false,
 				ServeOutcome: bamlutils.NativeStaticOutcomeParseError,
 			}),
-			ones: []cell{
-				{mPop, map[string]string{"population": populationExactJSONU1, "disposition": dispFailed}},
-				{mPhase, sc(map[string]string{"phase": "same_response_oracle"})},
-				{mResp, map[string]string{"field": "error", "result": "mismatch"}},
-				{mAttempts, map[string]string{"outcome": "parse_error"}},
+			want: want{
+				mPop:      one(popl(dispFailed)),
+				mPhase:    {cellKey(sc("claimed")): 1, cellKey(sc("postclaim_terminal")): 1, cellKey(sc("same_response_oracle")): 1},
+				mWinner:   one(scw("failure")),
+				mPlan:     one(plan("match")),
+				mSocket:   one(sock("responded")),
+				mResp:     one(resp("error", "mismatch")),
+				mAttempts: one(att("parse_error")),
 			},
-			totals: map[string]int{mPop: 1, mPhase: 3, mWinner: 1, mPlan: 1, mSocket: 1, mResp: 1, mFallback: 0, mAttempts: 1},
 		},
 		{
 			// Post-claim parser panic: obs carry PlanCompareRan/SameResponseOracleRan set BEFORE
@@ -299,38 +330,39 @@ func TestRecordOracle(t *testing.T) {
 				PlanCompareRan: true, PlanMatched: true, SocketOpened: true, SocketResponded: true,
 				SameResponseOracleRan: true, ServeOutcome: bamlutils.NativeStaticOutcomeNone,
 			}),
-			ones: []cell{
-				{mPop, map[string]string{"population": populationExactJSONU1, "disposition": dispFailed}},
-				{mPhase, sc(map[string]string{"phase": "same_response_oracle"})},
-				{mWinner, sc(map[string]string{"winner": "failure"})},
-				{mSocket, map[string]string{"flag": "on", "outcome": "responded"}},
-				{mAttempts, map[string]string{"outcome": "internal_error"}},
+			want: want{
+				mPop:      one(popl(dispFailed)),
+				mPhase:    {cellKey(sc("claimed")): 1, cellKey(sc("postclaim_terminal")): 1, cellKey(sc("same_response_oracle")): 1},
+				mWinner:   one(scw("failure")),
+				mPlan:     one(plan("match")),
+				mSocket:   one(sock("responded")),
+				mAttempts: one(att("internal_error")),
 			},
-			totals: map[string]int{mPop: 1, mPhase: 3, mWinner: 1, mPlan: 1, mSocket: 1, mResp: 0, mFallback: 0, mAttempts: 1},
 		},
 		{
 			name: "plan-mismatch decline",
 			res:  decline(true, false),
-			ones: []cell{
-				{mPop, map[string]string{"population": populationExactJSONU1, "disposition": dispDeclined}},
-				{mPhase, sc(map[string]string{"phase": "preclaim_decline"})},
-				{mWinner, sc(map[string]string{"winner": "baml_transport"})},
-				{mPlan, map[string]string{"result": "mismatch", "field": "meta"}},
+			want: want{
+				mPop:    one(popl(dispDeclined)),
+				mPhase:  one(sc("preclaim_decline")),
+				mWinner: one(scw("baml_transport")),
+				mPlan:   one(plan("mismatch")),
 			},
-			totals: map[string]int{mPop: 1, mPhase: 1, mWinner: 1, mPlan: 1, mSocket: 0, mResp: 0, mFallback: 0, mAttempts: 0},
 		},
 		{
 			name: "near-miss decline",
 			res:  decline(false, false),
-			ones: []cell{
-				{mPop, map[string]string{"population": populationExactJSONU1, "disposition": dispDeclined}},
-				{mPhase, sc(map[string]string{"phase": "preclaim_decline"})},
-				{mWinner, sc(map[string]string{"winner": "baml_transport"})},
+			want: want{
+				mPop:    one(popl(dispDeclined)),
+				mPhase:  one(sc("preclaim_decline")),
+				mWinner: one(scw("baml_transport")),
 			},
-			totals: map[string]int{mPop: 1, mPhase: 1, mWinner: 1, mPlan: 0, mSocket: 0, mResp: 0, mFallback: 0, mAttempts: 0},
 		},
 	}
 
+	// Every family is checked in every scenario, so an unexpected cell in a family a scenario
+	// does not populate (e.g. a stray fe_v1 winner, or a fallback on a non-drift path) fails.
+	families := []string{mPop, mPhase, mWinner, mPlan, mSocket, mResp, mFallback, mAttempts}
 	inv := bamlutils.NativeStaticInvocation{Provider: "openai"}
 	for _, s := range scenarios {
 		t.Run(s.name, func(t *testing.T) {
@@ -339,28 +371,21 @@ func TestRecordOracle(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewMetrics: %v", err)
 			}
-			pop, err := registerPopulationCounter(reg)
+			popCounter, err := registerPopulationCounter(reg)
 			if err != nil {
 				t.Fatalf("registerPopulationCounter: %v", err)
 			}
-			recordOracle(m, pop, inv, s.res)
+			recordOracle(m, popCounter, inv, s.res)
 
-			for _, c := range s.ones {
-				if got := sumCounter(t, reg, c.name, c.labels); got != 1 {
-					t.Errorf("%s cell %v = %v, want exactly 1", c.name, c.labels, got)
+			for _, fam := range families {
+				got := gatherFamily(t, reg, fam)
+				exp := s.want[fam]
+				if exp == nil {
+					exp = map[string]float64{}
 				}
-			}
-			for name, want := range s.totals {
-				if got := sumCounter(t, reg, name, nil); got != float64(want) {
-					t.Errorf("%s TOTAL = %v, want %d (no missing/double-counted cell)", name, got, want)
+				if !reflect.DeepEqual(got, exp) {
+					t.Errorf("%s cells =\n    %v\nwant EXACTLY\n    %v\n(a missing, dropped, duplicated, relabeled, or unexpected label cell)", fam, got, exp)
 				}
-			}
-			// Enrollment-free: nothing under a fe_v1 cohort, ever.
-			if got := sumCounter(t, reg, mWinner, map[string]string{"cohort": "fe_v1"}); got != 0 {
-				t.Errorf("composite fabricated an enrollment cohort: winner{fe_v1} = %v", got)
-			}
-			if got := sumCounter(t, reg, mPhase, map[string]string{"cohort": "fe_v1"}); got != 0 {
-				t.Errorf("composite fabricated an enrollment cohort: phase{fe_v1} = %v", got)
 			}
 		})
 	}
