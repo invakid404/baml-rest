@@ -670,8 +670,8 @@ func TestBootedArtifactDefaultSelectsExactJSONStatic(t *testing.T) {
 	if got := native.phaseBySurface["static_call/same_response_oracle"]; got != 1 {
 		t.Errorf("admission_phase{surface=static_call,phase=same_response_oracle} = %v, want 1 (the same-bytes oracle ran)", got)
 	}
-	if native.planCompareMatch < 1 {
-		t.Errorf("plan_compare match = %v, want >= 1 (the live BAML plan compare matched)", native.planCompareMatch)
+	if native.planCompareMatch != 1 {
+		t.Errorf("plan_compare match = %v, want exactly 1 (one U1 request, one live BAML plan match)", native.planCompareMatch)
 	}
 	if native.nativeSockets != 1 {
 		t.Errorf("native sockets = %v, want exactly 1", native.nativeSockets)
