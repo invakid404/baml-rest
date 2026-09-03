@@ -111,8 +111,44 @@ func TestOracleWinner(t *testing.T) {
 	}
 }
 
-// TestRecordOracle proves the composite reuses the bounded phase/winner series and
-// increments the bounded population counter, with NO enrollment cohort (CohortNone).
+// sumCounter sums every CounterVec cell whose labels CONTAIN the wanted subset (partial
+// match), by name — for metrics with more labels than the assertion pins. A nil/empty want
+// sums the whole series.
+func sumCounter(t *testing.T, reg *prometheus.Registry, name string, want map[string]string) float64 {
+	t.Helper()
+	fams, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	var sum float64
+	for _, mf := range fams {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			got := map[string]string{}
+			for _, lp := range m.GetLabel() {
+				got[lp.GetName()] = lp.GetValue()
+			}
+			match := true
+			for k, v := range want {
+				if got[k] != v {
+					match = false
+					break
+				}
+			}
+			if match {
+				sum += m.GetCounter().GetValue()
+			}
+		}
+	}
+	return sum
+}
+
+// TestRecordOracle proves the composite replays the FULL bounded metric series — plan
+// compare, native socket, per-facet response compare, fallback, serve outcome, and the
+// same-response phase — plus population/phase/winner, all under CohortNone (no enrollment),
+// from the observations CallWithOracle carries out.
 func TestRecordOracle(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m, err := admission.NewMetrics(reg)
@@ -123,21 +159,67 @@ func TestRecordOracle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("registerPopulationCounter: %v", err)
 	}
+	inv := bamlutils.NativeStaticInvocation{Provider: "openai"}
 
-	recordOracle(m, pop, bamlutils.SucceededOracleResult([]byte(`1`), "", "", bamlutils.NativeStaticServeEngineNative))
-	recordOracle(m, pop, bamlutils.DeclinedOracleResult(errors.New("d"), "admission", "r"))
-	recordOracle(m, pop, bamlutils.FailedAfterClaimOracleResult(errors.New("f"), "transport", "r", ""))
+	// A NATIVE-WIN success carries full observations: plan matched, one responded socket,
+	// same-response oracle entered, structured/order match, serve outcome success.
+	nativeWin := bamlutils.SucceededOracleResult([]byte(`1`), "", "", bamlutils.NativeStaticServeEngineNative)
+	nativeWin.Observations = bamlutils.NativeSpineUnaryOracleObservations{
+		PlanCompareRan: true, PlanMatched: true,
+		SocketOpened: true, SocketResponded: true,
+		SameResponseOracleRan: true,
+		ErrorCompareRecorded:  true, ErrorCompareMatch: true,
+		StructuredBranchServed: true, StructuredMatch: true, OrderMatch: true,
+		ServeOutcome: bamlutils.NativeStaticOutcomeSuccess,
+	}
+	recordOracle(m, pop, inv, nativeWin)
 
-	const name = "debaml_native_static_population_total"
-	for _, disp := range []string{dispSucceeded, dispDeclined, dispFailed} {
-		if got := counterValue(t, reg, name, map[string]string{"population": populationExactJSONU1, "disposition": disp}); got != 1 {
-			t.Errorf("population %s = %v, want 1", disp, got)
+	checks := []struct {
+		what   string
+		name   string
+		want   map[string]string
+		expect float64
+	}{
+		{"population succeeded", "debaml_native_static_population_total", map[string]string{"population": populationExactJSONU1, "disposition": dispSucceeded}, 1},
+		{"plan_compare match", "baml_rest_debaml_plan_compare_total", map[string]string{"result": "match"}, 1},
+		{"native_sockets responded", "baml_rest_debaml_native_sockets_total", map[string]string{"outcome": "responded"}, 1},
+		{"phase same_response_oracle", "baml_rest_debaml_admission_phase_total", map[string]string{"surface": "static_call", "phase": "same_response_oracle"}, 1},
+		{"phase claimed", "baml_rest_debaml_admission_phase_total", map[string]string{"surface": "static_call", "phase": "claimed"}, 1},
+		{"winner native", "baml_rest_debaml_winner_total", map[string]string{"surface": "static_call", "winner": "native"}, 1},
+		{"attempts success", "baml_rest_debaml_attempts_total", map[string]string{"outcome": "success"}, 1},
+		{"response_compare structured match", "baml_rest_debaml_response_compare_total", map[string]string{"field": "structured", "result": "match"}, 1},
+	}
+	for _, c := range checks {
+		if got := sumCounter(t, reg, c.name, c.want); got != c.expect {
+			t.Errorf("native-win %s (%s%v) = %v, want %v", c.what, c.name, c.want, got, c.expect)
 		}
 	}
-	// No enrollment cohort was fabricated: the population dimension is the only new label,
-	// and it never carries a config identity.
-	if got := counterValue(t, reg, name, map[string]string{"population": "fe_v1", "disposition": dispSucceeded}); got != 0 {
-		t.Errorf("population lane fabricated an enrollment cohort label: got %v", got)
+	// No enrollment cohort was fabricated: the winner/phase carry cohort=none, never fe_v1.
+	if got := sumCounter(t, reg, "baml_rest_debaml_winner_total", map[string]string{"surface": "static_call", "cohort": "fe_v1"}); got != 0 {
+		t.Errorf("composite fabricated an enrollment cohort: winner{fe_v1} = %v", got)
+	}
+
+	// A DRIFT success records fallback (the same-bytes BAML parse won).
+	drift := bamlutils.SucceededOracleResult([]byte(`2`), "", "", bamlutils.NativeStaticServeEngineBAMLParse)
+	drift.Observations = bamlutils.NativeSpineUnaryOracleObservations{
+		PlanCompareRan: true, PlanMatched: true, SocketOpened: true, SocketResponded: true,
+		SameResponseOracleRan: true, StructuredBranchServed: true, Fallback: true,
+		ServeOutcome: bamlutils.NativeStaticOutcomeSuccess,
+	}
+	recordOracle(m, pop, inv, drift)
+	if got := sumCounter(t, reg, "baml_rest_debaml_fallback_total", nil); got != 1 {
+		t.Errorf("fallback_total = %v after one drift, want 1", got)
+	}
+
+	// A pre-socket DECLINE records population(declined) + a preclaim phase, and opens NO
+	// socket / runs NO plan compare.
+	recordOracle(m, pop, inv, bamlutils.DeclinedOracleResult(errors.New("d"), "registry", "method_not_registered"))
+	if got := counterValue(t, reg, "debaml_native_static_population_total", map[string]string{"population": populationExactJSONU1, "disposition": dispDeclined}); got != 1 {
+		t.Errorf("population declined = %v, want 1", got)
+	}
+	// Two claimed attempts opened sockets; the decline opened none.
+	if got := sumCounter(t, reg, "baml_rest_debaml_native_sockets_total", nil); got != 2 {
+		t.Errorf("native_sockets_total = %v, want 2 (the decline opened no socket)", got)
 	}
 }
 
