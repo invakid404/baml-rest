@@ -144,6 +144,14 @@ func TestNativeCapableWorkerIsTheStandardArtifact(t *testing.T) {
 	if !sel.hasTag("nativestreamserve") {
 		t.Errorf("default build tags %v lack nativestreamserve; the standard artifact IS the stream-serve profile", sel.buildTags)
 	}
+	// ExecBridge-U1c: the standard native-capable serve worker now compiles the
+	// generated native spine registry (its serveProfileOptions installs the oracle
+	// composite, which drives NewExecutor), so the profile-neutral registry tag is
+	// present. Without it standardspineoracle.NewExecutor would see the fail-loud stub
+	// and the worker would refuse to serve.
+	if !sel.hasTag("debamlnativespinegenerated") {
+		t.Errorf("default build tags %v lack debamlnativespinegenerated; the standard oracle composite would see the fail-loud registry stub", sel.buildTags)
+	}
 }
 
 // TestBAMLOnlyRollbackArtifactStaysSelectable pins the other half of the
@@ -207,6 +215,14 @@ func TestShadowProfileIsNativeCapableButNotStreamServe(t *testing.T) {
 	if sel.hasTag("nativestreamserve") {
 		t.Errorf("shadow build tags %v include nativestreamserve; the shadow worker installs no stream serve factory", sel.buildTags)
 	}
+	// ExecBridge-U1c: the shadow worker does NOT use the generated native spine registry
+	// (it installs the no-send static shadow comparator, not the oracle composite), so
+	// the profile-neutral registry tag must be absent — the same GO_BUILD_TAGS would
+	// otherwise force the shadow build to carry (and require generation of) a registry it
+	// never imports.
+	if sel.hasTag("debamlnativespinegenerated") {
+		t.Errorf("shadow build tags %v include debamlnativespinegenerated; the shadow worker uses no generated registry", sel.buildTags)
+	}
 }
 
 // TestArtifactSelectorsAreStrictlyDecoded pins that the two variables deciding
@@ -248,8 +264,8 @@ func TestArtifactSelectorsAreStrictlyDecoded(t *testing.T) {
 // TestNativeOnlyWorkerIsSelectableAndTaggedGenerated is the ExecBridge-U1b
 // selection contract: NATIVE_ONLY_WORKER=true selects the BAML-free native-only
 // worker. It is native_capable (it links the native engine), it carries the
-// debamlnativeonlygenerated tag (so the generated registry, not the fail-loud
-// stub, compiles), and it is NOT a stream-serve profile (its cohort is unary
+// profile-neutral debamlnativespinegenerated tag (so the generated registry, not the
+// fail-loud stub, compiles), and it is NOT a stream-serve profile (its cohort is unary
 // final-call only), so the host must not arm stream-retry suppression for it.
 func TestNativeOnlyWorkerIsSelectableAndTaggedGenerated(t *testing.T) {
 	sel := runBuildScript(t, map[string]string{"NATIVE_ONLY_WORKER": "true"})
@@ -259,8 +275,8 @@ func TestNativeOnlyWorkerIsSelectableAndTaggedGenerated(t *testing.T) {
 	if sel.nativeOnlyWorker != "true" {
 		t.Errorf("native_only_worker = %q, want true", sel.nativeOnlyWorker)
 	}
-	if !sel.hasTag("debamlnativeonlygenerated") {
-		t.Errorf("native-only build tags %v lack debamlnativeonlygenerated; the fail-loud stub would compile instead of the generated registry", sel.buildTags)
+	if !sel.hasTag("debamlnativespinegenerated") {
+		t.Errorf("native-only build tags %v lack debamlnativespinegenerated; the fail-loud stub would compile instead of the generated registry", sel.buildTags)
 	}
 	if !sel.hasTag("nativeworkerartifact") {
 		t.Errorf("native-only build tags %v lack nativeworkerartifact", sel.buildTags)
@@ -270,10 +286,13 @@ func TestNativeOnlyWorkerIsSelectableAndTaggedGenerated(t *testing.T) {
 	}
 }
 
-// TestNativeOnlyWorkerFlagOffIsUnchanged proves --native-only-worker=false leaves
-// the standard artifact selection exactly as it was: the native-only tag is
-// absent and the standard native-capable/stream-serve artifact is selected.
-func TestNativeOnlyWorkerFlagOffIsUnchanged(t *testing.T) {
+// TestNativeOnlyWorkerFlagOffKeepsTheStandardArtifact proves --native-only-worker=false
+// selects the STANDARD native-capable serve artifact. Since ExecBridge-U1c that standard
+// artifact ALSO carries the profile-neutral debamlnativespinegenerated tag (its
+// serveProfileOptions installs the oracle composite over the generated registry), so the
+// two native artifacts are distinguished by native_only_worker + WorkerPackage, NOT by
+// the tag. The stream-serve profile is retained.
+func TestNativeOnlyWorkerFlagOffKeepsTheStandardArtifact(t *testing.T) {
 	for _, env := range []map[string]string{
 		nil,
 		{"NATIVE_ONLY_WORKER": "false"},
@@ -283,10 +302,12 @@ func TestNativeOnlyWorkerFlagOffIsUnchanged(t *testing.T) {
 		if sel.nativeOnlyWorker != "false" {
 			t.Errorf("env %v: native_only_worker = %q, want false", env, sel.nativeOnlyWorker)
 		}
-		if sel.hasTag("debamlnativeonlygenerated") {
-			t.Errorf("env %v: standard build tags %v must not include debamlnativeonlygenerated", env, sel.buildTags)
+		// The standard artifact carries the generic registry tag (the oracle composite),
+		// but is NOT the native-only worker.
+		if !sel.hasTag("debamlnativespinegenerated") {
+			t.Errorf("env %v: standard build tags %v lack debamlnativespinegenerated; the oracle composite would see the fail-loud stub", env, sel.buildTags)
 		}
-		// The standard artifact is unchanged: native_capable + stream serve.
+		// The standard artifact is otherwise unchanged: native_capable + stream serve.
 		if sel.profile != "native_capable" || !sel.hasTag("nativestreamserve") {
 			t.Errorf("env %v: flag-off build changed the standard artifact (profile=%q tags=%v)", env, sel.profile, sel.buildTags)
 		}

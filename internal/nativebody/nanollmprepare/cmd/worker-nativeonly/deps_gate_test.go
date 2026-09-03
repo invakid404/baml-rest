@@ -38,7 +38,7 @@ var positiveDeps = []string{
 // runs `GOWORK=off go list -deps` against the EXACT command package and tags built
 // into cmd/serve/worker, and fails on any BAML/CFFI/dynclient/rootruntime/
 // introspected/workerboot/root-baml_rest dependency. TestMain has already generated
-// the deployment registry, so the debamlnativeonlygenerated build sees the real
+// the deployment registry, so the debamlnativespinegenerated build sees the real
 // aggregate. This is the acceptance gate; the container build runs the same check.
 func TestNativeOnlyWorkerHasNoBAML(t *testing.T) {
 	_, moduleRoot := repoPaths()

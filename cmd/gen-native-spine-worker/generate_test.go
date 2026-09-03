@@ -76,7 +76,7 @@ func TestGenerateEmitsAdmittedRegistry(t *testing.T) {
 	data := jsonAliasDescriptorJSON(t)
 	out := t.TempDir()
 	seedStub(t, out)
-	if err := Generate(data, out, defaultRegistryPackagePath); err != nil {
+	if err := Generate(data, out, defaultRegistryPackagePath, false); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -96,6 +96,8 @@ func TestGenerateEmitsAdmittedRegistry(t *testing.T) {
 		"func candidates() []spine.UnaryRegistration",
 		"func NewRuntime() (worker.Runtime, error)",
 		"spine.NewWorkerRuntime(proj, candidates(), nil)",
+		"func NewExecutor() (bamlutils.NativeSpineUnaryOracleExecutor, error)",
+		"spine.NewPopulationExecutor(proj, candidates(), nil)",
 	} {
 		if !strings.Contains(aggStr, want) {
 			t.Errorf("generated.go missing %q", want)
@@ -143,10 +145,10 @@ func TestGenerateIsDeterministic(t *testing.T) {
 	b := t.TempDir()
 	seedStub(t, a)
 	seedStub(t, b)
-	if err := Generate(data, a, defaultRegistryPackagePath); err != nil {
+	if err := Generate(data, a, defaultRegistryPackagePath, false); err != nil {
 		t.Fatalf("Generate(a): %v", err)
 	}
-	if err := Generate(data, b, defaultRegistryPackagePath); err != nil {
+	if err := Generate(data, b, defaultRegistryPackagePath, false); err != nil {
 		t.Fatalf("Generate(b): %v", err)
 	}
 	ta, tb := collectTree(t, a), collectTree(t, b)
@@ -184,7 +186,7 @@ func TestGenerateCleansStaleOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	staleRootGo := filepath.Join(out, "stale_root_from_old_layout.go")
-	if err := os.WriteFile(staleRootGo, []byte("//go:build debamlnativeonlygenerated\n\npackage nativegenerated\n\nfunc StaleLeftover() {}\n"), 0o644); err != nil {
+	if err := os.WriteFile(staleRootGo, []byte("//go:build debamlnativespinegenerated\n\npackage nativegenerated\n\nfunc StaleLeftover() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	staleProjJSON := filepath.Join(out, projectJSONFileName)
@@ -194,7 +196,7 @@ func TestGenerateCleansStaleOutput(t *testing.T) {
 	seedStub(t, out)
 	stub := filepath.Join(out, stubFileName)
 
-	if err := Generate(data, out, defaultRegistryPackagePath); err != nil {
+	if err := Generate(data, out, defaultRegistryPackagePath, false); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 
@@ -232,7 +234,7 @@ func TestCleanOutputDirRefusesMissingDir(t *testing.T) {
 		t.Fatalf("cleanOutputDir accepted a non-existent dir; it must be refused (no committed stub)")
 	}
 	// And the full Generate path must not create the stubless directory.
-	if err := Generate(jsonAliasDescriptorJSON(t), missing, defaultRegistryPackagePath); err == nil {
+	if err := Generate(jsonAliasDescriptorJSON(t), missing, defaultRegistryPackagePath, false); err == nil {
 		t.Fatalf("Generate accepted a non-existent --out-dir; it must refuse rather than create a stubless registry")
 	}
 	if _, err := os.Stat(missing); !os.IsNotExist(err) {
@@ -311,8 +313,8 @@ func TestSubpackageNameIsCollisionProof(t *testing.T) {
 }
 
 func TestGenerateRejectsEmptyCandidateProject(t *testing.T) {
-	// A project with zero static-unary methods yields no candidate; the generator
-	// must refuse rather than emit an empty registry.
+	// A project with zero static-unary methods yields no candidate; the native-only
+	// generator (allowEmpty=false) must refuse rather than emit an empty registry.
 	proj := projectdescriptor.Project{
 		Version:                 projectdescriptor.Version,
 		PromptDescriptorVersion: promptdescriptor.Version,
@@ -325,12 +327,55 @@ func TestGenerateRejectsEmptyCandidateProject(t *testing.T) {
 	// Assert the specific candidate-free refusal, not merely any error: a method-less
 	// project can also fail earlier in proj.Validate(), which would pass this test
 	// without reaching the intended candidate-free branch.
-	err = Generate(data, t.TempDir(), defaultRegistryPackagePath)
+	err = Generate(data, t.TempDir(), defaultRegistryPackagePath, false)
 	if err == nil {
 		t.Fatalf("Generate accepted a candidate-free project, want refusal")
 	}
 	if !strings.Contains(err.Error(), "no codegen-admitted static-unary method") {
 		t.Fatalf("error = %v, want the candidate-free refusal", err)
+	}
+}
+
+// TestGenerateAllowsEmptyPopulationInStandardMode is the standard-composite twin of the
+// refusal above: with allowEmpty=true a candidate-free project is PERMITTED and yields a
+// valid aggregate carrying an empty candidate list and an all-decline NewExecutor. This
+// is the "empty is fine for the standard artifact, fatal for native-only" split encoded
+// in the generator, not an environment switch.
+func TestGenerateAllowsEmptyPopulationInStandardMode(t *testing.T) {
+	proj := projectdescriptor.Project{
+		Version:                 projectdescriptor.Version,
+		PromptDescriptorVersion: promptdescriptor.Version,
+		SchemaVersion:           schemadescriptor.Version,
+	}
+	data, err := json.Marshal(proj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := t.TempDir()
+	seedStub(t, out)
+	if err := Generate(data, out, defaultRegistryPackagePath, true); err != nil {
+		t.Fatalf("Generate(allowEmpty=true) refused a candidate-free project: %v", err)
+	}
+	agg, err := os.ReadFile(filepath.Join(out, aggregateFileName))
+	if err != nil {
+		t.Fatalf("generated.go missing: %v", err)
+	}
+	aggStr := string(agg)
+	for _, want := range []string{
+		"func NewExecutor() (bamlutils.NativeSpineUnaryOracleExecutor, error)",
+		"func NewRuntime() (worker.Runtime, error)",
+		"func candidates() []spine.UnaryRegistration",
+	} {
+		if !strings.Contains(aggStr, want) {
+			t.Errorf("empty-population aggregate missing %q", want)
+		}
+	}
+	// No per-method subpackage was emitted, so the aggregate must import none.
+	if strings.Contains(aggStr, defaultRegistryPackagePath+"/m") {
+		t.Errorf("empty-population aggregate imports a per-method subpackage, want none:\n%s", aggStr)
+	}
+	if dirs := subpackageDirs(t, out); len(dirs) != 0 {
+		t.Errorf("empty-population generation emitted %d subpackages, want 0: %v", len(dirs), dirs)
 	}
 }
 
