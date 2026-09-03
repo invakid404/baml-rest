@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -23,6 +24,8 @@ import (
 	"github.com/invakid404/baml-rest/internal/nativespinejsonfixture"
 	"github.com/invakid404/baml-rest/nativeserve/admission"
 )
+
+const secretPayload = "sk-topsecret-panic-value"
 
 // oracleLoopback stands a loopback provider up and returns its /v1 base URL + a hit
 // counter.
@@ -221,5 +224,66 @@ func TestCallWithOracle_LiveOracle_PlanMismatchDeclines(t *testing.T) {
 	}
 	if !res.Observations.PlanCompareRan || res.Observations.PlanMatched {
 		t.Errorf("observations = %+v, want plan compare ran + not matched", res.Observations)
+	}
+}
+
+// TestCallWithOracle_LiveOracle_PanickingPlanBuilderDeclinesZeroSocket pins P2-4/P2-5: a
+// BuildBAMLRequest that PANICS (inside the pre-claim plan compare) is a bounded PRE-SOCKET
+// decline — no provider request, no claim, the request-scoped client is closed by the
+// admission defer (no leak), and the recovered panic value never reaches the public error.
+func TestCallWithOracle_LiveOracle_PanickingPlanBuilderDeclinesZeroSocket(t *testing.T) {
+	lb := newOracleLoopback(t, func(w http.ResponseWriter, r *http.Request) { okJSONContent(w, `{"weather":"sunny"}`) })
+	e, _ := liveOracle(t, lb.baseURL())
+
+	var captured string
+	panicPlan := func(context.Context) (*llmhttp.Request, error) { panic("plan-builder panic: " + secretPayload) }
+	res := e.CallWithOracle(context.Background(), liveInv(t, panicPlan, `{"weather":"sunny"}`, &captured))
+	if res.Disposition != bamlutils.NativeSpineDeclinedPreSocket {
+		t.Fatalf("disposition = %v, want declined_pre_socket (a plan-builder panic is a pre-claim decline)", res.Disposition)
+	}
+	if lb.hits != 0 {
+		t.Errorf("provider hits = %d, want 0 (no socket on a pre-claim panic)", lb.hits)
+	}
+	if snap := e.Metrics().Snapshot(); snap.Sockets != 0 || snap.Claims != 0 {
+		t.Errorf("metrics = %+v, want zero sockets/claims", snap)
+	}
+	if res.Err != nil && strings.Contains(res.Err.Error(), secretPayload) {
+		t.Errorf("the recovered panic value leaked into the public error: %v", res.Err)
+	}
+}
+
+// TestCallWithOracle_LiveOracle_PostClaimPanicIsBoundedAndKeepsPhase pins P2-5/P2-6: a
+// BAMLOnlyParse that PANICS after the claim is a bounded terminal failure — the recovered
+// value is dropped from the public error, and the same-response phase is still recorded
+// (the panic-safe hook fired before the parser), so metric attribution is not lost.
+func TestCallWithOracle_LiveOracle_PostClaimPanicIsBoundedAndKeepsPhase(t *testing.T) {
+	const content = `{"weather":"sunny"}`
+	lb := newOracleLoopback(t, func(w http.ResponseWriter, r *http.Request) { okJSONContent(w, content) })
+	e, buildBAML := liveOracle(t, lb.baseURL())
+
+	values, err := nativespinejsonfixture.Binding().ProjectInput(&nativespinejsonfixture.StaticRecursiveAliasJsonInput{Topic: "weather"})
+	if err != nil {
+		t.Fatalf("ProjectInput: %v", err)
+	}
+	res := e.CallWithOracle(context.Background(), bamlutils.NativeStaticInvocation{
+		Method:           nativespinejsonfixture.MethodName,
+		Values:           values,
+		Mode:             bamlutils.NativeStaticModeFinal,
+		Provider:         "openai",
+		SingleLeaf:       true,
+		BuildBAMLRequest: buildBAML,
+		BAMLOnlyParse:    func(context.Context, string) ([]byte, error) { panic("parse panic: " + secretPayload) },
+	})
+	if res.Disposition != bamlutils.NativeSpineFailedAfterClaim {
+		t.Fatalf("disposition = %v, want failed_after_claim (a post-claim parser panic is terminal)", res.Disposition)
+	}
+	if lb.hits != 1 {
+		t.Errorf("provider hits = %d, want exactly 1 (the socket opened; no resend)", lb.hits)
+	}
+	if res.Err == nil || strings.Contains(res.Err.Error(), secretPayload) {
+		t.Errorf("post-claim panic error = %v; the recovered payload must be dropped (bounded sentinel)", res.Err)
+	}
+	if !res.Observations.SameResponseOracleRan {
+		t.Error("a post-claim parser panic lost the same-response phase observation")
 	}
 }

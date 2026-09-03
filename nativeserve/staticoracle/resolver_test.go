@@ -72,6 +72,23 @@ func TestResolve_ParseDeclineServesBAMLParse(t *testing.T) {
 	}
 }
 
+// TestResolve_HookFiresBeforeParserPanic pins P2-6: onStructuredOracle is invoked BEFORE
+// bamlOnlyParse, so a parser PANIC (which unwinds without Resolve returning) still lets the
+// caller record the same-response phase — the loss master avoided.
+func TestResolve_HookFiresBeforeParserPanic(t *testing.T) {
+	entered := false
+	res := &execute.AttemptResult{Outcome: execute.OutcomeStructured, Structured: []byte(`{"k":1}`), AssistantText: `{"k":1}`}
+	panicParse := func(context.Context, string) ([]byte, error) { panic("boom") }
+	func() {
+		defer func() { _ = recover() }()
+		Resolve(context.Background(), nil, res, nil, panicParse, func() { entered = true })
+		t.Error("Resolve returned despite a parser panic")
+	}()
+	if !entered {
+		t.Error("onStructuredOracle did not fire before the parser panicked — the same-response phase would be lost")
+	}
+}
+
 // TestResolve_ProviderErrorIsHTTPError: a provider non-2xx maps to a typed HTTPError.
 func TestResolve_ProviderErrorIsHTTPError(t *testing.T) {
 	res := &execute.AttemptResult{Outcome: execute.OutcomeProviderError, ProviderStatus: 429, ProviderBody: []byte(`{"error":"x"}`)}
