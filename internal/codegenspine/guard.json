@@ -3,7 +3,7 @@
   "native_worker_tar": {
     "path": "cmd/build/nativeworker_module.tar",
     "size_bytes": 912384,
-    "sha256": "7a6ceeb074604fdb9a14568a706d14147adaec628c4a4d5f5dc036948aee2f0d"
+    "sha256": "78ed94f9f7e3b35a5496854779c237a30b46d5798f5a683011cd116c025b7e86"
   },
   "first_party_pins": [
     {
@@ -41,7 +41,7 @@
     {
       "prefix": "nativeserve",
       "file_count": 109,
-      "sha256": "022d78d10297bde973c9bc63026ad22b9dad561440c548f451f1a1c1244b1a3f"
+      "sha256": "52b6739dee66b4b4890abb14d7fc68751c06f435dcd85e65317d5262617a2507"
     },
     {
       "prefix": "internal/nativebody/nanollmprepare",

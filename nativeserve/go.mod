@@ -29,10 +29,11 @@
 // packages the root's internal/* imports here), so the three first-party requires
 // are pinned to the ORIGIN-RESOLVABLE pseudo-version of a single commit — the one
 // nativeserve/pin_followup.md records and cmd/build's TestFirstPartyPinFollowupIsTracked
-// checks, which is CURRENTLY the ExecBridge-U1c guarded-source commit ae3900c1a0ff (a
-// BRANCH-ONLY pin whose tracked follow-up is OUTSTANDING — the post-squash re-pin to the U1c
-// MASTER squash commit is OWED; see the PIN-STATUS block below, pin_followup.md, and the
-// ExecBridge-U1c note by the pins). It SUPERSEDES the prior ExecBridge-U1b baseline
+// checks, which is CURRENTLY the ExecBridge-U1c MASTER squash commit 56d5473a1bdb (a
+// MASTER-DURABLE pin whose tracked follow-up is RESOLVED — the post-squash re-pin to the U1c
+// master squash commit has been PERFORMED; see the PIN-STATUS block below, pin_followup.md, and
+// the ExecBridge-U1c note by the pins). The branch-only ae3900c1a0ff it briefly named during
+// PR #713's review is HISTORICAL. It SUPERSEDES the prior ExecBridge-U1b baseline
 // 8fe27577082c, which was master-durable before U1c. It is NOT the
 // historical Slice 7.1b master merge 15b98cf6ebe4 named in the floor notes below — one
 // consistent snapshot that resolves cleanly off a fresh checkout with zero
