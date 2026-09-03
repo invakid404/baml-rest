@@ -20,6 +20,10 @@ var forbiddenDeps = []string{
 	"github.com/invakid404/baml-rest/internal/rootruntime",
 	"github.com/invakid404/baml-rest/introspected",
 	"github.com/invakid404/baml-rest/internal/workerboot",
+	// ExecBridge-U1c: the standard-only oracle composite is BAML-AWARE (it consumes the
+	// neutral BAML closures) and is imported ONLY by cmd/worker; the native-only command
+	// must never reach it.
+	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/standardspineoracle",
 }
 
 // positiveDeps must be present so an empty/wrong go-list output cannot pass this

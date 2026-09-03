@@ -16,13 +16,16 @@
 // direct-parse observation sink (a telemetry sink, not a serving callback — /parse
 // stays BAML-served).
 //
-// WHAT IT SERVES TODAY. Installing a factory is CAPABILITY, not enrollment. Since
-// the serving-cutover S1 slice, admission additionally requires an ENROLLED
-// surface/cohort pair before any native work, and the shipped policy
-// (admission.ProductionCohortGate) enrolls NOTHING — so every one of the surfaces
-// above declines pre-socket with `cohort_not_enrolled` and BAML serves 100% of
-// traffic on this binary. Enrollment is a separate, reviewed change to that policy;
-// the umbrella flag below remains the one global revert.
+// WHAT IT SERVES TODAY. Installing a factory is CAPABILITY, and for the dynamic
+// serve/stream/observe lanes it is also gated by ENROLLMENT: the shipped
+// admission.ProductionCohortGate enrolls only the fe-v1 dynamic-call cohort, so those
+// surfaces decline pre-socket with `cohort_not_enrolled` for every other configuration.
+// The static unary /call lane is DIFFERENT since ExecBridge-U1c: its factory
+// (standardspineoracle.NewStaticServe) DEFAULT-SELECTS the exact U1 structural population
+// through the generated spine + a live BAML plan-compare oracle, with NO enrollment — the
+// spine lane is cohort-gate-exempt and its admission is a code-owned totality gate over
+// the deployment's generated registry. Every static near-miss still declines pre-socket
+// to BAML. The umbrella flag below remains the one global revert for all lanes.
 //
 // It is built FROM the out-of-go.work nanollmprepare module with GOWORK=off + CGO
 // so the nanollm static archive links into it (via the nativeworker/canary
@@ -44,6 +47,7 @@ package main
 import (
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/nativeworker"
+	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/standardspineoracle"
 	"github.com/invakid404/baml-rest/internal/workerboot"
 	"github.com/invakid404/baml-rest/nativeserve"
 )
@@ -129,16 +133,20 @@ func serveProfileOptions() workerboot.Options {
 		// change. Installed ONLY under the umbrella flag (this whole branch is skipped
 		// when the flag is off), so the static observer is hard-off and 100% BAML then.
 		NativeStaticObserveFactory: nativeserve.NewStaticObserve,
-		// The STATIC SERVE factory (de-BAML Slice 8C): returns the neutral
+		// The STATIC SERVE factory (ExecBridge-U1c oracle composite): returns the neutral
 		// bamlutils.NativeStaticServeFunc the generated static /call seam installs — it
-		// actually SERVES an admitted static unary /call natively (one exact RoundTrip,
-		// native static SAP over the selected Return Bundle, the S5 same-response BAML
-		// parse safety compare) or declines PRE-SOCKET to BAML. It reuses the SAME serve
-		// core as nativeserve.New. Installed ALONGSIDE the observer in the serve profile;
-		// the generated static /call seam PREFERS the serve callback when present
-		// (mirroring the dynamic serve-over-shadow precedence), so the observer is the
-		// no-send fallback for a shadow/observe-only build. Skipped when the flag is off.
-		NativeStaticServeFactory: nativeserve.NewStaticServe,
+		// DEFAULT-SELECTS the exact U1 structural population (the direct five-arm JSON
+		// alias, required scalar inputs, literal-OpenAI default client) through the
+		// generated spine, wrapped in a LIVE BAML plan-compare admission + same-bytes parse
+		// oracle, and serves it natively (one exact RoundTrip); every near-miss declines
+		// PRE-SOCKET to BAML. Selection is STRUCTURAL, decided at boot by the spine's U1
+		// classifier over the deployment's generated registry — there is NO enrollment, no
+		// trusted-client seal, no cohort manifest row. It supersedes the legacy
+		// nativeserve.NewStaticServe wiring (kept as a tested public constructor). The
+		// generated static /call seam PREFERS the serve callback when present, so the
+		// observer stays the no-send fallback for a shadow/observe-only build. Skipped when
+		// the flag is off.
+		NativeStaticServeFactory: standardspineoracle.NewStaticServe,
 		// The STATIC STREAM SERVE factory (de-BAML Phase 3b): returns the neutral
 		// bamlutils.NativeStaticStreamServeFunc the generated static /stream{,-with-raw}
 		// seam installs as StreamConfig.NativeAttempt — it actually SERVES an admitted

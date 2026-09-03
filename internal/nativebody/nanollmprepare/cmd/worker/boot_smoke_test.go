@@ -31,6 +31,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,23 +40,97 @@ import (
 	"testing"
 	"time"
 
+	"github.com/invakid404/baml-rest/bamlutils/projectdescriptor"
+	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
+	"github.com/invakid404/baml-rest/bamlutils/schemadescriptor"
 	"github.com/invakid404/baml-rest/workerplugin"
 )
 
 // buildNativeWorker builds the serve-capable BAML+nanollm worker exactly as
-// build.sh's NATIVE_WORKER variant does (GOWORK=off + CGO + subprocess tag) and
-// returns its path.
+// build.sh's NATIVE_WORKER variant does (GOWORK=off + CGO + the subprocess +
+// profile-neutral registry tags) and returns its path. Since ExecBridge-U1c the standard
+// serve worker's serveProfileOptions installs standardspineoracle.NewStaticServe, which
+// drives NewExecutor over the generated spine registry, so the smoke build must GENERATE
+// a registry (an empty, all-decline one is enough to boot) and carry the generic tag —
+// the production builder guarantees the same, and a missing registry must fail loud, not
+// silently degrade to all-BAML.
 func buildNativeWorker(t *testing.T) string {
 	t.Helper()
+	generateEmptyNativeSpineRegistry(t)
 	bin := filepath.Join(t.TempDir(), "worker-native")
 	buildCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	build := exec.CommandContext(buildCtx, "go", "build", "-tags=subprocess", "-o", bin, ".")
+	build := exec.CommandContext(buildCtx, "go", "build", "-tags=subprocess,debamlnativespinegenerated", "-o", bin, ".")
 	build.Env = append(os.Environ(), "GOWORK=off", "CGO_ENABLED=1")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("building serve-capable BAML+nanollm worker failed: %v\n%s", err, out)
 	}
 	return bin
+}
+
+// generateEmptyNativeSpineRegistry generates an all-decline (empty-population) native
+// spine registry into internal/nativebody/nanollmprepare/nativegenerated so the standard
+// worker built with the generic tag links a real (all-decline) aggregate rather than the
+// fail-loud stub — enough for the boot smoke, where every request would fall back to
+// BAML. It restores the committed stub-only state on cleanup.
+func generateEmptyNativeSpineRegistry(t *testing.T) {
+	t.Helper()
+	root := repoRootDir(t)
+	genDir := filepath.Join(root, "internal", "nativebody", "nanollmprepare", "nativegenerated")
+
+	// A minimal, VALID, candidate-free project descriptor, built from the real version
+	// constants (no hard-coding) so --allow-empty accepts it and yields an all-decline
+	// NewExecutor.
+	proj := projectdescriptor.Project{
+		Version:                 projectdescriptor.Version,
+		PromptDescriptorVersion: promptdescriptor.Version,
+		SchemaVersion:           schemadescriptor.Version,
+	}
+	data, err := json.Marshal(proj)
+	if err != nil {
+		t.Fatalf("marshal empty project descriptor: %v", err)
+	}
+	descPath := filepath.Join(t.TempDir(), "empty-project.json")
+	if err := os.WriteFile(descPath, data, 0o644); err != nil {
+		t.Fatalf("write empty project descriptor: %v", err)
+	}
+
+	// gen-native-spine-worker is a ROOT-module command; run it from the repo root under
+	// the workspace (it needs no CGO). It writes generated.go + project.json into the
+	// committed registry package (whose only checked-in file is the stub).
+	gen := exec.Command("go", "run", "./cmd/gen-native-spine-worker",
+		"--descriptors", descPath,
+		"--out-dir", "internal/nativebody/nanollmprepare/nativegenerated",
+		"--allow-empty")
+	gen.Dir = root
+	if out, err := gen.CombinedOutput(); err != nil {
+		t.Fatalf("generating empty native spine registry: %v\n%s", err, out)
+	}
+	t.Cleanup(func() {
+		// Restore the committed stub-only state (an empty population emits no subpackage).
+		_ = os.Remove(filepath.Join(genDir, "generated.go"))
+		_ = os.Remove(filepath.Join(genDir, "project.json"))
+	})
+}
+
+// repoRootDir walks up from the test's working directory to the repo root (the directory
+// carrying go.work).
+func repoRootDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.work")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("repo root (go.work) not found above the test working directory")
+		}
+		dir = parent
+	}
 }
 
 // envWithoutClientDefaults returns os.Environ() with any BAML_REST_CLIENT_DEFAULTS

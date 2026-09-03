@@ -1005,9 +1005,9 @@ if [ "${SUBPROCESS:-true}" = "true" ]; then
                 echo "ERROR: native-only dependency gate produced no output (wrong package/tags?)" >&2
                 exit 1
             fi
-            if grep -Eq 'baml_client|github\.com/boundaryml/baml|github\.com/invakid404/baml-rest/dynclient|dynclient/baml-patched|language_client_go|github\.com/invakid404/baml-rest/internal/rootruntime|github\.com/invakid404/baml-rest/introspected|github\.com/invakid404/baml-rest/internal/workerboot|^github\.com/invakid404/baml-rest$' "${NATIVE_ONLY_DEPS}"; then
+            if grep -Eq 'baml_client|github\.com/boundaryml/baml|github\.com/invakid404/baml-rest/dynclient|dynclient/baml-patched|language_client_go|github\.com/invakid404/baml-rest/internal/rootruntime|github\.com/invakid404/baml-rest/introspected|github\.com/invakid404/baml-rest/internal/workerboot|github\.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/standardspineoracle|^github\.com/invakid404/baml-rest$' "${NATIVE_ONLY_DEPS}"; then
                 echo "ERROR: the native-only worker's compiled dependency graph contains a forbidden BAML/CFFI/dynclient/rootruntime/introspected/workerboot/root-baml_rest dependency:" >&2
-                grep -E 'baml_client|github\.com/boundaryml/baml|github\.com/invakid404/baml-rest/dynclient|dynclient/baml-patched|language_client_go|github\.com/invakid404/baml-rest/internal/rootruntime|github\.com/invakid404/baml-rest/introspected|github\.com/invakid404/baml-rest/internal/workerboot|^github\.com/invakid404/baml-rest$' "${NATIVE_ONLY_DEPS}" >&2
+                grep -E 'baml_client|github\.com/boundaryml/baml|github\.com/invakid404/baml-rest/dynclient|dynclient/baml-patched|language_client_go|github\.com/invakid404/baml-rest/internal/rootruntime|github\.com/invakid404/baml-rest/introspected|github\.com/invakid404/baml-rest/internal/workerboot|github\.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/standardspineoracle|^github\.com/invakid404/baml-rest$' "${NATIVE_ONLY_DEPS}" >&2
                 rm -f "${NATIVE_ONLY_DEPS}"
                 exit 1
             fi
