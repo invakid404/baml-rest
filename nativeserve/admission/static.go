@@ -188,6 +188,13 @@ type StaticInput struct {
 	// the strict plan compare. A nil closure records a decline (no plan to compare).
 	BuildBAMLRequest func(ctx context.Context) (*llmhttp.Request, error)
 
+	// CloseObserver is a bounded TEST-ONLY observability hook, nil in production. When set,
+	// the request-scoped prepared client's close() invokes it exactly once per real close, so
+	// a test can prove the "client is NEVER left open on a decline" invariant directly —
+	// e.g. that a PANIC from BuildBAMLRequest still closes the kept-alive engine. It carries
+	// no value and never influences admission.
+	CloseObserver func()
+
 	// Cohort is the serving-cutover S1 configuration identity + the default-deny
 	// cohort gate it is evaluated against (layer 1b), exactly as on the dynamic
 	// [Input]. Production leaves both halves zero, so every static request resolves
@@ -226,12 +233,18 @@ type staticPrepared struct {
 	// request. It is carried out to the claim so the serve boundary attributes its
 	// phase/winner telemetry to the identity admission actually gated on.
 	cohort CohortID
+	// onClose is the bounded test-only close observer forwarded from StaticInput.CloseObserver
+	// (nil in production). close() fires it exactly once per real client close.
+	onClose func()
 }
 
 func (p *staticPrepared) close() {
 	if p != nil && p.client != nil {
 		p.client.Close()
 		p.client = nil
+		if p.onClose != nil {
+			p.onClose()
+		}
 	}
 }
 
@@ -657,6 +670,7 @@ func admitStaticThroughPrepare(ctx context.Context, in StaticInput, spineLane bo
 		exactRequest: exactRequestFromPlan(prep),
 		alias:        alias,
 		cohort:       cohort,
+		onClose:      in.CloseObserver,
 	}, nil
 }
 
