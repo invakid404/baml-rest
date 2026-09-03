@@ -64,10 +64,21 @@ func NewStaticServe(reg prometheus.Registerer) (bamlutils.NativeStaticServeFunc,
 	if err != nil {
 		return nil, fmt.Errorf("standardspineoracle: build generated native spine executor: %w", err)
 	}
-	// REUSE the de-BAML collectors: the serve profile installs both the dynamic unary
-	// serve (nativeserve.New) and this static composite on the SAME worker registry, so a
-	// fresh NewMetrics would fail with a duplicate-registration panic. Reuse shares one
-	// collector set so both write the SAME phase/winner series.
+	return NewStaticServeFromExecutor(reg, exec)
+}
+
+// NewStaticServeFromExecutor builds the composite over an ALREADY-CONSTRUCTED oracle
+// executor. NewStaticServe delegates to it after resolving the deployment-generated
+// executor; it is also the injection seam a cross-boundary test uses to drive a real
+// standard generated static method through a test-built spine executor (proving the REAL
+// adapter maps a pre-socket decline back to BAML). It reuses the worker's bounded de-BAML
+// collectors (both the dynamic serve and this composite install on the SAME registry, so
+// a fresh NewMetrics would panic on duplicate registration) and registers the bounded
+// population counter.
+func NewStaticServeFromExecutor(reg prometheus.Registerer, exec bamlutils.NativeSpineUnaryOracleExecutor) (bamlutils.NativeStaticServeFunc, error) {
+	if exec == nil {
+		return nil, fmt.Errorf("standardspineoracle: nil oracle executor")
+	}
 	m, err := admission.NewMetricsReusing(reg)
 	if err != nil {
 		return nil, fmt.Errorf("standardspineoracle: reuse de-BAML metrics: %w", err)
