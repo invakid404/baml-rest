@@ -93,7 +93,7 @@ jobs:
       CGO_ENABLED: "1"
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
         with:
           # Fork-safe, de-secreted lane: it runs PR-supplied Go build/test but
           # performs NO authenticated Git operation — the public module fetch is
