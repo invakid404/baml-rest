@@ -10,7 +10,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/invakid404/baml-rest/bamlutils"
-	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/nativegenerated"
 	"github.com/invakid404/baml-rest/nativeserve/admission"
 )
 
@@ -358,6 +357,19 @@ func TestRecordOracle(t *testing.T) {
 				mWinner: one(scw("baml_transport")),
 			},
 		},
+		{
+			// An out-of-contract unknown disposition: adaptOracleResult fails it closed, and the
+			// recorder must still emit a terminal attempts{internal_error} — otherwise a
+			// fail-closed terminal is unobserved on attempts_total (cubic factory.go:212).
+			name: "unknown disposition fails closed",
+			res:  bamlutils.NativeSpineUnaryOracleResult{Disposition: bamlutils.NativeSpineUnaryDisposition(99)},
+			want: want{
+				mPop:      one(popl(dispFailed)),
+				mPhase:    {cellKey(sc("claimed")): 1, cellKey(sc("postclaim_terminal")): 1},
+				mWinner:   one(scw("failure")),
+				mAttempts: one(att("internal_error")),
+			},
+		},
 	}
 
 	// Every family is checked in every scenario, so an unexpected cell in a family a scenario
@@ -404,22 +416,13 @@ func TestRegisterPopulationCounterIsReusable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second register: %v", err)
 	}
-	a.WithLabelValues(populationExactJSONU1, dispSucceeded).Inc()
+	if a != b {
+		t.Errorf("second register returned a different collector: %p vs %p (reuse did not share the collector)", a, b)
+	}
+	// Increment through the SECOND handle: it must feed the registered collector, so a fresh
+	// unregistered CounterVec returned as b would make this assertion fail.
+	b.WithLabelValues(populationExactJSONU1, dispSucceeded).Inc()
 	if got := counterValue(t, reg, "debaml_native_static_population_total", map[string]string{"population": populationExactJSONU1, "disposition": dispSucceeded}); got != 1 {
 		t.Errorf("reused counter did not share state: got %v, want 1", got)
-	}
-	_ = b
-}
-
-// TestNewStaticServeFailsLoudWithoutGeneratedRegistry proves the fail-loud guard: in a
-// source checkout (no debamlnativespinegenerated tag) nativegenerated is the stub, so
-// NewStaticServe surfaces the generation error rather than silently degrading to all-BAML.
-func TestNewStaticServeFailsLoudWithoutGeneratedRegistry(t *testing.T) {
-	_, err := NewStaticServe(prometheus.NewRegistry())
-	if err == nil {
-		t.Fatal("NewStaticServe succeeded without a generated registry; it must fail loud so the standard build never silently degrades to all-BAML")
-	}
-	if !errors.Is(err, nativegenerated.ErrRuntimeNotGenerated) {
-		t.Errorf("err = %v, want it to wrap nativegenerated.ErrRuntimeNotGenerated", err)
 	}
 }

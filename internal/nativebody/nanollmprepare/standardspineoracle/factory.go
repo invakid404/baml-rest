@@ -205,11 +205,13 @@ func recordOracle(m *admission.Metrics, pop *prometheus.CounterVec, inv bamlutil
 	if obs.Fallback {
 		m.RecordFallback(admission.FallbackParseOnly)
 	}
-	// Serve outcome (attempts_total). None on a pre-socket decline; a claimed panic with no
-	// resolver outcome records internal_error.
+	// Serve outcome (attempts_total). None on a pre-socket decline; EVERY other non-success
+	// terminal — a claimed failure/panic with no resolver outcome, AND an out-of-contract
+	// unknown disposition that adaptOracleResult fails closed — records internal_error, so a
+	// fail-closed terminal is never silently unobserved on attempts_total.
 	if outcome, ok := mapServeOutcome(obs.ServeOutcome); ok {
 		m.RecordServeOutcome(admission.ModeCall, inv.Provider, outcome)
-	} else if res.Disposition == bamlutils.NativeSpineFailedAfterClaim {
+	} else if res.Disposition != bamlutils.NativeSpineDeclinedPreSocket && res.Disposition != bamlutils.NativeSpineSucceeded {
 		m.RecordServeOutcome(admission.ModeCall, inv.Provider, admission.OutcomeInternalError)
 	}
 }

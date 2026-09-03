@@ -295,4 +295,9 @@ func TestSpineComposite_PlanMismatchDeclinesToBAML(t *testing.T) {
 	if final == nil {
 		t.Fatal("final is nil; BAML should have served the decoded JSON")
 	}
+	// Assert the DECODED content, not just non-nil, so a wrong-but-non-nil BAML result cannot
+	// pass: BAML must decode the exact five-arm JSON alias from openAIJSONMap's assistant body.
+	if got := jsonOf(t, final); got != `{"weather":"sunny"}` {
+		t.Errorf("BAML-served final = %s, want the decoded JSON alias {\"weather\":\"sunny\"}", got)
+	}
 }

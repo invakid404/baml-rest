@@ -559,8 +559,10 @@ func TestEveryAdmissionEntryPointIsCohortGated(t *testing.T) {
 	}
 }
 
-// TestSpineLaneSkipsDynamicCohortGate is the compensating proof for the ONE cohort-gate
-// exemption (AdmitStaticSpineClaim): where the cohort-gated static claim lane declines at
+// TestSpineLaneSkipsDynamicCohortGate is the compensating proof for the TWO cohort-gate
+// exemptions (AdmitStaticSpineClaim, the frozen-evidence native-only entry, and
+// AdmitStaticSpineOracleClaim, the ExecBridge-U1c live-oracle standard-worker entry): where
+// the cohort-gated static claim lane declines at
 // the (cohort, cohort_not_enrolled) gate, the spine lane deliberately SKIPS it (SpineLane)
 // and declines at a LATER, non-cohort stage — its default-deny being its own
 // registration-time totality predicate, not the dynamic-rollout manifest. If a future

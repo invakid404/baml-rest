@@ -681,6 +681,12 @@ func TestBootedArtifactDefaultSelectsExactJSONStatic(t *testing.T) {
 	if native.status != stock.status || native.body != stock.body {
 		t.Errorf("the U1 default-selected answer differs from stock BAML:\n  stock:  %s\n  native: %s", stock.body, native.body)
 	}
+	// The native providerRequests check above is t.Errorf (non-fatal), so guard the wire
+	// slices before indexing: an empty native.wire (native reached no provider) would
+	// otherwise panic index-out-of-range and hide the real diagnostic.
+	if len(stock.wire) != 1 || len(native.wire) != 1 {
+		t.Fatalf("upstream requests: stock=%d native=%d, want exactly 1 each; the strict wire comparison cannot run", len(stock.wire), len(native.wire))
+	}
 	assertWireEquivalent(t, stock.wire[0], native.wire[0])
 
 	// NO ENROLLMENT: the native winner is attributed to the structural `none` cohort, never

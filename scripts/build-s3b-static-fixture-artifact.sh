@@ -117,6 +117,9 @@ fi
 # on the default-on acceptance leg. --allow-empty is harmless here (the project has a
 # candidate) but keeps the standard-mode contract explicit.
 FIXTURE_DESC="$(mktemp)"
+# Register cleanup BEFORE the generation steps, so a failed/interrupted introspect or
+# gen (set -e aborts the script) still removes the temp descriptor.
+trap 'rm -f -- "${FIXTURE_DESC}"' EXIT
 (cd "${REPO_ROOT}" && go run ./cmd/introspect \
     --native-spine-descriptors "${FIXTURE_DESC}" \
     --baml-src-dir internal/nativeprompt/testdata/staticserve_fixture/baml_src)
@@ -125,7 +128,6 @@ echo "Generating native spine registry (static fixture: exact-U1 population from
     --descriptors "${FIXTURE_DESC}" \
     --out-dir internal/nativebody/nanollmprepare/nativegenerated \
     --allow-empty)
-rm -f "${FIXTURE_DESC}"
 
 echo "Building S3b STATIC booted-artifact fixture cmd/worker (tags=${FIXTURE_TAGS}, artifact_id=${artifact_id})..."
 (

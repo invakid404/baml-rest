@@ -92,7 +92,9 @@ func generateEmptyRegistryOverlay(t *testing.T) string {
 	// gen-native-spine-worker is a ROOT-module command; run it from the repo root under
 	// the workspace (no CGO). --package-path names the REAL registry import path so the
 	// emitted aggregate is identical to a production one.
-	gen := exec.Command("go", "run", "./cmd/gen-native-spine-worker",
+	genCtx, cancelGen := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancelGen()
+	gen := exec.CommandContext(genCtx, "go", "run", "./cmd/gen-native-spine-worker",
 		"--empty",
 		"--out-dir", tmp,
 		"--package-path", "github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/nativegenerated")

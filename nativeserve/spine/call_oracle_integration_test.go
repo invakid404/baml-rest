@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -31,14 +32,14 @@ const secretPayload = "sk-topsecret-panic-value"
 // counter.
 type oracleLoopback struct {
 	srv  *httptest.Server
-	hits int
+	hits atomic.Int64
 }
 
 func newOracleLoopback(t *testing.T, handler http.HandlerFunc) *oracleLoopback {
 	t.Helper()
 	lb := &oracleLoopback{}
 	lb.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		lb.hits++
+		lb.hits.Add(1)
 		handler(w, r)
 	}))
 	t.Cleanup(lb.srv.Close)
@@ -136,8 +137,8 @@ func TestCallWithOracle_LiveOracle_NativeWinsAndParsesExactBytes(t *testing.T) {
 	if captured != content {
 		t.Errorf("BAMLOnlyParse was handed %q, want the exact assistant bytes %q (not a re-extraction)", captured, content)
 	}
-	if lb.hits != 1 {
-		t.Errorf("provider hits = %d, want exactly 1", lb.hits)
+	if lb.hits.Load() != 1 {
+		t.Errorf("provider hits = %d, want exactly 1", lb.hits.Load())
 	}
 	if snap := e.Metrics().Snapshot(); snap.Claims != 1 || snap.Sockets != 1 || snap.Successes != 1 || snap.Failures != 0 || snap.Declines != 0 {
 		t.Errorf("metrics = %+v, want one claim/socket/success (the live plan matched)", snap)
@@ -169,8 +170,8 @@ func TestCallWithOracle_LiveOracle_BAMLParseWinsOnDrift(t *testing.T) {
 	if captured != content {
 		t.Errorf("BAMLOnlyParse was handed %q, want the exact assistant bytes %q", captured, content)
 	}
-	if lb.hits != 1 {
-		t.Errorf("provider hits = %d, want exactly 1 (no re-send to compare)", lb.hits)
+	if lb.hits.Load() != 1 {
+		t.Errorf("provider hits = %d, want exactly 1 (no re-send to compare)", lb.hits.Load())
 	}
 	if !res.Observations.Fallback {
 		t.Errorf("drift did not record the fallback observation: %+v", res.Observations)
@@ -189,8 +190,8 @@ func TestCallWithOracle_LiveOracle_ProviderFaultIsTerminal(t *testing.T) {
 	if res.Disposition != bamlutils.NativeSpineFailedAfterClaim {
 		t.Fatalf("disposition = %v, want failed_after_claim (post-claim provider fault is terminal)", res.Disposition)
 	}
-	if lb.hits != 1 {
-		t.Errorf("provider hits = %d, want exactly 1 (no BAML resend after claim)", lb.hits)
+	if lb.hits.Load() != 1 {
+		t.Errorf("provider hits = %d, want exactly 1 (no BAML resend after claim)", lb.hits.Load())
 	}
 	if captured != "" {
 		t.Errorf("BAMLOnlyParse ran on a provider fault (captured %q); the same-bytes oracle must not run when there is no 2xx body", captured)
@@ -216,8 +217,8 @@ func TestCallWithOracle_LiveOracle_PlanMismatchDeclines(t *testing.T) {
 	if res.Disposition != bamlutils.NativeSpineDeclinedPreSocket {
 		t.Fatalf("disposition = %v, want declined_pre_socket on a plan mismatch", res.Disposition)
 	}
-	if lb.hits != 0 {
-		t.Errorf("provider hits = %d, want 0 (a plan mismatch declines pre-socket)", lb.hits)
+	if lb.hits.Load() != 0 {
+		t.Errorf("provider hits = %d, want 0 (a plan mismatch declines pre-socket)", lb.hits.Load())
 	}
 	if snap := e.Metrics().Snapshot(); snap.Sockets != 0 || snap.Claims != 0 {
 		t.Errorf("metrics = %+v, want zero sockets/claims", snap)
@@ -241,8 +242,8 @@ func TestCallWithOracle_LiveOracle_PanickingPlanBuilderDeclinesZeroSocket(t *tes
 	if res.Disposition != bamlutils.NativeSpineDeclinedPreSocket {
 		t.Fatalf("disposition = %v, want declined_pre_socket (a plan-builder panic is a pre-claim decline)", res.Disposition)
 	}
-	if lb.hits != 0 {
-		t.Errorf("provider hits = %d, want 0 (no socket on a pre-claim panic)", lb.hits)
+	if lb.hits.Load() != 0 {
+		t.Errorf("provider hits = %d, want 0 (no socket on a pre-claim panic)", lb.hits.Load())
 	}
 	if snap := e.Metrics().Snapshot(); snap.Sockets != 0 || snap.Claims != 0 {
 		t.Errorf("metrics = %+v, want zero sockets/claims", snap)
@@ -288,8 +289,8 @@ func TestAdmitStaticSpineOracleClaim_PanickingPlanBuilderClosesPrepExactlyOnce(t
 	if closes != 1 {
 		t.Errorf("prepared client closed %d times on the BuildBAMLRequest panic path, want EXACTLY 1 (no leak, no double-close)", closes)
 	}
-	if lb.hits != 0 {
-		t.Errorf("provider hits = %d, want 0 (the panic is pre-socket)", lb.hits)
+	if lb.hits.Load() != 0 {
+		t.Errorf("provider hits = %d, want 0 (the panic is pre-socket)", lb.hits.Load())
 	}
 }
 
@@ -318,8 +319,8 @@ func TestCallWithOracle_LiveOracle_PostClaimPanicIsBoundedAndKeepsPhase(t *testi
 	if res.Disposition != bamlutils.NativeSpineFailedAfterClaim {
 		t.Fatalf("disposition = %v, want failed_after_claim (a post-claim parser panic is terminal)", res.Disposition)
 	}
-	if lb.hits != 1 {
-		t.Errorf("provider hits = %d, want exactly 1 (the socket opened; no resend)", lb.hits)
+	if lb.hits.Load() != 1 {
+		t.Errorf("provider hits = %d, want exactly 1 (the socket opened; no resend)", lb.hits.Load())
 	}
 	if res.Err == nil || strings.Contains(res.Err.Error(), secretPayload) {
 		t.Errorf("post-claim panic error = %v; the recovered payload must be dropped (bounded sentinel)", res.Err)
