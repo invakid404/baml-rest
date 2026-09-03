@@ -133,6 +133,21 @@ type NativeStaticInvocation struct {
 	// identity — the safe direction, since no identity declines.
 	Registry *ClientRegistry
 
+	// HasClientRegistryOverride reports whether the request carries an effective client
+	// registry (the adapter's OriginalClientRegistry != nil). HasDynamicOutputSchema
+	// reports whether the request carries a dynamic output schema (the adapter's
+	// DeBAMLOutputSchema != nil). Both are TRUTHFUL bounded facts the ExecBridge-U1c
+	// spine oracle reads from the invocation rather than re-deriving from the adapter:
+	// the exact cohort serves ONLY the descriptor's default client against the static
+	// schema, so either declines PRE-SOCKET. They are populated by the generated static
+	// seam (installNativeStaticCall), where the request adapter is authoritative; a
+	// lightweight caller that leaves them false presents no override (the safe
+	// direction, since a real override would only decline). HasClientRegistryOverride is
+	// the same fact as Registry != nil, kept as an explicit bounded bool so the spine
+	// need not inspect the (sensitive) registry value to route.
+	HasClientRegistryOverride bool
+	HasDynamicOutputSchema    bool
+
 	// Provider is the resolved leaf provider (e.g. "openai").
 	Provider string
 	// ClientOverride is the concrete selected child/leaf client name, or empty for
