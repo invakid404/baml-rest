@@ -188,6 +188,13 @@ type StaticInput struct {
 	// the strict plan compare. A nil closure records a decline (no plan to compare).
 	BuildBAMLRequest func(ctx context.Context) (*llmhttp.Request, error)
 
+	// CloseObserver is a bounded TEST-ONLY observability hook, nil in production. When set,
+	// the request-scoped prepared client's close() invokes it exactly once per real close, so
+	// a test can prove the "client is NEVER left open on a decline" invariant directly —
+	// e.g. that a PANIC from BuildBAMLRequest still closes the kept-alive engine. It carries
+	// no value and never influences admission.
+	CloseObserver func()
+
 	// Cohort is the serving-cutover S1 configuration identity + the default-deny
 	// cohort gate it is evaluated against (layer 1b), exactly as on the dynamic
 	// [Input]. Production leaves both halves zero, so every static request resolves
@@ -226,12 +233,18 @@ type staticPrepared struct {
 	// request. It is carried out to the claim so the serve boundary attributes its
 	// phase/winner telemetry to the identity admission actually gated on.
 	cohort CohortID
+	// onClose is the bounded test-only close observer forwarded from StaticInput.CloseObserver
+	// (nil in production). close() fires it exactly once per real client close.
+	onClose func()
 }
 
 func (p *staticPrepared) close() {
 	if p != nil && p.client != nil {
 		p.client.Close()
 		p.client = nil
+		if p.onClose != nil {
+			p.onClose()
+		}
 	}
 }
 
@@ -335,33 +348,103 @@ func AdmitStaticClaim(ctx context.Context, in StaticInput) (*StaticClaim, error)
 // nanollm engine alive for exactly one RoundTrip; every decline returns a typed
 // *StaticDecline.
 func AdmitStaticSpineClaim(ctx context.Context, in StaticInput) (*StaticClaim, error) {
+	prep, dec := admitSpineThroughTotality(ctx, in)
+	if dec != nil {
+		return nil, dec
+	}
+	// No BAML plan compare — frozen v0.223 oracle evidence stands in for this exact
+	// cohort. Transfer ownership of the kept-alive engine to the claim.
+	return staticClaimFrom(prep), nil
+}
+
+// AdmitStaticSpineOracleClaim is the ExecBridge-U1c LIVE-oracle spine unary admission
+// entry — the standard-worker twin of the frozen-evidence [AdmitStaticSpineClaim]. It
+// runs the SAME shared spine prepare/rewrite/totality portion
+// (admitSpineThroughTotality) and then, for the oracle entry ONLY, adds back the strict
+// BAML `Request.<Method>` no-send plan compare (staticPlanCompareObservation) that the
+// native-only lane deliberately omits: a standard SERVE worker CAN construct BAML's
+// no-send plan (att.BuildBAMLRequest), so the live plan-match precondition is restored
+// as the exact-cohort safety rail before any socket. Only a full
+// NativeStaticObserveWouldAdmit (byte-match) transfers the kept-alive engine into a
+// claim; every other observation (mismatch, nil/failed BAML builder, a send-path
+// rewrite/proxy, a snapshot error) closes the engine and returns a typed *StaticDecline
+// guaranteeing NO socket occurred, so the outer composite falls back to BAML.
+//
+// The fork from AdmitStaticSpineClaim is deliberately TWO named exported functions, not
+// a boolean on StaticInput: a caller-controlled bit could accidentally bypass the
+// compare, so the enrollment-gate bypass (spineLane) and the live-vs-frozen oracle
+// choice are both internal to the lane, never caller-settable.
+func AdmitStaticSpineOracleClaim(ctx context.Context, in StaticInput) (*StaticClaim, error) {
+	prep, dec := admitSpineThroughTotality(ctx, in)
+	if dec != nil {
+		return nil, dec
+	}
+	// prep is a live request-scoped nanollm engine now owned by THIS function. Close it on
+	// ANY non-transfer exit — a plan mismatch/decline, OR a PANIC from the live
+	// BuildBAMLRequest callback inside staticPlanCompareObservation (a caller-supplied
+	// closure): the panic unwinds to CallWithOracle's pre-claim decline guard, and without
+	// this defer the engine would leak, contradicting "the client is NEVER left open on a
+	// decline". prep.close() is idempotent, so this is safe even alongside the totality
+	// helper's own guard.
+	transferred := false
+	defer func() {
+		if !transferred {
+			prep.close()
+		}
+	}()
+	// LIVE BAML plan compare (the standard-worker oracle rail): build BAML's `Request.<Method>`
+	// plan WITHOUT sending and require a byte match before the claim. A nil/failed builder,
+	// a send-path rewrite/proxy, a snapshot error, or a plan mismatch all close the kept-alive
+	// engine (no socket) and decline so the outer composite runs BAML for the same call.
+	obs := staticPlanCompareObservation(ctx, in, prep)
+	if obs.Observation != bamlutils.NativeStaticObserveWouldAdmit {
+		return nil, staticDeclineFromObs(obs)
+	}
+	// Would-admit: transfer ownership of the kept-alive engine to the claim.
+	claim := staticClaimFrom(prep)
+	transferred = true
+	return claim, nil
+}
+
+// admitSpineThroughTotality is the shared exact-spine pre-claim portion both spine
+// admission entries run: layers 1-6 (admitStaticThroughPrepare with the spine-lane
+// cohort-gate bypass), the MANDATORY fail-closed rewrite/proxy gate, and the ONE
+// root-owned U1 totality cut. On success it returns the kept-alive *staticPrepared
+// (the caller decides frozen-claim vs live-oracle-claim); on any decline it closes the
+// engine (NO socket) and returns a typed *StaticDecline.
+//
+// The rewrite/proxy gate is MANDATORY and TOTAL at this boundary, not optional-on-nil:
+// the spine lane is cohort-gate-EXEMPT, so a caller reaching a spine admission entry
+// directly with a valid StaticInput but a NIL WouldRewriteOrProxy predicate must NOT be
+// allowed to claim while the check is skipped (CodeRabbit #9 admission-boundary residual
+// — the call.go default only covers UnaryExecutor.Call). FAIL CLOSED: a nil predicate
+// means the effective target's rewrite/proxy status could not be verified, so decline
+// PRE-CLAIM exactly as a positive rewrite/proxy verdict would. UnaryExecutor.Call always
+// supplies a non-nil predicate (llmhttp.DefaultClient), so this only bites a direct
+// caller that omitted it.
+func admitSpineThroughTotality(ctx context.Context, in StaticInput) (*staticPrepared, *StaticDecline) {
 	prep, dec := admitStaticThroughPrepare(ctx, in, true)
 	if dec != nil {
 		return nil, staticDeclineFromObs(*dec)
 	}
-	// A send-path rewrite/proxy on the EFFECTIVE target would make the frozen-oracle
-	// exact-transport evidence meaningless (the request would go elsewhere), so decline
-	// pre-claim against the prepared URL. The spine omits the BAML plan-compare, which
-	// is where the dynamic/static observe lanes run this check (static.go
-	// staticPlanCompareObservation), so AdmitStaticSpineClaim runs it explicitly (Codex
-	// review finding 1). SingleLeaf / no-fallback / no-round-robin / no-retry-override
-	// were already enforced by admitStaticThroughPrepare's layer-2 strategy gate.
-	//
-	// This gate is MANDATORY and TOTAL at this EXPORTED boundary, not optional-on-nil: the
-	// spine lane is cohort-gate-EXEMPT, so a caller reaching AdmitStaticSpineClaim directly
-	// with a valid StaticInput but a NIL WouldRewriteOrProxy predicate must NOT be allowed
-	// to claim while the rewrite/proxy check is skipped (CodeRabbit #9 admission-boundary
-	// residual — the call.go default only covers UnaryExecutor.Call). FAIL CLOSED: a nil
-	// predicate means the effective target's rewrite/proxy status could not be verified, so
-	// decline PRE-CLAIM exactly as a positive rewrite/proxy verdict would. UnaryExecutor.Call
-	// always supplies a non-nil predicate (llmhttp.DefaultClient), so this only bites a
-	// direct caller that omitted it.
+	// prep is a live engine from here. Close it on ANY non-transfer exit — a decline OR a
+	// PANIC from the caller-supplied rewrite/proxy predicate or the totality gate — so a
+	// decline never leaks the request-scoped nanollm client. On success it is transferred to
+	// the caller (transferred = true).
+	transferred := false
+	defer func() {
+		if !transferred {
+			prep.close()
+		}
+	}()
+	// A send-path rewrite/proxy on the EFFECTIVE target would make the exact-transport
+	// evidence meaningless (the request would go elsewhere), so decline pre-claim against
+	// the prepared URL. SingleLeaf / no-fallback / no-round-robin / no-retry-override were
+	// already enforced by admitStaticThroughPrepare's layer-2 strategy gate.
 	if in.WouldRewriteOrProxy == nil {
-		prep.close()
 		return nil, staticDeclineFromObs(declineStatic(bamlutils.NativeStaticFamilyClient, StageStrategy, reasonSpineRewriteProxyUnverified))
 	}
 	if in.WouldRewriteOrProxy(prep.prepared.URL) {
-		prep.close()
 		return nil, staticDeclineFromObs(declineStatic(bamlutils.NativeStaticFamilyClient, StageStrategy, ReasonURLRewriteOrProxy))
 	}
 	// The ONE root-owned totality gate: the exact five-arm `JSON` alias family. It is
@@ -370,11 +453,16 @@ func AdmitStaticSpineClaim(ctx context.Context, in StaticInput) (*StaticClaim, e
 	// passed the shared final-support gate inside admitStaticThroughPrepare still
 	// declines here PRE-CLAIM (no socket) and the outer policy serves it.
 	if err := debaml.SupportsNativeStaticStreamBundle(prep.bundle); err != nil {
-		prep.close()
 		return nil, staticDeclineFromObs(declineStatic(bamlutils.NativeStaticFamilyDescriptorEnvelope, StagePrompt, reasonSpineNotExactAlias))
 	}
-	// No BAML plan compare — frozen v0.223 oracle evidence stands in for this exact
-	// cohort. Transfer ownership of the kept-alive engine to the claim.
+	transferred = true
+	return prep, nil
+}
+
+// staticClaimFrom transfers ownership of a fully-admitted kept-alive *staticPrepared
+// into the request-scoped *StaticClaim the serve core RoundTrips on. The claim owns
+// closing the engine from here.
+func staticClaimFrom(prep *staticPrepared) *StaticClaim {
 	return &StaticClaim{
 		client:       prep.client,
 		Prepared:     prep.prepared,
@@ -383,7 +471,7 @@ func AdmitStaticSpineClaim(ctx context.Context, in StaticInput) (*StaticClaim, e
 		Alias:        prep.alias,
 		Surface:      SurfaceStaticCall,
 		Cohort:       prep.cohort,
-	}, nil
+	}
 }
 
 // admitStaticThroughPrepare runs the static predicate layers 1-6 (build/flag/route,
@@ -582,6 +670,7 @@ func admitStaticThroughPrepare(ctx context.Context, in StaticInput, spineLane bo
 		exactRequest: exactRequestFromPlan(prep),
 		alias:        alias,
 		cohort:       cohort,
+		onClose:      in.CloseObserver,
 	}, nil
 }
 

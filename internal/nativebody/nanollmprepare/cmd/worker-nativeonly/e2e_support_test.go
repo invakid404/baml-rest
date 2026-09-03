@@ -47,7 +47,7 @@ import (
 const nativeOnlyMethod = "StaticRecursiveAliasJSON"
 
 // generated tags mirror build.sh's native-only worker build exactly.
-const nativeOnlyBuildTags = "subprocess,debamlnativeonlygenerated"
+const nativeOnlyBuildTags = "subprocess,debamlnativespinegenerated"
 
 var (
 	// nativeOnlyBin is the built native-only worker binary (set by TestMain).

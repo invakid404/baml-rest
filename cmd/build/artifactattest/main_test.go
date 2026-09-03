@@ -86,13 +86,16 @@ func TestRunAcceptsTheRealBuildSelections(t *testing.T) {
 		tags    string
 		sub     string
 	}{
-		{"standard artifact", "native_capable", "nanollmprepare:./cmd/worker/", "subprocess,nativestreamserve,nativeworkerartifact", "true"},
+		// ExecBridge-U1c: the standard native-capable serve worker now also compiles the
+		// generated native spine registry (the oracle composite drives NewExecutor), so
+		// its build tags carry the profile-neutral debamlnativespinegenerated too.
+		{"standard artifact", "native_capable", "nanollmprepare:./cmd/worker/", "subprocess,nativestreamserve,nativeworkerartifact,debamlnativespinegenerated", "true"},
 		{"shadow artifact", "native_capable", "nanollmprepare:./cmd/worker-shadow/", "subprocess,nativeworkerartifact", "true"},
-		// ExecBridge-U1b: the native-only worker is native_capable (a true derived
+		// ExecBridge-U1b/U1c: the native-only worker is native_capable (a true derived
 		// fact — it links the native engine) and is distinguished from the standard
-		// native artifact only by its WorkerPackage and the debamlnativeonlygenerated
-		// build tag, so no new artifact profile is introduced.
-		{"native-only artifact", "native_capable", "nanollmprepare:./cmd/worker-nativeonly/", "subprocess,nativeworkerartifact,debamlnativeonlygenerated", "true"},
+		// native artifact only by its WorkerPackage, since both now carry the
+		// debamlnativespinegenerated build tag.
+		{"native-only artifact", "native_capable", "nanollmprepare:./cmd/worker-nativeonly/", "subprocess,nativeworkerartifact,debamlnativespinegenerated", "true"},
 		{"rollback artifact", "baml_only", "root:./cmd/worker/", "subprocess", "true"},
 		{"in-process artifact", "baml_only", "", "", "false"},
 	} {

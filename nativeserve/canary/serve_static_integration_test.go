@@ -61,7 +61,7 @@ func staticAnswerBundle(t *testing.T) *schema.Bundle {
 // staticServeServer builds a Server whose exact executor sends the claimed plan to a
 // loopback capture server returning an OpenAI-shaped 2xx whose assistant content is
 // the flattened StaticAnswer JSON, and a synthetic static claim over that loopback.
-func staticServeServer(t *testing.T, hits *atomic.Int64) (*Server, *schema.Bundle) {
+func staticServeServer(t *testing.T, hits *atomic.Int64) (*Server, *schema.Bundle, *prometheus.Registry) {
 	t.Helper()
 	cs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
@@ -85,14 +85,46 @@ func staticServeServer(t *testing.T, hits *atomic.Int64) (*Server, *schema.Bundl
 		t.Fatalf("AdmitStaticClaimForTest: %v", err)
 	}
 	s.staticAdmitClaim = func(context.Context, admission.StaticInput) (*admission.StaticClaim, error) { return claim, nil }
-	return s, bundle
+	return s, bundle, reg
+}
+
+// staticPhaseCount sums the admission_phase cells whose labels contain want (partial match).
+func staticPhaseCount(t *testing.T, reg *prometheus.Registry, want map[string]string) float64 {
+	t.Helper()
+	fams, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	var sum float64
+	for _, mf := range fams {
+		if mf.GetName() != "baml_rest_debaml_admission_phase_total" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			got := map[string]string{}
+			for _, lp := range m.GetLabel() {
+				got[lp.GetName()] = lp.GetValue()
+			}
+			ok := true
+			for k, v := range want {
+				if got[k] != v {
+					ok = false
+					break
+				}
+			}
+			if ok {
+				sum += m.GetCounter().GetValue()
+			}
+		}
+	}
+	return sum
 }
 
 // TestServeStatic_OneSend_NativeWins proves a claimed static /call sends EXACTLY one
 // provider RoundTrip and, on a same-response BAML MATCH, serves the native result.
 func TestServeStatic_OneSend_NativeWins(t *testing.T) {
 	var hits atomic.Int64
-	s, _ := staticServeServer(t, &hits)
+	s, _, _ := staticServeServer(t, &hits)
 
 	inv := bamlutils.NativeStaticInvocation{
 		Method:   "StaticOutputFormat",
@@ -125,7 +157,7 @@ func TestServeStatic_OneSend_NativeWins(t *testing.T) {
 // safety (winner=native_baml_parse) — still EXACTLY one native send, never a resend.
 func TestServeStatic_OneSend_BAMLParseWinsOnDrift(t *testing.T) {
 	var hits atomic.Int64
-	s, _ := staticServeServer(t, &hits)
+	s, _, _ := staticServeServer(t, &hits)
 
 	inv := bamlutils.NativeStaticInvocation{
 		Method:   "StaticOutputFormat",
@@ -158,7 +190,7 @@ func TestServeStatic_OneSend_BAMLParseWinsOnDrift(t *testing.T) {
 // pre-claim boundary.
 func TestServeStatic_PreClaimDeclineZeroSend(t *testing.T) {
 	var hits atomic.Int64
-	s, _ := staticServeServer(t, &hits)
+	s, _, _ := staticServeServer(t, &hits)
 	// Override the claim to a pre-claim decline: NO socket may open.
 	s.staticAdmitClaim = func(context.Context, admission.StaticInput) (*admission.StaticClaim, error) {
 		return nil, &admission.StaticDecline{Stage: "strategy", Reason: "client_override_unproven"}
@@ -182,5 +214,37 @@ func TestServeStatic_PreClaimDeclineZeroSend(t *testing.T) {
 	}
 	if got := hits.Load(); got != 0 {
 		t.Errorf("capture server saw %d requests, want ZERO native sockets on a pre-claim decline", got)
+	}
+}
+
+// TestServeStatic_ParserPanicRecordsSameResponsePhase pins P2-6 through the PUBLIC
+// canary.ServeStatic (not a resolver-hook boolean): a BAMLOnlyParse that PANICS after the
+// structured claim is a bounded terminal FAILURE that STILL records exactly ONE
+// static_call/same_response_oracle phase. The panic-safe hook records the phase BEFORE the
+// parser, so it survives Resolve never returning — reverting mapStaticAttempt to record the
+// phase AFTER Resolve returns (as the pre-extraction code did) loses it and fails this. One
+// native socket opened; no resend.
+func TestServeStatic_ParserPanicRecordsSameResponsePhase(t *testing.T) {
+	var hits atomic.Int64
+	s, _, reg := staticServeServer(t, &hits)
+
+	inv := bamlutils.NativeStaticInvocation{
+		Method:   "StaticOutputFormat",
+		Provider: "openai",
+		Mode:     bamlutils.NativeStaticModeFinal,
+		// The claimed 2xx is structured, so the resolver ENTERS the same-response oracle
+		// (firing the phase hook) and then this parser PANICS.
+		BAMLOnlyParse: func(context.Context, string) ([]byte, error) { panic("same-response parse panic") },
+	}
+	out := s.ServeStatic(context.Background(), inv)
+
+	if out.Disposition != bamlutils.NativeStaticServeFailed {
+		t.Fatalf("disposition = %v (err=%v), want failed (a post-claim parser panic is terminal)", out.Disposition, out.Err)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Errorf("capture server saw %d requests, want EXACTLY 1 native socket (no resend)", got)
+	}
+	if got := staticPhaseCount(t, reg, map[string]string{"surface": "static_call", "phase": "same_response_oracle"}); got != 1 {
+		t.Errorf("same_response_oracle phase = %v, want EXACTLY 1 (the panic-safe hook records it BEFORE the parser, so it survives the panic)", got)
 	}
 }

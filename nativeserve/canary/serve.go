@@ -33,6 +33,7 @@ import (
 	"github.com/invakid404/baml-rest/nativeserve/admission"
 	"github.com/invakid404/baml-rest/nativeserve/execute"
 	"github.com/invakid404/baml-rest/nativeserve/parity"
+	"github.com/invakid404/baml-rest/nativeserve/staticoracle"
 )
 
 // canaryInternalAlias is the fixed, secret-free internal nanollm alias the serve
@@ -69,7 +70,10 @@ var errNativeServePanic = errors.New("nativeserve/canary: native serve attempt p
 // errNoBAMLOnlyParse marks a serve attempt that reached the response phase without
 // a BAML-only parse closure. The generated serve seam always threads one, so this
 // is a wiring bug; post-claim it FAILS (never serves an unverified native final).
-var errNoBAMLOnlyParse = errors.New("nativeserve/canary: same-response compare missing BAML-only parse closure")
+// It is the shared same-response-oracle sentinel (nativeserve/staticoracle) so the
+// dynamic serve path, the static shadow, and the factored static oracle all carry one
+// identity.
+var errNoBAMLOnlyParse = staticoracle.ErrNoBAMLOnlyParse
 
 // Server runs the native serve implementation. Construct it with NewServer (or the
 // NewServeFunc factory the serve worker uses). It holds the S3 admitter (which
@@ -613,7 +617,7 @@ func (s *Server) recordResponse(match bool, field admission.ResponseCompareField
 // provider 2xx body — a plain error (NOT an *HTTPError, NOT ErrOutputParse) so the
 // worker classifier maps it to worker_error with details.raw, exactly like the
 // BAML build/send path, rather than surfacing nanollm's synthesized 502.
-var errMalformed2xx = errors.New("buildrequest: failed to extract response content: malformed provider 2xx response")
+var errMalformed2xx = staticoracle.ErrMalformed2xx
 
 // isContextErr reports whether err is a caller cancellation or deadline. These
 // are handled as a transport-class typed error everywhere post-claim (mapAttempt

@@ -6,7 +6,7 @@
 //
 // It is built FROM the out-of-go.work nanollmprepare module with GOWORK=off + CGO
 // (so the nanollm static archive links via the nativeworker import) and with the
-// debamlnativeonlygenerated build tag (so the generated registry — emitted at build
+// debamlnativespinegenerated build tag (so the generated registry — emitted at build
 // time by cmd/gen-native-spine-worker from the deployment's own introspected
 // descriptor — is the real nativegenerated.NewRuntime). cmd/build/build.sh selects
 // it under the single --native-only-worker / BAML_REST_NATIVE_ONLY_WORKER gate and

@@ -26,18 +26,16 @@ package canary
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/invakid404/baml-rest/bamlutils"
-	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/internal/debaml"
 	"github.com/invakid404/baml-rest/internal/schema"
 	"github.com/invakid404/baml-rest/nativeserve/admission"
 	"github.com/invakid404/baml-rest/nativeserve/execute"
-	"github.com/invakid404/baml-rest/nativeserve/parity"
+	"github.com/invakid404/baml-rest/nativeserve/staticoracle"
 )
 
 // NewStaticServeFunc is the factory a SERVE-profile worker injects via
@@ -182,169 +180,89 @@ func (s *Server) ServeStatic(ctx context.Context, inv bamlutils.NativeStaticInvo
 
 // mapStaticAttempt maps one claimed native static attempt's (result, error) onto the
 // neutral static serve result. It NEVER declines (post-claim) and NEVER falls
-// through to a BAML resend — mirroring mapAttempt.
+// through to a BAML resend — mirroring mapAttempt. The post-response decision (the
+// same-bytes BAML oracle, structured/order compare, drift/parse-decline fallback, and
+// terminal error classification) is the shared, transport-free
+// [staticoracle.Resolve]; this method replays the returned bounded facet observations
+// into the exact metrics the static serve path recorded inline before the extraction.
 func (s *Server) mapStaticAttempt(ctx context.Context, inv bamlutils.NativeStaticInvocation, bundle *schema.Bundle, res *execute.AttemptResult, aerr error) bamlutils.NativeStaticServeResult {
-	if aerr != nil {
-		if isContextErr(aerr) {
-			s.metrics.RecordServeOutcome(admission.ModeCall, inv.Provider, admission.OutcomeTransportError)
-			return failStaticResult(aerr, "")
+	r := staticoracle.Resolve(ctx, bundle, res, aerr, inv.BAMLOnlyParse, func() {
+		// PANIC-SAFE: record the same-response phase the instant the structured oracle is
+		// entered, BEFORE the parser — a BAMLOnlyParse panic unwinds to ServeStatic's guard
+		// without Resolve returning, so recording it post-return (as before) would lose it,
+		// which is exactly what master avoided.
+		cohort := admission.ResolveCohort(admission.SurfaceStaticCall, s.staticCohortInput(inv))
+		s.metrics.RecordAdmissionPhase(admission.SurfaceStaticCall, cohort, admission.PhaseSameResponseOracle)
+	})
+	s.recordStaticOracleMetrics(inv, r)
+	if r.Served {
+		return bamlutils.NativeStaticServeResult{
+			Disposition:  bamlutils.NativeStaticServeSucceeded,
+			FinalJSON:    r.FinalJSON,
+			Raw:          r.Raw,
+			Reasoning:    r.Reasoning,
+			WinnerEngine: r.Winner,
 		}
-		if res == nil {
-			s.metrics.RecordServeOutcome(admission.ModeCall, inv.Provider, admission.OutcomeTransportError)
-			return failStaticResult(aerr, "")
-		}
-		if res.SAPInvoked {
-			// CLAIMED native SAP parse failure -> ErrOutputParse + the extracted
-			// assistant text as details.raw (mirrors BAML's parse_error envelope).
-			//
-			// The `buildrequest: failed to parse final result: ` PREFIX is part of that
-			// envelope, not decoration: BAML's own final-parse site wraps identically
-			// (call_orchestrator.go's parseFinal branch), and the orchestrator hands a
-			// native failure straight to the outer policy without adding anything. Without
-			// it the two engines rendered DIFFERENT error strings for the same rejected
-			// response — measured by the Slice 7.2b-3 live differential, whose false-@assert
-			// row runs the same fixture flag-on and flag-off and byte-compares err.Error().
-			// The wrapped cause is untouched, so the stock ParsingError bytes inside are
-			// still exactly what the CFFI produced.
-			s.metrics.RecordServeOutcome(admission.ModeCall, inv.Provider, admission.OutcomeParseError)
-			return failStaticResult(&buildrequest.OutputParseError{
-				Err: fmt.Errorf("buildrequest: failed to parse final result: %w", aerr),
-			}, res.Raw)
-		}
-		// Translate / non-JSON-2xx / assistant-extraction failure -> today's extraction
-		// error class with the raw upstream body retained as details.raw.
-		s.metrics.RecordServeOutcome(admission.ModeCall, inv.Provider, admission.OutcomeTranslateError)
-		return failStaticResult(fmt.Errorf("buildrequest: failed to extract response content: %w", aerr), string(res.ProviderBody))
 	}
+	return failStaticResult(r.Err, r.RawDiagnostic)
+}
 
-	switch res.Outcome {
-	case execute.OutcomeProviderError:
-		s.metrics.RecordServeOutcome(admission.ModeCall, inv.Provider, admission.OutcomeProviderError)
-		return failStaticResult(&llmhttp.HTTPError{
-			StatusCode: res.ProviderStatus,
-			Body:       capErrorBody(res.ProviderBody),
-		}, "")
-	case execute.OutcomeInvalidBody:
-		s.metrics.RecordServeOutcome(admission.ModeCall, inv.Provider, admission.OutcomeTranslateError)
-		return failStaticResult(errMalformed2xx, string(res.ProviderBody))
-	case execute.OutcomeParseDeclined:
-		return s.serveStaticParseOnly(ctx, inv, res)
-	case execute.OutcomeStructured:
-		return s.serveStaticStructured(ctx, inv, bundle, res)
+// recordStaticOracleMetrics replays the resolver's bounded facet observations into the
+// exact static-serve metrics the inline mapStaticAttempt/serveStaticStructured/
+// serveStaticParseOnly recorded before the same-bytes oracle was factored out. The
+// resolver records nothing itself; the canary path owns its own phase/winner/facet
+// series (the spine composite records its own separate bounded set).
+func (s *Server) recordStaticOracleMetrics(inv bamlutils.NativeStaticInvocation, r staticoracle.Result) {
+	// NOTE: PhaseSameResponseOracle is recorded by the panic-safe onStructuredOracle hook
+	// passed to staticoracle.Resolve (before the parser), NOT here — so a parser panic that
+	// prevents Resolve from returning (and thus this replay) still records the phase.
+	if r.ErrorCompareRecorded {
+		cmp := admission.ResponseCompareMismatch
+		if r.ErrorCompareMatch {
+			cmp = admission.ResponseCompareMatch
+		}
+		s.metrics.RecordResponseCompare(cmp, admission.ResponseCompareFieldError)
+	}
+	if r.StructuredBranchServed {
+		// Per-facet response parity. Native is the SOLE extractor, so the
+		// assistant/raw/reasoning channels are native-owned and translate is always OK on
+		// a structured claim; the load-bearing safety compare is structured/order.
+		s.recordResponse(true, admission.ResponseCompareFieldTranslate)
+		s.recordResponse(true, admission.ResponseCompareFieldAssistant)
+		s.recordResponse(true, admission.ResponseCompareFieldRaw)
+		s.recordResponse(true, admission.ResponseCompareFieldReasoning)
+		s.recordResponse(r.StructuredMatch, admission.ResponseCompareFieldStructured)
+		s.recordResponse(r.OrderMatch, admission.ResponseCompareFieldOrder)
+	}
+	if r.ParseDeclineServed {
+		// native declined where BAML parsed -> a real structured/order divergence.
+		s.recordResponse(true, admission.ResponseCompareFieldTranslate)
+		s.recordResponse(false, admission.ResponseCompareFieldStructured)
+		s.recordResponse(false, admission.ResponseCompareFieldOrder)
+	}
+	if r.Fallback {
+		s.metrics.RecordFallback(admission.FallbackParseOnly)
+	}
+	s.metrics.RecordServeOutcome(admission.ModeCall, inv.Provider, mapStaticOracleOutcome(r.Outcome))
+}
+
+// mapStaticOracleOutcome maps the neutral resolver outcome onto the admission serve
+// outcome the static path records.
+func mapStaticOracleOutcome(o staticoracle.Outcome) admission.Outcome {
+	switch o {
+	case staticoracle.OutcomeSuccess:
+		return admission.OutcomeSuccess
+	case staticoracle.OutcomeParseDecline:
+		return admission.OutcomeParseDecline
+	case staticoracle.OutcomeTranslateError:
+		return admission.OutcomeTranslateError
+	case staticoracle.OutcomeProviderError:
+		return admission.OutcomeProviderError
+	case staticoracle.OutcomeTransportError:
+		return admission.OutcomeTransportError
 	default:
-		s.metrics.RecordServeOutcome(admission.ModeCall, inv.Provider, admission.OutcomeParseError)
-		return failStaticResult(fmt.Errorf("nativeserve/canary: unexpected static attempt outcome %v", res.Outcome), "")
+		return admission.OutcomeParseError
 	}
-}
-
-// serveStaticStructured handles a clean native static structured claim: it runs the
-// S5 same-response BAML `Parse.<Method>` safety compare over the SAME bytes and
-// records response_compare per facet. On a structured/order MATCH it serves the
-// native flattened JSON; on drift it serves the BAML parse of the same bytes (still
-// one native provider request). If BAML's extraction/parse ERRORS on those bytes,
-// compatibility wins — the corresponding error is returned (never a native final
-// BAML would have rejected).
-func (s *Server) serveStaticStructured(ctx context.Context, inv bamlutils.NativeStaticInvocation, bundle *schema.Bundle, res *execute.AttemptResult) bamlutils.NativeStaticServeResult {
-	// The strict same-response oracle runs from here: BAML's `Parse.<Method>` over the
-	// SAME bytes the ONE native provider request returned. Its own phase, so a BAML
-	// parse win is never conflated with a BAML transport win.
-	s.metrics.RecordAdmissionPhase(admission.SurfaceStaticCall, admission.ResolveCohort(admission.SurfaceStaticCall, s.staticCohortInput(inv)), admission.PhaseSameResponseOracle)
-
-	if inv.BAMLOnlyParse == nil {
-		s.metrics.RecordResponseCompare(admission.ResponseCompareMismatch, admission.ResponseCompareFieldError)
-		s.metrics.RecordServeOutcome(admission.ModeCall, inv.Provider, admission.OutcomeParseError)
-		return failStaticResult(&buildrequest.OutputParseError{Err: errNoBAMLOnlyParse}, res.Raw)
-	}
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return s.ctxStaticTransportFail(inv, ctxErr)
-	}
-	// S5 same-response BAML Parse over the SAME assistant text native parsed:
-	// res.AssistantText — the text-only channel ConsumeResponse extracted from the
-	// OpenAI-TRANSLATED body — NOT a re-extraction from the pre-translation
-	// res.ProviderBody. ProviderBody is the provider-native wire shape; for a TRUSTED
-	// (non-OpenAI) provider an "openai" re-extraction of it would yield text native
-	// never saw, feeding BAML the wrong input and corrupting the structured/order
-	// compare + the drift-fallback served result. Mirrors serveStaticParseOnly.
-	bamlStructured, berr := inv.BAMLOnlyParse(ctx, res.AssistantText)
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return s.ctxStaticTransportFail(inv, ctxErr)
-	}
-	if berr != nil {
-		if isContextErr(berr) {
-			return s.ctxStaticTransportFail(inv, berr)
-		}
-		s.metrics.RecordResponseCompare(admission.ResponseCompareMismatch, admission.ResponseCompareFieldError)
-		s.metrics.RecordServeOutcome(admission.ModeCall, inv.Provider, admission.OutcomeParseError)
-		return failStaticResult(&buildrequest.OutputParseError{Err: berr}, res.Raw)
-	}
-	s.metrics.RecordResponseCompare(admission.ResponseCompareMatch, admission.ResponseCompareFieldError)
-
-	// Per-facet response parity. In the SERVE path native is the SOLE extractor, so
-	// the assistant/raw/reasoning channels are native-owned (res.AssistantText/Raw/
-	// Reasoning, all from the same translated body) and served as-is — there is no
-	// independent BAML extraction to diverge from — and translate is always OK on
-	// OutcomeStructured. The load-bearing safety compare is structured/order below
-	// (native's flattened structured vs BAML's parse of that same assistant text).
-	s.recordResponse(true, admission.ResponseCompareFieldTranslate)
-	s.recordResponse(true, admission.ResponseCompareFieldAssistant)
-	s.recordResponse(true, admission.ResponseCompareFieldRaw)
-	s.recordResponse(true, admission.ResponseCompareFieldReasoning)
-	structuredMatch, orderMatch := parity.CompareStaticStructured(res.Structured, bamlStructured, bundle)
-	s.recordResponse(structuredMatch, admission.ResponseCompareFieldStructured)
-	s.recordResponse(orderMatch, admission.ResponseCompareFieldOrder)
-
-	if structuredMatch && orderMatch {
-		// MATCH -> serve the native flattened JSON with native-owned raw/reasoning.
-		s.metrics.RecordServeOutcome(admission.ModeCall, inv.Provider, admission.OutcomeSuccess)
-		return successStaticResult(res.Structured, res, bamlutils.NativeStaticServeEngineNative)
-	}
-	// Structured/order drift -> serve the BAML parse of the SAME bytes for safety
-	// (still one native provider request). winner_engine records BAML produced it.
-	s.metrics.RecordFallback(admission.FallbackParseOnly)
-	s.metrics.RecordServeOutcome(admission.ModeCall, inv.Provider, admission.OutcomeSuccess)
-	return successStaticResult(bamlStructured, res, bamlutils.NativeStaticServeEngineBAMLParse)
-}
-
-// serveStaticParseOnly handles a native SAP decline (OutcomeParseDeclined): native
-// transported and translated cleanly but declined the parse shape (e.g. a bare
-// primitive string return native never claims as JSON), so BAML `Parse.<Method>`
-// runs on the SAME extracted assistant text and serves that final. One native
-// provider request, zero BAML provider requests.
-func (s *Server) serveStaticParseOnly(ctx context.Context, inv bamlutils.NativeStaticInvocation, res *execute.AttemptResult) bamlutils.NativeStaticServeResult {
-	if inv.BAMLOnlyParse == nil {
-		s.metrics.RecordResponseCompare(admission.ResponseCompareMismatch, admission.ResponseCompareFieldError)
-		s.metrics.RecordServeOutcome(admission.ModeCall, inv.Provider, admission.OutcomeParseError)
-		return failStaticResult(&buildrequest.OutputParseError{Err: errNoBAMLOnlyParse}, res.Raw)
-	}
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return s.ctxStaticTransportFail(inv, ctxErr)
-	}
-	bamlStructured, berr := inv.BAMLOnlyParse(ctx, res.AssistantText)
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return s.ctxStaticTransportFail(inv, ctxErr)
-	}
-	if berr != nil {
-		if isContextErr(berr) {
-			return s.ctxStaticTransportFail(inv, berr)
-		}
-		s.metrics.RecordServeOutcome(admission.ModeCall, inv.Provider, admission.OutcomeParseError)
-		return failStaticResult(&buildrequest.OutputParseError{Err: berr}, res.Raw)
-	}
-	// native declined where BAML parsed -> a real structured/order divergence.
-	s.recordResponse(true, admission.ResponseCompareFieldTranslate)
-	s.recordResponse(false, admission.ResponseCompareFieldStructured)
-	s.recordResponse(false, admission.ResponseCompareFieldOrder)
-	s.metrics.RecordFallback(admission.FallbackParseOnly)
-	s.metrics.RecordServeOutcome(admission.ModeCall, inv.Provider, admission.OutcomeParseDecline)
-	return successStaticResult(bamlStructured, res, bamlutils.NativeStaticServeEngineBAMLParse)
-}
-
-// ctxStaticTransportFail records a transport_error serve outcome and returns the
-// context error UNCHANGED (no OutputParseError wrap, no details.raw) so
-// errors.Is(context.Canceled/DeadlineExceeded) holds for the outer policy.
-func (s *Server) ctxStaticTransportFail(inv bamlutils.NativeStaticInvocation, ctxErr error) bamlutils.NativeStaticServeResult {
-	s.metrics.RecordServeOutcome(admission.ModeCall, inv.Provider, admission.OutcomeTransportError)
-	return failStaticResult(ctxErr, "")
 }
 
 func declineStaticResult(stage, reason string) bamlutils.NativeStaticServeResult {
@@ -360,20 +278,6 @@ func failStaticResult(err error, raw string) bamlutils.NativeStaticServeResult {
 		Disposition:   bamlutils.NativeStaticServeFailed,
 		Err:           err,
 		RawDiagnostic: raw,
-	}
-}
-
-// successStaticResult wraps a served static final: finalJSON is the winning
-// flattened canonical JSON (the generated /call seam decodes it into the concrete
-// return type via DecodeNativeStaticFinal), raw/reasoning are the native-owned
-// /call-with-raw channels, and engine is the bounded winner-engine token.
-func successStaticResult(finalJSON []byte, res *execute.AttemptResult, engine string) bamlutils.NativeStaticServeResult {
-	return bamlutils.NativeStaticServeResult{
-		Disposition:  bamlutils.NativeStaticServeSucceeded,
-		FinalJSON:    finalJSON,
-		Raw:          res.Raw,
-		Reasoning:    res.Reasoning,
-		WinnerEngine: engine,
 	}
 }
 

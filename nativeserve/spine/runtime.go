@@ -79,48 +79,9 @@ var _ worker.Runtime = (*workerRuntime)(nil)
 // widening classifyBinding / the executor WITHOUT touching NewWorkerRuntime's
 // shape, the bootstrap, the pool, the plugin ABI, or the build flag.
 func NewWorkerRuntime(proj projectdescriptor.Project, candidates []UnaryRegistration, exact *llmhttp.ExactExecutor) (worker.Runtime, error) {
-	if err := proj.Validate(); err != nil {
-		return nil, fmt.Errorf("nativespine: invalid project descriptor: %w", err)
-	}
-	byName := make(map[string]projectdescriptor.Method, len(proj.Methods))
-	for _, m := range proj.Methods {
-		byName[m.Name] = m
-	}
-	capByName := make(map[string]projectdescriptor.MethodCapability, len(proj.Capabilities))
-	for _, c := range proj.Capabilities {
-		capByName[c.Method] = c
-	}
-
-	seen := make(map[string]bool, len(candidates))
-	accepted := make([]UnaryRegistration, 0, len(candidates))
-	for i := range candidates {
-		c := candidates[i]
-		if c.BuildMethod == nil {
-			return nil, fmt.Errorf("nativespine: candidate %q has a nil BuildMethod (callback-before-claim)", c.Binding.Method)
-		}
-		// A duplicate candidate method is a corrupt candidate list (the generator
-		// must emit each method once); fail boot rather than silently dropping one.
-		// Record every non-empty candidate name BEFORE classification, so a duplicate
-		// is a hard failure regardless of whether either copy is accepted or is an
-		// out-of-cohort miss — a cohort-miss `continue` must never let a duplicate
-		// slip past this check.
-		if c.Binding.Method != "" {
-			if seen[c.Binding.Method] {
-				return nil, fmt.Errorf("nativespine: duplicate candidate method %q", c.Binding.Method)
-			}
-			seen[c.Binding.Method] = true
-		}
-		_, rej := classifyBinding(proj, byName, capByName, c.Binding)
-		if rej != nil {
-			if rej.kind == rejectHard {
-				return nil, rej.err
-			}
-			// Expected cohort miss: OMIT from the runtime registry. This is the single
-			// widening point — a later slice that admits this shape flips it to accepted
-			// with no bootstrap change.
-			continue
-		}
-		accepted = append(accepted, c)
+	accepted, err := classifyCandidates(proj, candidates)
+	if err != nil {
+		return nil, err
 	}
 	if len(accepted) == 0 {
 		return nil, fmt.Errorf("nativespine: no candidate method is in the exact U1 population (empty accepted cohort); refusing to boot a native-only worker that would decline every request")
@@ -158,6 +119,87 @@ func NewWorkerRuntime(proj projectdescriptor.Project, candidates []UnaryRegistra
 		parseMethods[name] = pm
 	}
 	return &workerRuntime{methods: methods, parseMethods: parseMethods}, nil
+}
+
+// classifyCandidates validates the whole project and classifies EVERY candidate against
+// the single U1 population predicate (classifyBinding — the same checks the strict
+// executor uses), returning the accepted subset in input order. It is the ONE shared
+// selection helper NewWorkerRuntime (native-only) and NewPopulationExecutor (the
+// ExecBridge-U1c standard composite) both call, so there is exactly one deletion
+// frontier. It FAILS HARD on an invalid project, a nil BuildMethod, a duplicate
+// candidate method (a corrupt candidate list), or any classifyBinding rejectHard
+// (invalid descriptor/envelope, missing/blocked capability, nil callback, name
+// mismatch), and OMITS ordinary cohort misses. It does NOT decide emptiness — the
+// caller does: native-only refuses an empty accepted set, the standard composite allows
+// it (all requests fall back to BAML).
+func classifyCandidates(proj projectdescriptor.Project, candidates []UnaryRegistration) ([]UnaryRegistration, error) {
+	if err := proj.Validate(); err != nil {
+		return nil, fmt.Errorf("nativespine: invalid project descriptor: %w", err)
+	}
+	byName := make(map[string]projectdescriptor.Method, len(proj.Methods))
+	for _, m := range proj.Methods {
+		byName[m.Name] = m
+	}
+	capByName := make(map[string]projectdescriptor.MethodCapability, len(proj.Capabilities))
+	for _, c := range proj.Capabilities {
+		capByName[c.Method] = c
+	}
+
+	seen := make(map[string]bool, len(candidates))
+	accepted := make([]UnaryRegistration, 0, len(candidates))
+	for i := range candidates {
+		c := candidates[i]
+		if c.BuildMethod == nil {
+			return nil, fmt.Errorf("nativespine: candidate %q has a nil BuildMethod (callback-before-claim)", c.Binding.Method)
+		}
+		// A duplicate candidate method is a corrupt candidate list (the generator must
+		// emit each method once); fail rather than silently dropping one. Recorded BEFORE
+		// classification, so a duplicate is a hard failure regardless of whether either
+		// copy is accepted or is an out-of-cohort miss.
+		if c.Binding.Method != "" {
+			if seen[c.Binding.Method] {
+				return nil, fmt.Errorf("nativespine: duplicate candidate method %q", c.Binding.Method)
+			}
+			seen[c.Binding.Method] = true
+		}
+		_, rej := classifyBinding(proj, byName, capByName, c.Binding)
+		if rej != nil {
+			if rej.kind == rejectHard {
+				return nil, rej.err
+			}
+			// Expected cohort miss: OMIT. This is the single widening point — a later
+			// slice that admits this shape flips it to accepted with no bootstrap change.
+			continue
+		}
+		accepted = append(accepted, c)
+	}
+	return accepted, nil
+}
+
+// NewPopulationExecutor builds a population-filtered *UnaryExecutor over exactly the
+// accepted subset of candidates — the ExecBridge-U1c standard composite's construction
+// path. Unlike NewUnaryExecutor (STRICT: every passed binding must be admitted) it OMITS
+// ordinary cohort misses via the shared classifyCandidates, and unlike NewWorkerRuntime
+// it ALLOWS AN EMPTY accepted set: a standard artifact whose project has nothing in the
+// exact U1 population yields an all-decline executor (every /call falls back to BAML),
+// which is legitimate — the difference between "empty is fatal" (native-only) and "empty
+// is fine" (standard) is encoded in two constructors, never an environment switch. It
+// still FAILS HARD on corruption. It builds only the executor over the accepted bindings
+// (never the worker method maps): the standard composite drives CallWithOracle directly,
+// not the worker handler.
+func NewPopulationExecutor(proj projectdescriptor.Project, candidates []UnaryRegistration, exact *llmhttp.ExactExecutor) (*UnaryExecutor, error) {
+	accepted, err := classifyCandidates(proj, candidates)
+	if err != nil {
+		return nil, err
+	}
+	bindings := make([]bamlutils.NativeSpineUnaryBinding, len(accepted))
+	for i := range accepted {
+		bindings[i] = accepted[i].Binding
+	}
+	// The strict executor re-classifies exactly these accepted bindings (single source of
+	// truth); they were classified accepted above, so registration succeeds — including
+	// the zero-binding case, which yields an all-decline executor.
+	return NewUnaryExecutor(proj, bindings, exact)
 }
 
 // InitRuntime is the pure-Go validation/no-op init: it loads no shared library

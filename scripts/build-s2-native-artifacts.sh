@@ -110,12 +110,26 @@ build_artifact() {
     emit "${id_env}=${artifact_id}"
 }
 
-# cmd/worker is the SERVE profile: build.sh gives it the nativestreamserve tag as
-# well, because it is the only profile that installs the native stream serve
-# factory. cmd/worker-shadow is the SHADOW profile: native-capable, but no stream
-# serve factory, so no nativestreamserve tag. Both get nativeworkerartifact, which
-# is what marks the artifact profile itself.
-build_artifact worker        "subprocess,nativestreamserve,nativeworkerartifact" \
+# ExecBridge-U1c: the SERVE profile (cmd/worker) compiles the generated native spine
+# registry — serveProfileOptions installs standardspineoracle.NewStaticServe, which drives
+# NewExecutor over it, and a missing registry fails loud at boot. These S2 artifacts carry
+# no deployment methods, so the U1 population is empty; generate an all-decline
+# (empty-population) registry and build cmd/worker with the profile-neutral
+# debamlnativespinegenerated tag, exactly as build.sh does for the standard artifact (so the
+# attested artifact ID matches). The SHADOW profile (cmd/worker-shadow) does NOT use the
+# registry, so it is unchanged — no generation, no generic tag, exactly as build.sh excludes
+# it.
+echo "Generating native spine registry (S2 serve profile: empty population)..."
+(cd "${REPO_ROOT}" && go run ./cmd/gen-native-spine-worker \
+    --empty \
+    --out-dir internal/nativebody/nanollmprepare/nativegenerated)
+
+# cmd/worker is the SERVE profile: build.sh gives it the nativestreamserve tag (the only
+# profile that installs the native stream serve factory) and, since U1c, the profile-neutral
+# debamlnativespinegenerated registry tag. cmd/worker-shadow is the SHADOW profile:
+# native-capable, but no stream serve factory and no generated registry, so neither tag.
+# Both get nativeworkerartifact, which is what marks the artifact profile itself.
+build_artifact worker        "subprocess,nativestreamserve,nativeworkerartifact,debamlnativespinegenerated" \
     BAML_REST_S2_NATIVE_WORKER_BIN BAML_REST_S2_NATIVE_WORKER_ARTIFACT_ID
 build_artifact worker-shadow "subprocess,nativeworkerartifact" \
     BAML_REST_S2_NATIVE_SHADOW_WORKER_BIN BAML_REST_S2_NATIVE_SHADOW_WORKER_ARTIFACT_ID

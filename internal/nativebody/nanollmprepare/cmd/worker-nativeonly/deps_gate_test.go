@@ -20,6 +20,10 @@ var forbiddenDeps = []string{
 	"github.com/invakid404/baml-rest/internal/rootruntime",
 	"github.com/invakid404/baml-rest/introspected",
 	"github.com/invakid404/baml-rest/internal/workerboot",
+	// ExecBridge-U1c: the standard-only oracle composite is BAML-AWARE (it consumes the
+	// neutral BAML closures) and is imported ONLY by cmd/worker; the native-only command
+	// must never reach it.
+	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/standardspineoracle",
 }
 
 // positiveDeps must be present so an empty/wrong go-list output cannot pass this
@@ -38,7 +42,7 @@ var positiveDeps = []string{
 // runs `GOWORK=off go list -deps` against the EXACT command package and tags built
 // into cmd/serve/worker, and fails on any BAML/CFFI/dynclient/rootruntime/
 // introspected/workerboot/root-baml_rest dependency. TestMain has already generated
-// the deployment registry, so the debamlnativeonlygenerated build sees the real
+// the deployment registry, so the debamlnativespinegenerated build sees the real
 // aggregate. This is the acceptance gate; the container build runs the same check.
 func TestNativeOnlyWorkerHasNoBAML(t *testing.T) {
 	_, moduleRoot := repoPaths()

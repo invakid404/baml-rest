@@ -315,14 +315,17 @@ fi
 if [ "${ARTIFACT_PROFILE}" = "native_capable" ]; then
     BUILD_TAGS="${BUILD_TAGS:+${BUILD_TAGS},}nativeworkerartifact"
 fi
-# ExecBridge-U1b: the native-only worker compiles the GENERATED registry (emitted
-# below by cmd/gen-native-spine-worker) under this tag; without it the committed
-# fail-loud stub (nativegenerated/generated_off.go) is selected instead. The host
-# serve build carries the tag too (it is inert there — no root file is gated on it),
-# so the same GO_BUILD_TAGS drives both builds and the axis is visible in the
-# attested artifact ID.
-if [ "${NATIVE_ONLY_WORKER:-false}" = "true" ]; then
-    BUILD_TAGS="${BUILD_TAGS:+${BUILD_TAGS},}debamlnativeonlygenerated"
+# ExecBridge-U1b/U1c: the native spine registry (emitted below by
+# cmd/gen-native-spine-worker) compiles under this PROFILE-NEUTRAL tag; without it the
+# committed fail-loud stub (nativegenerated/generated_off.go) is selected instead. BOTH
+# native-capable subprocess workers use the registry and therefore the tag: the
+# native-only worker (via NewRuntime) AND the standard native-capable serve worker (via
+# NewExecutor — the ExecBridge-U1c oracle composite). The SHADOW worker does not use the
+# registry, so it is excluded. The host serve build carries the tag too (it is inert
+# there — no root file is gated on it), so the same GO_BUILD_TAGS drives both builds and
+# the axis is visible in the attested artifact ID.
+if [ "${ARTIFACT_PROFILE}" = "native_capable" ] && [ "${SUBPROCESS:-true}" = "true" ] && [ "${SHADOW_WORKER}" != "true" ]; then
+    BUILD_TAGS="${BUILD_TAGS:+${BUILD_TAGS},}debamlnativespinegenerated"
 fi
 GO_BUILD_TAGS=""
 if [ -n "${BUILD_TAGS}" ]; then
@@ -977,7 +980,7 @@ if [ "${SUBPROCESS:-true}" = "true" ]; then
             # registry into the extracted tree. Generation cleans its output dir first,
             # so a method removed since the last build cannot survive as a stale
             # registration. The committed generated_off.go stub is left in place and is
-            # excluded by the debamlnativeonlygenerated tag below.
+            # excluded by the debamlnativespinegenerated tag below.
             echo "Emitting native-spine project descriptor..."
             go run ./cmd/introspect \
                 --native-spine-descriptors ./nativeworker_descriptors.json \
@@ -1002,9 +1005,9 @@ if [ "${SUBPROCESS:-true}" = "true" ]; then
                 echo "ERROR: native-only dependency gate produced no output (wrong package/tags?)" >&2
                 exit 1
             fi
-            if grep -Eq 'baml_client|github\.com/boundaryml/baml|github\.com/invakid404/baml-rest/dynclient|dynclient/baml-patched|language_client_go|github\.com/invakid404/baml-rest/internal/rootruntime|github\.com/invakid404/baml-rest/introspected|github\.com/invakid404/baml-rest/internal/workerboot|^github\.com/invakid404/baml-rest$' "${NATIVE_ONLY_DEPS}"; then
+            if grep -Eq 'baml_client|github\.com/boundaryml/baml|github\.com/invakid404/baml-rest/dynclient|dynclient/baml-patched|language_client_go|github\.com/invakid404/baml-rest/internal/rootruntime|github\.com/invakid404/baml-rest/introspected|github\.com/invakid404/baml-rest/internal/workerboot|github\.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/standardspineoracle|^github\.com/invakid404/baml-rest$' "${NATIVE_ONLY_DEPS}"; then
                 echo "ERROR: the native-only worker's compiled dependency graph contains a forbidden BAML/CFFI/dynclient/rootruntime/introspected/workerboot/root-baml_rest dependency:" >&2
-                grep -E 'baml_client|github\.com/boundaryml/baml|github\.com/invakid404/baml-rest/dynclient|dynclient/baml-patched|language_client_go|github\.com/invakid404/baml-rest/internal/rootruntime|github\.com/invakid404/baml-rest/introspected|github\.com/invakid404/baml-rest/internal/workerboot|^github\.com/invakid404/baml-rest$' "${NATIVE_ONLY_DEPS}" >&2
+                grep -E 'baml_client|github\.com/boundaryml/baml|github\.com/invakid404/baml-rest/dynclient|dynclient/baml-patched|language_client_go|github\.com/invakid404/baml-rest/internal/rootruntime|github\.com/invakid404/baml-rest/introspected|github\.com/invakid404/baml-rest/internal/workerboot|github\.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/standardspineoracle|^github\.com/invakid404/baml-rest$' "${NATIVE_ONLY_DEPS}" >&2
                 rm -f "${NATIVE_ONLY_DEPS}"
                 exit 1
             fi
@@ -1049,6 +1052,27 @@ if [ "${SUBPROCESS:-true}" = "true" ]; then
                 NATIVE_WORKER_OVERLAY_ARGS+=(--custom-baml-lib "${CUSTOM_BAML_GO_LIB}")
             fi
             go run ./cmd/build/nativeworker-overlay "${NATIVE_WORKER_OVERLAY_ARGS[@]}"
+
+            # ExecBridge-U1c: the STANDARD native-capable serve worker (cmd/worker) also
+            # compiles the generated native spine registry — its serveProfileOptions()
+            # installs standardspineoracle.NewStaticServe, which drives NewExecutor over
+            # the deployment's exact-U1 population. Generate it here, with --allow-empty
+            # (an empty U1 population yields an all-decline NewExecutor whose every /call
+            # falls back to BAML, so an ordinary BAML project stays buildable), and the
+            # generic debamlnativespinegenerated tag (added to BUILD_TAGS above) selects
+            # the real aggregate rather than the fail-loud stub. The SHADOW worker does not
+            # use the registry, so generation is skipped there and the tag is absent.
+            if [ "${SHADOW_WORKER}" != "true" ]; then
+                echo "Emitting native-spine project descriptor (standard composite)..."
+                go run ./cmd/introspect \
+                    --native-spine-descriptors ./nativeworker_descriptors.json \
+                    --baml-src-dir ./baml_src
+                echo "Generating native spine registry (standard composite, cmd/gen-native-spine-worker --allow-empty)..."
+                go run ./cmd/gen-native-spine-worker \
+                    --descriptors ./nativeworker_descriptors.json \
+                    --out-dir internal/nativebody/nanollmprepare/nativegenerated \
+                    --allow-empty
+            fi
 
             echo "Building BAML+nanollm worker binary (${NATIVE_WORKER_PKG}, from isolated nanollmprepare module)..."
             WORKER_OUT="$(pwd)/cmd/serve/worker"

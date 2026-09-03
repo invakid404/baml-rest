@@ -1,7 +1,9 @@
-// Command gen-native-spine-worker emits the DEPLOYMENT-SPECIFIC native-only
-// worker registry for the ExecBridge-U1b packaged worker. It consumes the JSON
-// emitted by `cmd/introspect --native-spine-descriptors` (a projectdescriptor.Project)
-// and generates, into the extracted nanollmprepare build tree:
+// Command gen-native-spine-worker emits the DEPLOYMENT-SPECIFIC native spine registry
+// for the ExecBridge packaged workers — BOTH the native-only artifact (via the emitted
+// NewRuntime) AND the ExecBridge-U1c standard native-capable serve worker (via the
+// emitted NewExecutor). It consumes the JSON emitted by
+// `cmd/introspect --native-spine-descriptors` (a projectdescriptor.Project) and
+// generates, into the extracted nanollmprepare build tree:
 //
 //   - one deterministic collision-proof subpackage per codegen-admitted static
 //     unary method, each produced by adapters/common/codegen.EmitNativeStaticUnary
@@ -9,7 +11,7 @@
 //     names such as MethodName, BuildMethod, and Binding);
 //   - nativegenerated/project.json, embedded by the aggregate registry package;
 //   - a deterministic aggregate candidate list (nativegenerated/generated.go, under
-//     the debamlnativeonlygenerated build tag) that imports every emitted subpackage
+//     the debamlnativespinegenerated build tag) that imports every emitted subpackage
 //     and pairs its Binding() with its BuildMethod, then exposes NewRuntime() which
 //     decodes the embedded descriptor and calls spine.NewWorkerRuntime.
 //
@@ -59,9 +61,12 @@ const defaultRegistryPackagePath = "github.com/invakid404/baml-rest/internal/nat
 // registryPackageName is the Go package name of the aggregate registry.
 const registryPackageName = "nativegenerated"
 
-// buildTag is the tag under which the generated registry is the real
-// implementation; without it the committed stub compiles and fails loud.
-const buildTag = "debamlnativeonlygenerated"
+// buildTag is the PROFILE-NEUTRAL tag under which the generated registry is the real
+// implementation; without it the committed stub compiles and fails loud. Both the
+// native-only artifact (via NewRuntime) AND the standard native-capable serve worker
+// (via NewExecutor) are built with it, so its name says "native spine", not "native
+// only".
+const buildTag = "debamlnativespinegenerated"
 
 // emittedMethod is one codegen-admitted static-unary method plus its resolved,
 // collision-proof subpackage identity.
@@ -74,13 +79,18 @@ type emittedMethod struct {
 }
 
 // Generate reads a projectdescriptor.Project from descriptorsJSON, validates it,
-// and writes the deployment-specific native registry into outDir. packagePath is
+// and writes the deployment-specific native spine registry into outDir. packagePath is
 // the import path outDir is built at (defaultRegistryPackagePath in production).
 //
-// It fails on an invalid descriptor, on a project that yields NO codegen-admitted
-// static-unary candidate (a native-only worker needs at least one), and on any
-// emitter error. It cleans the output directory first.
-func Generate(descriptorsJSON []byte, outDir, packagePath string) error {
+// allowEmpty selects the profile's empty-population semantics. With allowEmpty FALSE
+// (the native-only artifact) a project that yields NO codegen-admitted static-unary
+// candidate is REFUSED — a native-only worker that admits nothing has no reason to
+// serve. With allowEmpty TRUE (the ExecBridge-U1c standard composite) an empty
+// population is permitted: NewExecutor yields an all-decline executor whose every /call
+// falls back to BAML, so an ordinary BAML project does not become unbuildable merely
+// because its standard artifact has nothing in U1. It fails on an invalid descriptor and
+// any emitter error, and cleans the output directory first.
+func Generate(descriptorsJSON []byte, outDir, packagePath string, allowEmpty bool) error {
 	var proj projectdescriptor.Project
 	if err := json.Unmarshal(descriptorsJSON, &proj); err != nil {
 		return fmt.Errorf("gen-native-spine-worker: decode descriptor JSON: %w", err)
@@ -93,7 +103,7 @@ func Generate(descriptorsJSON []byte, outDir, packagePath string) error {
 	if err != nil {
 		return err
 	}
-	if len(emitted) == 0 {
+	if len(emitted) == 0 && !allowEmpty {
 		return fmt.Errorf("gen-native-spine-worker: project has no codegen-admitted static-unary method; a native-only worker needs at least one candidate")
 	}
 
@@ -219,11 +229,15 @@ func renderAggregate(emitted []emittedMethod) ([]byte, error) {
 	b.WriteString("\t_ \"embed\"\n")
 	b.WriteString("\t\"encoding/json\"\n")
 	b.WriteString("\t\"fmt\"\n\n")
+	b.WriteString("\t\"github.com/invakid404/baml-rest/bamlutils\"\n")
 	b.WriteString("\t\"github.com/invakid404/baml-rest/bamlutils/projectdescriptor\"\n")
 	b.WriteString("\t\"github.com/invakid404/baml-rest/nativeserve/spine\"\n")
-	b.WriteString("\t\"github.com/invakid404/baml-rest/worker\"\n\n")
-	for i, em := range emitted {
-		fmt.Fprintf(&b, "\tp%d %q\n", i, em.importPath)
+	b.WriteString("\t\"github.com/invakid404/baml-rest/worker\"\n")
+	if len(emitted) > 0 {
+		b.WriteString("\n")
+		for i, em := range emitted {
+			fmt.Fprintf(&b, "\tp%d %q\n", i, em.importPath)
+		}
 	}
 	b.WriteString(")\n\n")
 
@@ -231,9 +245,10 @@ func renderAggregate(emitted []emittedMethod) ([]byte, error) {
 	b.WriteString("var projectDescriptorJSON []byte\n\n")
 
 	b.WriteString("// candidates is the deterministic aggregate candidate list: one emitted\n")
-	b.WriteString("// per-method registration in method-name order. Membership in the SERVED\n")
-	b.WriteString("// runtime is NOT decided here — spine.NewWorkerRuntime's single U1 classifier\n")
-	b.WriteString("// owns that. These are CANDIDATES only; there is no fallback slot.\n")
+	b.WriteString("// per-method registration in method-name order (empty when the project has no\n")
+	b.WriteString("// codegen-admitted static-unary method). Membership in the SERVED runtime is NOT\n")
+	b.WriteString("// decided here — the single U1 classifier in nativeserve/spine owns that. These\n")
+	b.WriteString("// are CANDIDATES only; there is no fallback slot.\n")
 	b.WriteString("func candidates() []spine.UnaryRegistration {\n")
 	b.WriteString("\treturn []spine.UnaryRegistration{\n")
 	for i := range emitted {
@@ -243,15 +258,35 @@ func renderAggregate(emitted []emittedMethod) ([]byte, error) {
 	b.WriteString("}\n\n")
 
 	b.WriteString("// NewRuntime decodes the embedded deployment descriptor and builds the\n")
-	b.WriteString("// immutable admitted native runtime via spine.NewWorkerRuntime. It is the\n")
-	b.WriteString("// native-only command's root-runtime selection; there is no BAML fallback and\n")
-	b.WriteString("// no nil/default path to a generated BAML runtime.\n")
+	b.WriteString("// immutable admitted native-only runtime via spine.NewWorkerRuntime (which\n")
+	b.WriteString("// REFUSES an empty population). It is the native-only command's root-runtime\n")
+	b.WriteString("// selection; there is no BAML fallback and no nil/default path to a generated\n")
+	b.WriteString("// BAML runtime.\n")
 	b.WriteString("func NewRuntime() (worker.Runtime, error) {\n")
 	b.WriteString("\tvar proj projectdescriptor.Project\n")
 	b.WriteString("\tif err := json.Unmarshal(projectDescriptorJSON, &proj); err != nil {\n")
 	b.WriteString("\t\treturn nil, fmt.Errorf(\"nativegenerated: decode embedded project descriptor: %w\", err)\n")
 	b.WriteString("\t}\n")
 	b.WriteString("\treturn spine.NewWorkerRuntime(proj, candidates(), nil)\n")
+	b.WriteString("}\n\n")
+
+	b.WriteString("// NewExecutor decodes the embedded deployment descriptor and builds the\n")
+	b.WriteString("// population-filtered oracle-capable executor via spine.NewPopulationExecutor,\n")
+	b.WriteString("// which ALLOWS an empty population (an all-decline executor whose every /call\n")
+	b.WriteString("// falls back to BAML). It is the ExecBridge-U1c standard composite's construction\n")
+	b.WriteString("// path; this executor's own path carries no generated BAML/CFFI — the standard\n")
+	b.WriteString("// worker links BAML elsewhere and injects only the neutral no-send plan +\n")
+	b.WriteString("// same-bytes parse closures.\n")
+	b.WriteString("func NewExecutor() (bamlutils.NativeSpineUnaryOracleExecutor, error) {\n")
+	b.WriteString("\tvar proj projectdescriptor.Project\n")
+	b.WriteString("\tif err := json.Unmarshal(projectDescriptorJSON, &proj); err != nil {\n")
+	b.WriteString("\t\treturn nil, fmt.Errorf(\"nativegenerated: decode embedded project descriptor: %w\", err)\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\texec, err := spine.NewPopulationExecutor(proj, candidates(), nil)\n")
+	b.WriteString("\tif err != nil {\n")
+	b.WriteString("\t\treturn nil, err\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\treturn exec, nil\n")
 	b.WriteString("}\n")
 
 	formatted, err := format.Source([]byte(b.String()))

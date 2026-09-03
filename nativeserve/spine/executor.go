@@ -58,6 +58,8 @@ const (
 	reasonProjectInputErr   = "project_input_error"
 	reasonClientRegistry    = "client_registry_present"
 	reasonDynamicSchema     = "dynamic_output_schema_present"
+	reasonNoBAMLPlan        = "no_baml_plan_closure"
+	reasonNoBAMLParse       = "no_baml_parse_closure"
 	reasonPlannerError      = "planner_error"
 	reasonPlanExpired       = "plan_expired"
 	reasonPanic             = "panic"
@@ -76,6 +78,14 @@ var (
 	errParseDecline   = errors.New("nativespine: native final parser declined the response shape (no BAML fallback on this cohort)")
 	errClientRegistry = errors.New("nativespine: request carries a client_registry; the exact cohort serves only the descriptor's default client")
 	errDynamicSchema  = errors.New("nativespine: request carries a dynamic output schema; the exact cohort is static-only")
+	errNoBAMLPlan     = errors.New("nativespine: oracle call requires a BAML no-send plan closure; the standard composite must supply BuildBAMLRequest before the claim")
+	errNoBAMLParse    = errors.New("nativespine: oracle call requires a BAML same-bytes parse closure; the standard composite must supply BAMLOnlyParse before the claim")
+	// errPanicBeforeClaim / errPanicAfterClaim are BOUNDED, secret-free panic sentinels.
+	// The recovered value is NEVER interpolated into them: on the standard default path the
+	// adapter propagates the terminal error to the outer policy, so an arbitrary/sensitive
+	// panic payload must not escape (matching the legacy canary's bounded errNativeServePanic).
+	errPanicBeforeClaim = errors.New("nativespine: recovered a panic before the claim (no socket opened)")
+	errPanicAfterClaim  = errors.New("nativespine: recovered a panic after the claim")
 )
 
 // registeredMethod is one immutable, validated registry entry: the reconstructed
@@ -120,12 +130,19 @@ type UnaryExecutor struct {
 	registry map[string]*registeredMethod
 	exec     *llmhttp.ExactExecutor
 	metrics  *Metrics
-	// admitClaim is the pre-socket admission step, defaulting to
-	// admission.AdmitStaticSpineClaim. It is a field only so gated tests can inject a
-	// synthetic claim to drive the post-claim fault matrix deterministically; every
-	// production constructor leaves the default.
-	admitClaim func(ctx context.Context, in admission.StaticInput) (*admission.StaticClaim, error)
+	// admitClaim is the FROZEN-evidence pre-socket admission step (native-only Call),
+	// defaulting to admission.AdmitStaticSpineClaim. admitClaimOracle is the
+	// LIVE-oracle pre-socket admission step (ExecBridge-U1c standard CallWithOracle),
+	// defaulting to admission.AdmitStaticSpineOracleClaim. Both are fields only so gated
+	// tests can inject a synthetic claim to drive the post-claim fault matrix
+	// deterministically; every production constructor leaves the defaults.
+	admitClaim       func(ctx context.Context, in admission.StaticInput) (*admission.StaticClaim, error)
+	admitClaimOracle func(ctx context.Context, in admission.StaticInput) (*admission.StaticClaim, error)
 }
+
+// compile-time assertion the executor also satisfies the optional oracle-capable
+// contract the ExecBridge-U1c standard composite drives.
+var _ bamlutils.NativeSpineUnaryOracleExecutor = (*UnaryExecutor)(nil)
 
 // compile-time assertion the executor satisfies the neutral contract.
 var _ bamlutils.NativeSpineUnaryExecutor = (*UnaryExecutor)(nil)
@@ -165,10 +182,11 @@ func NewUnaryExecutor(proj projectdescriptor.Project, bindings []bamlutils.Nativ
 		return nil, fmt.Errorf("nativespine: invalid project descriptor: %w", err)
 	}
 	e := &UnaryExecutor{
-		registry:   make(map[string]*registeredMethod, len(bindings)),
-		exec:       exec,
-		metrics:    &Metrics{},
-		admitClaim: admission.AdmitStaticSpineClaim,
+		registry:         make(map[string]*registeredMethod, len(bindings)),
+		exec:             exec,
+		metrics:          &Metrics{},
+		admitClaim:       admission.AdmitStaticSpineClaim,
+		admitClaimOracle: admission.AdmitStaticSpineOracleClaim,
 	}
 	byName := make(map[string]projectdescriptor.Method, len(proj.Methods))
 	for _, m := range proj.Methods {

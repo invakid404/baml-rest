@@ -258,19 +258,26 @@ func installNativeStaticCall(
 			// trusted-configuration seal. Carried for identity resolution only, so a
 			// static decline is attributable to the configuration in front of it
 			// instead of collapsing to the generic no-identity one.
-			Registry:                adapter.OriginalClientRegistry(),
-			Provider:                att.Provider,
-			ClientOverride:          att.ClientOverride,
-			SingleLeaf:              singleLeaf,
-			HasFallbackChain:        hasFallbackChain,
-			HasRoundRobin:           hasRoundRobin,
-			HasRequestRetryOverride: hasRetry,
-			Raw:                     raw,
-			IncludeReasoning:        att.IncludeReasoning,
-			WouldRewriteOrProxy:     httpClient.WouldRewriteOrProxy,
-			BuildBAMLRequest:        att.BuildBAMLRequest,
-			BAMLOnlyParse:           bamlOnlyParse,
-			SendHeartbeat:           att.SendHeartbeat,
+			Registry: adapter.OriginalClientRegistry(),
+			// Truthful bounded request facts the exact-U1 spine oracle reads instead of
+			// re-deriving from the adapter: a client-registry override or a dynamic
+			// output schema each declines the exact cohort PRE-SOCKET (default client +
+			// static schema only). Populated here, where the request adapter is
+			// authoritative.
+			HasClientRegistryOverride: adapter.OriginalClientRegistry() != nil,
+			HasDynamicOutputSchema:    adapter.DeBAMLOutputSchema() != nil,
+			Provider:                  att.Provider,
+			ClientOverride:            att.ClientOverride,
+			SingleLeaf:                singleLeaf,
+			HasFallbackChain:          hasFallbackChain,
+			HasRoundRobin:             hasRoundRobin,
+			HasRequestRetryOverride:   hasRetry,
+			Raw:                       raw,
+			IncludeReasoning:          att.IncludeReasoning,
+			WouldRewriteOrProxy:       httpClient.WouldRewriteOrProxy,
+			BuildBAMLRequest:          att.BuildBAMLRequest,
+			BAMLOnlyParse:             bamlOnlyParse,
+			SendHeartbeat:             att.SendHeartbeat,
 		}
 		res := serve(ctx, inv)
 		switch res.Disposition {

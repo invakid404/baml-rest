@@ -95,6 +95,19 @@ func renameBinding(b bamlutils.NativeSpineUnaryBinding, name string) bamlutils.N
 	return b
 }
 
+// jsonAliasValues projects the exact-U1 fixture input into the argument vector the admitted
+// StaticRecursiveAliasJSON descriptor binds. A near-miss invocation carrying these Values is
+// a VALID exact-U1 request with exactly one fact flipped, so a gate PAST the arg binder (the
+// provider gate) is reachable — an empty-Values base would decline earlier at the binder.
+func jsonAliasValues(t *testing.T) []promptdescriptor.ArgumentValue {
+	t.Helper()
+	vals, err := nativespinejsonfixture.Binding().ProjectInput(&nativespinejsonfixture.StaticRecursiveAliasJsonInput{Topic: "weather"})
+	if err != nil {
+		t.Fatalf("ProjectInput: %v", err)
+	}
+	return vals
+}
+
 // declinesOn asserts NewUnaryExecutor over proj+binding is rejected with wantSub.
 func declinesOn(t *testing.T, err error, wantSub string) {
 	t.Helper()

@@ -31,6 +31,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,19 +44,103 @@ import (
 )
 
 // buildNativeWorker builds the serve-capable BAML+nanollm worker exactly as
-// build.sh's NATIVE_WORKER variant does (GOWORK=off + CGO + subprocess tag) and
-// returns its path.
+// build.sh's NATIVE_WORKER variant does (GOWORK=off + CGO + the subprocess +
+// profile-neutral registry tags) and returns its path. Since ExecBridge-U1c the standard
+// serve worker's serveProfileOptions installs standardspineoracle.NewStaticServe, which
+// drives NewExecutor over the generated spine registry, so the smoke build must provide a
+// registry (an empty, all-decline one is enough to boot) under the generic tag — the
+// production builder guarantees the same, and a missing registry must fail loud, not
+// silently degrade to all-BAML. The registry is injected via `-overlay` from a temp dir
+// so this build NEVER mutates the committed nativegenerated/ tree — the exact tree the
+// sibling cmd/worker-nativeonly tests generate into and clean up under a parallel
+// `go test ./...`, which an in-place generate+cleanup here would race and clobber.
 func buildNativeWorker(t *testing.T) string {
 	t.Helper()
+	overlay := generateEmptyRegistryOverlay(t)
 	bin := filepath.Join(t.TempDir(), "worker-native")
 	buildCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	build := exec.CommandContext(buildCtx, "go", "build", "-tags=subprocess", "-o", bin, ".")
+	build := exec.CommandContext(buildCtx, "go", "build", "-overlay", overlay, "-tags=subprocess,debamlnativespinegenerated", "-o", bin, ".")
 	build.Env = append(os.Environ(), "GOWORK=off", "CGO_ENABLED=1")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("building serve-capable BAML+nanollm worker failed: %v\n%s", err, out)
 	}
 	return bin
+}
+
+// generateEmptyRegistryOverlay generates an all-decline (empty-population) native spine
+// registry into a TEMP directory and returns a `go build -overlay` config that maps it
+// onto the nativegenerated package — so the committed tree is never touched. It seeds the
+// committed stub into the temp dir first (the generator refuses to clean a dir without
+// it), then generates `--empty` (which emits generated.go + project.json, no subpackages).
+func generateEmptyRegistryOverlay(t *testing.T) string {
+	t.Helper()
+	root := repoRootDir(t)
+	genDir := filepath.Join(root, "internal", "nativebody", "nanollmprepare", "nativegenerated")
+	tmp := t.TempDir()
+
+	// Seed the committed fail-loud stub so gen-native-spine-worker's clean-first invariant
+	// (which requires generated_off.go present) is satisfied in the temp dir.
+	stub, err := os.ReadFile(filepath.Join(genDir, "generated_off.go"))
+	if err != nil {
+		t.Fatalf("read committed registry stub: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "generated_off.go"), stub, 0o644); err != nil {
+		t.Fatalf("seed stub into temp registry dir: %v", err)
+	}
+
+	// gen-native-spine-worker is a ROOT-module command; run it from the repo root under
+	// the workspace (no CGO). --package-path names the REAL registry import path so the
+	// emitted aggregate is identical to a production one.
+	genCtx, cancelGen := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancelGen()
+	gen := exec.CommandContext(genCtx, "go", "run", "./cmd/gen-native-spine-worker",
+		"--empty",
+		"--out-dir", tmp,
+		"--package-path", "github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/nativegenerated")
+	gen.Dir = root
+	if out, err := gen.CombinedOutput(); err != nil {
+		t.Fatalf("generating empty native spine registry: %v\n%s", err, out)
+	}
+
+	// Overlay the generated aggregate + embedded descriptor onto the nativegenerated
+	// package. The committed dir has only the tag-OFF stub (excluded under the generic
+	// tag), so the overlay ADDS generated.go (tag-ON) and its embedded project.json.
+	overlay := struct {
+		Replace map[string]string
+	}{Replace: map[string]string{
+		filepath.Join(genDir, "generated.go"): filepath.Join(tmp, "generated.go"),
+		filepath.Join(genDir, "project.json"): filepath.Join(tmp, "project.json"),
+	}}
+	b, err := json.Marshal(overlay)
+	if err != nil {
+		t.Fatalf("marshal build overlay: %v", err)
+	}
+	overlayPath := filepath.Join(tmp, "overlay.json")
+	if err := os.WriteFile(overlayPath, b, 0o644); err != nil {
+		t.Fatalf("write build overlay: %v", err)
+	}
+	return overlayPath
+}
+
+// repoRootDir walks up from the test's working directory to the repo root (the directory
+// carrying go.work).
+func repoRootDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.work")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("repo root (go.work) not found above the test working directory")
+		}
+		dir = parent
+	}
 }
 
 // envWithoutClientDefaults returns os.Environ() with any BAML_REST_CLIENT_DEFAULTS

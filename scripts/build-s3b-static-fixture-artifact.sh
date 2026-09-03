@@ -56,7 +56,7 @@ ARTIFACT_PROFILE_PKG="github.com/invakid404/baml-rest/internal/artifactprofile"
 
 # The SHIPPED serve-profile tag set, stated literally for the same reason the S3a
 # script states it literally, plus the two fixture tags.
-SHIPPED_TAGS="subprocess,nativestreamserve,nativeworkerartifact"
+SHIPPED_TAGS="subprocess,nativestreamserve,nativeworkerartifact,debamlnativespinegenerated"
 FIXTURE_TAGS="${SHIPPED_TAGS},debamlworkerfixture,debamlworkerstaticfixture"
 
 # DRIFT GUARD. Two scripts now build "the shipped artifact, with a different method
@@ -108,6 +108,26 @@ if [ -z "${artifact_id}" ] || [ -z "${artifact_inputs}" ]; then
     printf '%s\n' "${attest_out}" >&2
     exit 1
 fi
+
+# ExecBridge-U1c: the standard serve worker compiles the generated native spine registry.
+# Generate it from the FIXTURE's own baml_src — the SAME project the
+# debamlworkerstaticfixture tag selects — so the spine admits the exact-U1
+# StaticRecursiveAliasJSON with the SAME baked plan (StaticOracleClient, loopback 17654)
+# the fixture's BAML uses. That is what lets the live plan compare MATCH and native serve
+# on the default-on acceptance leg. --allow-empty is harmless here (the project has a
+# candidate) but keeps the standard-mode contract explicit.
+FIXTURE_DESC="$(mktemp)"
+# Register cleanup BEFORE the generation steps, so a failed/interrupted introspect or
+# gen (set -e aborts the script) still removes the temp descriptor.
+trap 'rm -f -- "${FIXTURE_DESC}"' EXIT
+(cd "${REPO_ROOT}" && go run ./cmd/introspect \
+    --native-spine-descriptors "${FIXTURE_DESC}" \
+    --baml-src-dir internal/nativeprompt/testdata/staticserve_fixture/baml_src)
+echo "Generating native spine registry (static fixture: exact-U1 population from the fixture baml_src)..."
+(cd "${REPO_ROOT}" && go run ./cmd/gen-native-spine-worker \
+    --descriptors "${FIXTURE_DESC}" \
+    --out-dir internal/nativebody/nanollmprepare/nativegenerated \
+    --allow-empty)
 
 echo "Building S3b STATIC booted-artifact fixture cmd/worker (tags=${FIXTURE_TAGS}, artifact_id=${artifact_id})..."
 (

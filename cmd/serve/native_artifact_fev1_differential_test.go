@@ -440,8 +440,15 @@ const (
 	staticFixtureWorkerArtifactIDEnv = "BAML_REST_S3B_STATIC_FIXTURE_WORKER_ARTIFACT_ID"
 
 	// staticFixtureMethod is the simplest function in that project:
-	// `StaticCompletion(topic: string) -> string`, one client, no constraints.
+	// `StaticCompletion(topic: string) -> string`. A top-level string return is OUTSIDE
+	// the exact five-arm JSON alias population, so the ExecBridge-U1c spine composite
+	// declines it at the registry stage and BAML serves — the NON-U1 control.
 	staticFixtureMethod = "StaticCompletion"
+	// staticFixtureJSONMethod is the exact-U1 function
+	// `StaticRecursiveAliasJSON(topic: string) -> JSON` (the canonical direct five-arm
+	// alias) the S3b fixture's generated spine registry admits, so it is DEFAULT-SELECTED
+	// natively — the U1 twin of the control above.
+	staticFixtureJSONMethod = "StaticRecursiveAliasJSON"
 	// staticFixtureClient is the BAML client that function uses.
 	staticFixtureClient = "StaticOracleClient"
 	// staticFixtureLoopbackAddr is the FIXED loopback the fixture project's client
@@ -474,11 +481,15 @@ const (
 // handler, twice against ONE capture upstream: flag OFF (stock BAML v0.223 end to
 // end) then flag ON.
 //
-// The deployment even seals that project's OWN client under the ENROLLED slot, so
-// the arm is not passing because the configuration is unrecognisable. It declines
-// anyway, and that is the property: the enrollment is per (surface, cohort) and
-// names `dynamic_call` ONLY, so the static lane presents no identity at all and the
-// default-deny gate refuses it before any native work.
+// Since ExecBridge-U1c the static /call lane is the STRUCTURAL spine composite, so the
+// reason StaticCompletion declines is structural, NOT enrollment: a top-level `string`
+// return is outside the exact five-arm JSON alias population, so the generated spine
+// registry never admits it and the composite declines at the registry stage before any
+// native work — recorded under the enrollment-free `none` cohort. It is the NON-U1 control
+// of the design's required pair; its U1 twin, TestBootedArtifactDefaultSelectsExactJSONStatic,
+// proves a U1 method IS default-selected natively, so together they show U1c did not widen
+// the older lane. (The deployment still seals its client under the fe-v1 slot; the sub-test
+// proves the structural lane ignores it.)
 func TestBootedArtifactPreservesBAMLOnTheStaticCallSurface(t *testing.T) {
 	wantID := strings.TrimSpace(os.Getenv(staticFixtureWorkerArtifactIDEnv))
 	if wantID == "" {
@@ -555,12 +566,14 @@ func TestBootedArtifactPreservesBAMLOnTheStaticCallSurface(t *testing.T) {
 		t.Errorf("admission_phase{surface=static_call,phase=preclaim_decline} = %v on the flag-on artifact, want 1 — the static request never reached the native static seam, so its zero-native reading proves nothing",
 			got)
 	}
-	// ATTRIBUTION — the cohort label is READ, not collapsed away. `unrecognized` is
-	// the gate saying "an identity WAS resolved and this surface is not one the
-	// record declares it for"; `none` is "nothing identifiable ever arrived". A
-	// decline that recorded `none` here would be the generic no-identity refusal and
-	// would prove nothing about the deployment's approved configuration.
-	assertStaticDeclineCohort(t, "flag on, fe-v1 slot sealed", native, "unrecognized")
+	// ATTRIBUTION under ExecBridge-U1c: the static /call lane is now the STRUCTURAL spine
+	// composite, which is enrollment-EXEMPT and resolves NO config identity — every static
+	// decline is recorded under the structural `none` cohort, whether or not a configuration
+	// is sealed. So a non-U1 method (StaticCompletion, a top-level string) declines under
+	// `none`, NOT the `unrecognized` bucket the old enrollment-gated canary lane recorded
+	// for a sealed-but-not-enrolled class. The sub-test below confirms this is
+	// enrollment-INDEPENDENT (dropping the sealed config changes nothing).
+	assertStaticDeclineCohort(t, "flag on, fe-v1 slot sealed", native, "none")
 	// The flag-OFF control: with the kill switch on there is no seam to reach, so
 	// the same request records nothing at all.
 	if got := stock.phaseBySurface["static_call/preclaim_decline"]; got != 0 {
@@ -571,16 +584,13 @@ func TestBootedArtifactPreservesBAMLOnTheStaticCallSurface(t *testing.T) {
 		t.Errorf("the static surface moved the dynamic-call decline series (%v); a static call is not a dynamic one", got)
 	}
 
-	// THE MUTATION BITE for the attribution above, and it is a SINGLE-VARIABLE one.
-	// The deployment still declares the very same class under the very same slot;
-	// only the REQUEST changes, dropping the `client_registry` through which it
-	// selected that class. The worker's seal runs over a carried registry and
-	// nothing else, so the sealed configuration no longer reaches the gate — and the
-	// identical answer on the identical wire must now be attributed to `none`.
-	//
-	// Without this, `unrecognized` could be true for a reason that has nothing to do
-	// with the configuration in front of the gate.
-	t.Run("the same request without the sealed configuration has no identity at all", func(t *testing.T) {
+	// ENROLLMENT-INDEPENDENCE BITE. Under U1c the structural spine lane resolves no config
+	// identity, so dropping the `client_registry` (the channel the deployment's seal runs
+	// over) must change NOTHING: same `none` attribution, same served answer, same single
+	// upstream send, still zero native sockets. This is the U1c counterpart of the old
+	// unrecognized-vs-none mutation — where the old canary lane's attribution flipped with
+	// the sealed config, the structural lane's does not, because it never reads it.
+	t.Run("dropping the sealed configuration changes nothing (the static lane is enrollment-free)", func(t *testing.T) {
 		unsealed := runStaticRouteProof(t, provider, staticRouteOpts{
 			flagOn: true, fingerprint: feV1RouteFingerprint, omitRegistry: true,
 		})
@@ -603,6 +613,90 @@ func TestBootedArtifactPreservesBAMLOnTheStaticCallSurface(t *testing.T) {
 			t.Errorf("the unsealed leg opened %v native socket(s)", unsealed.nativeSockets)
 		}
 	})
+}
+
+// TestBootedArtifactDefaultSelectsExactJSONStatic is the U1 twin of the control above and
+// the design's required default-on proof (scope §6 criterion 1). It drives the EXACT-U1
+// method `StaticRecursiveAliasJSON` on the SAME booted static artifact: the generated spine
+// registry (built from the fixture's own baml_src, with the SAME StaticOracleClient the
+// fixture's BAML uses) admits it, so with the umbrella flag on it is DEFAULT-SELECTED
+// natively — one provider request, the live plan compares MATCH, the same-response oracle
+// runs, native wins, and the public answer is byte-identical to the stock BAML leg — with
+// NO enrollment (the winner is attributed to the structural `none` cohort, never fe_v1).
+//
+// The request carries NO client_registry: the exact cohort serves only the descriptor's
+// default client, and a request registry override declines pre-socket — so this leg omits
+// it, exactly as a default-client deployment request does.
+func TestBootedArtifactDefaultSelectsExactJSONStatic(t *testing.T) {
+	wantID := strings.TrimSpace(os.Getenv(staticFixtureWorkerArtifactIDEnv))
+	if wantID == "" {
+		t.Fatalf("%s is not set: this lane must BOOT a STATIC-CAPABLE artifact and default-select the exact-U1 route; a missing artifact is a lane misconfiguration, not a reason to report success", staticFixtureWorkerArtifactIDEnv)
+	}
+
+	provider := newRouteProofProviderAt(t, staticFixtureLoopbackAddr)
+	base := staticRouteOpts{method: staticFixtureJSONMethod, omitRegistry: true, fingerprint: feV1RouteFingerprint}
+	stock := runStaticRouteProof(t, provider, base)
+	nativeOpts := base
+	nativeOpts.flagOn = true
+	native := runStaticRouteProof(t, provider, nativeOpts)
+
+	// The binary under proof is the SHIPPED artifact.
+	if native.artifactProfile != string(artifactprofile.ProfileNativeCapable) {
+		t.Fatalf("the booted static fixture publishes profile=%q, want %q", native.artifactProfile, artifactprofile.ProfileNativeCapable)
+	}
+	if native.artifactID != wantID {
+		t.Fatalf("the booted static fixture publishes artifact_id=%q, want %q", native.artifactID, wantID)
+	}
+
+	// The route really ran on the STOCK (flag-off, BAML) leg: 200, a body, one BAML send.
+	if stock.status != http.StatusOK {
+		t.Fatalf("the public /call/%s route returned %d on the STOCK leg: %s", staticFixtureJSONMethod, stock.status, stock.body)
+	}
+	if strings.TrimSpace(stock.body) == "" {
+		t.Fatalf("the stock leg produced an empty body; the arm cannot compare anything")
+	}
+	if stock.providerRequests != 1 {
+		t.Fatalf("the stock leg put %d request(s) on the wire, want exactly 1", stock.providerRequests)
+	}
+
+	// DEFAULT-ON NATIVE SELECTION: exactly one provider request, native winner, live plan
+	// match, the same-response oracle phase, one native socket.
+	if native.providerRequests != 1 {
+		t.Errorf("the native leg put %d request(s) on the wire, want exactly 1 (native owns the one send)", native.providerRequests)
+	}
+	if got := native.winnerBySurface["static_call/native"]; got != 1 {
+		t.Errorf("winner{surface=static_call,winner=native} = %v, want 1 — the exact-U1 route must be default-selected natively", got)
+	}
+	if got := native.phaseBySurface["static_call/same_response_oracle"]; got != 1 {
+		t.Errorf("admission_phase{surface=static_call,phase=same_response_oracle} = %v, want 1 (the same-bytes oracle ran)", got)
+	}
+	if native.planCompareMatch != 1 {
+		t.Errorf("plan_compare match = %v, want exactly 1 (one U1 request, one live BAML plan match)", native.planCompareMatch)
+	}
+	if native.nativeSockets != 1 {
+		t.Errorf("native sockets = %v, want exactly 1", native.nativeSockets)
+	}
+
+	// BYTE-IDENTICAL to BAML: native's served answer equals the stock BAML leg's.
+	if native.status != stock.status || native.body != stock.body {
+		t.Errorf("the U1 default-selected answer differs from stock BAML:\n  stock:  %s\n  native: %s", stock.body, native.body)
+	}
+	// The native providerRequests check above is t.Errorf (non-fatal), so guard the wire
+	// slices before indexing: an empty native.wire (native reached no provider) would
+	// otherwise panic index-out-of-range and hide the real diagnostic.
+	if len(stock.wire) != 1 || len(native.wire) != 1 {
+		t.Fatalf("upstream requests: stock=%d native=%d, want exactly 1 each; the strict wire comparison cannot run", len(stock.wire), len(native.wire))
+	}
+	assertWireEquivalent(t, stock.wire[0], native.wire[0])
+
+	// NO ENROLLMENT: the native winner is attributed to the structural `none` cohort, never
+	// the fe-v1 enrollment, and no rollout row is required.
+	if got := native.winnerBySurfaceCohort["static_call/none/native"]; got != 1 {
+		t.Errorf("winner{surface=static_call,cohort=none,winner=native} = %v, want 1 (structural, enrollment-free)", got)
+	}
+	if got := native.winnerBySurfaceCohort["static_call/"+feV1RouteCohort+"/native"]; got != 0 {
+		t.Errorf("the U1 native serve was attributed to the fe-v1 enrollment (winner{fe_v1,native}=%v); the spine lane is enrollment-exempt", got)
+	}
 }
 
 // assertStaticDeclineCohort pins the static surface's decline to EXACTLY ONE cohort
@@ -709,6 +803,10 @@ type staticRouteOpts struct {
 	// request no longer selects it through the one channel the seal runs over, so
 	// nothing deployment-owned reaches the gate.
 	omitRegistry bool
+	// method is the public static method the leg POSTs to (empty => staticFixtureMethod,
+	// the non-U1 StaticCompletion control). The default-selection arm sets it to the
+	// exact-U1 staticFixtureJSONMethod.
+	method string
 }
 
 // runStaticRouteProof boots the STATIC-capable artifact and drives ONE public
@@ -741,13 +839,17 @@ func runStaticRouteProof(t *testing.T, provider *routeProofProvider, opts static
 		_ = workerPool.Shutdown(ctx)
 	})
 
-	srv := httptest.NewServer(makeChiCallHandler(workerPool, staticFixtureMethod, bamlutils.StreamModeCall))
+	method := opts.method
+	if method == "" {
+		method = staticFixtureMethod
+	}
+	srv := httptest.NewServer(makeChiCallHandler(workerPool, method, bamlutils.StreamModeCall))
 	t.Cleanup(srv.Close)
 
-	resp, err := http.Post(srv.URL+"/call/"+staticFixtureMethod, "application/json",
+	resp, err := http.Post(srv.URL+"/call/"+method, "application/json",
 		strings.NewReader(staticFixtureBody(!opts.omitRegistry)))
 	if err != nil {
-		t.Fatalf("POST the public /call/%s route: %v", staticFixtureMethod, err)
+		t.Fatalf("POST the public /call/%s route: %v", method, err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)

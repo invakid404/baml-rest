@@ -53,7 +53,7 @@ ARTIFACT_PROFILE_PKG="github.com/invakid404/baml-rest/internal/artifactprofile"
 # base list literal (rather than deriving it) is deliberate: if the shipped set ever
 # changes without this changing with it, the proof's own guard notices, because the
 # fixture's stamped artifact inputs stop matching the shipped artifact's.
-SHIPPED_TAGS="subprocess,nativestreamserve,nativeworkerartifact"
+SHIPPED_TAGS="subprocess,nativestreamserve,nativeworkerartifact,debamlnativespinegenerated"
 FIXTURE_TAGS="${SHIPPED_TAGS},debamlworkerfixture"
 
 mkdir -p "${OUT_DIR}"
@@ -88,6 +88,16 @@ if [ -z "${artifact_id}" ] || [ -z "${artifact_inputs}" ]; then
     printf '%s\n' "${attest_out}" >&2
     exit 1
 fi
+
+# ExecBridge-U1c: the standard serve worker compiles the generated native spine registry
+# (serveProfileOptions installs standardspineoracle.NewStaticServe, which drives
+# NewExecutor). The dynamic fixture has NO static-unary method, so generate an all-decline
+# (empty-population) registry — the same all-BAML-fallback executor a dynamic-only
+# deployment produces — under the generic tag now in SHIPPED_TAGS.
+echo "Generating native spine registry (dynamic fixture: empty population)..."
+(cd "${REPO_ROOT}" && go run ./cmd/gen-native-spine-worker \
+    --empty \
+    --out-dir internal/nativebody/nanollmprepare/nativegenerated)
 
 echo "Building S3a booted-artifact fixture cmd/worker (tags=${FIXTURE_TAGS}, artifact_id=${artifact_id})..."
 (
