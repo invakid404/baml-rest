@@ -1,0 +1,45 @@
+{
+  "deltas": [
+    {
+      "content": "\n",
+      "emit": false
+    },
+    {
+      "content": "{\"",
+      "emit": true,
+      "partial": "{}"
+    },
+    {
+      "content": "k\":1",
+      "emit": true,
+      "partial": "{\"k\":1}"
+    },
+    {
+      "content": ",\"s\":\"h",
+      "emit": true,
+      "partial": "{\"k\":\"1,\\\"s\\\":\\\"h\"}"
+    },
+    {
+      "content": "i\"",
+      "emit": true,
+      "partial": "{\"k\":\"1,\\\"s\\\":\\\"hi\\\"\"}"
+    },
+    {
+      "content": ",\"l\":[1",
+      "emit": true,
+      "partial": "{\"k\":\"1,\\\"s\\\":\\\"hi\\\",\\\"l\\\":[1\"}"
+    },
+    {
+      "content": ",2]",
+      "emit": true,
+      "partial": "{\"k\":\"1,\\\"s\\\":\\\"hi\\\",\\\"l\\\":[1,2]\"}"
+    },
+    {
+      "content": "}",
+      "emit": true,
+      "partial": "{\"k\":1,\"l\":[1,2],\"s\":\"hi\"}"
+    }
+  ],
+  "final": "{\"k\":1,\"l\":[1,2],\"s\":\"hi\"}",
+  "accumulated": "\n{\"k\":1,\"s\":\"hi\",\"l\":[1,2]}"
+}

@@ -6,14 +6,25 @@
 // generates, into the extracted nanollmprepare build tree:
 //
 //   - one deterministic collision-proof subpackage per codegen-admitted static
-//     unary method, each produced by adapters/common/codegen.EmitNativeStaticUnary
+//     method, produced by adapters/common/codegen.EmitNativeStaticUnary for a
+//     ClassStaticUnary method and EmitNativeStaticStream for a ClassStaticStream one
 //     (a subpackage boundary is required because every emitted file exports generic
 //     names such as MethodName, BuildMethod, and Binding);
+//
 //   - nativegenerated/project.json, embedded by the aggregate registry package;
-//   - a deterministic aggregate candidate list (nativegenerated/generated.go, under
-//     the debamlnativespinegenerated build tag) that imports every emitted subpackage
-//     and pairs its Binding() with its BuildMethod, then exposes NewRuntime() which
-//     decodes the embedded descriptor and calls spine.NewWorkerRuntime.
+//
+//   - a deterministic aggregate with TWO candidate projections (nativegenerated/
+//     generated.go, under the debamlnativespinegenerated build tag) that imports every
+//     emitted subpackage:
+//
+//     descriptor methods
+//     ├─ unaryCandidates: BOTH classes' Binding()       -> NewExecutor  -> spine.NewPopulationExecutor (/call only, empty allowed)
+//     └─ streamCandidates: ClassStaticStream's          -> NewRuntime   -> spine.NewWorkerRuntime      (call + streams, empty is a boot error)
+//     StreamBinding() only
+//
+// The split is deliberate: accepting a stream-class method's UNARY projection in the
+// standard composite preserves the existing /call behaviour across the v3 descriptor
+// bump; it is NOT standard stream enrollment, which is a later slice.
 //
 // It emits CANDIDATES, not a rollout/cohort manifest: runtime registry membership
 // is decided downstream by spine.NewWorkerRuntime's single U1 classifier, so later
@@ -68,14 +79,20 @@ const registryPackageName = "nativegenerated"
 // only".
 const buildTag = "debamlnativespinegenerated"
 
-// emittedMethod is one codegen-admitted static-unary method plus its resolved,
+// emittedMethod is one codegen-admitted static method plus its resolved,
 // collision-proof subpackage identity.
 type emittedMethod struct {
 	method     projectdescriptor.Method
 	dirName    string // subpackage directory name (== package name)
 	importPath string // full import path of the subpackage
 	fileName   string // the emitted source file name inside the subpackage
-	source     []byte // the EmitNativeStaticUnary output
+	source     []byte // the class emitter's output
+}
+
+// stream reports whether this method was emitted through the STREAM emitter and
+// therefore exports StreamBinding().
+func (e emittedMethod) stream() bool {
+	return e.method.Class == projectdescriptor.ClassStaticStream
 }
 
 // Generate reads a projectdescriptor.Project from descriptorsJSON, validates it,
@@ -83,9 +100,10 @@ type emittedMethod struct {
 // the import path outDir is built at (defaultRegistryPackagePath in production).
 //
 // allowEmpty selects the profile's empty-population semantics. With allowEmpty FALSE
-// (the native-only artifact) a project that yields NO codegen-admitted static-unary
-// candidate is REFUSED — a native-only worker that admits nothing has no reason to
-// serve. With allowEmpty TRUE (the ExecBridge-U1c standard composite) an empty
+// (the native-only artifact) a project that yields NO codegen-admitted STREAM-capable
+// candidate is REFUSED — the native-only worker serves through NewWorkerRuntime, which
+// requires the full stream surface, so a project with only unary-class methods could not
+// boot it. With allowEmpty TRUE (the ExecBridge-U1c standard composite) an empty
 // population is permitted: NewExecutor yields an all-decline executor whose every /call
 // falls back to BAML, so an ordinary BAML project does not become unbuildable merely
 // because its standard artifact has nothing in U1. It fails on an invalid descriptor and
@@ -103,8 +121,8 @@ func Generate(descriptorsJSON []byte, outDir, packagePath string, allowEmpty boo
 	if err != nil {
 		return err
 	}
-	if len(emitted) == 0 && !allowEmpty {
-		return fmt.Errorf("gen-native-spine-worker: project has no codegen-admitted static-unary method; a native-only worker needs at least one candidate")
+	if !allowEmpty && countStream(emitted) == 0 {
+		return fmt.Errorf("gen-native-spine-worker: project has no codegen-admitted %s method; a native-only worker serves through NewWorkerRuntime and needs at least one stream-capable candidate", projectdescriptor.ClassStaticStream)
 	}
 
 	if err := cleanOutputDir(outDir); err != nil {
@@ -146,9 +164,21 @@ func Generate(descriptorsJSON []byte, outDir, packagePath string, allowEmpty boo
 	return nil
 }
 
+// countStream returns how many emitted methods carry the stream class.
+func countStream(emitted []emittedMethod) int {
+	n := 0
+	for _, em := range emitted {
+		if em.stream() {
+			n++
+		}
+	}
+	return n
+}
+
 // emitMethods produces the deterministic, method-name-sorted set of emitted
-// per-method candidates. Every codegen-admitted static-unary method becomes a
-// candidate; membership in the served runtime is the runtime classifier's call.
+// per-method candidates, DISPATCHING each method to its class emitter. Every
+// codegen-admitted static method becomes a candidate; membership in the served runtime
+// is the runtime classifier's call.
 func emitMethods(proj projectdescriptor.Project, packagePath string) ([]emittedMethod, error) {
 	// Sort by method name so the emitted set and the aggregate import order are
 	// deterministic regardless of descriptor method order.
@@ -159,8 +189,9 @@ func emitMethods(proj projectdescriptor.Project, packagePath string) ([]emittedM
 	out := make([]emittedMethod, 0, len(methods))
 	seenDir := make(map[string]string, len(methods))
 	for _, m := range methods {
-		if m.Class != projectdescriptor.ClassStaticUnary {
-			// Only static-unary methods are emittable; anything else is not a candidate.
+		if m.Class != projectdescriptor.ClassStaticUnary && m.Class != projectdescriptor.ClassStaticStream {
+			// Only the two known native classes are emittable; anything else is not a
+			// candidate. A class this build does not know never becomes one silently.
 			continue
 		}
 		dir := subpackageDirName(m.Name)
@@ -171,7 +202,13 @@ func emitMethods(proj projectdescriptor.Project, packagePath string) ([]emittedM
 		}
 		seenDir[dir] = m.Name
 
-		src, err := codegen.EmitNativeStaticUnary(m, codegen.NativeSpineOptions{PackageName: dir})
+		var src []byte
+		var err error
+		if m.Class == projectdescriptor.ClassStaticStream {
+			src, err = codegen.EmitNativeStaticStream(m, codegen.NativeSpineOptions{PackageName: dir})
+		} else {
+			src, err = codegen.EmitNativeStaticUnary(m, codegen.NativeSpineOptions{PackageName: dir})
+		}
 		if err != nil {
 			return nil, fmt.Errorf("gen-native-spine-worker: emit %q: %w", m.Name, err)
 		}
@@ -244,12 +281,14 @@ func renderAggregate(emitted []emittedMethod) ([]byte, error) {
 	fmt.Fprintf(&b, "//go:embed %s\n", projectJSONFileName)
 	b.WriteString("var projectDescriptorJSON []byte\n\n")
 
-	b.WriteString("// candidates is the deterministic aggregate candidate list: one emitted\n")
-	b.WriteString("// per-method registration in method-name order (empty when the project has no\n")
-	b.WriteString("// codegen-admitted static-unary method). Membership in the SERVED runtime is NOT\n")
-	b.WriteString("// decided here — the single U1 classifier in nativeserve/spine owns that. These\n")
-	b.WriteString("// are CANDIDATES only; there is no fallback slot.\n")
-	b.WriteString("func candidates() []spine.UnaryRegistration {\n")
+	b.WriteString("// unaryCandidates is the deterministic aggregate UNARY candidate list: one emitted\n")
+	b.WriteString("// per-method registration in method-name order, for BOTH admitted classes (a\n")
+	b.WriteString("// static_stream method explicitly INCLUDES unary /call, so its Binding() belongs\n")
+	b.WriteString("// here too). Empty when the project has no codegen-admitted static method.\n")
+	b.WriteString("// Membership in the SERVED population is NOT decided here — the single classifier\n")
+	b.WriteString("// in nativeserve/spine owns that. These are CANDIDATES only; there is no fallback\n")
+	b.WriteString("// slot.\n")
+	b.WriteString("func unaryCandidates() []spine.UnaryRegistration {\n")
 	b.WriteString("\treturn []spine.UnaryRegistration{\n")
 	for i := range emitted {
 		fmt.Fprintf(&b, "\t\t{Binding: p%d.Binding(), BuildMethod: p%d.BuildMethod},\n", i, i)
@@ -257,9 +296,26 @@ func renderAggregate(emitted []emittedMethod) ([]byte, error) {
 	b.WriteString("\t}\n")
 	b.WriteString("}\n\n")
 
+	b.WriteString("// streamCandidates is the deterministic aggregate STREAM candidate list: ONLY the\n")
+	b.WriteString("// static_stream methods, carrying the emitted StreamBinding() (whose Unary field is\n")
+	b.WriteString("// the same Binding() above — one projector, one final decoder). It is what the\n")
+	b.WriteString("// native-only runtime is built from; a unary-class method is deliberately absent,\n")
+	b.WriteString("// because it has no partial decoder and could not serve a claimed stream.\n")
+	b.WriteString("func streamCandidates() []spine.StreamRegistration {\n")
+	b.WriteString("\treturn []spine.StreamRegistration{\n")
+	for i := range emitted {
+		if !emitted[i].stream() {
+			continue
+		}
+		fmt.Fprintf(&b, "\t\t{Binding: p%d.StreamBinding(), BuildMethod: p%d.BuildMethod},\n", i, i)
+	}
+	b.WriteString("\t}\n")
+	b.WriteString("}\n\n")
+
 	b.WriteString("// NewRuntime decodes the embedded deployment descriptor and builds the\n")
-	b.WriteString("// immutable admitted native-only runtime via spine.NewWorkerRuntime (which\n")
-	b.WriteString("// REFUSES an empty population). It is the native-only command's root-runtime\n")
+	b.WriteString("// immutable admitted native-only runtime via spine.NewWorkerRuntime over the\n")
+	b.WriteString("// STREAM candidates (which REFUSES an empty population and verifies the full\n")
+	b.WriteString("// stream method surface). It is the native-only command's root-runtime\n")
 	b.WriteString("// selection; there is no BAML fallback and no nil/default path to a generated\n")
 	b.WriteString("// BAML runtime.\n")
 	b.WriteString("func NewRuntime() (worker.Runtime, error) {\n")
@@ -267,12 +323,14 @@ func renderAggregate(emitted []emittedMethod) ([]byte, error) {
 	b.WriteString("\tif err := json.Unmarshal(projectDescriptorJSON, &proj); err != nil {\n")
 	b.WriteString("\t\treturn nil, fmt.Errorf(\"nativegenerated: decode embedded project descriptor: %w\", err)\n")
 	b.WriteString("\t}\n")
-	b.WriteString("\treturn spine.NewWorkerRuntime(proj, candidates(), nil)\n")
+	b.WriteString("\treturn spine.NewWorkerRuntime(proj, streamCandidates(), nil)\n")
 	b.WriteString("}\n\n")
 
 	b.WriteString("// NewExecutor decodes the embedded deployment descriptor and builds the\n")
-	b.WriteString("// population-filtered oracle-capable executor via spine.NewPopulationExecutor,\n")
-	b.WriteString("// which ALLOWS an empty population (an all-decline executor whose every /call\n")
+	b.WriteString("// population-filtered oracle-capable executor via spine.NewPopulationExecutor over\n")
+	b.WriteString("// the UNARY candidates (BOTH classes' Binding(): a static_stream method's unary\n")
+	b.WriteString("// /call is retained, which is NOT standard stream enrollment). It ALLOWS an\n")
+	b.WriteString("// empty population (an all-decline executor whose every /call\n")
 	b.WriteString("// falls back to BAML). It is the ExecBridge-U1c standard composite's construction\n")
 	b.WriteString("// path; this executor's own path carries no generated BAML/CFFI — the standard\n")
 	b.WriteString("// worker links BAML elsewhere and injects only the neutral no-send plan +\n")
@@ -282,7 +340,7 @@ func renderAggregate(emitted []emittedMethod) ([]byte, error) {
 	b.WriteString("\tif err := json.Unmarshal(projectDescriptorJSON, &proj); err != nil {\n")
 	b.WriteString("\t\treturn nil, fmt.Errorf(\"nativegenerated: decode embedded project descriptor: %w\", err)\n")
 	b.WriteString("\t}\n")
-	b.WriteString("\texec, err := spine.NewPopulationExecutor(proj, candidates(), nil)\n")
+	b.WriteString("\texec, err := spine.NewPopulationExecutor(proj, unaryCandidates(), nil)\n")
 	b.WriteString("\tif err != nil {\n")
 	b.WriteString("\t\treturn nil, err\n")
 	b.WriteString("\t}\n")

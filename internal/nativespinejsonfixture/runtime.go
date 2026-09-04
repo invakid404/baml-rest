@@ -21,10 +21,17 @@ type NativeRuntime struct {
 	parseMethods map[string]bamlutils.ParseMethod
 }
 
-// NewNativeRuntime builds the runtime from an injected neutral executor (the
-// production spine executor in the integration test; the runtime never makes a BAML
-// request or parse call).
-func NewNativeRuntime(exec bamlutils.NativeSpineUnaryExecutor) *NativeRuntime {
+// NewNativeRuntime builds the runtime from an injected neutral STREAM executor (the
+// production spine stream executor in the integration test; the runtime never makes a
+// BAML request or parse call).
+//
+// M3e-A: the parameter is the STREAM executor, not the unary one. The emitted method
+// is ClassStaticStream, so its BuildMethod serves /call, /stream, /stream-with-raw and
+// the socket-free stream parse; a unary-only executor would compile (BuildMethod still
+// takes the unary type) and then fail at request time with errNoStreamExecutor. Taking
+// the stream contract here moves that to CONSTRUCTION, where a misbuilt runtime fails
+// loudly and locally.
+func NewNativeRuntime(exec bamlutils.NativeSpineStreamExecutor) *NativeRuntime {
 	if executorIsNil(exec) {
 		// A nil executor would defer the failure to the emitted Impl goroutine (Call/Parse
 		// on a nil receiver panics and kills the process); reject it here, at construction,
@@ -44,8 +51,8 @@ func NewNativeRuntime(exec bamlutils.NativeSpineUnaryExecutor) *NativeRuntime {
 // executorIsNil reports whether exec is an untyped nil interface OR a typed-nil of a
 // nilable dynamic kind (pointer/func/map/chan/slice/interface) — either of which would
 // panic on the first method dispatch. It is the guard NewNativeRuntime uses so a
-// (*UnaryExecutor)(nil) is rejected at construction, not at dispatch.
-func executorIsNil(exec bamlutils.NativeSpineUnaryExecutor) bool {
+// (*StreamExecutor)(nil) is rejected at construction, not at dispatch.
+func executorIsNil(exec bamlutils.NativeSpineStreamExecutor) bool {
 	if exec == nil {
 		return true
 	}
@@ -59,11 +66,22 @@ func executorIsNil(exec bamlutils.NativeSpineUnaryExecutor) bool {
 }
 
 // InitRuntime is the pure-Go validation/no-op init: it loads no shared library and
-// reads no environment, and validates the registry is non-empty so a misbuilt
-// runtime fails loudly at boot.
+// reads no environment, and validates the registry is non-empty AND that every
+// registered method carries the FULL stream surface, so a misbuilt runtime fails
+// loudly at boot rather than at the first /stream request.
 func (r *NativeRuntime) InitRuntime() {
 	if len(r.methods) == 0 || len(r.parseMethods) == 0 {
 		panic("nativespinejsonfixture: NativeRuntime has an empty method registry")
+	}
+	for name, sm := range r.methods {
+		if sm.Impl == nil || sm.MakeInput == nil || sm.MakeOutput == nil || sm.MakeStreamOutput == nil {
+			panic("nativespinejsonfixture: method " + name + " has an incomplete StreamingMethod (nil Impl/MakeInput/MakeOutput/MakeStreamOutput)")
+		}
+	}
+	for name, pm := range r.parseMethods {
+		if pm.Impl == nil || pm.MakeOutput == nil || pm.StreamImpl == nil {
+			panic("nativespinejsonfixture: parse method " + name + " has an incomplete ParseMethod (nil Impl/MakeOutput/StreamImpl)")
+		}
 	}
 }
 
