@@ -12,6 +12,7 @@ import (
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/bamlparser"
+	"github.com/invakid404/baml-rest/bamlutils/projectdescriptor"
 	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
 	"github.com/invakid404/baml-rest/bamlutils/schemadescriptor"
 	"github.com/invakid404/baml-rest/internal/apierror"
@@ -86,8 +87,63 @@ func TestDescriptorVersionsMatchLiveCode(t *testing.T) {
 	if got, want := m.DescriptorVersions.Promptdescriptor, promptdescriptor.Version; got != want {
 		t.Errorf("descriptor_versions.promptdescriptor = %d, live promptdescriptor.Version = %d", got, want)
 	}
-	if m.DescriptorVersions.ProjectDescriptorPlanned < 1 {
-		t.Errorf("project_descriptor_planned must be >= 1, got %d", m.DescriptorVersions.ProjectDescriptorPlanned)
+	if got, want := m.DescriptorVersions.ProjectDescriptorPlanned, projectdescriptor.Version; got != want {
+		t.Errorf("descriptor_versions.project_descriptor_planned = %d, live projectdescriptor.Version = %d", got, want)
+	}
+}
+
+// TestMethodClassesMatchLiveCode grounds the frozen class-to-required-capability
+// contract (M3e-A) against the live descriptor + classifier: every class the
+// descriptor package defines has exactly one record, in the descriptor's own order,
+// whose ordered required set is byte-equal to what the classifier stamps, and whose
+// codes are all in the capability catalogue. Adding a class, reordering a required
+// set, or inventing a capability alias fails here until the manifest is reconciled.
+func TestMethodClassesMatchLiveCode(t *testing.T) {
+	m := loadManifest(t)
+
+	live := projectdescriptor.MethodClasses()
+	if len(m.MethodClasses) != len(live) {
+		t.Fatalf("method_classes has %d records, live projectdescriptor.MethodClasses() has %d", len(m.MethodClasses), len(live))
+	}
+	catalogue := make(map[string]bool, len(m.Capabilities))
+	for _, c := range m.Capabilities {
+		catalogue[c.Code] = true
+	}
+	for i, class := range live {
+		rec := m.MethodClasses[i]
+		if rec.Class != string(class) {
+			t.Errorf("method_classes[%d].class = %q, live class = %q (order is the contract)", i, rec.Class, class)
+			continue
+		}
+		var want []string
+		for _, c := range nativespine.ClassRequiredCapabilities(class) {
+			want = append(want, string(c))
+		}
+		if len(want) == 0 {
+			t.Errorf("class %q has no live required-capability set", class)
+			continue
+		}
+		if !reflect.DeepEqual(rec.Required, want) {
+			t.Errorf("method_classes[%q].required mismatch\n manifest: %v\n live:     %v", class, rec.Required, want)
+		}
+		for _, code := range rec.Required {
+			if !catalogue[code] {
+				t.Errorf("class %q requires capability %q, which is not in the capability catalogue", class, code)
+			}
+		}
+	}
+	// ClassStaticStream is a SUPERSET of ClassStaticUnary: the same generated method
+	// must keep serving /call. A stream class that dropped a unary capability would be
+	// a silent narrowing of the unary product.
+	unary := nativespine.ClassRequiredCapabilities(projectdescriptor.ClassStaticUnary)
+	stream := map[projectdescriptor.CapabilityCode]bool{}
+	for _, c := range nativespine.ClassRequiredCapabilities(projectdescriptor.ClassStaticStream) {
+		stream[c] = true
+	}
+	for _, c := range unary {
+		if !stream[c] {
+			t.Errorf("ClassStaticStream does not require %q, which ClassStaticUnary does; the stream class must be a superset", c)
+		}
 	}
 }
 

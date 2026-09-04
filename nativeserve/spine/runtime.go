@@ -36,6 +36,31 @@ type UnaryRegistration struct {
 	BuildMethod func(exec bamlutils.NativeSpineUnaryExecutor) (bamlutils.StreamingMethod, bamlutils.ParseMethod)
 }
 
+// StreamRegistration is ONE emitted per-method STREAM candidate (M3e-A) the production
+// native-only worker offers to the population classifier: the neutral STREAM binding
+// (which EMBEDS the unary projector/final decoder in Binding.Unary and adds the partial
+// decoder) plus the emitted BuildMethod closure.
+//
+// It carries no second UnaryRegistration on purpose. Binding.Unary IS the authoritative
+// unary projection for this method: Go closures have no meaningful equality operation,
+// so a duplicated unary binding would create a "these must match" invariant that nothing
+// could validate. The emitter makes StreamBinding() return Binding() as its Unary field,
+// and the native-only candidate list consumes that one field.
+//
+// Like [UnaryRegistration] it is a CANDIDATE, not an enrollment: membership in the
+// served runtime is decided downstream by the single classifier. There is no fallback
+// slot, so a BAML executor or oracle can never be injected through it.
+type StreamRegistration struct {
+	// Binding is the emitted neutral per-method STREAM registration.
+	Binding bamlutils.NativeSpineStreamBinding
+
+	// BuildMethod is the emitted method builder with the codegen BuildMethod signature.
+	// Its parameter type is the UNARY executor (the frozen contract the emitted module
+	// names); the emitted stream arms type-assert it up to the stream executor, which is
+	// what NewWorkerRuntime supplies.
+	BuildMethod func(exec bamlutils.NativeSpineUnaryExecutor) (bamlutils.StreamingMethod, bamlutils.ParseMethod)
+}
+
 // workerRuntime is the immutable admitted registry that satisfies worker.Runtime
 // (§4, "immutable admitted registry"). It is DEFAULT-DENY: only methods present
 // in the accepted maps exist to worker.Handler; every other method/mode is
@@ -78,24 +103,33 @@ var _ worker.Runtime = (*workerRuntime)(nil)
 // A nil exact executor uses the hardened default. Later slices grow the cohort by
 // widening classifyBinding / the executor WITHOUT touching NewWorkerRuntime's
 // shape, the bootstrap, the pool, the plugin ABI, or the build flag.
-func NewWorkerRuntime(proj projectdescriptor.Project, candidates []UnaryRegistration, exact *llmhttp.ExactExecutor) (worker.Runtime, error) {
-	accepted, err := classifyCandidates(proj, candidates)
+func NewWorkerRuntime(proj projectdescriptor.Project, candidates []StreamRegistration, exact *llmhttp.ExactExecutor) (worker.Runtime, error) {
+	// Transient records, as in NewStreamExecutor: they never outlive this constructor, so
+	// they may point at the caller's slice. The single detachment boundary is
+	// copyStreamBinding in classifyRegistration — see the note there.
+	normalized := make([]candidateRegistration, len(candidates))
+	for i := range candidates {
+		normalized[i] = candidateRegistration{
+			binding: candidates[i].Binding.Unary,
+			stream:  &candidates[i].Binding,
+			build:   candidates[i].BuildMethod,
+		}
+	}
+	accepted, err := classifyCandidates(proj, normalized, true)
 	if err != nil {
 		return nil, err
 	}
 	if len(accepted) == 0 {
-		return nil, fmt.Errorf("nativespine: no candidate method is in the exact U1 population (empty accepted cohort); refusing to boot a native-only worker that would decline every request")
+		return nil, fmt.Errorf("nativespine: no candidate method is in the exact U1 stream population (empty accepted cohort); refusing to boot a native-only worker that would decline every request")
 	}
 
-	bindings := make([]bamlutils.NativeSpineUnaryBinding, len(accepted))
-	for i := range accepted {
-		bindings[i] = accepted[i].Binding
-	}
-	// The strict executor re-classifies exactly these accepted bindings (single
-	// source of truth); they were classified accepted above, so registration
-	// succeeds. This keeps the executor's registry and the runtime's method maps in
-	// lockstep by construction.
-	exec, err := NewUnaryExecutor(proj, bindings, exact)
+	// The strict STREAM executor re-classifies exactly these accepted candidates (single
+	// source of truth); they were classified accepted above, so registration succeeds.
+	// This keeps the executor's registry and the runtime's method maps in lockstep by
+	// construction. It is a NativeSpineStreamExecutor, so the emitted stream arms'
+	// type assertion succeeds and every admitted method serves /call, /stream,
+	// /stream-with-raw, and both parse routes.
+	exec, err := newStreamExecutorFrom(proj, accepted, exact)
 	if err != nil {
 		return nil, err
 	}
@@ -103,17 +137,20 @@ func NewWorkerRuntime(proj projectdescriptor.Project, candidates []UnaryRegistra
 	methods := make(map[string]bamlutils.StreamingMethod, len(accepted))
 	parseMethods := make(map[string]bamlutils.ParseMethod, len(accepted))
 	for i := range accepted {
-		sm, pm := accepted[i].BuildMethod(exec)
-		name := accepted[i].Binding.Method
+		sm, pm := accepted[i].build(exec)
+		name := accepted[i].binding.Method
 		// A builder that returns an incomplete method would boot a runtime that panics
 		// on the first matching request (a nil Impl/constructor is a nil-func call). Fail
 		// boot instead — callback-before-claim, in lockstep with the nil-BuildMethod
-		// guard above.
-		if sm.Impl == nil || sm.MakeInput == nil || sm.MakeOutput == nil {
-			return nil, fmt.Errorf("nativespine: candidate %q built an incomplete StreamingMethod (nil Impl/MakeInput/MakeOutput)", name)
+		// guard above. M3e-A additionally requires the FULL stream surface:
+		// MakeStreamOutput (the pointer carrier constructor) and ParseMethod.StreamImpl
+		// (the socket-free stream parse). A native-only worker that booted without them
+		// would accept a /stream request and then fail at dispatch.
+		if sm.Impl == nil || sm.MakeInput == nil || sm.MakeOutput == nil || sm.MakeStreamOutput == nil {
+			return nil, fmt.Errorf("nativespine: candidate %q built an incomplete StreamingMethod (nil Impl/MakeInput/MakeOutput/MakeStreamOutput)", name)
 		}
-		if pm.Impl == nil || pm.MakeOutput == nil {
-			return nil, fmt.Errorf("nativespine: candidate %q built an incomplete ParseMethod (nil Impl/MakeOutput)", name)
+		if pm.Impl == nil || pm.MakeOutput == nil || pm.StreamImpl == nil {
+			return nil, fmt.Errorf("nativespine: candidate %q built an incomplete ParseMethod (nil Impl/MakeOutput/StreamImpl)", name)
 		}
 		methods[name] = sm
 		parseMethods[name] = pm
@@ -121,18 +158,19 @@ func NewWorkerRuntime(proj projectdescriptor.Project, candidates []UnaryRegistra
 	return &workerRuntime{methods: methods, parseMethods: parseMethods}, nil
 }
 
-// classifyCandidates validates the whole project and classifies EVERY candidate against
-// the single U1 population predicate (classifyBinding — the same checks the strict
-// executor uses), returning the accepted subset in input order. It is the ONE shared
-// selection helper NewWorkerRuntime (native-only) and NewPopulationExecutor (the
-// ExecBridge-U1c standard composite) both call, so there is exactly one deletion
-// frontier. It FAILS HARD on an invalid project, a nil BuildMethod, a duplicate
-// candidate method (a corrupt candidate list), or any classifyBinding rejectHard
-// (invalid descriptor/envelope, missing/blocked capability, nil callback, name
-// mismatch), and OMITS ordinary cohort misses. It does NOT decide emptiness — the
-// caller does: native-only refuses an empty accepted set, the standard composite allows
-// it (all requests fall back to BAML).
-func classifyCandidates(proj projectdescriptor.Project, candidates []UnaryRegistration) ([]UnaryRegistration, error) {
+// classifyCandidates validates the whole project and classifies EVERY normalized
+// candidate against the single U1 population predicate (classifyRegistration — the same
+// checks the strict executors use), returning the accepted subset in input order. It is
+// the ONE shared selection helper NewWorkerRuntime (native-only, stream surface) and
+// NewPopulationExecutor (the ExecBridge-U1c standard composite, unary surface) both
+// call, so there is exactly one deletion frontier. It FAILS HARD on an invalid project,
+// a nil BuildMethod, a duplicate candidate method (a corrupt candidate list), or any
+// classifyRegistration rejectHard (invalid descriptor/envelope, missing/blocked
+// capability, nil callback, name mismatch, a stream-stamped method the totality
+// predicate declines), and OMITS ordinary cohort misses. It does NOT decide emptiness —
+// the caller does: native-only refuses an empty accepted set, the standard composite
+// allows it (all requests fall back to BAML).
+func classifyCandidates(proj projectdescriptor.Project, candidates []candidateRegistration, requireStream bool) ([]candidateRegistration, error) {
 	if err := proj.Validate(); err != nil {
 		return nil, fmt.Errorf("nativespine: invalid project descriptor: %w", err)
 	}
@@ -146,23 +184,23 @@ func classifyCandidates(proj projectdescriptor.Project, candidates []UnaryRegist
 	}
 
 	seen := make(map[string]bool, len(candidates))
-	accepted := make([]UnaryRegistration, 0, len(candidates))
+	accepted := make([]candidateRegistration, 0, len(candidates))
 	for i := range candidates {
 		c := candidates[i]
-		if c.BuildMethod == nil {
-			return nil, fmt.Errorf("nativespine: candidate %q has a nil BuildMethod (callback-before-claim)", c.Binding.Method)
+		if c.build == nil {
+			return nil, fmt.Errorf("nativespine: candidate %q has a nil BuildMethod (callback-before-claim)", c.binding.Method)
 		}
 		// A duplicate candidate method is a corrupt candidate list (the generator must
 		// emit each method once); fail rather than silently dropping one. Recorded BEFORE
 		// classification, so a duplicate is a hard failure regardless of whether either
 		// copy is accepted or is an out-of-cohort miss.
-		if c.Binding.Method != "" {
-			if seen[c.Binding.Method] {
-				return nil, fmt.Errorf("nativespine: duplicate candidate method %q", c.Binding.Method)
+		if c.binding.Method != "" {
+			if seen[c.binding.Method] {
+				return nil, fmt.Errorf("nativespine: duplicate candidate method %q", c.binding.Method)
 			}
-			seen[c.Binding.Method] = true
+			seen[c.binding.Method] = true
 		}
-		_, rej := classifyBinding(proj, byName, capByName, c.Binding)
+		_, rej := classifyRegistration(proj, byName, capByName, c, requireStream)
 		if rej != nil {
 			if rej.kind == rejectHard {
 				return nil, rej.err
@@ -188,13 +226,23 @@ func classifyCandidates(proj projectdescriptor.Project, candidates []UnaryRegist
 // (never the worker method maps): the standard composite drives CallWithOracle directly,
 // not the worker handler.
 func NewPopulationExecutor(proj projectdescriptor.Project, candidates []UnaryRegistration, exact *llmhttp.ExactExecutor) (*UnaryExecutor, error) {
-	accepted, err := classifyCandidates(proj, candidates)
+	normalized := make([]candidateRegistration, len(candidates))
+	for i := range candidates {
+		normalized[i] = candidateRegistration{binding: candidates[i].Binding, build: candidates[i].BuildMethod}
+	}
+	// requireStream=false: the standard composite needs the UNARY surface only. The
+	// classifier therefore accepts BOTH classes' unary projection, which is exactly what
+	// preserves U1c /call behaviour after the v3 descriptor bump — accepting a
+	// ClassStaticStream method here is NOT standard stream enrollment. This constructor
+	// builds only the executor: it never constructs a stream BuildMethod, installs a
+	// stream factory, or exposes a standard stream executor.
+	accepted, err := classifyCandidates(proj, normalized, false)
 	if err != nil {
 		return nil, err
 	}
 	bindings := make([]bamlutils.NativeSpineUnaryBinding, len(accepted))
 	for i := range accepted {
-		bindings[i] = accepted[i].Binding
+		bindings[i] = accepted[i].binding
 	}
 	// The strict executor re-classifies exactly these accepted bindings (single source of
 	// truth); they were classified accepted above, so registration succeeds — including

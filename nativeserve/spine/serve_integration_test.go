@@ -53,7 +53,7 @@ func TestRealPopulation_CallAndParse(t *testing.T) {
 		okChatCompletion(w, modelText)
 	})
 
-	exec := newJSONExec(t, lb.baseURL(), nil)
+	exec := newJSONStreamExec(t, lb.baseURL(), nil)
 	h := newHandler(t, exec)
 	ctx := context.Background()
 
@@ -118,4 +118,127 @@ func assertJSONEnvelopeCarrier(t *testing.T, data []byte, wantCanonical string) 
 	if got := inner.AsVariant0(); got == nil || *got != 1 {
 		t.Fatalf("int arm value = %v, want 1", got)
 	}
+}
+
+// TestRealPopulation_StreamThroughWorkerHandler drives the FULL native-only stream path
+// through worker.Handler — the same dispatch the booted native-only worker uses:
+//
+//	loopback SSE -> exact one-shot stream client -> shared cadence -> native
+//	ParseStaticStreamPartial -> emitted DecodeStaticAliasStream[OutputJsonStream] ->
+//	generated streamResult -> worker stream bridge -> workerplugin frames
+//
+// and asserts the whole public frame transcript (kind, order, bytes, raw) against the
+// SHARED expectation fixture, with exactly one provider request. No generated BAML
+// parser is anywhere on this path.
+func TestRealPopulation_StreamThroughWorkerHandler(t *testing.T) {
+	tr := loadTranscript(t)
+	lb := newLoopback(t, func(w http.ResponseWriter, r *http.Request) {
+		writeSSE(w, transcriptBody(tr), 0)
+	})
+	h := newHandler(t, newJSONStreamExec(t, lb.baseURL(), nil))
+
+	for _, tc := range []struct {
+		name     string
+		mode     bamlutils.StreamMode
+		needsRaw bool
+	}{
+		{"stream", bamlutils.StreamModeStream, false},
+		{"stream_with_raw", bamlutils.StreamModeStreamWithRaw, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := lb.count()
+			ch, err := h.CallStream(context.Background(), jsonAliasMethod, callInput("weather"), tc.mode)
+			if err != nil {
+				t.Fatalf("CallStream: %v", err)
+			}
+			frames := drain(t, ch)
+			if len(frames) == 0 {
+				t.Fatal("no frames")
+			}
+			if got := lb.count() - before; got != 1 {
+				t.Fatalf("provider request count = %d, want exactly 1", got)
+			}
+
+			// The LAST frame is the single final; no error frame anywhere.
+			last := frames[len(frames)-1]
+			if last.Kind != workerplugin.StreamResultKindFinal {
+				t.Fatalf("last frame kind = %v, want final", last.Kind)
+			}
+			if string(last.Data) != tr.Final {
+				t.Fatalf("final envelope = %s, want %s", last.Data, tr.Final)
+			}
+			var structured []string
+			var rawOnly int
+			for i, f := range frames[:len(frames)-1] {
+				if f.Error != nil {
+					t.Fatalf("frame %d is an error frame: %v", i, f.Error)
+				}
+				if f.Kind != workerplugin.StreamResultKindStream {
+					t.Fatalf("frame %d kind = %v, want stream", i, f.Kind)
+				}
+				if string(f.Data) == "null" {
+					rawOnly++
+					continue
+				}
+				structured = append(structured, string(f.Data))
+			}
+			var want []string
+			for _, d := range tr.Deltas {
+				if d.Emit {
+					want = append(want, d.Partial)
+				}
+			}
+			if len(structured) != len(want) {
+				t.Fatalf("got %d structured partial frame(s), want %d", len(structured), len(want))
+			}
+			for i := range want {
+				if structured[i] != want[i] {
+					t.Fatalf("structured partial frame %d = %s, want %s", i, structured[i], want[i])
+				}
+			}
+			if tc.needsRaw {
+				if rawOnly == 0 {
+					t.Fatal("/stream-with-raw produced no raw-only frame")
+				}
+				if last.Raw != tr.Accumulated {
+					t.Fatalf("final frame raw = %q, want %q", last.Raw, tr.Accumulated)
+				}
+			} else {
+				if rawOnly != 0 {
+					t.Fatalf("/stream produced %d raw-only frame(s), want 0", rawOnly)
+				}
+				if last.Raw != "" {
+					t.Fatalf("final frame raw = %q on /stream, want empty", last.Raw)
+				}
+			}
+		})
+	}
+}
+
+// TestRealPopulation_StreamParseIsSocketFree proves the worker's parse-STREAM route
+// (`/parse` with stream=true) dispatches the NATIVE ParseMethod.StreamImpl and returns
+// the POINTER carrier with zero provider sockets.
+func TestRealPopulation_StreamParseIsSocketFree(t *testing.T) {
+	lb := newLoopback(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("the stream-parse route contacted the provider")
+	})
+	h := newHandler(t, newJSONStreamExec(t, lb.baseURL(), nil))
+
+	res, err := h.Parse(context.Background(), jsonAliasMethod, streamParseInput(`{"k":1`))
+	if err != nil {
+		t.Fatalf("Parse(stream=true): %v", err)
+	}
+	// The partial of an unterminated object is the object built so far.
+	if string(res.Data) != `{}` && string(res.Data) != `{"k":1}` {
+		t.Fatalf("stream-parse envelope = %s, want the native partial for the prefix", res.Data)
+	}
+	if lb.count() != 0 {
+		t.Fatalf("stream parse opened %d socket(s), want 0", lb.count())
+	}
+}
+
+// streamParseInput is the JSON envelope for a stream `/parse` of raw model text.
+func streamParseInput(raw string) []byte {
+	b, _ := json.Marshal(map[string]any{"raw": raw, "stream": true})
+	return b
 }

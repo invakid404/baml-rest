@@ -4,7 +4,7 @@
   "descriptor_versions": {
     "schemadescriptor": 1,
     "promptdescriptor": 3,
-    "project_descriptor_planned": 2
+    "project_descriptor_planned": 3
   },
   "dynamic_endpoint_name": "_dynamic",
   "dynamic_method_name": "Baml_Rest_Dynamic",
@@ -99,8 +99,8 @@
     { "code": "static_method", "kind": "mode", "proven_status": "proven", "source_ref": "bamlutils StreamingMethod (interfaces.go:217); nativeschema BuildStaticSchemas (build.go:233)" },
     { "code": "final_call", "kind": "mode", "proven_status": "proven", "source_ref": "StreamModeCall (interfaces.go:196); nativeserve unary /call cohort (admission/static.go)" },
     { "code": "call_with_raw", "kind": "mode", "proven_status": "transitional", "source_ref": "StreamModeCallWithRaw (interfaces.go:200); ReasonWithRawUnproven with_raw_unproven (admission/decline.go:123)" },
-    { "code": "stream", "kind": "mode", "proven_status": "transitional", "source_ref": "StreamModeStream (interfaces.go:198); ReasonStreamingUnproven streaming_unproven (admission/decline.go:124); static streaming not emitted (nativeschema/build.go D12)" },
-    { "code": "stream_with_raw", "kind": "mode", "proven_status": "transitional", "source_ref": "StreamModeStreamWithRaw (interfaces.go:202)" },
+    { "code": "stream", "kind": "mode", "proven_status": "transitional", "source_ref": "StreamModeStream (interfaces.go:198); ReasonStreamingUnproven streaming_unproven (admission/decline.go:124); emitted CLASS-QUALIFIED ONLY for projectdescriptor.ClassStaticStream (codegen EmitNativeStaticStream) and served ONLY by the BAML-free native-only spine (nativeserve/spine StreamExecutor + admission.AdmitStaticSpineStreamClaim); no generic schema obtains streaming from this entry" },
+    { "code": "stream_with_raw", "kind": "mode", "proven_status": "transitional", "source_ref": "StreamModeStreamWithRaw (interfaces.go:202); emitted CLASS-QUALIFIED ONLY for projectdescriptor.ClassStaticStream and served ONLY by the BAML-free native-only spine (same lane as `stream`)" },
     { "code": "final_parse", "kind": "mode", "proven_status": "transitional", "source_ref": "ParseMethod (interfaces.go:226); native-first dynamic /parse final with BAML oracle; ReasonDirectParseUnproven direct_parse_unproven (admission/decline.go:299)" },
     { "code": "media_image", "kind": "media", "proven_status": "proven", "source_ref": "nativeprompt only image proven (support.go:199-224); schemadescriptor MediaImage (descriptor.go:182)" },
     { "code": "media_audio", "kind": "media", "proven_status": "declined", "source_ref": "beyond proven corpus (nativeprompt/support.go:221); FeatureMediaPart (nativebody/support.go:119); ReasonMediaPart media_part (admission/decline.go:214)" },
@@ -115,6 +115,18 @@
     { "code": "strategy_round_robin", "kind": "strategy", "proven_status": "declined", "source_ref": "ReasonRoundRobin round_robin (admission/decline.go:133)" },
     { "code": "single_leaf_client", "kind": "strategy", "proven_status": "proven", "source_ref": "ReasonNotSingleLeaf not_single_leaf gates to one leaf (admission/decline.go:131; clientmap.go)" },
     { "code": "provider_openai", "kind": "provider", "proven_status": "proven", "source_ref": "nativebody.ProviderOpenAI (support.go:126); PolicyStrictOpenAI (admission/clientmap.go:27)" }
+  ],
+  "method_classes": [
+    {
+      "class": "static_unary",
+      "required": ["static_method", "final_call", "provider_openai", "single_leaf_client"],
+      "source_ref": "projectdescriptor.ClassStaticUnary (descriptor.go); internal/nativespine admittedCapabilities; unary final-call + final-parse ONLY — it promises nothing about streaming"
+    },
+    {
+      "class": "static_stream",
+      "required": ["static_method", "final_call", "stream", "stream_with_raw", "provider_openai", "single_leaf_client"],
+      "source_ref": "projectdescriptor.ClassStaticStream (descriptor.go, Version 3); internal/nativespine streamAdmittedCapabilities, stamped ONLY where internal/debaml.SupportsNativeStaticStreamBundle admits (the exact five-arm JSON recursive alias); superset of static_unary so /call is retained"
+    }
   ],
   "declines": {
     "umbrella_sentinel": "github.com/invakid404/baml-rest/nativeserve/admission.ErrDeclined",

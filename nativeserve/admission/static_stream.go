@@ -180,12 +180,36 @@ func admittedStaticStreamReturnShape(b *schema.Bundle) bool {
 	return debaml.IsProvenRecursiveAliasStaticStreamFamily(b)
 }
 
+// staticStreamLane is the UNEXPORTED admission-lane policy for the two static-stream
+// entry points. It exists so the cohort gate and the BAML plan compare are properties of
+// the LANE (each with its own exported entry point), never a caller-settable field: a
+// boolean on [StaticStreamInput] could be flipped by any caller and would silently skip
+// both safety rails.
+//
+//	entry                       | cohort gate | BAML plan compare | owner
+//	----------------------------|-------------|-------------------|--------------------------
+//	AdmitStaticStreamClaim      | yes         | yes               | existing standard/legacy
+//	AdmitStaticSpineStreamClaim | no          | no                | BAML-free native-only spine
+type staticStreamLane uint8
+
+const (
+	// laneLegacyStaticStream is the EXISTING standard/legacy static-stream lane:
+	// default-deny cohort gate plus the strict BAML StreamRequest plan compare. Its
+	// behaviour is unchanged by M3e-A.
+	laneLegacyStaticStream staticStreamLane = iota
+	// laneSpineStaticStream is the M3e-A codegen-spine lane. It carries NO generated
+	// BAML plan closure (the native-only artifact links no BAML at all), and its
+	// admission is its own registration-time totality gate over the emitted exact-JSON
+	// cohort, so it must not consult — or widen — the dynamic-rollout cohort manifest.
+	laneSpineStaticStream
+)
+
 // AdmitStaticStreamClaim runs the static-stream no-send admission predicate and returns a
 // live *StaticStreamClaim on a full would-admit, else a *StaticDecline guaranteeing no
 // socket occurred. The caller MUST Close the returned claim on every path.
 func AdmitStaticStreamClaim(ctx context.Context, in StaticStreamInput) (*StaticStreamClaim, error) {
 	// --- Layers 1-3b: build/flag/route, mode, strategy, descriptor, Return bundle ---
-	bundle, fn, cohort, dec := admitStaticStreamThroughBundle(ctx, in)
+	bundle, fn, cohort, dec := admitStaticStreamThroughBundle(ctx, in, laneLegacyStaticStream)
 	if dec != nil {
 		return nil, staticDeclineFromObs(*dec)
 	}
@@ -215,6 +239,14 @@ func AdmitStaticStreamClaim(ctx context.Context, in StaticStreamInput) (*StaticS
 	}
 
 	// Would-admit: transfer ownership of the kept-alive engine to the claim.
+	return staticStreamClaimFrom(prep, req, cohort), nil
+}
+
+// staticStreamClaimFrom transfers ownership of a fully-admitted kept-alive
+// *staticPrepared (plus the streaming nanollm.Request the executor hands DoStream) into
+// the request-scoped *StaticStreamClaim the serve core RoundTrips on. The claim owns
+// closing the engine from here.
+func staticStreamClaimFrom(prep *staticPrepared, req nanollm.Request, cohort CohortID) *StaticStreamClaim {
 	return &StaticStreamClaim{
 		client:       prep.client,
 		Prepared:     prep.prepared,
@@ -224,14 +256,14 @@ func AdmitStaticStreamClaim(ctx context.Context, in StaticStreamInput) (*StaticS
 		request:      req,
 		Surface:      SurfaceStaticStream,
 		Cohort:       cohort,
-	}, nil
+	}
 }
 
 // admitStaticStreamThroughBundle runs the static-stream layers 1-3b (build/flag/route,
 // the STREAM mode gate, the orchestration-plan gate, descriptor envelope + arg binder,
 // and Return-Bundle lower/support) and returns the lowered Return Bundle + descriptor on
 // success, or a bounded decline. It opens NO socket and does NO nanollm work.
-func admitStaticStreamThroughBundle(ctx context.Context, in StaticStreamInput) (*schema.Bundle, promptdescriptor.Function, CohortID, *StaticObservation) {
+func admitStaticStreamThroughBundle(ctx context.Context, in StaticStreamInput, lane staticStreamLane) (*schema.Bundle, promptdescriptor.Function, CohortID, *StaticObservation) {
 	decline := func(family bamlutils.NativeStaticObserveFamily, stage Stage, reason Reason) (*schema.Bundle, promptdescriptor.Function, CohortID, *StaticObservation) {
 		o := declineStatic(family, stage, reason)
 		return nil, promptdescriptor.Function{}, CohortNone, &o
@@ -268,9 +300,20 @@ func admitStaticStreamThroughBundle(ctx context.Context, in StaticStreamInput) (
 	// New/Prepare work below — so a non-enrolled static stream costs ZERO native work
 	// and opens no socket. The surface is this LANE's constant (static_stream), so a
 	// cohort enrolled only for static_call can never claim a stream.
-	cohort, cd := admitCohort(SurfaceStaticStream, in.Cohort)
-	if cd != nil {
-		return decline(bamlutils.NativeStaticFamilyCapability, cd.Stage, cd.Reason)
+	//
+	// The M3e-A spine lane SKIPS it, exactly as the unary spine lane skips its twin:
+	// it is a separate lane whose admission is its own root-owned totality gate over
+	// the emitted exact-JSON cohort (resolved at registration), and it must NOT widen
+	// the dynamic cohort manifest. cohort stays CohortNone, carried out for telemetry.
+	// The choice is the LANE's, never a caller field, so no caller of
+	// AdmitStaticStreamClaim can opt into the skip.
+	cohort := CohortNone
+	if lane != laneSpineStaticStream {
+		c, cd := admitCohort(SurfaceStaticStream, in.Cohort)
+		if cd != nil {
+			return decline(bamlutils.NativeStaticFamilyCapability, cd.Stage, cd.Reason)
+		}
+		cohort = c
 	}
 
 	// --- Layer 2: whole orchestration plan + selected-child facts -----------

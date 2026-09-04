@@ -46,8 +46,10 @@ import (
 	"github.com/invakid404/baml-rest/bamlutils/projectdescriptor"
 	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
 	"github.com/invakid404/baml-rest/bamlutils/schemadescriptor"
+	"github.com/invakid404/baml-rest/internal/debaml"
 	"github.com/invakid404/baml-rest/internal/nativeprompt"
 	"github.com/invakid404/baml-rest/internal/nativeschema"
+	"github.com/invakid404/baml-rest/internal/schema"
 )
 
 // M1 decline codes — every value is a code in internal/codegenspine/manifest.json
@@ -94,6 +96,32 @@ func DeclineCodes() []projectdescriptor.CapabilityCode {
 // method satisfies.
 var admittedCapabilities = []projectdescriptor.CapabilityCode{
 	"static_method", "final_call", "provider_openai", "single_leaf_client",
+}
+
+// streamAdmittedCapabilities are the manifest capability codes a ClassStaticStream
+// method satisfies (M3e-A): the unary set PLUS the two real streaming modes. The
+// spelling is the manifest's existing catalogue (`stream`, `stream_with_raw`) — the
+// class does not invent aliases — and the order is the fixed one
+// [projectdescriptor.Project.Validate] compares against the per-method capability
+// record.
+var streamAdmittedCapabilities = []projectdescriptor.CapabilityCode{
+	"static_method", "final_call", "stream", "stream_with_raw", "provider_openai", "single_leaf_client",
+}
+
+// ClassRequiredCapabilities returns the ORDERED manifest capability codes an admitted
+// method of class c requires, or nil for an unknown class. It is the exported form of
+// the two sets above so the frozen contract manifest
+// (internal/codegenspine/manifest.json, method_classes) is validated against the LIVE
+// classifier rather than against a hand-copied list.
+func ClassRequiredCapabilities(c projectdescriptor.MethodClass) []projectdescriptor.CapabilityCode {
+	switch c {
+	case projectdescriptor.ClassStaticUnary:
+		return append([]projectdescriptor.CapabilityCode(nil), admittedCapabilities...)
+	case projectdescriptor.ClassStaticStream:
+		return append([]projectdescriptor.CapabilityCode(nil), streamAdmittedCapabilities...)
+	default:
+		return nil
+	}
 }
 
 // Provider strings. Strategy providers are matched in BOTH their canonical
@@ -228,8 +256,10 @@ func projectTemplates(macros []promptdescriptor.TemplateString) []projectdescrip
 	return out
 }
 
-// admitMethod projects a promptdescriptor.Function into an admitted
-// ClassStaticUnary Method, composing the JSON-clean sub-descriptors.
+// admitMethod projects a promptdescriptor.Function into an admitted Method,
+// composing the JSON-clean sub-descriptors. The class is [methodClass]'s verdict:
+// every admitted method is at least ClassStaticUnary, and the exact stream-capable
+// population is additionally stamped ClassStaticStream.
 func admitMethod(name string, fn promptdescriptor.Function) projectdescriptor.Method {
 	args := make([]projectdescriptor.Argument, 0, len(fn.Args))
 	for _, a := range fn.Args {
@@ -239,17 +269,50 @@ func admitMethod(name string, fn promptdescriptor.Function) projectdescriptor.Me
 		}
 		args = append(args, projectdescriptor.Argument{Name: a.Name, Type: vt})
 	}
+	class, required := methodClass(fn)
 	return projectdescriptor.Method{
 		Name:                 name,
-		Class:                projectdescriptor.ClassStaticUnary,
+		Class:                class,
 		Prompt:               fn.Prompt,
 		Args:                 args,
 		Client:               fn.Client,
 		Provider:             effectiveProvider(fn),
 		Model:                projectdescriptor.Model{Value: fn.ClientConfig.Model.Value, Provenance: fn.ClientConfig.Model.Provenance},
 		Return:               fn.Return,
-		RequiredCapabilities: append([]projectdescriptor.CapabilityCode(nil), admittedCapabilities...),
+		RequiredCapabilities: append([]projectdescriptor.CapabilityCode(nil), required...),
 	}
+}
+
+// methodClass decides which native class an ALREADY-ADMITTED method belongs to, and
+// returns its ordered required-capability set (M3e-A).
+//
+// The rule is strictly additive on top of the unchanged static-unary admission above:
+//
+//	base static-unary admission fails            -> declined (never reaches here)
+//	base admission succeeds + Supports... fails  -> ClassStaticUnary
+//	base admission succeeds + Supports... passes -> ClassStaticStream
+//
+// The stream verdict is the ONE root-owned totality predicate
+// [debaml.SupportsNativeStaticStreamBundle] — the exact five-arm `JSON` recursive
+// alias — asked over the LOWERED return bundle. This package deliberately does NOT
+// reproduce that structural fingerprint: the same predicate decides the descriptor
+// class here, registration in nativeserve/spine, call-time admission, and the parse
+// entrypoints, so there is exactly one definition of the stream population and nothing
+// to drift.
+//
+// A return that does not LOWER is not stream-capable. A malformed/unlowerable return
+// must never be stamped ClassStaticStream (the emitter would have no carrier to name),
+// so lowering failure falls back to the unary class, where the existing output-shape
+// checks and the emitter backstop remain in force.
+func methodClass(fn promptdescriptor.Function) (projectdescriptor.MethodClass, []projectdescriptor.CapabilityCode) {
+	bundle, err := schema.FromStaticDescriptor(fn.Return)
+	if err != nil {
+		return projectdescriptor.ClassStaticUnary, admittedCapabilities
+	}
+	if err := debaml.SupportsNativeStaticStreamBundle(bundle); err != nil {
+		return projectdescriptor.ClassStaticUnary, admittedCapabilities
+	}
+	return projectdescriptor.ClassStaticStream, streamAdmittedCapabilities
 }
 
 func effectiveProvider(fn promptdescriptor.Function) string {

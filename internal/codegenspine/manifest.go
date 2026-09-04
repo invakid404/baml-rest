@@ -35,7 +35,14 @@ type Manifest struct {
 	OptionsEnvelope   OptionsEnvelope `json:"options_envelope"`
 
 	Capabilities []Capability `json:"capabilities"`
-	Declines     Declines     `json:"declines"`
+	// MethodClasses freezes the class-to-required-capability contract of the native
+	// codegen classifier (M3e-A). It is the CLASS-QUALIFIED reading of the capability
+	// catalogue above: a capability entry says a code exists and how proven it is; a
+	// method class says which ordered set an admitted method of that class carries.
+	// Validated against projectdescriptor.MethodClasses() +
+	// nativespine.ClassRequiredCapabilities by manifest_test.go.
+	MethodClasses []MethodClassRecord `json:"method_classes"`
+	Declines      Declines            `json:"declines"`
 
 	Fixtures                   []Fixture `json:"fixtures"`
 	RequiredCapabilityCoverage []string  `json:"required_capability_coverage"`
@@ -111,6 +118,16 @@ type Capability struct {
 	Kind         string `json:"kind"`
 	ProvenStatus string `json:"proven_status"`
 	SourceRef    string `json:"source_ref"`
+}
+
+// MethodClassRecord is one native method class and the ORDERED capability codes an
+// admitted method of that class requires. Class is the projectdescriptor.MethodClass
+// wire string; Required is order-sensitive because Project.Validate compares a
+// method's RequiredCapabilities against its capability record exactly.
+type MethodClassRecord struct {
+	Class     string   `json:"class"`
+	Required  []string `json:"required"`
+	SourceRef string   `json:"source_ref"`
 }
 
 // Declines points at the live decline taxonomy rather than duplicating it. The

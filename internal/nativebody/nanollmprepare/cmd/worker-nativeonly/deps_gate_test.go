@@ -24,6 +24,10 @@ var forbiddenDeps = []string{
 	// neutral BAML closures) and is imported ONLY by cmd/worker; the native-only command
 	// must never reach it.
 	"github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/standardspineoracle",
+	// M3e-A: the legacy/standard static-stream serve lane is BAML-plan-compare-bound
+	// (it builds BAML's StreamRequest plan before its claim), so the native-only command
+	// must reach neither it nor the generated static seam that installs it.
+	"github.com/invakid404/baml-rest/nativeserve/canary",
 }
 
 // positiveDeps must be present so an empty/wrong go-list output cannot pass this
@@ -36,6 +40,15 @@ var positiveDeps = []string{
 	"github.com/invakid404/baml-rest/worker",
 	"github.com/invakid404/baml-rest/workerplugin",
 	"github.com/viktordanov/nanollm-ffi/go",
+	// M3e-A: the STREAM path's own machinery must be PRESENT, so a dead or wrongly
+	// generated graph cannot make the forbidden-list check pass by absence. These are
+	// exactly the packages the spine stream executor links: the pre-socket admission
+	// gate, the one-shot exact stream transport, the shared BAML-free delta cadence,
+	// and the root-owned native static-stream parsers.
+	"github.com/invakid404/baml-rest/nativeserve/admission",
+	"github.com/invakid404/baml-rest/nativeserve/execute",
+	"github.com/invakid404/baml-rest/bamlutils/buildrequest",
+	"github.com/invakid404/baml-rest/internal/debaml",
 }
 
 // TestNativeOnlyWorkerHasNoBAML is the whole packaged-command dependency gate. It
@@ -44,6 +57,10 @@ var positiveDeps = []string{
 // introspected/workerboot/root-baml_rest dependency. TestMain has already generated
 // the deployment registry, so the debamlnativespinegenerated build sees the real
 // aggregate. This is the acceptance gate; the container build runs the same check.
+//
+// M3e-A made this artifact STREAM-capable, so the positive list now names the stream
+// path's own packages too: a graph that reached none of them would satisfy the
+// forbidden list vacuously, which is exactly the false-green this gate must not allow.
 func TestNativeOnlyWorkerHasNoBAML(t *testing.T) {
 	_, moduleRoot := repoPaths()
 	cmd := exec.Command("go", "list", "-deps", "-tags="+nativeOnlyBuildTags, "./cmd/worker-nativeonly")

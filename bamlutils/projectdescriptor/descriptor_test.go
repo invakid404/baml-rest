@@ -3,6 +3,7 @@ package projectdescriptor
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
@@ -47,9 +48,75 @@ func sampleProject() Project {
 	}
 }
 
-func TestVersionIsTwo(t *testing.T) {
-	if Version != 2 {
-		t.Fatalf("Version = %d, want 2 (M2 whole-project descriptor)", Version)
+func TestVersionIsThree(t *testing.T) {
+	if Version != 3 {
+		t.Fatalf("Version = %d, want 3 (M3e-A: the additive ClassStaticStream class)", Version)
+	}
+}
+
+// TestValidateRejectsPriorVersion pins the INTENTIONAL wire incompatibility of the v3
+// bump: a v2 descriptor is REJECTED by the exact-equality fence, never read as a v3
+// one. Under v3 the name static_unary still means unary-only, so silently accepting a
+// v2 payload would mean reading its class names under the new contract.
+func TestValidateRejectsPriorVersion(t *testing.T) {
+	p := sampleProject()
+	p.Version = 2
+	err := p.Validate()
+	if err == nil {
+		t.Fatal("Validate accepted a version-2 descriptor under v3")
+	}
+	if !strings.Contains(err.Error(), "unsupported project version 2") {
+		t.Fatalf("Validate error %q does not name the unsupported version", err)
+	}
+}
+
+// TestMethodClassesAreKnownAndComplete pins the class enumeration and the fail-closed
+// unknown-class fence. A descriptor naming a class this build does not define must be
+// a HARD error: serving it would mean inferring a capability promise from a name.
+func TestMethodClassesAreKnownAndComplete(t *testing.T) {
+	classes := MethodClasses()
+	if len(classes) != 2 || classes[0] != ClassStaticUnary || classes[1] != ClassStaticStream {
+		t.Fatalf("MethodClasses() = %v, want [static_unary static_stream]", classes)
+	}
+	for _, c := range classes {
+		if !c.IsKnown() {
+			t.Errorf("MethodClasses() member %q reports IsKnown()=false", c)
+		}
+	}
+	if MethodClass("static_stream_with_raw").IsKnown() {
+		t.Error("an undefined class reports IsKnown()=true")
+	}
+
+	p := sampleProject()
+	p.Methods[0].Class = "static_future"
+	p.Capabilities[0].Class = "static_future"
+	err := p.Validate()
+	if err == nil {
+		t.Fatal("Validate accepted an unknown method class")
+	}
+	if !strings.Contains(err.Error(), "unknown class") {
+		t.Fatalf("Validate error %q does not name the unknown class", err)
+	}
+}
+
+// TestValidateAcceptsStreamClass proves the additive class is a first-class admitted
+// class: a ClassStaticStream method with the stream capability set validates, and the
+// capability record must still agree with the method exactly.
+func TestValidateAcceptsStreamClass(t *testing.T) {
+	streamCaps := []CapabilityCode{"static_method", "final_call", "stream", "stream_with_raw", "provider_openai", "single_leaf_client"}
+	p := sampleProject()
+	p.Methods[0].Class = ClassStaticStream
+	p.Methods[0].RequiredCapabilities = streamCaps
+	p.Capabilities[0].Class = ClassStaticStream
+	p.Capabilities[0].Required = streamCaps
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate(stream-class sample) = %v, want nil", err)
+	}
+
+	// A capability record that kept the unary class is an inconsistent descriptor.
+	p.Capabilities[0].Class = ClassStaticUnary
+	if err := p.Validate(); err == nil {
+		t.Fatal("Validate accepted a capability record whose class disagrees with the method")
 	}
 }
 

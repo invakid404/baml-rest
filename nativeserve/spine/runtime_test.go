@@ -11,13 +11,23 @@ import (
 	"github.com/invakid404/baml-rest/nativeserve/spine"
 )
 
-// jsonAliasReg is the accepted emitted candidate for the exact five-arm JSON
-// alias method (the real production binding + method builder).
-func jsonAliasReg() spine.UnaryRegistration {
-	return spine.UnaryRegistration{
-		Binding:     nativespinejsonfixture.Binding(),
+// jsonAliasReg is the accepted emitted STREAM candidate for the exact five-arm JSON
+// alias method (the real production stream binding + method builder). NewWorkerRuntime
+// is the native-only, STREAM-capable constructor (M3e-A), so its candidates carry the
+// emitted StreamBinding — whose Unary field is the same Binding() the standard unary
+// composite registers.
+func jsonAliasReg() spine.StreamRegistration {
+	return spine.StreamRegistration{
+		Binding:     nativespinejsonfixture.StreamBinding(),
 		BuildMethod: nativespinejsonfixture.BuildMethod,
 	}
+}
+
+// namedStreamReg is the emitted stream candidate renamed onto another corpus method.
+func namedStreamReg(name string) spine.StreamRegistration {
+	reg := jsonAliasReg()
+	reg.Binding.Unary = renameBinding(reg.Binding.Unary, name)
+	return reg
 }
 
 // aliasType is the exact five-arm JSON recursive alias (the admitted cohort's
@@ -36,7 +46,7 @@ type runtimeWorkerNamer interface {
 // non-panicking InitRuntime.
 func TestNewWorkerRuntime_AdmitsExactJSONAlias(t *testing.T) {
 	proj := jsonAliasProject(t)
-	rt, err := spine.NewWorkerRuntime(proj, []spine.UnaryRegistration{jsonAliasReg()}, nil)
+	rt, err := spine.NewWorkerRuntime(proj, []spine.StreamRegistration{jsonAliasReg()}, nil)
 	if err != nil {
 		t.Fatalf("NewWorkerRuntime: %v", err)
 	}
@@ -81,17 +91,10 @@ func TestNewWorkerRuntime_OmitsCohortMiss(t *testing.T) {
 		`function PlainString(topic: string) -> string { client C prompt #"{{ topic }}"# }`,
 	}, "\n")))
 
-	cohortMiss := spine.UnaryRegistration{
-		// A renamed binding whose BuildMethod is never invoked (the method is omitted).
-		Binding:     renameBinding(nativespinejsonfixture.Binding(), "PlainString"),
-		BuildMethod: nativespinejsonfixture.BuildMethod,
-	}
-	admitted := spine.UnaryRegistration{
-		Binding:     renameBinding(nativespinejsonfixture.Binding(), "StaticRecursiveAliasJSON"),
-		BuildMethod: nativespinejsonfixture.BuildMethod,
-	}
+	cohortMiss := namedStreamReg("PlainString")
+	admitted := namedStreamReg("StaticRecursiveAliasJSON")
 
-	rt, err := spine.NewWorkerRuntime(proj, []spine.UnaryRegistration{admitted, cohortMiss}, nil)
+	rt, err := spine.NewWorkerRuntime(proj, []spine.StreamRegistration{admitted, cohortMiss}, nil)
 	if err != nil {
 		t.Fatalf("NewWorkerRuntime: %v", err)
 	}
@@ -111,11 +114,8 @@ func TestNewWorkerRuntime_OmitsCohortMiss(t *testing.T) {
 // nothing refuses to boot rather than silently declining every request.
 func TestNewWorkerRuntime_EmptyCohortFails(t *testing.T) {
 	proj := projectFromCorpus(t, corpus("", `function F(topic: string) -> string { client C prompt #"{{ topic }}"# }`))
-	cand := spine.UnaryRegistration{
-		Binding:     renameBinding(nativespinejsonfixture.Binding(), "F"),
-		BuildMethod: nativespinejsonfixture.BuildMethod,
-	}
-	_, err := spine.NewWorkerRuntime(proj, []spine.UnaryRegistration{cand}, nil)
+	cand := namedStreamReg("F")
+	_, err := spine.NewWorkerRuntime(proj, []spine.StreamRegistration{cand}, nil)
 	if err == nil {
 		t.Fatalf("NewWorkerRuntime admitted an all-cohort-miss candidate set, want empty-cohort failure")
 	}
@@ -128,7 +128,7 @@ func TestNewWorkerRuntime_EmptyCohortFails(t *testing.T) {
 // same method twice) fails boot rather than silently dropping one.
 func TestNewWorkerRuntime_DuplicateCandidateFails(t *testing.T) {
 	proj := jsonAliasProject(t)
-	_, err := spine.NewWorkerRuntime(proj, []spine.UnaryRegistration{jsonAliasReg(), jsonAliasReg()}, nil)
+	_, err := spine.NewWorkerRuntime(proj, []spine.StreamRegistration{jsonAliasReg(), jsonAliasReg()}, nil)
 	if err == nil || !strings.Contains(err.Error(), "duplicate candidate") {
 		t.Fatalf("error = %v, want a duplicate-candidate failure", err)
 	}
@@ -143,15 +143,9 @@ func TestNewWorkerRuntime_DuplicateCohortMissFailsBoot(t *testing.T) {
 		`function StaticRecursiveAliasJSON(topic: string) -> JSON { client C prompt #"{{ topic }}"# }`,
 		`function PlainString(topic: string) -> string { client C prompt #"{{ topic }}"# }`,
 	}, "\n")))
-	admitted := spine.UnaryRegistration{
-		Binding:     renameBinding(nativespinejsonfixture.Binding(), "StaticRecursiveAliasJSON"),
-		BuildMethod: nativespinejsonfixture.BuildMethod,
-	}
-	miss := spine.UnaryRegistration{
-		Binding:     renameBinding(nativespinejsonfixture.Binding(), "PlainString"),
-		BuildMethod: nativespinejsonfixture.BuildMethod,
-	}
-	_, err := spine.NewWorkerRuntime(proj, []spine.UnaryRegistration{admitted, miss, miss}, nil)
+	admitted := namedStreamReg("StaticRecursiveAliasJSON")
+	miss := namedStreamReg("PlainString")
+	_, err := spine.NewWorkerRuntime(proj, []spine.StreamRegistration{admitted, miss, miss}, nil)
 	if err == nil || !strings.Contains(err.Error(), "duplicate candidate") {
 		t.Fatalf("error = %v, want a duplicate-candidate hard failure for a repeated cohort-miss method", err)
 	}
@@ -171,7 +165,7 @@ func TestNewWorkerRuntime_HardFailsOnCorruptClientReference(t *testing.T) {
 				p.Methods[i].Client = ghost
 			}
 		})
-		_, err := spine.NewWorkerRuntime(proj, []spine.UnaryRegistration{jsonAliasReg()}, nil)
+		_, err := spine.NewWorkerRuntime(proj, []spine.StreamRegistration{jsonAliasReg()}, nil)
 		if err == nil || !strings.Contains(err.Error(), "not present in the project client graph") {
 			t.Fatalf("error = %v, want a hard client-reference-corruption failure", err)
 		}
@@ -192,11 +186,8 @@ func TestNewWorkerRuntime_HardFailsOnCorruptClientReference(t *testing.T) {
 			p.Capabilities = append(p.Capabilities, cap)
 		})
 		valid := jsonAliasReg() // StaticRecursiveAliasJSON — would be accepted
-		corrupt := spine.UnaryRegistration{
-			Binding:     renameBinding(nativespinejsonfixture.Binding(), "CorruptClientRef"),
-			BuildMethod: nativespinejsonfixture.BuildMethod,
-		}
-		_, err := spine.NewWorkerRuntime(proj, []spine.UnaryRegistration{valid, corrupt}, nil)
+		corrupt := namedStreamReg("CorruptClientRef")
+		_, err := spine.NewWorkerRuntime(proj, []spine.StreamRegistration{valid, corrupt}, nil)
 		if err == nil {
 			t.Fatalf("NewWorkerRuntime BOOTED with a corrupt candidate present; a corrupt candidate must fail boot, not be omitted")
 		}
@@ -227,11 +218,8 @@ func TestNewWorkerRuntime_HardFailsOnDanglingReturnReference(t *testing.T) {
 		p.Capabilities = append(p.Capabilities, cap)
 	})
 	valid := jsonAliasReg() // StaticRecursiveAliasJSON — would be accepted
-	corrupt := spine.UnaryRegistration{
-		Binding:     renameBinding(nativespinejsonfixture.Binding(), "DanglingReturnRef"),
-		BuildMethod: nativespinejsonfixture.BuildMethod,
-	}
-	_, err := spine.NewWorkerRuntime(proj, []spine.UnaryRegistration{valid, corrupt}, nil)
+	corrupt := namedStreamReg("DanglingReturnRef")
+	_, err := spine.NewWorkerRuntime(proj, []spine.StreamRegistration{valid, corrupt}, nil)
 	if err == nil {
 		t.Fatalf("NewWorkerRuntime BOOTED with a dangling-return-reference candidate; structural return corruption must fail boot, not be omitted")
 	}
@@ -273,11 +261,8 @@ func TestNewWorkerRuntime_RoundRobinStrategyClientIsOmitted(t *testing.T) {
 		p.Capabilities = append(p.Capabilities, cap)
 	})
 	valid := jsonAliasReg()
-	rr := spine.UnaryRegistration{
-		Binding:     renameBinding(nativespinejsonfixture.Binding(), "RoundRobinMethod"),
-		BuildMethod: nativespinejsonfixture.BuildMethod,
-	}
-	rt, err := spine.NewWorkerRuntime(proj, []spine.UnaryRegistration{valid, rr}, nil)
+	rr := namedStreamReg("RoundRobinMethod")
+	rt, err := spine.NewWorkerRuntime(proj, []spine.StreamRegistration{valid, rr}, nil)
 	if err != nil {
 		t.Fatalf("a WELL-FORMED round-robin strategy method (wrapper present in Clients) must be OMITTED (population miss), not fail boot or empty the cohort: %v", err)
 	}
@@ -321,11 +306,8 @@ func TestNewWorkerRuntime_HardFailsOnStrategyWithoutClientWrapper(t *testing.T) 
 		p.Capabilities = append(p.Capabilities, cap)
 	})
 	valid := jsonAliasReg()
-	corrupt := spine.UnaryRegistration{
-		Binding:     renameBinding(nativespinejsonfixture.Binding(), "CorruptStrategyRef"),
-		BuildMethod: nativespinejsonfixture.BuildMethod,
-	}
-	_, err := spine.NewWorkerRuntime(proj, []spine.UnaryRegistration{valid, corrupt}, nil)
+	corrupt := namedStreamReg("CorruptStrategyRef")
+	_, err := spine.NewWorkerRuntime(proj, []spine.StreamRegistration{valid, corrupt}, nil)
 	if err == nil {
 		t.Fatalf("NewWorkerRuntime BOOTED with a strategy-without-wrapper candidate; a Strategies entry whose Client is absent from the graph is corruption and must fail boot, not be omitted")
 	}
@@ -348,7 +330,7 @@ func TestNewWorkerRuntime_IncompleteBuiltMethodFailsBoot(t *testing.T) {
 		// would panic on the first request instead of failing boot.
 		return bamlutils.StreamingMethod{}, bamlutils.ParseMethod{}
 	}
-	_, err := spine.NewWorkerRuntime(proj, []spine.UnaryRegistration{reg}, nil)
+	_, err := spine.NewWorkerRuntime(proj, []spine.StreamRegistration{reg}, nil)
 	if err == nil || !strings.Contains(err.Error(), "incomplete") {
 		t.Fatalf("error = %v, want an incomplete-built-method boot failure", err)
 	}
@@ -361,38 +343,42 @@ func TestNewWorkerRuntime_HardFailures(t *testing.T) {
 	proj := jsonAliasProject(t)
 
 	t.Run("unknown_method", func(t *testing.T) {
-		cand := spine.UnaryRegistration{
-			Binding:     renameBinding(nativespinejsonfixture.Binding(), "NopeNotInProject"),
-			BuildMethod: nativespinejsonfixture.BuildMethod,
-		}
-		_, err := spine.NewWorkerRuntime(proj, []spine.UnaryRegistration{cand}, nil)
+		cand := namedStreamReg("NopeNotInProject")
+		_, err := spine.NewWorkerRuntime(proj, []spine.StreamRegistration{cand}, nil)
 		if err == nil || !strings.Contains(err.Error(), "did not admit") {
 			t.Fatalf("error = %v, want a name-mismatch hard failure", err)
 		}
 	})
 
 	t.Run("nil_build_method", func(t *testing.T) {
-		cand := spine.UnaryRegistration{Binding: nativespinejsonfixture.Binding(), BuildMethod: nil}
-		_, err := spine.NewWorkerRuntime(proj, []spine.UnaryRegistration{cand}, nil)
+		cand := spine.StreamRegistration{Binding: nativespinejsonfixture.StreamBinding(), BuildMethod: nil}
+		_, err := spine.NewWorkerRuntime(proj, []spine.StreamRegistration{cand}, nil)
 		if err == nil || !strings.Contains(err.Error(), "nil BuildMethod") {
 			t.Fatalf("error = %v, want a nil-BuildMethod hard failure", err)
 		}
 	})
 
 	t.Run("nil_projector", func(t *testing.T) {
-		b := nativespinejsonfixture.Binding()
-		b.ProjectInput = nil
-		cand := spine.UnaryRegistration{Binding: b, BuildMethod: nativespinejsonfixture.BuildMethod}
-		_, err := spine.NewWorkerRuntime(proj, []spine.UnaryRegistration{cand}, nil)
+		b := nativespinejsonfixture.StreamBinding()
+		b.Unary.ProjectInput = nil
+		cand := spine.StreamRegistration{Binding: b, BuildMethod: nativespinejsonfixture.BuildMethod}
+		_, err := spine.NewWorkerRuntime(proj, []spine.StreamRegistration{cand}, nil)
 		if err == nil || !strings.Contains(err.Error(), "ProjectInput is nil") {
 			t.Fatalf("error = %v, want a nil-projector hard failure", err)
 		}
 	})
 }
 
-// compile-time assertion the emitted (Binding, BuildMethod) pair is exactly the
-// UnaryRegistration field shape (catches emitted-signature drift at build time).
-var _ = spine.UnaryRegistration{
-	Binding:     nativespinejsonfixture.Binding(),
-	BuildMethod: nativespinejsonfixture.BuildMethod,
-}
+// compile-time assertions that the emitted registration pairs are exactly the two
+// registration field shapes (catches emitted-signature drift at build time): the
+// standard composite's UNARY candidate and the native-only STREAM candidate.
+var (
+	_ = spine.UnaryRegistration{
+		Binding:     nativespinejsonfixture.Binding(),
+		BuildMethod: nativespinejsonfixture.BuildMethod,
+	}
+	_ = spine.StreamRegistration{
+		Binding:     nativespinejsonfixture.StreamBinding(),
+		BuildMethod: nativespinejsonfixture.BuildMethod,
+	}
+)

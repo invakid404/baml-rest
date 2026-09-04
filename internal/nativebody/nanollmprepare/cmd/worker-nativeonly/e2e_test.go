@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/bamlutils/projectdescriptor"
 	"github.com/invakid404/baml-rest/workerplugin"
 )
 
@@ -27,9 +28,12 @@ func TestNativeOnlyWorker_BootCallParse(t *testing.T) {
 	ctx := context.Background()
 
 	// --- Default-deny at boot: GENERATED then DECLINED --------------------------
-	// The fixture declares THREE static-unary methods that codegen/M1 all admit into
-	// the generated candidate set — the exact JSON alias, a non-alias (string) return,
-	// and a retry-policy client method. Proving both halves distinguishes a
+	// The fixture declares THREE static methods the codegen classifier admits into the
+	// generated candidate set: the exact JSON alias and a retry-policy client method —
+	// both stamped static_stream, because each RETURNS the exact five-arm JSON alias and
+	// the class is derived from the return shape alone — plus a non-alias (string)
+	// return, which is static_unary. The retry-policy method is declined later, by the
+	// CLIENT (cohort) gate rather than by its shape. Proving both halves distinguishes a
 	// generate-then-decline from a candidate that was never generated: the emitted
 	// descriptor must carry all three names...
 	gen := generatedCandidateNames(t)
@@ -38,9 +42,30 @@ func TestNativeOnlyWorker_BootCallParse(t *testing.T) {
 			t.Fatalf("generated candidate %q missing from the emitted descriptor %v; the generate-then-decline proof is vacuous if a candidate was never generated", want, gen)
 		}
 	}
+	// ...with the classes the classifier is supposed to have stamped. Pinning them here
+	// keeps the helper above honest: a class filter that silently dropped a served
+	// method would otherwise only surface as a confusing count mismatch below.
+	//
+	// The class is derived from the RETURN SHAPE ALONE — internal/nativespine lowers the
+	// Return and asks the one totality predicate — so it says nothing about the client.
+	// RetryPolicyMethod therefore carries the STREAM class (its return IS the exact
+	// five-arm JSON alias) even though its retry-policy client puts it outside the
+	// runtime cohort. Those are two independent axes, and the boot count below is what
+	// proves the second one: a stream-CLASS method is still omitted at boot for a
+	// client-level reason.
+	for method, wantClass := range map[string]projectdescriptor.MethodClass{
+		"StaticRecursiveAliasJSON": projectdescriptor.ClassStaticStream,
+		"NonCohortStringReturn":    projectdescriptor.ClassStaticUnary,
+		"RetryPolicyMethod":        projectdescriptor.ClassStaticStream,
+	} {
+		if got := generatedCandidateClass(t, method); got != wantClass {
+			t.Fatalf("generated candidate %q has class %q, want %q", method, got, wantClass)
+		}
+	}
 	// ...while the booted runtime admits exactly ONE. The other two were GENERATED but
-	// declined at admission (a non-alias return and a retry-policy client), then omitted
-	// at boot — not merely absent.
+	// declined at admission — a non-alias return (out of the population by SHAPE) and a
+	// retry-policy client (out of it by CLIENT, despite carrying the stream class) —
+	// then omitted at boot, not merely absent.
 	if n := admittedMethodCount(t, bw); n != 1 {
 		t.Fatalf("admitted_method_count = %d, want exactly 1 (the two non-cohort candidates must be omitted at boot)", n)
 	}
@@ -140,13 +165,15 @@ func TestNativeOnlyWorker_EverythingElseDeclines(t *testing.T) {
 	ctx := context.Background()
 
 	// Call-route declines: (input, streamMode).
+	// NOTE (M3e-A): the two REAL stream modes are no longer decline rows — the exact
+	// cohort is now stream-capable through this artifact, and their served transcript is
+	// the subject of e2e_stream_test.go. /call-with-raw stays declined: it is outside
+	// ClassStaticStream's promise, which is a CLOSED mode set, not "everything but call".
 	callCases := []struct {
 		name  string
 		input []byte
 		mode  bamlutils.StreamMode
 	}{
-		{"stream_mode", callInput("x"), bamlutils.StreamModeStream},
-		{"stream_with_raw_mode", callInput("x"), bamlutils.StreamModeStreamWithRaw},
 		{"call_with_raw_mode", callInput("x"), bamlutils.StreamModeCallWithRaw},
 		{"caller_client_registry", []byte(`{"topic":"x","__baml_options__":{"client_registry":{"clients":[]}}}`), bamlutils.StreamModeCall},
 		{"dynamic_output_schema", []byte(`{"topic":"x","__baml_options__":{"output_schema":{}}}`), bamlutils.StreamModeCall},

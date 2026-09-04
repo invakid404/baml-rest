@@ -24,6 +24,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -32,6 +33,7 @@ import (
 	"regexp"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -60,14 +62,18 @@ var (
 	providerURL string
 	// providerHits counts every request the loopback provider receives.
 	providerHits atomic.Int64
+	// providerConns counts every NEW TCP connection the loopback provider accepts, so a
+	// stream row can prove exactly one socket as well as exactly one request.
+	providerConns atomic.Int64
 	// providerHandler is the swappable per-test provider behaviour.
 	providerHandler atomic.Pointer[func(w http.ResponseWriter, r *http.Request)]
 )
 
-// setProviderHandler installs the per-test provider behaviour and resets the hit
-// counter. Returns a function reading the current hit count.
+// setProviderHandler installs the per-test provider behaviour and resets the hit and
+// connection counters. Returns a function reading the current hit count.
 func setProviderHandler(h func(w http.ResponseWriter, r *http.Request)) func() int64 {
 	providerHits.Store(0)
+	providerConns.Store(0)
 	providerHandler.Store(&h)
 	return providerHits.Load
 }
@@ -83,8 +89,10 @@ func okChatCompletion(w http.ResponseWriter, content string) {
 }
 
 func TestMain(m *testing.M) {
-	// One loopback provider for the whole suite; its handler is swapped per test.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// One loopback provider for the whole suite; its handler is swapped per test. It is
+	// started UNSTARTED so ConnState can be installed before the listener accepts: the
+	// stream rows assert exactly one provider CONNECTION as well as exactly one request.
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		providerHits.Add(1)
 		if hp := providerHandler.Load(); hp != nil {
 			(*hp)(w, r)
@@ -93,6 +101,12 @@ func TestMain(m *testing.M) {
 		// Default: a well-formed success, so a stray request never hangs.
 		okChatCompletion(w, `{"k":1}`)
 	}))
+	srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			providerConns.Add(1)
+		}
+	}
+	srv.Start()
 	providerURL = srv.URL + "/v1"
 
 	code, err := func() (int, error) {
@@ -170,11 +184,19 @@ client<llm> RetryingOracle {
   }
 }
 `, providerURL, providerURL)
-	// Three static-unary methods are introspected + emitted as candidates, but only
+	// Three static methods are introspected + emitted as candidates, but only
 	// StaticRecursiveAliasJSON is IN the exact U1 cohort. The other two are generated
-	// candidates OUTSIDE U1 — a non-JSON-alias (string) return, and a retry-policy
-	// client — that M1 admits into Project.Methods but the runtime classifier DECLINES
-	// at admission, so NewWorkerRuntime OMITS them at boot.
+	// candidates OUTSIDE it that the codegen classifier admits into Project.Methods and
+	// the RUNTIME classifier then DECLINES, so NewWorkerRuntime OMITS them at boot.
+	//
+	// The two axes are independent, and this corpus separates them deliberately. The
+	// descriptor CLASS comes from the RETURN SHAPE alone, so StaticRecursiveAliasJSON
+	// and RetryPolicyMethod are both static_stream (each returns the exact five-arm JSON
+	// alias) while NonCohortStringReturn is static_unary (a plain string return).
+	// RetryPolicyMethod is then declined by the CLIENT gate — its retry_policy client is
+	// a cohort miss — which is why a stream-CLASS method can still be omitted at boot.
+	// The in-process mirror of this classification is
+	// internal/nativespine.TestBootedE2ECorpusClasses.
 	functions := `function StaticRecursiveAliasJSON(topic: string) -> JSON {
   client JSONOracle
   prompt #"Return a JSON document describing {{ topic }}."#
@@ -375,11 +397,18 @@ func admittedMethodCount(t *testing.T, b *bootedWorker) int {
 	}
 }
 
-// generatedCandidateNames reads the emitted deployment descriptor and returns the
-// names of every generated (codegen-admitted) static-unary candidate — the set BEFORE
-// the runtime classifier runs. Paired with admittedMethodCount it distinguishes a
-// candidate that was GENERATED then declined at admission from one that was never
-// generated at all (an unknown-method lookup).
+// generatedCandidateNames reads the emitted deployment descriptor and returns the names
+// of every generated (codegen-admitted) candidate — the set BEFORE the runtime
+// classifier runs. Paired with admittedMethodCount it distinguishes a candidate that was
+// GENERATED then declined at admission from one that was never generated at all (an
+// unknown-method lookup).
+//
+// It accepts BOTH admitted classes. Since M3e-A the exact five-arm JSON alias is stamped
+// ClassStaticStream, and a static_stream method is a SUPERSET of a static_unary one — it
+// is a generated candidate in both projections (Binding() for the standard composite's
+// /call, StreamBinding() for the native-only runtime). Filtering to static_unary alone
+// would silently drop the very method the acceptance rows serve, and the suite's own
+// non-vacuity assertion would fail before it ever exercised streaming.
 func generatedCandidateNames(t *testing.T) []string {
 	t.Helper()
 	if generatedProjectJSON == "" {
@@ -395,11 +424,38 @@ func generatedCandidateNames(t *testing.T) []string {
 	}
 	var names []string
 	for _, m := range proj.Methods {
-		if m.Class == projectdescriptor.ClassStaticUnary {
+		switch m.Class {
+		case projectdescriptor.ClassStaticUnary, projectdescriptor.ClassStaticStream:
 			names = append(names, m.Name)
+		default:
+			// A class this build does not know is not a candidate: the generator skips
+			// it, so listing it here would make the generate-then-decline proof lie.
 		}
 	}
 	return names
+}
+
+// generatedCandidateClass returns the descriptor class the generator stamped on one
+// method, or "" when the method is not in the emitted descriptor.
+func generatedCandidateClass(t *testing.T, method string) projectdescriptor.MethodClass {
+	t.Helper()
+	if generatedProjectJSON == "" {
+		t.Fatal("generated project.json path not set (TestMain setup failed)")
+	}
+	raw, err := os.ReadFile(generatedProjectJSON)
+	if err != nil {
+		t.Fatalf("read generated project.json: %v", err)
+	}
+	var proj projectdescriptor.Project
+	if err := json.Unmarshal(raw, &proj); err != nil {
+		t.Fatalf("unmarshal generated project.json: %v", err)
+	}
+	for _, m := range proj.Methods {
+		if m.Name == method {
+			return m.Class
+		}
+	}
+	return ""
 }
 
 // drainFinal collects stream results until the channel closes (bounded).
@@ -423,3 +479,144 @@ func drainFinal(t *testing.T, ch <-chan *workerplugin.StreamResult) []*workerplu
 
 func callInput(topic string) []byte { return []byte(fmt.Sprintf(`{"topic":%q}`, topic)) }
 func parseInput(raw string) []byte  { b, _ := json.Marshal(map[string]string{"raw": raw}); return b }
+
+// --- M3e-A stream helpers ---------------------------------------------------------
+
+// transcriptDelta is one provider content delta and the public event it must produce.
+type transcriptDelta struct {
+	Content string `json:"content"`
+	Emit    bool   `json:"emit"`
+	Partial string `json:"partial,omitempty"`
+}
+
+// transcriptFixture is the SHARED expected public stream transcript. It is OWNED and
+// regenerated by internal/nativespinejsonfixture (which computes it from the root-owned
+// native static-stream parsers plus the emitted decoders); this module cannot import
+// root-internal packages, so it reads the committed file from the repo root. Nothing
+// here computes an expectation at runtime, and nothing here imports BAML to do it.
+type transcriptFixture struct {
+	Deltas      []transcriptDelta `json:"deltas"`
+	Final       string            `json:"final"`
+	Accumulated string            `json:"accumulated"`
+}
+
+// structuredPartials returns the ordered expected partial bytes.
+func (tr transcriptFixture) structuredPartials() []string {
+	var out []string
+	for _, d := range tr.Deltas {
+		if d.Emit {
+			out = append(out, d.Partial)
+		}
+	}
+	return out
+}
+
+// loadTranscript reads the committed shared transcript fixture.
+func loadTranscript(t *testing.T) transcriptFixture {
+	t.Helper()
+	repoRoot, _ := repoPaths()
+	path := filepath.Join(repoRoot, "internal", "nativespinejsonfixture", "testdata", "stream_transcript.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read shared stream transcript: %v", err)
+	}
+	var tr transcriptFixture
+	if err := json.Unmarshal(raw, &tr); err != nil {
+		t.Fatalf("decode shared stream transcript: %v", err)
+	}
+	if len(tr.Deltas) == 0 || tr.Final == "" {
+		t.Fatal("shared stream transcript is empty")
+	}
+	return tr
+}
+
+// The SSE framing helpers below intentionally mirror the ones in
+// nativeserve/spine/stream_integration_test.go. They cannot be shared: that suite lives in
+// a different module, and THIS module cannot import root-internal packages, which is where
+// the shared expectation fixture's owner lives. The anti-drift property is the fixture
+// itself — both suites assert the SAME checked-in testdata/stream_transcript.json, so a
+// framing change on either side fails against that one table rather than diverging
+// silently. Keep the two in step by hand if the wire encoding ever changes.
+
+// sseChunk renders one OpenAI streaming chunk carrying an assistant content delta.
+func sseChunk(content string) string {
+	b, _ := json.Marshal(map[string]any{
+		"choices": []any{map[string]any{"delta": map[string]any{"content": content}}},
+	})
+	return "data: " + string(b) + "\n\n"
+}
+
+// sseReasoningChunk renders a chunk carrying ONLY provider reasoning text.
+func sseReasoningChunk(text string) string {
+	b, _ := json.Marshal(map[string]any{
+		"choices": []any{map[string]any{"delta": map[string]any{"reasoning_content": text}}},
+	})
+	return "data: " + string(b) + "\n\n"
+}
+
+// The noise frames every real provider interleaves. None may produce a public event.
+const (
+	sseRoleOnly   = `data: {"choices":[{"delta":{"role":"assistant"}}]}` + "\n\n"
+	sseEmptyDelta = `data: {"choices":[{"delta":{"content":""}}]}` + "\n\n"
+	sseFinishOnly = `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n"
+	sseUsageOnly  = `data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2}}` + "\n\n"
+	sseDone       = "data: [DONE]\n\n"
+)
+
+// writeSSE writes body as an event-stream, flushing after each fragment. fragment <= 0
+// writes it in one piece; otherwise it is split into fragment-byte writes, which
+// deliberately splits multi-byte UTF-8 runes across the wire.
+func writeSSE(w http.ResponseWriter, body string, fragment int) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	b := []byte(body)
+	step := len(b)
+	if fragment > 0 {
+		step = fragment
+	}
+	for i := 0; i < len(b); i += step {
+		end := i + step
+		if end > len(b) {
+			end = len(b)
+		}
+		_, _ = w.Write(b[i:end])
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+}
+
+// transcriptBody renders the shared transcript's content deltas interleaved with the
+// noise frames a real provider sends, terminated with [DONE]. reasoning, when non-empty,
+// is emitted as reasoning-only chunks between the content deltas.
+func transcriptBody(tr transcriptFixture, reasoning []string) string {
+	var b strings.Builder
+	b.WriteString(sseRoleOnly)
+	for i, d := range tr.Deltas {
+		if i < len(reasoning) {
+			b.WriteString(sseReasoningChunk(reasoning[i]))
+		}
+		b.WriteString(sseChunk(d.Content))
+		b.WriteString(sseEmptyDelta)
+	}
+	b.WriteString(sseFinishOnly)
+	b.WriteString(sseUsageOnly)
+	b.WriteString(sseDone)
+	return b.String()
+}
+
+// streamCallInput is the JSON envelope for a stream request that opts into reasoning.
+func streamCallInputWithReasoning(topic string) []byte {
+	b, _ := json.Marshal(map[string]any{
+		"topic":            topic,
+		"__baml_options__": map[string]any{"include_reasoning": true},
+	})
+	return b
+}
+
+// streamParseInput is the JSON envelope for a stream `/parse` of raw model text.
+func streamParseInput(raw string) []byte {
+	b, _ := json.Marshal(map[string]any{"raw": raw, "stream": true})
+	return b
+}

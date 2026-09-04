@@ -131,6 +131,10 @@ type testAdapter struct {
 	httpClient   *llmhttp.Client
 	outputSchema *bamlutils.DynamicOutputSchema
 	streamMode   bamlutils.StreamMode
+	// includeReasoning is the request's reasoning opt-in. It is REAL state (not an
+	// inert no-op) because the stream lane forwards it to the transport's reasoning
+	// channel, so a test that could not set it could not prove the channel is gated.
+	includeReasoning bool
 }
 
 func newTestAdapter() *testAdapter { return &testAdapter{Context: context.Background()} }
@@ -152,8 +156,8 @@ func (a *testAdapter) NewMediaFromBase64(bamlutils.MediaKind, string, *string) (
 }
 func (a *testAdapter) SetRetryConfig(c *bamlutils.RetryConfig)                { a.retry = c }
 func (a *testAdapter) RetryConfig() *bamlutils.RetryConfig                    { return a.retry }
-func (a *testAdapter) SetIncludeReasoning(bool)                               {}
-func (a *testAdapter) IncludeReasoning() bool                                 { return false }
+func (a *testAdapter) SetIncludeReasoning(v bool)                             { a.includeReasoning = v }
+func (a *testAdapter) IncludeReasoning() bool                                 { return a.includeReasoning }
 func (a *testAdapter) SoftFinalParse() bool                                   { return false }
 func (a *testAdapter) ClientRegistryProvider() string                         { return "" }
 func (a *testAdapter) OriginalClientRegistry() *bamlutils.ClientRegistry      { return a.registry }
