@@ -471,6 +471,16 @@ func TestStreamPostClaimFaultMatrix(t *testing.T) {
 
 	partialDecodeErr := emitted
 	partialDecodeErr.DecodePartial = func([]byte) (any, error) { return nil, errors.New("forced partial decode error") }
+	// The P1 regression: a DECODER error whose chain contains the PARSER's "no partial
+	// for this prefix yet" sentinel. Only the parser's own no-partial outcome is benign,
+	// and it is resolved before the decoder runs — so this must still be TERMINAL. A
+	// cadence (or a parse closure) that applied errors.Is(ErrDeBAMLParseUnsupported) to
+	// the combined parser+decoder error would swallow it into a no-event and the stream
+	// would wrongly SUCCEED.
+	partialDecodeSentinel := emitted
+	partialDecodeSentinel.DecodePartial = func([]byte) (any, error) {
+		return nil, fmt.Errorf("decode static alias stream: %w", bamlutils.ErrDeBAMLParseUnsupported)
+	}
 	partialDecodePanic := emitted
 	partialDecodePanic.DecodePartial = func([]byte) (any, error) { panic("forced partial decode panic") }
 	finalDecodeErr := emitted
@@ -507,6 +517,12 @@ func TestStreamPostClaimFaultMatrix(t *testing.T) {
 		{
 			name:      "partial_decoder_failure_is_terminal",
 			binding:   partialDecodeErr,
+			handler:   func(w http.ResponseWriter, r *http.Request) { writeSSE(w, transcriptBody(tr), 0) },
+			wantStage: "stream", wantReason: "emit_error",
+		},
+		{
+			name:      "partial_decoder_error_wrapping_the_parser_sentinel_is_terminal",
+			binding:   partialDecodeSentinel,
 			handler:   func(w http.ResponseWriter, r *http.Request) { writeSSE(w, transcriptBody(tr), 0) },
 			wantStage: "stream", wantReason: "emit_error",
 		},

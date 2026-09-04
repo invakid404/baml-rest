@@ -238,19 +238,35 @@ func (e *StreamExecutor) Stream(ctx context.Context, method string, input any, e
 		// The native lane parses on EVERY tick, matching the generated adapters (none of
 		// which configures a throttle) and therefore stock BAML's partial cadence.
 		ParseThrottleInterval: 0,
-		ParsePartial: func(pctx context.Context, accumulated string) (any, error) {
+		ParsePartial: func(pctx context.Context, accumulated string) (any, bool, error) {
 			// The root-owned native static-stream PARTIAL parse, then the emitted
 			// POINTER-carrier decode. No BAML on any prefix.
 			parsed, err := debaml.ParseStaticStreamPartial(pctx, bundle, accumulated)
 			if err != nil {
-				return nil, err
+				// ONLY the PARSER's documented "no parseable partial for this prefix
+				// yet" sentinel is benign, and it is resolved HERE — before the decoder
+				// runs — into the cadence's explicit no-partial result. For an immutable
+				// bundle that already passed admission it means exactly that, and it is
+				// never a fallback: there is nothing to fall back to on a claimed stream.
+				if errors.Is(err, bamlutils.ErrDeBAMLParseUnsupported) {
+					return nil, false, nil
+				}
+				return nil, false, err
 			}
-			return decodePartial(parsed.JSON)
+			carrier, derr := decodePartial(parsed.JSON)
+			if derr != nil {
+				// EVERY decoder error is TERMINAL, whatever its error chain. A decoder
+				// that returned or wrapped the parser's sentinel must NEVER be read as a
+				// benign no-partial: the parser already produced bytes for this prefix,
+				// so failing to decode them is a real post-claim failure.
+				return nil, false, derr
+			}
+			// Presence is the DECODER's success, not a nil check: a typed-nil carrier
+			// (a present-but-null partial) is a real event and must not be collapsed.
+			return carrier, true, nil
 		},
-		// STRICT: only the documented "no parseable partial for this prefix yet"
-		// sentinel is a benign no-emit. Any OTHER partial parser or decoder error is a
-		// real failure of a bundle admission already proved supported, and on a claimed
-		// stream it must terminate rather than be silently swallowed.
+		// STRICT: every error that reaches the cadence is terminal. The benign
+		// no-partial case never arrives as an error — it is the explicit result above.
 		ParsePolicy: buildrequest.CadenceParseErrorsAreTerminal,
 		Emit: func(ev buildrequest.StreamCadenceEvent) error {
 			return emit(bamlutils.NativeSpineStreamEvent{
@@ -264,9 +280,15 @@ func (e *StreamExecutor) Stream(ctx context.Context, method string, input any, e
 
 	// --- CLAIM the native attempt (ownership boundary). From here every terminal
 	// condition is SUCCEEDED or FAILED-AFTER-CLAIM. ---
-	claimed = true
+	//
+	// ORDER IS LOAD-BEARING and is pinned structurally by
+	// TestStreamClaimMarkerIsTheLastStatementBeforeRunStream: the bookkeeping happens
+	// FIRST, so `claimed = true` is the FINAL statement before entering the one-send
+	// operation. Nothing may be inserted between them — a statement in that gap could
+	// panic while the guard still reads `claimed == false`, turning a post-claim fault
+	// into a DECLINE and inviting a resend.
 	e.metrics.claims.Add(1)
-
+	claimed = true
 	res, rerr := execute.RunStream(ctx, execute.StreamConfig{
 		Client:           claim.Client(),
 		Request:          claim.Request(),
