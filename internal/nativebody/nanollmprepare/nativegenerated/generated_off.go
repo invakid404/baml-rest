@@ -32,7 +32,11 @@ var ErrRuntimeNotGenerated = errors.New("nativegenerated: native spine registry 
 
 // NewRuntime always fails on a plain source build. The generated implementation
 // (debamlnativespinegenerated) decodes the embedded descriptor and builds the immutable
-// admitted native-only runtime via nativeserve/spine.NewWorkerRuntime.
+// admitted native-only runtime via nativeserve/spine.NewWorkerRuntime over the emitted
+// STREAM candidates — so the real runtime requires a STREAM-CAPABLE registry (M3e-A):
+// every admitted method carries the pointer-carrier partial decoder, MakeStreamOutput,
+// and a non-nil ParseMethod.StreamImpl, and an empty stream population refuses to boot.
+// This stub is not a degraded stream-less runtime; it is no runtime at all.
 func NewRuntime() (worker.Runtime, error) {
 	return nil, ErrRuntimeNotGenerated
 }

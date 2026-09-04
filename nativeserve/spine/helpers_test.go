@@ -73,9 +73,29 @@ func newJSONExec(t *testing.T, baseURL string, exec *llmhttp.ExactExecutor, bind
 	return e
 }
 
-// newHandler wraps the spine executor in the emitted JSON-alias runtime + a
-// worker.Handler (the production dispatch path that passes the adapter into Call).
-func newHandler(t *testing.T, exec *spine.UnaryExecutor) *worker.Handler {
+// newJSONStreamExec builds the production spine STREAM executor over the admitted
+// JSON-alias project with base_url pointed at baseURL and the given emitted stream
+// binding (default = nativespinejsonfixture.StreamBinding). It is what the native-only
+// worker runtime is driven by, so a handler-level test exercises the real serving path.
+func newJSONStreamExec(t *testing.T, baseURL string, exec *llmhttp.ExactExecutor, binding ...bamlutils.NativeSpineStreamBinding) *spine.StreamExecutor {
+	t.Helper()
+	proj := injectBaseURL(t, jsonAliasProject(t), baseURL)
+	b := nativespinejsonfixture.StreamBinding()
+	if len(binding) > 0 {
+		b = binding[0]
+	}
+	e, err := spine.NewStreamExecutor(proj, []spine.StreamRegistration{{Binding: b, BuildMethod: nativespinejsonfixture.BuildMethod}}, exec)
+	if err != nil {
+		t.Fatalf("NewStreamExecutor: %v", err)
+	}
+	return e
+}
+
+// newHandler wraps the spine STREAM executor in the emitted JSON-alias runtime + a
+// worker.Handler (the production dispatch path that passes the adapter into Call and
+// Stream). The runtime requires the stream contract, so the handler serves /call,
+// /stream, /stream-with-raw, and both parse routes off one executor.
+func newHandler(t *testing.T, exec *spine.StreamExecutor) *worker.Handler {
 	t.Helper()
 	rt := nativespinejsonfixture.NewNativeRuntime(exec)
 	rt.InitRuntime()

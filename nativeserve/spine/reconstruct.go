@@ -27,7 +27,8 @@ import (
 // INCONSISTENT descriptor. Most of these are facts proj.Validate does not catch; the
 // project-version bullet is a defensive backstop proj.Validate also proves:
 //
-//   - an admitted method whose class is not static-unary;
+//   - an admitted method whose class is not one of the two known native classes
+//     (static-unary or static-stream);
 //   - a project descriptor version that is not the current version (a backstop —
 //     proj.Validate already rejects this before reconstruction);
 //   - a method whose default client is ABSENT from the project Clients graph — a
@@ -51,12 +52,18 @@ import (
 // facts that only the Project carries. It does NOT widen the M1 classifier — it
 // NARROWS registration to the exact population cohort.
 func reconstructFunction(proj projectdescriptor.Project, m projectdescriptor.Method) (promptdescriptor.Function, *reconstructError) {
-	// A method that is admitted (in proj.Methods) yet not static-unary, or a project
-	// whose descriptor version is wrong, is an INCONSISTENT descriptor — structural
-	// corruption, not a population fact — so it is a HARD failure.
-	// proj.Validate proves the version, so this is a defensive backstop.
-	if m.Class != projectdescriptor.ClassStaticUnary {
-		return promptdescriptor.Function{}, corruptReconstruct(fmt.Errorf("class is %q, want %q", m.Class, projectdescriptor.ClassStaticUnary))
+	// A method that is admitted (in proj.Methods) yet carries a class this build does
+	// not reconstruct, or a project whose descriptor version is wrong, is an
+	// INCONSISTENT descriptor — structural corruption, not a population fact — so it is
+	// a HARD failure. proj.Validate proves the version, so this is a defensive backstop.
+	//
+	// M3e-A accepts exactly the TWO known classes and nothing more: ClassStaticStream
+	// is a SUPERSET of ClassStaticUnary (the same static prompt/provider/scalar-input
+	// shape plus the streaming modes), so it reconstructs identically. Every current
+	// template, retry, strategy, provider, and scalar-input restriction below is
+	// retained unchanged — nothing in M3e-A broadens this population.
+	if m.Class != projectdescriptor.ClassStaticUnary && m.Class != projectdescriptor.ClassStaticStream {
+		return promptdescriptor.Function{}, corruptReconstruct(fmt.Errorf("class is %q, want %q or %q", m.Class, projectdescriptor.ClassStaticUnary, projectdescriptor.ClassStaticStream))
 	}
 	if proj.Version != projectdescriptor.Version {
 		return promptdescriptor.Function{}, corruptReconstruct(fmt.Errorf("project descriptor version %d, want %d", proj.Version, projectdescriptor.Version))

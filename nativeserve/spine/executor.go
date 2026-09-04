@@ -91,10 +91,39 @@ var (
 // registeredMethod is one immutable, validated registry entry: the reconstructed
 // descriptor, its lowered Return Bundle (the native static SAP surface), and the
 // emitted projector/decoder. All resolved at registration time.
+//
+// stream is the emitted STREAM binding (M3e-A) and is non-nil ONLY for a method
+// registered through a stream candidate: it carries the partial decoder over the
+// pointer carrier, alongside the SAME unary projection in binding. A nil stream is a
+// method that serves /call and the final /parse only, so [StreamExecutor.Stream]
+// declines it pre-socket rather than claiming a socket it cannot parse partials for.
 type registeredMethod struct {
 	fn      promptdescriptor.Function
 	bundle  *schema.Bundle
 	binding bamlutils.NativeSpineUnaryBinding
+	stream  *bamlutils.NativeSpineStreamBinding
+}
+
+// candidateRegistration is the ONE normalized candidate record the single classifier
+// consumes. Both public registration forms lower into it, so the reconstruction,
+// envelope, client, input, and totality checks exist exactly once and the unary lane,
+// the stream lane, and the build generator cannot invent three definitions of the
+// deletion frontier.
+//
+// stream is nil for a unary candidate and non-nil for a stream candidate; binding is
+// ALWAYS the unary projection (for a stream candidate it is the one embedded in
+// StreamBinding().Unary, never a second independently supplied closure — Go closures
+// have no meaningful equality, so a duplicate would create a "must match" invariant
+// nothing could validate).
+type candidateRegistration struct {
+	binding bamlutils.NativeSpineUnaryBinding
+	stream  *bamlutils.NativeSpineStreamBinding
+	build   func(exec bamlutils.NativeSpineUnaryExecutor) (bamlutils.StreamingMethod, bamlutils.ParseMethod)
+}
+
+// unaryCandidate lowers a plain unary binding into the normalized candidate record.
+func unaryCandidate(b bamlutils.NativeSpineUnaryBinding) candidateRegistration {
+	return candidateRegistration{binding: b}
 }
 
 // Metrics is a minimal, bounded observability counter set for the executor. Every
@@ -169,6 +198,19 @@ var _ bamlutils.NativeSpineUnaryExecutor = (*UnaryExecutor)(nil)
 // A nil exec uses the hardened default exact executor. Callback-before-claim: both
 // closures are resolved and validated here.
 func NewUnaryExecutor(proj projectdescriptor.Project, bindings []bamlutils.NativeSpineUnaryBinding, exec *llmhttp.ExactExecutor) (*UnaryExecutor, error) {
+	candidates := make([]candidateRegistration, len(bindings))
+	for i := range bindings {
+		candidates[i] = unaryCandidate(bindings[i])
+	}
+	return newExecutor(proj, candidates, exec, false)
+}
+
+// newExecutor is the SHARED private registry builder both public constructors drive
+// (M3e-A). requireStream states the caller's required SURFACE — a stream executor's
+// registry must carry a stream binding for every method — and nothing else: it does not
+// duplicate the reconstruction, client, input, lowering, or totality checks, which live
+// once in classifyRegistration.
+func newExecutor(proj projectdescriptor.Project, candidates []candidateRegistration, exec *llmhttp.ExactExecutor, requireStream bool) (*UnaryExecutor, error) {
 	if exec == nil {
 		exec = llmhttp.NewExactExecutor(nil)
 	}
@@ -182,7 +224,7 @@ func NewUnaryExecutor(proj projectdescriptor.Project, bindings []bamlutils.Nativ
 		return nil, fmt.Errorf("nativespine: invalid project descriptor: %w", err)
 	}
 	e := &UnaryExecutor{
-		registry:         make(map[string]*registeredMethod, len(bindings)),
+		registry:         make(map[string]*registeredMethod, len(candidates)),
 		exec:             exec,
 		metrics:          &Metrics{},
 		admitClaim:       admission.AdmitStaticSpineClaim,
@@ -196,8 +238,8 @@ func NewUnaryExecutor(proj projectdescriptor.Project, bindings []bamlutils.Nativ
 	for _, c := range proj.Capabilities {
 		capByName[c.Method] = c
 	}
-	for i := range bindings {
-		if err := e.register(proj, byName, capByName, bindings[i]); err != nil {
+	for i := range candidates {
+		if err := e.register(proj, byName, capByName, candidates[i], requireStream); err != nil {
 			return nil, err
 		}
 	}
@@ -263,27 +305,41 @@ func cohortMiss(err error) *bindingRejection {
 // because a NewUnaryExecutor caller passes only the bindings it means to serve.
 // NewWorkerRuntime instead consults classifyBinding directly so it can omit
 // cohort misses while still failing on hard corruption (§3.A.2).
-func (e *UnaryExecutor) register(proj projectdescriptor.Project, byName map[string]projectdescriptor.Method, capByName map[string]projectdescriptor.MethodCapability, b bamlutils.NativeSpineUnaryBinding) error {
-	if _, dup := e.registry[b.Method]; dup {
-		return fmt.Errorf("nativespine: register %q: duplicate method", b.Method)
+func (e *UnaryExecutor) register(proj projectdescriptor.Project, byName map[string]projectdescriptor.Method, capByName map[string]projectdescriptor.MethodCapability, c candidateRegistration, requireStream bool) error {
+	if _, dup := e.registry[c.binding.Method]; dup {
+		return fmt.Errorf("nativespine: register %q: duplicate method", c.binding.Method)
 	}
-	rm, rej := classifyBinding(proj, byName, capByName, b)
+	rm, rej := classifyRegistration(proj, byName, capByName, c, requireStream)
 	if rej != nil {
 		return rej.err
 	}
-	e.registry[b.Method] = rm
+	e.registry[c.binding.Method] = rm
 	return nil
 }
 
-// classifyBinding is the SINGLE population owner: it validates one candidate
-// binding against the whole project and returns either the resolved registry
-// entry (accepted) or a classified rejection (hard corruption vs expected cohort
-// miss). It is the ONE place the reconstruction, envelope, client, input, and
-// totality checks live, so the executor, NewWorkerRuntime, and the build
-// generator cannot invent three subtly different definitions of the deletion
-// frontier. It does NOT check for duplicates — that is each caller's own concern
-// (register reads its live registry; NewWorkerRuntime dedupes across candidates).
-func classifyBinding(proj projectdescriptor.Project, byName map[string]projectdescriptor.Method, capByName map[string]projectdescriptor.MethodCapability, b bamlutils.NativeSpineUnaryBinding) (*registeredMethod, *bindingRejection) {
+// classifyRegistration is the SINGLE population owner: it validates one normalized
+// candidate against the whole project and returns either the resolved registry entry
+// (accepted) or a classified rejection (hard corruption vs expected cohort miss). It is
+// the ONE place the reconstruction, envelope, client, input, and totality checks live,
+// so the unary executor, the stream executor, NewWorkerRuntime, NewPopulationExecutor,
+// and the build generator cannot invent five subtly different definitions of the
+// deletion frontier. It does NOT check for duplicates — that is each caller's own
+// concern (register reads its live registry; the runtime constructors dedupe across
+// candidates).
+//
+// requireStream states the CALLER'S REQUIRED SURFACE and nothing else:
+//
+//   - false (a unary candidate): accept BOTH ClassStaticUnary and ClassStaticStream,
+//     because the stream class explicitly INCLUDES unary /call. This is what preserves
+//     the existing /call behaviour across the v3 descriptor bump.
+//   - true (a stream candidate): require ClassStaticStream, the embedded unary
+//     projector/final decoder, a non-nil DecodePartial, and a non-nil generated
+//     BuildMethod.
+//
+// It never duplicates a check across the two: everything below the surface gate is the
+// common core, and debaml.SupportsNativeStaticStreamBundle is asked exactly once.
+func classifyRegistration(proj projectdescriptor.Project, byName map[string]projectdescriptor.Method, capByName map[string]projectdescriptor.MethodCapability, c candidateRegistration, requireStream bool) (*registeredMethod, *bindingRejection) {
+	b := c.binding
 	if b.Method == "" {
 		return nil, hardReject(fmt.Errorf("nativespine: register: binding has no method name"))
 	}
@@ -292,6 +348,21 @@ func classifyBinding(proj projectdescriptor.Project, byName map[string]projectde
 	}
 	if b.DecodeFinal == nil {
 		return nil, hardReject(fmt.Errorf("nativespine: register %q: binding DecodeFinal is nil (callback-before-claim)", b.Method))
+	}
+	// SURFACE gate (M3e-A). A caller that needs streams must be handed a complete
+	// stream registration: a missing binding or partial decoder is CORRUPTION (the
+	// generator emits both together), never a quiet omission that would boot a
+	// native-only worker unable to serve the mode it was built for.
+	if requireStream {
+		if c.stream == nil {
+			return nil, hardReject(fmt.Errorf("nativespine: register %q: stream candidate has no stream binding (callback-before-claim)", b.Method))
+		}
+		if c.stream.DecodePartial == nil {
+			return nil, hardReject(fmt.Errorf("nativespine: register %q: stream binding DecodePartial is nil (callback-before-claim)", b.Method))
+		}
+		if c.build == nil {
+			return nil, hardReject(fmt.Errorf("nativespine: register %q: stream candidate has a nil BuildMethod (callback-before-claim)", b.Method))
+		}
 	}
 	m, ok := byName[b.Method]
 	if !ok {
@@ -368,9 +439,24 @@ func classifyBinding(proj projectdescriptor.Project, byName map[string]projectde
 	// controls registration in lockstep with call and direct parse. A Return that
 	// lowers cleanly but is outside that family is a cohort miss.
 	if err := debaml.SupportsNativeStaticStreamBundle(bundle); err != nil {
+		if m.Class == projectdescriptor.ClassStaticStream {
+			// A method the descriptor STAMPED stream-capable that the totality predicate
+			// declines is an INCONSISTENT descriptor: the same predicate decided the class
+			// at descriptor-build time, so a disagreement here means the descriptor and
+			// this build disagree about the population. Fail boot rather than omit it —
+			// a stream-stamped method must never be silently downgraded to a cohort miss.
+			return nil, hardReject(fmt.Errorf("nativespine: register %q: descriptor stamped %q but the return is not the exact five-arm JSON alias cohort: %w", b.Method, m.Class, err))
+		}
 		return nil, cohortMiss(fmt.Errorf("nativespine: register %q: not the exact five-arm JSON alias cohort: %w", b.Method, err))
 	}
-	return &registeredMethod{fn: fn, bundle: bundle, binding: b}, nil
+	// A final-only class is a valid UNARY candidate but never a stream candidate: it
+	// carries no promise that its partials can be natively owned. This is an ordinary
+	// surface mismatch of a well-formed method, so it is a cohort miss for the stream
+	// lane, not corruption.
+	if requireStream && m.Class != projectdescriptor.ClassStaticStream {
+		return nil, cohortMiss(fmt.Errorf("nativespine: register %q: class %q is not stream-capable (want %q)", b.Method, m.Class, projectdescriptor.ClassStaticStream))
+	}
+	return &registeredMethod{fn: fn, bundle: bundle, binding: b, stream: c.stream}, nil
 }
 
 // requiredScalarInputs enforces the ExecBridge-U1 input cohort: every argument is a

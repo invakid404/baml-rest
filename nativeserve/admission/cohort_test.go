@@ -510,16 +510,17 @@ func TestEveryAdmissionEntryPointIsCohortGated(t *testing.T) {
 		"AdmitDirectParse":       true,
 	}
 	// spineLaneExempt is the deliberate, DOCUMENTED set of exceptions to the
-	// dynamic-rollout cohort gate: the ExecBridge-U1 codegen-spine unary lanes
-	// (AdmitStaticSpineClaim, the frozen-evidence native-only entry, and
-	// AdmitStaticSpineOracleClaim, the ExecBridge-U1c live-oracle standard-worker
-	// entry). Neither runs admitCohort because the spine is a SEPARATE default-deny
+	// dynamic-rollout cohort gate: the codegen-spine lanes
+	// (AdmitStaticSpineClaim, the frozen-evidence native-only unary entry;
+	// AdmitStaticSpineOracleClaim, the ExecBridge-U1c live-oracle standard-worker unary
+	// entry; and AdmitStaticSpineStreamClaim, the M3e-A BAML-free native-only STREAM
+	// entry). None runs admitCohort because the spine is a SEPARATE default-deny
 	// lane whose admission is its own root-owned totality predicate
 	// (debaml.SupportsNativeStaticStreamBundle — the exact five-arm JSON alias)
 	// resolved at REGISTRATION, and membership is structural, NOT an enrollment. U1c
 	// default-selects the exact population through a live BAML plan-compare oracle, but
 	// still must NOT widen the dynamic cohort manifest, and enrolling a static cohort to
-	// satisfy this gate would do exactly that. Both STAY discoverable here — renaming to
+	// satisfy this gate would do exactly that. All STAY discoverable here — renaming to
 	// dodge the scan is the evasion this guard forbids — so the exemption is explicit and
 	// reviewed; the default-deny is proven separately by TestSpineLaneSkipsDynamicCohortGate
 	// (this package, showing they decline at a NON-cohort stage where the cohort-gated
@@ -527,6 +528,7 @@ func TestEveryAdmissionEntryPointIsCohortGated(t *testing.T) {
 	spineLaneExempt := map[string]bool{
 		"AdmitStaticSpineClaim":       true,
 		"AdmitStaticSpineOracleClaim": true,
+		"AdmitStaticSpineStreamClaim": true,
 	}
 	found := map[string]bool{}
 	for _, ep := range admissionEntryPoints(packageAST(t)) {
@@ -559,15 +561,16 @@ func TestEveryAdmissionEntryPointIsCohortGated(t *testing.T) {
 	}
 }
 
-// TestSpineLaneSkipsDynamicCohortGate is the compensating proof for the TWO cohort-gate
-// exemptions (AdmitStaticSpineClaim, the frozen-evidence native-only entry, and
-// AdmitStaticSpineOracleClaim, the ExecBridge-U1c live-oracle standard-worker entry): where
-// the cohort-gated static claim lane declines at
-// the (cohort, cohort_not_enrolled) gate, the spine lane deliberately SKIPS it (SpineLane)
-// and declines at a LATER, non-cohort stage — its default-deny being its own
+// TestSpineLaneSkipsDynamicCohortGate is the compensating proof for the THREE cohort-gate
+// exemptions (AdmitStaticSpineClaim, the frozen-evidence native-only unary entry;
+// AdmitStaticSpineOracleClaim, the ExecBridge-U1c live-oracle standard-worker entry; and
+// AdmitStaticSpineStreamClaim, the M3e-A native-only STREAM entry): where
+// the cohort-gated static claim (and static STREAM claim) lanes decline at
+// the (cohort, cohort_not_enrolled) gate, the spine lanes deliberately SKIP it and
+// decline at a LATER, non-cohort stage — their default-deny being their own
 // registration-time totality predicate, not the dynamic-rollout manifest. If a future
-// change routed the spine lane back through admitCohort, this test would go red (it would
-// decline at the cohort gate), and if it removed the skip's effect the two lanes would no
+// change routed a spine lane back through admitCohort, this test would go red (it would
+// decline at the cohort gate), and if it removed the skip's effect the lanes would no
 // longer differ.
 func TestSpineLaneSkipsDynamicCohortGate(t *testing.T) {
 	ctx := context.Background()
@@ -607,6 +610,33 @@ func TestSpineLaneSkipsDynamicCohortGate(t *testing.T) {
 		if d.Stage == string(StageCohort) {
 			t.Fatalf("%s declined at the dynamic cohort gate (%s, %s); it must skip it and be default-deny by its own registration-time totality gate", lane.name, d.Stage, d.Reason)
 		}
+	}
+
+	// The STREAM pair, in the same shape: the cohort-gated legacy static-stream lane
+	// declines AT the cohort gate; the M3e-A spine stream lane skips it.
+	streamBase := StaticStreamInput{
+		WorkerCapable:       true,
+		RequestAPIPresent:   true,
+		OnBuildRequestRoute: true,
+		FlagEnabled:         true,
+		RouteKind:           RouteKindStatic,
+		Method:              "M",
+		Mode:                bamlutils.NativeStreamModeStream,
+		SingleLeaf:          true,
+	}
+	if _, err := AdmitStaticStreamClaim(ctx, streamBase); true {
+		assertStaticCohortDecline(t, "AdmitStaticStreamClaim", err)
+	}
+	claim, err := AdmitStaticSpineStreamClaim(ctx, streamBase)
+	if claim != nil {
+		t.Fatalf("AdmitStaticSpineStreamClaim returned a claim alongside a decline")
+	}
+	sd, ok := err.(*StaticDecline)
+	if !ok {
+		t.Fatalf("AdmitStaticSpineStreamClaim: err = %v (%T), want *StaticDecline", err, err)
+	}
+	if sd.Stage == string(StageCohort) {
+		t.Fatalf("AdmitStaticSpineStreamClaim declined at the dynamic cohort gate (%s, %s); it must skip it and be default-deny by its own registration-time totality gate", sd.Stage, sd.Reason)
 	}
 }
 
