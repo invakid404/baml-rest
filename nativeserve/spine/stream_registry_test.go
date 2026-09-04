@@ -413,16 +413,19 @@ func TestStreamDeclinesAMethodWithoutAStreamBinding(t *testing.T) {
 
 // TestRegistryIsDetachedFromTheCallersSlice is the mutate-after-boot regression for the
 // registry's immutability claim. Both stream constructors normalize the caller's
-// registration slice into their own candidate records, and the classifier stores the
-// stream binding into the registry — so if any of those hops kept a POINTER into the
-// caller's backing array, a caller mutating that slice after construction would reach
-// live serving state and could replace, or nil out, the partial decoder that the
-// registration-time nil check already validated.
+// registration slice into transient candidate records, and the classifier stores the
+// stream binding into the registry — so without a copy at that last hop, a caller
+// mutating its slice after construction would reach live serving state and could replace,
+// or nil out, the partial decoder that the registration-time nil check already validated.
 //
-// The probe is the socket-free ParseStream route, which reads exactly the registered
-// DecodePartial. Reverting any of the three copies (NewStreamExecutor's normalizer,
-// NewWorkerRuntime's normalizer, or classifyRegistration's registry write) makes the
-// mutated decoder win and the assertions below fail.
+// Detachment is taken at exactly ONE place — copyStreamBinding, in classifyRegistration,
+// the single boundary where a caller-owned value becomes long-lived. That is what makes
+// this test load-bearing: reverting that one copy makes the mutated decoder win and the
+// assertions below fail. (An earlier revision copied at all three hops, and each site
+// shielded the others, so this test stayed green under any single-site regression.)
+//
+// The probe is the socket-free ParseStream / StreamImpl route, which reads exactly the
+// registered DecodePartial.
 func TestRegistryIsDetachedFromTheCallersSlice(t *testing.T) {
 	proj := jsonAliasProject(t)
 	ctx := context.Background()

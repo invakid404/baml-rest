@@ -71,11 +71,27 @@ func (unaryOnlyExec) Parse(context.Context, string, string) (any, error) { retur
 
 var _ bamlutils.NativeSpineUnaryExecutor = unaryOnlyExec{}
 
+// jsonCarrier builds the STREAM (pointer) carrier — what a PARTIAL and the socket-free
+// stream parse carry.
 func jsonCarrier(t *testing.T, raw string) OutputJsonStream {
 	t.Helper()
 	v, err := bamlutils.DecodeStaticAliasStream[OutputJsonStream]([]byte(raw))
 	if err != nil {
 		t.Fatalf("decode stream carrier %s: %v", raw, err)
+	}
+	return v
+}
+
+// jsonFinalCarrier builds the FINAL (value) carrier — what production actually puts on a
+// success, because the executor decodes a stream's final through the EMBEDDED unary
+// DecodeFinal (DecodeStaticAliasFinal[OutputJson]), never the partial decoder. Using the
+// stream carrier for a final assertion would let a stream implementation forward the wrong
+// carrier type and still pass.
+func jsonFinalCarrier(t *testing.T, raw string) OutputJson {
+	t.Helper()
+	v, err := bamlutils.DecodeStaticAliasFinal[OutputJson]([]byte(raw))
+	if err != nil {
+		t.Fatalf("decode final carrier %s: %v", raw, err)
 	}
 	return v
 }
@@ -137,7 +153,7 @@ func TestMakeStreamOutputIsTheStreamCarrier(t *testing.T) {
 // plus any unknown mode decline BEFORE any executor dispatch.
 func TestBuildMethodModeSwitchIsClosed(t *testing.T) {
 	t.Run("call_dispatches_unary", func(t *testing.T) {
-		f := &fakeStreamExec{unary: bamlutils.SucceededSpineResult(jsonCarrier(t, `{"k":1}`))}
+		f := &fakeStreamExec{unary: bamlutils.SucceededSpineResult(jsonFinalCarrier(t, `{"k":1}`))}
 		sm, _ := BuildMethod(f)
 		ch, err := sm.Impl(adapterFor(bamlutils.StreamModeCall), &StaticRecursiveAliasJsonInput{Topic: "x"})
 		if err != nil {
@@ -157,7 +173,7 @@ func TestBuildMethodModeSwitchIsClosed(t *testing.T) {
 
 	for _, mode := range []bamlutils.StreamMode{bamlutils.StreamModeStream, bamlutils.StreamModeStreamWithRaw} {
 		t.Run("stream_mode_dispatches_stream", func(t *testing.T) {
-			f := &fakeStreamExec{result: bamlutils.SucceededSpineStreamResult(jsonCarrier(t, `{"k":1}`), "", "")}
+			f := &fakeStreamExec{result: bamlutils.SucceededSpineStreamResult(jsonFinalCarrier(t, `{"k":1}`), "", "")}
 			sm, _ := BuildMethod(f)
 			ch, err := sm.Impl(adapterFor(mode), &StaticRecursiveAliasJsonInput{Topic: "x"})
 			if err != nil {
@@ -194,7 +210,7 @@ func TestBuildMethodModeSwitchIsClosed(t *testing.T) {
 // orchestrator's emitFinal gates the final's channels.
 func TestStreamEventsMapToFrames(t *testing.T) {
 	partial := jsonCarrier(t, `{"k":1}`)
-	final := jsonCarrier(t, `{"k":1,"done":true}`)
+	final := jsonFinalCarrier(t, `{"k":1,"done":true}`)
 	events := []bamlutils.NativeSpineStreamEvent{
 		{HasPartial: true, Partial: partial, Raw: `{"k":1}`, Reasoning: "why"},
 		{HasPartial: false, Raw: `,"done"`, Reasoning: "more"},
@@ -239,6 +255,17 @@ func TestStreamEventsMapToFrames(t *testing.T) {
 		if !reflect.DeepEqual(frames[1].Final(), final) {
 			t.Errorf("final = %#v, want the FINAL value carrier", frames[1].Final())
 		}
+		// The TYPE matters independently of the value: production decodes a stream's
+		// final through the embedded unary DecodeFinal, so the frame must carry the VALUE
+		// carrier. A stream impl that forwarded the pointer carrier would still compare
+		// equal against a pointer-carrier expectation, which is why the expectation above
+		// is built with jsonFinalCarrier.
+		if _, ok := frames[1].Final().(OutputJson); !ok {
+			t.Errorf("final has Go type %T, want the FINAL value carrier OutputJson", frames[1].Final())
+		}
+		if _, isStream := frames[1].Final().(OutputJsonStream); isStream {
+			t.Error("final carries the STREAM (pointer) carrier; a stream final has the ordinary value-union type")
+		}
 	})
 
 	t.Run("stream_with_raw", func(t *testing.T) {
@@ -261,6 +288,9 @@ func TestStreamEventsMapToFrames(t *testing.T) {
 		if frames[2].Raw() != "accumulated" || frames[2].Reasoning() != "reasoned" {
 			t.Errorf("final raw/reasoning = (%q, %q), want the accumulated channels", frames[2].Raw(), frames[2].Reasoning())
 		}
+		if _, ok := frames[2].Final().(OutputJson); !ok {
+			t.Errorf("final has Go type %T, want the FINAL value carrier OutputJson", frames[2].Final())
+		}
 	})
 }
 
@@ -272,7 +302,7 @@ func TestStreamTypedNilPartialIsPresent(t *testing.T) {
 	var typedNil OutputJsonStream
 	f := &fakeStreamExec{
 		events: []bamlutils.NativeSpineStreamEvent{{HasPartial: true, Partial: typedNil}},
-		result: bamlutils.SucceededSpineStreamResult(jsonCarrier(t, `1`), "", ""),
+		result: bamlutils.SucceededSpineStreamResult(jsonFinalCarrier(t, `1`), "", ""),
 	}
 	sm, _ := BuildMethod(f)
 	ch, err := sm.Impl(adapterFor(bamlutils.StreamModeStream), &StaticRecursiveAliasJsonInput{Topic: "x"})

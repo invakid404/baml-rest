@@ -798,6 +798,52 @@ func TestStreamCancellationAfterCleanCompletionIsTerminal(t *testing.T) {
 	}
 }
 
+// TestStreamCancellationDuringFinalDecodeIsTerminal closes the last window in the
+// post-claim completion path. The transport completes cleanly and the native final parse
+// succeeds; the cancellation arrives DURING the emitted final decode — after any check
+// placed between RunStream and the parse would already have passed. The single ctx check
+// sits after all post-claim work and immediately before the success returns, so this is
+// still terminal.
+//
+// The cancel is issued from inside an injected DecodeFinal that then decodes
+// SUCCESSFULLY, so nothing else can produce a terminal outcome: a Succeeded result here
+// would mean the window is open.
+func TestStreamCancellationDuringFinalDecodeIsTerminal(t *testing.T) {
+	tr := loadTranscript(t)
+	lb := newLoopback(t, func(w http.ResponseWriter, r *http.Request) { writeSSE(w, transcriptBody(tr), 0) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	binding := nativespinejsonfixture.StreamBinding()
+	inner := binding.Unary.DecodeFinal
+	decoded := false
+	binding.Unary.DecodeFinal = func(b []byte) (any, error) {
+		decoded = true
+		cancel()
+		return inner(b)
+	}
+	e := newJSONStreamExec(t, lb.baseURL(), nil, binding)
+
+	ad := streamAdapterFor(bamlutils.StreamModeStream, false)
+	ad.Context = ctx
+	c := &collector{}
+	res := e.Stream(ad, jsonAliasMethod, jsonInput(), c.emit)
+
+	// NON-VACUITY: the run must actually have reached the final decode, or the row would
+	// prove nothing about that window.
+	if !decoded {
+		t.Fatal("the final decoder never ran; the cancellation window under test was not reached")
+	}
+	assertTerminal(t, res, lb, 1)
+	if res.Reason != "stream_cancelled" {
+		t.Fatalf("(stage, reason) = (%q, %q), want the cancellation terminal", res.Stage, res.Reason)
+	}
+	if res.Final != nil {
+		t.Fatal("a cancelled stream returned a final value")
+	}
+}
+
 // TestStreamByteProgressTimeoutsAreIndependent proves the two byte-progress deadlines
 // fire independently and are both terminal with exactly one provider request: a
 // first-body timeout (headers, then no body byte) and an idle timeout (a body byte, then

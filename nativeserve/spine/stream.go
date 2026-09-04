@@ -329,15 +329,6 @@ func (e *StreamExecutor) Stream(ctx context.Context, method string, input any, e
 	}
 	_ = res
 
-	// A caller cancellation observed AFTER a clean completion is still POST-CLAIM: the
-	// socket was owned, events were delivered, and the final parse below has not run. It
-	// must be terminal, not a success — returning Succeeded here would hand the caller a
-	// final for a request it already abandoned, and would be the one path on which a
-	// cancelled stream did not report as cancelled.
-	if err := ctx.Err(); err != nil {
-		return e.failedStream(err, stageStream, reasonStreamCancelled, cadence.Raw())
-	}
-
 	// --- Clean completion: the FINAL parse over the accumulated parseable text, then
 	// the EMBEDDED unary final decoder. A stream final has the ordinary final
 	// value-union type, so it uses DecodeFinal — never the partial decoder. Either
@@ -356,6 +347,22 @@ func (e *StreamExecutor) Stream(ctx context.Context, method string, input any, e
 	if derr != nil {
 		return e.failedStream(derr, stageDecode, reasonDecodeError, cadence.Raw())
 	}
+
+	// A caller cancellation observed anywhere in the post-claim completion path is still
+	// POST-CLAIM: the socket was owned and events were delivered, so it is terminal, not
+	// a success — returning Succeeded would hand a final to a request that has already
+	// gone away, and would be the one path on which a cancelled stream did not report as
+	// cancelled.
+	//
+	// This is the SINGLE check, and its position is load-bearing: it sits after ALL
+	// post-claim work (RunStream, the native final parse, and the emitted decode) and
+	// immediately before the only success returns, so there is no window left between a
+	// cancellation and a Succeeded result. Checking earlier — after RunStream but before
+	// the parse/decode — would leave exactly the parse-and-decode window open.
+	if err := ctx.Err(); err != nil {
+		return e.failedStream(err, stageStream, reasonStreamCancelled, cadence.Raw())
+	}
+
 	e.metrics.successes.Add(1)
 	// Raw/reasoning ride the FINAL only for a raw-wanted mode, matching the shared
 	// orchestrator's emitFinal gate.
