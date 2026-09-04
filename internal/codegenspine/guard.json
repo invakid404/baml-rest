@@ -2,34 +2,34 @@
   "note": "Pin/tar-independence baseline for the codegen-spine slice: the packaged native-worker tar, the five first-party pseudo-version pins, and the byte content of the three collision-path trees. A codegen-spine (M/P) slice must leave every value here untouched. It is NOT a freeze on master: a sanctioned change to a guarded path — the /parse union burn-down (#689), the /parse union-residual batch 2, ExecBridge-U1's spine serve lane under nativeserve, ExecBridge-U1b's native-only packaged worker, ExecBridge-U1c's live-oracle standard composite, a post-squash first-party re-pin — legitimately moves these, and MUST re-run the update flag in the same change, or this guard stays red for everyone. First frozen at M0; re-frozen after #689 + the post-squash re-pin to 062871154d95, again for the /parse union-residual batch 2 (post-squash re-pin to master commit 7c7bed8291b6), again for ExecBridge-U1 — the production native unary executor/population bridge that adds a BAML-free spine serve lane under nativeserve (post-squash re-pin to master commit 7ddbb39fd3db), and again for ExecBridge-U1b — the native-only packaged worker that adds the reusable nativeserve/spine.NewWorkerRuntime factory + population classifier and the BAML-free nanollmprepare nativeonlyboot / cmd/worker-nativeonly (post-squash re-pin to master commit 8fe27577082c), and again for ExecBridge-U1c — the live-oracle standard composite that adds nativeserve/spine.CallWithOracle + the live-oracle admission entry AdmitStaticSpineOracleClaim + the factored nativeserve/staticoracle same-response core, and the nanollmprepare standardspineoracle composite + generated NewExecutor (post-squash re-pin to master commit 56d5473a1bdb). Regenerate with: go test ./internal/codegenspine/ -run TestSourceGuard -update-codegenspine-guard",
   "native_worker_tar": {
     "path": "cmd/build/nativeworker_module.tar",
-    "size_bytes": 955904,
-    "sha256": "adb4c7308508b76c95d0fa750143c8c70ade1a9fb837080dd8f7f83a5a3a0e0c"
+    "size_bytes": 957440,
+    "sha256": "2093eeebc29a02c0169daf535007ed630006f2945d0ff28660758e206c5097f6"
   },
   "first_party_pins": [
     {
       "file": "nativeserve/go.mod",
       "module": "github.com/invakid404/baml-rest",
-      "version": "v0.0.0-20260904111205-ae978980e684"
+      "version": "v0.0.0-20260904112736-7da8ea40ed07"
     },
     {
       "file": "nativeserve/go.mod",
       "module": "github.com/invakid404/baml-rest/bamlutils",
-      "version": "v0.0.49-0.20260904111205-ae978980e684"
+      "version": "v0.0.49-0.20260904112736-7da8ea40ed07"
     },
     {
       "file": "nativeserve/go.mod",
       "module": "github.com/invakid404/baml-rest/worker",
-      "version": "v0.0.49-0.20260904111205-ae978980e684"
+      "version": "v0.0.49-0.20260904112736-7da8ea40ed07"
     },
     {
       "file": "internal/nativebody/nanollmprepare/go.mod",
       "module": "github.com/invakid404/baml-rest/bamlutils",
-      "version": "v0.0.49-0.20260904111205-ae978980e684"
+      "version": "v0.0.49-0.20260904112736-7da8ea40ed07"
     },
     {
       "file": "internal/nativebody/nanollmprepare/go.mod",
       "module": "github.com/invakid404/baml-rest/worker",
-      "version": "v0.0.49-0.20260904111205-ae978980e684"
+      "version": "v0.0.49-0.20260904112736-7da8ea40ed07"
     }
   ],
   "guarded_trees": [
@@ -41,12 +41,12 @@
     {
       "prefix": "nativeserve",
       "file_count": 116,
-      "sha256": "13f85ea74573546fe54b0b438dbe18f74adff1e13dcf31aea973aca7ea449bbf"
+      "sha256": "c73d9f9b81240f46144d4bde6ce17198503037689e817f977f54135899d65052"
     },
     {
       "prefix": "internal/nativebody/nanollmprepare",
       "file_count": 85,
-      "sha256": "8b071de19179496ee31d0531eacdde277dbd6e35a5d92c94a68e6e6088c6956a"
+      "sha256": "1a017847ef04195df805f4040ae2c9e38b971327c9bfde00d214f90e602fd5a7"
     }
   ]
 }
