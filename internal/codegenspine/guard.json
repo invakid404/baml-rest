@@ -3,33 +3,33 @@
   "native_worker_tar": {
     "path": "cmd/build/nativeworker_module.tar",
     "size_bytes": 953856,
-    "sha256": "0aa82d9f5ca2ab81f619b21979238acd2ffb36aafc6cf6d2741e8d959df3c265"
+    "sha256": "dc2e3e71f46220411f341d14f60461f2e604ea637b1e56be926c183bd7129d02"
   },
   "first_party_pins": [
     {
       "file": "nativeserve/go.mod",
       "module": "github.com/invakid404/baml-rest",
-      "version": "v0.0.0-20260904103402-23d7dbdc59af"
+      "version": "v0.0.0-20260904104337-e74ed12a5be5"
     },
     {
       "file": "nativeserve/go.mod",
       "module": "github.com/invakid404/baml-rest/bamlutils",
-      "version": "v0.0.49-0.20260904103402-23d7dbdc59af"
+      "version": "v0.0.49-0.20260904104337-e74ed12a5be5"
     },
     {
       "file": "nativeserve/go.mod",
       "module": "github.com/invakid404/baml-rest/worker",
-      "version": "v0.0.49-0.20260904103402-23d7dbdc59af"
+      "version": "v0.0.49-0.20260904104337-e74ed12a5be5"
     },
     {
       "file": "internal/nativebody/nanollmprepare/go.mod",
       "module": "github.com/invakid404/baml-rest/bamlutils",
-      "version": "v0.0.49-0.20260904103402-23d7dbdc59af"
+      "version": "v0.0.49-0.20260904104337-e74ed12a5be5"
     },
     {
       "file": "internal/nativebody/nanollmprepare/go.mod",
       "module": "github.com/invakid404/baml-rest/worker",
-      "version": "v0.0.49-0.20260904103402-23d7dbdc59af"
+      "version": "v0.0.49-0.20260904104337-e74ed12a5be5"
     }
   ],
   "guarded_trees": [
@@ -41,12 +41,12 @@
     {
       "prefix": "nativeserve",
       "file_count": 116,
-      "sha256": "8da49a942524277abca23b8daac7b64fd54249a47a3ecd9abcaf681c7cb820a8"
+      "sha256": "269e9885d56f88dbf9a4922fc369ff157833ca8defa1ec29b6df1fa5831ab760"
     },
     {
       "prefix": "internal/nativebody/nanollmprepare",
       "file_count": 85,
-      "sha256": "de19e02f73dfda1352ff82e8b1755db7c2b70f794eeee979c8b49e602108c3ce"
+      "sha256": "d3b829b5faed7d4be42d50831a639ef515888ad4f30d67167eba068bfe649416"
     }
   ]
 }
