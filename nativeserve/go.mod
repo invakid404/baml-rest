@@ -29,7 +29,7 @@
 // packages the root's internal/* imports here), so the three first-party requires
 // are pinned to the ORIGIN-RESOLVABLE pseudo-version of a single commit — the one
 // nativeserve/pin_followup.md records and cmd/build's TestFirstPartyPinFollowupIsTracked
-// checks, which is CURRENTLY the M3e-A BRANCH SOURCE commit 7081daeeda47 on
+// checks, which is CURRENTLY the M3e-A BRANCH SOURCE commit ae978980e684 on
 // feat/debaml-m3e-a (a BRANCH-ONLY pin whose tracked follow-up is OUTSTANDING — the
 // post-squash re-pin to the M3e-A master squash commit is OWED; see the PIN-STATUS block
 // below, pin_followup.md, and the M3e-A note by the pins). It SUPERSEDES the prior
@@ -101,7 +101,7 @@
 //
 // NOTE (M3e-A — spine STREAM substrate): these pins are BRANCH-ONLY and the tracked
 // follow-up in nativeserve/pin_followup.md is therefore STATUS: OUTSTANDING. They name
-// 7081daeeda47 on feat/debaml-m3e-a, the branch SOURCE commit that carries the M3e-A
+// ae978980e684 on feat/debaml-m3e-a, the branch SOURCE commit that carries the M3e-A
 // guarded-tree change, because no master commit carries it yet. This module gains the
 // BAML-free spine STREAM lane: nativeserve/spine's StreamExecutor (embedding the frozen
 // UnaryExecutor) plus StreamRegistration and the stream-native NewWorkerRuntime, and
@@ -164,7 +164,7 @@
 // U1c's #713 post-squash re-pin: pin to the branch SOURCE commit only because no master commit
 // carries the change yet, then re-pin all five to master and regenerate the tar IMMEDIATELY
 // after the merge. This change is the BRANCH-pin half of that pattern for M3e-A: all five pins
-// name the branch source commit 7081daeeda47 (STATUS: OUTSTANDING) with the tar regenerated in
+// name the branch source commit ae978980e684 (STATUS: OUTSTANDING) with the tar regenerated in
 // the same change, and the post-squash master re-pin is OWED.
 //
 // A bump must ALSO move internal/nativebody/nanollmprepare/go.mod's recorded bamlutils +
@@ -181,9 +181,9 @@ go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260904105543-7081daeeda47
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260904105543-7081daeeda47
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260904105543-7081daeeda47
+	github.com/invakid404/baml-rest v0.0.0-20260904111205-ae978980e684
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260904111205-ae978980e684
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260904111205-ae978980e684
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
