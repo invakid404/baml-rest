@@ -288,8 +288,17 @@ func TestStreamEventsMapToFrames(t *testing.T) {
 		if frames[2].Raw() != "accumulated" || frames[2].Reasoning() != "reasoned" {
 			t.Errorf("final raw/reasoning = (%q, %q), want the accumulated channels", frames[2].Raw(), frames[2].Reasoning())
 		}
+		// VALUE first, then type — mirroring the plain-stream case. Asserting only the
+		// carrier type would pass for any OutputJson, so a final carrying the wrong
+		// decoded value would go unnoticed on this mode.
+		if !reflect.DeepEqual(frames[2].Final(), final) {
+			t.Errorf("final = %#v, want the FINAL value carrier %#v", frames[2].Final(), final)
+		}
 		if _, ok := frames[2].Final().(OutputJson); !ok {
 			t.Errorf("final has Go type %T, want the FINAL value carrier OutputJson", frames[2].Final())
+		}
+		if _, isStream := frames[2].Final().(OutputJsonStream); isStream {
+			t.Error("final carries the STREAM (pointer) carrier; a stream final has the ordinary value-union type")
 		}
 	})
 }
