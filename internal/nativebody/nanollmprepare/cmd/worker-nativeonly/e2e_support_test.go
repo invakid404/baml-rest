@@ -439,6 +439,9 @@ func generatedCandidateNames(t *testing.T) []string {
 // method, or "" when the method is not in the emitted descriptor.
 func generatedCandidateClass(t *testing.T, method string) projectdescriptor.MethodClass {
 	t.Helper()
+	if generatedProjectJSON == "" {
+		t.Fatal("generated project.json path not set (TestMain setup failed)")
+	}
 	raw, err := os.ReadFile(generatedProjectJSON)
 	if err != nil {
 		t.Fatalf("read generated project.json: %v", err)
@@ -526,6 +529,14 @@ func loadTranscript(t *testing.T) transcriptFixture {
 	}
 	return tr
 }
+
+// The SSE framing helpers below intentionally mirror the ones in
+// nativeserve/spine/stream_integration_test.go. They cannot be shared: that suite lives in
+// a different module, and THIS module cannot import root-internal packages, which is where
+// the shared expectation fixture's owner lives. The anti-drift property is the fixture
+// itself — both suites assert the SAME checked-in testdata/stream_transcript.json, so a
+// framing change on either side fails against that one table rather than diverging
+// silently. Keep the two in step by hand if the wire encoding ever changes.
 
 // sseChunk renders one OpenAI streaming chunk carrying an assistant content delta.
 func sseChunk(content string) string {

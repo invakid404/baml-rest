@@ -30,17 +30,28 @@ const legacyStaticStreamServePath = "github.com/invakid404/baml-rest/nativeserve
 // static-stream serve lane. It scans every non-test .go file (all build tags —
 // parser.ImportsOnly ignores constraints) so a tag-gated aggregate is covered too.
 func TestNativeOnlyPackagesDoNotImportStandardComposite(t *testing.T) {
+	forbidden := []struct {
+		path string
+		// kind names WHAT the package is, so the diagnostic is accurate for each. The two
+		// are different kinds of BAML-bound code and calling both "the standard-only
+		// composite" would misdescribe the canary lane.
+		kind string
+	}{
+		{standardSpineOraclePath, "the standard-only oracle composite"},
+		{legacyStaticStreamServePath, "the legacy BAML-plan-bound static-stream serve lane"},
+	}
 	for _, rel := range []string{
 		"../nativegenerated",
 		"../nativeonlyboot",
 		"../cmd/worker-nativeonly",
 	} {
-		assertNoImport(t, rel, standardSpineOraclePath)
-		assertNoImport(t, rel, legacyStaticStreamServePath)
+		for _, f := range forbidden {
+			assertNoImport(t, rel, f.path, f.kind)
+		}
 	}
 }
 
-func assertNoImport(t *testing.T, dir, forbidden string) {
+func assertNoImport(t *testing.T, dir, forbidden, kind string) {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -59,7 +70,7 @@ func assertNoImport(t *testing.T, dir, forbidden string) {
 		scanned++
 		for _, imp := range f.Imports {
 			if strings.Trim(imp.Path.Value, `"`) == forbidden {
-				t.Errorf("%s imports the standard-only composite %q; the native-only graph must never reach it", path, forbidden)
+				t.Errorf("%s imports %s (%q); the native-only graph must never reach it", path, kind, forbidden)
 			}
 		}
 	}
