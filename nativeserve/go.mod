@@ -29,12 +29,11 @@
 // packages the root's internal/* imports here), so the three first-party requires
 // are pinned to the ORIGIN-RESOLVABLE pseudo-version of a single commit — the one
 // nativeserve/pin_followup.md records and cmd/build's TestFirstPartyPinFollowupIsTracked
-// checks, which is CURRENTLY the ExecBridge-U1c MASTER squash commit 56d5473a1bdb (a
-// MASTER-DURABLE pin whose tracked follow-up is RESOLVED — the post-squash re-pin to the U1c
-// master squash commit has been PERFORMED; see the PIN-STATUS block below, pin_followup.md, and
-// the ExecBridge-U1c note by the pins). The branch-only ae3900c1a0ff it briefly named during
-// PR #713's review is HISTORICAL. It SUPERSEDES the prior ExecBridge-U1b baseline
-// 8fe27577082c, which was master-durable before U1c. It is NOT the
+// checks, which is CURRENTLY the M3e-A BRANCH SOURCE commit a9882f60b5b2 on
+// feat/debaml-m3e-a (a BRANCH-ONLY pin whose tracked follow-up is OUTSTANDING — the
+// post-squash re-pin to the M3e-A master squash commit is OWED; see the PIN-STATUS block
+// below, pin_followup.md, and the M3e-A note by the pins). It SUPERSEDES the prior
+// ExecBridge-U1c baseline 56d5473a1bdb, which was master-durable before M3e-A. It is NOT the
 // historical Slice 7.1b master merge 15b98cf6ebe4 named in the floor notes below — one
 // consistent snapshot that resolves cleanly off a fresh checkout with zero
 // local replacements. The replace directives below
@@ -84,7 +83,7 @@
 // the pins were moved here. Pin to a branch commit only if unavoidable, and re-pin to the
 // merged master commit as the immediate follow-up.
 //
-// PIN-STATUS: RESOLVED
+// PIN-STATUS: OUTSTANDING
 //
 // That marker is the MACHINE-READABLE statement of where these pins stand, and
 // cmd/build's TestPackagedManifestsMatchTheTrackedPins requires it to equal the
@@ -100,21 +99,25 @@
 // go get/build/run) — is nativeserve/pin_followup.md's post-squash re-pin runbook
 // section. Follow it there; do not reconstruct it from these paragraphs.
 //
-// NOTE (ExecBridge-U1c — live-oracle standard composite): these pins are MASTER-DURABLE and the
-// tracked follow-up in nativeserve/pin_followup.md is therefore STATUS: RESOLVED. They name
-// 56d5473a1bdb, the MASTER squash-merge commit of PR #713 that carries the U1c change. This
-// module gains the oracle-capable spine (nativeserve/spine's CallWithOracle +
-// NewPopulationExecutor sharing Call's core), the live-oracle admission entry
-// (nativeserve/admission.AdmitStaticSpineOracleClaim), and the factored same-response static
-// oracle (nativeserve/staticoracle) that both the canary static serve path and the spine oracle
-// reuse. The U1c nativeserve source depends on a NEW bamlutils symbol — the neutral
-// NativeSpineUnaryOracleExecutor / NativeSpineUnaryOracleResult contract — so a consumer
-// resolving a PRE-U1c bamlutils fails to compile this module; the lockstep is a build
-// precondition, not cosmetic. The post-squash re-pin to this master squash commit was the
-// MANDATORY follow-up after the PR merged and has been PERFORMED (see pin_followup.md's
-// post-squash re-pin runbook section for the executed record).
+// NOTE (M3e-A — spine STREAM substrate): these pins are BRANCH-ONLY and the tracked
+// follow-up in nativeserve/pin_followup.md is therefore STATUS: OUTSTANDING. They name
+// a9882f60b5b2 on feat/debaml-m3e-a, the branch SOURCE commit that carries the M3e-A
+// guarded-tree change, because no master commit carries it yet. This module gains the
+// BAML-free spine STREAM lane: nativeserve/spine's StreamExecutor (embedding the frozen
+// UnaryExecutor) plus StreamRegistration and the stream-native NewWorkerRuntime, and
+// nativeserve/admission's AdmitStaticSpineStreamClaim with its unexported lane policy.
+// The M3e-A nativeserve source depends on NEW bamlutils symbols — the neutral
+// NativeSpineStreamExecutor / NativeSpineStreamBinding / NativeSpineStreamResult contract
+// and the extracted BAML-free buildrequest.StreamCadence — so a consumer resolving a
+// PRE-M3e-A bamlutils fails to compile this module; the lockstep is a build precondition,
+// not cosmetic. Re-pinning all five to the MASTER squash commit immediately after the PR
+// merges is the MANDATORY follow-up (see pin_followup.md's post-squash re-pin runbook).
 //
 // HISTORICAL, SUPERSEDED — the SHAs in this paragraph are not the current pins:
+// Immediately before M3e-A, all five were MASTER-DURABLE at 56d5473a1bdb (STATUS: RESOLVED),
+// the MASTER squash-merge commit of PR #713 that carried the ExecBridge-U1c live-oracle
+// standard composite; U1c's pins were briefly BRANCH-ONLY at ae3900c1a0ff until #713
+// squash-merged and its post-squash re-pin moved them to 56d5473a1bdb.
 // Immediately before U1c, all five were MASTER-DURABLE at 8fe27577082c (STATUS: RESOLVED), the
 // U1b MASTER squash-merge commit (PR #711) that carried the native-only packaged worker
 // (nativeserve/spine.NewWorkerRuntime factory + population classifier + promoted pure adapter);
@@ -144,24 +147,25 @@
 // and S1's at de1eefa68ed8 (#675) after 7cb69af02b36. That branch-pin-then-re-pin sequence
 // is the precedent this bump repeats.
 //
-// This bump carries real cross-module behaviour, not a version string. The U1c change adds a
-// new NEUTRAL contract in bamlutils (NativeSpineUnaryOracleExecutor / NativeSpineUnaryOracleResult
-// + the truthful HasClientRegistryOverride / HasDynamicOutputSchema invocation facts) that this
-// module's oracle-capable spine lane (nativeserve/spine.CallWithOracle +
-// nativeserve/admission.AdmitStaticSpineOracleClaim + nativeserve/staticoracle) is built directly
-// on top of. A consumer resolving a PRE-U1c pin gets a bamlutils that predates that contract, so
-// this module fails to compile against it — the lockstep is not cosmetic here, it is a build
-// precondition. The emitted/runtime spine path itself remains free of generated BAML and BAML
-// CFFI (proven by go list -deps over the emitted modules and the spine package); nanollm FFI is
-// the intended native engine and is permitted.
+// This bump carries real cross-module behaviour, not a version string. The M3e-A change adds
+// new NEUTRAL contracts in bamlutils (NativeSpineStreamExecutor / NativeSpineStreamBinding /
+// NativeSpineStreamEvent / NativeSpineStreamResult, and the extracted BAML-free
+// buildrequest.StreamCadence) that this module's spine STREAM lane
+// (nativeserve/spine.StreamExecutor + nativeserve/admission.AdmitStaticSpineStreamClaim) is
+// built directly on top of. A consumer resolving a PRE-M3e-A pin gets a bamlutils that
+// predates those contracts, so this module fails to compile against it — the lockstep is not
+// cosmetic here, it is a build precondition. The emitted/runtime spine path itself remains free
+// of generated BAML and BAML CFFI (proven by go list -deps over the emitted modules, the spine
+// package, and the whole packaged native-only command); nanollm FFI is the intended native
+// engine and is permitted.
 //
 // The precedent for this follow-up was #681 -> #682, #683 -> #684, #686 -> #687,
-// #689 -> #692, #703's batch-2 re-pin, U1's #708 -> #709, and U1b's #711 post-squash re-pin: pin
-// to the branch SOURCE commit only because no master commit carries the change yet, then re-pin
-// all five to master and regenerate the tar IMMEDIATELY after the merge. This change is the U1c
-// MASTER re-pin instance of it: all five pins name the U1c master squash commit 56d5473a1bdb
-// (STATUS: RESOLVED) with the tar regenerated in the same change; it repaired the branch-only
-// ae3900c1a0ff pin the moment PR #713 squash-merged.
+// #689 -> #692, #703's batch-2 re-pin, U1's #708 -> #709, U1b's #711 post-squash re-pin, and
+// U1c's #713 post-squash re-pin: pin to the branch SOURCE commit only because no master commit
+// carries the change yet, then re-pin all five to master and regenerate the tar IMMEDIATELY
+// after the merge. This change is the BRANCH-pin half of that pattern for M3e-A: all five pins
+// name the branch source commit a9882f60b5b2 (STATUS: OUTSTANDING) with the tar regenerated in
+// the same change, and the post-squash master re-pin is OWED.
 //
 // A bump must ALSO move internal/nativebody/nanollmprepare/go.mod's recorded bamlutils +
 // worker selections in LOCKSTEP: nanollmprepare directory-replaces root / bamlutils /
@@ -177,9 +181,9 @@ go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260903134144-56d5473a1bdb
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260903134144-56d5473a1bdb
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260903134144-56d5473a1bdb
+	github.com/invakid404/baml-rest v0.0.0-20260904095707-a9882f60b5b2
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260904095707-a9882f60b5b2
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260904095707-a9882f60b5b2
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
