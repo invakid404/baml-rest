@@ -153,11 +153,14 @@ func (c *StreamCadence) Reasoning() string { return c.acc.reasoning.String() }
 // channels, decides whether this tick produces a structured partial, a raw-only event,
 // or no event at all, and hands any event to the sink.
 //
-// It returns a non-nil error ONLY when the sink asked to stop (a cancelled partial
-// send, or a sink failure) or — under [CadenceParseErrorsAreTerminal] — when the
-// partial parser failed for a non-sentinel reason. Every benign case (an empty chunk, a
-// throttled tick, a declined prefix) returns nil, exactly as the orchestrator's inline
-// cadence did.
+// It returns a non-nil error ONLY when the sink asked to stop (a cancelled partial send,
+// or a sink failure) or — under [CadenceParseErrorsAreTerminal] — when the parse callback
+// returned ANY error. There is no sentinel exemption: the cadence never inspects an
+// error's chain, so a decoder failure that returns or wraps a parser sentinel is terminal
+// exactly like every other error. The ONLY benign non-emitting parse outcome is the
+// callback's explicit no-partial RESULT ([StreamCadenceParseFunc]'s hasPartial=false with
+// a nil error). The other benign cases — an empty chunk and a throttled tick — likewise
+// return nil, exactly as the orchestrator's inline cadence did.
 func (c *StreamCadence) Delta(ctx context.Context, parseableDelta, rawDelta, reasoningDelta string) error {
 	// Skip when nothing meaningful arrived on any channel. Under IncludeReasoning=true a
 	// reasoning-only event has empty raw/parseable but non-empty reasoning — so the gate

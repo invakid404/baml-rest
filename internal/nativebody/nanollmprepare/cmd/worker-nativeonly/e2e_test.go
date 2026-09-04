@@ -29,10 +29,13 @@ func TestNativeOnlyWorker_BootCallParse(t *testing.T) {
 
 	// --- Default-deny at boot: GENERATED then DECLINED --------------------------
 	// The fixture declares THREE static methods the codegen classifier admits into the
-	// generated candidate set — the exact JSON alias (stamped static_stream), a
-	// non-alias (string) return, and a retry-policy client method (both static_unary).
-	// Proving both halves distinguishes a generate-then-decline from a candidate that
-	// was never generated: the emitted descriptor must carry all three names...
+	// generated candidate set: the exact JSON alias and a retry-policy client method —
+	// both stamped static_stream, because each RETURNS the exact five-arm JSON alias and
+	// the class is derived from the return shape alone — plus a non-alias (string)
+	// return, which is static_unary. The retry-policy method is declined later, by the
+	// CLIENT (cohort) gate rather than by its shape. Proving both halves distinguishes a
+	// generate-then-decline from a candidate that was never generated: the emitted
+	// descriptor must carry all three names...
 	gen := generatedCandidateNames(t)
 	for _, want := range []string{"StaticRecursiveAliasJSON", "NonCohortStringReturn", "RetryPolicyMethod"} {
 		if !slices.Contains(gen, want) {

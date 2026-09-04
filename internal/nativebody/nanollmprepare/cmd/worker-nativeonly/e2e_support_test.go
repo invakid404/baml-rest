@@ -184,11 +184,19 @@ client<llm> RetryingOracle {
   }
 }
 `, providerURL, providerURL)
-	// Three static-unary methods are introspected + emitted as candidates, but only
+	// Three static methods are introspected + emitted as candidates, but only
 	// StaticRecursiveAliasJSON is IN the exact U1 cohort. The other two are generated
-	// candidates OUTSIDE U1 — a non-JSON-alias (string) return, and a retry-policy
-	// client — that M1 admits into Project.Methods but the runtime classifier DECLINES
-	// at admission, so NewWorkerRuntime OMITS them at boot.
+	// candidates OUTSIDE it that the codegen classifier admits into Project.Methods and
+	// the RUNTIME classifier then DECLINES, so NewWorkerRuntime OMITS them at boot.
+	//
+	// The two axes are independent, and this corpus separates them deliberately. The
+	// descriptor CLASS comes from the RETURN SHAPE alone, so StaticRecursiveAliasJSON
+	// and RetryPolicyMethod are both static_stream (each returns the exact five-arm JSON
+	// alias) while NonCohortStringReturn is static_unary (a plain string return).
+	// RetryPolicyMethod is then declined by the CLIENT gate — its retry_policy client is
+	// a cohort miss — which is why a stream-CLASS method can still be omitted at boot.
+	// The in-process mirror of this classification is
+	// internal/nativespine.TestBootedE2ECorpusClasses.
 	functions := `function StaticRecursiveAliasJSON(topic: string) -> JSON {
   client JSONOracle
   prompt #"Return a JSON document describing {{ topic }}."#

@@ -34,9 +34,14 @@ import (
 // retry, no fallback child, no reset, no pool replay, and no second RoundTrip.
 //
 // There is nothing to fall back TO. This executor is the native-only artifact's whole
-// serving path, so a terminal failure is a caller-visible error frame, which is exactly
-// why the strict cadence policy (a non-sentinel partial decode failure is terminal) is
-// correct here and the legacy swallow-everything policy is not.
+// serving path, so a terminal failure is a caller-visible error frame — which is exactly
+// why the strict cadence policy is correct here and the legacy swallow-everything policy
+// is not. Under it the ONLY benign non-emitting outcome is the parse closure's explicit
+// no-partial RESULT, which it produces solely for the PARSER's own "no parseable partial
+// for this prefix yet" sentinel and only BEFORE the decoder runs. Every error that
+// reaches the cadence is terminal regardless of its chain, so a decoder failure that
+// returns or wraps that same sentinel fails the claimed stream rather than being read as
+// a no-event.
 
 // Bounded, secret-free stage/reason tokens for the stream lane. They extend — never
 // replace — the unary lane's tokens, so a metric label set stays closed.
