@@ -47,8 +47,15 @@ import (
 // whether it is native-admitted (and its required capabilities) or which feature
 // blocks it. It carries no new carrier vocabulary: stream requirements ride on
 // the per-field streaming metadata already in each method's Return
-// [schemadescriptor.Bundle] plus the capability manifest (stream carriers are M3).
-const Version = 2
+// [schemadescriptor.Bundle] plus the capability manifest.
+//
+// Version 3 (M3e-A, spine STREAM substrate) adds the additive [ClassStaticStream]
+// method class. It is an INTENTIONAL WIRE INCOMPATIBILITY, not a compatible
+// extension: under v3 the name [ClassStaticUnary] still means EXACTLY "unary
+// final-call + final-parse", so a v2 descriptor must be REJECTED by the exact-version
+// fence below rather than read as a v3 one whose class names silently acquired a new
+// meaning. Every descriptor JSON/golden fixture moves with the bump.
+const Version = 3
 
 // MethodClass names the native capability class a method was admitted into. A
 // declined method carries no class (it stays on generated BAML); its reason is
@@ -62,8 +69,43 @@ const (
 	// and none of media, dynamic types, BamlSnippets, tool/body options,
 	// fallback/round-robin strategies, checks, or asserts. Any of those leaves
 	// the method declined — see the classifier in internal/nativespine.
+	//
+	// Its contract is FROZEN at exactly that: it promises unary final-call and
+	// final-parse and NOTHING about streaming. M3e-A deliberately did NOT broaden it —
+	// see [ClassStaticStream].
 	ClassStaticUnary MethodClass = "static_unary"
+
+	// ClassStaticStream (Version 3, M3e-A) is a static LLM function served as unary
+	// final-call + final-parse AND the two real streaming modes (/stream,
+	// /stream-with-raw) + stream parse. It is a SUPERSET of ClassStaticUnary's promise
+	// by construction: the same generated method must keep serving /call in the
+	// native-only runtime and stay usable by the unary standard composite.
+	//
+	// It is stamped ONLY on a method the one root-owned totality predicate
+	// (internal/debaml.SupportsNativeStaticStreamBundle — the exact five-arm `JSON`
+	// recursive alias) admits, on top of every ClassStaticUnary check. It promises
+	// NOTHING beyond that: not /call-with-raw, not strategies or retries, not stream
+	// annotations, not JsonValue, not arbitrary schemas.
+	ClassStaticStream MethodClass = "static_stream"
 )
+
+// MethodClasses returns every MethodClass this descriptor version defines, in a
+// stable order. It is the enumeration a fail-closed consumer validates an unknown
+// class against; [Project.Validate] uses it so a v3 descriptor carrying a class this
+// build does not know is a hard error rather than a silently-served method.
+func MethodClasses() []MethodClass {
+	return []MethodClass{ClassStaticUnary, ClassStaticStream}
+}
+
+// IsKnown reports whether c is one of the classes this descriptor version defines.
+func (c MethodClass) IsKnown() bool {
+	for _, k := range MethodClasses() {
+		if c == k {
+			return true
+		}
+	}
+	return false
+}
 
 // CapabilityCode is an opaque, stable, machine-readable feature/decline code.
 // The catalogue of valid values is owned by internal/codegenspine/manifest.json
@@ -246,6 +288,13 @@ func (p *Project) Validate() error {
 		}
 		if m.Class == "" {
 			return fmt.Errorf("projectdescriptor: method %q has empty class", m.Name)
+		}
+		// FAIL CLOSED on an unknown class (Version 3). A consumer that silently
+		// accepted one would serve a method whose capability promise this build cannot
+		// read — exactly the "never infer support from mere presence" rule the
+		// capability manifest encodes.
+		if !m.Class.IsKnown() {
+			return fmt.Errorf("projectdescriptor: method %q has unknown class %q (known: %v)", m.Name, m.Class, MethodClasses())
 		}
 		if m.Return.Version != schemadescriptor.Version {
 			return fmt.Errorf("projectdescriptor: method %q return-schema version %d (want %d)", m.Name, m.Return.Version, schemadescriptor.Version)
