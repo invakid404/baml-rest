@@ -121,9 +121,16 @@ type StreamCadenceConfig struct {
 // letting the SSE transport path and the native EmitDelta paths drive byte-identical
 // partial cadence. A fresh accumulator is created per child/attempt window.
 type streamAccumulator struct {
-	parseable     strings.Builder
-	raw           strings.Builder
-	reasoning     strings.Builder
+	parseable strings.Builder
+	raw       strings.Builder
+	reasoning strings.Builder
+	// parsed records whether a throttled parse has run in this window, so the FIRST
+	// tick always parses. Deriving that from lastParseTime's zero value would make the
+	// behaviour depend on the clock's epoch: an injected clock starting at (or near)
+	// the zero time reads as "inside the interval" and suppresses every partial until
+	// it advances past the throttle. Real time is far from the zero time, so this is
+	// byte-identical for the production clock.
+	parsed        bool
 	lastParseTime time.Time
 }
 
@@ -197,11 +204,12 @@ func (c *StreamCadence) Delta(ctx context.Context, parseableDelta, rawDelta, rea
 		var parsed any
 		var hasPartial bool
 		if c.cfg.ParsePartial != nil {
-			shouldParse := c.cfg.ParseThrottleInterval == 0 ||
+			shouldParse := c.cfg.ParseThrottleInterval == 0 || !c.acc.parsed ||
 				c.cfg.Now().Sub(c.acc.lastParseTime) >= c.cfg.ParseThrottleInterval
 			if shouldParse {
 				// Update the throttle timestamp regardless of parse success/failure so
 				// repeated failures don't bypass the throttle interval.
+				c.acc.parsed = true
 				c.acc.lastParseTime = c.cfg.Now()
 				candidate, present, parseErr := c.cfg.ParsePartial(ctx, c.acc.parseable.String())
 				if parseErr != nil {

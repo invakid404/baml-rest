@@ -146,10 +146,24 @@ type NativeSpineStreamExecutor interface {
 // read as success), and the substituted value must never carry content.
 var ErrNativeSpineStreamFailed = errors.New("nativespine: native stream failed after the claim")
 
+// ErrNativeSpineStreamDeclined is the same guarantee for the DECLINE constructor. A
+// decline is delivered to the caller as one error frame, so a nil Err would surface as a
+// terminal failure carrying no usable error at all. Every non-success result therefore
+// carries a non-nil, bounded, secret-free error.
+var ErrNativeSpineStreamDeclined = errors.New("nativespine: native stream declined before any provider socket")
+
 // DeclinedSpineStreamResult builds a pre-socket decline carrying the typed
 // capability/admission decline and bounded stage/reason. It certifies zero provider
 // sockets and zero emitted events.
+//
+// A nil err is replaced with [ErrNativeSpineStreamDeclined], mirroring the
+// failed-after-claim constructor: the native-only lane turns a decline into one error
+// frame, so a nil error would reach the caller as a terminal failure with nothing to
+// report.
 func DeclinedSpineStreamResult(err error, stage, reason string) NativeSpineStreamResult {
+	if err == nil {
+		err = ErrNativeSpineStreamDeclined
+	}
 	return NativeSpineStreamResult{
 		Disposition: NativeSpineStreamDeclinedPreSocket,
 		Err:         err,

@@ -456,7 +456,26 @@ func classifyRegistration(proj projectdescriptor.Project, byName map[string]proj
 	if requireStream && m.Class != projectdescriptor.ClassStaticStream {
 		return nil, cohortMiss(fmt.Errorf("nativespine: register %q: class %q is not stream-capable (want %q)", b.Method, m.Class, projectdescriptor.ClassStaticStream))
 	}
-	return &registeredMethod{fn: fn, bundle: bundle, binding: b, stream: c.stream}, nil
+	// COPY the stream binding into the registry. c.stream points into the CALLER's
+	// registration slice, and both the executor and the runtime document their registry
+	// as immutable after construction — so retaining that pointer would let a caller
+	// mutate live serving state after boot, including nil-ing DecodePartial after the
+	// registration-time nil check above already passed. The unary binding is a value
+	// field and is copied by assignment; this makes the stream half match.
+	return &registeredMethod{fn: fn, bundle: bundle, binding: b, stream: copyStreamBinding(c.stream)}, nil
+}
+
+// copyStreamBinding returns an independent copy of a stream binding, or nil for nil. The
+// copy is deep enough for the ownership boundary that matters: NativeSpineStreamBinding
+// holds only an embedded value struct and function values, so copying the struct detaches
+// the registry from the caller's backing array entirely. A caller that later reassigns
+// its slice element — or the binding's DecodePartial — cannot reach the registered copy.
+func copyStreamBinding(b *bamlutils.NativeSpineStreamBinding) *bamlutils.NativeSpineStreamBinding {
+	if b == nil {
+		return nil
+	}
+	copied := *b
+	return &copied
 }
 
 // requiredScalarInputs enforces the ExecBridge-U1 input cohort: every argument is a

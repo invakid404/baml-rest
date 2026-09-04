@@ -20,17 +20,15 @@ import (
 // fakeStreamExec is a scripted bamlutils.NativeSpineStreamExecutor. It records what the
 // generated closures asked of it and replays a canned event/result script.
 type fakeStreamExec struct {
-	calls       []string
-	events      []bamlutils.NativeSpineStreamEvent
-	emitErr     error
-	result      bamlutils.NativeSpineStreamResult
-	unary       bamlutils.NativeSpineUnaryResult
-	parseOut    any
-	parseErr    error
-	streamOut   any
-	streamErr   error
-	sawStream   bool
-	sawNeedsRaw bool
+	calls     []string
+	events    []bamlutils.NativeSpineStreamEvent
+	result    bamlutils.NativeSpineStreamResult
+	unary     bamlutils.NativeSpineUnaryResult
+	parseOut  any
+	parseErr  error
+	streamOut any
+	streamErr error
+	sawStream bool
 }
 
 func (f *fakeStreamExec) Call(_ context.Context, method string, _ any) bamlutils.NativeSpineUnaryResult {
@@ -48,7 +46,6 @@ func (f *fakeStreamExec) Stream(_ context.Context, method string, _ any, emit ba
 	f.sawStream = true
 	for _, ev := range f.events {
 		if err := emit(ev); err != nil {
-			f.emitErr = err
 			break
 		}
 	}
@@ -210,31 +207,36 @@ func TestStreamEventsMapToFrames(t *testing.T) {
 			t.Fatalf("Impl: %v", err)
 		}
 		frames := drain(t, ch)
-		if len(frames) != 3 {
-			t.Fatalf("got %d frames, want 2 partials + 1 final", len(frames))
+		// The raw-only event is DROPPED on a plain /stream: it has no structured partial
+		// and its raw/reasoning channels are suppressed for this mode, so forwarding it
+		// would put a contentless frame on the wire that the BAML lane never emits.
+		if len(frames) != 2 {
+			t.Fatalf("got %d frames, want 1 structured partial + 1 final (the raw-only event carries no public content on /stream): %+v", len(frames), frames)
 		}
-		for i, fr := range frames[:2] {
-			if fr.Kind() != bamlutils.StreamResultKindStream {
-				t.Fatalf("frame %d kind = %v, want stream", i, fr.Kind())
-			}
-			if fr.Raw() != "" || fr.Reasoning() != "" {
-				t.Errorf("frame %d on a plain /stream carries raw=%q reasoning=%q; both must stay empty", i, fr.Raw(), fr.Reasoning())
-			}
+		if frames[0].Kind() != bamlutils.StreamResultKindStream {
+			t.Fatalf("frame 0 kind = %v, want stream", frames[0].Kind())
+		}
+		if frames[0].Raw() != "" || frames[0].Reasoning() != "" {
+			t.Errorf("frame 0 on a plain /stream carries raw=%q reasoning=%q; both must stay empty", frames[0].Raw(), frames[0].Reasoning())
 		}
 		if got := frames[0].Stream(); !reflect.DeepEqual(got, partial) {
 			t.Errorf("structured partial = %#v, want the emitted stream carrier", got)
 		}
-		if got := frames[1].Stream(); got != nil {
-			t.Errorf("raw-only event produced a structured partial %#v, want nil", got)
+		// No frame may be contentless: a stream frame with neither a partial nor raw is
+		// exactly the spurious empty event this mode must not produce.
+		for i, fr := range frames {
+			if fr.Kind() == bamlutils.StreamResultKindStream && fr.Stream() == nil && fr.Raw() == "" && fr.Reasoning() == "" {
+				t.Errorf("frame %d is a contentless stream frame", i)
+			}
 		}
-		if frames[2].Kind() != bamlutils.StreamResultKindFinal {
-			t.Fatalf("last frame kind = %v, want final", frames[2].Kind())
+		if frames[1].Kind() != bamlutils.StreamResultKindFinal {
+			t.Fatalf("last frame kind = %v, want final", frames[1].Kind())
 		}
-		if frames[2].Raw() != "" || frames[2].Reasoning() != "" {
-			t.Errorf("final on a plain /stream carries raw=%q reasoning=%q; both must stay empty", frames[2].Raw(), frames[2].Reasoning())
+		if frames[1].Raw() != "" || frames[1].Reasoning() != "" {
+			t.Errorf("final on a plain /stream carries raw=%q reasoning=%q; both must stay empty", frames[1].Raw(), frames[1].Reasoning())
 		}
-		if !reflect.DeepEqual(frames[2].Final(), final) {
-			t.Errorf("final = %#v, want the FINAL value carrier", frames[2].Final())
+		if !reflect.DeepEqual(frames[1].Final(), final) {
+			t.Errorf("final = %#v, want the FINAL value carrier", frames[1].Final())
 		}
 	})
 
@@ -440,5 +442,109 @@ func TestParseRoutesAreSocketFreeAndDistinct(t *testing.T) {
 	}
 	if f.sawStream {
 		t.Error("a parse route entered the transport Stream path")
+	}
+}
+
+// TestDeclineFramesAlwaysCarryANonNilError proves the generated error frame is never
+// empty-handed. A decline is delivered to the caller as ONE error frame, so a result
+// whose Err was left nil would surface as a terminal failure carrying no error at all —
+// the caller sees a failed stream and has nothing to report or classify. The neutral
+// constructors substitute a bounded, secret-free sentinel; this pins that the generated
+// frame carries it through.
+func TestDeclineFramesAlwaysCarryANonNilError(t *testing.T) {
+	cases := []struct {
+		name   string
+		result bamlutils.NativeSpineStreamResult
+		want   error
+	}{
+		{
+			name:   "declined_with_nil_err",
+			result: bamlutils.DeclinedSpineStreamResult(nil, "registry", "method_not_registered"),
+			want:   bamlutils.ErrNativeSpineStreamDeclined,
+		},
+		{
+			name:   "failed_after_claim_with_nil_err",
+			result: bamlutils.FailedAfterClaimSpineStreamResult(nil, "serve", "panic", ""),
+			want:   bamlutils.ErrNativeSpineStreamFailed,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.result.Err == nil {
+				t.Fatal("the constructor left Err nil; every non-success result must carry a bounded error")
+			}
+			f := &fakeStreamExec{result: tc.result}
+			sm, _ := BuildMethod(f)
+			ch, err := sm.Impl(adapterFor(bamlutils.StreamModeStream), &StaticRecursiveAliasJsonInput{Topic: "x"})
+			if err != nil {
+				t.Fatalf("Impl: %v", err)
+			}
+			frames := drain(t, ch)
+			if len(frames) != 1 || frames[0].Kind() != bamlutils.StreamResultKindError {
+				t.Fatalf("frames = %+v, want exactly one error frame", frames)
+			}
+			if frames[0].Error() == nil {
+				t.Fatal("the error frame carries a nil error; the caller has nothing to classify")
+			}
+			if !errors.Is(frames[0].Error(), tc.want) {
+				t.Fatalf("frame error = %v, want the bounded sentinel %v", frames[0].Error(), tc.want)
+			}
+		})
+	}
+}
+
+// cancelOnEmitExec fills the generated result channel past its buffer and then cancels
+// the adapter, so the emit closure faces a FULL buffer and a cancelled context at once.
+type cancelOnEmitExec struct {
+	unaryOnlyExec
+	events   int
+	cancel   context.CancelFunc
+	emitErrs []error
+}
+
+func (e *cancelOnEmitExec) Stream(_ context.Context, _ string, _ any, emit bamlutils.NativeSpineStreamEmit) bamlutils.NativeSpineStreamResult {
+	for i := 0; i < e.events; i++ {
+		// Cancel once the buffer is certainly full, so every later emit sees BOTH a
+		// blocked send and a done context.
+		if i == e.events-1 {
+			e.cancel()
+		}
+		e.emitErrs = append(e.emitErrs, emit(bamlutils.NativeSpineStreamEvent{HasPartial: true, Partial: OutputJsonStream(nil)}))
+	}
+	return bamlutils.SucceededSpineStreamResult(nil, "", "")
+}
+
+func (e *cancelOnEmitExec) ParseStream(context.Context, string, string) (any, error) { return nil, nil }
+
+var _ bamlutils.NativeSpineStreamExecutor = (*cancelOnEmitExec)(nil)
+
+// TestFullBufferNeverMasksCancellation pins the emit closure's select semantics: when the
+// bounded result channel is FULL and the adapter is cancelled, the send cannot proceed, so
+// Go's select cannot choose it and the `default` (drop-the-partial) arm is unreachable —
+// `default` is taken ONLY when no other case can proceed. Cancellation therefore always
+// wins over the drop path, and the closure returns the context error rather than silently
+// dropping a partial and reading one more delta.
+func TestFullBufferNeverMasksCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ad := newFixtureAdapter(ctx)
+	ad.SetStreamMode(bamlutils.StreamModeStream)
+
+	// More events than the buffer holds, and nothing drains the channel until Stream has
+	// returned — so the tail of the run is exactly the full-buffer-plus-cancelled state.
+	exec := &cancelOnEmitExec{events: streamResultBuffer + 4, cancel: cancel}
+	sm, _ := BuildMethod(exec)
+	ch, err := sm.Impl(ad, &StaticRecursiveAliasJsonInput{Topic: "x"})
+	if err != nil {
+		t.Fatalf("Impl: %v", err)
+	}
+	drain(t, ch)
+
+	last := exec.emitErrs[len(exec.emitErrs)-1]
+	if last == nil {
+		t.Fatal("the emit closure dropped a partial on a cancelled adapter with a full buffer; cancellation must win over the drop path")
+	}
+	if !errors.Is(last, context.Canceled) {
+		t.Fatalf("emit returned %v, want the adapter's context error", last)
 	}
 }

@@ -188,6 +188,55 @@ func TestCadenceThrottleUsesTheInjectedClock(t *testing.T) {
 	}
 }
 
+// TestCadenceFirstTickAlwaysParsesRegardlessOfTheClockEpoch pins that the FIRST delta in
+// a window parses even under a positive throttle, whatever epoch the injected clock
+// starts at. Deriving "have we parsed yet" from lastParseTime's ZERO value made that
+// depend on the clock: a clock starting at (or near) the zero time reads as "inside the
+// interval" and suppresses every structured partial until it advances past the throttle.
+// Real time is far from the zero time, so the production clock never showed it.
+func TestCadenceFirstTickAlwaysParsesRegardlessOfTheClockEpoch(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		start time.Time
+	}{
+		{"zero_time_clock", time.Time{}},
+		{"just_after_the_zero_time", time.Time{}.Add(time.Millisecond)},
+		{"ordinary_wall_clock", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clk := &fakeClock{now: tc.start}
+			var parses int
+			sink := &cadenceSink{}
+			c := NewStreamCadence(StreamCadenceConfig{
+				NeedsPartials:         true,
+				ParseThrottleInterval: time.Hour,
+				ParsePartial: func(context.Context, string) (any, bool, error) {
+					parses++
+					return "p", true, nil
+				},
+				Emit: sink.emit,
+				Now:  clk.Now,
+			})
+			if err := c.Delta(context.Background(), "x", "x", ""); err != nil {
+				t.Fatalf("Delta: %v", err)
+			}
+			if parses != 1 {
+				t.Fatalf("parses = %d on the first tick, want 1 (the throttle must not suppress it)", parses)
+			}
+			if len(sink.events) != 1 || !sink.events[0].HasPartial {
+				t.Fatalf("events = %+v, want one structured partial", sink.events)
+			}
+			// And the throttle is genuinely armed afterwards: a second tick inside the
+			// interval does NOT parse again.
+			clk.advance(time.Second)
+			_ = c.Delta(context.Background(), "y", "y", "")
+			if parses != 1 {
+				t.Fatalf("parses = %d inside the throttle window, want 1", parses)
+			}
+		})
+	}
+}
+
 // TestCadenceLegacyPolicySwallowsParseErrors is the byte-for-byte guard on the standard
 // orchestrator's behaviour: under CadenceParseErrorsAreNoEvent, ANY partial parse error
 // — sentinel or not — is a benign no-event and the stream continues.

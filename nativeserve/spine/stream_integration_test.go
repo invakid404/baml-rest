@@ -13,13 +13,13 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/internal/nativespinejsonfixture"
-	"github.com/invakid404/baml-rest/nativeserve/spine"
 )
 
 // stream_integration_test.go is the M3e-A SSE fragmentation + post-claim fault matrix at
@@ -42,6 +42,17 @@ type transcriptFixture struct {
 	Deltas      []transcriptDelta `json:"deltas"`
 	Final       string            `json:"final"`
 	Accumulated string            `json:"accumulated"`
+}
+
+// StructuredCount is how many deltas produce a structured partial event.
+func (tr transcriptFixture) StructuredCount() int {
+	n := 0
+	for _, d := range tr.Deltas {
+		if d.Emit {
+			n++
+		}
+	}
+	return n
 }
 
 // loadTranscript reads the SHARED expected transcript fixture. It is owned and
@@ -141,22 +152,6 @@ func transcriptBody(tr transcriptFixture) string {
 
 // --- executor + drive helpers ------------------------------------------------------
 
-// streamExecFor builds the production stream executor over the JSON-alias descriptor at
-// baseURL, optionally with a fault-injected stream binding.
-func streamExecFor(t *testing.T, baseURL string, binding ...bamlutils.NativeSpineStreamBinding) *spine.StreamExecutor {
-	t.Helper()
-	proj := injectBaseURL(t, jsonAliasProject(t), baseURL)
-	b := nativespinejsonfixture.StreamBinding()
-	if len(binding) > 0 {
-		b = binding[0]
-	}
-	e, err := spine.NewStreamExecutor(proj, []spine.StreamRegistration{{Binding: b, BuildMethod: nativespinejsonfixture.BuildMethod}}, nil)
-	if err != nil {
-		t.Fatalf("NewStreamExecutor: %v", err)
-	}
-	return e
-}
-
 // collectedEvent is one public event the executor delivered.
 type collectedEvent struct {
 	hasPartial bool
@@ -253,7 +248,7 @@ func TestStreamServesTheSharedTranscript(t *testing.T) {
 			lb := newLoopback(t, func(w http.ResponseWriter, r *http.Request) {
 				writeSSE(w, transcriptBody(tr), 0)
 			})
-			e := streamExecFor(t, lb.baseURL())
+			e := newJSONStreamExec(t, lb.baseURL(), nil)
 			c := &collector{}
 			res := e.Stream(streamAdapterFor(tc.mode, false), jsonAliasMethod, jsonInput(), c.emit)
 
@@ -362,7 +357,7 @@ func TestStreamWithRawCarriesReasoningInOrder(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			lb := newLoopback(t, func(w http.ResponseWriter, r *http.Request) { writeSSE(w, body, 0) })
-			e := streamExecFor(t, lb.baseURL())
+			e := newJSONStreamExec(t, lb.baseURL(), nil)
 			c := &collector{}
 			res := e.Stream(streamAdapterFor(bamlutils.StreamModeStreamWithRaw, tc.includeReason), jsonAliasMethod, jsonInput(), c.emit)
 			if res.Disposition != bamlutils.NativeSpineStreamSucceeded {
@@ -398,7 +393,7 @@ func TestStreamSurvivesArbitraryFragmentation(t *testing.T) {
 	for _, fragment := range []int{1, 3, 7} {
 		t.Run(fmt.Sprintf("fragment_%d", fragment), func(t *testing.T) {
 			lb := newLoopback(t, func(w http.ResponseWriter, r *http.Request) { writeSSE(w, body, fragment) })
-			e := streamExecFor(t, lb.baseURL())
+			e := newJSONStreamExec(t, lb.baseURL(), nil)
 			c := &collector{}
 			res := e.Stream(streamAdapterFor(bamlutils.StreamModeStream, false), jsonAliasMethod, jsonInput(), c.emit)
 			if res.Disposition != bamlutils.NativeSpineStreamSucceeded {
@@ -425,7 +420,7 @@ func TestStreamSurvivesArbitraryFragmentation(t *testing.T) {
 func TestStreamNoiseFramesProduceNoEvent(t *testing.T) {
 	body := sseRoleOnly + sseEmptyDelta + sseFinishOnly + sseUsageOnly + sseDone
 	lb := newLoopback(t, func(w http.ResponseWriter, r *http.Request) { writeSSE(w, body, 0) })
-	e := streamExecFor(t, lb.baseURL())
+	e := newJSONStreamExec(t, lb.baseURL(), nil)
 	c := &collector{}
 	res := e.Stream(streamAdapterFor(bamlutils.StreamModeStreamWithRaw, true), jsonAliasMethod, jsonInput(), c.emit)
 
@@ -433,10 +428,20 @@ func TestStreamNoiseFramesProduceNoEvent(t *testing.T) {
 		t.Fatalf("noise-only stream produced %d event(s), want 0: %+v", len(got), got)
 	}
 	assertTerminal(t, res, lb, 1)
-	if res.Reason != "native_final_parse_error" && res.Reason != "native_final_parse_declined" {
-		t.Fatalf("reason = %q, want a final-parse terminal", res.Reason)
+	// EXACTLY the documented outcome for this scenario. Accepting either final-parse
+	// reason would let a regression that changes which one is produced pass silently,
+	// and the two are not interchangeable: the DECLINE reason means the native final
+	// parser returned its support sentinel for the accumulated text, which is what an
+	// empty accumulation does.
+	if res.Reason != reasonFinalParseDeclinedToken {
+		t.Fatalf("reason = %q, want %q", res.Reason, reasonFinalParseDeclinedToken)
 	}
 }
+
+// The bounded reason tokens this suite asserts, spelled once.
+const (
+	reasonFinalParseDeclinedToken = "native_final_parse_declined"
+)
 
 // TestStreamUnclosedFinalCompletes proves an UNCLOSED final (a clean EOF mid-object)
 // still produces a final through ParseStaticStreamFinal's EOF completion — the
@@ -445,7 +450,7 @@ func TestStreamUnclosedFinalCompletes(t *testing.T) {
 	// No [DONE]: a clean upstream EOF with the JSON object left open.
 	body := sseRoleOnly + sseChunk(`{"k":1`)
 	lb := newLoopback(t, func(w http.ResponseWriter, r *http.Request) { writeSSE(w, body, 0) })
-	e := streamExecFor(t, lb.baseURL())
+	e := newJSONStreamExec(t, lb.baseURL(), nil)
 	c := &collector{}
 	res := e.Stream(streamAdapterFor(bamlutils.StreamModeStream, false), jsonAliasMethod, jsonInput(), c.emit)
 	if res.Disposition != bamlutils.NativeSpineStreamSucceeded {
@@ -543,7 +548,7 @@ func TestStreamPostClaimFaultMatrix(t *testing.T) {
 	for _, tc := range rows {
 		t.Run(tc.name, func(t *testing.T) {
 			lb := newLoopback(t, tc.handler)
-			e := streamExecFor(t, lb.baseURL(), tc.binding)
+			e := newJSONStreamExec(t, lb.baseURL(), nil, tc.binding)
 			c := &collector{}
 			res := e.Stream(streamAdapterFor(bamlutils.StreamModeStreamWithRaw, false), jsonAliasMethod, jsonInput(), c.emit)
 
@@ -570,7 +575,7 @@ func TestStreamMalformedChunkJSONYieldsNoEvent(t *testing.T) {
 		"data: [[[\n\n" +
 		sseDone
 	lb := newLoopback(t, func(w http.ResponseWriter, r *http.Request) { writeSSE(w, body, 0) })
-	e := streamExecFor(t, lb.baseURL())
+	e := newJSONStreamExec(t, lb.baseURL(), nil)
 	c := &collector{}
 	res := e.Stream(streamAdapterFor(bamlutils.StreamModeStream, false), jsonAliasMethod, jsonInput(), c.emit)
 	if res.Disposition != bamlutils.NativeSpineStreamSucceeded {
@@ -595,6 +600,12 @@ func TestStreamMalformedChunkJSONYieldsNoEvent(t *testing.T) {
 // closes before the frame terminator) is a post-claim decoder terminal with exactly one
 // provider request — never a resend.
 func TestStreamTruncatedStreamIsTerminal(t *testing.T) {
+	// notHijackable records, from the PROVIDER goroutine, that the response writer could
+	// not be hijacked. It must not call t.Skip there: httptest runs the handler on its
+	// own goroutine, where t.Skip only calls runtime.Goexit on THAT goroutine — the test
+	// goroutine would carry on into assertTerminal and report a wrong result instead of
+	// skipping. The decision is taken below, on the test goroutine.
+	var notHijackable atomic.Bool
 	lb := newLoopback(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -609,7 +620,7 @@ func TestStreamTruncatedStreamIsTerminal(t *testing.T) {
 		}
 		hj, ok := w.(http.Hijacker)
 		if !ok {
-			t.Skip("ResponseWriter is not a Hijacker; cannot truncate the stream")
+			notHijackable.Store(true)
 			return
 		}
 		conn, _, err := hj.Hijack()
@@ -619,9 +630,12 @@ func TestStreamTruncatedStreamIsTerminal(t *testing.T) {
 		}
 		_ = conn.Close()
 	})
-	e := streamExecFor(t, lb.baseURL())
+	e := newJSONStreamExec(t, lb.baseURL(), nil)
 	c := &collector{}
 	res := e.Stream(streamAdapterFor(bamlutils.StreamModeStream, false), jsonAliasMethod, jsonInput(), c.emit)
+	if notHijackable.Load() {
+		t.Skip("ResponseWriter is not a Hijacker; cannot truncate the stream")
+	}
 	assertTerminal(t, res, lb, 1)
 	if res.Stage != "transport" {
 		t.Fatalf("stage = %q, want transport", res.Stage)
@@ -638,7 +652,7 @@ func TestStreamPreservesProviderStatusAndBody(t *testing.T) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(body))
 	})
-	e := streamExecFor(t, lb.baseURL())
+	e := newJSONStreamExec(t, lb.baseURL(), nil)
 	c := &collector{}
 	res := e.Stream(streamAdapterFor(bamlutils.StreamModeStream, false), jsonAliasMethod, jsonInput(), c.emit)
 	assertTerminal(t, res, lb, 1)
@@ -664,7 +678,7 @@ func TestStreamEmitFaultsAfterClaimAreTerminal(t *testing.T) {
 
 	t.Run("emit_error", func(t *testing.T) {
 		lb := newLoopback(t, func(w http.ResponseWriter, r *http.Request) { writeSSE(w, transcriptBody(tr), 0) })
-		e := streamExecFor(t, lb.baseURL())
+		e := newJSONStreamExec(t, lb.baseURL(), nil)
 		boom := errors.New("consumer went away")
 		c := &collector{failAt: 1, failWith: boom}
 		res := e.Stream(streamAdapterFor(bamlutils.StreamModeStream, false), jsonAliasMethod, jsonInput(), c.emit)
@@ -676,7 +690,7 @@ func TestStreamEmitFaultsAfterClaimAreTerminal(t *testing.T) {
 
 	t.Run("emit_panic", func(t *testing.T) {
 		lb := newLoopback(t, func(w http.ResponseWriter, r *http.Request) { writeSSE(w, transcriptBody(tr), 0) })
-		e := streamExecFor(t, lb.baseURL())
+		e := newJSONStreamExec(t, lb.baseURL(), nil)
 		c := &collector{panicAt: 1}
 		res := e.Stream(streamAdapterFor(bamlutils.StreamModeStream, false), jsonAliasMethod, jsonInput(), c.emit)
 		assertTerminal(t, res, lb, 1)
@@ -705,7 +719,7 @@ func TestStreamCancellationAfterClaimIsTerminal(t *testing.T) {
 	})
 	t.Cleanup(func() { close(release) })
 
-	e := streamExecFor(t, lb.baseURL())
+	e := newJSONStreamExec(t, lb.baseURL(), nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	ad := streamAdapterFor(bamlutils.StreamModeStream, false)
 	ad.Context = ctx
@@ -713,10 +727,15 @@ func TestStreamCancellationAfterClaimIsTerminal(t *testing.T) {
 	done := make(chan bamlutils.NativeSpineStreamResult, 1)
 	go func() { done <- e.Stream(ad, jsonAliasMethod, jsonInput(), c.emit) }()
 
-	// Wait until the first public event proves the claim happened, then cancel.
+	// Wait until the first public event proves the claim happened, then cancel. The loop
+	// also selects on done: a Stream that returns BEFORE emitting anything (a decline, or
+	// a cadence regression that stops emitting) would otherwise burn the whole window and
+	// then fail with a message about the timeout instead of the real result.
 	deadline := time.After(15 * time.Second)
 	for len(c.snapshot()) == 0 {
 		select {
+		case res := <-done:
+			t.Fatalf("Stream returned before emitting any event: disposition=%v stage=%q reason=%q err=%v", res.Disposition, res.Stage, res.Reason, res.Err)
 		case <-deadline:
 			t.Fatal("no event before the cancellation window elapsed")
 		default:
@@ -733,6 +752,49 @@ func TestStreamCancellationAfterClaimIsTerminal(t *testing.T) {
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("Stream did not return after cancellation")
+	}
+}
+
+// TestStreamCancellationAfterCleanCompletionIsTerminal covers the one window a
+// cancellation could previously slip through: the request is cancelled AFTER the transport
+// completed cleanly but BEFORE the final parse. That is still post-claim — the socket was
+// owned and every partial was already delivered — so it must be terminal, not a Succeeded
+// result handed to a caller that has already gone away.
+//
+// The cancel is issued from inside the LAST emit callback, which runs synchronously on the
+// stream goroutine while the body is already fully buffered, so RunStream reaches a clean
+// EOF and returns no error of its own. Without the post-completion ctx check the executor
+// would parse the final and report success.
+func TestStreamCancellationAfterCleanCompletionIsTerminal(t *testing.T) {
+	tr := loadTranscript(t)
+	lb := newLoopback(t, func(w http.ResponseWriter, r *http.Request) { writeSSE(w, transcriptBody(tr), 0) })
+	e := newJSONStreamExec(t, lb.baseURL(), nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ad := streamAdapterFor(bamlutils.StreamModeStream, false)
+	ad.Context = ctx
+
+	want := tr.StructuredCount()
+	if want == 0 {
+		t.Fatal("the shared transcript emits no structured partial; this row would never cancel")
+	}
+	seen := 0
+	emit := func(bamlutils.NativeSpineStreamEvent) error {
+		seen++
+		if seen == want {
+			cancel()
+		}
+		return nil
+	}
+
+	res := e.Stream(ad, jsonAliasMethod, jsonInput(), emit)
+	assertTerminal(t, res, lb, 1)
+	if res.Reason != "stream_cancelled" {
+		t.Fatalf("(stage, reason) = (%q, %q), want the cancellation terminal", res.Stage, res.Reason)
+	}
+	if res.Final != nil {
+		t.Fatal("a cancelled stream returned a final value")
 	}
 }
 
@@ -754,7 +816,7 @@ func TestStreamByteProgressTimeoutsAreIndependent(t *testing.T) {
 			<-release
 		})
 		t.Cleanup(func() { close(release) })
-		e := streamExecFor(t, lb.baseURL())
+		e := newJSONStreamExec(t, lb.baseURL(), nil)
 		c := &collector{}
 		res := e.Stream(streamAdapterFor(bamlutils.StreamModeStream, false), jsonAliasMethod, jsonInput(), c.emit)
 		assertTerminal(t, res, lb, 1)
@@ -778,7 +840,7 @@ func TestStreamByteProgressTimeoutsAreIndependent(t *testing.T) {
 			<-release // first byte arrived, then the stream stalls
 		})
 		t.Cleanup(func() { close(release) })
-		e := streamExecFor(t, lb.baseURL())
+		e := newJSONStreamExec(t, lb.baseURL(), nil)
 		c := &collector{}
 		res := e.Stream(streamAdapterFor(bamlutils.StreamModeStream, false), jsonAliasMethod, jsonInput(), c.emit)
 		assertTerminal(t, res, lb, 1)
@@ -793,7 +855,7 @@ func TestStreamByteProgressTimeoutsAreIndependent(t *testing.T) {
 // a socket-free direct parse.
 func TestStreamCallAndParseStayOnTheSameExecutor(t *testing.T) {
 	lb := newLoopback(t, func(w http.ResponseWriter, r *http.Request) { okChatCompletion(w, `{"k":1}`) })
-	e := streamExecFor(t, lb.baseURL())
+	e := newJSONStreamExec(t, lb.baseURL(), nil)
 
 	res := e.Call(newTestAdapter(), jsonAliasMethod, jsonInput())
 	if res.Disposition != bamlutils.NativeSpineSucceeded {

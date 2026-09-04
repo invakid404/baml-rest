@@ -410,3 +410,76 @@ func TestStreamDeclinesAMethodWithoutAStreamBinding(t *testing.T) {
 		t.Fatalf("unary registration opened %d socket(s), want 0", hits())
 	}
 }
+
+// TestRegistryIsDetachedFromTheCallersSlice is the mutate-after-boot regression for the
+// registry's immutability claim. Both stream constructors normalize the caller's
+// registration slice into their own candidate records, and the classifier stores the
+// stream binding into the registry — so if any of those hops kept a POINTER into the
+// caller's backing array, a caller mutating that slice after construction would reach
+// live serving state and could replace, or nil out, the partial decoder that the
+// registration-time nil check already validated.
+//
+// The probe is the socket-free ParseStream route, which reads exactly the registered
+// DecodePartial. Reverting any of the three copies (NewStreamExecutor's normalizer,
+// NewWorkerRuntime's normalizer, or classifyRegistration's registry write) makes the
+// mutated decoder win and the assertions below fail.
+func TestRegistryIsDetachedFromTheCallersSlice(t *testing.T) {
+	proj := jsonAliasProject(t)
+	ctx := context.Background()
+
+	// poison is what a post-boot mutation would install: a decoder that fails loudly.
+	poison := func([]byte) (any, error) { return nil, errors.New("post-boot mutation reached the registry") }
+
+	t.Run("NewStreamExecutor", func(t *testing.T) {
+		regs := []spine.StreamRegistration{streamReg()}
+		e, err := spine.NewStreamExecutor(proj, regs, nil)
+		if err != nil {
+			t.Fatalf("NewStreamExecutor: %v", err)
+		}
+		// Mutate the caller's slice AFTER construction, both ways a caller plausibly
+		// would: swap the decoder, and nil it out entirely.
+		regs[0].Binding.DecodePartial = poison
+		got, perr := e.ParseStream(ctx, jsonAliasMethod, `{"k":1}`)
+		if perr != nil {
+			t.Fatalf("ParseStream after a caller-side mutation: %v", perr)
+		}
+		if _, ok := got.(nativespinejsonfixture.OutputJsonStream); !ok {
+			t.Fatalf("ParseStream produced %T, want the registered decoder's carrier", got)
+		}
+
+		regs[0].Binding.DecodePartial = nil
+		if _, perr := e.ParseStream(ctx, jsonAliasMethod, `{"k":1}`); perr != nil {
+			t.Fatalf("nil-ing the caller's DecodePartial after boot disabled the registered decoder: %v", perr)
+		}
+		// The whole registration element being replaced must not reach it either.
+		regs[0] = spine.StreamRegistration{}
+		if _, perr := e.ParseStream(ctx, jsonAliasMethod, `{"k":1}`); perr != nil {
+			t.Fatalf("replacing the caller's registration after boot reached the registry: %v", perr)
+		}
+	})
+
+	t.Run("NewWorkerRuntime", func(t *testing.T) {
+		regs := []spine.StreamRegistration{streamReg()}
+		rt, err := spine.NewWorkerRuntime(proj, regs, nil)
+		if err != nil {
+			t.Fatalf("NewWorkerRuntime: %v", err)
+		}
+		regs[0].Binding.DecodePartial = poison
+		regs[0].Binding.Unary.DecodeFinal = poison
+
+		pm, ok := rt.ParseMethod(jsonAliasMethod)
+		if !ok {
+			t.Fatal("admitted method missing from the runtime")
+		}
+		out, perr := pm.StreamImpl(rt.MakeAdapter(ctx), `{"k":1}`)
+		if perr != nil {
+			t.Fatalf("stream parse after a caller-side mutation: %v", perr)
+		}
+		if _, ok := out.(nativespinejsonfixture.OutputJsonStream); !ok {
+			t.Fatalf("stream parse produced %T, want the registered decoder's carrier", out)
+		}
+		if _, perr := pm.Impl(rt.MakeAdapter(ctx), `{"k":1}`); perr != nil {
+			t.Fatalf("final parse after a caller-side mutation: %v", perr)
+		}
+	})
+}

@@ -104,9 +104,12 @@ var (
 func NewStreamExecutor(proj projectdescriptor.Project, registrations []StreamRegistration, exact *llmhttp.ExactExecutor) (*StreamExecutor, error) {
 	normalized := make([]candidateRegistration, len(registrations))
 	for i := range registrations {
+		// Per-iteration COPY: taking the address of the caller's slice element would let
+		// a post-construction mutation of that slice reach the registry this builds.
+		b := registrations[i].Binding
 		normalized[i] = candidateRegistration{
-			binding: registrations[i].Binding.Unary,
-			stream:  &registrations[i].Binding,
+			binding: b.Unary,
+			stream:  &b,
 			build:   registrations[i].BuildMethod,
 		}
 	}
@@ -322,6 +325,15 @@ func (e *StreamExecutor) Stream(ctx context.Context, method string, input any, e
 		return e.failedStream(rerr, stage, reason, cadence.Raw())
 	}
 	_ = res
+
+	// A caller cancellation observed AFTER a clean completion is still POST-CLAIM: the
+	// socket was owned, events were delivered, and the final parse below has not run. It
+	// must be terminal, not a success — returning Succeeded here would hand the caller a
+	// final for a request it already abandoned, and would be the one path on which a
+	// cancelled stream did not report as cancelled.
+	if err := ctx.Err(); err != nil {
+		return e.failedStream(err, stageStream, reasonStreamCancelled, cadence.Raw())
+	}
 
 	// --- Clean completion: the FINAL parse over the accumulated parseable text, then
 	// the EMBEDDED unary final decoder. A stream final has the ordinary final

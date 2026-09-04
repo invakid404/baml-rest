@@ -1181,6 +1181,14 @@ func runStream(exec bamlutils.NativeSpineStreamExecutor, adapter bamlutils.Adapt
 	go func() {
 		defer close(ch)
 		emit := func(ev bamlutils.NativeSpineStreamEvent) error {
+			if !ev.HasPartial && !needsRaw {
+				// A raw-only event on a plain /stream carries NO public content: no
+				// structured partial, and the raw/reasoning channels are suppressed for
+				// this mode. Delivering it would put a contentless frame on the wire,
+				// which the BAML lane never emits. Drop it here rather than shaping an
+				// empty streamResult.
+				return nil
+			}
 			r := streamResult{}
 			if ev.HasPartial {
 				r.partial = ev.Partial
