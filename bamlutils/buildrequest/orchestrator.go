@@ -379,18 +379,6 @@ type NewResultFunc func(kind bamlutils.StreamResultKind, stream, final any, raw,
 // StreamResultKindMetadata and its Metadata() must return the supplied value.
 type NewMetadataResultFunc func(md *bamlutils.Metadata) bamlutils.StreamResult
 
-// streamAccumulator holds one child/attempt window's parseable/raw/reasoning
-// accumulation plus the throttle clock. It is the shared per-window state the
-// processDelta cadence driver mutates, letting the SSE ForEach path and the
-// de-BAML native EmitDelta path drive byte-identical partial cadence (scope §5.4).
-// A fresh streamAccumulator is created per child/attempt window.
-type streamAccumulator struct {
-	parseable     strings.Builder
-	raw           strings.Builder
-	reasoning     strings.Builder
-	lastParseTime time.Time
-}
-
 // RunStreamOrchestration executes the BuildRequest streaming path.
 //
 // It builds an HTTP request, executes it, parses SSE events, extracts deltas,
@@ -575,83 +563,32 @@ func RunStreamOrchestration(
 		return nil
 	}
 
-	// processDelta is the SHARED per-delta accumulation + throttled-partial cadence
-	// driver for BOTH transport engines (scope §5.4). The SSE ForEach path and the
-	// de-BAML native EmitDelta path both feed one normalized delta triple through
-	// it, so parseable/raw/reasoning accumulation, the ParseThrottleInterval
-	// decision, the nonblocking partial send, and the sawStreamFrame bookkeeping are
-	// byte-for-byte identical across engines. The ONLY deliberate difference is the
-	// parseStreamFn closure: the BAML/hybrid closure on the BAML lane, the
-	// native-only closure on the claimed native lane. acc holds the one
-	// child/attempt window's accumulators + throttle clock (a fresh acc per window).
-	// It returns a non-nil error only when a partial send observed ctx cancellation
-	// (the caller must stop reading); a benign empty or parse-declined delta returns
-	// nil, exactly as the prior inline SSE body did.
-	processDelta := func(acc *streamAccumulator, parseStreamFn ParseStreamFunc, parseableDelta, rawDelta, reasoningDelta string) error {
-		// Skip when nothing meaningful arrived on any channel. Under
-		// IncludeReasoning=true a reasoning-only event has empty raw/parseable but
-		// non-empty reasoning — so the gate must consider reasoning too.
-		if rawDelta == "" && parseableDelta == "" && reasoningDelta == "" {
-			return nil
-		}
-
-		acc.raw.WriteString(rawDelta)
-		if parseableDelta != "" {
-			acc.parseable.WriteString(parseableDelta)
-		}
-		if reasoningDelta != "" {
-			acc.reasoning.WriteString(reasoningDelta)
-		}
-
-		if config.NeedsPartials && parseableDelta == "" {
-			if config.NeedsRaw {
-				return trySendPartialShared(nil, rawDelta, reasoningDelta)
-			}
-			return nil
-		}
-
-		// Emit partial if needed. Non-blocking sends for partials/deltas: drop when
-		// the output buffer is full so the LLM stream keeps draining (matches the
-		// legacy path which intentionally drops non-reset partials rather than
-		// coupling upstream reads to downstream consumer backpressure).
-		if config.NeedsPartials {
-			// Attempt a throttled structured parse, but DELIVER RAW REGARDLESS of
-			// whether the parse succeeds, errors, returns nil, OR the tick is
-			// throttle-skipped: for a NeedsRaw stream, raw partials must not depend
-			// on structured-parse success or cadence (the customer's core
-			// complaint — prose streamed against a class schema fails ParseStream
-			// for every prefix, which previously hid every live partial).
-			var parsed any
-			if parseStreamFn != nil {
-				shouldParse := config.ParseThrottleInterval == 0 ||
-					time.Since(acc.lastParseTime) >= config.ParseThrottleInterval
-				if shouldParse {
-					// Update throttle timestamp regardless of parse success/failure so
-					// repeated failures don't bypass the throttle interval.
-					acc.lastParseTime = time.Now()
-					if candidate, parseErr := parseStreamFn(ctx, acc.parseable.String()); parseErr == nil && candidate != nil {
-						parsed = candidate
-					}
-				}
-			}
-			if parsed != nil {
-				rawForResult := ""
-				reasoningForResult := ""
-				if config.NeedsRaw {
-					rawForResult = rawDelta
-					reasoningForResult = reasoningDelta
-				}
-				return trySendPartialShared(parsed, rawForResult, reasoningForResult)
-			}
-			if config.NeedsRaw {
-				// No structured partial this tick (parse error, nil result, OR a
-				// throttle-skipped tick). Emit the raw/reasoning delta on its own so
-				// live raw survives a parse miss and a throttle skip alike. Non-raw
-				// streams never enter this branch, preserving their strict cadence.
-				return trySendPartialShared(nil, rawDelta, reasoningDelta)
-			}
-		}
-		return nil
+	// newCadence builds one child/attempt window's SHARED cadence driver: the
+	// per-delta accumulation + throttled-partial machinery extracted into
+	// stream_cadence.go, which BOTH transport engines drive. The SSE ForEach path and
+	// the de-BAML native EmitDelta path feed one normalized delta triple through it,
+	// so parseable/raw/reasoning accumulation, the ParseThrottleInterval decision, the
+	// nonblocking partial send, and the sawStreamFrame bookkeeping are byte-for-byte
+	// identical across engines. The ONLY deliberate difference is the parseStreamFn
+	// closure: the BAML/hybrid closure on the BAML lane, the native-only closure on the
+	// claimed native lane.
+	//
+	// This orchestrator keeps CadenceParseErrorsAreNoEvent — the exact policy the
+	// former inline closure encoded — so its streaming behaviour is unchanged: an
+	// ordinary partial parse error is a no-event, and a raw-wanted stream keeps
+	// delivering raw/reasoning through it. The strict policy exists for the BAML-free
+	// spine lane and is never selected here.
+	newCadence := func(parseStreamFn ParseStreamFunc) *StreamCadence {
+		return NewStreamCadence(StreamCadenceConfig{
+			NeedsPartials:         config.NeedsPartials,
+			NeedsRaw:              config.NeedsRaw,
+			ParseThrottleInterval: config.ParseThrottleInterval,
+			ParsePartial:          StreamCadenceParseFunc(parseStreamFn),
+			ParsePolicy:           CadenceParseErrorsAreNoEvent,
+			Emit: func(ev StreamCadenceEvent) error {
+				return trySendPartialShared(ev.Partial, ev.Raw, ev.Reasoning)
+			},
+		})
 	}
 
 	// tryOneBedrockStreamChild runs a single aws-bedrock streaming
@@ -890,7 +827,7 @@ func RunStreamOrchestration(
 					"",
 				)
 			}
-			acc := &streamAccumulator{}
+			cad := newCadence(config.NativeParseStream)
 			outcome := config.NativeAttempt(ctx, NativeStreamAttempt{
 				Provider:         provider,
 				ClientOverride:   clientOverride,
@@ -910,7 +847,7 @@ func RunStreamOrchestration(
 				// closure, so partials on the claimed native lane use the same
 				// accumulation/throttle/nonblocking-send semantics as the BAML lane.
 				EmitDelta: func(d bamlutils.NativeStreamDelta) error {
-					return processDelta(acc, config.NativeParseStream, d.ParseableDelta, d.RawDelta, d.ReasoningDelta)
+					return cad.Delta(ctx, d.ParseableDelta, d.RawDelta, d.ReasoningDelta)
 				},
 				// The native transport fires SendHeaders the instant it reads 2xx
 				// headers — the same idempotent first-2xx liveness signal the BAML path
@@ -933,9 +870,9 @@ func RunStreamOrchestration(
 				// NATIVE-ONLY final closure (no per-prefix BAML fallback, I6). A native
 				// final-parse error is TERMINAL for the claimed stream (I4) — it must
 				// NOT enter retry/fallback/BAML-resend.
-				fullRaw := acc.raw.String()
-				fullReasoning := acc.reasoning.String()
-				finalResult, parseErr := config.NativeParseFinal(ctx, acc.parseable.String())
+				fullRaw := cad.Raw()
+				fullReasoning := cad.Reasoning()
+				finalResult, parseErr := config.NativeParseFinal(ctx, cad.Parseable())
 				if parseErr != nil {
 					return nil, "", "", newNativeStreamTerminalError(
 						wrapOutputParse(fmt.Errorf("buildrequest: failed to parse native final result: %w", parseErr)),
@@ -952,7 +889,7 @@ func RunStreamOrchestration(
 				// carried as details.raw.
 				raw := outcome.RawDiagnostic
 				if raw == "" {
-					raw = acc.raw.String()
+					raw = cad.Raw()
 				}
 				return nil, "", "", newNativeStreamTerminalError(outcome.Err, raw)
 			default:
@@ -988,10 +925,10 @@ func RunStreamOrchestration(
 		// Send heartbeat on connection success
 		sendHeartbeat()
 
-		// Fresh per-window accumulator; processDelta drives the same cadence the
-		// native lane uses, differing only in the parseStream closure (BAML/hybrid
+		// Fresh per-window cadence; it drives the same accumulation/throttle/delivery
+		// the native lane uses, differing only in the parseStream closure (BAML/hybrid
 		// here, native-only on the claimed native lane).
-		acc := &streamAccumulator{}
+		cad := newCadence(parseStream)
 
 		// callbackErr captures an error raised from inside the per-event
 		// callback (extraction failure or a partial-send ctx cancellation)
@@ -1018,14 +955,14 @@ func RunStreamOrchestration(
 				// the break (per #256).
 				callbackErr = newRawError(
 					fmt.Errorf("buildrequest: delta extraction failed: %w", extractErr),
-					acc.raw.String(),
+					cad.Raw(),
 				)
 				return sseclient.ErrStopScan
 			}
 			// Drive the shared accumulation + throttled-partial cadence with the
 			// BAML/hybrid parseStream closure. A ctx-cancellation during a partial
 			// send surfaces as a non-nil error, which halts the scan verbatim.
-			if err := processDelta(acc, parseStream, delta.Parseable, delta.Raw, delta.Reasoning); err != nil {
+			if err := cad.Delta(ctx, delta.Parseable, delta.Raw, delta.Reasoning); err != nil {
 				callbackErr = err
 				return sseclient.ErrStopScan
 			}
@@ -1046,16 +983,16 @@ func RunStreamOrchestration(
 			// details.raw.
 			return nil, "", "", newRawError(
 				fmt.Errorf("buildrequest: stream error: %w", streamErr),
-				acc.raw.String(),
+				cad.Raw(),
 			)
 		}
 
 		// Parse the final result — let parseFinal decide whether an empty
 		// completion is valid. The legacy path does not reject empty strings.
-		fullRaw := acc.raw.String()
-		fullReasoning := acc.reasoning.String()
+		fullRaw := cad.Raw()
+		fullReasoning := cad.Reasoning()
 
-		finalResult, parseErr := parseFinal(ctx, acc.parseable.String())
+		finalResult, parseErr := parseFinal(ctx, cad.Parseable())
 		if parseErr != nil {
 			// Opt-in soft-final (default OFF), identical scope/guards to the
 			// bedrock final arm: STREAMING (NeedsPartials) + NeedsRaw +
