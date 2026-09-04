@@ -102,14 +102,17 @@ var (
 // A nil exact executor uses the hardened default. The two byte-progress deadlines come
 // from the environment, the same source the legacy static-stream server uses.
 func NewStreamExecutor(proj projectdescriptor.Project, registrations []StreamRegistration, exact *llmhttp.ExactExecutor) (*StreamExecutor, error) {
+	// The normalized records are TRANSIENT: they exist only for the duration of this
+	// constructor and are never retained, so pointing them at the caller's slice is safe.
+	// Detachment from caller memory happens at the ONE ownership boundary where something
+	// IS retained — copyStreamBinding, in classifyRegistration, where the registry entry
+	// is built. Do not re-add a copy here: a redundant one shields that boundary and stops
+	// the mutate-after-boot regression from biting when it is reverted.
 	normalized := make([]candidateRegistration, len(registrations))
 	for i := range registrations {
-		// Per-iteration COPY: taking the address of the caller's slice element would let
-		// a post-construction mutation of that slice reach the registry this builds.
-		b := registrations[i].Binding
 		normalized[i] = candidateRegistration{
-			binding: b.Unary,
-			stream:  &b,
+			binding: registrations[i].Binding.Unary,
+			stream:  &registrations[i].Binding,
 			build:   registrations[i].BuildMethod,
 		}
 	}

@@ -456,12 +456,16 @@ func classifyRegistration(proj projectdescriptor.Project, byName map[string]proj
 	if requireStream && m.Class != projectdescriptor.ClassStaticStream {
 		return nil, cohortMiss(fmt.Errorf("nativespine: register %q: class %q is not stream-capable (want %q)", b.Method, m.Class, projectdescriptor.ClassStaticStream))
 	}
-	// COPY the stream binding into the registry. c.stream points into the CALLER's
-	// registration slice, and both the executor and the runtime document their registry
-	// as immutable after construction — so retaining that pointer would let a caller
-	// mutate live serving state after boot, including nil-ing DecodePartial after the
-	// registration-time nil check above already passed. The unary binding is a value
-	// field and is copied by assignment; this makes the stream half match.
+	// COPY the stream binding into the registry. This is the SINGLE ownership boundary
+	// between caller memory and the immutable registry: every construction path funnels
+	// through classifyRegistration, and the candidate records upstream are transient, so
+	// this is the one place a caller-owned value becomes long-lived serving state.
+	// c.stream points into the CALLER's registration slice, and both the executor and the
+	// runtime document their registry as immutable after construction — so retaining that
+	// pointer would let a caller mutate live serving state after boot, including nil-ing
+	// DecodePartial after the registration-time nil check above already passed. The unary
+	// binding is a value field and is copied by assignment; this makes the stream half
+	// match.
 	return &registeredMethod{fn: fn, bundle: bundle, binding: b, stream: copyStreamBinding(c.stream)}, nil
 }
 
@@ -470,6 +474,12 @@ func classifyRegistration(proj projectdescriptor.Project, byName map[string]proj
 // holds only an embedded value struct and function values, so copying the struct detaches
 // the registry from the caller's backing array entirely. A caller that later reassigns
 // its slice element — or the binding's DecodePartial — cannot reach the registered copy.
+//
+// This is deliberately the ONLY copy on the path. An extra one in either constructor's
+// normalizer would be redundant — the normalized records never outlive construction — and
+// worse than redundant: it would mask a regression here, leaving
+// TestRegistryIsDetachedFromTheCallersSlice green while the registry was no longer
+// detached. One load-bearing copy, one test that bites on it.
 func copyStreamBinding(b *bamlutils.NativeSpineStreamBinding) *bamlutils.NativeSpineStreamBinding {
 	if b == nil {
 		return nil

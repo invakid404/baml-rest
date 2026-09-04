@@ -6,6 +6,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 )
@@ -495,17 +496,27 @@ func TestDeclineFramesAlwaysCarryANonNilError(t *testing.T) {
 
 // cancelOnEmitExec fills the generated result channel past its buffer and then cancels
 // the adapter, so the emit closure faces a FULL buffer and a cancelled context at once.
+//
+// emitsDone is closed once EVERY emit has returned. The test must wait on it before it
+// drains: draining concurrently frees buffer slots, which would let the final send become
+// ready alongside <-Done() — and with both ready, select is entitled to choose either, so
+// the assertion would be a coin flip rather than a proof.
 type cancelOnEmitExec struct {
 	unaryOnlyExec
-	events   int
-	cancel   context.CancelFunc
-	emitErrs []error
+	events    int
+	cancel    context.CancelFunc
+	emitsDone chan struct{}
+	emitErrs  []error
 }
 
 func (e *cancelOnEmitExec) Stream(_ context.Context, _ string, _ any, emit bamlutils.NativeSpineStreamEmit) bamlutils.NativeSpineStreamResult {
+	// Closed after the loop, so a test that waits on it observes every emitErrs write
+	// (the close/receive pair is the happens-before edge that also makes the slice safe
+	// to read from the test goroutine).
+	defer close(e.emitsDone)
 	for i := 0; i < e.events; i++ {
-		// Cancel once the buffer is certainly full, so every later emit sees BOTH a
-		// blocked send and a done context.
+		// Cancel once the buffer is certainly full, so the LAST emit sees BOTH a blocked
+		// send and a done context.
 		if i == e.events-1 {
 			e.cancel()
 		}
@@ -530,15 +541,46 @@ func TestFullBufferNeverMasksCancellation(t *testing.T) {
 	ad := newFixtureAdapter(ctx)
 	ad.SetStreamMode(bamlutils.StreamModeStream)
 
-	// More events than the buffer holds, and nothing drains the channel until Stream has
-	// returned — so the tail of the run is exactly the full-buffer-plus-cancelled state.
-	exec := &cancelOnEmitExec{events: streamResultBuffer + 4, cancel: cancel}
+	// More events than the buffer holds, and NOTHING drains the channel until every emit
+	// has returned — so the tail of the run is deterministically the
+	// full-buffer-plus-cancelled state.
+	exec := &cancelOnEmitExec{
+		events:    streamResultBuffer + 4,
+		cancel:    cancel,
+		emitsDone: make(chan struct{}),
+	}
 	sm, _ := BuildMethod(exec)
 	ch, err := sm.Impl(ad, &StaticRecursiveAliasJsonInput{Topic: "x"})
 	if err != nil {
 		t.Fatalf("Impl: %v", err)
 	}
-	drain(t, ch)
+	// Wait for the scripted emits BEFORE draining. Draining first is what made this
+	// racy: it frees slots, so the last send can become ready and select may legally
+	// take it instead of <-Done().
+	select {
+	case <-exec.emitsDone:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the scripted executor did not finish emitting")
+	}
+
+	// NON-VACUITY: the buffer must really have filled, or "cancellation beat the drop
+	// path" would be proven with the drop path never reached. Every emit after the
+	// buffer's capacity, up to the cancelled one, must have taken the drop arm (nil).
+	if len(exec.emitErrs) != exec.events {
+		t.Fatalf("recorded %d emit results, want %d", len(exec.emitErrs), exec.events)
+	}
+	dropped := 0
+	for _, e := range exec.emitErrs[:len(exec.emitErrs)-1] {
+		if e == nil {
+			dropped++
+		}
+	}
+	if dropped != exec.events-1 {
+		t.Fatalf("%d of %d pre-cancel emits returned an error; they must all succeed or drop silently", exec.events-1-dropped, exec.events-1)
+	}
+	if exec.events-1 <= streamResultBuffer {
+		t.Fatal("the script never exceeds the channel buffer; the full-buffer path is untested")
+	}
 
 	last := exec.emitErrs[len(exec.emitErrs)-1]
 	if last == nil {
@@ -547,4 +589,6 @@ func TestFullBufferNeverMasksCancellation(t *testing.T) {
 	if !errors.Is(last, context.Canceled) {
 		t.Fatalf("emit returned %v, want the adapter's context error", last)
 	}
+
+	drain(t, ch)
 }

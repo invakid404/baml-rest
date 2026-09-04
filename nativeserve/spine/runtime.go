@@ -104,13 +104,16 @@ var _ worker.Runtime = (*workerRuntime)(nil)
 // widening classifyBinding / the executor WITHOUT touching NewWorkerRuntime's
 // shape, the bootstrap, the pool, the plugin ABI, or the build flag.
 func NewWorkerRuntime(proj projectdescriptor.Project, candidates []StreamRegistration, exact *llmhttp.ExactExecutor) (worker.Runtime, error) {
+	// Transient records, as in NewStreamExecutor: they never outlive this constructor, so
+	// they may point at the caller's slice. The single detachment boundary is
+	// copyStreamBinding in classifyRegistration — see the note there.
 	normalized := make([]candidateRegistration, len(candidates))
 	for i := range candidates {
-		// b is a per-iteration COPY, and the stream pointer must address THAT copy: a
-		// pointer into the caller's slice would leave the immutable registry reachable
-		// from caller-side mutation after boot.
-		b := candidates[i].Binding
-		normalized[i] = candidateRegistration{binding: b.Unary, stream: &b, build: candidates[i].BuildMethod}
+		normalized[i] = candidateRegistration{
+			binding: candidates[i].Binding.Unary,
+			stream:  &candidates[i].Binding,
+			build:   candidates[i].BuildMethod,
+		}
 	}
 	accepted, err := classifyCandidates(proj, normalized, true)
 	if err != nil {
