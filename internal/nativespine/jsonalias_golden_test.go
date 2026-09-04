@@ -152,18 +152,30 @@ func TestNonStreamFamiliesStayUnary(t *testing.T) {
 			if err != nil {
 				t.Fatalf("BuildFromSource: %v", err)
 			}
+			// NON-VACUITY: the method must actually have been RETAINED and admitted.
+			// Without this flag a family that was dropped from Project.Methods entirely
+			// (declined upstream, renamed, or lost to a classifier change) would satisfy
+			// the loop below by never entering it, and the unary-class claim would be
+			// proven of nothing.
+			found := false
 			for _, m := range p.Methods {
 				if m.Name != "F" {
 					continue
 				}
+				found = true
 				if m.Class != projectdescriptor.ClassStaticUnary {
 					t.Fatalf("class = %q, want %q (only the exact five-arm JSON alias is stream-capable)", m.Class, projectdescriptor.ClassStaticUnary)
 				}
-				for _, c := range m.RequiredCapabilities {
-					if c == "stream" || c == "stream_with_raw" {
-						t.Fatalf("non-stream family acquired capability %q", c)
-					}
+				// The capability set must be exactly the unary one — not merely free of
+				// the two stream codes, which a truncated or reordered set would also be.
+				want := nativespine.ClassRequiredCapabilities(projectdescriptor.ClassStaticUnary)
+				if !reflect.DeepEqual(m.RequiredCapabilities, want) {
+					t.Fatalf("required capabilities = %v, want the unary-only set %v", m.RequiredCapabilities, want)
 				}
+			}
+			if !found {
+				t.Fatalf("method %q is not in Project.Methods (%d admitted, %d declined); the unary-class proof would be vacuous",
+					"F", len(p.Methods), len(p.Diagnostics))
 			}
 		})
 	}

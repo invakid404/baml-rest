@@ -184,47 +184,8 @@ func TestAdmitStaticSpineStreamClaimModeGate(t *testing.T) {
 	}
 }
 
-// TestAdmitStaticSpineStreamClaimRewriteProxyIsFailClosed proves the MANDATORY
-// rewrite/proxy rule: this lane is cohort-gate-exempt, so a caller that supplies NO
-// predicate must not be allowed to claim while the check is skipped. A nil predicate
-// declines exactly as a positive verdict would.
-func TestAdmitStaticSpineStreamClaimRewriteProxyIsFailClosed(t *testing.T) {
-	in := spineStreamInput(aliasDescriptorBundle("M", "JSON", false, descJSONArms()))
-	in.WouldRewriteOrProxy = nil
-	claim, err := AdmitStaticSpineStreamClaim(context.Background(), in)
-	if claim != nil {
-		claim.Close()
-		t.Fatal("a nil rewrite/proxy predicate produced a CLAIM; the gate must be fail-closed")
-	}
-	if err == nil {
-		t.Fatal("a nil rewrite/proxy predicate was admitted")
-	}
-	// It must not be admitted anywhere earlier for an unrelated reason either: the
-	// descriptor above is the exact admitted family, so the only reasons it can decline
-	// are the rewrite gate itself or a later render/prepare step (the fixture carries no
-	// prompt, so the render gate is legitimately reachable). What it must NEVER do is
-	// return a claim.
-	d, ok := err.(*StaticDecline)
-	if !ok {
-		t.Fatalf("err = %v (%T), want *StaticDecline", err, err)
-	}
-	if Reason(d.Reason) == reasonSpineNotExactAlias {
-		t.Fatalf("the exact JSON alias declined at the totality gate (%q); the fixture must reach the rewrite gate", d.Reason)
-	}
-}
-
-// TestAdmitStaticSpineStreamClaimRewriteProxyDeclinesADivertedTarget is the positive
-// half: a predicate that reports the effective target WOULD be rewritten or proxied
-// declines pre-socket, because the exact-transport evidence would be meaningless.
-func TestAdmitStaticSpineStreamClaimRewriteProxyDeclinesADivertedTarget(t *testing.T) {
-	in := spineStreamInput(aliasDescriptorBundle("M", "JSON", false, descJSONArms()))
-	in.WouldRewriteOrProxy = func(string) bool { return true }
-	claim, err := AdmitStaticSpineStreamClaim(context.Background(), in)
-	if claim != nil {
-		claim.Close()
-		t.Fatal("a rewritten/proxied target produced a CLAIM")
-	}
-	if err == nil {
-		t.Fatal("a rewritten/proxied target was admitted")
-	}
-}
+// The MANDATORY fail-closed rewrite/proxy gate is proven in
+// static_spine_stream_prepare_test.go, against a fully valid input that reaches the
+// PREPARED plan and ADMITS when the predicate reports an untouched target. It cannot be
+// proven from the incomplete fixture here: this one declines during render/prepare
+// anyway, so "it declined" would hold even with the gate deleted.

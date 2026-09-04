@@ -389,11 +389,18 @@ func admittedMethodCount(t *testing.T, b *bootedWorker) int {
 	}
 }
 
-// generatedCandidateNames reads the emitted deployment descriptor and returns the
-// names of every generated (codegen-admitted) static-unary candidate — the set BEFORE
-// the runtime classifier runs. Paired with admittedMethodCount it distinguishes a
-// candidate that was GENERATED then declined at admission from one that was never
-// generated at all (an unknown-method lookup).
+// generatedCandidateNames reads the emitted deployment descriptor and returns the names
+// of every generated (codegen-admitted) candidate — the set BEFORE the runtime
+// classifier runs. Paired with admittedMethodCount it distinguishes a candidate that was
+// GENERATED then declined at admission from one that was never generated at all (an
+// unknown-method lookup).
+//
+// It accepts BOTH admitted classes. Since M3e-A the exact five-arm JSON alias is stamped
+// ClassStaticStream, and a static_stream method is a SUPERSET of a static_unary one — it
+// is a generated candidate in both projections (Binding() for the standard composite's
+// /call, StreamBinding() for the native-only runtime). Filtering to static_unary alone
+// would silently drop the very method the acceptance rows serve, and the suite's own
+// non-vacuity assertion would fail before it ever exercised streaming.
 func generatedCandidateNames(t *testing.T) []string {
 	t.Helper()
 	if generatedProjectJSON == "" {
@@ -409,11 +416,35 @@ func generatedCandidateNames(t *testing.T) []string {
 	}
 	var names []string
 	for _, m := range proj.Methods {
-		if m.Class == projectdescriptor.ClassStaticUnary {
+		switch m.Class {
+		case projectdescriptor.ClassStaticUnary, projectdescriptor.ClassStaticStream:
 			names = append(names, m.Name)
+		default:
+			// A class this build does not know is not a candidate: the generator skips
+			// it, so listing it here would make the generate-then-decline proof lie.
 		}
 	}
 	return names
+}
+
+// generatedCandidateClass returns the descriptor class the generator stamped on one
+// method, or "" when the method is not in the emitted descriptor.
+func generatedCandidateClass(t *testing.T, method string) projectdescriptor.MethodClass {
+	t.Helper()
+	raw, err := os.ReadFile(generatedProjectJSON)
+	if err != nil {
+		t.Fatalf("read generated project.json: %v", err)
+	}
+	var proj projectdescriptor.Project
+	if err := json.Unmarshal(raw, &proj); err != nil {
+		t.Fatalf("unmarshal generated project.json: %v", err)
+	}
+	for _, m := range proj.Methods {
+		if m.Name == method {
+			return m.Class
+		}
+	}
+	return ""
 }
 
 // drainFinal collects stream results until the channel closes (bounded).

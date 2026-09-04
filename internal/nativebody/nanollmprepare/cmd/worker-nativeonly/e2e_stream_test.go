@@ -238,13 +238,11 @@ func TestNativeOnlyWorker_BootStreamPostClaimFaultIsTerminal(t *testing.T) {
 			hits := setProviderHandler(tc.handler)
 			bw := bootWorker(t)
 			ch, err := bw.worker.CallStream(context.Background(), nativeOnlyMethod, callInput("weather"), bamlutils.StreamModeStream)
+			// A SYNCHRONOUS refusal is not a post-claim outcome: it means the request
+			// never reached the transport, so this row would prove nothing about the
+			// terminal contract. Fail loudly rather than accept it as success.
 			if err != nil {
-				// A refusal before any frame is also terminal, but it must not have
-				// opened a socket more than once.
-				if hits() > 1 {
-					t.Fatalf("provider request count = %d, want at most 1", hits())
-				}
-				return
+				t.Fatalf("CallStream refused the request synchronously (%v); a post-claim row must reach the transport\nstderr:\n%s", err, bw.stderr.String())
 			}
 			frames := drainFinal(t, ch)
 			errFrames := 0
@@ -256,6 +254,8 @@ func TestNativeOnlyWorker_BootStreamPostClaimFaultIsTerminal(t *testing.T) {
 					t.Fatalf("a post-claim fault produced a successful final frame: %s", f.Data)
 				}
 			}
+			// UNCONDITIONAL for every row: exactly one terminal error frame, and exactly
+			// one provider request — the claim is owned once and never resent.
 			if errFrames != 1 {
 				t.Fatalf("got %d error frame(s), want exactly 1 terminal error: %+v", errFrames, frames)
 			}

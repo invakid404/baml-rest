@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/bamlutils/projectdescriptor"
 	"github.com/invakid404/baml-rest/workerplugin"
 )
 
@@ -27,15 +28,27 @@ func TestNativeOnlyWorker_BootCallParse(t *testing.T) {
 	ctx := context.Background()
 
 	// --- Default-deny at boot: GENERATED then DECLINED --------------------------
-	// The fixture declares THREE static-unary methods that codegen/M1 all admit into
-	// the generated candidate set — the exact JSON alias, a non-alias (string) return,
-	// and a retry-policy client method. Proving both halves distinguishes a
-	// generate-then-decline from a candidate that was never generated: the emitted
-	// descriptor must carry all three names...
+	// The fixture declares THREE static methods the codegen classifier admits into the
+	// generated candidate set — the exact JSON alias (stamped static_stream), a
+	// non-alias (string) return, and a retry-policy client method (both static_unary).
+	// Proving both halves distinguishes a generate-then-decline from a candidate that
+	// was never generated: the emitted descriptor must carry all three names...
 	gen := generatedCandidateNames(t)
 	for _, want := range []string{"StaticRecursiveAliasJSON", "NonCohortStringReturn", "RetryPolicyMethod"} {
 		if !slices.Contains(gen, want) {
 			t.Fatalf("generated candidate %q missing from the emitted descriptor %v; the generate-then-decline proof is vacuous if a candidate was never generated", want, gen)
+		}
+	}
+	// ...with the classes the classifier is supposed to have stamped. Pinning them here
+	// keeps the helper above honest: a class filter that silently dropped the served
+	// method would otherwise only surface as a confusing count mismatch below.
+	for method, wantClass := range map[string]projectdescriptor.MethodClass{
+		"StaticRecursiveAliasJSON": projectdescriptor.ClassStaticStream,
+		"NonCohortStringReturn":    projectdescriptor.ClassStaticUnary,
+		"RetryPolicyMethod":        projectdescriptor.ClassStaticUnary,
+	} {
+		if got := generatedCandidateClass(t, method); got != wantClass {
+			t.Fatalf("generated candidate %q has class %q, want %q", method, got, wantClass)
 		}
 	}
 	// ...while the booted runtime admits exactly ONE. The other two were GENERATED but
