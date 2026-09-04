@@ -45,7 +45,7 @@ func TestCadenceSkipsEmptyChunks(t *testing.T) {
 		sink := &cadenceSink{}
 		c := NewStreamCadence(StreamCadenceConfig{
 			NeedsPartials: true, NeedsRaw: needsRaw,
-			ParsePartial: func(context.Context, string) (any, error) { return "p", nil },
+			ParsePartial: func(context.Context, string) (any, bool, error) { return "p", true, nil },
 			Emit:         sink.emit,
 		})
 		if err := c.Delta(context.Background(), "", "", ""); err != nil {
@@ -66,7 +66,7 @@ func TestCadenceAccumulatesAllThreeChannels(t *testing.T) {
 	sink := &cadenceSink{}
 	c := NewStreamCadence(StreamCadenceConfig{
 		NeedsPartials: true, NeedsRaw: true,
-		ParsePartial: func(context.Context, string) (any, error) { return nil, nil },
+		ParsePartial: func(context.Context, string) (any, bool, error) { return nil, false, nil },
 		Emit:         sink.emit,
 	})
 	ctx := context.Background()
@@ -103,8 +103,8 @@ func TestCadenceAccumulatesAllThreeChannels(t *testing.T) {
 // those ticks produces an event.
 func TestCadenceRawIsDecoupledFromParseSuccess(t *testing.T) {
 	parsers := map[string]StreamCadenceParseFunc{
-		"parse_error": func(context.Context, string) (any, error) { return nil, errors.New("boom") },
-		"nil_result":  func(context.Context, string) (any, error) { return nil, nil },
+		"parse_error": func(context.Context, string) (any, bool, error) { return nil, false, errors.New("boom") },
+		"nil_result":  func(context.Context, string) (any, bool, error) { return nil, false, nil },
 	}
 	for name, parse := range parsers {
 		t.Run(name+"_with_raw", func(t *testing.T) {
@@ -144,9 +144,9 @@ func TestCadenceThrottleUsesTheInjectedClock(t *testing.T) {
 	c := NewStreamCadence(StreamCadenceConfig{
 		NeedsPartials:         true,
 		ParseThrottleInterval: 100 * time.Millisecond,
-		ParsePartial: func(context.Context, string) (any, error) {
+		ParsePartial: func(context.Context, string) (any, bool, error) {
 			parses++
-			return nil, errors.New("always fails")
+			return nil, false, errors.New("always fails")
 		},
 		Emit: sink.emit,
 		Now:  clk.Now,
@@ -173,9 +173,9 @@ func TestCadenceThrottleUsesTheInjectedClock(t *testing.T) {
 	parses = 0
 	c2 := NewStreamCadence(StreamCadenceConfig{
 		NeedsPartials: true,
-		ParsePartial: func(context.Context, string) (any, error) {
+		ParsePartial: func(context.Context, string) (any, bool, error) {
 			parses++
-			return nil, nil
+			return nil, false, nil
 		},
 		Emit: sink.emit,
 		Now:  clk.Now,
@@ -199,7 +199,7 @@ func TestCadenceLegacyPolicySwallowsParseErrors(t *testing.T) {
 		sink := &cadenceSink{}
 		c := NewStreamCadence(StreamCadenceConfig{
 			NeedsPartials: true, NeedsRaw: true,
-			ParsePartial: func(context.Context, string) (any, error) { return nil, parseErr },
+			ParsePartial: func(context.Context, string) (any, bool, error) { return nil, false, parseErr },
 			ParsePolicy:  CadenceParseErrorsAreNoEvent,
 			Emit:         sink.emit,
 		})
@@ -212,25 +212,51 @@ func TestCadenceLegacyPolicySwallowsParseErrors(t *testing.T) {
 	}
 }
 
-// TestCadenceStrictPolicySplitsSentinelFromFailure is the M3e-A rule: only the
-// documented "no parseable partial yet" sentinel is benign; every other partial parser
-// or decoder error propagates so the claimed spine stream can terminate on it.
+// TestCadenceStrictPolicySplitsSentinelFromFailure is the M3e-A rule, stated as the
+// cadence now enforces it: "no structured partial for this prefix" is an explicit
+// RESULT of the callback and is benign; every ERROR that reaches the cadence propagates,
+// so the claimed spine stream terminates on it.
 func TestCadenceStrictPolicySplitsSentinelFromFailure(t *testing.T) {
-	t.Run("sentinel_is_benign", func(t *testing.T) {
+	t.Run("explicit_no_partial_is_benign", func(t *testing.T) {
 		sink := &cadenceSink{}
 		c := NewStreamCadence(StreamCadenceConfig{
 			NeedsPartials: true,
-			ParsePartial: func(context.Context, string) (any, error) {
-				return nil, fmt.Errorf("static stream: no partial for this prefix yet: %w", bamlutils.ErrDeBAMLParseUnsupported)
+			ParsePartial: func(context.Context, string) (any, bool, error) {
+				// The callback resolved the parser's sentinel itself: the cadence sees
+				// the explicit no-partial result, never an error.
+				return nil, false, nil
 			},
 			ParsePolicy: CadenceParseErrorsAreTerminal,
 			Emit:        sink.emit,
 		})
 		if err := c.Delta(context.Background(), "{", "{", ""); err != nil {
-			t.Fatalf("the no-partial sentinel terminated the stream: %v", err)
+			t.Fatalf("the explicit no-partial result terminated the stream: %v", err)
 		}
 		if len(sink.events) != 0 {
 			t.Fatalf("events = %+v, want none", sink.events)
+		}
+	})
+
+	// The P1 regression at the cadence level: an error whose CHAIN contains the parser's
+	// no-partial sentinel is STILL terminal. Only the explicit no-partial RESULT is
+	// benign, so a decoder that returned or wrapped that sentinel can never be read as
+	// "no event". A cadence that re-introduced an errors.Is(ErrDeBAMLParseUnsupported)
+	// check would swallow this row.
+	t.Run("an_error_wrapping_the_sentinel_is_terminal", func(t *testing.T) {
+		wrapped := fmt.Errorf("decode static alias stream: %w", bamlutils.ErrDeBAMLParseUnsupported)
+		sink := &cadenceSink{}
+		c := NewStreamCadence(StreamCadenceConfig{
+			NeedsPartials: true, NeedsRaw: true,
+			ParsePartial: func(context.Context, string) (any, bool, error) { return nil, false, wrapped },
+			ParsePolicy:  CadenceParseErrorsAreTerminal,
+			Emit:         sink.emit,
+		})
+		err := c.Delta(context.Background(), "x", "x", "")
+		if !errors.Is(err, wrapped) {
+			t.Fatalf("Delta = %v, want the sentinel-wrapping error propagated as terminal", err)
+		}
+		if len(sink.events) != 0 {
+			t.Fatalf("events = %+v, want none after a terminal parse failure", sink.events)
 		}
 	})
 
@@ -239,7 +265,7 @@ func TestCadenceStrictPolicySplitsSentinelFromFailure(t *testing.T) {
 		sink := &cadenceSink{}
 		c := NewStreamCadence(StreamCadenceConfig{
 			NeedsPartials: true, NeedsRaw: true,
-			ParsePartial: func(context.Context, string) (any, error) { return nil, boom },
+			ParsePartial: func(context.Context, string) (any, bool, error) { return nil, false, boom },
 			ParsePolicy:  CadenceParseErrorsAreTerminal,
 			Emit:         sink.emit,
 		})
@@ -265,7 +291,7 @@ func TestCadenceStructuredEventShape(t *testing.T) {
 		sink := &cadenceSink{}
 		c := NewStreamCadence(StreamCadenceConfig{
 			NeedsPartials: true, NeedsRaw: true,
-			ParsePartial: func(context.Context, string) (any, error) { return parsed, nil },
+			ParsePartial: func(context.Context, string) (any, bool, error) { return parsed, true, nil },
 			Emit:         sink.emit,
 		})
 		_ = c.Delta(context.Background(), "x", "x", "why")
@@ -279,7 +305,7 @@ func TestCadenceStructuredEventShape(t *testing.T) {
 		sink := &cadenceSink{}
 		c := NewStreamCadence(StreamCadenceConfig{
 			NeedsPartials: true,
-			ParsePartial:  func(context.Context, string) (any, error) { return parsed, nil },
+			ParsePartial:  func(context.Context, string) (any, bool, error) { return parsed, true, nil },
 			Emit:          sink.emit,
 		})
 		_ = c.Delta(context.Background(), "x", "x", "why")
@@ -289,12 +315,28 @@ func TestCadenceStructuredEventShape(t *testing.T) {
 		}
 	})
 
+	t.Run("presence_is_the_callbacks_verdict_not_a_nil_check", func(t *testing.T) {
+		// A callback that reports a PRESENT partial whose value is an untyped nil is
+		// still an event: the cadence must not re-derive presence from the value, or a
+		// decoder's successful nil result would be silently collapsed into "no event".
+		sink := &cadenceSink{}
+		c := NewStreamCadence(StreamCadenceConfig{
+			NeedsPartials: true,
+			ParsePartial:  func(context.Context, string) (any, bool, error) { return nil, true, nil },
+			Emit:          sink.emit,
+		})
+		_ = c.Delta(context.Background(), "null", "null", "")
+		if len(sink.events) != 1 || !sink.events[0].HasPartial {
+			t.Fatalf("events = %+v, want one PRESENT partial", sink.events)
+		}
+	})
+
 	t.Run("typed_nil_partial_is_present", func(t *testing.T) {
 		var typedNil *carrier
 		sink := &cadenceSink{}
 		c := NewStreamCadence(StreamCadenceConfig{
 			NeedsPartials: true,
-			ParsePartial:  func(context.Context, string) (any, error) { return typedNil, nil },
+			ParsePartial:  func(context.Context, string) (any, bool, error) { return typedNil, true, nil },
 			Emit:          sink.emit,
 		})
 		_ = c.Delta(context.Background(), "null", "null", "")
@@ -310,7 +352,7 @@ func TestCadenceNoPartialsModeEmitsNothing(t *testing.T) {
 	sink := &cadenceSink{}
 	var parses int
 	c := NewStreamCadence(StreamCadenceConfig{
-		ParsePartial: func(context.Context, string) (any, error) { parses++; return "p", nil },
+		ParsePartial: func(context.Context, string) (any, bool, error) { parses++; return "p", true, nil },
 		Emit:         sink.emit,
 	})
 	_ = c.Delta(context.Background(), "x", "x", "r")
@@ -333,8 +375,8 @@ func TestCadenceSinkErrorPropagates(t *testing.T) {
 		name  string
 		parse StreamCadenceParseFunc
 	}{
-		{"structured", func(context.Context, string) (any, error) { return "p", nil }},
-		{"raw_only", func(context.Context, string) (any, error) { return nil, nil }},
+		{"structured", func(context.Context, string) (any, bool, error) { return "p", true, nil }},
+		{"raw_only", func(context.Context, string) (any, bool, error) { return nil, false, nil }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sink := &cadenceSink{err: stop}

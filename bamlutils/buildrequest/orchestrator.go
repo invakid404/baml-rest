@@ -579,11 +579,26 @@ func RunStreamOrchestration(
 	// delivering raw/reasoning through it. The strict policy exists for the BAML-free
 	// spine lane and is never selected here.
 	newCadence := func(parseStreamFn ParseStreamFunc) *StreamCadence {
+		// The BAML/hybrid ParseStreamFunc reports presence the way the former inline
+		// closure read it — a NON-NIL parsed candidate — so the adapter below is the
+		// same test, only stated explicitly. A nil parseStreamFn stays nil rather than
+		// becoming a no-op callback, so the throttle clock is untouched exactly as
+		// before.
+		var parse StreamCadenceParseFunc
+		if parseStreamFn != nil {
+			parse = func(pctx context.Context, accumulated string) (any, bool, error) {
+				candidate, err := parseStreamFn(pctx, accumulated)
+				if err != nil {
+					return nil, false, err
+				}
+				return candidate, candidate != nil, nil
+			}
+		}
 		return NewStreamCadence(StreamCadenceConfig{
 			NeedsPartials:         config.NeedsPartials,
 			NeedsRaw:              config.NeedsRaw,
 			ParseThrottleInterval: config.ParseThrottleInterval,
-			ParsePartial:          StreamCadenceParseFunc(parseStreamFn),
+			ParsePartial:          parse,
 			ParsePolicy:           CadenceParseErrorsAreNoEvent,
 			Emit: func(ev StreamCadenceEvent) error {
 				return trySendPartialShared(ev.Partial, ev.Raw, ev.Reasoning)
