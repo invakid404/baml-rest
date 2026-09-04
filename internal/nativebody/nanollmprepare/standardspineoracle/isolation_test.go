@@ -15,12 +15,20 @@ import (
 // local complement that points at the exact offending file.
 const standardSpineOraclePath = "github.com/invakid404/baml-rest/internal/nativebody/nanollmprepare/standardspineoracle"
 
+// legacyStaticStreamServePath is the LEGACY/standard static-stream serve lane. It is
+// BAML-plan-compare-bound (it builds BAML's StreamRequest plan before its claim), so
+// M3e-A's stream-capable native-only graph must never reach it either: the native-only
+// artifact streams through nativeserve/spine's BAML-free StreamExecutor, and importing
+// this package would reintroduce the standard lane's BAML dependency. It mirrors the
+// entry added to the whole-command go-list-deps gate.
+const legacyStaticStreamServePath = "github.com/invakid404/baml-rest/nativeserve/canary"
+
 // TestNativeOnlyPackagesDoNotImportStandardComposite proves the deletion-substrate
 // invariant at source level: the BAML-free native-only packages (nativegenerated,
 // nativeonlyboot, cmd/worker-nativeonly) must NEVER import the standard-only composite,
-// which is BAML-aware and imported only by cmd/worker. It scans every non-test .go file
-// (all build tags — parser.ImportsOnly ignores constraints) so a tag-gated aggregate is
-// covered too.
+// which is BAML-aware and imported only by cmd/worker, nor the legacy BAML-plan-bound
+// static-stream serve lane. It scans every non-test .go file (all build tags —
+// parser.ImportsOnly ignores constraints) so a tag-gated aggregate is covered too.
 func TestNativeOnlyPackagesDoNotImportStandardComposite(t *testing.T) {
 	for _, rel := range []string{
 		"../nativegenerated",
@@ -28,6 +36,7 @@ func TestNativeOnlyPackagesDoNotImportStandardComposite(t *testing.T) {
 		"../cmd/worker-nativeonly",
 	} {
 		assertNoImport(t, rel, standardSpineOraclePath)
+		assertNoImport(t, rel, legacyStaticStreamServePath)
 	}
 }
 

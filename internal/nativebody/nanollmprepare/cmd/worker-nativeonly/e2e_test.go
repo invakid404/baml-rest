@@ -140,13 +140,15 @@ func TestNativeOnlyWorker_EverythingElseDeclines(t *testing.T) {
 	ctx := context.Background()
 
 	// Call-route declines: (input, streamMode).
+	// NOTE (M3e-A): the two REAL stream modes are no longer decline rows — the exact
+	// cohort is now stream-capable through this artifact, and their served transcript is
+	// the subject of e2e_stream_test.go. /call-with-raw stays declined: it is outside
+	// ClassStaticStream's promise, which is a CLOSED mode set, not "everything but call".
 	callCases := []struct {
 		name  string
 		input []byte
 		mode  bamlutils.StreamMode
 	}{
-		{"stream_mode", callInput("x"), bamlutils.StreamModeStream},
-		{"stream_with_raw_mode", callInput("x"), bamlutils.StreamModeStreamWithRaw},
 		{"call_with_raw_mode", callInput("x"), bamlutils.StreamModeCallWithRaw},
 		{"caller_client_registry", []byte(`{"topic":"x","__baml_options__":{"client_registry":{"clients":[]}}}`), bamlutils.StreamModeCall},
 		{"dynamic_output_schema", []byte(`{"topic":"x","__baml_options__":{"output_schema":{}}}`), bamlutils.StreamModeCall},
