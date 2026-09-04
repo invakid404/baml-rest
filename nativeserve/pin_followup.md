@@ -2,7 +2,7 @@
 
 This file is the TRACKED record of whether the five first-party pseudo-version
 selections below point at a **master** commit. **They DO NOT.** They name
-`7da8ea40ed07` on `feat/debaml-m3e-a`, the branch SOURCE commit that carries the M3e-A
+`3fa2816336c2` on `feat/debaml-m3e-a`, the branch SOURCE commit that carries the M3e-A
 guarded-tree change (the spine STREAM substrate: `nativeserve/spine.StreamExecutor` +
 `StreamRegistration` + the stream-native `NewWorkerRuntime`,
 `nativeserve/admission.AdmitStaticSpineStreamClaim` with its unexported lane policy, and
@@ -41,8 +41,8 @@ CONCRETE, per-change instance of it, which is what the generic comment cannot be
 
 ```text
 STATUS: OUTSTANDING
-PINNED-COMMIT: 7da8ea40ed07
-PINNED-STAMP: 20260904112736
+PINNED-COMMIT: 3fa2816336c2
+PINNED-STAMP: 20260904113537
 REACHABLE-FROM: feat/debaml-m3e-a
 SLICE: M3e-A — spine STREAM substrate: make the exact five-arm JSON cohort stream-capable through the BAML-free native-only worker (additive ClassStaticStream descriptor v3 + two carriers over one union; neutral bamlutils stream contract; extracted BAML-free buildrequest.StreamCadence; nativeserve/admission AdmitStaticSpineStreamClaim; nativeserve/spine StreamExecutor + StreamRegistration + stream-native NewWorkerRuntime; generated unaryCandidates/streamCandidates split; no standard-worker serving change)
 PR: pending — post-squash re-pin to the M3e-A master squash commit is OWED
@@ -50,7 +50,7 @@ PR: pending — post-squash re-pin to the M3e-A master squash commit is OWED
 
 ## Why the pins name the M3e-A branch source commit
 
-`7da8ea40ed07` is the branch commit that carries the guarded-tree change. The packaged
+`3fa2816336c2` is the branch commit that carries the guarded-tree change. The packaged
 tar (`cmd/build/nativeworker_module.tar`) embeds both out-of-work modules' source AND
 their go.mods, so the pins the tar ships are the pins an external `nativeserve-goget`
 consumer resolves. Pinning `nativeserve` / `nanollmprepare` to a PRE-M3e-A commit would
@@ -82,11 +82,11 @@ bump is invisible until the out-of-work packaging build fails with
 
 | # | file | module | current selection |
 | --- | --- | --- | --- |
-| 1 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest` | `v0.0.0-20260904112736-7da8ea40ed07` |
-| 2 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260904112736-7da8ea40ed07` |
-| 3 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260904112736-7da8ea40ed07` |
-| 4 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260904112736-7da8ea40ed07` |
-| 5 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260904112736-7da8ea40ed07` |
+| 1 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest` | `v0.0.0-20260904113537-3fa2816336c2` |
+| 2 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260904113537-3fa2816336c2` |
+| 3 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260904113537-3fa2816336c2` |
+| 4 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260904113537-3fa2816336c2` |
+| 5 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260904113537-3fa2816336c2` |
 
 `internal/nativebody/nanollmprepare/go.mod`'s `github.com/invakid404/baml-rest v0.0.48`
 is deliberately NOT in this list: it is a released tag, not a pseudo-version tracking a
@@ -97,14 +97,14 @@ commit, and the module directory-replaces it.
 The bump below points all five selections at the M3e-A branch SOURCE commit and sets the
 record `OUTSTANDING`; the post-squash master re-pin is OWED.
 
-1. **All five selections re-pointed together** to `7da8ea40ed07` (Go-formula stamp
-   `20260904112736`). The edit touched only `require` lines; `nanollmprepare`'s
+1. **All five selections re-pointed together** to `3fa2816336c2` (Go-formula stamp
+   `20260904113537`). The edit touched only `require` lines; `nanollmprepare`'s
    deliberate `baml-rest v0.0.48` (a released TAG) is untouched, and so is every SHA
    inside the historical prose.
 2. **Both `// PIN-STATUS` markers flipped** from `RESOLVED` to `OUTSTANDING`, one per
    manifest.
 3. **Both mirrored narratives rewritten** to BRANCH-ONLY naming the M3e-A branch source
-   commit `7da8ea40ed07`, with the U1c master `56d5473a1bdb` sentences demoted to
+   commit `3fa2816336c2`, with the U1c master `56d5473a1bdb` sentences demoted to
    HISTORICAL.
 4. **This file updated** — fenced record (`OUTSTANDING`, the M3e-A branch commit/stamp,
    `REACHABLE-FROM: feat/debaml-m3e-a`), opening claim, selections table, this section.
@@ -123,7 +123,7 @@ guards read.
 
 ## The follow-up — OWED (the post-squash re-pin RUNBOOK, to run after merge)
 
-**This is NOT yet done for M3e-A: the pins are BRANCH-ONLY** at `7da8ea40ed07`. What
+**This is NOT yet done for M3e-A: the pins are BRANCH-ONLY** at `3fa2816336c2`. What
 makes the post-squash re-pin MANDATORY and IMMEDIATE after merge is the same failure mode
 as always: a squash flattens the branch source commit out of history and the branch is
 deleted, so until the re-pin lands the five selections would name a commit that resolves
@@ -223,8 +223,8 @@ pseudo-versions from step 0.
 
 DONE for the M3e-A BRANCH pin (THIS change):
 
-- [x] point all five selections at the M3e-A SOURCE commit `7da8ea40ed07` (Go-formula
-      stamp `20260904112736`), each with its correct base version
+- [x] point all five selections at the M3e-A SOURCE commit `3fa2816336c2` (Go-formula
+      stamp `20260904113537`), each with its correct base version
 - [x] set both `// PIN-STATUS` markers + this file to `OUTSTANDING`,
       `REACHABLE-FROM: feat/debaml-m3e-a`
 - [x] rewrite both narratives to branch-only; demote the U1c `56d5473a1bdb` text to
@@ -242,7 +242,7 @@ squash-merges):
 - [ ] flip both `// PIN-STATUS` markers + this file to `RESOLVED`,
       `REACHABLE-FROM: master`
 - [ ] rewrite both narratives to master-durable naming the master squash commit; demote
-      the branch-only `7da8ea40ed07` text to `HISTORICAL, SUPERSEDED`
+      the branch-only `3fa2816336c2` text to `HISTORICAL, SUPERSEDED`
 - [ ] `cmd/build/nativeworker_module.tar` regenerated and
       `internal/codegenspine/guard.json` re-baselined
 - [ ] pin/tar/guard gates green (`TestFirstPartyPinFollowupIsTracked` sees a
