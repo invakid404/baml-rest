@@ -40,20 +40,29 @@ func TestNativeOnlyWorker_BootCallParse(t *testing.T) {
 		}
 	}
 	// ...with the classes the classifier is supposed to have stamped. Pinning them here
-	// keeps the helper above honest: a class filter that silently dropped the served
+	// keeps the helper above honest: a class filter that silently dropped a served
 	// method would otherwise only surface as a confusing count mismatch below.
+	//
+	// The class is derived from the RETURN SHAPE ALONE — internal/nativespine lowers the
+	// Return and asks the one totality predicate — so it says nothing about the client.
+	// RetryPolicyMethod therefore carries the STREAM class (its return IS the exact
+	// five-arm JSON alias) even though its retry-policy client puts it outside the
+	// runtime cohort. Those are two independent axes, and the boot count below is what
+	// proves the second one: a stream-CLASS method is still omitted at boot for a
+	// client-level reason.
 	for method, wantClass := range map[string]projectdescriptor.MethodClass{
 		"StaticRecursiveAliasJSON": projectdescriptor.ClassStaticStream,
 		"NonCohortStringReturn":    projectdescriptor.ClassStaticUnary,
-		"RetryPolicyMethod":        projectdescriptor.ClassStaticUnary,
+		"RetryPolicyMethod":        projectdescriptor.ClassStaticStream,
 	} {
 		if got := generatedCandidateClass(t, method); got != wantClass {
 			t.Fatalf("generated candidate %q has class %q, want %q", method, got, wantClass)
 		}
 	}
 	// ...while the booted runtime admits exactly ONE. The other two were GENERATED but
-	// declined at admission (a non-alias return and a retry-policy client), then omitted
-	// at boot — not merely absent.
+	// declined at admission — a non-alias return (out of the population by SHAPE) and a
+	// retry-policy client (out of it by CLIENT, despite carrying the stream class) —
+	// then omitted at boot, not merely absent.
 	if n := admittedMethodCount(t, bw); n != 1 {
 		t.Fatalf("admitted_method_count = %d, want exactly 1 (the two non-cohort candidates must be omitted at boot)", n)
 	}

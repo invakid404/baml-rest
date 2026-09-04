@@ -181,6 +181,106 @@ func TestNonStreamFamiliesStayUnary(t *testing.T) {
 	}
 }
 
+// TestBootedE2ECorpusClasses mirrors, IN PROCESS, the exact three-method corpus the
+// booted native-only e2e generates its deployment registry from
+// (internal/nativebody/nanollmprepare/cmd/worker-nativeonly/e2e_support_test.go), and
+// pins the class the classifier stamps on each.
+//
+// It exists because that corpus is only classified inside a booted, container-tagged
+// build, so a wrong expectation there costs a full CI round-trip to discover — as one
+// did. The classification itself is pure: it lowers the Return and asks the one totality
+// predicate, so it reproduces exactly here.
+//
+// The property it pins is the one that is easy to get wrong: the class is derived from
+// the RETURN SHAPE ALONE and says nothing about the client. RetryPolicyMethod returns the
+// exact five-arm JSON alias, so it is stream-CLASS even though its retry-policy client
+// puts it outside the runtime cohort — shape and client are independent axes, and only
+// the runtime classifier consults the second.
+func TestBootedE2ECorpusClasses(t *testing.T) {
+	const clients = `client<llm> JSONOracle {
+  provider openai
+  options {
+    model "gpt-4o-mini"
+    api_key "sk-execbridge-u1-not-a-real-secret"
+    base_url "http://127.0.0.1:9/v1"
+  }
+}
+
+retry_policy U1bRetry {
+  max_retries 2
+  strategy { type constant_delay delay_ms 100 }
+}
+
+client<llm> RetryingOracle {
+  provider openai
+  retry_policy U1bRetry
+  options {
+    model "gpt-4o-mini"
+    api_key "sk-execbridge-u1b-not-a-real-secret"
+    base_url "http://127.0.0.1:9/v1"
+  }
+}
+`
+	const functions = `function StaticRecursiveAliasJSON(topic: string) -> JSON {
+  client JSONOracle
+  prompt #"Return a JSON document describing {{ topic }}."#
+}
+
+function NonCohortStringReturn(topic: string) -> string {
+  client JSONOracle
+  prompt #"Return a string describing {{ topic }}."#
+}
+
+function RetryPolicyMethod(topic: string) -> JSON {
+  client RetryingOracle
+  prompt #"Return a JSON document describing {{ topic }}."#
+}
+`
+
+	p, err := nativespine.BuildFromSource(map[string]string{
+		"clients.baml":   clients,
+		"types.baml":     "type JSON = int | string | bool | JSON[] | map<string, JSON>\n",
+		"functions.baml": functions,
+	})
+	if err != nil {
+		t.Fatalf("BuildFromSource: %v", err)
+	}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+
+	want := map[string]projectdescriptor.MethodClass{
+		// The served method: exact five-arm JSON alias on an admitted client.
+		"StaticRecursiveAliasJSON": projectdescriptor.ClassStaticStream,
+		// Out of the population by SHAPE — a plain string return is not the alias.
+		"NonCohortStringReturn": projectdescriptor.ClassStaticUnary,
+		// Out of the population by CLIENT, not by shape: its return IS the exact alias,
+		// so it carries the STREAM class and is still declined at runtime registration
+		// (reconstructFunction's retry-policy population gate) and omitted at boot.
+		"RetryPolicyMethod": projectdescriptor.ClassStaticStream,
+	}
+
+	got := map[string]projectdescriptor.MethodClass{}
+	for _, m := range p.Methods {
+		got[m.Name] = m.Class
+	}
+	// NON-VACUITY: all three must be RETAINED as admitted candidates, or the class
+	// assertions below would hold over an empty set — which is what the booted suite's
+	// own generate-then-decline proof depends on too.
+	if len(got) != len(want) {
+		t.Fatalf("admitted methods = %v, want exactly the three corpus methods %v (declined: %d)", got, want, len(p.Diagnostics))
+	}
+	for name, wantClass := range want {
+		gotClass, ok := got[name]
+		if !ok {
+			t.Fatalf("method %q was not admitted; the booted e2e's generated candidate set would be missing it", name)
+		}
+		if gotClass != wantClass {
+			t.Fatalf("method %q has class %q, want %q", name, gotClass, wantClass)
+		}
+	}
+}
+
 // TestJSONAliasCodegenGolden proves the M3e-A JSON-alias carrier fixture is exactly
 // what the STREAM emitter produces from the neutral descriptor. With -update it
 // regenerates the committed file.
