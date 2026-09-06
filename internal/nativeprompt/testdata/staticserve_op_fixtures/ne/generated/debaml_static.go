@@ -384,6 +384,14 @@ type nativeStaticStreamServeGetter interface {
 	NativeStaticStreamServeComparator() bamlutils.NativeStaticStreamServeFunc
 }
 
+// nativeStaticStreamOracleServeGetter is the ExecBridge-U1s twin of
+// nativeStaticStreamServeGetter: the narrow optional interface the adapter implements to
+// expose the installed STANDARD static STREAM ORACLE serve implementation. Kept off
+// bamlutils.Adapter, like every other native accessor.
+type nativeStaticStreamOracleServeGetter interface {
+	NativeStaticStreamOracleServeComparator() bamlutils.NativeStaticStreamOracleServeFunc
+}
+
 // deBAMLStaticStreamParserGetter exposes the injected native parser, reused for the
 // static-stream partial/final parse via DeBAMLParseRequest.StaticStreamDescriptor (the
 // generated adapter cannot import internal/debaml, so the parse crosses the boundary as
@@ -408,6 +416,146 @@ func deBAMLStaticStreamServe(adapter bamlutils.Adapter) bamlutils.NativeStaticSt
 		return nil
 	}
 	return getter.NativeStaticStreamServeComparator()
+}
+
+// deBAMLStaticStreamOracleServe returns the installed ExecBridge-U1s standard static STREAM
+// ORACLE serve implementation when the de-BAML umbrella flag is on AND a standard
+// serve-profile worker wired it, else nil — the hard-off default that keeps every static
+// stream byte-identical BAML. The generated /stream seam checks this FIRST (before the
+// legacy stream serve getter and before any descriptor lookup), so with the flag off — or
+// on a build with no oracle callback — it performs no StaticPromptDescriptor lookup, builds
+// no closures, and installs no native attempt.
+func deBAMLStaticStreamOracleServe(adapter bamlutils.Adapter) bamlutils.NativeStaticStreamOracleServeFunc {
+	if !adapter.DeBAMLConfig().Enabled {
+		return nil
+	}
+	getter, ok := adapter.(nativeStaticStreamOracleServeGetter)
+	if !ok {
+		return nil
+	}
+	return getter.NativeStaticStreamOracleServeComparator()
+}
+
+// installNativeStaticStreamOracle installs the ExecBridge-U1s / M3e-B ORACLE-OWNED native
+// STATIC STREAM attempt (StreamConfig.NativeOracleAttempt) on the static StreamRequest path.
+// It is the standard worker's DEFAULT static stream lane.
+//
+// It differs from installNativeStaticStream in WHO OWNS THE PARSE, which is why it uses a
+// separate StreamConfig seam and deliberately leaves NativeParseStream / NativeParseFinal /
+// NativeAttempt UNSET: the oracle implementation owns the cadence, the per-prefix
+// comparison, every public event, and the final. Installing the legacy parser closures
+// alongside it would let the outer error-SWALLOWING cadence absorb an oracle failure that
+// must be terminal, and would invite a second parse of an already-resolved partial.
+//
+// The four callbacks it supplies are the whole safety unit, and only THIS package can build
+// them because only it is linked against BAML:
+//
+//   - bamlStreamParse: ParseStream.<Method> over the exact accumulated prefix, with BAML's
+//     partial semantics normalized — an ordinary rejection is an authoritative NO-VALUE, not
+//     an error; a cancelled/expired context is a real error (the oracle could not be
+//     ESTABLISHED); and a panic is never converted to a no-value (it unwinds into the
+//     claimed executor's guard). Generated BAML v0.223 exposes no dedicated "not parseable
+//     yet" sentinel, so an option-construction failure is indistinguishable from an ordinary
+//     rejection HERE and reads as a no-value; it is not lost, because it recurs on the FINAL
+//     parse, where any error is terminal for the claimed stream;
+//   - bamlFinalParse: Parse.<Method> over the complete accumulated text;
+//   - decodeStreamPartial / decodeStreamFinal: this method's own concrete carrier decoders,
+//     so a chosen NATIVE value is a value this method's result wrapper can type-assert.
+//
+// Like the legacy installer it is a RUNTIME no-op unless the ACTUAL public mode is a real
+// /stream{,-with-raw} request, so a unary /call{,-with-raw} bridged through the
+// StreamRequest builder is left byte-identical BAML.
+//
+// SENSITIVE: fn/args/values and all four closures carry secret material; this never logs,
+// serializes, or emits them.
+func installNativeStaticStreamOracle(
+	cfg *buildrequest.StreamConfig,
+	serve bamlutils.NativeStaticStreamOracleServeFunc,
+	adapter bamlutils.Adapter,
+	fn promptdescriptor.Function,
+	args map[string]any,
+	argOrder []string,
+	values []promptdescriptor.ArgumentValue,
+	singleLeaf bool,
+	hasFallbackChain bool,
+	hasRoundRobin bool,
+	hasRetry bool,
+	bamlStreamParse bamlutils.BAMLStreamParse,
+	bamlFinalParse bamlutils.BAMLStreamFinalParse,
+	decodeStreamPartial func(canonicalJSON []byte) (any, error),
+	decodeStreamFinal func(canonicalJSON []byte) (any, error),
+) {
+	// PUBLIC-MODE gate: install ONLY for a REAL /stream{,-with-raw} request.
+	publicMode := adapter.StreamMode()
+	if publicMode != bamlutils.StreamModeStream && publicMode != bamlutils.StreamModeStreamWithRaw {
+		return
+	}
+	// The effective send client whose WouldRewriteOrProxy applies rewrites/proxying at
+	// execution time; nil falls back to the default client.
+	httpClient := adapter.HTTPClient()
+	if httpClient == nil {
+		httpClient = llmhttp.DefaultClient
+	}
+	streamMode := bamlutils.NativeStreamModeStream
+	if publicMode == bamlutils.StreamModeStreamWithRaw {
+		streamMode = bamlutils.NativeStreamModeStreamWithRaw
+	}
+
+	cfg.NativeOracleAttemptEnabled = true
+	cfg.PlannedEngine = "native"
+	cfg.NativeMode = streamMode
+	cfg.NativeOracleAttempt = func(ctx context.Context, att buildrequest.NativeStreamOracleAttempt) buildrequest.NativeStreamOracleOutcome {
+		descriptor := fn
+		res := serve(ctx, bamlutils.NativeStaticStreamOracleInvocation{
+			Method:         fn.Method,
+			Descriptor:     descriptor,
+			Args:           args,
+			ArgOrder:       argOrder,
+			Values:         values,
+			Mode:           streamMode,
+			Provider:       att.Provider,
+			ClientOverride: att.ClientOverride,
+			SingleLeaf:     singleLeaf,
+			// TRUTHFUL orchestration-plan facts: any of them declines PRE-CLAIM, which on a
+			// stream is the only moment a decline is still possible.
+			HasFallbackChain:        hasFallbackChain,
+			HasRoundRobin:           hasRoundRobin,
+			HasRequestRetryOverride: hasRetry,
+			// The exact cohort serves only the descriptor's default client against the
+			// static schema; both of these decline pre-socket. Read here, where the request
+			// adapter is authoritative.
+			HasClientRegistryOverride: adapter.OriginalClientRegistry() != nil,
+			HasDynamicOutputSchema:    adapter.DeBAMLOutputSchema() != nil,
+			WouldRewriteOrProxy:       httpClient.WouldRewriteOrProxy,
+			NeedsRaw:                  att.NeedsRaw,
+			IncludeReasoning:          att.IncludeReasoning,
+			BuildBAMLStreamRequest:    att.BuildBAMLRequest,
+			BAMLStreamParse:           bamlStreamParse,
+			BAMLFinalParse:            bamlFinalParse,
+			DecodeNativeStreamPartial: decodeStreamPartial,
+			DecodeNativeStreamFinal:   decodeStreamFinal,
+			SendHeaders:               att.SendHeaders,
+			SendFirstBody:             att.SendFirstBody,
+		}, att.EmitResolved)
+		switch res.Disposition {
+		case bamlutils.NativeStaticStreamOracleSucceeded:
+			// The final is ALREADY oracled and already this method's concrete carrier, so
+			// it is returned verbatim — re-parsing here would discard the comparison.
+			return buildrequest.CompleteNativeStreamOracle(res.Final, res.Raw, res.Reasoning, res.WinnerEngine)
+		case bamlutils.NativeStaticStreamOracleFailed:
+			return buildrequest.FailNativeStreamOracleAfterClaim(res.Err, res.RawDiagnostic)
+		case bamlutils.NativeStaticStreamOracleDeclined:
+			return buildrequest.DeclineNativeStreamOracle(
+				buildrequest.NativeDeclineStage(res.Stage),
+				buildrequest.NativeDeclineReason(res.Reason),
+			)
+		default:
+			// An out-of-contract disposition cannot assert "no socket, no event": fail
+			// closed rather than risk a hidden second same-request BAML stream.
+			return buildrequest.FailNativeStreamOracleAfterClaim(
+				fmt.Errorf("native static stream oracle serve returned unknown disposition %d", res.Disposition), "")
+		}
+	}
 }
 
 // installNativeStaticStream installs the de-BAML Phase 3b native STATIC STREAM SERVE

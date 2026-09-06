@@ -179,6 +179,23 @@ type Config struct {
 	// NativeStaticServeComparator.
 	NativeStaticStreamServeComparator bamlutils.NativeStaticStreamServeFunc
 
+	// NativeStaticStreamOracleServeComparator is the neutral ExecBridge-U1s STANDARD
+	// static STREAM ORACLE serve implementation. Non-nil ONLY in a standard SERVE-profile
+	// worker with the umbrella flag on; every default/native-only/shadow/flag-off build
+	// leaves it nil, so the generated static /stream{,-with-raw} seam's oracle callback
+	// stays nil/hard-off and the request stays byte-identical to today. Installed on every
+	// adapter via the narrow nativeStaticStreamOracleServeSetter interface, gated by
+	// DeBAMLConfig().Enabled at the seam.
+	//
+	// It is the standard worker's DEFAULT static stream lane and it SUPERSEDES
+	// NativeStaticStreamServeComparator at the generated seam: where that one hands only
+	// TRANSPORT to native and leaves partial/final parsing to the orchestrator, this one
+	// owns the whole claimed stream — one DoStream RoundTrip plus a per-prefix and final
+	// BAML comparison over that one response — or declines PRE-SOCKET to BAML. The legacy
+	// field stays for the callers that still drive it directly (its own tests and the
+	// static-serve op harness).
+	NativeStaticStreamOracleServeComparator bamlutils.NativeStaticStreamOracleServeFunc
+
 	// NativeDirectParseObserver is the neutral DIRECT-PARSE observation sink (de-BAML
 	// serving cutover S1). Non-nil ONLY in a native-capable worker with the umbrella
 	// flag on; every default/flag-off build leaves it nil and Parse calls nothing.
@@ -285,6 +302,16 @@ type nativeStaticStreamServeSetter interface {
 	SetNativeStaticStreamServeComparator(bamlutils.NativeStaticStreamServeFunc)
 }
 
+// nativeStaticStreamOracleServeSetter is the ExecBridge-U1s twin of
+// nativeStaticStreamServeSetter: the narrow optional interface the adapter implements to
+// receive the STANDARD static STREAM ORACLE serve implementation. Kept off the
+// bamlutils.Adapter interface for the same reason as the other native setters. nil
+// implementation ⇒ nothing installed ⇒ the generated seam falls back to the legacy static
+// stream serve callback, and then to BAML.
+type nativeStaticStreamOracleServeSetter interface {
+	SetNativeStaticStreamOracleServeComparator(bamlutils.NativeStaticStreamOracleServeFunc)
+}
+
 // nativeStaticShadowSetter is the SHADOW twin of nativeStaticServeSetter (de-BAML
 // Slice 8C Stage-1): the narrow optional interface the adapter implements to receive
 // the native static SHADOW comparator. Kept off the bamlutils.Adapter interface for
@@ -382,6 +409,13 @@ type Handler struct {
 	// DeBAMLConfig().Enabled and otherwise leaves the serve callback nil/hard-off.
 	nativeStaticStreamServe bamlutils.NativeStaticStreamServeFunc
 
+	// nativeStaticStreamOracleServe is the neutral ExecBridge-U1s STANDARD static STREAM
+	// ORACLE serve implementation, injected only in the standard SERVE deploy profile with
+	// the flag on (nil in every default/native-only/shadow/flag-off build). Installed on
+	// every adapter in configureAdapter; the generated static /stream{,-with-raw} seam gates
+	// it on DeBAMLConfig().Enabled and otherwise leaves the oracle callback nil/hard-off.
+	nativeStaticStreamOracleServe bamlutils.NativeStaticStreamOracleServeFunc
+
 	// nativeStaticShadow is the neutral native STATIC Stage-1 SHADOW comparator
 	// (de-BAML Slice 8C), injected only in the SHADOW deploy profile with the flag on
 	// (nil in every default/serve/flag-off build). Installed on every adapter in
@@ -447,6 +481,8 @@ func New(cfg Config) (*Handler, error) {
 		nativeStaticServe:       cfg.NativeStaticServeComparator,
 		nativeStaticStreamServe: cfg.NativeStaticStreamServeComparator,
 		nativeStaticShadow:      cfg.NativeStaticShadowComparator,
+
+		nativeStaticStreamOracleServe: cfg.NativeStaticStreamOracleServeComparator,
 
 		nativeDirectParseObserver: cfg.NativeDirectParseObserver,
 	}
@@ -546,6 +582,15 @@ func (h *Handler) configureAdapter(adapter bamlutils.Adapter) {
 	// StreamRequest.<Method> / ParseStream.<Method> for the same request.
 	if setter, ok := adapter.(nativeStaticStreamServeSetter); ok {
 		setter.SetNativeStaticStreamServeComparator(h.nativeStaticStreamServe)
+	}
+	// Install the ExecBridge-U1s STANDARD static STREAM ORACLE implementation (nil in every
+	// default/native-only/shadow/flag-off build, so this is a no-op there). The generated
+	// static /stream{,-with-raw} seam resolves it BEFORE the legacy stream serve callback and
+	// builds an oracle-owned native callback when it is non-nil AND DeBAMLConfig().Enabled;
+	// on a pre-socket decline it runs BAML's StreamRequest.<Method> / ParseStream.<Method>
+	// for the same request exactly once.
+	if setter, ok := adapter.(nativeStaticStreamOracleServeSetter); ok {
+		setter.SetNativeStaticStreamOracleServeComparator(h.nativeStaticStreamOracleServe)
 	}
 	// Install the native STATIC Stage-1 SHADOW comparator (de-BAML Slice 8C; nil in
 	// every default/serve/flag-off build, so this is a no-op there). The generated

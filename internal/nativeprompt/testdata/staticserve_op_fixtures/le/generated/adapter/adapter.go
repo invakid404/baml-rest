@@ -145,6 +145,15 @@ type BamlAdapter struct {
 	// unsupported shape.
 	nativeStaticStreamServe bamlutils.NativeStaticStreamServeFunc
 
+	// nativeStaticStreamOracleServe is the ExecBridge-U1s STANDARD static STREAM
+	// ORACLE serve implementation, injected by a standard serve-profile worker.
+	// Non-nil ONLY in that worker with the flag on; nil in every default/flag-off
+	// build. It owns the WHOLE claimed stream — one DoStream RoundTrip, the
+	// per-prefix and final BAML comparison, and every public event — or declines
+	// PRE-SOCKET to BAML. The generated /stream seam resolves it FIRST and falls
+	// back to nativeStaticStreamServe when it is absent.
+	nativeStaticStreamOracleServe bamlutils.NativeStaticStreamOracleServeFunc
+
 	// nativeStaticShadow is the native STATIC Stage-1 SHADOW comparator
 	// (de-BAML Slice 8C), injected by a SHADOW-profile worker. Non-nil ONLY in
 	// a shadow worker with the flag on; nil in every default/serve/flag-off
@@ -359,6 +368,12 @@ func (b *BamlAdapter) SetNativeStaticStreamServeComparator(fn bamlutils.NativeSt
 }
 func (b *BamlAdapter) NativeStaticStreamServeComparator() bamlutils.NativeStaticStreamServeFunc {
 	return b.nativeStaticStreamServe
+}
+func (b *BamlAdapter) SetNativeStaticStreamOracleServeComparator(fn bamlutils.NativeStaticStreamOracleServeFunc) {
+	b.nativeStaticStreamOracleServe = fn
+}
+func (b *BamlAdapter) NativeStaticStreamOracleServeComparator() bamlutils.NativeStaticStreamOracleServeFunc {
+	return b.nativeStaticStreamOracleServe
 }
 func (b *BamlAdapter) SetNativeStaticShadowComparator(fn bamlutils.NativeStaticShadowFunc) {
 	b.nativeStaticShadow = fn

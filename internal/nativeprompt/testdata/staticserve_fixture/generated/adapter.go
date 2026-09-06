@@ -567,17 +567,44 @@ func staticAssertConfidenceBuildRequest(adapter bamlutils.Adapter, rawInput any,
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticAssertConfidence"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticAssertConfidence", []any{input.Topic}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticAssertAnswer](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAssertAnswer](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticAssertConfidence(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticAssertConfidence(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticAssertAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAssertAnswer](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticAssertAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAssertAnswer](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -1461,17 +1488,44 @@ func staticCheckedAliasedFieldBuildRequest(adapter bamlutils.Adapter, rawInput a
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticCheckedAliasedField"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticCheckedAliasedField", []any{input.Topic}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticAliasedCheckedAnswer](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAliasedCheckedAnswer](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticCheckedAliasedField(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticCheckedAliasedField(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticAliasedCheckedAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAliasedCheckedAnswer](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticAliasedCheckedAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAliasedCheckedAnswer](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -2355,17 +2409,44 @@ func staticCheckedConfidenceBuildRequest(adapter bamlutils.Adapter, rawInput any
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticCheckedConfidence"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticCheckedConfidence", []any{input.Topic}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticCheckedAnswer](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.StaticCheckedAnswer](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticCheckedConfidence(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticCheckedConfidence(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticCheckedAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticCheckedAnswer](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticCheckedAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticCheckedAnswer](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -3249,17 +3330,44 @@ func staticCheckedFloatBuildRequest(adapter bamlutils.Adapter, rawInput any, out
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticCheckedFloat"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticCheckedFloat", []any{input.Topic}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticFloatCheckedAnswer](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.StaticFloatCheckedAnswer](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticCheckedFloat(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticCheckedFloat(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticFloatCheckedAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticFloatCheckedAnswer](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticFloatCheckedAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticFloatCheckedAnswer](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -4143,17 +4251,44 @@ func staticCheckedGtePredicateBuildRequest(adapter bamlutils.Adapter, rawInput a
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticCheckedGtePredicate"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticCheckedGtePredicate", []any{input.Topic}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticGtePredicateAnswer](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.StaticGtePredicateAnswer](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticCheckedGtePredicate(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticCheckedGtePredicate(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticGtePredicateAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticGtePredicateAnswer](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticGtePredicateAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticGtePredicateAnswer](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -5037,17 +5172,44 @@ func staticCheckedListBuildRequest(adapter bamlutils.Adapter, rawInput any, out 
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticCheckedList"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticCheckedList", []any{input.Topic}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticListCheckedAnswer](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.StaticListCheckedAnswer](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticCheckedList(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticCheckedList(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticListCheckedAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticListCheckedAnswer](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticListCheckedAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticListCheckedAnswer](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -5931,17 +6093,44 @@ func staticCheckedNonAsciiLabelBuildRequest(adapter bamlutils.Adapter, rawInput 
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticCheckedNonAsciiLabel"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticCheckedNonAsciiLabel", []any{input.Topic}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticNonAsciiLabelAnswer](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.StaticNonAsciiLabelAnswer](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticCheckedNonAsciiLabel(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticCheckedNonAsciiLabel(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticNonAsciiLabelAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticNonAsciiLabelAnswer](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticNonAsciiLabelAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticNonAsciiLabelAnswer](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -6825,17 +7014,44 @@ func staticCheckedOptionalBuildRequest(adapter bamlutils.Adapter, rawInput any, 
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticCheckedOptional"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticCheckedOptional", []any{input.Topic}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticOptionalCheckedAnswer](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.StaticOptionalCheckedAnswer](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticCheckedOptional(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticCheckedOptional(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticOptionalCheckedAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticOptionalCheckedAnswer](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticOptionalCheckedAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticOptionalCheckedAnswer](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -7719,17 +7935,44 @@ func staticCheckedRenamedClassBuildRequest(adapter bamlutils.Adapter, rawInput a
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticCheckedRenamedClass"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticCheckedRenamedClass", []any{input.Topic}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.OtherCheckedAnswer](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.OtherCheckedAnswer](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticCheckedRenamedClass(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticCheckedRenamedClass(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.OtherCheckedAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.OtherCheckedAnswer](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.OtherCheckedAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.OtherCheckedAnswer](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -8613,17 +8856,44 @@ func staticCheckedReorderedBuildRequest(adapter bamlutils.Adapter, rawInput any,
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticCheckedReordered"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticCheckedReordered", []any{input.Topic}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticReorderedAnswer](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.StaticReorderedAnswer](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticCheckedReordered(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticCheckedReordered(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticReorderedAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticReorderedAnswer](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticReorderedAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticReorderedAnswer](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -9507,17 +9777,44 @@ func staticCheckedTwoChecksBuildRequest(adapter bamlutils.Adapter, rawInput any,
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticCheckedTwoChecks"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticCheckedTwoChecks", []any{input.Topic}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticTwoCheckAnswer](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.StaticTwoCheckAnswer](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticCheckedTwoChecks(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticCheckedTwoChecks(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticTwoCheckAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticTwoCheckAnswer](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticTwoCheckAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticTwoCheckAnswer](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -10401,17 +10698,44 @@ func staticCheckedUnionBuildRequest(adapter bamlutils.Adapter, rawInput any, out
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticCheckedUnion"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticCheckedUnion", []any{input.Topic}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticUnionCheckedAnswer](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.StaticUnionCheckedAnswer](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticCheckedUnion(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticCheckedUnion(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticUnionCheckedAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticUnionCheckedAnswer](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticUnionCheckedAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticUnionCheckedAnswer](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -11295,17 +11619,44 @@ func staticCompletionBuildRequest(adapter bamlutils.Adapter, rawInput any, out c
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticCompletion"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticCompletion", []any{input.Topic}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticCompletion(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticCompletion(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -12189,17 +12540,44 @@ func staticCompletionOutputFormatBuildRequest(adapter bamlutils.Adapter, rawInpu
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticCompletionOutputFormat"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticCompletionOutputFormat", []any{input.Topic}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticAnswer](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAnswer](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticCompletionOutputFormat(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticCompletionOutputFormat(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAnswer](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAnswer](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -13083,17 +13461,44 @@ func staticEnumArgCanonicalEqBuildRequest(adapter bamlutils.Adapter, rawInput an
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticEnumArgCanonicalEq"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticEnumArgCanonicalEq", []any{input.Color}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"color": input.Color}, []string{"color"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"color": input.Color}, []string{"color"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticEnumArgCanonicalEq(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticEnumArgCanonicalEq(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"color": input.Color}, []string{"color"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -13977,17 +14382,44 @@ func staticEnumArgMemberEqBuildRequest(adapter bamlutils.Adapter, rawInput any, 
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticEnumArgMemberEq"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticEnumArgMemberEq", []any{input.Color}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"color": input.Color}, []string{"color"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"color": input.Color}, []string{"color"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticEnumArgMemberEq(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticEnumArgMemberEq(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"color": input.Color}, []string{"color"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -14871,17 +15303,44 @@ func staticEnumCanonicalArgEqBuildRequest(adapter bamlutils.Adapter, rawInput an
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticEnumCanonicalArgEq"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticEnumCanonicalArgEq", []any{input.Color}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"color": input.Color}, []string{"color"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"color": input.Color}, []string{"color"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticEnumCanonicalArgEq(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticEnumCanonicalArgEq(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"color": input.Color}, []string{"color"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -15751,17 +16210,44 @@ func staticEnumCanonicalEqBuildRequest(adapter bamlutils.Adapter, rawInput any, 
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticEnumCanonicalEq"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticEnumCanonicalEq", []any{}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{}, []string{}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{}, []string{}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticEnumCanonicalEq(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticEnumCanonicalEq(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{}, []string{}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -16627,17 +17113,44 @@ func staticEnumCanonicalInMemberListBuildRequest(adapter bamlutils.Adapter, rawI
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticEnumCanonicalInMemberList"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticEnumCanonicalInMemberList", []any{}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{}, []string{}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{}, []string{}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticEnumCanonicalInMemberList(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticEnumCanonicalInMemberList(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{}, []string{}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -17503,17 +18016,44 @@ func staticEnumDifferentMemberEqBuildRequest(adapter bamlutils.Adapter, rawInput
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticEnumDifferentMemberEq"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticEnumDifferentMemberEq", []any{}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{}, []string{}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{}, []string{}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticEnumDifferentMemberEq(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticEnumDifferentMemberEq(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{}, []string{}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -18379,17 +18919,44 @@ func staticEnumDisplayAliasEqBuildRequest(adapter bamlutils.Adapter, rawInput an
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticEnumDisplayAliasEq"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticEnumDisplayAliasEq", []any{}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{}, []string{}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{}, []string{}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticEnumDisplayAliasEq(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticEnumDisplayAliasEq(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{}, []string{}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -19269,17 +19836,44 @@ func staticEnumMemberArgEqBuildRequest(adapter bamlutils.Adapter, rawInput any, 
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticEnumMemberArgEq"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticEnumMemberArgEq", []any{input.Color}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"color": input.Color}, []string{"color"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"color": input.Color}, []string{"color"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticEnumMemberArgEq(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticEnumMemberArgEq(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"color": input.Color}, []string{"color"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -20149,17 +20743,44 @@ func staticEnumMemberInCanonicalListBuildRequest(adapter bamlutils.Adapter, rawI
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticEnumMemberInCanonicalList"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticEnumMemberInCanonicalList", []any{}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{}, []string{}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{}, []string{}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticEnumMemberInCanonicalList(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticEnumMemberInCanonicalList(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{}, []string{}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -21025,17 +21646,44 @@ func staticEnumReverseCanonicalEqBuildRequest(adapter bamlutils.Adapter, rawInpu
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticEnumReverseCanonicalEq"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticEnumReverseCanonicalEq", []any{}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{}, []string{}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{}, []string{}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticEnumReverseCanonicalEq(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticEnumReverseCanonicalEq(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{}, []string{}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -21901,17 +22549,44 @@ func staticEnumSameMemberEqBuildRequest(adapter bamlutils.Adapter, rawInput any,
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticEnumSameMemberEq"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticEnumSameMemberEq", []any{}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{}, []string{}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{}, []string{}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticEnumSameMemberEq(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticEnumSameMemberEq(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{}, []string{}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -22806,17 +23481,44 @@ func staticMediaImageBuildRequest(adapter bamlutils.Adapter, rawInput any, out c
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticMediaImage"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticMediaImage", []any{__media_img}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"img": __media_img}, []string{"img"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"img": __media_img}, []string{"img"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticMediaImage(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticMediaImage(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"img": __media_img}, []string{"img"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -23729,17 +24431,44 @@ func staticMediaImageListBuildRequest(adapter bamlutils.Adapter, rawInput any, o
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticMediaImageList"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticMediaImageList", []any{__media_imgs}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"imgs": __media_imgs}, []string{"imgs"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"imgs": __media_imgs}, []string{"imgs"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticMediaImageList(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticMediaImageList(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"imgs": __media_imgs}, []string{"imgs"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -24661,17 +25390,44 @@ func staticMediaInClassBuildRequest(adapter bamlutils.Adapter, rawInput any, out
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticMediaInClass"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticMediaInClass", []any{__struct_bundle}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"bundle": __struct_bundle}, []string{"bundle"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"bundle": __struct_bundle}, []string{"bundle"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticMediaInClass(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticMediaInClass(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"bundle": __struct_bundle}, []string{"bundle"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -25559,17 +26315,44 @@ func staticOutputFormatBuildRequest(adapter bamlutils.Adapter, rawInput any, out
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticOutputFormat"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticOutputFormat", []any{input.Topic}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticAnswer](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAnswer](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticOutputFormat(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticOutputFormat(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAnswer](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAnswer](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -26456,22 +27239,54 @@ func staticPrimitiveArgsBuildRequest(adapter bamlutils.Adapter, rawInput any, ou
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticPrimitiveArgs"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticPrimitiveArgs", []any{input.Text, input.Count, input.Ratio, input.Flag}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{
-					"count": input.Count,
-					"flag":  input.Flag,
-					"ratio": input.Ratio,
-					"text":  input.Text,
-				}, []string{"text", "count", "ratio", "flag"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{
+						"count": input.Count,
+						"flag":  input.Flag,
+						"ratio": input.Ratio,
+						"text":  input.Text,
+					}, []string{"text", "count", "ratio", "flag"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticPrimitiveArgs(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticPrimitiveArgs(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{
+						"count": input.Count,
+						"flag":  input.Flag,
+						"ratio": input.Ratio,
+						"text":  input.Text,
+					}, []string{"text", "count", "ratio", "flag"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -27365,17 +28180,44 @@ func staticRecursiveABuildRequest(adapter bamlutils.Adapter, rawInput any, out c
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRecursiveA"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticRecursiveA", []any{input.Topic}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.A](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.A](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticRecursiveA(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticRecursiveA(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.A](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.A](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.A](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.A](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -28259,17 +29101,44 @@ func staticRecursiveAliasJsonBuildRequest(adapter bamlutils.Adapter, rawInput an
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRecursiveAliasJSON"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticRecursiveAliasJSON", []any{input.Topic}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticAliasStream[*streamtypes.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticAliasFinal[types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticRecursiveAliasJSON(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticRecursiveAliasJSON(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticAliasStream[*streamtypes.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticAliasFinal[types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticAliasStream[*streamtypes.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticAliasFinal[types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -29153,17 +30022,44 @@ func staticRecursiveAliasJsonValueBuildRequest(adapter bamlutils.Adapter, rawInp
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRecursiveAliasJsonValue"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticRecursiveAliasJsonValue", []any{input.Topic}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[*streamtypes.Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticAliasFinal[*types.Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticRecursiveAliasJsonValue(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticRecursiveAliasJsonValue(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[*streamtypes.Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticAliasFinal[*types.Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[*streamtypes.Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticAliasFinal[*types.Union6BoolOrFloatOrIntOrListJsonValueOrMapStringKeyJsonValueValueOrString](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -30047,17 +30943,44 @@ func staticRecursiveAliasJsonValueReorderedBuildRequest(adapter bamlutils.Adapte
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRecursiveAliasJsonValueReordered"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticRecursiveAliasJsonValueReordered", []any{input.Topic}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[*streamtypes.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticAliasFinal[*types.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticRecursiveAliasJsonValueReordered(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticRecursiveAliasJsonValueReordered(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[*streamtypes.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticAliasFinal[*types.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[*streamtypes.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticAliasFinal[*types.Union6BoolOrFloatOrIntOrListJsonValueReorderedOrMapStringKeyJsonValueReorderedValueOrString](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -30941,17 +31864,44 @@ func staticRecursiveBBuildRequest(adapter bamlutils.Adapter, rawInput any, out c
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRecursiveB"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticRecursiveB", []any{input.Topic}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.B](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.B](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticRecursiveB(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticRecursiveB(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.B](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.B](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.B](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.B](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -31835,17 +32785,44 @@ func staticRecursiveLoopBuildRequest(adapter bamlutils.Adapter, rawInput any, ou
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRecursiveLoop"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticRecursiveLoop", []any{input.Topic}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.Loop](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.Loop](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticRecursiveLoop(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticRecursiveLoop(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.Loop](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.Loop](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.Loop](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.Loop](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -32729,17 +33706,44 @@ func staticRecursiveNodeBuildRequest(adapter bamlutils.Adapter, rawInput any, ou
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRecursiveNode"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticRecursiveNode", []any{input.Topic}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.Node](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.Node](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticRecursiveNode(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticRecursiveNode(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.Node](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.Node](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.Node](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.Node](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -33623,17 +34627,44 @@ func staticRecursiveNodeAnnBuildRequest(adapter bamlutils.Adapter, rawInput any,
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRecursiveNodeAnn"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticRecursiveNodeAnn", []any{input.Topic}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.NodeAnn](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.NodeAnn](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticRecursiveNodeAnn(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticRecursiveNodeAnn(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.NodeAnn](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.NodeAnn](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.NodeAnn](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.NodeAnn](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -34517,17 +35548,44 @@ func staticRenderEnumBuildRequest(adapter bamlutils.Adapter, rawInput any, out c
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRenderEnum"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticRenderEnum", []any{input.Color}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"color": input.Color}, []string{"color"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"color": input.Color}, []string{"color"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticRenderEnum(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticRenderEnum(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"color": input.Color}, []string{"color"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -35411,17 +36469,44 @@ func staticRenderListBuildRequest(adapter bamlutils.Adapter, rawInput any, out c
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRenderList"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticRenderList", []any{input.Colors}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"colors": input.Colors}, []string{"colors"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"colors": input.Colors}, []string{"colors"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticRenderList(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticRenderList(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"colors": input.Colors}, []string{"colors"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -36305,17 +37390,44 @@ func staticRenderPaletteBuildRequest(adapter bamlutils.Adapter, rawInput any, ou
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRenderPalette"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticRenderPalette", []any{input.Palette}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"palette": input.Palette}, []string{"palette"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"palette": input.Palette}, []string{"palette"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticRenderPalette(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticRenderPalette(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"palette": input.Palette}, []string{"palette"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -37199,17 +38311,44 @@ func staticRenderPalettesBuildRequest(adapter bamlutils.Adapter, rawInput any, o
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRenderPalettes"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticRenderPalettes", []any{input.Palettes}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"palettes": input.Palettes}, []string{"palettes"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"palettes": input.Palettes}, []string{"palettes"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticRenderPalettes(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticRenderPalettes(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"palettes": input.Palettes}, []string{"palettes"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -38093,17 +39232,44 @@ func staticRenderStringsBuildRequest(adapter bamlutils.Adapter, rawInput any, ou
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRenderStrings"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticRenderStrings", []any{input.Tags}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"tags": input.Tags}, []string{"tags"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"tags": input.Tags}, []string{"tags"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticRenderStrings(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticRenderStrings(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"tags": input.Tags}, []string{"tags"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -38988,20 +40154,50 @@ func staticRoleChatBuildRequest(adapter bamlutils.Adapter, rawInput any, out cha
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticRoleChat"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticRoleChat", []any{input.Topic, input.Count}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{
-					"count": input.Count,
-					"topic": input.Topic,
-				}, []string{"topic", "count"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{
+						"count": input.Count,
+						"topic": input.Topic,
+					}, []string{"topic", "count"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticRoleChat(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticRoleChat(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{
+						"count": input.Count,
+						"topic": input.Topic,
+					}, []string{"topic", "count"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[string](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -39891,17 +41087,44 @@ func staticStreamAliasEqBuildRequest(adapter bamlutils.Adapter, rawInput any, ou
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticStreamAliasEq"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticStreamAliasEq", []any{input.Color}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"color": input.Color}, []string{"color"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticAliasStream[*streamtypes.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticAliasFinal[types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"color": input.Color}, []string{"color"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticStreamAliasEq(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticStreamAliasEq(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticAliasStream[*streamtypes.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticAliasFinal[types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"color": input.Color}, []string{"color"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticAliasStream[*streamtypes.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticAliasFinal[types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -40785,17 +42008,44 @@ func staticStreamRenderEnumBuildRequest(adapter bamlutils.Adapter, rawInput any,
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticStreamRenderEnum"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticStreamRenderEnum", []any{input.Color}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"color": input.Color}, []string{"color"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticAliasStream[*streamtypes.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticAliasFinal[types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"color": input.Color}, []string{"color"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticStreamRenderEnum(__pctx, __prefix, options...)
+						if __se != nil {
+							// A cancelled/expired context is NOT an ordinary partial rejection: the
+							// oracle could not be ESTABLISHED for this prefix, which after the claim
+							// is terminal. Reporting it as a no-value would silently stop comparing.
+							if __ce := __pctx.Err(); __ce != nil {
+								return bamlutils.BAMLStreamPrefixResult{}, __ce
+							}
+							// An ordinary ParseStream rejection is the EXPECTED outcome for an
+							// incomplete prefix: an authoritative no-value, never an error.
+							return bamlutils.BAMLStreamPrefixResult{}, nil
+						}
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticStreamRenderEnum(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticAliasStream[*streamtypes.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticAliasFinal[types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"color": input.Color}, []string{"color"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticAliasStream[*streamtypes.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticAliasFinal[types.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}

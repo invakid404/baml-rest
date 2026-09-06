@@ -827,14 +827,26 @@ func (me *methodEmitter) emitBuildRequest() {
 		)
 	}
 
-	// De-BAML Phase 3b native STATIC STREAM child-attempt install. Emitted ONLY for a
-	// static serve method's StreamRequest builder (never the unary BuildCallRequest), so
-	// the TRUE-unary /call path carries no static-stream hook. installNativeStaticStream
-	// additionally no-ops at RUNTIME unless the ACTUAL public mode is a real
-	// /stream{,-with-raw} request, so a unary call bridged through this StreamRequest
-	// builder is left byte-identical BAML. FLAG-OFF IDENTITY: deBAMLStaticStreamServe is
-	// resolved FIRST and the descriptor lookup + install are gated on it being non-nil, so
-	// a flag-off / non-serve build performs no StaticPromptDescriptor lookup and stays
+	// Native STATIC STREAM child-attempt install. Emitted ONLY for a static serve method's
+	// StreamRequest builder (never the unary BuildCallRequest), so the TRUE-unary /call path
+	// carries no static-stream hook. Both installers additionally no-op at RUNTIME unless the
+	// ACTUAL public mode is a real /stream{,-with-raw} request, so a unary call bridged
+	// through this StreamRequest builder is left byte-identical BAML.
+	//
+	// TWO lanes, resolved in a fixed order and never both:
+	//
+	//   - ExecBridge-U1s (installNativeStaticStreamOracle): the STANDARD worker's DEFAULT
+	//     static stream lane. It owns the whole claimed stream — one native RoundTrip, the
+	//     per-prefix and final BAML comparison, and every public event — and therefore also
+	//     supplies the BAML-only ParseStream/Parse closures that only this BAML-linked
+	//     package can build.
+	//   - de-BAML Phase 3b (installNativeStaticStream): the LEGACY transport-only lane, kept
+	//     as the external seam its own tests drive. The orchestrator parses partials/final
+	//     itself there.
+	//
+	// FLAG-OFF IDENTITY: BOTH getters are resolved FIRST and the descriptor lookup, the
+	// projected-value binder and every closure are gated on one of them being non-nil, so a
+	// flag-off / non-serve build performs no StaticPromptDescriptor lookup and stays
 	// byte-identical BAML. The strategy facts + retry override mirror the unary
 	// installNativeStaticCall call exactly. Emitted only for pure-scalar methods
 	// (!hasReleaseConverted), the same slice-pool-race reasoning as the unary serve seam.
@@ -844,12 +856,86 @@ func (me *methodEmitter) emitBuildRequest() {
 		// STREAM carrier (DecodeStaticAliasStream[stream_types.JSON]) and the FINAL bytes into
 		// the concrete FINAL carrier (the same decoder the /call seam uses). Non-alias static
 		// methods never claim a stream (admission declines them), so their generic decoder is
-		// dead at runtime but must type-check.
-		decodeStreamPartialClosure := me.decodeClosure(me.streamResultDecoderName(), me.streamResultTypeCode())
-		decodeStreamFinalClosure := me.decodeClosure(me.finalResultDecoderName(), me.finalResultTypeCode())
+		// dead at runtime but must type-check. jennifer statements are single-use, so each
+		// install branch gets FRESH copies (both branches are emitted; one runs).
+		decodeStreamPartialClosure := func() jen.Code {
+			return me.decodeClosure(me.streamResultDecoderName(), me.streamResultTypeCode())
+		}
+		decodeStreamFinalClosure := func() jen.Code {
+			return me.decodeClosure(me.finalResultDecoderName(), me.finalResultTypeCode())
+		}
+		// The U1s BAML-ONLY per-prefix oracle: ParseStream.<Method> over the exact
+		// accumulated prefix, with BAML's partial semantics normalized into the neutral
+		// closed contract. It parses; it can reach no transport.
+		bamlStreamParseClosure := func() jen.Code {
+			return jen.Func().Params(
+				jen.Id("__pctx").Qual("context", "Context"),
+				jen.Id("__prefix").String(),
+			).Params(jen.Qual(g.pkgs.InterfacesPkg, "BAMLStreamPrefixResult"), jen.Error()).Block(
+				jen.List(jen.Id("__sv"), jen.Id("__se")).Op(":=").
+					Qual(g.pkgs.GeneratedClientPkg, "ParseStream").Dot(me.methodName).
+					Call(jen.Id("__pctx"), jen.Id("__prefix"), jen.Id("options").Op("...")),
+				jen.If(jen.Id("__se").Op("!=").Nil()).Block(
+					jen.Comment("A cancelled/expired context is NOT an ordinary partial rejection: the"),
+					jen.Comment("oracle could not be ESTABLISHED for this prefix, which after the claim"),
+					jen.Comment("is terminal. Reporting it as a no-value would silently stop comparing."),
+					jen.If(jen.Id("__ce").Op(":=").Id("__pctx").Dot("Err").Call(), jen.Id("__ce").Op("!=").Nil()).Block(
+						jen.Return(jen.Qual(g.pkgs.InterfacesPkg, "BAMLStreamPrefixResult").Values(), jen.Id("__ce")),
+					),
+					jen.Comment("An ordinary ParseStream rejection is the EXPECTED outcome for an"),
+					jen.Comment("incomplete prefix: an authoritative no-value, never an error."),
+					jen.Return(jen.Qual(g.pkgs.InterfacesPkg, "BAMLStreamPrefixResult").Values(), jen.Nil()),
+				),
+				jen.Return(jen.Qual(g.pkgs.InterfacesPkg, "BAMLStreamPrefixValue").Call(jen.Id("__sv")), jen.Nil()),
+			)
+		}
+		// The U1s BAML-ONLY FINAL oracle: Parse.<Method> (never ParseStream) over the
+		// complete accumulated text. Any error is terminal for the claimed stream.
+		bamlFinalParseClosure := func() jen.Code {
+			return jen.Func().Params(
+				jen.Id("__pctx").Qual("context", "Context"),
+				jen.Id("__full").String(),
+			).Params(jen.Any(), jen.Error()).Block(
+				jen.Return(
+					jen.Qual(g.pkgs.GeneratedClientPkg, "Parse").Dot(me.methodName).
+						Call(jen.Id("__pctx"), jen.Id("__full"), jen.Id("options").Op("...")),
+				),
+			)
+		}
+		// The shared selected-route facts both installers take, in the same order.
+		routeFacts := func() []jen.Code {
+			return []jen.Code{
+				jen.Id("adapter"),
+				jen.Id("__staticStreamDescriptor"),
+				me.staticArgBinderMap(),
+				me.staticArgOrderSlice(),
+				jen.Id("__staticStreamValues"),
+				jen.Len(jen.Id("fallbackChain")).Op("==").Lit(0),
+				jen.Len(jen.Id("fallbackChain")).Op(">").Lit(0),
+				jen.Id("plannedMetadata").Op("!=").Nil().Op("&&").
+					Id("plannedMetadata").Dot("RoundRobin").Op("!=").Nil(),
+				jen.Id("retryPolicy").Op("!=").Nil(),
+			}
+		}
+		oracleInstall := func() jen.Code {
+			args := append([]jen.Code{jen.Id("streamConfig"), jen.Id("__staticStreamOracle")}, routeFacts()...)
+			args = append(args,
+				bamlStreamParseClosure(),
+				bamlFinalParseClosure(),
+				decodeStreamPartialClosure(),
+				decodeStreamFinalClosure(),
+			)
+			return jen.Id("installNativeStaticStreamOracle").Call(args...)
+		}
+		legacyInstall := func() jen.Code {
+			args := append([]jen.Code{jen.Id("streamConfig"), jen.Id("__staticStreamServe")}, routeFacts()...)
+			args = append(args, decodeStreamPartialClosure(), decodeStreamFinalClosure())
+			return jen.Id("installNativeStaticStream").Call(args...)
+		}
 		buildRequestBody = append(buildRequestBody,
+			jen.List(jen.Id("__staticStreamOracle")).Op(":=").Id("deBAMLStaticStreamOracleServe").Call(jen.Id("adapter")),
 			jen.List(jen.Id("__staticStreamServe")).Op(":=").Id("deBAMLStaticStreamServe").Call(jen.Id("adapter")),
-			jen.If(jen.Id("__staticStreamServe").Op("!=").Nil()).Block(
+			jen.If(jen.Id("__staticStreamOracle").Op("!=").Nil().Op("||").Id("__staticStreamServe").Op("!=").Nil()).Block(
 				jen.If(
 					jen.List(jen.Id("__staticStreamDescriptor"), jen.Id("__staticStreamOK")).Op(":=").
 						Qual(g.pkgs.IntrospectedPkg, "StaticPromptDescriptor").Call(jen.Lit(me.methodName)),
@@ -857,30 +943,22 @@ func (me *methodEmitter) emitBuildRequest() {
 				).Block(
 					// De-BAML Slice 7.1b: project the ALREADY-TYPED arguments into the
 					// neutral ordered value vector. A method with no generated projector
-					// (its build-time AST audit failed) yields ok=false and the native
-					// stream seam is NOT installed at all — a pre-render decline with zero
-					// native activity, never a reflection or raw-map fallback.
+					// (its build-time AST audit failed) yields ok=false and NEITHER native
+					// stream seam is installed — a pre-render decline with zero native
+					// activity, never a reflection or raw-map fallback.
 					jen.If(
 						jen.List(jen.Id("__staticStreamValues"), jen.Id("__staticStreamValuesOK")).Op(":=").
 							Qual(g.pkgs.IntrospectedPkg, "StaticPromptArgumentValues").
 							Call(jen.Lit(me.methodName), me.staticArgAnySlice()),
 						jen.Id("__staticStreamValuesOK"),
 					).Block(
-						jen.Id("installNativeStaticStream").Call(
-							jen.Id("streamConfig"),
-							jen.Id("__staticStreamServe"),
-							jen.Id("adapter"),
-							jen.Id("__staticStreamDescriptor"),
-							me.staticArgBinderMap(),
-							me.staticArgOrderSlice(),
-							jen.Id("__staticStreamValues"),
-							jen.Len(jen.Id("fallbackChain")).Op("==").Lit(0),
-							jen.Len(jen.Id("fallbackChain")).Op(">").Lit(0),
-							jen.Id("plannedMetadata").Op("!=").Nil().Op("&&").
-								Id("plannedMetadata").Dot("RoundRobin").Op("!=").Nil(),
-							jen.Id("retryPolicy").Op("!=").Nil(),
-							decodeStreamPartialClosure,
-							decodeStreamFinalClosure,
+						// The U1s oracle SUPERSEDES the legacy transport-only seam. Exactly
+						// one is installed, which is what the orchestrator's fail-closed
+						// double-installation guard requires.
+						jen.If(jen.Id("__staticStreamOracle").Op("!=").Nil()).Block(
+							oracleInstall(),
+						).Else().Block(
+							legacyInstall(),
 						),
 					),
 				),

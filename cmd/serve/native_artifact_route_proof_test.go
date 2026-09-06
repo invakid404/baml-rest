@@ -124,8 +124,23 @@ type routeProofProvider struct {
 	srv   *httptest.Server
 	calls atomic.Int64
 
+	// streamChunks overrides routeProofStreamChunks for this provider. It exists so an
+	// arm can feed a FRAGMENTED corpus (several content deltas rather than one) without
+	// perturbing the arms that share the default single-delta transcript: a stream
+	// differential that only ever sees one structured tick cannot observe per-tick
+	// behaviour at all.
+	streamChunks []string
+
 	mu   sync.Mutex
 	seen []capturedUpstream
+}
+
+// chunks returns the SSE transcript this provider serves.
+func (p *routeProofProvider) chunks() []string {
+	if len(p.streamChunks) > 0 {
+		return p.streamChunks
+	}
+	return routeProofStreamChunks
 }
 
 func newRouteProofProvider(t *testing.T) *routeProofProvider {
@@ -162,7 +177,7 @@ func newRouteProofProviderAt(t *testing.T, addr string) *routeProofProvider {
 		if bytes.Contains(body, []byte(`"stream":true`)) {
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(http.StatusOK)
-			for _, chunk := range routeProofStreamChunks {
+			for _, chunk := range p.chunks() {
 				_, _ = w.Write([]byte("data: " + chunk + "\n\n"))
 				if f, ok := w.(http.Flusher); ok {
 					f.Flush()

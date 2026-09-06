@@ -27,7 +27,6 @@ package standardspineoracle
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -263,18 +262,8 @@ func oracleWinner(engine string) admission.Winner {
 // structural population counter for the U1 lane. Its only labels are the fixed population
 // dimension and a bounded disposition — never a content-derived value or enrollment id.
 func registerPopulationCounter(reg prometheus.Registerer) (*prometheus.CounterVec, error) {
-	vec := prometheus.NewCounterVec(prometheus.CounterOpts{
+	return registerCounterVec(reg, prometheus.CounterOpts{
 		Name: "debaml_native_static_population_total",
 		Help: "Count of static /call requests routed through the ExecBridge-U1c structural population lane, by bounded population and disposition. Structural, not an enrollment cohort.",
 	}, []string{"population", "disposition"})
-	if err := reg.Register(vec); err != nil {
-		var are prometheus.AlreadyRegisteredError
-		if errors.As(err, &are) {
-			if existing, ok := are.ExistingCollector.(*prometheus.CounterVec); ok {
-				return existing, nil
-			}
-		}
-		return nil, err
-	}
-	return vec, nil
 }

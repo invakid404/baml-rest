@@ -147,15 +147,25 @@ func serveProfileOptions() workerboot.Options {
 		// observer stays the no-send fallback for a shadow/observe-only build. Skipped when
 		// the flag is off.
 		NativeStaticServeFactory: standardspineoracle.NewStaticServe,
-		// The STATIC STREAM SERVE factory (de-BAML Phase 3b): returns the neutral
-		// bamlutils.NativeStaticStreamServeFunc the generated static /stream{,-with-raw}
-		// seam installs as StreamConfig.NativeAttempt — it actually SERVES an admitted
-		// static stream natively (one exact RoundTrip driving nanollm DoStream over the
-		// selected Return Bundle, the native-only partial/final parsers owned by the
-		// orchestrator) or declines PRE-TRANSPORT to BAML. Installed ALONGSIDE the unary
-		// static serve factory (both live in the serve profile) and mirrors the
-		// dynamic serve/stream factory pair. Skipped when the flag is off.
-		NativeStaticStreamServeFactory: nativeserve.NewStaticStream,
+		// The STATIC STREAM SERVE factory (ExecBridge-U1s oracle composite): returns the
+		// neutral bamlutils.NativeStaticStreamOracleServeFunc the generated static
+		// /stream{,-with-raw} seam installs as StreamConfig.NativeOracleAttempt — it
+		// DEFAULT-SELECTS the exact ClassStaticStream structural population (the direct
+		// five-arm JSON alias, required scalar inputs, literal-OpenAI default client)
+		// through the generated spine, wrapped in a LIVE BAML StreamRequest plan-compare
+		// admission plus a PER-PREFIX and FINAL BAML parse oracle over that ONE response,
+		// and serves it natively (one exact DoStream RoundTrip); every near-miss declines
+		// PRE-SOCKET to BAML, exactly once. Selection is STRUCTURAL, decided at boot by the
+		// spine's classifier over the deployment's generated registry — there is NO
+		// enrollment, no trusted-client seal, no cohort manifest row.
+		//
+		// It supersedes the legacy nativeserve.NewStaticStream wiring, which stays a
+		// compiled, tested public constructor reachable through
+		// worker.Config.NativeStaticStreamServeComparator. A U1s registry miss is NOT
+		// delegated to it: the miss falls directly to the existing BAML stream branch.
+		// Installed ALONGSIDE the unary static serve factory (both live in the serve
+		// profile). Skipped when the flag is off.
+		NativeStaticStreamServeFactory: standardspineoracle.NewStaticStreamServe,
 		// The DIRECT-PARSE observation sink (de-BAML serving cutover S1): returns the
 		// neutral bamlutils.NativeDirectParseObserveFunc the worker's /parse route
 		// reports each request to. It is NOT a serving callback — it observes and

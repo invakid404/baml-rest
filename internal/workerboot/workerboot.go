@@ -155,18 +155,28 @@ type Options struct {
 	// the observer, is NOT part of the dynamic serve/shadow mutual exclusion.
 	NativeStaticServeFactory func(reg prometheus.Registerer) (bamlutils.NativeStaticServeFunc, error)
 
-	// NativeStaticStreamServeFactory, when non-nil, builds the native STATIC STREAM
-	// SERVE implementation (de-BAML Phase 3b, the streaming twin of Slice 8C unary
-	// serve) a SERVE-profile worker injects while the umbrella flag is on. It is called
-	// ONCE at startup with the worker's private Prometheus registry; the returned
-	// NativeStaticStreamServeFunc is installed on every adapter. The generated static
+	// NativeStaticStreamServeFactory, when non-nil, builds the STANDARD static STREAM
+	// serve implementation a serve-profile worker injects while the umbrella flag is on.
+	// It is called ONCE at startup with the worker's private Prometheus registry; the
+	// returned callback is installed on every adapter. A returned error exits the process
+	// non-zero (fails the go-plugin handshake). nil in every non-serve build. It is the
+	// streaming twin of NativeStaticServeFactory.
+	//
+	// Since ExecBridge-U1s its value is the ORACLE-OWNED form
+	// (bamlutils.NativeStaticStreamOracleServeFunc): the generated static
 	// /stream{,-with-raw} seam turns it into a serving callback only when it is non-nil
-	// AND the umbrella flag is enabled: it SERVES an admitted static stream natively (one
-	// exact DoStream RoundTrip, the native-only partial/final parsers owned by the
-	// orchestrator), and every unsupported shape declines PRE-TRANSPORT so BAML serves
-	// it. A returned error exits the process non-zero (fails the go-plugin handshake).
-	// nil in every non-serve build. It is the streaming twin of NativeStaticServeFactory.
-	NativeStaticStreamServeFactory func(reg prometheus.Registerer) (bamlutils.NativeStaticStreamServeFunc, error)
+	// AND the umbrella flag is enabled, and it then owns the WHOLE claimed stream — one
+	// exact DoStream RoundTrip plus a per-prefix and final BAML comparison over that one
+	// response — while every unsupported shape declines PRE-SOCKET so BAML serves it. The
+	// field name is unchanged because its ROLE is unchanged (this deployment's static
+	// stream serve lane); what changed is how much of the request that lane owns.
+	//
+	// The legacy transport-only form (bamlutils.NativeStaticStreamServeFunc, built by
+	// nativeserve.NewStaticStream) is NOT wired here any more. It remains a compiled,
+	// tested public constructor and reaches an adapter through
+	// worker.Config.NativeStaticStreamServeComparator, which is the seam its own tests and
+	// the static-serve op harness drive.
+	NativeStaticStreamServeFactory func(reg prometheus.Registerer) (bamlutils.NativeStaticStreamOracleServeFunc, error)
 
 	// NativeDirectParseObserveFactory, when non-nil, builds the DIRECT-PARSE
 	// observation sink and is called ONCE at boot with the worker's private registry.
@@ -606,11 +616,13 @@ func Run(opts Options) {
 		nativeStaticServe = fn
 	}
 
-	// Build the native STATIC STREAM SERVE implementation (de-BAML Phase 3b; nil except
-	// in a SERVE-profile worker with the flag on). A non-nil factory returning an error
-	// or a nil func without an error is fatal, so a serve cohort never silently streams
-	// all-BAML while reporting a serve build.
-	var nativeStaticStreamServe bamlutils.NativeStaticStreamServeFunc
+	// Build the STANDARD static STREAM serve implementation (the ExecBridge-U1s
+	// oracle-owned lane; nil except in a serve-profile worker with the flag on). A non-nil
+	// factory returning an error or a nil func without an error is fatal, so a serve cohort
+	// never silently streams all-BAML while reporting a serve build — which matters more
+	// here than anywhere else, because all-BAML is ALSO what a legitimately empty
+	// structural population produces, and the two are indistinguishable from the outside.
+	var nativeStaticStreamServe bamlutils.NativeStaticStreamOracleServeFunc
 	if opts.NativeStaticStreamServeFactory != nil {
 		fn, err := opts.NativeStaticStreamServeFactory(metricsReg)
 		if err != nil {
@@ -710,8 +722,8 @@ func Run(opts Options) {
 		// umbrella flag is enabled the generated static /stream{,-with-raw} seam serves an
 		// admitted static stream natively (one exact DoStream RoundTrip); unsupported
 		// traffic declines pre-transport to BAML.
-		NativeStaticStreamServeComparator: nativeStaticStreamServe,
-		NativeDirectParseObserver:         nativeDirectParseObserver,
+		NativeStaticStreamOracleServeComparator: nativeStaticStreamServe,
+		NativeDirectParseObserver:               nativeDirectParseObserver,
 	})
 	if err != nil {
 		logger.Error("failed to construct worker handler", "err", err.Error())

@@ -243,6 +243,15 @@ func emitFrameworkAdapter(out *jen.File, opts Options) {
 		jen.Comment("unsupported shape."),
 		jen.Id("nativeStaticStreamServe").Qual(bamlutilsPkg, "NativeStaticStreamServeFunc"),
 		jen.Line(),
+		jen.Comment("nativeStaticStreamOracleServe is the ExecBridge-U1s STANDARD static STREAM"),
+		jen.Comment("ORACLE serve implementation, injected by a standard serve-profile worker."),
+		jen.Comment("Non-nil ONLY in that worker with the flag on; nil in every default/flag-off"),
+		jen.Comment("build. It owns the WHOLE claimed stream — one DoStream RoundTrip, the"),
+		jen.Comment("per-prefix and final BAML comparison, and every public event — or declines"),
+		jen.Comment("PRE-SOCKET to BAML. The generated /stream seam resolves it FIRST and falls"),
+		jen.Comment("back to nativeStaticStreamServe when it is absent."),
+		jen.Id("nativeStaticStreamOracleServe").Qual(bamlutilsPkg, "NativeStaticStreamOracleServeFunc"),
+		jen.Line(),
 		jen.Comment("nativeStaticShadow is the native STATIC Stage-1 SHADOW comparator"),
 		jen.Comment("(de-BAML Slice 8C), injected by a SHADOW-profile worker. Non-nil ONLY in"),
 		jen.Comment("a shadow worker with the flag on; nil in every default/serve/flag-off"),
@@ -777,6 +786,26 @@ func emitFrameworkAdapterDeBAML(out *jen.File, bamlutilsPkg string) {
 		Id("NativeStaticStreamServeComparator").Params().Qual(bamlutilsPkg, "NativeStaticStreamServeFunc").
 		Block(
 			jen.Return(jen.Id("b").Dot("nativeStaticStreamServe")),
+		)
+
+	// SetNativeStaticStreamOracleServeComparator / NativeStaticStreamOracleServeComparator
+	// are the ExecBridge-U1s STANDARD static STREAM ORACLE twins: the narrow optional
+	// interfaces a standard serve-profile worker and the generated static /stream seam use
+	// to install and read the U1s oracle-owned serve implementation. Kept off
+	// bamlutils.Adapter like the other native accessors; nil in every default build. When
+	// non-nil AND the umbrella flag is on, the generated /stream seam serves an admitted
+	// static stream through the per-prefix + final BAML oracle; otherwise it falls back to
+	// the legacy transport-only static stream seam, and then to BAML.
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("SetNativeStaticStreamOracleServeComparator").Params(jen.Id("fn").Qual(bamlutilsPkg, "NativeStaticStreamOracleServeFunc")).
+		Block(
+			jen.Id("b").Dot("nativeStaticStreamOracleServe").Op("=").Id("fn"),
+		)
+
+	out.Func().Params(jen.Id("b").Op("*").Id("BamlAdapter")).
+		Id("NativeStaticStreamOracleServeComparator").Params().Qual(bamlutilsPkg, "NativeStaticStreamOracleServeFunc").
+		Block(
+			jen.Return(jen.Id("b").Dot("nativeStaticStreamOracleServe")),
 		)
 
 	// SetNativeStaticShadowComparator / NativeStaticShadowComparator are the STATIC
