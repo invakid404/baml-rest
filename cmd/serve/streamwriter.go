@@ -51,12 +51,12 @@ const (
 // true and the provider produced reasoning/thinking text; omitempty keeps
 // the legacy wire shape byte-identical when the flag is off.
 type NDJSONEvent struct {
-	Type      NDJSONEventType `json:"type"`
+	Type      NDJSONEventType    `json:"type"`
 	Data      stdjson.RawMessage `json:"data,omitempty"`
-	Raw       string          `json:"raw,omitempty"`
-	Reasoning string          `json:"reasoning,omitempty"`
-	Error     string          `json:"error,omitempty"`
-	Code      apierror.Code   `json:"code,omitempty"`
+	Raw       string             `json:"raw,omitempty"`
+	Reasoning string             `json:"reasoning,omitempty"`
+	Error     string             `json:"error,omitempty"`
+	Code      apierror.Code      `json:"code,omitempty"`
 	Details   stdjson.RawMessage `json:"details,omitempty"`
 }
 
@@ -494,8 +494,8 @@ func (p *SSEStreamWriterPublisher) PublishMetadata(payload stdjson.RawMessage) e
 
 func (p *SSEStreamWriterPublisher) PublishError(errMsg string, code apierror.Code, details stdjson.RawMessage) error {
 	envelope := struct {
-		Error   string          `json:"error"`
-		Code    apierror.Code   `json:"code,omitempty"`
+		Error   string             `json:"error"`
+		Code    apierror.Code      `json:"code,omitempty"`
 		Details stdjson.RawMessage `json:"details,omitempty"`
 	}{Error: errMsg, Code: code, Details: details}
 	payload, err := sonic.Marshal(envelope)

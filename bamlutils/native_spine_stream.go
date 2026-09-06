@@ -253,9 +253,13 @@ const (
 
 // NativeSpineStreamOracleObservations are the bounded, secret-free facts a StreamWithOracle
 // carries out so the standard composite can replay the worker's de-BAML metric series
-// without re-deriving them. Every field is false/zero on a pre-admission decline. NONE of
-// them carries a content-derived value: no method output, prefix, raw text, request plan,
-// panic value, or error string.
+// without re-deriving them.
+//
+// Every field is false/zero on a decline taken BEFORE admission. The one exception is a
+// plan-MISMATCH decline, which sets PlanCompareRan (with PlanMatched false) — the compare
+// genuinely ran and genuinely refused, and a metric consumer must be able to tell that
+// apart from "no comparison happened". NONE of them carries a content-derived value: no
+// method output, prefix, raw text, request plan, panic value, or error string.
 //
 // The counters are carried out on EVERY path (including a post-claim panic), so evidence
 // for plan-match, exactly-one-socket, per-prefix comparison, and drift is never lost.

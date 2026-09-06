@@ -249,6 +249,6 @@ OWED post-squash for the U1s MASTER re-pin (after this slice's PR squash-merges)
 
 Precedent: #677 → #678, #681 → #682, #683 → #684, #686 → #687, #689 → #692, #703,
 U1's #708 → #709, U1b's #711 post-squash re-pin, U1c's #713 post-squash re-pin, and
-M3e-A's #715 post-squash re-pin (this change) are the instances of this runbook being
+M3e-A's #715 post-squash re-pin are the instances of this runbook being
 executed correctly; Slice 7.1b (#655) is what skipping it costs — a branch pin went red
 on `nativeserve-goget` the moment the branch was deleted.

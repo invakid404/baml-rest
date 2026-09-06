@@ -90,9 +90,14 @@ type StaticStreamInput struct {
 
 	// Cohort is the serving-cutover S1 configuration identity + the default-deny
 	// cohort gate it is evaluated against (layer 1b), exactly as on the dynamic
-	// [Input] and the unary [StaticInput]. Production leaves both halves zero, so
-	// every static stream resolves to CohortNone and declines with
-	// cohort_not_enrolled before any native work.
+	// [Input] and the unary [StaticInput].
+	//
+	// It is read by the LEGACY lane only. Production leaves both halves zero, so a static
+	// stream reaching [AdmitStaticStreamClaim] resolves to CohortNone and declines with
+	// cohort_not_enrolled before any native work. BOTH spine lanes skip the gate entirely
+	// (see [staticStreamLane.skipsCohortGate]): their admission is the root-owned
+	// registration-time totality predicate, and membership there is structural, not an
+	// enrollment — so a spine stream can be ADMITTED with this field zero.
 	Cohort CohortInput
 }
 

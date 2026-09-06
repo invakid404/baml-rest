@@ -216,6 +216,12 @@ func TestStreamOracleComposite_EventExactOnStreamWithRaw(t *testing.T) {
 		t.Fatal("the stock /stream-with-raw leg carried no raw text; the raw half of the comparison would be vacuous")
 	}
 	assertTraceEqual(t, "U1s /stream-with-raw vs stock BAML", native, baml)
+	// Same non-vacuity guard as the /stream arm: two legs that both emit ZERO heartbeats
+	// would compare equal while proving nothing about this cadence branch still emitting
+	// the liveness the pool's hung detector depends on.
+	if baml.heartbeats == 0 {
+		t.Fatal("the stock /stream-with-raw leg emitted no 2xx heartbeat; the liveness comparison would be vacuous")
+	}
 	if native.heartbeats != baml.heartbeats {
 		t.Errorf("2xx-liveness heartbeats: native=%d stock=%d", native.heartbeats, baml.heartbeats)
 	}

@@ -129,6 +129,11 @@ type routeProofProvider struct {
 	// perturbing the arms that share the default single-delta transcript: a stream
 	// differential that only ever sees one structured tick cannot observe per-tick
 	// behaviour at all.
+	//
+	// It is written ONCE, before the server starts accepting, and only read by the handler
+	// goroutine afterwards. Setting it on a already-started provider would be a data race:
+	// an inbound request from a worker SUBPROCESS creates no happens-before edge with the
+	// test goroutine's write, so -race would flag it nondeterministically.
 	streamChunks []string
 
 	mu   sync.Mutex
@@ -158,7 +163,15 @@ func newRouteProofProvider(t *testing.T) *routeProofProvider {
 // A bind failure is a lane fault, not a reason to report success, so it is fatal.
 func newRouteProofProviderAt(t *testing.T, addr string) *routeProofProvider {
 	t.Helper()
-	p := &routeProofProvider{}
+	return newRouteProofProviderWith(t, addr, nil)
+}
+
+// newRouteProofProviderWith is [newRouteProofProviderAt] with a provider-specific SSE
+// corpus, installed before the listener accepts so the handler goroutine can read it
+// without synchronisation.
+func newRouteProofProviderWith(t *testing.T, addr string, streamChunks []string) *routeProofProvider {
+	t.Helper()
+	p := &routeProofProvider{streamChunks: streamChunks}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p.calls.Add(1)
 		body, _ := io.ReadAll(r.Body)

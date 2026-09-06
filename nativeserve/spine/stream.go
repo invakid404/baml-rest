@@ -67,7 +67,6 @@ const (
 	reasonNoBAMLStreamPlan  = "no_baml_stream_plan_closure"
 	reasonNoBAMLStreamParse = "no_baml_stream_parse_closure"
 	reasonNoStreamDecoder   = "no_standard_stream_decoder"
-	reasonOracleTerminal    = "stream_oracle_terminal"
 	reasonFinalOracle       = "stream_final_oracle_error"
 )
 

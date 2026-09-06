@@ -3,6 +3,7 @@ package streamoracle
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -85,17 +86,27 @@ type reordered struct {
 }
 
 func TestResolvePrefix_MatchServesNative(t *testing.T) {
+	// Two DISTINCT maps with identical content, so the legs agree on public bytes while
+	// remaining separately identifiable.
 	nativeValue := map[string]any{"answer": "ok"}
-	out, err := ResolvePrefix(context.Background(), legs(val(nativeValue, nil), bamlVal(map[string]any{"answer": "ok"}, nil)), `{"answer":"ok"}`)
+	bamlValue := map[string]any{"answer": "ok"}
+	out, err := ResolvePrefix(context.Background(), legs(val(nativeValue, nil), bamlVal(bamlValue, nil)), `{"answer":"ok"}`)
 	if err != nil {
 		t.Fatalf("ResolvePrefix: %v", err)
 	}
 	if out.Action != ActionEmitNative {
 		t.Fatalf("action = %v, want ActionEmitNative", out.Action)
 	}
-	// Identity, not equality: the NATIVE value must be the one released on a match.
-	if got, ok := out.Value.(map[string]any); !ok || &got != &nativeValue && got["answer"] != "ok" {
-		t.Errorf("value = %#v, want the native value", out.Value)
+	// IDENTITY, not equality. Comparing the released value's content would pass whichever
+	// leg it came from — the two are byte-identical by construction, which is the whole
+	// premise of a "match". Comparing the underlying map header is what actually pins
+	// "native's value is the one released".
+	got, ok := out.Value.(map[string]any)
+	if !ok {
+		t.Fatalf("value = %#v, want a map", out.Value)
+	}
+	if reflect.ValueOf(got).Pointer() != reflect.ValueOf(nativeValue).Pointer() {
+		t.Errorf("a matching tick released BAML's value; on a match the NATIVE decoded carrier must be the one that reaches the client")
 	}
 	if out.Compare != bamlutils.NativeStreamCompareMatch || out.Drift || out.Substituted || out.Suppressed {
 		t.Errorf("outcome = %+v, want a clean match with no drift", out)

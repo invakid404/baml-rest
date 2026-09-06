@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"go/ast"
 	"go/parser"
+	"go/printer"
 	"go/token"
 	"testing"
 )
@@ -25,15 +27,26 @@ import (
 // EDIT — dropping a conjunct, or adding a third one keyed on something observed too late —
 // and that is exactly what an AST comparison of the assignment catches.
 
-// suppressionAssignmentOperands returns the identifier/selector operands of the
-// `cfg.DisableStreamInfrastructureRetries = ...` assignment in the given file, in order.
-func suppressionAssignmentOperands(t *testing.T, path string) []string {
+// suppressionAssignmentText returns the RENDERED right-hand side of the
+// `cfg.DisableStreamInfrastructureRetries = ...` assignment in the given file.
+//
+// It renders the whole expression rather than collecting operands, because an operand list
+// cannot see the two edits that matter most: `&&` -> `||`, and an inserted `!`. All three of
+//
+//	nativeStreamServeCapable && runtimeCfg.DeBAML.Enabled
+//	nativeStreamServeCapable || runtimeCfg.DeBAML.Enabled
+//	nativeStreamServeCapable && !runtimeCfg.DeBAML.Enabled
+//
+// yield the same operands, and the third INVERTS the guarantee — it would arm suppression
+// only while the kill switch is off.
+func suppressionAssignmentText(t *testing.T, path string) string {
 	t.Helper()
-	f, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, 0)
 	if err != nil {
 		t.Fatalf("parse %s: %v", path, err)
 	}
-	var operands []string
+	var rendered string
 	found := false
 	ast.Inspect(f, func(n ast.Node) bool {
 		assign, ok := n.(*ast.AssignStmt)
@@ -48,51 +61,28 @@ func suppressionAssignmentOperands(t *testing.T, path string) []string {
 			t.Errorf("%s assigns DisableStreamInfrastructureRetries more than once; the arming rule must have ONE source", path)
 		}
 		found = true
-		ast.Inspect(assign.Rhs[0], func(rn ast.Node) bool {
-			switch v := rn.(type) {
-			case *ast.SelectorExpr:
-				operands = append(operands, exprText(v))
-				return false
-			case *ast.Ident:
-				operands = append(operands, v.Name)
-				return false
-			}
-			return true
-		})
+		var buf bytes.Buffer
+		if err := printer.Fprint(&buf, fset, assign.Rhs[0]); err != nil {
+			t.Fatalf("render the arming expression in %s: %v", path, err)
+		}
+		rendered = buf.String()
 		return false
 	})
 	if !found {
 		t.Fatalf("%s does not assign DisableStreamInfrastructureRetries; the arming rule is missing", path)
 	}
-	return operands
-}
-
-// exprText renders a (possibly nested) selector as dotted text.
-func exprText(sel *ast.SelectorExpr) string {
-	switch x := sel.X.(type) {
-	case *ast.Ident:
-		return x.Name + "." + sel.Sel.Name
-	case *ast.SelectorExpr:
-		return exprText(x) + "." + sel.Sel.Name
-	default:
-		return sel.Sel.Name
-	}
+	return rendered
 }
 
 // TestStreamRetrySuppressionIsArmedByCapabilityAndFlag asserts BOTH worker-mode boot paths
-// arm suppression from exactly the two conjuncts, in that order, and from nothing else.
+// arm suppression from exactly this expression — operator, operand order and negation
+// included.
 func TestStreamRetrySuppressionIsArmedByCapabilityAndFlag(t *testing.T) {
-	want := []string{"nativeStreamServeCapable", "runtimeCfg.DeBAML.Enabled"}
+	const want = "nativeStreamServeCapable && runtimeCfg.DeBAML.Enabled"
 	for _, path := range []string{"worker_mode_subprocess.go", "worker_mode_inprocess.go"} {
-		got := suppressionAssignmentOperands(t, path)
-		if len(got) != len(want) {
-			t.Errorf("%s arms suppression from %v, want exactly %v — a dropped conjunct would replay a claimed native stream, an extra one would narrow the guarantee", path, got, want)
-			continue
-		}
-		for i := range want {
-			if got[i] != want[i] {
-				t.Errorf("%s conjunct %d = %q, want %q", path, i, got[i], want[i])
-			}
+		if got := suppressionAssignmentText(t, path); got != want {
+			t.Errorf("%s arms suppression from %q, want %q — a dropped conjunct replays a claimed native stream, an added one narrows the guarantee, and a flipped operator or an inserted ! inverts it",
+				path, got, want)
 		}
 	}
 }

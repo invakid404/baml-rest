@@ -150,4 +150,44 @@ func TestStandardCompositeDoesNotLinkBAML(t *testing.T) {
 			t.Errorf("the composite's dependency graph is missing %q; the isolation gate would pass by absence", want)
 		}
 	}
+
+	// `go list -deps` resolves only the files active under the DEFAULT build constraints,
+	// so a BAML import introduced behind a build tag — and this repo uses them, e.g.
+	// debamlnativespinegenerated — would sail through the graph check above. The source
+	// scan below is tag-independent (parser.ImportsOnly ignores constraints), so it closes
+	// that gap for the composite's own files.
+	assertNoBAMLImportsUnderAnyTag(t, ".")
+}
+
+// assertNoBAMLImportsUnderAnyTag scans every non-test .go file in dir for a BAML import,
+// regardless of build constraints.
+func assertNoBAMLImportsUnderAnyTag(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+	scanned := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		scanned++
+		for _, imp := range f.Imports {
+			p := strings.Trim(imp.Path.Value, `"`)
+			for _, bad := range bamlLinkedPaths {
+				if strings.Contains(p, bad) {
+					t.Errorf("%s imports %q (matched %q) — BAML must reach this composite only as neutral closures, under EVERY build tag", path, p, bad)
+				}
+			}
+		}
+	}
+	if scanned == 0 {
+		t.Errorf("scanned no non-test .go files in %s; the tag-independent BAML scan would pass vacuously", dir)
+	}
 }

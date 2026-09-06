@@ -192,13 +192,94 @@ func TestStreamComposite_DeclineRecordsNoClaimedEvidence(t *testing.T) {
 	}); got != 1 {
 		t.Errorf("stream population{declined} = %v, want 1", got)
 	}
-	// A decline records NO serve outcome at all: attempts_total counts claimed attempts.
+	// A decline records NO serve outcome AT ALL: attempts_total counts claimed attempts.
+	// Checking only `success` would let the fail-closed internal_error branch start firing
+	// on declines unnoticed, which is the regression most likely to happen here.
 	for _, mode := range []admission.Mode{admission.ModeStream, admission.ModeStreamWithRaw} {
-		if got := counterValue(t, reg, mAttempts, map[string]string{
-			"mode": string(mode), "engine": "native", "provider": "openai", "outcome": "success",
-		}); got != 0 {
-			t.Errorf("attempts_total{%s} = %v on a decline, want 0", mode, got)
+		for _, outcome := range []string{"success", "internal_error", "parse_error", "provider_error", "transport_error"} {
+			if got := counterValue(t, reg, mAttempts, map[string]string{
+				"mode": string(mode), "engine": "native", "provider": "openai", "outcome": outcome,
+			}); got != 0 {
+				t.Errorf("attempts_total{%s,%s} = %v on a decline, want 0", mode, outcome, got)
+			}
 		}
+	}
+}
+
+// TestStreamComposite_UnknownDispositionNeverPublishesAMappedOutcome pins the fail-closed
+// metric arm: an out-of-contract disposition is reported as a FAILURE by the adapter, so the
+// serve outcome it happens to carry must not be published — least of all a `success` on a
+// request the adapter is about to fail.
+func TestStreamComposite_UnknownDispositionNeverPublishesAMappedOutcome(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	stub := &stubStreamOracleExec{res: bamlutils.NativeSpineStreamOracleResult{Disposition: 99}}
+	stub.res.Observations.ServeOutcome = bamlutils.NativeStaticOutcomeSuccess
+	serve, err := NewStaticStreamServeFromExecutor(reg, stub)
+	if err != nil {
+		t.Fatalf("NewStaticStreamServeFromExecutor: %v", err)
+	}
+	got := serve(context.Background(), bamlutils.NativeStaticStreamOracleInvocation{Method: "M", Provider: "openai"}, func(bamlutils.NativeSpineStreamEvent) error { return nil })
+	if got.Disposition != bamlutils.NativeStaticStreamOracleFailed {
+		t.Fatalf("disposition = %v, want failed (fail-closed)", got.Disposition)
+	}
+	if v := counterValue(t, reg, mAttempts, map[string]string{
+		"mode": "stream", "engine": "native", "provider": "openai", "outcome": "success",
+	}); v != 0 {
+		t.Errorf("attempts_total{success} = %v for an unknown disposition the adapter FAILED; the carried outcome must not be published", v)
+	}
+	if v := counterValue(t, reg, mAttempts, map[string]string{
+		"mode": "stream", "engine": "native", "provider": "openai", "outcome": "internal_error",
+	}); v != 1 {
+		t.Errorf("attempts_total{internal_error} = %v, want 1 — a fail-closed terminal is still an attempt and must be counted", v)
+	}
+}
+
+// TestStreamComposite_SucceededWithoutAnOutcomeIsNotInternalError matches the unary twin: a
+// success that carried no resolver outcome must not be mislabelled a failure. Unreachable
+// with the production executor (which always sets one), which is exactly why the arm needs
+// a test rather than a reader's assumption.
+func TestStreamComposite_SucceededWithoutAnOutcomeIsNotInternalError(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	stub := &stubStreamOracleExec{res: bamlutils.SucceededSpineStreamOracleResult("f", "", "", bamlutils.NativeStaticServeEngineNative)}
+	// Observations deliberately left zero: ServeOutcome == NativeStaticOutcomeNone.
+	serve, err := NewStaticStreamServeFromExecutor(reg, stub)
+	if err != nil {
+		t.Fatalf("NewStaticStreamServeFromExecutor: %v", err)
+	}
+	serve(context.Background(), bamlutils.NativeStaticStreamOracleInvocation{Method: "M", Provider: "openai"}, func(bamlutils.NativeSpineStreamEvent) error { return nil })
+	if v := counterValue(t, reg, mAttempts, map[string]string{
+		"mode": "stream", "engine": "native", "provider": "openai", "outcome": "internal_error",
+	}); v != 0 {
+		t.Errorf("attempts_total{internal_error} = %v for a SUCCEEDED stream; a served request must never read as an internal error", v)
+	}
+}
+
+// TestStreamComposite_UnknownCompareTokenFoldsOntoOneLabel pins the metric's bounded
+// cardinality: a classification the recorder does not know must fold onto a fixed label
+// rather than be published verbatim as a new label value — and must still be COUNTED, since
+// dropping it would under-report drift.
+func TestStreamComposite_UnknownCompareTokenFoldsOntoOneLabel(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	stub := &stubStreamOracleExec{res: bamlutils.SucceededSpineStreamOracleResult("f", "", "", bamlutils.NativeStaticServeEngineNative)}
+	stub.res.Observations = bamlutils.NativeSpineStreamOracleObservations{
+		PrefixComparisons: 1, FinalOracleRan: true,
+		FinalCompare: bamlutils.NativeStreamOracleCompare("a_token_from_the_future"),
+		ServeOutcome: bamlutils.NativeStaticOutcomeSuccess,
+	}
+	serve, err := NewStaticStreamServeFromExecutor(reg, stub)
+	if err != nil {
+		t.Fatalf("NewStaticStreamServeFromExecutor: %v", err)
+	}
+	serve(context.Background(), bamlutils.NativeStaticStreamOracleInvocation{Method: "M", Provider: "openai"}, func(bamlutils.NativeSpineStreamEvent) error { return nil })
+	if v := counterValue(t, reg, "debaml_native_static_stream_oracle_compare_total", map[string]string{
+		"stage": compareStageFinal, "result": "a_token_from_the_future",
+	}); v != 0 {
+		t.Errorf("an unrecognized classification was published verbatim as a label value (%v); the series' cardinality must be bounded by the code", v)
+	}
+	if v := counterValue(t, reg, "debaml_native_static_stream_oracle_compare_total", map[string]string{
+		"stage": compareStageFinal, "result": compareOther,
+	}); v != 1 {
+		t.Errorf("compare{final,other} = %v, want 1 — an unknown classification folds onto one label but is still counted", v)
 	}
 }
 

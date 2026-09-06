@@ -86,6 +86,16 @@ type staticStreamFrame struct {
 	data      string
 	raw       string
 	reasoning string
+	// reset is the client-observable "discard accumulated state" signal. Without it a
+	// reset frame (kind=Stream, empty Data) is indistinguishable from a plain empty Stream
+	// frame, so a lane that injected one where the other leg sent the other would compare
+	// equal while streaming clients saw different behaviour.
+	reset bool
+	// metaPhase is the metadata frame's phase. The full payload is deliberately NOT
+	// compared — winner_engine legitimately differs between the legs, which is the point
+	// of the flag — but the phase SEQUENCE must match: a wrong phase, or two metadata
+	// events swapped, is a routing divergence a count comparison cannot see.
+	metaPhase string
 }
 
 func kindName(k workerplugin.StreamResultKind) string {
@@ -106,17 +116,33 @@ func kindName(k workerplugin.StreamResultKind) string {
 }
 
 func (f staticStreamFrame) String() string {
-	return fmt.Sprintf("{kind:%s data:%s raw:%q reasoning:%q}", kindName(f.kind), f.data, f.raw, f.reasoning)
+	return fmt.Sprintf("{kind:%s data:%s raw:%q reasoning:%q reset:%v phase:%q}",
+		kindName(f.kind), f.data, f.raw, f.reasoning, f.reset, f.metaPhase)
+}
+
+// metadataPhaseOf extracts a metadata frame's phase. An unparseable payload yields "", which
+// compares equal across legs and so cannot mask a divergence by itself.
+func metadataPhaseOf(data []byte) string {
+	var envelope struct {
+		Phase string `json:"phase"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return ""
+	}
+	return envelope.Phase
 }
 
 // staticStreamResult is one leg of the differential.
 type staticStreamResult struct {
 	frames []staticStreamFrame
-	// heartbeats counts the 2xx-liveness frames, and metadata holds each metadata frame's
-	// raw payload in order. Both are recorded separately from frames so an arm can assert
-	// on them directly as well as through the ordered comparison.
+	// heartbeats counts the 2xx-liveness frames and metadataPhases holds each metadata
+	// frame's phase in order. Both are recorded separately from frames so an arm can assert
+	// on them directly as well as through the ordered comparison. The raw metadata PAYLOAD
+	// is deliberately not retained: winner_engine legitimately differs between the legs, so
+	// comparing whole payloads would fail on the one field that is supposed to differ,
+	// while the phase sequence catches a wrong phase or two swapped events.
 	heartbeats       int
-	metadata         []string
+	metadataPhases   []string
 	final            string
 	providerRequests int64
 	metrics          routeProofResult
@@ -187,14 +213,23 @@ func runStaticStreamProof(t *testing.T, provider *routeProofProvider, mode bamlu
 		case workerplugin.StreamResultKindStream, workerplugin.StreamResultKindFinal:
 			out.frames = append(out.frames, staticStreamFrame{
 				kind: res.Kind, data: string(res.Data), raw: res.Raw, reasoning: res.Reasoning,
+				reset: res.Reset,
 			})
 			if res.Kind == workerplugin.StreamResultKindFinal {
 				out.final = string(res.Data)
 			}
 		case workerplugin.StreamResultKindHeartbeat:
-			// The 2xx-liveness signal. Its PRESENCE and POSITION are part of the public
-			// transcript — the pool's hung detector is what consumes it — so it is recorded
-			// with no payload rather than dropped.
+			// Recorded, but expected to be ZERO at THIS boundary on both legs: the pool
+			// CONSUMES heartbeats for its first-byte/hung-detection bookkeeping and never
+			// forwards them to a CallStream caller (pool.go, "Filter heartbeat - only for
+			// first-byte tracking"). So this arm exists to keep the recorder total — if a
+			// future pool change starts forwarding them, they are compared rather than
+			// silently dropped — not because this test can observe liveness.
+			//
+			// The ordered-liveness proof therefore lives where the frames actually are:
+			// TestStreamWithOracle_LiveOracle_LivenessSignalsFireInOrder reads them at the
+			// executor, before the pool filter, over a provider that delays the body so
+			// headers and first-body are genuinely separated.
 			out.frames = append(out.frames, staticStreamFrame{kind: res.Kind})
 			out.heartbeats++
 		case workerplugin.StreamResultKindMetadata:
@@ -202,8 +237,9 @@ func runStaticStreamProof(t *testing.T, provider *routeProofProvider, mode bamlu
 			// legitimately differs between the two legs (that difference is the whole
 			// point of the flag). The routing facts that must NOT differ are asserted
 			// explicitly by the caller.
-			out.frames = append(out.frames, staticStreamFrame{kind: res.Kind})
-			out.metadata = append(out.metadata, string(res.Data))
+			phase := metadataPhaseOf(res.Data)
+			out.frames = append(out.frames, staticStreamFrame{kind: res.Kind, metaPhase: phase})
+			out.metadataPhases = append(out.metadataPhases, phase)
 		default:
 			// An unhandled kind is a transcript this recorder cannot compare. Failing is
 			// the only honest response: silently dropping it is how a lane stops emitting
@@ -233,14 +269,26 @@ func assertStaticStreamTranscriptsMatch(t *testing.T, label string, stock, nativ
 			t.Errorf("%s: public frame %d differs:\n  stock:  %s\n  native: %s", label, i, stock.frames[i], native.frames[i])
 		}
 	}
-	// The two channels the ordered comparison alone would not make legible on failure.
+	// The two per-kind counts the ordered comparison alone would not make legible on a
+	// failure. Heartbeats are structurally 0 == 0 at this boundary (the pool filters them);
+	// the comparison is kept so a future pool change that forwarded them ASYMMETRICALLY
+	// would fail here rather than pass unnoticed.
 	if stock.heartbeats != native.heartbeats {
-		t.Errorf("%s: 2xx-liveness heartbeats: stock=%d native=%d — the native lane REPLACES the stock stream path, so it owes the same liveness the pool's hung detector watches",
+		t.Errorf("%s: 2xx-liveness heartbeats: stock=%d native=%d — the two legs must deliver the same kinds to a CallStream caller",
 			label, stock.heartbeats, native.heartbeats)
 	}
-	if len(stock.metadata) != len(native.metadata) {
-		t.Errorf("%s: metadata frames: stock=%d native=%d", label, len(stock.metadata), len(native.metadata))
+	// The metadata PHASE sequence, compared element-wise. The ordered frame comparison above
+	// already covers it, but a dedicated message names the divergence instead of leaving a
+	// reader to spot it inside a frame dump.
+	if strings.Join(stock.metadataPhases, ",") != strings.Join(native.metadataPhases, ",") {
+		t.Errorf("%s: metadata phase sequence: stock=%v native=%v — a wrong phase or two swapped metadata events is a routing divergence",
+			label, stock.metadataPhases, native.metadataPhases)
 	}
+	// Ground truth for whoever reads this lane's CI log next: the per-kind shape of both
+	// transcripts, so a future disagreement starts from data instead of a re-derivation.
+	t.Logf("%s per-kind frame counts: stock{total:%d heartbeat:%d metadata:%d} native{total:%d heartbeat:%d metadata:%d}",
+		label, len(stock.frames), stock.heartbeats, len(stock.metadataPhases),
+		len(native.frames), native.heartbeats, len(native.metadataPhases))
 }
 
 // TestBootedArtifactDefaultServesTheExactJSONStaticStream is the headline acceptance proof:
@@ -252,8 +300,7 @@ func TestBootedArtifactDefaultServesTheExactJSONStaticStream(t *testing.T) {
 		t.Fatalf("%s is not set: this lane must BOOT a STATIC-CAPABLE artifact and stream a real request through it; a missing artifact is a lane misconfiguration, not a reason to report success", staticFixtureWorkerArtifactIDEnv)
 	}
 
-	provider := newRouteProofProviderAt(t, staticFixtureLoopbackAddr)
-	provider.streamChunks = staticStreamChunks()
+	provider := newRouteProofProviderWith(t, staticFixtureLoopbackAddr, staticStreamChunks())
 
 	stock := runStaticStreamProof(t, provider, bamlutils.StreamModeStream, false)
 	native := runStaticStreamProof(t, provider, bamlutils.StreamModeStream, true)
@@ -278,11 +325,22 @@ func TestBootedArtifactDefaultServesTheExactJSONStaticStream(t *testing.T) {
 	if stock.providerRequests != 1 {
 		t.Fatalf("the stock leg put %d request(s) on the wire, want exactly 1", stock.providerRequests)
 	}
-	// NON-VACUITY on the liveness channel: the stock path emits a 2xx heartbeat, so a
-	// comparison that found none on either leg would prove nothing about the native lane
-	// having stopped emitting it.
-	if stock.heartbeats == 0 {
-		t.Fatalf("the stock leg published no 2xx-liveness heartbeat; the liveness half of the transcript comparison would be vacuous")
+	// NON-VACUITY on the kinds this boundary actually delivers. The structured-frame count
+	// above already proves the corpus produced several ticks; this pins that the recorder
+	// saw a terminal FINAL too, so "the transcripts match" is a statement about a complete
+	// stream rather than about two truncated ones.
+	//
+	// It deliberately does NOT require a heartbeat frame: the pool consumes those before a
+	// CallStream caller can see them, so requiring one asserted a frame this boundary can
+	// never produce — which is exactly how this guard failed CI while nothing was wrong.
+	finals := 0
+	for _, f := range stock.frames {
+		if f.kind == workerplugin.StreamResultKindFinal {
+			finals++
+		}
+	}
+	if finals != 1 {
+		t.Fatalf("the stock leg published %d final frame(s), want exactly 1; the transcript comparison would not be comparing a complete stream", finals)
 	}
 
 	// THE DIFFERENTIAL: the complete ordered public transcript is identical.
@@ -332,8 +390,7 @@ func TestBootedArtifactDefaultServesTheExactJSONStaticStreamWithRaw(t *testing.T
 	if strings.TrimSpace(os.Getenv(staticFixtureWorkerArtifactIDEnv)) == "" {
 		t.Fatalf("%s is not set: this lane must BOOT a STATIC-CAPABLE artifact", staticFixtureWorkerArtifactIDEnv)
 	}
-	provider := newRouteProofProviderAt(t, staticFixtureLoopbackAddr)
-	provider.streamChunks = staticStreamChunks()
+	provider := newRouteProofProviderWith(t, staticFixtureLoopbackAddr, staticStreamChunks())
 
 	stock := runStaticStreamProof(t, provider, bamlutils.StreamModeStreamWithRaw, false)
 	native := runStaticStreamProof(t, provider, bamlutils.StreamModeStreamWithRaw, true)
@@ -365,6 +422,18 @@ func TestBootedArtifactDefaultServesTheExactJSONStaticStreamWithRaw(t *testing.T
 	if got := native.metrics.winnerBySurface["static_stream/native"]; got != 1 {
 		t.Errorf("winner{surface=static_stream,winner=native} = %v, want 1", got)
 	}
+	// The ORACLE actually ran on THIS cadence branch. Without these, the arm would pass on
+	// a native win that agreed with nothing — which is precisely the failure the comment
+	// above says this surface is the one likely to hit.
+	if native.metrics.planCompareMatch != 1 {
+		t.Errorf("plan_compare match = %v, want exactly 1 (one U1s request, one live BAML stream-plan match)", native.metrics.planCompareMatch)
+	}
+	if got := native.metrics.phaseBySurface["static_stream/same_response_oracle"]; got != 1 {
+		t.Errorf("admission_phase{surface=static_stream,phase=same_response_oracle} = %v, want 1 (the per-prefix + final oracle ran on the raw cadence branch too)", got)
+	}
+	if got := native.metrics.winnerBySurfaceCohort["static_stream/none/native"]; got != 1 {
+		t.Errorf("winner{surface=static_stream,cohort=none,winner=native} = %v, want 1 (structural, enrollment-free)", got)
+	}
 }
 
 // TestBootedArtifactWithTheFlagOffStreamsWithNoNativeWork is the kill-switch arm: with
@@ -379,8 +448,7 @@ func TestBootedArtifactWithTheFlagOffStreamsWithNoNativeWork(t *testing.T) {
 	if strings.TrimSpace(os.Getenv(staticFixtureWorkerArtifactIDEnv)) == "" {
 		t.Fatalf("%s is not set: this lane must BOOT a STATIC-CAPABLE artifact", staticFixtureWorkerArtifactIDEnv)
 	}
-	provider := newRouteProofProviderAt(t, staticFixtureLoopbackAddr)
-	provider.streamChunks = staticStreamChunks()
+	provider := newRouteProofProviderWith(t, staticFixtureLoopbackAddr, staticStreamChunks())
 
 	stock := runStaticStreamProof(t, provider, bamlutils.StreamModeStream, false)
 	if strings.TrimSpace(stock.final) == "" {

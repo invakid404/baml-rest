@@ -169,17 +169,38 @@ func TestGeneratedBAMLPrefixClosureHasNoErrorSwallowingBranch(t *testing.T) {
 		t.Fatalf("parse generated adapter %s: %v", fixtureAdapterGo, err)
 	}
 
-	checked := 0
+	// Candidates are identified by a marker a SWALLOWING variant cannot remove: a
+	// ParseStream selector together with the __prefix parameter. Keying on `__se` instead
+	// would let a closure that discarded the parse error with `_` fall out of the candidate
+	// set and be skipped silently — the exact evasion this guard must not permit. Nested
+	// literals are excluded by taking only the innermost match.
+	candidates := 0
+	compliant := 0
 	ast.Inspect(file, func(n ast.Node) bool {
-		// The emitted closure is the one that calls ParseStream and assigns to __se.
 		lit, ok := n.(*ast.FuncLit)
-		if !ok || !blockRefsIdent(lit, "__se") || !blockRefsIdent(lit, "__prefix") {
+		if !ok || !blockRefsIdent(lit, "__prefix") || !refsParseStreamSelector(lit) {
 			return true
 		}
-		// Find its `if __se != nil { … }` guard and require the block to be exactly one
-		// return whose SECOND result is the received error.
-		ast.Inspect(lit.Body, func(inner ast.Node) bool {
-			ifs, ok := inner.(*ast.IfStmt)
+		// Descend: an OUTER literal containing the closure matches the same filter, and
+		// counting it would inflate the tally. Only the innermost match is the closure.
+		inner := false
+		ast.Inspect(lit.Body, func(m ast.Node) bool {
+			l2, ok := m.(*ast.FuncLit)
+			if ok && l2 != lit && blockRefsIdent(l2, "__prefix") && refsParseStreamSelector(l2) {
+				inner = true
+				return false
+			}
+			return true
+		})
+		if inner {
+			return true
+		}
+		candidates++
+		// EVERY candidate must carry exactly one compliant `if __se != nil` branch, so a
+		// single well-formed closure cannot vouch for the rest.
+		branches := 0
+		ast.Inspect(lit.Body, func(m ast.Node) bool {
+			ifs, ok := m.(*ast.IfStmt)
 			if !ok {
 				return true
 			}
@@ -191,29 +212,55 @@ func TestGeneratedBAMLPrefixClosureHasNoErrorSwallowingBranch(t *testing.T) {
 			if !ok || lhs.Name != "__se" {
 				return true
 			}
-			checked++
+			branches++
 			if len(ifs.Body.List) != 1 {
-				t.Errorf("the per-prefix BAML error branch has %d statement(s), want exactly one return; a branch with logic in it is where a swallow hides", len(ifs.Body.List))
+				t.Errorf("a per-prefix BAML error branch has %d statement(s), want exactly one return; a branch with logic in it is where a swallow hides", len(ifs.Body.List))
 				return false
 			}
 			ret, ok := ifs.Body.List[0].(*ast.ReturnStmt)
 			if !ok || len(ret.Results) != 2 {
-				t.Error("the per-prefix BAML error branch does not end in a two-result return")
+				t.Error("a per-prefix BAML error branch does not end in a two-result return")
 				return false
 			}
 			id, ok := ret.Results[1].(*ast.Ident)
 			if !ok || id.Name != "__se" {
-				t.Errorf("the per-prefix BAML error branch returns %s as its error, want the received __se — anything else (a nil, a substituted error) SWALLOWS a genuine BAML failure and leaves the claimed stream running with no post-claim authority",
+				t.Errorf("a per-prefix BAML error branch returns %s as its error, want the received __se — anything else (a nil, a substituted error) SWALLOWS a genuine BAML failure and leaves the claimed stream running with no post-claim authority",
 					exprSummary(ret.Results[1]))
+				return false
 			}
+			compliant++
 			return false
 		})
+		if branches != 1 {
+			t.Errorf("a per-prefix BAML closure has %d `if __se != nil` branch(es), want exactly 1; a closure that DISCARDS the parse error carries none", branches)
+		}
 		return true
 	})
-	if checked == 0 {
+	if candidates == 0 {
 		t.Fatal("no generated per-prefix BAML closure was found; the swallow guard would pass vacuously")
 	}
-	t.Logf("checked the error branch of %d generated per-prefix BAML closure(s)", checked)
+	if compliant != candidates {
+		t.Errorf("%d of %d per-prefix BAML closures propagate the parse error; every one must", compliant, candidates)
+	}
+	t.Logf("checked the error branch of %d generated per-prefix BAML closure(s)", candidates)
+}
+
+// refsParseStreamSelector reports whether n contains a `ParseStream.<Method>` selector — a
+// marker the closure cannot drop while still being the per-prefix BAML oracle.
+func refsParseStreamSelector(n ast.Node) bool {
+	found := false
+	ast.Inspect(n, func(m ast.Node) bool {
+		sel, ok := m.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if inner, ok := sel.X.(*ast.SelectorExpr); ok && inner.Sel.Name == "ParseStream" {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 // exprSummary renders an expression enough to name it in a diagnostic, without carrying any
@@ -244,7 +291,14 @@ func TestStaticStreamOracleHelperEmitted(t *testing.T) {
 	}
 	// The U1s installer must NOT set the legacy transport-only parser seams: the oracle
 	// owns the parse, and installing them would arm the outer error-swallowing cadence.
-	oracleFn := helper[strings.Index(helper, "func installNativeStaticStreamOracle("):]
+	// Guard the index: the presence check above is non-fatal, so on drift execution reaches
+	// here with -1 and `helper[-1:]` panics — turning an intended clean drift signal into a
+	// stack trace.
+	oracleIdx := strings.Index(helper, "func installNativeStaticStreamOracle(")
+	if oracleIdx < 0 {
+		t.Fatal("installNativeStaticStreamOracle is absent from the generated helper; its seams cannot be asserted")
+	}
+	oracleFn := helper[oracleIdx:]
 	if end := strings.Index(oracleFn, "\nfunc "); end > 0 {
 		oracleFn = oracleFn[:end]
 	}

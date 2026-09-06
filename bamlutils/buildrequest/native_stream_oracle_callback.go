@@ -84,7 +84,13 @@ type NativeStreamOracleOutcome struct {
 	Disposition NativeStreamDisposition
 
 	// Declined-only: bounded, secret-free tokens describing WHERE and WHY the native path
-	// stepped aside. The orchestrator only forwards them for observability.
+	// stepped aside, carried for parity with the legacy seam's outcome.
+	//
+	// The orchestrator does not consume them: it falls through to BAML and the decline's
+	// observability is recorded on the OTHER side of the boundary, where the tokens
+	// originate — the standard composite's RecordPreclaimDecline plus its bounded
+	// population counter, both keyed on the same spine result. They are kept here so a
+	// caller inspecting an outcome can see the reason without reaching into metrics.
 	DeclineStage  NativeDeclineStage
 	DeclineReason NativeDeclineReason
 

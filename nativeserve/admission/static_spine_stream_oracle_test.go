@@ -177,7 +177,11 @@ func TestAdmitStaticSpineStreamOracleClaimKeepsTheFrozenLanesGates(t *testing.T)
 		}
 		// The legacy lane would decline this SAME input at (cohort, cohort_not_enrolled),
 		// because nothing is enrolled for static_stream.
-		if _, lerr := AdmitStaticStreamClaim(context.Background(), in); lerr == nil {
+		// The claim is CAPTURED rather than discarded: if the legacy lane ever admits — the
+		// regression this contrast exists to catch — its kept-alive nanollm engine would
+		// otherwise leak before the t.Fatal.
+		if lclaim, lerr := AdmitStaticStreamClaim(context.Background(), in); lerr == nil {
+			lclaim.Close()
 			t.Fatal("the legacy lane admitted an unenrolled static stream")
 		} else if d, ok := lerr.(*StaticDecline); !ok || d.Stage != string(StageCohort) {
 			t.Fatalf("the legacy lane declined at %v, want the cohort gate — the contrast is the point", lerr)

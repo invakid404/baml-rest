@@ -215,12 +215,44 @@ func recordStreamOracle(
 	if inv.NeedsRaw {
 		mode = admission.ModeStreamWithRaw
 	}
-	if outcome, ok := mapServeOutcome(obs.ServeOutcome); ok {
-		m.RecordServeOutcome(mode, inv.Provider, outcome)
-	} else if res.Disposition != bamlutils.NativeSpineStreamDeclinedPreSocket {
+	switch {
+	case res.Disposition == bamlutils.NativeSpineStreamDeclinedPreSocket:
+		// A pre-socket decline is not an attempt; attempts_total counts claimed ones.
+	case res.Disposition != bamlutils.NativeSpineStreamSucceeded &&
+		res.Disposition != bamlutils.NativeSpineStreamFailedAfterClaim:
+		// An out-of-contract disposition. adaptStreamOracleResult fails it CLOSED, so the
+		// outcome it happens to carry must not be published — least of all a `success` on
+		// a request the adapter is about to report as failed.
 		m.RecordServeOutcome(mode, inv.Provider, admission.OutcomeInternalError)
+	default:
+		if outcome, ok := mapServeOutcome(obs.ServeOutcome); ok {
+			m.RecordServeOutcome(mode, inv.Provider, outcome)
+		} else if res.Disposition != bamlutils.NativeSpineStreamSucceeded {
+			// A claimed terminal that carried no resolver outcome (a post-claim panic,
+			// say) is still an attempt and must be counted. A SUCCESS without one is
+			// excluded, matching the unary twin: mislabelling a served stream
+			// internal_error would be worse than not counting it.
+			m.RecordServeOutcome(mode, inv.Provider, admission.OutcomeInternalError)
+		}
 	}
 }
+
+// knownStreamCompare is the CLOSED set of comparison classifications that may become a
+// metric label. Validating against it is what keeps this series' cardinality bounded by the
+// code rather than by whatever the resolver happens to return: a token added upstream
+// without a counter would otherwise be published verbatim as a new label value.
+var knownStreamCompare = map[bamlutils.NativeStreamOracleCompare]bool{
+	bamlutils.NativeStreamCompareMatch:         true,
+	bamlutils.NativeStreamCompareNativeNoValue: true,
+	bamlutils.NativeStreamCompareBAMLNoValue:   true,
+	bamlutils.NativeStreamCompareBytesMismatch: true,
+	bamlutils.NativeStreamCompareNativeError:   true,
+}
+
+// compareOther is where an unrecognized classification folds. It is a fixed label, so an
+// out-of-contract token costs one extra series rather than one per distinct value — and it
+// is still COUNTED, because silently dropping it would under-report drift.
+const compareOther = "other"
 
 // recordCompare adds n to one bounded (stage, result) comparison cell, skipping zero so an
 // untouched classification stays absent rather than being published as an explicit zero.
@@ -228,7 +260,11 @@ func recordCompare(cmp *prometheus.CounterVec, stage string, result bamlutils.Na
 	if n <= 0 {
 		return
 	}
-	cmp.WithLabelValues(stage, string(result)).Add(float64(n))
+	label := string(result)
+	if !knownStreamCompare[result] {
+		label = compareOther
+	}
+	cmp.WithLabelValues(stage, label).Add(float64(n))
 }
 
 // registerStreamPopulationCounter registers (or reuses, on a shared registry) the ONE
