@@ -49,7 +49,7 @@ PINNED-COMMIT: c65182236f3e
 PINNED-STAMP: 20260906220027
 REACHABLE-FROM: feat/debaml-u1s
 SLICE: ExecBridge-U1s / M3e-B — standard-worker default-SERVE streaming: make the standard BAML+nanollm worker serve /stream and /stream-with-raw natively by default for the exact ClassStaticStream cohort, under a live BAML StreamRequest plan-compare admission plus a per-prefix and final BAML parse oracle over the ONE response (neutral bamlutils oracle contracts; nativeserve/streamoracle decision matrix; nativeserve/spine StreamWithOracle on a shared claimed-stream core + NewPopulationStreamExecutor; nativeserve/admission AdmitStaticSpineStreamOracleClaim; buildrequest's oracle-owned stream attempt seam; the standard stream composite; the cmd/worker static-stream factory swap)
-PR: pending — the post-squash re-pin to the master squash commit is OWED
+PR: #717 — the post-squash re-pin to the master squash commit is OWED
 ```
 
 ## Why the pins name a BRANCH commit
