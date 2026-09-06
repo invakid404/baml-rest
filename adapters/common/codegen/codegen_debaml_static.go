@@ -478,14 +478,25 @@ func deBAMLStaticStreamOracleServe(adapter bamlutils.Adapter) bamlutils.NativeSt
 // The four callbacks it supplies are the whole safety unit, and only THIS package can build
 // them because only it is linked against BAML:
 //
-//   - bamlStreamParse: ParseStream.<Method> over the exact accumulated prefix, with BAML's
-//     partial semantics normalized — an ordinary rejection is an authoritative NO-VALUE, not
-//     an error; a cancelled/expired context is a real error (the oracle could not be
-//     ESTABLISHED); and a panic is never converted to a no-value (it unwinds into the
-//     claimed executor's guard). Generated BAML v0.223 exposes no dedicated "not parseable
-//     yet" sentinel, so an option-construction failure is indistinguishable from an ordinary
-//     rejection HERE and reads as a no-value; it is not lost, because it recurs on the FINAL
-//     parse, where any error is terminal for the claimed stream;
+//   - bamlStreamParse: ParseStream.<Method> over the exact accumulated prefix, normalized
+//     into the neutral closed contract. EVERY error it returns is TERMINAL, and a panic is
+//     never converted to a no-value (it unwinds into the claimed executor's guard).
+//
+//     That rule is not a choice between plausible policies — it follows from how BAML
+//     actually signals "nothing yet". Generated BAML v0.223 reports an incomplete prefix by
+//     RETURNING a partial value with a nil error, never by erroring: measured across the
+//     exact JSON alias, a top-level string and a class return, every degenerate prefix ("",
+//     "[", "{", "tru", "not json at all") yields (value, nil). The only errors observed are
+//     genuine failures — a cancelled/expired context, an engine invocation error, a decode
+//     failure. So there is no benign error class to carve out, and swallowing errors here
+//     would silently remove the post-claim authority while the stream kept emitting. The
+//     empirical property is pinned by TestBAMLParseStreamNeverErrorsOnAnIncompletePrefix, so
+//     a BAML upgrade that started erroring on incompleteness fails there rather than
+//     quietly turning benign prefixes into terminals.
+//
+//     "No value" therefore arrives as a RETURNED nil (a nil interface or a typed-nil
+//     pointer — the stream carriers are pointer aliases), which bamlutils.BAMLStreamPrefixValue
+//     normalizes;
 //   - bamlFinalParse: Parse.<Method> over the complete accumulated text;
 //   - decodeStreamPartial / decodeStreamFinal: this method's own concrete carrier decoders,
 //     so a chosen NATIVE value is a value this method's result wrapper can type-assert.

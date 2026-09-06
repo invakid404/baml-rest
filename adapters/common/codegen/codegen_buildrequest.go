@@ -865,8 +865,9 @@ func (me *methodEmitter) emitBuildRequest() {
 			return me.decodeClosure(me.finalResultDecoderName(), me.finalResultTypeCode())
 		}
 		// The U1s BAML-ONLY per-prefix oracle: ParseStream.<Method> over the exact
-		// accumulated prefix, with BAML's partial semantics normalized into the neutral
-		// closed contract. It parses; it can reach no transport.
+		// accumulated prefix, normalized into the neutral closed contract. It parses; it
+		// can reach no transport. EVERY error it returns is terminal — see
+		// installNativeStaticStreamOracle for why that is the whole rule.
 		bamlStreamParseClosure := func() jen.Code {
 			return jen.Func().Params(
 				jen.Id("__pctx").Qual("context", "Context"),
@@ -876,16 +877,14 @@ func (me *methodEmitter) emitBuildRequest() {
 					Qual(g.pkgs.GeneratedClientPkg, "ParseStream").Dot(me.methodName).
 					Call(jen.Id("__pctx"), jen.Id("__prefix"), jen.Id("options").Op("...")),
 				jen.If(jen.Id("__se").Op("!=").Nil()).Block(
-					jen.Comment("A cancelled/expired context is NOT an ordinary partial rejection: the"),
-					jen.Comment("oracle could not be ESTABLISHED for this prefix, which after the claim"),
-					jen.Comment("is terminal. Reporting it as a no-value would silently stop comparing."),
-					jen.If(jen.Id("__ce").Op(":=").Id("__pctx").Dot("Err").Call(), jen.Id("__ce").Op("!=").Nil()).Block(
-						jen.Return(jen.Qual(g.pkgs.InterfacesPkg, "BAMLStreamPrefixResult").Values(), jen.Id("__ce")),
-					),
-					jen.Comment("An ordinary ParseStream rejection is the EXPECTED outcome for an"),
-					jen.Comment("incomplete prefix: an authoritative no-value, never an error."),
-					jen.Return(jen.Qual(g.pkgs.InterfacesPkg, "BAMLStreamPrefixResult").Values(), jen.Nil()),
+					jen.Comment("EVERY error is TERMINAL. ParseStream signals \"no partial for this"),
+					jen.Comment("prefix yet\" by RETURNING a value, never by erroring, so an error here"),
+					jen.Comment("is always a genuine failure and the claimed stream has lost its"),
+					jen.Comment("oracle. See installNativeStaticStreamOracle for the pinned evidence."),
+					jen.Return(jen.Qual(g.pkgs.InterfacesPkg, "BAMLStreamPrefixResult").Values(), jen.Id("__se")),
 				),
+				jen.Comment("A returned value is the answer — including a typed nil, which"),
+				jen.Comment("BAMLStreamPrefixValue normalizes to an authoritative no-value."),
 				jen.Return(jen.Qual(g.pkgs.InterfacesPkg, "BAMLStreamPrefixValue").Call(jen.Id("__sv")), jen.Nil()),
 			)
 		}

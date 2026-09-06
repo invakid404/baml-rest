@@ -28,6 +28,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
@@ -94,6 +95,12 @@ func (p *streamOracleProvider) baseURL() string { return p.srv.URL + "/v1" }
 func okSSE(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
+	okSSEBody(w)
+}
+
+// okSSEBody writes only the BODY, for a handler that wants to control when the headers go
+// out relative to the first body byte.
+func okSSEBody(w http.ResponseWriter) {
 	flusher, _ := w.(http.Flusher)
 	for _, line := range strings.SplitAfter(streamOracleBody(), "\n\n") {
 		if line == "" {
@@ -534,6 +541,75 @@ func TestStreamWithOracle_LiveOracle_BAMLPrefixErrorIsTerminal(t *testing.T) {
 	}
 }
 
+// TestStreamWithOracle_LiveOracle_LivenessSignalsFireInOrder pins that the default-served
+// lane emits the SAME liveness signals the stock BAML stream path emits: the 2xx heartbeat
+// the pool's hung detector watches, and the first-body marker, in that fixed order and each
+// exactly once.
+//
+// It matters because this lane REPLACES the stock path for the exact cohort. A lane that
+// opened a socket and then went quiet on a slow body would look hung to the pool even while
+// it was streaming correctly — a liveness regression no transcript comparison of the deltas
+// would notice.
+//
+// The provider deliberately delays the body after the headers, so "headers fired before the
+// first body byte" is an observation rather than a coincidence of timing.
+func TestStreamWithOracle_LiveOracle_LivenessSignalsFireInOrder(t *testing.T) {
+	p := newStreamOracleProvider(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// A gap between the headers and the first body byte: the two signals are
+		// genuinely separated in time.
+		time.Sleep(30 * time.Millisecond)
+		okSSEBody(w)
+	})
+	e, buildBAML, bundle := streamLiveOracle(t, p.baseURL())
+	leg := &bamlLeg{bundle: bundle}
+	c := &oracleCollector{}
+
+	var mu sync.Mutex
+	var order []string
+	inv := liveStreamInv(t, buildBAML, leg)
+	inv.SendHeaders = func() {
+		mu.Lock()
+		defer mu.Unlock()
+		order = append(order, "headers")
+	}
+	inv.SendFirstBody = func() {
+		mu.Lock()
+		defer mu.Unlock()
+		order = append(order, "first_body")
+	}
+
+	res := e.StreamWithOracle(context.Background(), inv, c.emit)
+	if res.Disposition != bamlutils.NativeSpineStreamSucceeded {
+		t.Fatalf("disposition = %v (err %v), want succeeded", res.Disposition, res.Err)
+	}
+	mu.Lock()
+	got := append([]string(nil), order...)
+	mu.Unlock()
+	if len(got) != 2 || got[0] != "headers" || got[1] != "first_body" {
+		t.Fatalf("liveness signals = %v, want exactly [headers first_body] — the stock stream path emits both, and a lane that replaces it owes the same", got)
+	}
+}
+
+// TestStreamWithOracle_LiveOracle_NilLivenessCallbacksAreSafe: the frozen native-only lane
+// supplies neither callback, so the core must accept nil for both. This is the guard that
+// keeps the M3e-A lane's behaviour unchanged by the addition.
+func TestStreamWithOracle_LiveOracle_NilLivenessCallbacksAreSafe(t *testing.T) {
+	p := newStreamOracleProvider(t, func(w http.ResponseWriter, _ *http.Request) { okSSE(w) })
+	e, buildBAML, bundle := streamLiveOracle(t, p.baseURL())
+	leg := &bamlLeg{bundle: bundle}
+	inv := liveStreamInv(t, buildBAML, leg)
+	inv.SendHeaders, inv.SendFirstBody = nil, nil
+	res := e.StreamWithOracle(context.Background(), inv, (&oracleCollector{}).emit)
+	if res.Disposition != bamlutils.NativeSpineStreamSucceeded {
+		t.Fatalf("disposition = %v (err %v), want succeeded with nil liveness callbacks", res.Disposition, res.Err)
+	}
+}
+
 // TestStreamWithOracle_LiveOracle_BAMLPrefixPanicIsBoundedAndTerminal: a panicking oracle is
 // never converted into a no-value. It unwinds into the claimed guard, terminates the stream,
 // and the recovered payload does not escape.
@@ -558,9 +634,55 @@ func TestStreamWithOracle_LiveOracle_BAMLPrefixPanicIsBoundedAndTerminal(t *test
 	if got := p.hits.Load(); got != 1 {
 		t.Errorf("the provider saw %d request(s), want exactly 1", got)
 	}
-	// The evidence accumulated before the panic still comes out.
-	if !res.Observations.SocketOpened || !res.Observations.PlanMatched {
-		t.Errorf("observations = %+v, want the pre-panic plan/socket evidence retained", res.Observations)
+	// The evidence accumulated before the panic still comes out — and, critically, the
+	// ENTERED-oracle ledger is consistent with what happened: the tick was entered and the
+	// oracle was lost. A panic that unwound before those were set would report zero
+	// comparisons and no oracle terminal, and the serve-outcome classification would then
+	// call an oracle parse failure an internal error.
+	obs := res.Observations
+	if !obs.SocketOpened || !obs.PlanMatched {
+		t.Errorf("observations = %+v, want the pre-panic plan/socket evidence retained", obs)
+	}
+	if obs.PrefixComparisons != 1 {
+		t.Errorf("PrefixComparisons = %d, want 1 — the tick the oracle panicked on was ENTERED", obs.PrefixComparisons)
+	}
+	if !obs.OracleTerminal {
+		t.Error("OracleTerminal is false after a panicking oracle; the ledger contradicts the terminal it produced")
+	}
+	if obs.ServeOutcome != bamlutils.NativeStaticOutcomeParseError {
+		t.Errorf("ServeOutcome = %v, want a PARSE error — the safety comparison could not be established, which is not an internal error", obs.ServeOutcome)
+	}
+}
+
+// TestStreamWithOracle_LiveOracle_FinalPanicKeepsTheLedgerConsistent is the same guard on the
+// FINAL leg, where the panic unwinds through a different resolution path.
+func TestStreamWithOracle_LiveOracle_FinalPanicKeepsTheLedgerConsistent(t *testing.T) {
+	p := newStreamOracleProvider(t, func(w http.ResponseWriter, _ *http.Request) { okSSE(w) })
+	e, buildBAML, bundle := streamLiveOracle(t, p.baseURL())
+	leg := &bamlLeg{bundle: bundle}
+	leg.finalFn = func(string) (any, error) { panic("final oracle panic: " + secretPayload) }
+	c := &oracleCollector{}
+	res := e.StreamWithOracle(context.Background(), liveStreamInv(t, buildBAML, leg), c.emit)
+	if res.Disposition != bamlutils.NativeSpineStreamFailedAfterClaim {
+		t.Fatalf("disposition = %v, want failed_after_claim", res.Disposition)
+	}
+	if res.Err == nil || strings.Contains(res.Err.Error(), secretPayload) {
+		t.Errorf("the terminal error leaks the recovered panic payload: %v", res.Err)
+	}
+	obs := res.Observations
+	if !obs.FinalOracleRan || !obs.OracleTerminal {
+		t.Errorf("observations = %+v, want the final oracle entered AND the terminal recorded", obs)
+	}
+	if obs.ServeOutcome != bamlutils.NativeStaticOutcomeParseError {
+		t.Errorf("ServeOutcome = %v, want a PARSE error", obs.ServeOutcome)
+	}
+	// The transport DID respond — the panic happened while comparing the final, long after
+	// the provider answered — so an observation saying otherwise would misattribute it.
+	if !obs.SocketResponded {
+		t.Error("SocketResponded is false though the panic happened during the FINAL comparison, after a clean transport completion")
+	}
+	if got := p.hits.Load(); got != 1 {
+		t.Errorf("the provider saw %d request(s), want exactly 1", got)
 	}
 }
 

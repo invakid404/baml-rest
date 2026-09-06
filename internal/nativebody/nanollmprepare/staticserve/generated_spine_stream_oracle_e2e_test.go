@@ -49,16 +49,7 @@ import (
 // counting serve func and the concrete executor for its bounded socket counter.
 func fixtureBamlSrcStreamOracle(t *testing.T) (bamlutils.NativeStaticStreamOracleServeFunc, *spine.StreamExecutor, *int) {
 	t.Helper()
-	dir := filepath.Join("..", "..", "..", "nativeprompt", "testdata", "staticserve_fixture", "baml_src")
-	sources := map[string]string{}
-	for _, name := range []string{"clients.baml", "types.baml", "functions.baml"} {
-		b, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			t.Fatalf("read fixture baml_src %s: %v", name, err)
-		}
-		sources[name] = string(b)
-	}
-	proj, err := nativespine.BuildFromSource(sources)
+	proj, err := nativespine.BuildFromSource(readBamlSources(t, fixtureBamlSrcDir()))
 	if err != nil {
 		t.Fatalf("BuildFromSource(fixture baml_src): %v", err)
 	}
@@ -78,6 +69,27 @@ func fixtureBamlSrcStreamOracle(t *testing.T) (bamlutils.NativeStaticStreamOracl
 		return inner(ctx, inv, emit)
 	}
 	return fn, exec, &calls
+}
+
+// fixtureBamlSrcDir is the fixture project's own .baml source directory — the SAME input
+// scripts/build-s3b-static-fixture-artifact.sh introspects, so a spine built from it has a
+// baked plan that byte-matches the fixture's live BAML plan.
+func fixtureBamlSrcDir() string {
+	return filepath.Join("..", "..", "..", "nativeprompt", "testdata", "staticserve_fixture", "baml_src")
+}
+
+// readBamlSources reads the three .baml files a project descriptor is built from.
+func readBamlSources(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	sources := map[string]string{}
+	for _, name := range []string{"clients.baml", "types.baml", "functions.baml"} {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("read fixture baml_src %s: %v", name, err)
+		}
+		sources[name] = string(b)
+	}
+	return sources
 }
 
 // buildFixtureStreamOracleAdapter wires the fixture adapter with the U1s ORACLE comparator
@@ -151,6 +163,18 @@ func TestStreamOracleComposite_EventExactVsStockBAML(t *testing.T) {
 
 	assertTraceEqual(t, "U1s /stream vs stock BAML", native, baml)
 
+	// The 2xx-LIVENESS channel, which the ordered event comparison deliberately does not
+	// carry. This lane REPLACES the stock stream path, so it owes the same heartbeat the
+	// pool's hung detector watches; without it a healthy slow-body stream reads as hung.
+	// The stock leg's own count is the non-vacuity check.
+	if baml.heartbeats == 0 {
+		t.Fatal("the stock leg emitted no 2xx heartbeat; the liveness comparison would be vacuous")
+	}
+	if native.heartbeats != baml.heartbeats {
+		t.Errorf("2xx-liveness heartbeats: native=%d stock=%d — the default-served lane must emit the same liveness the stock path does",
+			native.heartbeats, baml.heartbeats)
+	}
+
 	if native.planned != "native" || native.winner != bamlutils.NativeStaticServeEngineNative {
 		t.Errorf("planned=%q winner=%q, want the native winner — the plan matched and every prefix and the final agreed",
 			native.planned, native.winner)
@@ -192,6 +216,9 @@ func TestStreamOracleComposite_EventExactOnStreamWithRaw(t *testing.T) {
 		t.Fatal("the stock /stream-with-raw leg carried no raw text; the raw half of the comparison would be vacuous")
 	}
 	assertTraceEqual(t, "U1s /stream-with-raw vs stock BAML", native, baml)
+	if native.heartbeats != baml.heartbeats {
+		t.Errorf("2xx-liveness heartbeats: native=%d stock=%d", native.heartbeats, baml.heartbeats)
+	}
 	if native.winner != bamlutils.NativeStaticServeEngineNative {
 		t.Errorf("winner = %q, want native", native.winner)
 	}

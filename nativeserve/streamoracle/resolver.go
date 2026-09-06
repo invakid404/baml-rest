@@ -94,7 +94,16 @@ var (
 	ErrBAMLFinalNoValue = errors.New("streamoracle: the BAML final oracle produced no value; a claimed stream has no valid final no-value state")
 	// ErrBAMLFinalUnmarshalable: the BAML final value could not be marshaled to public bytes.
 	ErrBAMLFinalUnmarshalable = errors.New("streamoracle: the BAML final oracle value could not be marshaled to public bytes")
+	// ErrNativeFinalNoValue: the NATIVE final produced no answer. Unlike the BAML one this
+	// is not terminal — native is not the authority — so it is recorded as drift and BAML's
+	// same-response final is served.
+	ErrNativeFinalNoValue = errors.New("streamoracle: the native final parser produced no value")
 )
+
+// IsNoValue reports whether an engine returned no answer. It is [bamlutils.IsBAMLStreamNoValue]
+// — the one rule, shared by the per-prefix and final legs, so the two cannot disagree about
+// what a missing answer looks like.
+func IsNoValue(v any) bool { return bamlutils.IsBAMLStreamNoValue(v) }
 
 // Validate reports whether every required leg is present. The caller runs it BEFORE
 // admission so missing wiring is a PRE-SOCKET decline rather than a post-claim discovery.
@@ -279,6 +288,12 @@ func ResolveFinal(ctx context.Context, legs Legs, full string) (FinalOutcome, er
 
 	nativeValue, nativeErr := legs.NativeFinal(ctx, full)
 	var nativeBytes []byte
+	if nativeErr == nil && IsNoValue(nativeValue) {
+		// A native final that produced no answer is DRIFT, resolved against BAML below —
+		// not a value to compare. Without this it would marshal as `null`, disagree with
+		// BAML's real final, and be reported as a byte mismatch instead of what it is.
+		nativeErr = ErrNativeFinalNoValue
+	}
 	if nativeErr == nil {
 		b, merr := legs.marshal(nativeValue)
 		if merr != nil {
@@ -292,7 +307,11 @@ func ResolveFinal(ctx context.Context, legs Legs, full string) (FinalOutcome, er
 	if bamlErr != nil {
 		return FinalOutcome{}, fmt.Errorf("%w: %w", ErrBAMLFinalUnavailable, bamlErr)
 	}
-	if bamlValue == nil {
+	// The SAME no-value rule the per-prefix leg runs. A nil INTERFACE is not the only
+	// shape a missing answer takes: the generated carriers are pointer aliases, so a
+	// typed-nil pointer boxed in an `any` is a non-nil interface that would sail past a
+	// plain nil check and be returned — or SUBSTITUTED for a native final — as `null`.
+	if IsNoValue(bamlValue) {
 		return FinalOutcome{}, ErrBAMLFinalNoValue
 	}
 	bamlBytes, merr := legs.marshal(bamlValue)

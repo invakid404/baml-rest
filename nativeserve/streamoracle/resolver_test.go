@@ -341,6 +341,66 @@ func TestResolveFinal_BAMLNoValueIsTerminal(t *testing.T) {
 	}
 }
 
+// TestResolveFinal_TypedNilBAMLValueIsTerminal is the typed-nil row. The generated stream
+// carriers are POINTER aliases (`type JSON = *Union5…`), so a nil carrier boxed in an `any`
+// is a non-nil interface: a plain nil check lets it through, it marshals as `null`, and it
+// can be RETURNED as the final or SUBSTITUTED for a perfectly good native one. The final
+// matrix has no no-value state, so it must be terminal — and terminal even though native
+// succeeded, because a lost authority is not repaired by the other engine agreeing with
+// itself.
+func TestResolveFinal_TypedNilBAMLValueIsTerminal(t *testing.T) {
+	type carrier struct{ A int }
+	var typedNil *carrier
+	_, err := ResolveFinal(context.Background(), finalLegs(
+		func(context.Context, string) (any, error) { return ordered{A: 1, B: 2}, nil },
+		func(context.Context, string) (any, error) { return typedNil, nil },
+	), `{"a":1,"b":2}`)
+	if !errors.Is(err, ErrBAMLFinalNoValue) {
+		t.Fatalf("err = %v, want ErrBAMLFinalNoValue — a typed-nil pointer is not a final", err)
+	}
+}
+
+// TestResolveFinal_TypedNilNativeValueIsDriftNotAValue is the asymmetric half: native is not
+// the authority, so ITS typed nil is drift resolved from BAML's same-response final. Without
+// this the nil would marshal as `null`, disagree with BAML's real final, and be reported as
+// a byte mismatch — the right served value for the wrong recorded reason.
+func TestResolveFinal_TypedNilNativeValueIsDriftNotAValue(t *testing.T) {
+	type carrier struct{ A int }
+	var typedNil *carrier
+	out, err := ResolveFinal(context.Background(), finalLegs(
+		func(context.Context, string) (any, error) { return typedNil, nil },
+		func(context.Context, string) (any, error) { return ordered{A: 9, B: 9}, nil },
+	), `{"a":9,"b":9}`)
+	if err != nil {
+		t.Fatalf("a native typed-nil final must be drift, not a terminal: %v", err)
+	}
+	if out.Compare != bamlutils.NativeStreamCompareNativeError || !out.Substituted {
+		t.Fatalf("outcome = %+v, want native_error with BAML's final substituted", out)
+	}
+	if got, ok := out.Value.(ordered); !ok || got.A != 9 {
+		t.Errorf("value = %#v, want BAML's same-response final", out.Value)
+	}
+}
+
+// TestResolvePrefixAndFinalShareOneNoValueRule pins that the two legs cannot disagree about
+// what a missing answer looks like — the asymmetry that let a typed nil through the final
+// while the prefix leg rejected it.
+func TestResolvePrefixAndFinalShareOneNoValueRule(t *testing.T) {
+	type carrier struct{ A int }
+	var typedNil *carrier
+	for name, v := range map[string]any{"nil interface": nil, "typed-nil pointer": typedNil} {
+		if !IsNoValue(v) {
+			t.Errorf("%s: IsNoValue = false, want true", name)
+		}
+		if got := bamlutils.BAMLStreamPrefixValue(v); got.HasValue {
+			t.Errorf("%s: the prefix leg reported a value", name)
+		}
+	}
+	if IsNoValue(ordered{A: 1}) || IsNoValue(&carrier{A: 1}) {
+		t.Error("IsNoValue rejected a present value")
+	}
+}
+
 func TestResolveFinal_BAMLMarshalFailureIsTerminal(t *testing.T) {
 	type poison struct{ C chan int }
 	_, err := ResolveFinal(context.Background(), finalLegs(

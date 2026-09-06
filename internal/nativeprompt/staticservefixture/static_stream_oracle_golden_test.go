@@ -144,10 +144,88 @@ func TestStaticStreamOracleClosuresNameTheRightBAMLParsers(t *testing.T) {
 			t.Errorf("the generated adapter is missing %q", want)
 		}
 	}
-	// An ordinary ParseStream rejection must be normalized to a NO-VALUE, and a cancelled
-	// context to a real error — the distinction the whole strict-cadence contract rests on.
-	if !strings.Contains(src, "if __ce := __pctx.Err(); __ce != nil {") {
-		t.Error("the per-prefix BAML closure does not distinguish a cancelled context from an ordinary partial rejection")
+}
+
+// TestGeneratedBAMLPrefixClosureHasNoErrorSwallowingBranch is the DISCRIMINATING guard on
+// the per-prefix oracle's error contract, and it is structural for a reason worth stating.
+//
+// The rule is that EVERY error from ParseStream.<Method> is terminal, because BAML signals
+// "no partial yet" by RETURNING a value and never by erroring
+// (TestBAMLParseStreamNeverErrorsOnAnIncompletePrefix pins that). The consequence is that
+// the ONLY error a test can make the real closure produce is a cancelled context — and a
+// swallowing implementation that special-cased cancellation would return an error for that
+// case too. So no runtime input distinguishes the two implementations, and a runtime test
+// CANNOT bite the swallow. This one can: it reads the emitted error branch and requires it
+// to return the error it received.
+//
+// A previous version of the emitted closure checked `__pctx.Err()` and, finding it nil,
+// returned `BAMLStreamPrefixResult{}, nil` — a silent no-value. That let a BAML
+// runtime/invariant/option failure remove the post-claim authority while the claimed stream
+// kept emitting, including raw. This assertion is what makes reintroducing it fail.
+func TestGeneratedBAMLPrefixClosureHasNoErrorSwallowingBranch(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, fixtureAdapterGo, nil, 0)
+	if err != nil {
+		t.Fatalf("parse generated adapter %s: %v", fixtureAdapterGo, err)
+	}
+
+	checked := 0
+	ast.Inspect(file, func(n ast.Node) bool {
+		// The emitted closure is the one that calls ParseStream and assigns to __se.
+		lit, ok := n.(*ast.FuncLit)
+		if !ok || !blockRefsIdent(lit, "__se") || !blockRefsIdent(lit, "__prefix") {
+			return true
+		}
+		// Find its `if __se != nil { … }` guard and require the block to be exactly one
+		// return whose SECOND result is the received error.
+		ast.Inspect(lit.Body, func(inner ast.Node) bool {
+			ifs, ok := inner.(*ast.IfStmt)
+			if !ok {
+				return true
+			}
+			bin, ok := ifs.Cond.(*ast.BinaryExpr)
+			if !ok {
+				return true
+			}
+			lhs, ok := bin.X.(*ast.Ident)
+			if !ok || lhs.Name != "__se" {
+				return true
+			}
+			checked++
+			if len(ifs.Body.List) != 1 {
+				t.Errorf("the per-prefix BAML error branch has %d statement(s), want exactly one return; a branch with logic in it is where a swallow hides", len(ifs.Body.List))
+				return false
+			}
+			ret, ok := ifs.Body.List[0].(*ast.ReturnStmt)
+			if !ok || len(ret.Results) != 2 {
+				t.Error("the per-prefix BAML error branch does not end in a two-result return")
+				return false
+			}
+			id, ok := ret.Results[1].(*ast.Ident)
+			if !ok || id.Name != "__se" {
+				t.Errorf("the per-prefix BAML error branch returns %s as its error, want the received __se — anything else (a nil, a substituted error) SWALLOWS a genuine BAML failure and leaves the claimed stream running with no post-claim authority",
+					exprSummary(ret.Results[1]))
+			}
+			return false
+		})
+		return true
+	})
+	if checked == 0 {
+		t.Fatal("no generated per-prefix BAML closure was found; the swallow guard would pass vacuously")
+	}
+	t.Logf("checked the error branch of %d generated per-prefix BAML closure(s)", checked)
+}
+
+// exprSummary renders an expression enough to name it in a diagnostic, without carrying any
+// generated prompt or credential material.
+func exprSummary(e ast.Expr) string {
+	switch v := e.(type) {
+	case *ast.Ident:
+		return v.Name
+	case *ast.CallExpr:
+		return "a call expression"
+	default:
+		return "a non-identifier expression"
 	}
 }
 

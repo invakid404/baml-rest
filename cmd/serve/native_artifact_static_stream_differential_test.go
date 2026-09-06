@@ -76,7 +76,11 @@ func staticStreamChunks() []string {
 }
 
 // staticStreamFrame is ONE public frame the worker published, reduced to the bytes and
-// channels a client would actually receive.
+// channels a client would actually receive. EVERY kind is recorded — including heartbeats
+// and metadata — because the acceptance criterion is the COMPLETE ORDERED transcript, and a
+// recorder that quietly drops a kind cannot observe a lane that stopped emitting it. (The
+// first version of this file dropped heartbeat and metadata frames, which is precisely why a
+// missing 2xx-liveness signal did not bite here.)
 type staticStreamFrame struct {
 	kind      workerplugin.StreamResultKind
 	data      string
@@ -84,13 +88,35 @@ type staticStreamFrame struct {
 	reasoning string
 }
 
+func kindName(k workerplugin.StreamResultKind) string {
+	switch k {
+	case workerplugin.StreamResultKindStream:
+		return "stream"
+	case workerplugin.StreamResultKindFinal:
+		return "final"
+	case workerplugin.StreamResultKindError:
+		return "error"
+	case workerplugin.StreamResultKindHeartbeat:
+		return "heartbeat"
+	case workerplugin.StreamResultKindMetadata:
+		return "metadata"
+	default:
+		return fmt.Sprintf("kind(%d)", k)
+	}
+}
+
 func (f staticStreamFrame) String() string {
-	return fmt.Sprintf("{kind:%d data:%s raw:%q reasoning:%q}", f.kind, f.data, f.raw, f.reasoning)
+	return fmt.Sprintf("{kind:%s data:%s raw:%q reasoning:%q}", kindName(f.kind), f.data, f.raw, f.reasoning)
 }
 
 // staticStreamResult is one leg of the differential.
 type staticStreamResult struct {
-	frames           []staticStreamFrame
+	frames []staticStreamFrame
+	// heartbeats counts the 2xx-liveness frames, and metadata holds each metadata frame's
+	// raw payload in order. Both are recorded separately from frames so an arm can assert
+	// on them directly as well as through the ordered comparison.
+	heartbeats       int
+	metadata         []string
 	final            string
 	providerRequests int64
 	metrics          routeProofResult
@@ -158,15 +184,31 @@ func runStaticStreamProof(t *testing.T, provider *routeProofProvider, mode bamlu
 		switch res.Kind {
 		case workerplugin.StreamResultKindError:
 			t.Fatalf("the %v stream returned an error frame: %v", mode, res.Error)
-		case workerplugin.StreamResultKindStream:
+		case workerplugin.StreamResultKindStream, workerplugin.StreamResultKindFinal:
 			out.frames = append(out.frames, staticStreamFrame{
 				kind: res.Kind, data: string(res.Data), raw: res.Raw, reasoning: res.Reasoning,
 			})
-		case workerplugin.StreamResultKindFinal:
-			out.frames = append(out.frames, staticStreamFrame{
-				kind: res.Kind, data: string(res.Data), raw: res.Raw, reasoning: res.Reasoning,
-			})
-			out.final = string(res.Data)
+			if res.Kind == workerplugin.StreamResultKindFinal {
+				out.final = string(res.Data)
+			}
+		case workerplugin.StreamResultKindHeartbeat:
+			// The 2xx-liveness signal. Its PRESENCE and POSITION are part of the public
+			// transcript — the pool's hung detector is what consumes it — so it is recorded
+			// with no payload rather than dropped.
+			out.frames = append(out.frames, staticStreamFrame{kind: res.Kind})
+			out.heartbeats++
+		case workerplugin.StreamResultKindMetadata:
+			// Metadata ORDER is compared; its payload is not, because winner_engine
+			// legitimately differs between the two legs (that difference is the whole
+			// point of the flag). The routing facts that must NOT differ are asserted
+			// explicitly by the caller.
+			out.frames = append(out.frames, staticStreamFrame{kind: res.Kind})
+			out.metadata = append(out.metadata, string(res.Data))
+		default:
+			// An unhandled kind is a transcript this recorder cannot compare. Failing is
+			// the only honest response: silently dropping it is how a lane stops emitting
+			// something and no test notices.
+			t.Fatalf("the %v stream published an unhandled frame kind %s; the complete-transcript comparison cannot silently drop it", mode, kindName(res.Kind))
 		}
 	}
 	out.providerRequests = provider.calls.Load() - before
@@ -190,6 +232,14 @@ func assertStaticStreamTranscriptsMatch(t *testing.T, label string, stock, nativ
 		if stock.frames[i] != native.frames[i] {
 			t.Errorf("%s: public frame %d differs:\n  stock:  %s\n  native: %s", label, i, stock.frames[i], native.frames[i])
 		}
+	}
+	// The two channels the ordered comparison alone would not make legible on failure.
+	if stock.heartbeats != native.heartbeats {
+		t.Errorf("%s: 2xx-liveness heartbeats: stock=%d native=%d — the native lane REPLACES the stock stream path, so it owes the same liveness the pool's hung detector watches",
+			label, stock.heartbeats, native.heartbeats)
+	}
+	if len(stock.metadata) != len(native.metadata) {
+		t.Errorf("%s: metadata frames: stock=%d native=%d", label, len(stock.metadata), len(native.metadata))
 	}
 }
 
@@ -227,6 +277,12 @@ func TestBootedArtifactDefaultServesTheExactJSONStaticStream(t *testing.T) {
 	}
 	if stock.providerRequests != 1 {
 		t.Fatalf("the stock leg put %d request(s) on the wire, want exactly 1", stock.providerRequests)
+	}
+	// NON-VACUITY on the liveness channel: the stock path emits a 2xx heartbeat, so a
+	// comparison that found none on either leg would prove nothing about the native lane
+	// having stopped emitting it.
+	if stock.heartbeats == 0 {
+		t.Fatalf("the stock leg published no 2xx-liveness heartbeat; the liveness half of the transcript comparison would be vacuous")
 	}
 
 	// THE DIFFERENTIAL: the complete ordered public transcript is identical.

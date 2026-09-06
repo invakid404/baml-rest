@@ -44,25 +44,35 @@ type BAMLStreamPrefixResult struct {
 	HasValue bool
 }
 
-// BAMLStreamPrefixValue normalizes ONE successful generated `ParseStream.<Method>` return
-// into the neutral prefix result. It exists so the "what counts as a value" rule is stated
-// ONCE, next to the contract, rather than re-derived in every generated closure.
+// IsBAMLStreamNoValue is THE single rule for "BAML established no value", and both the
+// per-prefix and the final oracle legs run it. It exists so the rule is stated once, next to
+// the contract, rather than re-derived — the prefix leg treating a typed nil as no-value
+// while the final leg accepted one is exactly the asymmetry this function removes.
 //
-// A nil interface and a NIL POINTER both report HasValue=false. Generated ParseStream
-// returns either a value type or a pointer depending on the method's stream carrier, and a
-// nil pointer boxed in an `any` is a non-nil interface — so a plain `v != nil` check would
-// read a nil carrier as a present partial and hand it to the comparison, where it marshals
-// as `null`.
+// A nil interface and a NIL POINTER both count as no value. Generated BAML returns either a
+// value type or a POINTER depending on the method's carrier — the stream carriers are
+// pointer aliases (`type JSON = *Union5…`) — and a nil pointer boxed in an `any` is a
+// non-nil interface, so a plain `v != nil` check would read a nil carrier as a present
+// answer and hand it to the comparison, where it marshals as `null`.
 //
-// For the exact `ClassStaticStream` cohort this is unobservable: its stream carrier is a
-// non-nullable union value, so a nil success cannot arise. The rule is stated for the
-// methods a later slice admits, and it is the SAFE direction there — a BAML no-value
-// SUPPRESSES the tick rather than releasing an unverified partial.
-func BAMLStreamPrefixValue(v any) BAMLStreamPrefixResult {
+// It is not hypothetical: generated `ParseStream` returns a TYPED-NIL carrier alongside its
+// error when the context is cancelled, so anything downstream of a partially-handled error
+// can meet one.
+func IsBAMLStreamNoValue(v any) bool {
 	if v == nil {
-		return BAMLStreamPrefixResult{}
+		return true
 	}
-	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Ptr && rv.IsNil() {
+	rv := reflect.ValueOf(v)
+	return rv.Kind() == reflect.Ptr && rv.IsNil()
+}
+
+// BAMLStreamPrefixValue normalizes ONE successful generated `ParseStream.<Method>` return
+// into the neutral prefix result, using [IsBAMLStreamNoValue].
+//
+// Treating a returned nil as a no-value is the SAFE direction on a claimed stream: a BAML
+// no-value SUPPRESSES the tick rather than releasing an unverified partial.
+func BAMLStreamPrefixValue(v any) BAMLStreamPrefixResult {
+	if IsBAMLStreamNoValue(v) {
 		return BAMLStreamPrefixResult{}
 	}
 	return BAMLStreamPrefixResult{Value: v, HasValue: true}
@@ -92,7 +102,8 @@ type BAMLStreamParse func(ctx context.Context, prefix string) (BAMLStreamPrefixR
 // BAMLStreamFinalParse runs BAML's `Parse.<Method>` — the FINAL parser, never
 // `ParseStream.<Method>` — over the COMPLETE accumulated parseable text. There is no valid
 // final "no value" state on a claimed stream: a nil error must come with a value, and any
-// error (or a missing value) is TERMINAL for the stream.
+// error — or a value [IsBAMLStreamNoValue] rejects, which includes a TYPED-NIL pointer — is
+// TERMINAL for the stream.
 type BAMLStreamFinalParse func(ctx context.Context, full string) (any, error)
 
 // NativeStreamDecode decodes native canonical JSON into the STANDARD generated method's

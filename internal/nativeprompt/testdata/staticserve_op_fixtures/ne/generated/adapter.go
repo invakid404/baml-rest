@@ -576,16 +576,14 @@ func staticAssertConfidenceBuildRequest(adapter bamlutils.Adapter, rawInput any,
 					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
 						__sv, __se := bamlclient.ParseStream.StaticAssertConfidence(__pctx, __prefix, options...)
 						if __se != nil {
-							// A cancelled/expired context is NOT an ordinary partial rejection: the
-							// oracle could not be ESTABLISHED for this prefix, which after the claim
-							// is terminal. Reporting it as a no-value would silently stop comparing.
-							if __ce := __pctx.Err(); __ce != nil {
-								return bamlutils.BAMLStreamPrefixResult{}, __ce
-							}
-							// An ordinary ParseStream rejection is the EXPECTED outcome for an
-							// incomplete prefix: an authoritative no-value, never an error.
-							return bamlutils.BAMLStreamPrefixResult{}, nil
+							// EVERY error is TERMINAL. ParseStream signals "no partial for this
+							// prefix yet" by RETURNING a value, never by erroring, so an error here
+							// is always a genuine failure and the claimed stream has lost its
+							// oracle. See installNativeStaticStreamOracle for the pinned evidence.
+							return bamlutils.BAMLStreamPrefixResult{}, __se
 						}
+						// A returned value is the answer — including a typed nil, which
+						// BAMLStreamPrefixValue normalizes to an authoritative no-value.
 						return bamlutils.BAMLStreamPrefixValue(__sv), nil
 					}, func(__pctx context.Context, __full string) (any, error) {
 						return bamlclient.Parse.StaticAssertConfidence(__pctx, __full, options...)
@@ -1497,16 +1495,14 @@ func staticCheckedConfidenceBuildRequest(adapter bamlutils.Adapter, rawInput any
 					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
 						__sv, __se := bamlclient.ParseStream.StaticCheckedConfidence(__pctx, __prefix, options...)
 						if __se != nil {
-							// A cancelled/expired context is NOT an ordinary partial rejection: the
-							// oracle could not be ESTABLISHED for this prefix, which after the claim
-							// is terminal. Reporting it as a no-value would silently stop comparing.
-							if __ce := __pctx.Err(); __ce != nil {
-								return bamlutils.BAMLStreamPrefixResult{}, __ce
-							}
-							// An ordinary ParseStream rejection is the EXPECTED outcome for an
-							// incomplete prefix: an authoritative no-value, never an error.
-							return bamlutils.BAMLStreamPrefixResult{}, nil
+							// EVERY error is TERMINAL. ParseStream signals "no partial for this
+							// prefix yet" by RETURNING a value, never by erroring, so an error here
+							// is always a genuine failure and the claimed stream has lost its
+							// oracle. See installNativeStaticStreamOracle for the pinned evidence.
+							return bamlutils.BAMLStreamPrefixResult{}, __se
 						}
+						// A returned value is the answer — including a typed nil, which
+						// BAMLStreamPrefixValue normalizes to an authoritative no-value.
 						return bamlutils.BAMLStreamPrefixValue(__sv), nil
 					}, func(__pctx context.Context, __full string) (any, error) {
 						return bamlclient.Parse.StaticCheckedConfidence(__pctx, __full, options...)

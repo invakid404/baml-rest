@@ -424,10 +424,14 @@ func (e *StreamExecutor) StreamWithOracle(ctx context.Context, inv bamlutils.Nat
 		parsePartial: func(bundle *schema.Bundle) buildrequest.StreamCadenceParseFunc {
 			legs := e.oracleLegs(bundle, inv)
 			return func(pctx context.Context, accumulated string) (any, bool, error) {
-				// BOTH legs run over this EXACT accumulated prefix, before the cadence
-				// emits anything for this tick.
-				res, err := streamoracle.ResolvePrefix(pctx, legs, accumulated)
+				// The ENTERED count is incremented BEFORE resolution, and the terminal flag
+				// is set by a panic-safe guard, so an engine that PANICS still leaves the
+				// ledger consistent with what happened: the tick was entered and the oracle
+				// was lost. Setting them after would make a panicking stream report zero
+				// comparisons and no oracle terminal, and streamOracleServeOutcome would
+				// then classify an oracle parse failure as an internal error.
 				obs.PrefixComparisons++
+				res, err := resolvePrefixWithOracleGuard(pctx, legs, accumulated, &obs)
 				if err != nil {
 					// The oracle could not be established for this prefix. Under the STRICT
 					// cadence policy this stops RunStream and becomes a post-claim terminal:
@@ -449,7 +453,7 @@ func (e *StreamExecutor) StreamWithOracle(ctx context.Context, inv bamlutils.Nat
 			legs := e.oracleLegs(bundle, inv)
 			// Set BEFORE either leg runs, so a panic in one still carries the phase out.
 			obs.FinalOracleRan = true
-			res, err := streamoracle.ResolveFinal(fctx, legs, full)
+			res, err := resolveFinalWithOracleGuard(fctx, legs, full, &obs)
 			if err != nil {
 				obs.OracleTerminal = true
 				// Wrapped as an output-parse error so the worker classifies it exactly like
@@ -468,6 +472,11 @@ func (e *StreamExecutor) StreamWithOracle(ctx context.Context, inv bamlutils.Nat
 		emit:             emit,
 		needsRaw:         needsRaw,
 		includeReasoning: inv.IncludeReasoning,
+		// This lane REPLACES the stock BAML stream path for the exact cohort, so it owes
+		// the same liveness signals that path emits — the 2xx heartbeat the pool's hung
+		// detector watches, and the first-body marker.
+		sendHeaders:   inv.SendHeaders,
+		sendFirstBody: inv.SendFirstBody,
 		onClaimed: func() {
 			// The plan byte-matched (that is why the claim was granted) and exactly one
 			// socket is about to open.
@@ -541,6 +550,40 @@ func (e *StreamExecutor) oracleLegs(bundle *schema.Bundle, inv bamlutils.NativeS
 		BAMLPrefix: inv.BAMLStreamParse,
 		BAMLFinal:  inv.BAMLFinalParse,
 	}
+}
+
+// resolvePrefixWithOracleGuard runs one prefix resolution and, if an engine PANICS, marks
+// the oracle terminal in the bounded ledger BEFORE letting the panic continue to the claimed
+// executor's payload-dropping guard.
+//
+// It deliberately RE-PANICS rather than converting the panic into an error. Swallowing it
+// here would turn a broken oracle into an ordinary terminal and lose the claimed guard's
+// bounded classification; this function's only job is to make the observations tell the
+// truth about a stream the panic is about to end. The recovered value is never inspected,
+// logged, or interpolated — it is re-panicked as-is so the claimed guard drops it.
+func resolvePrefixWithOracleGuard(ctx context.Context, legs streamoracle.Legs, prefix string, obs *bamlutils.NativeSpineStreamOracleObservations) (res streamoracle.PrefixOutcome, err error) {
+	completed := false
+	defer func() {
+		if !completed {
+			obs.OracleTerminal = true
+		}
+	}()
+	res, err = streamoracle.ResolvePrefix(ctx, legs, prefix)
+	completed = true
+	return res, err
+}
+
+// resolveFinalWithOracleGuard is the same guard for the final resolution.
+func resolveFinalWithOracleGuard(ctx context.Context, legs streamoracle.Legs, full string, obs *bamlutils.NativeSpineStreamOracleObservations) (res streamoracle.FinalOutcome, err error) {
+	completed := false
+	defer func() {
+		if !completed {
+			obs.OracleTerminal = true
+		}
+	}()
+	res, err = streamoracle.ResolveFinal(ctx, legs, full)
+	completed = true
+	return res, err
 }
 
 // recordPrefixCompare folds ONE resolved prefix comparison into the bounded observations.
@@ -632,6 +675,17 @@ type claimedStreamLane struct {
 	// bookkeeping, BEFORE the `claimed = true` marker — never in the gap between that marker
 	// and execute.RunStream, where a panic would be misclassified as a pre-socket decline.
 	onClaimed func()
+
+	// sendHeaders / sendFirstBody are the caller's LIVENESS signals, fired by the exact
+	// client on the first 2xx response headers and on the first raw body byte. They are the
+	// same two the stock BAML stream path and the legacy native seam emit, and a lane that
+	// REPLACES the stock path must emit them too: without the 2xx heartbeat the pool's hung
+	// detector sees no liveness on a slow body and can treat a healthy stream as hung.
+	//
+	// Nil on the frozen native-only lane, whose caller supplies none and whose behaviour is
+	// unchanged; execute.StreamConfig accepts nil for both.
+	sendHeaders   func()
+	sendFirstBody func()
 }
 
 // claimedStreamOutcome is the shared core's neutral result. Each public entry maps it into
@@ -768,8 +822,12 @@ func (e *StreamExecutor) runClaimedStream(ctx context.Context, lane claimedStrea
 		// OnClaim fires immediately before the underlying RoundTrip: it is the
 		// PHYSICAL socket marker, an observability proof that the transport boundary
 		// was reached — never permission to decline if RunStream then fails.
-		IdleTimeout: e.idleTimeout,
-		OnClaim:     func() { e.metrics.sockets.Add(1) },
+		// OnResponseHeaders / OnFirstBody are the lane's liveness signals, fired after it
+		// in that fixed order; both are nil on the frozen native-only lane.
+		IdleTimeout:       e.idleTimeout,
+		OnClaim:           func() { e.metrics.sockets.Add(1) },
+		OnResponseHeaders: lane.sendHeaders,
+		OnFirstBody:       lane.sendFirstBody,
 	})
 	if rerr != nil {
 		// EVERY RunStream error is terminal. Preserve the provider status when one is
