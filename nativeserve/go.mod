@@ -29,7 +29,7 @@
 // packages the root's internal/* imports here), so the three first-party requires
 // are pinned to the ORIGIN-RESOLVABLE pseudo-version of a single commit — the one
 // nativeserve/pin_followup.md records and cmd/build's TestFirstPartyPinFollowupIsTracked
-// checks, which is CURRENTLY the ExecBridge-U1s BRANCH SOURCE commit add491797af9 (a
+// checks, which is CURRENTLY the ExecBridge-U1s BRANCH SOURCE commit d7b61f2a7a8e (a
 // BRANCH-ONLY pin whose tracked follow-up is OUTSTANDING — the post-squash re-pin to the
 // U1s master squash commit is OWED; see the PIN-STATUS block below,
 // pin_followup.md, and the ExecBridge-U1s note by the pins). The master-durable
@@ -105,7 +105,7 @@
 //
 // NOTE (ExecBridge-U1s — standard-worker default-SERVE streaming): these pins are
 // BRANCH-ONLY and the tracked follow-up in nativeserve/pin_followup.md is therefore
-// STATUS: OUTSTANDING. They name add491797af9 on feat/debaml-u1s, the branch SOURCE commit
+// STATUS: OUTSTANDING. They name d7b61f2a7a8e on feat/debaml-u1s, the branch SOURCE commit
 // that carries the U1s guarded-tree change, because no master commit carries it yet.
 // This module gains the LIVE-oracle spine STREAM lane: nativeserve/spine's StreamWithOracle
 // on the shared claimed-stream core plus NewPopulationStreamExecutor, the new
@@ -178,7 +178,7 @@
 // U1c's #713 post-squash re-pin, and M3e-A's #715 one: pin to the branch SOURCE commit only
 // because no master commit carries the change yet, then re-pin all five to master and
 // regenerate the tar IMMEDIATELY after the merge. This change is the BRANCH half of that
-// pattern for U1s: all five pins name the branch source commit add491797af9
+// pattern for U1s: all five pins name the branch source commit d7b61f2a7a8e
 // (STATUS: OUTSTANDING) with the tar regenerated in the same change, and the master re-pin
 // is owed the moment the PR squash-merges.
 //
@@ -196,9 +196,9 @@ go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260906224202-add491797af9
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260906224202-add491797af9
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260906224202-add491797af9
+	github.com/invakid404/baml-rest v0.0.0-20260906231147-d7b61f2a7a8e
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260906231147-d7b61f2a7a8e
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260906231147-d7b61f2a7a8e
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
