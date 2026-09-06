@@ -201,3 +201,177 @@ func FailedAfterClaimSpineStreamResult(err error, stage, reason, rawDiagnostic s
 		RawDiagnostic: rawDiagnostic,
 	}
 }
+
+// ExecBridge-U1s / M3e-B — the NEUTRAL OPTIONAL oracle-capable extension to the spine
+// STREAM executor. It is the streaming twin of [NativeSpineUnaryOracleExecutor] and stands
+// in exactly the same relation to the M3e-A contract above: the base
+// [NativeSpineStreamExecutor.Stream] is UNCHANGED and BAML-free, and a native-only emitted
+// BuildMethod names neither this interface nor its result. Nothing on the emitted/runtime
+// native-only path can construct the BAML closures this lane requires.
+
+// NativeSpineStreamOracleExecutor is the optional oracle-capable spine stream executor: ONE
+// claimed native stream for an admitted method under a LIVE BAML `StreamRequest`
+// plan-compare admission plus a per-prefix and final BAML parse oracle over that ONE
+// response.
+//
+// It is deliberately a SINGLE-METHOD interface rather than an extension of
+// [NativeSpineStreamExecutor]: the standard composite drives StreamWithOracle and nothing
+// else, so requiring it to also satisfy the native-only Call/Parse/Stream/ParseStream
+// surface would couple the standard attachment (and every test double of it) to a surface
+// it never uses. The exact population is decided STRUCTURALLY at construction —
+// StreamWithOracle is a policy over the SAME immutable registry Stream serves, never a
+// second population.
+type NativeSpineStreamOracleExecutor interface {
+	StreamWithOracle(ctx context.Context, inv NativeStaticStreamOracleInvocation, emit NativeSpineStreamEmit) NativeSpineStreamOracleResult
+}
+
+// NativeStreamOracleCompare is a BOUNDED, secret-free classification of ONE per-prefix (or
+// final) native-vs-BAML comparison. It never carries a content-derived value.
+type NativeStreamOracleCompare string
+
+const (
+	// NativeStreamCompareNone is the zero value: no comparison was performed.
+	NativeStreamCompareNone NativeStreamOracleCompare = ""
+	// NativeStreamCompareMatch: both engines produced a value and their PUBLIC marshaled
+	// bytes are identical. Native's decoded value is served.
+	NativeStreamCompareMatch NativeStreamOracleCompare = "match"
+	// NativeStreamCompareNativeNoValue: native produced no value for this prefix (its
+	// documented no-partial sentinel). BAML's value is served if it has one; if BAML also
+	// has none the tick emits nothing and no drift is recorded.
+	NativeStreamCompareNativeNoValue NativeStreamOracleCompare = "native_no_value"
+	// NativeStreamCompareBAMLNoValue: native produced a value and BAML did not. The
+	// structured partial is SUPPRESSED — BAML is the authority after the claim.
+	NativeStreamCompareBAMLNoValue NativeStreamOracleCompare = "baml_no_value"
+	// NativeStreamCompareBytesMismatch: both engines produced a value and their public
+	// bytes differ. BAML's same-prefix value is served.
+	NativeStreamCompareBytesMismatch NativeStreamOracleCompare = "bytes_mismatch"
+	// NativeStreamCompareNativeError: native's parse, decode, or value marshal FAILED (not
+	// its no-partial sentinel). BAML's value is served if it has one; either way the drift
+	// latch is set.
+	NativeStreamCompareNativeError NativeStreamOracleCompare = "native_error"
+)
+
+// NativeSpineStreamOracleObservations are the bounded, secret-free facts a StreamWithOracle
+// carries out so the standard composite can replay the worker's de-BAML metric series
+// without re-deriving them. Every field is false/zero on a pre-admission decline. NONE of
+// them carries a content-derived value: no method output, prefix, raw text, request plan,
+// panic value, or error string.
+//
+// The counters are carried out on EVERY path (including a post-claim panic), so evidence
+// for plan-match, exactly-one-socket, per-prefix comparison, and drift is never lost.
+type NativeSpineStreamOracleObservations struct {
+	// PlanCompareRan: the live BAML StreamRequest plan compare executed; PlanMatched: it
+	// byte-matched (which is why the attempt CLAIMED). A plan-mismatch decline sets
+	// ran=true, matched=false.
+	PlanCompareRan bool
+	PlanMatched    bool
+	// SocketOpened: the single provider stream was attempted (== claimed); SocketResponded:
+	// the transport completed cleanly.
+	SocketOpened    bool
+	SocketResponded bool
+
+	// PrefixComparisons is the number of structured cadence ticks the oracle was ENTERED
+	// on. The five counters below partition the ticks it RESOLVED; a tick whose oracle
+	// could not be established (which terminates the stream) is counted here and in none
+	// of them, so `comparisons - sum(results)` is the count of oracle terminals rather
+	// than an unexplained gap.
+	PrefixComparisons   int
+	PrefixMatch         int
+	PrefixNativeNoValue int
+	PrefixBAMLNoValue   int
+	PrefixBytesMismatch int
+	PrefixNativeError   int
+
+	// FinalOracleRan: the final comparison was ENTERED (set before either leg runs, so a
+	// panic in one does not lose the phase). FinalCompare is its bounded result.
+	FinalOracleRan bool
+	FinalCompare   NativeStreamOracleCompare
+
+	// Substituted: at least one prefix or the final was served from BAML's same-response
+	// value. Suppressed: at least one native structured partial was withheld because BAML
+	// established no value for that prefix.
+	Substituted bool
+	Suppressed  bool
+
+	// OracleTerminal: the oracle itself terminated the claimed stream (a BAML leg that
+	// could not be established, a comparison invariant failure, or a final with no value).
+	OracleTerminal bool
+
+	// ServeOutcome is the bounded serve-outcome classification for RecordServeOutcome.
+	ServeOutcome NativeStaticServeOutcome
+}
+
+// NativeSpineStreamOracleResult is the neutral tri-state result of a spine
+// StreamWithOracle. It is a DISTINCT type from [NativeSpineStreamResult] on purpose: the
+// M3e-A native-only contract carries no winner and no observations, and folding the oracle's
+// evidence into it would weaken that contract rather than extend it. There is no "partial
+// fallback" disposition — a claimed stream has no route back.
+//
+// SENSITIVE: Final/Raw/Reasoning are parsed provider output. Only
+// Disposition/Stage/Reason/WinnerEngine and the bounded Observations are safe to emit.
+type NativeSpineStreamOracleResult struct {
+	Disposition NativeSpineStreamDisposition
+
+	// Succeeded-only: the ALREADY-ORACLED typed final in the STANDARD method's concrete
+	// carrier (never the hermetic emitted spine carrier), the accumulated
+	// /stream-with-raw channels, and the bounded winner-engine token
+	// (NativeStaticServeEngineNative / NativeStaticServeEngineBAMLParse).
+	Final        any
+	Raw          string
+	Reasoning    string
+	WinnerEngine string
+
+	// Declined (typed pre-socket decline) or Failed-after-claim (typed terminal error).
+	Err           error
+	RawDiagnostic string
+	Stage         string
+	Reason        string
+
+	Observations NativeSpineStreamOracleObservations
+}
+
+// DeclinedSpineStreamOracleResult builds a pre-socket decline certifying zero provider
+// sockets and zero emitted events. A nil err is replaced with the bounded
+// [ErrNativeSpineStreamDeclined] so a decline can never surface as a terminal failure
+// carrying no error at all.
+func DeclinedSpineStreamOracleResult(err error, stage, reason string) NativeSpineStreamOracleResult {
+	if err == nil {
+		err = ErrNativeSpineStreamDeclined
+	}
+	return NativeSpineStreamOracleResult{
+		Disposition: NativeSpineStreamDeclinedPreSocket,
+		Err:         err,
+		Stage:       stage,
+		Reason:      reason,
+	}
+}
+
+// SucceededSpineStreamOracleResult builds a success carrying the oracled typed final, the
+// accumulated raw/reasoning channels, and the bounded winner-engine token. Every public
+// event has already been delivered through the emit callback by the time it is returned.
+func SucceededSpineStreamOracleResult(final any, raw, reasoning, winnerEngine string) NativeSpineStreamOracleResult {
+	return NativeSpineStreamOracleResult{
+		Disposition:  NativeSpineStreamSucceeded,
+		Final:        final,
+		Raw:          raw,
+		Reasoning:    reasoning,
+		WinnerEngine: winnerEngine,
+	}
+}
+
+// FailedAfterClaimSpineStreamOracleResult builds a TERMINAL post-claim failure carrying the
+// typed error, bounded stage/reason, and the owned raw diagnostic accumulated before the
+// fault. A nil err is replaced with [ErrNativeSpineStreamFailed] so the result can never be
+// mistaken for a success. It can NEVER become a decline.
+func FailedAfterClaimSpineStreamOracleResult(err error, stage, reason, rawDiagnostic string) NativeSpineStreamOracleResult {
+	if err == nil {
+		err = ErrNativeSpineStreamFailed
+	}
+	return NativeSpineStreamOracleResult{
+		Disposition:   NativeSpineStreamFailedAfterClaim,
+		Err:           err,
+		Stage:         stage,
+		Reason:        reason,
+		RawDiagnostic: rawDiagnostic,
+	}
+}
