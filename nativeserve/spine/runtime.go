@@ -250,6 +250,50 @@ func NewPopulationExecutor(proj projectdescriptor.Project, candidates []UnaryReg
 	return NewUnaryExecutor(proj, bindings, exact)
 }
 
+// NewPopulationStreamExecutor builds a population-filtered *StreamExecutor over exactly the
+// accepted subset of STREAM candidates — the ExecBridge-U1s standard composite's
+// construction path, and the streaming twin of [NewPopulationExecutor].
+//
+// Like that constructor it OMITS ordinary cohort misses (unlike the STRICT
+// [NewStreamExecutor], where every passed registration must be admitted) and it ALLOWS AN
+// EMPTY accepted set: a standard artifact whose project has nothing in the exact stream
+// population yields an all-decline executor, so every /stream falls back to BAML. That is
+// legitimate for the standard worker and fatal for the native-only one, and the difference
+// is encoded in two constructors rather than an environment switch.
+//
+// It classifies with requireStream=true — the same predicate [NewWorkerRuntime] uses — so
+// the standard stream population is EXACTLY the native-only one: a method without a partial
+// decoder, or one the totality predicate declines, is omitted here as it is there. It still
+// FAILS HARD on corruption (an invalid project, a nil BuildMethod, a duplicate candidate,
+// any classifyRegistration hard rejection).
+//
+// It builds ONLY the executor over the accepted bindings, never the worker method maps: the
+// standard composite drives StreamWithOracle directly, and the standard worker's request
+// dispatch stays BAML's. Obtaining a stream executor by constructing NewWorkerRuntime and
+// type-asserting worker.Runtime would be wrong twice over — that constructor REFUSES an
+// empty population, and it hides its executor behind method maps.
+func NewPopulationStreamExecutor(proj projectdescriptor.Project, candidates []StreamRegistration, exact *llmhttp.ExactExecutor) (*StreamExecutor, error) {
+	// Transient records, as in NewStreamExecutor and NewWorkerRuntime: they never outlive
+	// this constructor, so they may point at the caller's slice. The single detachment
+	// boundary is copyStreamBinding in classifyRegistration.
+	normalized := make([]candidateRegistration, len(candidates))
+	for i := range candidates {
+		normalized[i] = candidateRegistration{
+			binding: candidates[i].Binding.Unary,
+			stream:  &candidates[i].Binding,
+			build:   candidates[i].BuildMethod,
+		}
+	}
+	accepted, err := classifyCandidates(proj, normalized, true)
+	if err != nil {
+		return nil, err
+	}
+	// The strict stream executor re-classifies exactly these accepted candidates (single
+	// source of truth); they were classified accepted above, so registration succeeds —
+	// including the zero-candidate case, which yields an all-decline executor.
+	return newStreamExecutorFrom(proj, accepted, exact)
+}
+
 // InitRuntime is the pure-Go validation/no-op init: it loads no shared library
 // and reads no environment, and validates the registry is non-empty so a misbuilt
 // runtime fails loudly at boot rather than serving an all-decline worker.
