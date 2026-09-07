@@ -16,8 +16,9 @@ import (
 // It is a pure, neutral data transform over the descriptor packages (no nanollm, no
 // generated BAML, no codegen toolchain), kept IN the bridge so the production serve
 // package stays a thin lane — it does NOT pull internal/nativespine's classifier +
-// code-generation dependency graph. It reconstructs everything the scalar cohort needs
-// (prompt, ordered resolved scalar argument edges, return Bundle, resolved client
+// code-generation dependency graph. It reconstructs everything the cohort needs
+// (prompt, the ordered resolved argument edges — scalars and single-level scalar
+// lists alike, copied verbatim from the descriptor — return Bundle, resolved client
 // config) so the reconstructed Function is exactly what the existing native
 // render/prepare admission path consumes.
 //

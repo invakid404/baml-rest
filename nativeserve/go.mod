@@ -29,11 +29,12 @@
 // packages the root's internal/* imports here), so the three first-party requires
 // are pinned to the ORIGIN-RESOLVABLE pseudo-version of a single commit — the one
 // nativeserve/pin_followup.md records and cmd/build's TestFirstPartyPinFollowupIsTracked
-// checks, which is CURRENTLY the ExecBridge-U1s MASTER squash commit 5d1a7d8b1d0b (a
-// MASTER-DURABLE pin whose tracked follow-up is RESOLVED — the post-squash re-pin to the
-// U1s master squash commit has been PERFORMED; see the PIN-STATUS block below,
-// pin_followup.md, and the ExecBridge-U1s note by the pins). The branch-only d7b61f2a7a8e
-// it named during PR #717's review is HISTORICAL, as are the M3e-A baseline 0ed769e091fd
+// checks, which is CURRENTLY the BRANCH-ONLY scalar-list widening source commit
+// c44e054441e6 on feat/debaml-widen-scalar-list-inputs (a BRANCH pin whose tracked
+// follow-up is OUTSTANDING — the post-squash re-pin to the merged master commit is OWED;
+// see the PIN-STATUS block below, pin_followup.md, and the scalar-list note by the pins).
+// The ExecBridge-U1s master squash 5d1a7d8b1d0b it named before this change is
+// HISTORICAL, as are the M3e-A baseline 0ed769e091fd
 // and the ExecBridge-U1c baseline 56d5473a1bdb before it. It is NOT the
 // historical Slice 7.1b master merge 15b98cf6ebe4 named in the floor notes below — one
 // consistent snapshot that resolves cleanly off a fresh checkout with zero
@@ -84,7 +85,7 @@
 // the pins were moved here. Pin to a branch commit only if unavoidable, and re-pin to the
 // merged master commit as the immediate follow-up.
 //
-// PIN-STATUS: RESOLVED
+// PIN-STATUS: OUTSTANDING
 //
 // That marker is the MACHINE-READABLE statement of where these pins stand, and
 // cmd/build's TestPackagedManifestsMatchTheTrackedPins requires it to equal the
@@ -103,26 +104,31 @@
 // follow-up is owed or performed and is therefore rewritten every slice, so this pointer
 // deliberately does not name it.
 //
-// NOTE (ExecBridge-U1s — standard-worker default-SERVE streaming): these pins are
-// MASTER-DURABLE and the tracked follow-up in nativeserve/pin_followup.md is therefore
-// STATUS: RESOLVED. They name 5d1a7d8b1d0b, the MASTER squash-merge commit of PR #717 that
-// carries the U1s change.
-// This module gains the LIVE-oracle spine STREAM lane: nativeserve/spine's StreamWithOracle
-// on the shared claimed-stream core plus NewPopulationStreamExecutor, the new
-// nativeserve/streamoracle per-prefix/final decision matrix, and nativeserve/admission's
-// AdmitStaticSpineStreamOracleClaim with its extended unexported lane policy. The U1s
-// nativeserve source depends on NEW bamlutils symbols — the neutral
-// NativeStaticStreamOracleInvocation / BAMLStreamParse / BAMLStreamFinalParse /
-// NativeSpineStreamOracleExecutor contract — so a consumer resolving a PRE-U1s bamlutils
-// fails to compile this module; the lockstep is a build precondition, not cosmetic. The
-// post-squash re-pin to this master squash commit was the MANDATORY follow-up after the PR
-// merged and has been PERFORMED.
+// NOTE (scalar-LIST input widening — default-serving the exact JSON cohort with
+// required scalar-list inputs): these pins are BRANCH-ONLY and the tracked follow-up in
+// nativeserve/pin_followup.md is therefore STATUS: OUTSTANDING. They name c44e054441e6 on
+// feat/debaml-widen-scalar-list-inputs, the branch SOURCE commit that carries the change,
+// because no master commit carries it yet.
+// This module's change is confined to nativeserve/spine's single population owner: the
+// registration input predicate now admits a required single-level list of required
+// primitives (string[]/int[]/bool[]) alongside the existing required primitives, so the
+// standard /call, /stream and /stream-with-raw populations and the BAML-free native-only
+// runtime all widen through the one classifier they share. It adds NO new bamlutils
+// symbol — the neutral contracts are unchanged — so the lockstep here is the delivery
+// convention rather than a link-time precondition: the packaged snapshot an external
+// nativeserve-goget consumer resolves must be the one that CARRIES this predicate, or it
+// serves the pre-widening population while the tar says otherwise.
+// The post-squash re-pin to the merged master commit is the MANDATORY, IMMEDIATE
+// follow-up once the PR merges, and it is OWED.
 //
 // HISTORICAL, SUPERSEDED — the SHAs in this paragraph are not the current pins:
-// During PR #717's review these five were BRANCH-ONLY at d7b61f2a7a8e on feat/debaml-u1s
-// (STATUS: OUTSTANDING), the branch SOURCE commit that carried the U1s guarded-tree change
-// while no master commit did; #717's squash flattened that SHA out of history and the
-// branch was deleted, which is what this re-pin repairs.
+// Immediately before this widening, all five were MASTER-DURABLE at 5d1a7d8b1d0b
+// (STATUS: RESOLVED), the MASTER squash-merge commit of PR #717 that carried the
+// ExecBridge-U1s standard-worker default-SERVE streaming lane. During #717's own review
+// these five were BRANCH-ONLY at d7b61f2a7a8e on feat/debaml-u1s (STATUS: OUTSTANDING),
+// the branch SOURCE commit that carried the U1s guarded-tree change while no master
+// commit did; #717's squash flattened that SHA out of history and the branch was deleted,
+// which its post-squash re-pin repaired.
 // Immediately before U1s, all five were MASTER-DURABLE at 0ed769e091fd (STATUS: RESOLVED),
 // the MASTER squash-merge commit of PR #715 that carried the M3e-A spine STREAM substrate.
 // During #715's own review these five were
@@ -178,13 +184,13 @@
 // native engine and is permitted.
 //
 // The precedent for this follow-up was #681 -> #682, #683 -> #684, #686 -> #687,
-// #689 -> #692, #703's batch-2 re-pin, U1's #708 -> #709, U1b's #711 post-squash re-pin, and
-// U1c's #713 post-squash re-pin, and M3e-A's #715 one: pin to the branch SOURCE commit only
-// because no master commit carries the change yet, then re-pin all five to master and
-// regenerate the tar IMMEDIATELY after the merge. This change is the MASTER re-pin half of
-// that pattern for U1s: all five pins name the U1s master squash commit 5d1a7d8b1d0b
-// (STATUS: RESOLVED) with the tar regenerated in the same change; it repaired the
-// branch-only d7b61f2a7a8e pin the moment PR #717 squash-merged.
+// #689 -> #692, #703's batch-2 re-pin, U1's #708 -> #709, U1b's #711 post-squash re-pin,
+// U1c's #713 post-squash re-pin, M3e-A's #715 one, and U1s's #717 one: pin to the branch
+// SOURCE commit only because no master commit carries the change yet, then re-pin all
+// five to master and regenerate the tar IMMEDIATELY after the merge. This change is the
+// BRANCH-pin half of that pattern for the scalar-list widening: all five pins name the
+// branch source commit c44e054441e6 (STATUS: OUTSTANDING) with the tar regenerated in the
+// same change, and the master re-pin is OWED the moment the PR squash-merges.
 //
 // A bump must ALSO move internal/nativebody/nanollmprepare/go.mod's recorded bamlutils +
 // worker selections in LOCKSTEP: nanollmprepare directory-replaces root / bamlutils /
@@ -200,9 +206,9 @@ go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260907074047-5d1a7d8b1d0b
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260907074047-5d1a7d8b1d0b
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260907074047-5d1a7d8b1d0b
+	github.com/invakid404/baml-rest v0.0.0-20260907172212-c44e054441e6
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260907172212-c44e054441e6
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260907172212-c44e054441e6
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2

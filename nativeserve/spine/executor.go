@@ -15,8 +15,11 @@
 // failed-after-claim) mapped onto the neutral bamlutils.NativeSpineUnaryResult.
 //
 // COHORT: exactly the proven direct five-arm `JSON` recursive alias, unary final call
-// + direct parse only; inputs required string/int/float/bool scalars only. Emittable
-// is not population-admitted — every other shape declines at registration or, if not
+// + direct parse only; inputs are required string/int/float/bool SCALARS, plus
+// required single-level LISTS whose element is a required string/int/bool (float is
+// admitted as a scalar but not as a list element — see the measured
+// Debug-vs-Display residual on requiredScalarOrScalarListInputs). Emittable is not
+// population-admitted — every other shape declines at registration or, if not
 // registered, at Call with a typed pre-socket decline and zero sockets.
 //
 // Default-deny: this runtime is constructible + exercisable, but it changes no
@@ -190,7 +193,7 @@ var _ bamlutils.NativeSpineUnaryExecutor = (*UnaryExecutor)(nil)
 //     ProjectInput/DecodeFinal callback;
 //   - a descriptor-envelope mismatch (return method/version, or a streaming return) —
 //     so registration, call, and direct parse agree in lockstep (finding 3);
-//   - an input outside the required-scalar cohort;
+//   - an input outside the required scalar-or-scalar-list cohort;
 //   - a Return that does not lower, and anything the ONE root-owned totality predicate
 //     (debaml.SupportsNativeStaticStreamBundle — the exact five-arm `JSON` alias)
 //     declines.
@@ -271,7 +274,8 @@ func (e *UnaryExecutor) Methods() []string {
 //     mismatch. NewUnaryExecutor and NewWorkerRuntime BOTH fail boot on it: a
 //     corrupt candidate is never quietly omitted.
 //   - rejectCohortMiss: the binding is well-formed but its method is simply
-//     OUTSIDE the exact U1 population — a non-required-scalar input, a
+//     OUTSIDE the exact U1 population — an input outside the required
+//     scalar-or-scalar-list cohort, a
 //     cohort-forbidden client/strategy/options, or a Return the totality predicate
 //     declines. The strict NewUnaryExecutor still rejects it (its callers pass only
 //     methods they mean to serve); NewWorkerRuntime OMITS it from the runtime
@@ -432,7 +436,7 @@ func classifyRegistration(proj projectdescriptor.Project, byName map[string]proj
 	if err := admission.CheckStaticClientCohort(fn.Provider, fn.ClientConfig); err != nil {
 		return nil, cohortMiss(fmt.Errorf("nativespine: register %q: %w", b.Method, err))
 	}
-	if err := requiredScalarInputs(fn); err != nil {
+	if err := requiredScalarOrScalarListInputs(fn); err != nil {
 		return nil, cohortMiss(fmt.Errorf("nativespine: register %q: %w", b.Method, err))
 	}
 	// The ONE root-owned totality predicate — the exact five-arm `JSON` alias family —
@@ -488,23 +492,113 @@ func copyStreamBinding(b *bamlutils.NativeSpineStreamBinding) *bamlutils.NativeS
 	return &copied
 }
 
-// requiredScalarInputs enforces the ExecBridge-U1 input cohort: every argument is a
-// required (non-nullable) string/int/float/bool scalar. No nullable, list, class,
-// enum, map, union, or media input.
-func requiredScalarInputs(fn promptdescriptor.Function) error {
+// requiredScalarOrScalarListInputs enforces the input cohort: every argument is
+// EITHER a required (non-nullable) string/int/float/bool scalar OR a required
+// single-level list whose element is a required string/int/bool. No nullable
+// argument, no nullable element, no nested list, and no class, enum, map, union,
+// media, or null input.
+//
+// FLOAT IS ADMITTED AS A SCALAR BUT NOT AS A LIST ELEMENT, and that asymmetry is a
+// MEASURED parity fact, not caution. BAML renders a directly interpolated scalar
+// through Rust's `Display for f64` (always positional) and a LIST through
+// `debug_list`, which formats each element with `Debug for f64` — and Debug switches
+// to exponent form at roughly 1e16 and 1e-5. The native list renderer formats every
+// element with the positional formatter, so stock v0.223 renders `[1e16]` where
+// native renders `[10000000000000000.0]`, while the same value as a SCALAR agrees on
+// both legs. Measured against stock v0.223 in
+// internal/nativebody/nanollmprepare/listserve (TestFloatListRenderResidualIsReal),
+// which is also the reopening condition: close the Debug-vs-Display float formatting
+// in internal/bamlprofile's list renderer and `float` joins the element set.
+//
+// The divergence is SAFE today — the pre-claim plan compare declines it before any
+// socket and BAML serves — but admitting a type whose values are known to decline is
+// not what this cohort means, so the type is excluded rather than the values.
+//
+// It is written as TWO EXPLICIT LEVELS rather than a recursive walk, and that is the
+// whole point. internal/nativespine's classifyInputArgs uses a RECURSIVE profile
+// (inputWithinM1Profile) because codegen can emit a carrier for any depth of
+// scalar list; reusing it here would silently admit `string[][]`, `float[]` and
+// nullable shapes, none of which have a stock render/bind differential. The serving
+// population is this narrower predicate, so the two must NOT be collapsed into one
+// helper.
+//
+// The source resolver already rejects a nested dimension, including one hidden
+// behind a type alias (`type L = string[]; F(x: L[])` resolves to a list whose
+// element is a list — internal/nativeschema/inputvalues.go). This is the DEFENSIVE
+// second reading over the RESOLVED shape, so a synthetic or hand-built descriptor
+// that never went through that resolver cannot smuggle one past registration.
+func requiredScalarOrScalarListInputs(fn promptdescriptor.Function) error {
 	for _, a := range fn.Args {
 		if a.ValueType == nil {
 			return fmt.Errorf("argument %q has no resolved value type", a.Name)
 		}
 		vt := *a.ValueType
 		if vt.Nullable {
-			return fmt.Errorf("argument %q is nullable (only required scalars are admitted)", a.Name)
+			return fmt.Errorf("argument %q is nullable (only required scalars and required lists of required scalars are admitted)", a.Name)
 		}
-		switch vt.Kind {
-		case promptdescriptor.ValueString, promptdescriptor.ValueInt, promptdescriptor.ValueFloat, promptdescriptor.ValueBool:
+		switch {
+		case cohortScalarKind(vt.Kind):
+			if err := scalarCarriesNoEdge(vt); err != nil {
+				return fmt.Errorf("argument %q %w", a.Name, err)
+			}
+		case vt.Kind == promptdescriptor.ValueList:
+			if vt.EnumName != "" || vt.ClassName != "" {
+				return fmt.Errorf("argument %q is a list carrying an enum/class edge (malformed descriptor)", a.Name)
+			}
+			if vt.Elem == nil {
+				return fmt.Errorf("argument %q is a list with no element type", a.Name)
+			}
+			elem := *vt.Elem
+			if elem.Nullable {
+				return fmt.Errorf("argument %q is a list with a nullable element (only required lists of required scalars are admitted)", a.Name)
+			}
+			// A nested list is NOT recursed into: ValueList is not a cohort element
+			// kind, so `string[][]` — however it is spelled, including behind an
+			// alias — falls through to this decline, and so does `float[]`.
+			if !cohortListElementKind(elem.Kind) {
+				return fmt.Errorf("argument %q is a list whose element kind %q is outside the required scalar-or-scalar-list cohort", a.Name, elem.Kind)
+			}
+			if err := scalarCarriesNoEdge(elem); err != nil {
+				return fmt.Errorf("argument %q element %w", a.Name, err)
+			}
 		default:
-			return fmt.Errorf("argument %q uses input kind %q outside the required-scalar cohort", a.Name, vt.Kind)
+			return fmt.Errorf("argument %q uses input kind %q outside the required scalar-or-scalar-list cohort", a.Name, vt.Kind)
 		}
+	}
+	return nil
+}
+
+// cohortScalarKind reports whether k is one of the four admitted TOP-LEVEL BAML
+// primitives. Unchanged by the list widening.
+func cohortScalarKind(k promptdescriptor.ValueKind) bool {
+	switch k {
+	case promptdescriptor.ValueString, promptdescriptor.ValueInt, promptdescriptor.ValueFloat, promptdescriptor.ValueBool:
+		return true
+	default:
+		return false
+	}
+}
+
+// cohortListElementKind reports whether k may be a LIST ELEMENT. It is the scalar
+// set MINUS float — see the measured Debug-vs-Display residual documented on
+// requiredScalarOrScalarListInputs. Keeping it a separate function (rather than a
+// parameter on cohortScalarKind) is what makes the exclusion visible at every call
+// site instead of hiding behind a boolean.
+func cohortListElementKind(k promptdescriptor.ValueKind) bool {
+	switch k {
+	case promptdescriptor.ValueString, promptdescriptor.ValueInt, promptdescriptor.ValueBool:
+		return true
+	default:
+		return false
+	}
+}
+
+// scalarCarriesNoEdge rejects a scalar node that also carries a list/enum/class edge.
+// A well-formed descriptor never produces one; a hand-built one could, and the binder
+// would then read a field the kind says is absent.
+func scalarCarriesNoEdge(vt promptdescriptor.ResolvedValueType) error {
+	if vt.Elem != nil || vt.EnumName != "" || vt.ClassName != "" {
+		return fmt.Errorf("is a %q scalar carrying a list/enum/class edge (malformed descriptor)", vt.Kind)
 	}
 	return nil
 }

@@ -136,9 +136,10 @@ func serveProfileOptions() workerboot.Options {
 		// The STATIC SERVE factory (ExecBridge-U1c oracle composite): returns the neutral
 		// bamlutils.NativeStaticServeFunc the generated static /call seam installs — it
 		// DEFAULT-SELECTS the exact U1 structural population (the direct five-arm JSON
-		// alias, required scalar inputs, literal-OpenAI default client) through the
-		// generated spine, wrapped in a LIVE BAML plan-compare admission + same-bytes parse
-		// oracle, and serves it natively (one exact RoundTrip); every near-miss declines
+		// alias, required scalar and required scalar-LIST inputs, literal-OpenAI default
+		// client) through the generated spine, wrapped in a LIVE BAML plan-compare
+		// admission + same-bytes parse oracle, and serves it natively (one exact
+		// RoundTrip); every near-miss declines
 		// PRE-SOCKET to BAML. Selection is STRUCTURAL, decided at boot by the spine's U1
 		// classifier over the deployment's generated registry — there is NO enrollment, no
 		// trusted-client seal, no cohort manifest row. It supersedes the legacy
@@ -151,9 +152,10 @@ func serveProfileOptions() workerboot.Options {
 		// neutral bamlutils.NativeStaticStreamOracleServeFunc the generated static
 		// /stream{,-with-raw} seam installs as StreamConfig.NativeOracleAttempt — it
 		// DEFAULT-SELECTS the exact ClassStaticStream structural population (the direct
-		// five-arm JSON alias, required scalar inputs, literal-OpenAI default client)
-		// through the generated spine, wrapped in a LIVE BAML StreamRequest plan-compare
-		// admission plus a PER-PREFIX and FINAL BAML parse oracle over that ONE response,
+		// five-arm JSON alias, required scalar and required scalar-LIST inputs,
+		// literal-OpenAI default client) through the generated spine, wrapped in a LIVE
+		// BAML StreamRequest plan-compare admission plus a PER-PREFIX and FINAL BAML
+		// parse oracle over that ONE response,
 		// and serves it natively (one exact DoStream RoundTrip); every near-miss declines
 		// PRE-SOCKET to BAML, exactly once. Selection is STRUCTURAL, decided at boot by the
 		// spine's classifier over the deployment's generated registry — there is NO
