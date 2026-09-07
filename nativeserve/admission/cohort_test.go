@@ -513,8 +513,10 @@ func TestEveryAdmissionEntryPointIsCohortGated(t *testing.T) {
 	// dynamic-rollout cohort gate: the codegen-spine lanes
 	// (AdmitStaticSpineClaim, the frozen-evidence native-only unary entry;
 	// AdmitStaticSpineOracleClaim, the ExecBridge-U1c live-oracle standard-worker unary
-	// entry; and AdmitStaticSpineStreamClaim, the M3e-A BAML-free native-only STREAM
-	// entry). None runs admitCohort because the spine is a SEPARATE default-deny
+	// entry; AdmitStaticSpineStreamClaim, the M3e-A BAML-free native-only STREAM entry;
+	// and AdmitStaticSpineStreamOracleClaim, the ExecBridge-U1s live-oracle
+	// standard-worker STREAM entry). None runs admitCohort because the spine is a
+	// SEPARATE default-deny
 	// lane whose admission is its own root-owned totality predicate
 	// (debaml.SupportsNativeStaticStreamBundle — the exact five-arm JSON alias)
 	// resolved at REGISTRATION, and membership is structural, NOT an enrollment. U1c
@@ -526,9 +528,10 @@ func TestEveryAdmissionEntryPointIsCohortGated(t *testing.T) {
 	// (this package, showing they decline at a NON-cohort stage where the cohort-gated
 	// lanes decline at cohort) and the nativeserve/spine registration-gate tests.
 	spineLaneExempt := map[string]bool{
-		"AdmitStaticSpineClaim":       true,
-		"AdmitStaticSpineOracleClaim": true,
-		"AdmitStaticSpineStreamClaim": true,
+		"AdmitStaticSpineClaim":             true,
+		"AdmitStaticSpineOracleClaim":       true,
+		"AdmitStaticSpineStreamClaim":       true,
+		"AdmitStaticSpineStreamOracleClaim": true,
 	}
 	found := map[string]bool{}
 	for _, ep := range admissionEntryPoints(packageAST(t)) {
@@ -561,10 +564,12 @@ func TestEveryAdmissionEntryPointIsCohortGated(t *testing.T) {
 	}
 }
 
-// TestSpineLaneSkipsDynamicCohortGate is the compensating proof for the THREE cohort-gate
+// TestSpineLaneSkipsDynamicCohortGate is the compensating proof for the FOUR cohort-gate
 // exemptions (AdmitStaticSpineClaim, the frozen-evidence native-only unary entry;
-// AdmitStaticSpineOracleClaim, the ExecBridge-U1c live-oracle standard-worker entry; and
-// AdmitStaticSpineStreamClaim, the M3e-A native-only STREAM entry): where
+// AdmitStaticSpineOracleClaim, the ExecBridge-U1c live-oracle standard-worker entry;
+// AdmitStaticSpineStreamClaim, the M3e-A native-only STREAM entry; and
+// AdmitStaticSpineStreamOracleClaim, the ExecBridge-U1s live-oracle standard-worker STREAM
+// entry): where
 // the cohort-gated static claim (and static STREAM claim) lanes decline at
 // the (cohort, cohort_not_enrolled) gate, the spine lanes deliberately SKIP it and
 // decline at a LATER, non-cohort stage — their default-deny being their own
@@ -612,8 +617,8 @@ func TestSpineLaneSkipsDynamicCohortGate(t *testing.T) {
 		}
 	}
 
-	// The STREAM pair, in the same shape: the cohort-gated legacy static-stream lane
-	// declines AT the cohort gate; the M3e-A spine stream lane skips it.
+	// The STREAM lanes, in the same shape: the cohort-gated legacy static-stream lane
+	// declines AT the cohort gate; BOTH spine stream lanes skip it.
 	streamBase := StaticStreamInput{
 		WorkerCapable:       true,
 		RequestAPIPresent:   true,
@@ -627,16 +632,24 @@ func TestSpineLaneSkipsDynamicCohortGate(t *testing.T) {
 	if _, err := AdmitStaticStreamClaim(ctx, streamBase); true {
 		assertStaticCohortDecline(t, "AdmitStaticStreamClaim", err)
 	}
-	claim, err := AdmitStaticSpineStreamClaim(ctx, streamBase)
-	if claim != nil {
-		t.Fatalf("AdmitStaticSpineStreamClaim returned a claim alongside a decline")
-	}
-	sd, ok := err.(*StaticDecline)
-	if !ok {
-		t.Fatalf("AdmitStaticSpineStreamClaim: err = %v (%T), want *StaticDecline", err, err)
-	}
-	if sd.Stage == string(StageCohort) {
-		t.Fatalf("AdmitStaticSpineStreamClaim declined at the dynamic cohort gate (%s, %s); it must skip it and be default-deny by its own registration-time totality gate", sd.Stage, sd.Reason)
+	for _, lane := range []struct {
+		name  string
+		admit func(context.Context, StaticStreamInput) (*StaticStreamClaim, error)
+	}{
+		{"AdmitStaticSpineStreamClaim", AdmitStaticSpineStreamClaim},
+		{"AdmitStaticSpineStreamOracleClaim", AdmitStaticSpineStreamOracleClaim},
+	} {
+		claim, err := lane.admit(ctx, streamBase)
+		if claim != nil {
+			t.Fatalf("%s returned a claim alongside a decline", lane.name)
+		}
+		sd, ok := err.(*StaticDecline)
+		if !ok {
+			t.Fatalf("%s: err = %v (%T), want *StaticDecline", lane.name, err, err)
+		}
+		if sd.Stage == string(StageCohort) {
+			t.Fatalf("%s declined at the dynamic cohort gate (%s, %s); it must skip it and be default-deny by its own registration-time totality gate", lane.name, sd.Stage, sd.Reason)
+		}
 	}
 }
 

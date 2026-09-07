@@ -50,3 +50,16 @@ func NewRuntime() (worker.Runtime, error) {
 func NewExecutor() (bamlutils.NativeSpineUnaryOracleExecutor, error) {
 	return nil, ErrRuntimeNotGenerated
 }
+
+// NewStreamOracleExecutor always fails on a plain source build. The generated
+// implementation (debamlnativespinegenerated) decodes the embedded descriptor and builds
+// the population-filtered oracle-capable STREAM executor via
+// nativeserve/spine.NewPopulationStreamExecutor (empty allowed) that the ExecBridge-U1s
+// standard composite drives as the worker's DEFAULT static /stream{,-with-raw} path. A
+// returned error is the fail-loud production-registry guard: a standard build that expected
+// the generated registry but linked this stub must fail startup rather than silently
+// degrade to all-BAML streaming — the degrade would be invisible, because all-BAML is also
+// what a legitimate empty population produces.
+func NewStreamOracleExecutor() (bamlutils.NativeSpineStreamOracleExecutor, error) {
+	return nil, ErrRuntimeNotGenerated
+}

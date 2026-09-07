@@ -287,10 +287,10 @@ func workerPayloadPreserveOrder(t *testing.T, data []byte) bool {
 // fall back to the server default when the field is absent / null.
 func TestMakeChiDynamicCallHandler_PreserveSchemaOrderDefault(t *testing.T) {
 	cases := []struct {
-		name           string
-		serverDefault  bool
-		preserveField  string // exact JSON fragment for preserve_schema_order
-		wantPreserve   bool
+		name          string
+		serverDefault bool
+		preserveField string // exact JSON fragment for preserve_schema_order
+		wantPreserve  bool
 	}{
 		{
 			name:          "default off, field omitted -> off",

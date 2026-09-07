@@ -21,9 +21,9 @@ go 1.26.5
 require (
 	github.com/boundaryml/baml v0.223.0
 	github.com/invakid404/baml-rest v0.0.48
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260904124049-0ed769e091fd
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260906231147-d7b61f2a7a8e
 	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260904124049-0ed769e091fd
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260906231147-d7b61f2a7a8e
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
@@ -112,7 +112,7 @@ require (
 // without recording it here fails the native-worker PACKAGING build (-mod=readonly)
 // with "updates to go.mod needed".
 //
-// PIN-STATUS: RESOLVED
+// PIN-STATUS: OUTSTANDING
 //
 // That marker is the MACHINE-READABLE statement of where these pins stand, and
 // cmd/build's TestPackagedManifestsMatchTheTrackedPins requires it to equal the
@@ -130,10 +130,13 @@ require (
 // deliberately does not name it.
 //
 // HISTORICAL, SUPERSEDED — the SHAs in this paragraph are not the current pins:
-// During PR #715's review these five were BRANCH-ONLY at 3fa2816336c2 on
-// feat/debaml-m3e-a (STATUS: OUTSTANDING), the branch SOURCE commit that carried the
-// M3e-A guarded-tree change while no master commit did; #715's squash flattened that SHA
-// out of history and the branch was deleted, which is what this re-pin repairs.
+// Immediately before U1s, all five were MASTER-DURABLE at 0ed769e091fd (STATUS: RESOLVED),
+// the MASTER squash-merge commit of PR #715 that carried the M3e-A spine STREAM substrate;
+// that is the pin this branch bump supersedes. During #715's own review these five were
+// BRANCH-ONLY at 3fa2816336c2 on feat/debaml-m3e-a (STATUS: OUTSTANDING), the branch SOURCE
+// commit that carried the M3e-A guarded-tree change while no master commit did; #715's squash
+// flattened that SHA out of history and the branch was deleted, which its post-squash re-pin
+// repaired. This bump is the BRANCH half of that same pattern for U1s.
 // Immediately before M3e-A, all five were MASTER-DURABLE at 56d5473a1bdb (STATUS: RESOLVED),
 // the MASTER squash-merge commit of PR #713 that carried the ExecBridge-U1c live-oracle
 // standard composite; U1c's pins were briefly BRANCH-ONLY at ae3900c1a0ff until #713
@@ -164,15 +167,16 @@ require (
 // it to cf03786a1fac (#692 re-pinned to the 062871154d95 tip). Every one of these was a
 // branch-pin-then-re-pin, the precedent THIS U1 bump repeats.
 //
-// RIGHT NOW they are MASTER-DURABLE: all five name 0ed769e091fd, the MASTER squash-merge commit
-// of PR #715 that carries the M3e-A guarded-tree change. nanollmprepare directory-replaces
-// root/bamlutils/worker/nativeserve, so only the version STRINGS reach MVS, and they must move
-// in lockstep with nativeserve's so the out-of-work packaging build resolves the M3e-A source
-// (nativeserve/spine's StreamExecutor + StreamRegistration + stream-native NewWorkerRuntime,
-// admission's AdmitStaticSpineStreamClaim, and THIS module's stream-capable native-only
-// worker). So nativeserve/pin_followup.md reads STATUS: RESOLVED and the post-squash re-pin to
-// the M3e-A master squash commit — the MANDATORY, IMMEDIATE follow-up after the PR merged —
-// has been PERFORMED. Do not treat
+// RIGHT NOW they are BRANCH-ONLY: all five name d7b61f2a7a8e on feat/debaml-u1s, the branch
+// SOURCE commit that carries the ExecBridge-U1s guarded-tree change, because no master commit
+// carries it yet. nanollmprepare directory-replaces root/bamlutils/worker/nativeserve, so only
+// the version STRINGS reach MVS, and they must move in lockstep with nativeserve's so the
+// out-of-work packaging build resolves the U1s source (nativeserve/spine's StreamWithOracle on
+// the shared claimed-stream core plus NewPopulationStreamExecutor, admission's
+// AdmitStaticSpineStreamOracleClaim, nativeserve/streamoracle's per-prefix/final matrix, and
+// THIS module's standard stream composite + the cmd/worker factory swap). So
+// nativeserve/pin_followup.md reads STATUS: OUTSTANDING and the post-squash re-pin to the U1s
+// master squash commit is the MANDATORY, IMMEDIATE follow-up once the PR merges. Do not treat
 // this comment as the authority — nativeserve/pin_followup.md is the tracked record, and
 // cmd/build's TestFirstPartyPinFollowupIsTracked is what holds the two together: it
 // parses that record and the require directives above on every ordinary

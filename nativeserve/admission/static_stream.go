@@ -90,9 +90,14 @@ type StaticStreamInput struct {
 
 	// Cohort is the serving-cutover S1 configuration identity + the default-deny
 	// cohort gate it is evaluated against (layer 1b), exactly as on the dynamic
-	// [Input] and the unary [StaticInput]. Production leaves both halves zero, so
-	// every static stream resolves to CohortNone and declines with
-	// cohort_not_enrolled before any native work.
+	// [Input] and the unary [StaticInput].
+	//
+	// It is read by the LEGACY lane only. Production leaves both halves zero, so a static
+	// stream reaching [AdmitStaticStreamClaim] resolves to CohortNone and declines with
+	// cohort_not_enrolled before any native work. BOTH spine lanes skip the gate entirely
+	// (see [staticStreamLane.skipsCohortGate]): their admission is the root-owned
+	// registration-time totality predicate, and membership there is structural, not an
+	// enrollment — so a spine stream can be ADMITTED with this field zero.
 	Cohort CohortInput
 }
 
@@ -186,23 +191,40 @@ func admittedStaticStreamReturnShape(b *schema.Bundle) bool {
 // boolean on [StaticStreamInput] could be flipped by any caller and would silently skip
 // both safety rails.
 //
-//	entry                       | cohort gate | BAML plan compare | owner
-//	----------------------------|-------------|-------------------|--------------------------
-//	AdmitStaticStreamClaim      | yes         | yes               | existing standard/legacy
-//	AdmitStaticSpineStreamClaim | no          | no                | BAML-free native-only spine
+//	entry                             | cohort gate | exact totality | BAML plan compare | owner
+//	----------------------------------|-------------|----------------|-------------------|----------------------------
+//	AdmitStaticStreamClaim            | yes         | legacy shape   | yes               | existing standard/legacy
+//	AdmitStaticSpineStreamClaim       | no          | exact bundle   | no                | BAML-free native-only spine
+//	AdmitStaticSpineStreamOracleClaim | no          | exact bundle   | yes               | ExecBridge-U1s standard composite
 type staticStreamLane uint8
 
 const (
 	// laneLegacyStaticStream is the EXISTING standard/legacy static-stream lane:
 	// default-deny cohort gate plus the strict BAML StreamRequest plan compare. Its
-	// behaviour is unchanged by M3e-A.
+	// behaviour is unchanged by M3e-A and by ExecBridge-U1s.
 	laneLegacyStaticStream staticStreamLane = iota
 	// laneSpineStaticStream is the M3e-A codegen-spine lane. It carries NO generated
 	// BAML plan closure (the native-only artifact links no BAML at all), and its
 	// admission is its own registration-time totality gate over the emitted exact-JSON
 	// cohort, so it must not consult — or widen — the dynamic-rollout cohort manifest.
 	laneSpineStaticStream
+	// laneSpineStaticStreamOracle is the ExecBridge-U1s standard composite's lane. It is
+	// the SAME exact-cohort spine lane — same totality gate, same cohort-gate exemption —
+	// with the strict BAML `StreamRequest` plan compare RESTORED, because a standard SERVE
+	// worker CAN build BAML's no-send plan. It is a third named entry rather than a field
+	// on StaticStreamInput for the reason stated above: a caller-settable bit could bypass
+	// either safety rail, and on a claimed stream there is no route back.
+	laneSpineStaticStreamOracle
 )
+
+// skipsCohortGate reports whether this lane bypasses the layer-1b default-deny cohort
+// admission. BOTH spine lanes do: their admission is the registration-time root-owned
+// totality gate over the emitted exact-JSON cohort, and consulting the dynamic-rollout
+// manifest would either widen it or deny a structurally-admitted method. The choice is the
+// LANE's — never a caller field.
+func (l staticStreamLane) skipsCohortGate() bool {
+	return l == laneSpineStaticStream || l == laneSpineStaticStreamOracle
+}
 
 // AdmitStaticStreamClaim runs the static-stream no-send admission predicate and returns a
 // live *StaticStreamClaim on a full would-admit, else a *StaticDecline guaranteeing no
@@ -301,14 +323,14 @@ func admitStaticStreamThroughBundle(ctx context.Context, in StaticStreamInput, l
 	// and opens no socket. The surface is this LANE's constant (static_stream), so a
 	// cohort enrolled only for static_call can never claim a stream.
 	//
-	// The M3e-A spine lane SKIPS it, exactly as the unary spine lane skips its twin:
+	// BOTH spine lanes SKIP it, exactly as the unary spine lanes skip their twin:
 	// it is a separate lane whose admission is its own root-owned totality gate over
 	// the emitted exact-JSON cohort (resolved at registration), and it must NOT widen
 	// the dynamic cohort manifest. cohort stays CohortNone, carried out for telemetry.
 	// The choice is the LANE's, never a caller field, so no caller of
 	// AdmitStaticStreamClaim can opt into the skip.
 	cohort := CohortNone
-	if lane != laneSpineStaticStream {
+	if !lane.skipsCohortGate() {
 		c, cd := admitCohort(SurfaceStaticStream, in.Cohort)
 		if cd != nil {
 			return decline(bamlutils.NativeStaticFamilyCapability, cd.Stage, cd.Reason)

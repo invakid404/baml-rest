@@ -567,17 +567,42 @@ func staticAssertConfidenceBuildRequest(adapter bamlutils.Adapter, rawInput any,
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticAssertConfidence"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticAssertConfidence", []any{input.Topic}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticAssertAnswer](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAssertAnswer](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticAssertConfidence(__pctx, __prefix, options...)
+						if __se != nil {
+							// EVERY error is TERMINAL. ParseStream signals "no partial for this
+							// prefix yet" by RETURNING a value, never by erroring, so an error here
+							// is always a genuine failure and the claimed stream has lost its
+							// oracle. See installNativeStaticStreamOracle for the pinned evidence.
+							return bamlutils.BAMLStreamPrefixResult{}, __se
+						}
+						// A returned value is the answer — including a typed nil, which
+						// BAMLStreamPrefixValue normalizes to an authoritative no-value.
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticAssertConfidence(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticAssertAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAssertAnswer](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticAssertAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticAssertAnswer](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}
@@ -1461,17 +1486,42 @@ func staticCheckedConfidenceBuildRequest(adapter bamlutils.Adapter, rawInput any
 	if __c := adapter.HTTPClient(); __c != nil {
 		__httpClient = __c
 	}
+	__staticStreamOracle := deBAMLStaticStreamOracleServe(adapter)
 	__staticStreamServe := deBAMLStaticStreamServe(adapter)
-	if __staticStreamServe != nil {
+	if __staticStreamOracle != nil || __staticStreamServe != nil {
 		if __staticStreamDescriptor, __staticStreamOK := introspected.StaticPromptDescriptor("StaticCheckedConfidence"); __staticStreamOK {
 			if __staticStreamValues, __staticStreamValuesOK := introspected.StaticPromptArgumentValues("StaticCheckedConfidence", []any{input.Topic}); __staticStreamValuesOK {
-				installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticCheckedAnswer](__cj)
-					return __dv, __de
-				}, func(__cj []byte) (any, error) {
-					__dv, __de := bamlutils.DecodeStaticFinal[types.StaticCheckedAnswer](__cj)
-					return __dv, __de
-				})
+				if __staticStreamOracle != nil {
+					installNativeStaticStreamOracle(streamConfig, __staticStreamOracle, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__pctx context.Context, __prefix string) (bamlutils.BAMLStreamPrefixResult, error) {
+						__sv, __se := bamlclient.ParseStream.StaticCheckedConfidence(__pctx, __prefix, options...)
+						if __se != nil {
+							// EVERY error is TERMINAL. ParseStream signals "no partial for this
+							// prefix yet" by RETURNING a value, never by erroring, so an error here
+							// is always a genuine failure and the claimed stream has lost its
+							// oracle. See installNativeStaticStreamOracle for the pinned evidence.
+							return bamlutils.BAMLStreamPrefixResult{}, __se
+						}
+						// A returned value is the answer — including a typed nil, which
+						// BAMLStreamPrefixValue normalizes to an authoritative no-value.
+						return bamlutils.BAMLStreamPrefixValue(__sv), nil
+					}, func(__pctx context.Context, __full string) (any, error) {
+						return bamlclient.Parse.StaticCheckedConfidence(__pctx, __full, options...)
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticCheckedAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticCheckedAnswer](__cj)
+						return __dv, __de
+					})
+				} else {
+					installNativeStaticStream(streamConfig, __staticStreamServe, adapter, __staticStreamDescriptor, map[string]any{"topic": input.Topic}, []string{"topic"}, __staticStreamValues, len(fallbackChain) == 0, len(fallbackChain) > 0, plannedMetadata != nil && plannedMetadata.RoundRobin != nil, retryPolicy != nil, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[streamtypes.StaticCheckedAnswer](__cj)
+						return __dv, __de
+					}, func(__cj []byte) (any, error) {
+						__dv, __de := bamlutils.DecodeStaticFinal[types.StaticCheckedAnswer](__cj)
+						return __dv, __de
+					})
+				}
 			}
 		}
 	}

@@ -168,10 +168,15 @@ type capturedEvent struct {
 }
 
 type streamTrace struct {
-	events  []capturedEvent
-	winner  string
-	planned string
-	drainer error
+	events []capturedEvent
+	// heartbeats counts the 2xx-liveness frames. They are kept OUT of the ordered event
+	// list (their timing is transport-dependent) but counted, because their PRESENCE is a
+	// public fact: the pool's hung detector is what consumes them, so a lane that stopped
+	// emitting them would look hung on a slow body while streaming correctly.
+	heartbeats int
+	winner     string
+	planned    string
+	drainer    error
 }
 
 // drainStreamTrace drains ch, capturing the complete ordered event trace. Heartbeat events
@@ -202,8 +207,9 @@ func drainStreamTrace(t *testing.T, ch <-chan bamlutils.StreamResult, err error)
 				}
 			}
 		case bamlutils.StreamResultKindHeartbeat:
+			tr.heartbeats++
 			r.Release()
-			continue // liveness-only; omit from the ordered trace
+			continue // liveness-only; counted above, omitted from the ordered trace
 		}
 		tr.events = append(tr.events, ev)
 		r.Release()

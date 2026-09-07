@@ -312,6 +312,27 @@ type StreamConfig struct {
 	// attempt for admission/metrics. Ignored when the seam is off.
 	NativeMode bamlutils.NativeStreamMode
 
+	// --- ExecBridge-U1s ORACLE-OWNED native STREAM seam (M3e-B) — NEUTRAL, HARD-OFF ---
+	//
+	// Set ONLY by the generated adapter when a standard SERVE-profile worker injected the
+	// U1s oracle implementation AND the umbrella flag is on. It is DISTINCT from
+	// NativeAttempt above because it owns the whole claimed stream — cadence, per-prefix
+	// BAML oracle, emission, AND the final — rather than transport alone. Installing both
+	// is a wiring bug and FAILS CLOSED (see tryOneStreamChild): overloading one completion
+	// mode would either double-parse an already-oracled partial or let the legacy
+	// error-swallowing cadence absorb an oracle failure that must be terminal.
+
+	// NativeOracleAttemptEnabled is the neutral enabled predicate gating the oracle-owned
+	// stream seam. The seam runs only when this is true AND NativeOracleAttempt is non-nil.
+	NativeOracleAttemptEnabled bool
+
+	// NativeOracleAttempt is the oracle-owned native stream child-attempt callback. When
+	// enabled, the orchestrator invokes it as the FIRST operation for a selected
+	// non-legacy, non-bedrock stream child and NEVER calls NativeParseStream,
+	// NativeParseFinal, or the outer cadence for it. See
+	// native_stream_oracle_callback.go for the disposition contract.
+	NativeOracleAttempt NativeStreamOracleAttemptFunc
+
 	// NativeParseStream / NativeParseFinal are the NATIVE-ONLY partial/final parser
 	// closures the CLAIMED native lane uses instead of the BAML/hybrid parseStream /
 	// parseFinal arguments (scope §5.4 — one engine owns partial+final, I6, with NO
@@ -824,6 +845,86 @@ func RunStreamOrchestration(
 		// outcome is COMPLETED (every partial already emitted via processDelta; the
 		// orchestrator runs the native-only FINAL parse and marks winner_engine=native)
 		// or a TERMINAL FailedAfterClaim that bypasses retry/fallback/pool-replay (I4).
+		// ExecBridge-U1s ORACLE-OWNED native stream seam (M3e-B), HARD-OFF unless a
+		// standard serve-profile worker installed the callback AND the umbrella flag
+		// flipped the enabled gate. It runs BEFORE the legacy transport-only seam below and
+		// owns cadence + final itself, so on its success path the orchestrator never
+		// allocates the outer cadence and never calls NativeParseStream / NativeParseFinal /
+		// EmitDelta. With the callback nil (every production/flag-off build) this block is
+		// skipped entirely and the attempt is byte-identical to today.
+		if config.NativeOracleAttemptEnabled && config.NativeOracleAttempt != nil {
+			// FAIL CLOSED on double installation (config boundary). The two native stream
+			// seams own different amounts of the request — transport only vs the whole
+			// claimed stream — so with both installed there is no safe choice: running the
+			// legacy one would leave the oracle uninstalled on a default-serve lane, and
+			// running the oracle one while the legacy parsers are also wired invites a
+			// second parse of an already-oracled partial. Surface it as a TERMINAL
+			// misconfiguration BEFORE either callback runs, so no socket is claimed. The
+			// generated installer never sets both; this bites a malformed/future installer.
+			if config.NativeAttemptEnabled && config.NativeAttempt != nil {
+				return nil, "", "", newNativeStreamTerminalError(
+					fmt.Errorf("buildrequest: both native stream seams are installed (NativeOracleAttempt and NativeAttempt); exactly one may own a claimed stream"),
+					"",
+				)
+			}
+			outcome := config.NativeOracleAttempt(ctx, NativeStreamOracleAttempt{
+				Provider:         provider,
+				ClientOverride:   clientOverride,
+				NeedsPartials:    config.NeedsPartials,
+				NeedsRaw:         config.NeedsRaw,
+				IncludeReasoning: config.IncludeReasoning,
+				// The SAME per-attempt build closure the BAML path uses below, pre-bound to
+				// this child's clientOverride. The oracle compares it against the native
+				// plan as a pre-claim precondition; it opens no socket. On DECLINE the
+				// orchestrator still runs buildRequest(ctx, clientOverride) itself.
+				BuildBAMLRequest: func(bctx context.Context) (*llmhttp.Request, error) {
+					return buildRequest(bctx, clientOverride)
+				},
+				// EmitResolved DELIVERS an already-oracled event through the SAME shared
+				// partial-emission helper both transports use, so drop-on-full,
+				// cancellation and sawStreamFrame bookkeeping stay identical. It does NOT
+				// parse: the decision was made against the exact accumulated prefix before
+				// the event became public.
+				EmitResolved: func(ev bamlutils.NativeSpineStreamEvent) error {
+					if !ev.HasPartial && ev.Raw == "" && ev.Reasoning == "" {
+						// A fully empty event carries nothing to publish; releasing it would
+						// put a bogus null partial frame on the wire.
+						return nil
+					}
+					return trySendPartialShared(ev.Partial, ev.Raw, ev.Reasoning)
+				},
+				SendHeaders:   sendHeartbeat,
+				SendFirstBody: func() {},
+			})
+			switch outcome.Disposition {
+			case NativeStreamDeclined:
+				// Pre-claim decline (I2): fall through to the existing BAML build/send for
+				// the SAME child in the SAME retry iteration below. The callback guaranteed
+				// no socket and no public event occurred, so the BAML path is
+				// byte-identical to today.
+			case NativeStreamCompleted:
+				// The claimed stream reached a valid terminal condition; every partial was
+				// already resolved against the oracle and delivered through EmitResolved,
+				// and the final on the outcome has ALREADY been oracled. Emitting it
+				// verbatim is load-bearing: re-parsing the accumulated text here would
+				// discard the oracle's decision and could publish a final the comparison
+				// rejected.
+				nativeWinnerEngine = allowedWinnerEngine(outcome.WinnerEngine)
+				return outcome.Final, outcome.Raw, outcome.Reasoning, nil
+			case NativeStreamFailedAfterClaim:
+				// TERMINAL (I4): a socket may have opened and events may already be public.
+				// The typed error is wrapped in a retry-terminal carrier so it bypasses
+				// retry.Execute, the fallback loop, and the pool replay owner. NEVER a BAML
+				// resend/retry/fallback/reset.
+				return nil, "", "", newNativeStreamTerminalError(outcome.Err, outcome.RawDiagnostic)
+			default:
+				// An out-of-contract disposition can't assert "no socket": treat it as
+				// terminal rather than risk a hidden second same-child send.
+				return nil, "", "", newNativeStreamTerminalError(
+					fmt.Errorf("buildrequest: oracle-owned native stream attempt returned unknown disposition %d", outcome.Disposition), "")
+			}
+		}
+
 		if config.NativeAttemptEnabled && config.NativeAttempt != nil {
 			// Fail-fast companion-callback validation (config boundary). The generated
 			// installer ALWAYS sets NativeParseStream + NativeParseFinal together with

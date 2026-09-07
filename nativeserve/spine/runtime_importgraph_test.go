@@ -35,6 +35,12 @@ var positiveSpineDeps = []string{
 	"github.com/invakid404/baml-rest/worker",
 	"github.com/invakid404/baml-rest/nativeserve/admission",
 	"github.com/invakid404/baml-rest/internal/debaml",
+	// ExecBridge-U1s: the per-prefix/final oracle matrix the standard StreamWithOracle
+	// lane drives. It must be PRESENT (a graph missing it would satisfy the forbidden
+	// list vacuously) and — because it is on this BAML-free list — it must itself stay
+	// BAML-free: the standard worker supplies BAML only as neutral closures, so no
+	// package on this side of the boundary may link a generated client.
+	"github.com/invakid404/baml-rest/nativeserve/streamoracle",
 }
 
 // TestSpinePackageHasNoBAMLOrCFFI asserts the non-test import graph of
