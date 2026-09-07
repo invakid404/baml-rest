@@ -1,35 +1,35 @@
 {
-  "note": "Pin/tar-independence baseline for the codegen-spine slice: the packaged native-worker tar, the five first-party pseudo-version pins, and the byte content of the three collision-path trees. A codegen-spine (M/P) slice must leave every value here untouched. It is NOT a freeze on master: a sanctioned change to a guarded path — the /parse union burn-down (#689), the /parse union-residual batch 2, ExecBridge-U1's spine serve lane under nativeserve, ExecBridge-U1b's native-only packaged worker, ExecBridge-U1c's live-oracle standard composite, M3e-A's spine STREAM substrate, a post-squash first-party re-pin — legitimately moves these, and MUST re-run the update flag in the same change, or this guard stays red for everyone. First frozen at M0; re-frozen after #689 + the post-squash re-pin to 062871154d95, again for the /parse union-residual batch 2 (post-squash re-pin to master commit 7c7bed8291b6), again for ExecBridge-U1 — the production native unary executor/population bridge that adds a BAML-free spine serve lane under nativeserve (post-squash re-pin to master commit 7ddbb39fd3db), and again for ExecBridge-U1b — the native-only packaged worker that adds the reusable nativeserve/spine.NewWorkerRuntime factory + population classifier and the BAML-free nanollmprepare nativeonlyboot / cmd/worker-nativeonly (post-squash re-pin to master commit 8fe27577082c), and again for ExecBridge-U1c — the live-oracle standard composite that adds nativeserve/spine.CallWithOracle + the live-oracle admission entry AdmitStaticSpineOracleClaim + the factored nativeserve/staticoracle same-response core, and the nanollmprepare standardspineoracle composite + generated NewExecutor (post-squash re-pin to master commit 56d5473a1bdb), and again for M3e-A — the spine STREAM substrate that adds nativeserve/spine.StreamExecutor + StreamRegistration + the stream-native NewWorkerRuntime and nativeserve/admission.AdmitStaticSpineStreamClaim, plus the stream-capable nanollmprepare native-only worker (post-squash re-pin to master commit 0ed769e091fd). Regenerate with: go test ./internal/codegenspine/ -run TestSourceGuard -update-codegenspine-guard",
+  "note": "Pin/tar-independence baseline for the codegen-spine slice: the packaged native-worker tar, the five first-party pseudo-version pins, and the byte content of the three collision-path trees. A codegen-spine (M/P) slice must leave every value here untouched. It is NOT a freeze on master: a sanctioned change to a guarded path — the /parse union burn-down (#689), the /parse union-residual batch 2, ExecBridge-U1's spine serve lane under nativeserve, ExecBridge-U1b's native-only packaged worker, ExecBridge-U1c's live-oracle standard composite, M3e-A's spine STREAM substrate, a post-squash first-party re-pin — legitimately moves these, and MUST re-run the update flag in the same change, or this guard stays red for everyone. First frozen at M0; re-frozen after #689 + the post-squash re-pin to 062871154d95, again for the /parse union-residual batch 2 (post-squash re-pin to master commit 7c7bed8291b6), again for ExecBridge-U1 — the production native unary executor/population bridge that adds a BAML-free spine serve lane under nativeserve (post-squash re-pin to master commit 7ddbb39fd3db), and again for ExecBridge-U1b — the native-only packaged worker that adds the reusable nativeserve/spine.NewWorkerRuntime factory + population classifier and the BAML-free nanollmprepare nativeonlyboot / cmd/worker-nativeonly (post-squash re-pin to master commit 8fe27577082c), and again for ExecBridge-U1c — the live-oracle standard composite that adds nativeserve/spine.CallWithOracle + the live-oracle admission entry AdmitStaticSpineOracleClaim + the factored nativeserve/staticoracle same-response core, and the nanollmprepare standardspineoracle composite + generated NewExecutor (post-squash re-pin to master commit 56d5473a1bdb), and again for M3e-A — the spine STREAM substrate that adds nativeserve/spine.StreamExecutor + StreamRegistration + the stream-native NewWorkerRuntime and nativeserve/admission.AdmitStaticSpineStreamClaim, plus the stream-capable nanollmprepare native-only worker (post-squash re-pin to master commit 0ed769e091fd), and again for ExecBridge-U1s — the standard-worker default-SERVE streaming lane that adds nativeserve/spine.StreamWithOracle on the shared claimed-stream core plus NewPopulationStreamExecutor, the nativeserve/streamoracle per-prefix/final decision matrix and nativeserve/admission.AdmitStaticSpineStreamOracleClaim, plus the nanollmprepare standard stream composite and the cmd/worker static-stream factory swap (post-squash re-pin to master commit 5d1a7d8b1d0b), and again for the required scalar-LIST input widening — the one-predicate widening of nativeserve/spine's registration input cohort to admit required single-level lists of required primitives alongside the existing required scalars, keeping the exact five-arm JSON return (post-squash re-pin to master commit 880a3c4d693e). Regenerate with: go test ./internal/codegenspine/ -run TestSourceGuard -update-codegenspine-guard",
   "native_worker_tar": {
     "path": "cmd/build/nativeworker_module.tar",
-    "size_bytes": 1039360,
-    "sha256": "17abc7e879e6e604113f22c68e5cbe5c4af539c38fea75fd2cde41002572ae34"
+    "size_bytes": 1039872,
+    "sha256": "32155a6890a03e2cc98357c5ee504620457d1c46145c19d67280baab1ab74a26"
   },
   "first_party_pins": [
     {
       "file": "nativeserve/go.mod",
       "module": "github.com/invakid404/baml-rest",
-      "version": "v0.0.0-20260907172212-c44e054441e6"
+      "version": "v0.0.0-20260907202119-880a3c4d693e"
     },
     {
       "file": "nativeserve/go.mod",
       "module": "github.com/invakid404/baml-rest/bamlutils",
-      "version": "v0.0.49-0.20260907172212-c44e054441e6"
+      "version": "v0.0.49-0.20260907202119-880a3c4d693e"
     },
     {
       "file": "nativeserve/go.mod",
       "module": "github.com/invakid404/baml-rest/worker",
-      "version": "v0.0.49-0.20260907172212-c44e054441e6"
+      "version": "v0.0.49-0.20260907202119-880a3c4d693e"
     },
     {
       "file": "internal/nativebody/nanollmprepare/go.mod",
       "module": "github.com/invakid404/baml-rest/bamlutils",
-      "version": "v0.0.49-0.20260907172212-c44e054441e6"
+      "version": "v0.0.49-0.20260907202119-880a3c4d693e"
     },
     {
       "file": "internal/nativebody/nanollmprepare/go.mod",
       "module": "github.com/invakid404/baml-rest/worker",
-      "version": "v0.0.49-0.20260907172212-c44e054441e6"
+      "version": "v0.0.49-0.20260907202119-880a3c4d693e"
     }
   ],
   "guarded_trees": [
@@ -41,12 +41,12 @@
     {
       "prefix": "nativeserve",
       "file_count": 122,
-      "sha256": "2f868593f5de85a31f7e6c578b4e54e3f729a9b21a64a9fb03269fb5daa498c4"
+      "sha256": "e0183a9fefe7961002b1d83c6be33f5d17a0b306a90f51ca3ae52bf20e4686e0"
     },
     {
       "prefix": "internal/nativebody/nanollmprepare",
       "file_count": 94,
-      "sha256": "7de8ad11499a5cd4d480b3f009000787a97ff277994800b5db3b69666f4d49d7"
+      "sha256": "a7d2f66e11dde24a81a219c3f6781532329cb78ddfe9fee0eb28d2d3c7d7d845"
     }
   ]
 }
