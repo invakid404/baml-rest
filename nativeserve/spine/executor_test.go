@@ -124,27 +124,94 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 			}),
 			jsonAliasBinding(), "JSON alias cohort", "register:totality", "coverage"},
 
-		// --- input shape negatives — register:required-scalar (PRE-EXISTING gate) -
-		// nullable + list inputs SURVIVE the source classifier and reach register(),
-		// where requiredScalarInputs refuses them (the classifier admits these input
-		// shapes; the spine's required-scalar gate is what declines them).
+		// --- input shape negatives — register:input-cohort ----------------------
+		// These SURVIVE the source classifier and reach register(), where
+		// requiredScalarOrScalarListInputs refuses them. The widened cohort is
+		// "required scalar OR required list of required scalar"; every row below is
+		// exactly one axis outside it, so the whole set is the fence around the
+		// slice rather than a restatement of it.
+		//
+		// The scalar-list POSITIVES that used to live here as a decline
+		// (`function F(tags: string[]) -> JSON`) are now
+		// TestNewUnaryExecutor_AdmitsRequiredScalarListInputs.
 		{"nullable_scalar_input",
 			projectFromCorpus(t, corpus(jsonType, `function F(topic: string?) -> JSON { client C prompt #"{{ topic }}"# }`)),
-			jsonAliasBinding("F"), "is nullable", "register:required-scalar", "coverage"},
-		{"list_input",
-			projectFromCorpus(t, corpus(jsonType, `function F(tags: string[]) -> JSON { client C prompt #"{{ tags }}"# }`)),
-			jsonAliasBinding("F"), "required-scalar cohort", "register:required-scalar", "coverage"},
+			jsonAliasBinding("F"), "is nullable", "register:input-cohort", "coverage"},
+		{"nullable_list_input", // `string[]?` — the LIST itself is optional
+			projectFromCorpus(t, corpus(jsonType, `function F(tags: string[]?) -> JSON { client C prompt #"{{ tags }}"# }`)),
+			jsonAliasBinding("F"), "is nullable", "register:input-cohort", "regression"},
+		{"nullable_list_element", // `(string?)[]` — the ELEMENT is optional
+			projectFromCorpus(t, corpus(jsonType, `function F(tags: (string?)[]) -> JSON { client C prompt #"{{ tags }}"# }`)),
+			jsonAliasBinding("F"), "nullable element", "register:input-cohort", "regression"},
+		// `float` is an admitted SCALAR but NOT an admitted list ELEMENT: stock v0.223
+		// renders a float list element through Rust's `Debug for f64` (exponent form
+		// from ~1e16 and ~1e-5) while the native list renderer is positional. The
+		// divergence is measured against stock BAML in
+		// internal/nativebody/nanollmprepare/listserve. The scalar control below is
+		// what makes this row about the ELEMENT position rather than about float.
+		{"float_list_input",
+			projectFromCorpus(t, corpus(jsonType, `function F(ratios: float[]) -> JSON { client C prompt #"{{ ratios }}"# }`)),
+			jsonAliasBinding("F"), "outside the required scalar-or-scalar-list cohort", "register:input-cohort", "regression"},
+		// The two SOURCE-spelled nesting rows never become a Method at all: the V3
+		// resolver refuses a nested dimension (internal/nativeschema/inputvalues.go),
+		// including the alias-hidden spelling, so the project declines the function
+		// and the binding names a method it did not admit. They are kept because
+		// "nested list is not in this cohort" must be proven END TO END, not only at
+		// the registry; the registry's own reading of a RESOLVED nested list is the
+		// synthetic row below.
+		{"nested_list_input", // `string[][]` — spelled as two dimensions
+			projectFromCorpus(t, corpus(jsonType, `function F(tags: string[][]) -> JSON { client C prompt #"{{ tags }}"# }`)),
+			jsonAliasBinding("F"), "did not admit", "register:binding", "coverage"},
+		{"alias_hidden_nested_list_input", // `type L = string[]; F(tags: L[])`
+			projectFromCorpus(t, corpus(jsonType+"\ntype L = string[]", `function F(tags: L[]) -> JSON { client C prompt #"{{ tags }}"# }`)),
+			jsonAliasBinding("F"), "did not admit", "register:binding", "coverage"},
+		// The SYNTHETIC halves of the two nesting rows above. The source resolver
+		// strips the ValueType from a nested list, so those rows decline on the
+		// missing type rather than on the nesting itself. A descriptor that never
+		// went through that resolver CAN carry a resolved nested list, and the
+		// registry's own defensive second reading is what must refuse it — these
+		// two rows are the only way to reach that branch (scope §3.A "Maintain a
+		// defensive resolved-shape check at registry admission for synthetic
+		// descriptors too").
+		{"synthetic_resolved_nested_list",
+			mutatedJSONProject(t, func(p *projectdescriptor.Project) {
+				inner := promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString}
+				mid := promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueList, Elem: &inner}
+				p.Methods[0].Args[0].Type = promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueList, Elem: &mid}
+			}),
+			jsonAliasBinding(), "outside the required scalar-or-scalar-list cohort", "register:input-cohort", "regression"},
+		{"synthetic_resolved_nullable_element",
+			mutatedJSONProject(t, func(p *projectdescriptor.Project) {
+				elem := promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString, Nullable: true}
+				p.Methods[0].Args[0].Type = promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueList, Elem: &elem}
+			}),
+			jsonAliasBinding(), "nullable element", "register:input-cohort", "regression"},
+		{"synthetic_list_without_element",
+			mutatedJSONProject(t, func(p *projectdescriptor.Project) {
+				p.Methods[0].Args[0].Type = promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueList}
+			}),
+			jsonAliasBinding(), "list with no element type", "register:input-cohort", "regression"},
 		// A class/enum/map/media input is removed by the SOURCE classifier and never
-		// reaches the constructor, so injecting a non-scalar (class) type DIRECTLY onto
-		// the admitted method's argument edge is the only way to exercise the spine's
-		// requiredScalarInputs gate on a non-scalar input that SURVIVES to register()
-		// (review-3 finding 3). requiredScalarInputs is a PRE-EXISTING gate, so this is
-		// coverage, not a regression.
+		// reaches the constructor, so injecting a non-scalar type DIRECTLY onto the
+		// admitted method's argument edge is the only way to exercise the registry
+		// gate on one that SURVIVES to register() (review-3 finding 3).
 		{"nonscalar_class_input_survives",
 			mutatedJSONProject(t, func(p *projectdescriptor.Project) {
 				p.Methods[0].Args[0].Type = promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueClass, ClassName: "Ghost"}
 			}),
-			jsonAliasBinding(), "required-scalar cohort", "register:required-scalar", "coverage"},
+			jsonAliasBinding(), "outside the required scalar-or-scalar-list cohort", "register:input-cohort", "coverage"},
+		{"list_of_class_input_survives",
+			mutatedJSONProject(t, func(p *projectdescriptor.Project) {
+				elem := promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueClass, ClassName: "Ghost"}
+				p.Methods[0].Args[0].Type = promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueList, Elem: &elem}
+			}),
+			jsonAliasBinding(), "outside the required scalar-or-scalar-list cohort", "register:input-cohort", "regression"},
+		{"list_of_enum_input_survives",
+			mutatedJSONProject(t, func(p *projectdescriptor.Project) {
+				elem := promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueEnum, EnumName: "Ghost"}
+				p.Methods[0].Args[0].Type = promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueList, Elem: &elem}
+			}),
+			jsonAliasBinding(), "outside the required scalar-or-scalar-list cohort", "register:input-cohort", "regression"},
 
 		// --- static-client cohort — register:client-cohort ----------------------
 		// selected_client_non_openai + invalid_utf8_model are the cycle-3 REGRESSIONS
@@ -246,14 +313,15 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 	// sub-gate (e.g. a totality row tagged register:binding) fails: its `want` is not in
 	// the tagged sub-gate's set. Every layer used by a row above must appear here.
 	layerWants := map[string][]string{
-		"validate:version":         {"project version", "prompt-descriptor version", "schema version"},
-		"validate:capability":      {"capability"},
-		"register:totality":        {"JSON alias cohort"},
-		"register:required-scalar": {"is nullable", "required-scalar cohort"},
-		"register:client-cohort":   {"not the proven openai", "valid UTF-8", "request_body option"},
-		"register:reconstruct":     {"template-free", "forbids retries"},
-		"register:envelope":        {"return names method", "streaming variant"},
-		"register:binding":         {"ProjectInput is nil", "DecodeFinal is nil", "did not admit"},
+		"validate:version":    {"project version", "prompt-descriptor version", "schema version"},
+		"validate:capability": {"capability"},
+		"register:totality":   {"JSON alias cohort"},
+		"register:input-cohort": {"is nullable", "nullable element",
+			"list with no element type", "outside the required scalar-or-scalar-list cohort"},
+		"register:client-cohort": {"not the proven openai", "valid UTF-8", "request_body option"},
+		"register:reconstruct":   {"template-free", "forbids retries"},
+		"register:envelope":      {"return names method", "streaming variant"},
+		"register:binding":       {"ProjectInput is nil", "DecodeFinal is nil", "did not admit"},
 	}
 
 	for _, tc := range cases {
@@ -324,7 +392,18 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 			t.Fatalf("row %q has an unclassified kind %q", tc.name, tc.kind)
 		}
 	}
-	wantRegressions := []string{"selected_client_non_openai", "invalid_utf8_model", "body_option_client_survives", "capability_manifest_corruption"}
+	wantRegressions := []string{
+		"selected_client_non_openai", "invalid_utf8_model", "body_option_client_survives", "capability_manifest_corruption",
+		// The scalar-LIST widening's own fence. Each of these ADMITS if
+		// requiredScalarOrScalarListInputs is replaced by the recursively permissive
+		// codegen profile (internal/nativespine.inputWithinM1Profile), by a bare
+		// "scalar or list" test that forgets the element, or by dropping the
+		// defensive resolved-shape reading — which is exactly the over-admission
+		// this slice must not commit.
+		"nullable_list_input", "nullable_list_element", "float_list_input",
+		"synthetic_resolved_nested_list", "synthetic_resolved_nullable_element", "synthetic_list_without_element",
+		"list_of_class_input_survives", "list_of_enum_input_survives",
+	}
 	if len(gotRegressions) != len(wantRegressions) {
 		t.Fatalf("regression rows = %v, want exactly %v", gotRegressions, wantRegressions)
 	}

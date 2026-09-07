@@ -39,6 +39,14 @@ import (
 // populationExactJSONU1 is the ONE bounded structural population label for the U1 lane.
 // It is NOT an enrollment cohort — no productionEnrollments() row backs it — so it never
 // carries a config identity; it is a code-owned totality dimension for the spine counter.
+//
+// The label is FIXED and stays fixed as the population widens. It names the RETURN
+// family, which is what the lane owns: the population now also serves methods whose
+// inputs mix required scalars with required single-level lists of non-nullable
+// primitives, and that widening deliberately adds NO label. A per-method or per-input
+// dimension would make the series unbounded and could carry request content, so the
+// input cohort is documented here and in nativeserve/spine's registration predicate
+// rather than exported as a metric.
 const populationExactJSONU1 = "exact_json_u1"
 
 // bounded, secret-free disposition tokens for the population counter.

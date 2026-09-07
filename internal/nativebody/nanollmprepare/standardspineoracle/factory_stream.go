@@ -34,6 +34,11 @@ import (
 // populationExactJSONU1s is the ONE bounded structural population label for the U1s stream
 // lane. Like the unary lane's it is NOT an enrollment cohort — no productionEnrollments()
 // row backs it — so it never carries a configuration identity.
+//
+// Like the unary label, it is FIXED as the population widens: serving methods whose
+// inputs mix required scalars with required single-level lists of non-nullable
+// primitives adds NO new label. A per-method or per-input dimension would make the
+// series unbounded and could carry request content.
 const populationExactJSONU1s = "exact_json_u1s"
 
 // bounded oracle-compare stages for the per-prefix/final comparison counter.

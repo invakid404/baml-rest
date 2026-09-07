@@ -6,6 +6,7 @@ import (
 
 	"github.com/invakid404/baml-rest/bamlutils/bamlparser"
 	"github.com/invakid404/baml-rest/bamlutils/projectdescriptor"
+	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
 	"github.com/invakid404/baml-rest/internal/nativeschema"
 )
 
@@ -100,6 +101,19 @@ function FallbackGreet(name: string) -> string {
 // is independent of map iteration. It is the test-support entry that lets any
 // package reconstruct the neutral artifact from raw source.
 func BuildFromSource(sources map[string]string) (projectdescriptor.Project, error) {
+	proj, _, err := ProjectAndDescriptorsFromSource(sources)
+	return proj, err
+}
+
+// ProjectAndDescriptorsFromSource is BuildFromSource plus the per-function
+// promptdescriptor.Function map produced by the SAME parse.
+//
+// The two outputs are the two halves of one project: the Project feeds the native
+// spine (registration + the codegen emitter), while the descriptor map is what the
+// STANDARD generated argument projector (cmd/introspect) is emitted from. A
+// differential that wants to compare those two input paths must build them from one
+// source read, or it is comparing two projects that merely look alike.
+func ProjectAndDescriptorsFromSource(sources map[string]string) (projectdescriptor.Project, map[string]promptdescriptor.Function, error) {
 	names := make([]string, 0, len(sources))
 	for name := range sources {
 		names = append(names, name)
@@ -110,7 +124,7 @@ func BuildFromSource(sources map[string]string) (projectdescriptor.Project, erro
 	for _, name := range names {
 		f, err := bamlparser.ParseBytes(name, []byte(sources[name]))
 		if err != nil {
-			return projectdescriptor.Project{}, fmt.Errorf("nativespine: parse %s: %w", name, err)
+			return projectdescriptor.Project{}, nil, fmt.Errorf("nativespine: parse %s: %w", name, err)
 		}
 		files = append(files, nativeschema.SourceFile{File: f, Path: name})
 	}
@@ -134,5 +148,5 @@ func BuildFromSource(sources map[string]string) (projectdescriptor.Project, erro
 		RetryPolicies:      retries,
 		Strategies:         strategies,
 		Templates:          nativeschema.BuildProjectTemplates(files),
-	}), nil
+	}), funcs, nil
 }

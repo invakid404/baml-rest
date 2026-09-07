@@ -90,8 +90,8 @@ var _ worker.Runtime = (*workerRuntime)(nil)
 //     (classifyBinding, the same checks the strict executor uses), FAILING BOOT on
 //     any hard corruption (invalid descriptor/envelope, missing/blocked capability,
 //     nil callback, name mismatch) and OMITTING expected cohort misses
-//     (non-required-scalar input, unsupported client/strategy/options, a Return the
-//     totality predicate declines);
+//     (an input outside the required scalar-or-scalar-list cohort, unsupported
+//     client/strategy/options, a Return the totality predicate declines);
 //   - rejects a duplicate candidate method (a corrupt candidate list) as a hard
 //     failure;
 //   - fails boot on an EMPTY accepted cohort — a native-only worker that admits
