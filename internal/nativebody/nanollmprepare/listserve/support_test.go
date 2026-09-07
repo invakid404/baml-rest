@@ -30,6 +30,7 @@ package listserve
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -404,7 +405,9 @@ type captureServer struct {
 	last  capturedRequest
 	first bool
 	// readErr is the first body-read failure the handler goroutine saw. It is
-	// reported by captured(), which runs on the test goroutine.
+	// checked on the TEST goroutine in two places, for two different caller sets:
+	// the registered cleanup (every server, unconditionally) and captured() (the
+	// callers that compare bytes, where the earlier failure attributes better).
 	readErr error
 }
 
@@ -419,8 +422,7 @@ type capturedRequest struct {
 // assistant content is content.
 func newJSONServer(t *testing.T, content string) *captureServer {
 	t.Helper()
-	cs := &captureServer{}
-	cs.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return startCaptureServer(t, func(cs *captureServer, w http.ResponseWriter, r *http.Request) {
 		cs.record(r)
 		env, _ := json.Marshal(map[string]any{
 			"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": content}}},
@@ -428,16 +430,13 @@ func newJSONServer(t *testing.T, content string) *captureServer {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(env)
-	}))
-	t.Cleanup(cs.srv.Close)
-	return cs
+	})
 }
 
 // newSSEServer replays events as an SSE stream.
 func newSSEServer(t *testing.T, events []string) *captureServer {
 	t.Helper()
-	cs := &captureServer{}
-	cs.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return startCaptureServer(t, func(cs *captureServer, w http.ResponseWriter, r *http.Request) {
 		cs.record(r)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -448,9 +447,53 @@ func newSSEServer(t *testing.T, events []string) *captureServer {
 				fl.Flush()
 			}
 		}
+	})
+}
+
+// startCaptureServer is the ONE construction site for a capture server, and the ONE
+// place its cleanup is registered. Both matter.
+//
+// The cleanup closes the server — httptest.Server.Close blocks until every in-flight
+// handler has returned, which is the happens-before that makes reading readErr here
+// race-free — and then validates readErr on the TEST goroutine.
+//
+// That validation is UNCONDITIONAL, and that is the point. An earlier arrangement
+// checked readErr only inside captured(); the streaming tests never call captured(),
+// so a body-read failure there was silently ignored — strictly weaker than the
+// t.Fatalf-from-the-handler it replaced. Every server now gets the check whether its
+// test compares bytes or not.
+//
+// A zero-request negative control stays valid: readErr can only be set inside
+// record(), so no request means no error to report.
+//
+// t.Errorf rather than t.Fatalf: a cleanup runs on the test goroutine, but FailNow
+// there would Goexit mid-cleanup and skip the remaining cleanups. Marking the failure
+// is enough — the test body has already finished.
+func startCaptureServer(t *testing.T, handle func(*captureServer, http.ResponseWriter, *http.Request)) *captureServer {
+	t.Helper()
+	cs := &captureServer{}
+	cs.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handle(cs, w, r)
 	}))
-	t.Cleanup(cs.srv.Close)
+	t.Cleanup(func() {
+		cs.srv.Close()
+		cs.reportReadErr(t.Errorf)
+	})
 	return cs
+}
+
+// reportReadErr calls fail with the stored body-read failure, if any. It is a
+// parameter rather than a *testing.T so the cleanup can pass t.Errorf while
+// TestCaptureServerReportsAReadFailureWithoutCaptured can pass a recorder — which is
+// how this net is proven to fire without failing the test that proves it.
+func (cs *captureServer) reportReadErr(fail func(format string, args ...any)) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	if cs.readErr != nil {
+		fail("the capture server could not read a request body: %v — a truncated or empty "+
+			"captured body would otherwise be compared against BAML's plan and reported as a "+
+			"plan divergence that never happened", cs.readErr)
+	}
 }
 
 func (cs *captureServer) record(r *http.Request) {
@@ -476,6 +519,9 @@ func (cs *captureServer) captured(t *testing.T) capturedRequest {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	if cs.readErr != nil {
+		// Also checked unconditionally by the registered cleanup; here it is the
+		// EARLY, better-attributed failure for the callers that go on to compare
+		// these bytes against BAML's plan.
 		t.Fatalf("the capture server could not read a request body: %v", cs.readErr)
 	}
 	if !cs.first {
@@ -593,4 +639,46 @@ func TestMain(m *testing.M) {
 			streamtypes.Union5BoolOrIntOrListJSONOrMapStringKeyJSONValueOrString{}),
 	})
 	os.Exit(m.Run())
+}
+
+// TestCaptureServerReportsAReadFailureWithoutCaptured covers the caller set the
+// earlier arrangement lost: a test that drives the provider but never calls
+// captured() — which is every streaming test in this package.
+//
+// It deliberately does NOT call captured(). It stores a read failure the way record()
+// would, then drives the same reportReadErr the registered cleanup drives, through a
+// recorder rather than t.Errorf, and requires it to fire. Passing the failure function
+// in is what lets the net be exercised without the exercise itself failing.
+func TestCaptureServerReportsAReadFailureWithoutCaptured(t *testing.T) {
+	cs := newJSONServer(t, `[1]`)
+
+	// CONTROL: a server that read every body cleanly reports nothing, so the
+	// assertion below is about the stored error and not about reportReadErr always
+	// firing. This also covers the zero-request negative controls, which have no
+	// request and therefore no readErr.
+	var clean []string
+	cs.reportReadErr(func(format string, args ...any) { clean = append(clean, fmt.Sprintf(format, args...)) })
+	if len(clean) != 0 {
+		t.Fatalf("a clean capture server reported %d read failure(s): %v", len(clean), clean)
+	}
+
+	cs.mu.Lock()
+	cs.readErr = errors.New("synthetic body-read failure")
+	cs.mu.Unlock()
+
+	var reported []string
+	cs.reportReadErr(func(format string, args ...any) { reported = append(reported, fmt.Sprintf(format, args...)) })
+	if len(reported) != 1 {
+		t.Fatalf("a stored body-read failure was reported %d time(s), want exactly 1 — a caller that never "+
+			"invokes captured() would otherwise ignore it, which is the regression this test exists for", len(reported))
+	}
+	if !strings.Contains(reported[0], "synthetic body-read failure") {
+		t.Errorf("the report does not carry the underlying error: %q", reported[0])
+	}
+
+	// Clear it so the registered cleanup — which runs the SAME function with
+	// t.Errorf — does not fail this test on the error it deliberately planted.
+	cs.mu.Lock()
+	cs.readErr = nil
+	cs.mu.Unlock()
 }
