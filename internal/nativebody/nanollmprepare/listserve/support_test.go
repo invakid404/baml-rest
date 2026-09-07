@@ -408,7 +408,10 @@ type captureServer struct {
 	// checked on the TEST goroutine in two places, for two different caller sets:
 	// the registered cleanup (every server, unconditionally) and captured() (the
 	// callers that compare bytes, where the earlier failure attributes better).
-	readErr error
+	// readErrReported latches once either of them has reported it, so one failure
+	// is not restated twice.
+	readErr         error
+	readErrReported bool
 }
 
 type capturedRequest struct {
@@ -482,14 +485,23 @@ func startCaptureServer(t *testing.T, handle func(*captureServer, http.ResponseW
 	return cs
 }
 
-// reportReadErr calls fail with the stored body-read failure, if any. It is a
-// parameter rather than a *testing.T so the cleanup can pass t.Errorf while
+// reportReadErr calls fail with the stored body-read failure, if any, AT MOST ONCE.
+//
+// fail is a parameter rather than a *testing.T so the cleanup can pass t.Errorf while
 // TestCaptureServerReportsAReadFailureWithoutCaptured can pass a recorder — which is
 // how this net is proven to fire without failing the test that proves it.
+//
+// The at-most-once latch is why captured() does not simply CLEAR readErr before its
+// own t.Fatalf. Clearing would work — Fatalf's Goexit runs the cleanup, which would
+// then find nothing — but it would make the cleanup's unconditional net depend on
+// captured() having run first, which is precisely the conditional-check arrangement
+// that left this package's streaming tests blind to a read failure. The error stays
+// stored; only the reporting is deduplicated.
 func (cs *captureServer) reportReadErr(fail func(format string, args ...any)) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
-	if cs.readErr != nil {
+	if cs.readErr != nil && !cs.readErrReported {
+		cs.readErrReported = true
 		fail("the capture server could not read a request body: %v — a truncated or empty "+
 			"captured body would otherwise be compared against BAML's plan and reported as a "+
 			"plan divergence that never happened", cs.readErr)
@@ -516,14 +528,14 @@ func (cs *captureServer) record(r *http.Request) {
 
 func (cs *captureServer) captured(t *testing.T) capturedRequest {
 	t.Helper()
+	// Report a read failure FIRST, and fatally: this caller goes on to compare these
+	// bytes against BAML's plan, where an empty captured body would surface as a plan
+	// divergence that never happened. The registered cleanup checks the same thing
+	// unconditionally for every server; the latch inside reportReadErr keeps the one
+	// failure from being stated twice when Fatalf's Goexit runs that cleanup.
+	cs.reportReadErr(t.Fatalf)
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
-	if cs.readErr != nil {
-		// Also checked unconditionally by the registered cleanup; here it is the
-		// EARLY, better-attributed failure for the callers that go on to compare
-		// these bytes against BAML's plan.
-		t.Fatalf("the capture server could not read a request body: %v", cs.readErr)
-	}
 	if !cs.first {
 		t.Fatal("no request reached the provider; there is nothing to compare")
 	}
@@ -667,7 +679,8 @@ func TestCaptureServerReportsAReadFailureWithoutCaptured(t *testing.T) {
 	cs.mu.Unlock()
 
 	var reported []string
-	cs.reportReadErr(func(format string, args ...any) { reported = append(reported, fmt.Sprintf(format, args...)) })
+	record := func(format string, args ...any) { reported = append(reported, fmt.Sprintf(format, args...)) }
+	cs.reportReadErr(record)
 	if len(reported) != 1 {
 		t.Fatalf("a stored body-read failure was reported %d time(s), want exactly 1 — a caller that never "+
 			"invokes captured() would otherwise ignore it, which is the regression this test exists for", len(reported))
@@ -676,9 +689,21 @@ func TestCaptureServerReportsAReadFailureWithoutCaptured(t *testing.T) {
 		t.Errorf("the report does not carry the underlying error: %q", reported[0])
 	}
 
-	// Clear it so the registered cleanup — which runs the SAME function with
-	// t.Errorf — does not fail this test on the error it deliberately planted.
+	// AT MOST ONCE. captured() reports fatally and Fatalf's Goexit then runs the
+	// registered cleanup, which reports again through the same function — so without
+	// the latch one read failure would be stated twice. Driving the second call here
+	// is also what leaves the planted error unreported by this test's own cleanup.
+	cs.reportReadErr(record)
+	if len(reported) != 1 {
+		t.Fatalf("the same body-read failure was reported %d time(s), want exactly 1", len(reported))
+	}
+
+	// The error itself is still STORED: deduplicating the report must not swallow it,
+	// or the cleanup's unconditional net would depend on captured() having run.
 	cs.mu.Lock()
-	cs.readErr = nil
+	stored := cs.readErr
 	cs.mu.Unlock()
+	if stored == nil {
+		t.Error("reporting the failure cleared it; the stored error must survive so nothing depends on report order")
+	}
 }
