@@ -141,9 +141,7 @@ func TestOutOfCohortCorporaProduceAnEmptyServingPopulation(t *testing.T) {
 			if res.Disposition != bamlutils.NativeStaticServeDeclined {
 				t.Fatalf("disposition = %v, want a pre-socket DECLINE so BAML owns the request", res.Disposition)
 			}
-			if snap := exec.Metrics().Snapshot(); snap.Sockets != 0 || snap.Claims != 0 {
-				t.Fatalf("a registry miss claimed or opened a socket: %+v", snap)
-			}
+			assertPreClaimDeclineLedger(t, exec.Metrics().Snapshot(), "a registry miss")
 			if got := server.hits.Load(); got != 0 {
 				t.Fatalf("the provider saw %d request(s) on a declined row, want 0", got)
 			}
@@ -226,9 +224,7 @@ func TestPlanMismatchOnListValuesDeclinesPreClaim(t *testing.T) {
 		t.Fatalf("disposition = %v (stage=%q reason=%q); a plan that differs only in a LIST element must decline pre-socket",
 			res.Disposition, res.Stage, res.Reason)
 	}
-	if snap := exec.Metrics().Snapshot(); snap.Sockets != 0 || snap.Claims != 0 {
-		t.Fatalf("a plan mismatch claimed or opened a socket: %+v", snap)
-	}
+	assertPreClaimDeclineLedger(t, exec.Metrics().Snapshot(), "a plan mismatch")
 	if got := server.hits.Load(); got != 0 {
 		t.Fatalf("the provider saw %d request(s), want 0", got)
 	}
@@ -292,9 +288,7 @@ func TestStreamNearMissesDeclinePreClaim(t *testing.T) {
 				if res.Disposition != bamlutils.NativeStaticStreamOracleDeclined {
 					t.Fatalf("disposition = %v (stage=%q reason=%q), want a PRE-SOCKET decline", res.Disposition, res.Stage, res.Reason)
 				}
-				if snap := exec.Metrics().Snapshot(); snap.Sockets != 0 || snap.Claims != 0 {
-					t.Fatalf("counters = %+v, want sockets=0 claims=0", snap)
-				}
+				assertPreClaimDeclineLedger(t, exec.Metrics().Snapshot(), "a stream near miss")
 				if got := server.hits.Load(); got != 0 {
 					t.Fatalf("the provider saw %d request(s) on a pre-socket decline, want 0", got)
 				}
@@ -311,3 +305,23 @@ var errPlanUnavailable = errStr("the BAML plan could not be built")
 type errStr string
 
 func (e errStr) Error() string { return string(e) }
+
+// assertPreClaimDeclineLedger requires the COMPLETE executor counter ledger of a
+// pre-claim decline: exactly one decline and nothing else.
+//
+// Asserting only Sockets and Claims — which these three sites used to do — passes a
+// decline that never increments Declines, and passes one that also increments
+// Successes or Failures. Both would be real regressions in the executor's own
+// accounting, and both are invisible to a two-counter check. The unary near-miss row
+// already asserted Declines; this makes the whole set say the same thing, once.
+//
+// The values are MEASURED, not assumed: every row of all three sites reports
+// {Declines:1 Claims:0 Sockets:0 Successes:0 Failures:0}.
+func assertPreClaimDeclineLedger(t *testing.T, snap spine.MetricsSnapshot, ctx string) {
+	t.Helper()
+	want := spine.MetricsSnapshot{Declines: 1}
+	if snap != want {
+		t.Fatalf("%s produced counters %+v, want exactly %+v — a pre-claim decline opens no socket, "+
+			"makes no claim, and is counted once as a decline and nothing else", ctx, snap, want)
+	}
+}
