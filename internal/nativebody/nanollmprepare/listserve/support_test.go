@@ -294,18 +294,24 @@ func httpRequestToLLMHTTP(t *testing.T, req baml.HTTPRequest) *llmhttp.Request {
 }
 
 // readBody reads the whole request body so the captured bytes can be compared with
-// BAML's plan body. A read error is fatal: an empty body would compare unequal and
-// be reported as a plan divergence that never happened.
-func readBody(t *testing.T, r *http.Request) string {
-	t.Helper()
+// BAML's plan body.
+//
+// It RETURNS the error rather than failing: it runs on the httptest HANDLER
+// goroutine, and t.Fatalf there calls FailNow, which the testing package requires to
+// run on the goroutine running the test function. From the handler it would only kill
+// that goroutine, leaving the response unwritten and the test failing later for an
+// unrelated reason with no attribution. captured() reports the stored error from the
+// test goroutine instead — a read failure still cannot be mistaken for a plan
+// divergence, which is what the fatal was there for.
+func readBody(r *http.Request) (string, error) {
 	if r.Body == nil {
-		return ""
+		return "", nil
 	}
 	b, err := io.ReadAll(r.Body)
 	if err != nil {
-		t.Fatalf("read captured request body: %v", err)
+		return "", fmt.Errorf("read captured request body: %w", err)
 	}
-	return string(b)
+	return string(b), nil
 }
 
 func envSnapshot() map[string]string {
@@ -397,6 +403,9 @@ type captureServer struct {
 	mu    sync.Mutex
 	last  capturedRequest
 	first bool
+	// readErr is the first body-read failure the handler goroutine saw. It is
+	// reported by captured(), which runs on the test goroutine.
+	readErr error
 }
 
 type capturedRequest struct {
@@ -412,7 +421,7 @@ func newJSONServer(t *testing.T, content string) *captureServer {
 	t.Helper()
 	cs := &captureServer{}
 	cs.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cs.record(t, r)
+		cs.record(r)
 		env, _ := json.Marshal(map[string]any{
 			"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": content}}},
 		})
@@ -429,7 +438,7 @@ func newSSEServer(t *testing.T, events []string) *captureServer {
 	t.Helper()
 	cs := &captureServer{}
 	cs.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cs.record(t, r)
+		cs.record(r)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		fl, _ := w.(http.Flusher)
@@ -444,9 +453,9 @@ func newSSEServer(t *testing.T, events []string) *captureServer {
 	return cs
 }
 
-func (cs *captureServer) record(t *testing.T, r *http.Request) {
+func (cs *captureServer) record(r *http.Request) {
 	cs.hits.Add(1)
-	body := readBody(t, r)
+	body, err := readBody(r)
 	hdr := map[string]string{}
 	for k, v := range r.Header {
 		if len(v) > 0 {
@@ -455,6 +464,9 @@ func (cs *captureServer) record(t *testing.T, r *http.Request) {
 	}
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
+	if err != nil && cs.readErr == nil {
+		cs.readErr = err
+	}
 	cs.last = capturedRequest{method: r.Method, url: r.URL.String(), headers: hdr, body: body}
 	cs.first = true
 }
@@ -463,6 +475,9 @@ func (cs *captureServer) captured(t *testing.T) capturedRequest {
 	t.Helper()
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
+	if cs.readErr != nil {
+		t.Fatalf("the capture server could not read a request body: %v", cs.readErr)
+	}
 	if !cs.first {
 		t.Fatal("no request reached the provider; there is nothing to compare")
 	}
@@ -493,10 +508,10 @@ func openAIUsageChunk() string {
 func contentSSE(contentChunks, reasoningChunks []string) []string {
 	events := []string{openAIChunk(`{"role":"assistant"}`, "")}
 	for _, rc := range reasoningChunks {
-		events = append(events, openAIChunk(fmt.Sprintf(`{"reasoning_content":%q}`, rc), ""))
+		events = append(events, openAIChunk(`{"reasoning_content":`+jsonString(rc)+`}`, ""))
 	}
 	for _, cc := range contentChunks {
-		events = append(events, openAIChunk(fmt.Sprintf(`{"content":%q}`, cc), ""))
+		events = append(events, openAIChunk(`{"content":`+jsonString(cc)+`}`, ""))
 	}
 	events = append(events, openAIUsageChunk(), openAIChunk(`{}`, "stop"), "[DONE]")
 	return events
@@ -511,6 +526,30 @@ func listStreamCorpus() []string {
 }
 
 const listStreamFinal = `[1,"x",true]`
+
+// listReasoningDeltas is the reasoning corpus, and listReasoningFull the complete
+// text they concatenate to. Both are named so the stream tests assert the WHOLE
+// accumulated channel rather than its non-emptiness.
+var listReasoningDeltas = []string{"thinking ", "harder"}
+
+const listReasoningFull = "thinking harder"
+
+// jsonString quotes s as a JSON string.
+//
+// json.Marshal rather than %q on purpose: Go's %q is strconv.Quote, which emits
+// \a, \v and \xNN escapes that no JSON parser accepts. Today's corpora carry no
+// such byte, but a helper that silently produces invalid JSON for one would make the
+// oracle misparse the frame rather than fail, so the escaping is done by the JSON
+// encoder that owns it.
+func jsonString(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		// Unreachable: encoding a Go string cannot fail. Panicking beats returning
+		// a malformed frame that the oracle would then misattribute.
+		panic("listserve: marshal SSE chunk string: " + err.Error())
+	}
+	return string(b)
+}
 
 // jsonOf marshals a public value the way a client would receive it.
 func jsonOf(t *testing.T, v any) string {

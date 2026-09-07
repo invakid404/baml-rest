@@ -187,7 +187,14 @@ func assertStandardProjectorAdmitted(t *testing.T, path string) {
 		t.Fatalf("read emitted projector: %v", err)
 	}
 	src := string(b)
-	declines := src[strings.Index(src, "StaticPromptProjectorDeclines"):]
+	// Guarded rather than sliced directly: a missing ledger would make
+	// src[-1:] panic, and the panic would replace the specific failure message this
+	// assertion exists to produce.
+	start := strings.Index(src, "StaticPromptProjectorDeclines")
+	if start < 0 {
+		t.Fatal("the emitted projector declared no StaticPromptProjectorDeclines ledger; the emitter's shape has changed")
+	}
+	declines := src[start:]
 	if end := strings.Index(declines, "\n}"); end >= 0 {
 		declines = declines[:end]
 	}
@@ -282,7 +289,7 @@ func TestBothInputPathsProduceTheSameVector(t *testing.T) {
 			}
 			assertVectorsEqual(t, std, spineVec)
 
-			// Both must be the full 8-argument vector in DECLARED order; a shared
+			// Both must be the full 7-argument vector in DECLARED order; a shared
 			// truncation would otherwise compare equal to itself.
 			wantNames := []string{"topic", "n", "r", "b", "tags", "counts", "flags"}
 			if len(std) != len(wantNames) {

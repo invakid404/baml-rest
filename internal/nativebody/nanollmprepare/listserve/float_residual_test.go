@@ -9,11 +9,18 @@ package listserve
 // Stock BAML v0.223 renders a directly interpolated value two different ways
 // depending on where it sits:
 //
-//	{{ r }}   a SCALAR float goes through Rust's `Display for f64` — always
-//	          positional, never exponent notation;
-//	{{ rs }}  a LIST goes through `debug_list`, which formats each element with
-//	          `Debug for f64` — which switches to exponent notation once the
-//	          magnitude is large or small enough.
+//	{{ r }}   a SCALAR float is rendered by MiniJinja's `Display for Value` float
+//	          arm — the shortest round-tripping POSITIONAL decimal, never exponent
+//	          notation, with `.0` appended when the result has no fractional part;
+//	{{ rs }}  a LIST goes through BAML's `debug_list`, which formats each element
+//	          with Rust's `Debug for f64` — which switches to exponent notation
+//	          once the magnitude is large or small enough.
+//
+// The scalar arm is MiniJinja's Value display, NOT Rust's bare `Display for f64`:
+// bare Display prints an integral float as `2`, and both legs here print `2.0`. The
+// `.0` therefore does not distinguish the two positions and the two paths agree on
+// every ordinary magnitude — the ONLY observed divergence is exponent notation, which
+// is what the table below encodes and what the assertions turn on.
 //
 // The native renderer (internal/bamlprofile's debugValue, which delegates a list
 // element to the fork's positional Value.Repr/formatFloat) uses the POSITIONAL form

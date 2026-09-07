@@ -34,12 +34,15 @@ import (
 //	NewPopulationStreamExecutor  the STANDARD worker's /stream + /stream-with-raw
 //	NewWorkerRuntime          the BAML-free NATIVE-ONLY worker
 //
-// Non-vacuity: every row here DECLINED before the widening (the pre-change
-// requiredScalarInputs refused ValueList outright), and the fence around it is
-// TestRegistrationDeclineMatrix's register:input-cohort rows — nullable list,
-// nullable element, resolved nested list, list-of-class, list-of-enum. Widening the
-// predicate to the recursively permissive codegen profile turns those rows green,
-// which is what makes this pair discriminating rather than a restatement.
+// Non-vacuity: every LIST-BEARING row here DECLINED before the widening (the
+// pre-change requiredScalarInputs refused ValueList outright). The three
+// `*_unchanged` rows are the retained pre-existing cohort and were admitted before
+// this change too — they are controls proving the widening disturbs nothing, not
+// evidence of it. The fence on the other side is TestRegistrationDeclineMatrix's
+// register:input-cohort rows (kind="fence") — nullable list, nullable element, float
+// list, the synthetic resolved shapes, list-of-class, list-of-enum — each of which
+// ADMITS under a permissive replacement of the predicate. That pair is what makes
+// this file discriminating rather than a restatement.
 
 const listJSONType = "type JSON = int | string | bool | JSON[] | map<string, JSON>"
 

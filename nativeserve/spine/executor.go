@@ -15,8 +15,11 @@
 // failed-after-claim) mapped onto the neutral bamlutils.NativeSpineUnaryResult.
 //
 // COHORT: exactly the proven direct five-arm `JSON` recursive alias, unary final call
-// + direct parse only; inputs required string/int/float/bool scalars only. Emittable
-// is not population-admitted — every other shape declines at registration or, if not
+// + direct parse only; inputs are required string/int/float/bool SCALARS, plus
+// required single-level LISTS whose element is a required string/int/bool (float is
+// admitted as a scalar but not as a list element — see the measured
+// Debug-vs-Display residual on requiredScalarOrScalarListInputs). Emittable is not
+// population-admitted — every other shape declines at registration or, if not
 // registered, at Call with a typed pre-socket decline and zero sockets.
 //
 // Default-deny: this runtime is constructible + exercisable, but it changes no

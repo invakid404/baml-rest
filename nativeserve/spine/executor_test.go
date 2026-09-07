@@ -52,11 +52,18 @@ func TestNewUnaryExecutor_AdmitsExactJSONAlias(t *testing.T) {
 //     "register:*". The loop CHECKS it per row: a "validate:*" row MUST fail
 //     proj.Validate(); a "register:*" row MUST pass Validate (so its decline necessarily
 //     happens inside register()). A mislabelled row fails the test.
-//   - kind: "regression" for a row that exercises a gate one of this slice's review fixes
-//     ADDED (so it ADMITTED on the corresponding pre-fix tip and discriminates it), or
-//     "coverage" for a row documenting a gate that was ALREADY present (it would decline
-//     on the pre-fix tip too). The invariant AFTER the loop consumes every kind and PINS
-//     the exact regression-name set, so the classification cannot silently drift.
+//   - kind: the row's EVIDENCE class — "regression" (a gate a review fix ADDED, so the row
+//     ADMITTED on the corresponding pre-fix tip and discriminates it), "fence" (a row that
+//     declined on the pre-change tip TOO but ADMITS under a wrong implementation of the
+//     predicate this slice introduced), or "coverage" (a gate that was ALREADY present).
+//     The invariant AFTER the loop consumes every kind and PINS both the regression-name
+//     and the fence-name set, so the classification cannot silently drift.
+//
+// The rows labelled kind=="fence" are this slice's scalar-LIST widening: nullable list,
+// nullable element, float list, the two synthetic resolved shapes, the element-less list,
+// and list-of-class/enum. They are NOT regressions — the pre-change requiredScalarInputs
+// refused ValueList outright, so each declined before this change too — but each ADMITS
+// under a permissive replacement of requiredScalarOrScalarListInputs.
 //
 // The rows labelled kind=="regression" (and the gate each one exercises):
 //   - selected_client_non_openai, invalid_utf8_model — the cycle-3 client-cohort fix:
@@ -87,7 +94,15 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 		binding bamlutils.NativeSpineUnaryBinding
 		want    string
 		layer   string // exact declining gate: "validate:*" (before the register loop) or "register:*"
-		kind    string // "regression" (a gate a review fix ADDED — admits on the pre-fix tip) or "coverage" (a pre-existing gate)
+		// kind is the row's EVIDENCE class, and the three are distinct claims:
+		//   "regression" — a gate a review fix ADDED: the row ADMITS on the
+		//                  corresponding pre-fix tip, so it discriminates that tip.
+		//   "fence"      — a row that declined on the pre-change tip TOO (this
+		//                  slice's predicate is narrower than what it replaced), and
+		//                  ADMITS under a plausible WRONG implementation of the new
+		//                  predicate. It discriminates the implementation, not a tip.
+		//   "coverage"   — a pre-existing gate, documented; declines either way.
+		kind string
 	}{
 		// --- output shape negatives — register:totality (PRE-EXISTING gate) ------
 		{"jsonvalue_alias",
@@ -139,10 +154,10 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 			jsonAliasBinding("F"), "is nullable", "register:input-cohort", "coverage"},
 		{"nullable_list_input", // `string[]?` — the LIST itself is optional
 			projectFromCorpus(t, corpus(jsonType, `function F(tags: string[]?) -> JSON { client C prompt #"{{ tags }}"# }`)),
-			jsonAliasBinding("F"), "is nullable", "register:input-cohort", "regression"},
+			jsonAliasBinding("F"), "is nullable", "register:input-cohort", "fence"},
 		{"nullable_list_element", // `(string?)[]` — the ELEMENT is optional
 			projectFromCorpus(t, corpus(jsonType, `function F(tags: (string?)[]) -> JSON { client C prompt #"{{ tags }}"# }`)),
-			jsonAliasBinding("F"), "nullable element", "register:input-cohort", "regression"},
+			jsonAliasBinding("F"), "nullable element", "register:input-cohort", "fence"},
 		// `float` is an admitted SCALAR but NOT an admitted list ELEMENT: stock v0.223
 		// renders a float list element through Rust's `Debug for f64` (exponent form
 		// from ~1e16 and ~1e-5) while the native list renderer is positional. The
@@ -151,7 +166,7 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 		// what makes this row about the ELEMENT position rather than about float.
 		{"float_list_input",
 			projectFromCorpus(t, corpus(jsonType, `function F(ratios: float[]) -> JSON { client C prompt #"{{ ratios }}"# }`)),
-			jsonAliasBinding("F"), "outside the required scalar-or-scalar-list cohort", "register:input-cohort", "regression"},
+			jsonAliasBinding("F"), "outside the required scalar-or-scalar-list cohort", "register:input-cohort", "fence"},
 		// The two SOURCE-spelled nesting rows never become a Method at all: the V3
 		// resolver refuses a nested dimension (internal/nativeschema/inputvalues.go),
 		// including the alias-hidden spelling, so the project declines the function
@@ -179,18 +194,18 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 				mid := promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueList, Elem: &inner}
 				p.Methods[0].Args[0].Type = promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueList, Elem: &mid}
 			}),
-			jsonAliasBinding(), "outside the required scalar-or-scalar-list cohort", "register:input-cohort", "regression"},
+			jsonAliasBinding(), "outside the required scalar-or-scalar-list cohort", "register:input-cohort", "fence"},
 		{"synthetic_resolved_nullable_element",
 			mutatedJSONProject(t, func(p *projectdescriptor.Project) {
 				elem := promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueString, Nullable: true}
 				p.Methods[0].Args[0].Type = promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueList, Elem: &elem}
 			}),
-			jsonAliasBinding(), "nullable element", "register:input-cohort", "regression"},
+			jsonAliasBinding(), "nullable element", "register:input-cohort", "fence"},
 		{"synthetic_list_without_element",
 			mutatedJSONProject(t, func(p *projectdescriptor.Project) {
 				p.Methods[0].Args[0].Type = promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueList}
 			}),
-			jsonAliasBinding(), "list with no element type", "register:input-cohort", "regression"},
+			jsonAliasBinding(), "list with no element type", "register:input-cohort", "fence"},
 		// A class/enum/map/media input is removed by the SOURCE classifier and never
 		// reaches the constructor, so injecting a non-scalar type DIRECTLY onto the
 		// admitted method's argument edge is the only way to exercise the registry
@@ -205,13 +220,13 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 				elem := promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueClass, ClassName: "Ghost"}
 				p.Methods[0].Args[0].Type = promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueList, Elem: &elem}
 			}),
-			jsonAliasBinding(), "outside the required scalar-or-scalar-list cohort", "register:input-cohort", "regression"},
+			jsonAliasBinding(), "outside the required scalar-or-scalar-list cohort", "register:input-cohort", "fence"},
 		{"list_of_enum_input_survives",
 			mutatedJSONProject(t, func(p *projectdescriptor.Project) {
 				elem := promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueEnum, EnumName: "Ghost"}
 				p.Methods[0].Args[0].Type = promptdescriptor.ResolvedValueType{Kind: promptdescriptor.ValueList, Elem: &elem}
 			}),
-			jsonAliasBinding(), "outside the required scalar-or-scalar-list cohort", "register:input-cohort", "regression"},
+			jsonAliasBinding(), "outside the required scalar-or-scalar-list cohort", "register:input-cohort", "fence"},
 
 		// --- static-client cohort — register:client-cohort ----------------------
 		// selected_client_non_openai + invalid_utf8_model are the cycle-3 REGRESSIONS
@@ -376,17 +391,31 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 		})
 	}
 
-	// The `kind` label is CONSUMED here so the regression classification is a checked
-	// invariant, not dead prose: exactly these four rows are the genuine pre-fix
-	// regressions (the gates this slice's review fixes added — cycle-3's client-cohort
-	// intent predicate and review-2's registration cohort + capability-manifest gates).
-	// Every other row is coverage of a pre-existing gate. If a future edit relabels a row
-	// or adds a regression without updating this set, the test fails.
+	// Both evidence classes are CONSUMED here so the classification is a checked
+	// invariant, not dead prose.
+	//
+	// REGRESSION rows are the genuine pre-fix regressions (gates earlier review fixes
+	// added — cycle-3's client-cohort intent predicate and review-2's registration
+	// cohort + capability-manifest gates); each ADMITS on its pre-fix tip.
+	//
+	// FENCE rows are this slice's scalar-LIST widening. They are deliberately NOT
+	// labelled regressions: the pre-change requiredScalarInputs refused ValueList
+	// outright, so every one of them declined on the pre-change tip too. What they
+	// discriminate is the IMPLEMENTATION of the new predicate — each admits if it is
+	// replaced by internal/nativespine's recursively permissive codegen profile, by a
+	// bare "scalar or list" test that forgets the element, or by dropping the
+	// defensive resolved-shape reading.
+	//
+	// If a future edit relabels a row or adds one without updating these sets, the
+	// test fails.
 	gotRegressions := map[string]bool{}
+	gotFences := map[string]bool{}
 	for _, tc := range cases {
 		switch tc.kind {
 		case "regression":
 			gotRegressions[tc.name] = true
+		case "fence":
+			gotFences[tc.name] = true
 		case "coverage":
 		default:
 			t.Fatalf("row %q has an unclassified kind %q", tc.name, tc.kind)
@@ -394,22 +423,27 @@ func TestRegistrationDeclineMatrix(t *testing.T) {
 	}
 	wantRegressions := []string{
 		"selected_client_non_openai", "invalid_utf8_model", "body_option_client_survives", "capability_manifest_corruption",
-		// The scalar-LIST widening's own fence. Each of these ADMITS if
-		// requiredScalarOrScalarListInputs is replaced by the recursively permissive
-		// codegen profile (internal/nativespine.inputWithinM1Profile), by a bare
-		// "scalar or list" test that forgets the element, or by dropping the
-		// defensive resolved-shape reading — which is exactly the over-admission
-		// this slice must not commit.
+	}
+	wantFences := []string{
 		"nullable_list_input", "nullable_list_element", "float_list_input",
 		"synthetic_resolved_nested_list", "synthetic_resolved_nullable_element", "synthetic_list_without_element",
 		"list_of_class_input_survives", "list_of_enum_input_survives",
 	}
-	if len(gotRegressions) != len(wantRegressions) {
-		t.Fatalf("regression rows = %v, want exactly %v", gotRegressions, wantRegressions)
-	}
-	for _, n := range wantRegressions {
-		if !gotRegressions[n] {
-			t.Fatalf("expected row %q to be labelled kind=regression", n)
+	for _, set := range []struct {
+		label string
+		got   map[string]bool
+		want  []string
+	}{
+		{"regression", gotRegressions, wantRegressions},
+		{"fence", gotFences, wantFences},
+	} {
+		if len(set.got) != len(set.want) {
+			t.Fatalf("%s rows = %v, want exactly %v", set.label, set.got, set.want)
+		}
+		for _, n := range set.want {
+			if !set.got[n] {
+				t.Fatalf("expected row %q to be labelled kind=%s", n, set.label)
+			}
 		}
 	}
 

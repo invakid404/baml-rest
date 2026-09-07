@@ -206,8 +206,13 @@ func TestStreamComposite_NativeWinsOnBothRoutes(t *testing.T) {
 				}
 
 				if m.mode == bamlutils.NativeStreamModeStreamWithRaw {
-					if res.Raw == "" {
-						t.Error("/stream-with-raw produced no accumulated raw text")
+					// The COMPLETE accumulated raw, not merely a non-empty one: a
+					// truncated, duplicated or reordered raw channel passes a
+					// non-emptiness check while losing exactly what the route exists
+					// to deliver. The corpus's content deltas concatenate to the
+					// final text, so that is the whole expected value.
+					if res.Raw != listStreamFinal {
+						t.Errorf("accumulated raw = %q, want %q (the corpus's content deltas, in order)", res.Raw, listStreamFinal)
 					}
 					sawRaw := false
 					for _, e := range collector.snapshot() {
@@ -235,7 +240,7 @@ func TestStreamComposite_NativeWinsOnBothRoutes(t *testing.T) {
 // on /stream-with-raw, so the reasoning channel is exercised for a list-input
 // witness rather than assumed to follow from the raw one.
 func TestStreamComposite_ReasoningRoute(t *testing.T) {
-	events := contentSSE([]string{"[1,", `"x",`, "true]"}, []string{"thinking ", "harder"})
+	events := contentSSE([]string{"[1,", `"x",`, "true]"}, listReasoningDeltas)
 	r := argRows()[0]
 
 	server := newSSEServer(t, events)
@@ -256,8 +261,10 @@ func TestStreamComposite_ReasoningRoute(t *testing.T) {
 	if snap := exec.Metrics().Snapshot(); snap.Sockets != 1 {
 		t.Fatalf("executor counters = %+v, want exactly one socket", snap)
 	}
-	if res.Reasoning == "" {
-		t.Fatal("the reasoning channel is empty; the reasoning deltas in the corpus were dropped")
+	// The COMPLETE accumulated reasoning: a single surviving delta would satisfy a
+	// non-emptiness check while proving nothing about ordering or completeness.
+	if res.Reasoning != listReasoningFull {
+		t.Errorf("accumulated reasoning = %q, want %q (both corpus deltas, in order)", res.Reasoning, listReasoningFull)
 	}
 	if got := jsonOf(t, res.Final); got != listStreamFinal {
 		t.Errorf("public final = %s, want %s", got, listStreamFinal)

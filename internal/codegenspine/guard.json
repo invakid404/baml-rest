@@ -2,8 +2,8 @@
   "note": "Pin/tar-independence baseline for the codegen-spine slice: the packaged native-worker tar, the five first-party pseudo-version pins, and the byte content of the three collision-path trees. A codegen-spine (M/P) slice must leave every value here untouched. It is NOT a freeze on master: a sanctioned change to a guarded path — the /parse union burn-down (#689), the /parse union-residual batch 2, ExecBridge-U1's spine serve lane under nativeserve, ExecBridge-U1b's native-only packaged worker, ExecBridge-U1c's live-oracle standard composite, M3e-A's spine STREAM substrate, a post-squash first-party re-pin — legitimately moves these, and MUST re-run the update flag in the same change, or this guard stays red for everyone. First frozen at M0; re-frozen after #689 + the post-squash re-pin to 062871154d95, again for the /parse union-residual batch 2 (post-squash re-pin to master commit 7c7bed8291b6), again for ExecBridge-U1 — the production native unary executor/population bridge that adds a BAML-free spine serve lane under nativeserve (post-squash re-pin to master commit 7ddbb39fd3db), and again for ExecBridge-U1b — the native-only packaged worker that adds the reusable nativeserve/spine.NewWorkerRuntime factory + population classifier and the BAML-free nanollmprepare nativeonlyboot / cmd/worker-nativeonly (post-squash re-pin to master commit 8fe27577082c), and again for ExecBridge-U1c — the live-oracle standard composite that adds nativeserve/spine.CallWithOracle + the live-oracle admission entry AdmitStaticSpineOracleClaim + the factored nativeserve/staticoracle same-response core, and the nanollmprepare standardspineoracle composite + generated NewExecutor (post-squash re-pin to master commit 56d5473a1bdb), and again for M3e-A — the spine STREAM substrate that adds nativeserve/spine.StreamExecutor + StreamRegistration + the stream-native NewWorkerRuntime and nativeserve/admission.AdmitStaticSpineStreamClaim, plus the stream-capable nanollmprepare native-only worker (post-squash re-pin to master commit 0ed769e091fd). Regenerate with: go test ./internal/codegenspine/ -run TestSourceGuard -update-codegenspine-guard",
   "native_worker_tar": {
     "path": "cmd/build/nativeworker_module.tar",
-    "size_bytes": 1038848,
-    "sha256": "45fbdf29ce09a27b16122855154e73625fc40b9ba121c9f8a1a745423ba3c5cb"
+    "size_bytes": 1039360,
+    "sha256": "28b086d00989689910b96fd421f72e340f5de812a49b0f4947b5c8168c1b6030"
   },
   "first_party_pins": [
     {
@@ -41,12 +41,12 @@
     {
       "prefix": "nativeserve",
       "file_count": 122,
-      "sha256": "0d3811ce3338c7a2b99ba0c317be4e5355b0860e22977faa12159babff2be8e0"
+      "sha256": "7d9489dae5175842306f83bc7aa03c0a8e1c3c00ce5e404f71feee52a4d3f16d"
     },
     {
       "prefix": "internal/nativebody/nanollmprepare",
       "file_count": 94,
-      "sha256": "f42b04c3cdd607ccc567e5ddfba421c64b6d4652bfb7f3d536b8f094d7f9dcb8"
+      "sha256": "1c76b58825c73529087258e283fc8d845e539d3b0dd243b0863c6238743bbb03"
     }
   ]
 }

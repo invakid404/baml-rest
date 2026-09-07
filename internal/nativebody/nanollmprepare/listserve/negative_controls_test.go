@@ -244,9 +244,9 @@ func TestPlanMismatchOnListValuesDeclinesPreClaim(t *testing.T) {
 }
 
 // TestStreamNearMissesDeclinePreClaim is the streaming half of the request-scoped
-// controls. A claimed stream has NO route back to BAML, so a near miss that
-// declined late would be unrecoverable — which is why both stream routes carry the
-// same fence as /call.
+// controls, run on BOTH public stream routes. A claimed stream has NO route back to
+// BAML, so a near miss that declined late would be unrecoverable — which is why both
+// stream routes carry the same fence as /call, and why both are exercised here.
 func TestStreamNearMissesDeclinePreClaim(t *testing.T) {
 	rewrites := func(string) bool { return true }
 	cases := []struct {
@@ -266,30 +266,43 @@ func TestStreamNearMissesDeclinePreClaim(t *testing.T) {
 		{"no_per_prefix_oracle", func(i *bamlutils.NativeStaticStreamOracleInvocation) { i.BAMLStreamParse = nil }},
 		{"no_final_oracle", func(i *bamlutils.NativeStaticStreamOracleInvocation) { i.BAMLFinalParse = nil }},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			server := newSSEServer(t, listStreamCorpus())
-			leg := newBAMLLeg(t, server.baseURL())
-			serve, exec := streamComposite(t, server.baseURL())
+	// BOTH public stream routes. /stream-with-raw takes a different cadence branch
+	// (NeedsRaw flows raw on ticks that release no structured partial), so a
+	// route-specific regression in the pre-claim fence could otherwise let it open a
+	// socket for a near miss while plain /stream stayed green.
+	modes := []struct {
+		name string
+		mode bamlutils.NativeStreamMode
+	}{
+		{"stream", bamlutils.NativeStreamModeStream},
+		{"stream_with_raw", bamlutils.NativeStreamModeStreamWithRaw},
+	}
+	for _, m := range modes {
+		for _, tc := range cases {
+			t.Run(m.name+"/"+tc.name, func(t *testing.T) {
+				server := newSSEServer(t, listStreamCorpus())
+				leg := newBAMLLeg(t, server.baseURL())
+				serve, exec := streamComposite(t, server.baseURL())
 
-			inv := streamInv(t, leg, argRows()[0], bamlutils.NativeStreamModeStream)
-			tc.mutate(&inv)
-			collector := &eventCollector{}
-			res := serve(context.Background(), inv, collector.emit)
+				inv := streamInv(t, leg, argRows()[0], m.mode)
+				tc.mutate(&inv)
+				collector := &eventCollector{}
+				res := serve(context.Background(), inv, collector.emit)
 
-			if res.Disposition != bamlutils.NativeStaticStreamOracleDeclined {
-				t.Fatalf("disposition = %v (stage=%q reason=%q), want a PRE-SOCKET decline", res.Disposition, res.Stage, res.Reason)
-			}
-			if snap := exec.Metrics().Snapshot(); snap.Sockets != 0 || snap.Claims != 0 {
-				t.Fatalf("counters = %+v, want sockets=0 claims=0", snap)
-			}
-			if got := server.hits.Load(); got != 0 {
-				t.Fatalf("the provider saw %d request(s) on a pre-socket decline, want 0", got)
-			}
-			if got := collector.snapshot(); len(got) != 0 {
-				t.Fatalf("a declined stream emitted %d public event(s); a decline certifies ZERO events", len(got))
-			}
-		})
+				if res.Disposition != bamlutils.NativeStaticStreamOracleDeclined {
+					t.Fatalf("disposition = %v (stage=%q reason=%q), want a PRE-SOCKET decline", res.Disposition, res.Stage, res.Reason)
+				}
+				if snap := exec.Metrics().Snapshot(); snap.Sockets != 0 || snap.Claims != 0 {
+					t.Fatalf("counters = %+v, want sockets=0 claims=0", snap)
+				}
+				if got := server.hits.Load(); got != 0 {
+					t.Fatalf("the provider saw %d request(s) on a pre-socket decline, want 0", got)
+				}
+				if got := collector.snapshot(); len(got) != 0 {
+					t.Fatalf("a declined stream emitted %d public event(s); a decline certifies ZERO events", len(got))
+				}
+			})
+		}
 	}
 }
 
