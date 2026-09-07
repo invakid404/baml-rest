@@ -3,33 +3,33 @@
   "native_worker_tar": {
     "path": "cmd/build/nativeworker_module.tar",
     "size_bytes": 1039360,
-    "sha256": "28b086d00989689910b96fd421f72e340f5de812a49b0f4947b5c8168c1b6030"
+    "sha256": "17abc7e879e6e604113f22c68e5cbe5c4af539c38fea75fd2cde41002572ae34"
   },
   "first_party_pins": [
     {
       "file": "nativeserve/go.mod",
       "module": "github.com/invakid404/baml-rest",
-      "version": "v0.0.0-20260907164835-f3fcdbc2595d"
+      "version": "v0.0.0-20260907172212-c44e054441e6"
     },
     {
       "file": "nativeserve/go.mod",
       "module": "github.com/invakid404/baml-rest/bamlutils",
-      "version": "v0.0.49-0.20260907164835-f3fcdbc2595d"
+      "version": "v0.0.49-0.20260907172212-c44e054441e6"
     },
     {
       "file": "nativeserve/go.mod",
       "module": "github.com/invakid404/baml-rest/worker",
-      "version": "v0.0.49-0.20260907164835-f3fcdbc2595d"
+      "version": "v0.0.49-0.20260907172212-c44e054441e6"
     },
     {
       "file": "internal/nativebody/nanollmprepare/go.mod",
       "module": "github.com/invakid404/baml-rest/bamlutils",
-      "version": "v0.0.49-0.20260907164835-f3fcdbc2595d"
+      "version": "v0.0.49-0.20260907172212-c44e054441e6"
     },
     {
       "file": "internal/nativebody/nanollmprepare/go.mod",
       "module": "github.com/invakid404/baml-rest/worker",
-      "version": "v0.0.49-0.20260907164835-f3fcdbc2595d"
+      "version": "v0.0.49-0.20260907172212-c44e054441e6"
     }
   ],
   "guarded_trees": [
@@ -41,12 +41,12 @@
     {
       "prefix": "nativeserve",
       "file_count": 122,
-      "sha256": "7d9489dae5175842306f83bc7aa03c0a8e1c3c00ce5e404f71feee52a4d3f16d"
+      "sha256": "2f868593f5de85a31f7e6c578b4e54e3f729a9b21a64a9fb03269fb5daa498c4"
     },
     {
       "prefix": "internal/nativebody/nanollmprepare",
       "file_count": 94,
-      "sha256": "1c76b58825c73529087258e283fc8d845e539d3b0dd243b0863c6238743bbb03"
+      "sha256": "9ab9b8aada58d06d0c13a738262b238f3e95558fb05292922e558d09cdcbcf38"
     }
   ]
 }

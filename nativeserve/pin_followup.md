@@ -1,7 +1,7 @@
 # Out-of-`go.work` first-party pin follow-up
 
 This file is the TRACKED record of whether the five first-party pseudo-version
-selections below point at a **master** commit. **They do NOT.** They name `f3fcdbc2595d`,
+selections below point at a **master** commit. **They do NOT.** They name `c44e054441e6`,
 the branch SOURCE commit on `feat/debaml-widen-scalar-list-inputs` that carries the
 scalar-LIST input widening (the standard worker's default-serving population now also
 admits methods whose inputs mix the existing required scalars with required single-level
@@ -43,8 +43,8 @@ CONCRETE, per-change instance of it, which is what the generic comment cannot be
 
 ```text
 STATUS: OUTSTANDING
-PINNED-COMMIT: f3fcdbc2595d
-PINNED-STAMP: 20260907164835
+PINNED-COMMIT: c44e054441e6
+PINNED-STAMP: 20260907172212
 REACHABLE-FROM: feat/debaml-widen-scalar-list-inputs
 SLICE: de-BAML cohort widening (Rank 1) — required scalar-LIST inputs: widen the default-native serving population so the standard BAML+nanollm worker also default-serves methods whose inputs mix the existing required scalars with required single-level lists of non-nullable primitives (string[]/int[]/bool[]), keeping the exact five-arm JSON return and reusing every existing oracle (nativeserve/spine's registration input predicate, one precise two-level shape check; the shared classifier widens /call, /stream, /stream-with-raw and the native-only runtime together)
 PR: #719 — branch-only pin; post-squash re-pin to the merged master commit is OWED
@@ -52,7 +52,7 @@ PR: #719 — branch-only pin; post-squash re-pin to the merged master commit is 
 
 ## Why the pins name a branch commit
 
-`f3fcdbc2595d` is the branch SOURCE commit on `feat/debaml-widen-scalar-list-inputs` that
+`c44e054441e6` is the branch SOURCE commit on `feat/debaml-widen-scalar-list-inputs` that
 carries the guarded-tree change. The packaged tar (`cmd/build/nativeworker_module.tar`)
 embeds both out-of-work modules' source AND their go.mods, so the pins the tar ships are
 the pins an external `nativeserve-goget` consumer resolves. Pinning to a PRE-widening
@@ -75,11 +75,11 @@ bump is invisible until the out-of-work packaging build fails with
 
 | # | file | module | current selection |
 | --- | --- | --- | --- |
-| 1 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest` | `v0.0.0-20260907164835-f3fcdbc2595d` |
-| 2 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260907164835-f3fcdbc2595d` |
-| 3 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260907164835-f3fcdbc2595d` |
-| 4 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260907164835-f3fcdbc2595d` |
-| 5 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260907164835-f3fcdbc2595d` |
+| 1 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest` | `v0.0.0-20260907172212-c44e054441e6` |
+| 2 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260907172212-c44e054441e6` |
+| 3 | `nativeserve/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260907172212-c44e054441e6` |
+| 4 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/bamlutils` | `v0.0.49-0.20260907172212-c44e054441e6` |
+| 5 | `internal/nativebody/nanollmprepare/go.mod` | `github.com/invakid404/baml-rest/worker` | `v0.0.49-0.20260907172212-c44e054441e6` |
 
 `internal/nativebody/nanollmprepare/go.mod`'s `github.com/invakid404/baml-rest v0.0.48`
 is deliberately NOT in this list: it is a released tag, not a pseudo-version tracking a
@@ -90,14 +90,14 @@ commit, and the module directory-replaces it.
 The pin below points all five selections at the widening's BRANCH SOURCE commit and sets
 the record `OUTSTANDING`; the post-squash re-pin to master is now OWED.
 
-1. **All five selections re-pointed together** to `f3fcdbc2595d` (Go-formula stamp
-   `20260907164835`, taken from `go mod download -json` against the pushed branch commit
+1. **All five selections re-pointed together** to `c44e054441e6` (Go-formula stamp
+   `20260907172212`, taken from `go mod download -json` against the pushed branch commit
    rather than hand-computed). The edit touched only `require` lines; `nanollmprepare`'s
    deliberate `baml-rest v0.0.48` (a released TAG) and `workerplugin v0.0.48` are
    untouched, and so is every SHA inside the historical prose.
 2. **Both `// PIN-STATUS` markers flipped** from `RESOLVED` to `OUTSTANDING`, one per
    manifest.
-3. **Both mirrored narratives rewritten** to branch-only naming `f3fcdbc2595d`, with the
+3. **Both mirrored narratives rewritten** to branch-only naming `c44e054441e6`, with the
    ExecBridge-U1s master squash `5d1a7d8b1d0b` demoted to `HISTORICAL, SUPERSEDED`.
 4. **This file updated** — fenced record (`OUTSTANDING`, the branch commit/stamp,
    `REACHABLE-FROM: feat/debaml-widen-scalar-list-inputs`), opening claim, selections
@@ -117,7 +117,7 @@ guards read.
 
 ## The follow-up — OWED (the post-squash re-pin RUNBOOK, to run after merge)
 
-**This is NOT done yet: the pins are BRANCH-ONLY** at `f3fcdbc2595d`. What makes the
+**This is NOT done yet: the pins are BRANCH-ONLY** at `c44e054441e6`. What makes the
 post-squash re-pin MANDATORY and IMMEDIATE after merge is the same failure mode as
 always: a squash flattens the branch source commit out of history and the branch is
 deleted, so until the re-pin lands the five selections name a commit that resolves to
@@ -220,8 +220,8 @@ pseudo-versions from step 0.
 
 DONE for the scalar-list widening BRANCH pin (THIS change):
 
-- [x] point all five selections at the widening's branch SOURCE commit `f3fcdbc2595d`
-      (Go-formula stamp `20260907164835`), each with its correct base version
+- [x] point all five selections at the widening's branch SOURCE commit `c44e054441e6`
+      (Go-formula stamp `20260907172212`), each with its correct base version
 - [x] set both `// PIN-STATUS` markers + this file to `OUTSTANDING`,
       `REACHABLE-FROM: feat/debaml-widen-scalar-list-inputs`
 - [x] rewrite both narratives to branch-only; demote the U1s `5d1a7d8b1d0b` text to
@@ -238,7 +238,7 @@ OWED post-squash for the scalar-list widening MASTER re-pin (the ORCHESTRATOR's 
 - [ ] flip both `// PIN-STATUS` markers + this file to `RESOLVED`,
       `REACHABLE-FROM: master`
 - [ ] rewrite both narratives to master-durable naming that squash commit; demote the
-      branch-only `f3fcdbc2595d` text to `HISTORICAL, SUPERSEDED`
+      branch-only `c44e054441e6` text to `HISTORICAL, SUPERSEDED`
 - [ ] `cmd/build/nativeworker_module.tar` regenerated and
       `internal/codegenspine/guard.json` re-baselined
 - [ ] pin/tar/guard gates green (`TestFirstPartyPinFollowupIsTracked` will then see a

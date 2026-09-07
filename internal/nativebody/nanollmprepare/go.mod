@@ -21,9 +21,9 @@ go 1.26.5
 require (
 	github.com/boundaryml/baml v0.223.0
 	github.com/invakid404/baml-rest v0.0.48
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260907164835-f3fcdbc2595d
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260907172212-c44e054441e6
 	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260907164835-f3fcdbc2595d
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260907172212-c44e054441e6
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
@@ -167,7 +167,7 @@ require (
 // it to cf03786a1fac (#692 re-pinned to the 062871154d95 tip). Every one of these was a
 // branch-pin-then-re-pin, the precedent THIS U1 bump repeats.
 //
-// RIGHT NOW they are BRANCH-ONLY: all five name f3fcdbc2595d on
+// RIGHT NOW they are BRANCH-ONLY: all five name c44e054441e6 on
 // feat/debaml-widen-scalar-list-inputs, the branch SOURCE commit that carries the
 // scalar-LIST input widening, because no master commit carries it yet. nanollmprepare
 // directory-replaces root/bamlutils/worker/nativeserve, so only

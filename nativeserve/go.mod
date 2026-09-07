@@ -30,7 +30,7 @@
 // are pinned to the ORIGIN-RESOLVABLE pseudo-version of a single commit — the one
 // nativeserve/pin_followup.md records and cmd/build's TestFirstPartyPinFollowupIsTracked
 // checks, which is CURRENTLY the BRANCH-ONLY scalar-list widening source commit
-// f3fcdbc2595d on feat/debaml-widen-scalar-list-inputs (a BRANCH pin whose tracked
+// c44e054441e6 on feat/debaml-widen-scalar-list-inputs (a BRANCH pin whose tracked
 // follow-up is OUTSTANDING — the post-squash re-pin to the merged master commit is OWED;
 // see the PIN-STATUS block below, pin_followup.md, and the scalar-list note by the pins).
 // The ExecBridge-U1s master squash 5d1a7d8b1d0b it named before this change is
@@ -106,7 +106,7 @@
 //
 // NOTE (scalar-LIST input widening — default-serving the exact JSON cohort with
 // required scalar-list inputs): these pins are BRANCH-ONLY and the tracked follow-up in
-// nativeserve/pin_followup.md is therefore STATUS: OUTSTANDING. They name f3fcdbc2595d on
+// nativeserve/pin_followup.md is therefore STATUS: OUTSTANDING. They name c44e054441e6 on
 // feat/debaml-widen-scalar-list-inputs, the branch SOURCE commit that carries the change,
 // because no master commit carries it yet.
 // This module's change is confined to nativeserve/spine's single population owner: the
@@ -189,7 +189,7 @@
 // SOURCE commit only because no master commit carries the change yet, then re-pin all
 // five to master and regenerate the tar IMMEDIATELY after the merge. This change is the
 // BRANCH-pin half of that pattern for the scalar-list widening: all five pins name the
-// branch source commit f3fcdbc2595d (STATUS: OUTSTANDING) with the tar regenerated in the
+// branch source commit c44e054441e6 (STATUS: OUTSTANDING) with the tar regenerated in the
 // same change, and the master re-pin is OWED the moment the PR squash-merges.
 //
 // A bump must ALSO move internal/nativebody/nanollmprepare/go.mod's recorded bamlutils +
@@ -206,9 +206,9 @@ go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.2
-	github.com/invakid404/baml-rest v0.0.0-20260907164835-f3fcdbc2595d
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260907164835-f3fcdbc2595d
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260907164835-f3fcdbc2595d
+	github.com/invakid404/baml-rest v0.0.0-20260907172212-c44e054441e6
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260907172212-c44e054441e6
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20260907172212-c44e054441e6
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
