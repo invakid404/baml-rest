@@ -44,7 +44,7 @@ jobs:
         working-directory: internal/debaml/bamlunicode
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
         with:
           # No later step needs git auth; don't leave the token in git config.
           persist-credentials: false
