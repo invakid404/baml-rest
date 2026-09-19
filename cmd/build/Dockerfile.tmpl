@@ -35,7 +35,7 @@ RUN cargo build --release -p baml-cli -p baml_cffi
 
 # Builder stage: Node.js + Go combined environment
 # renovate: datasource=docker
-FROM node:24.17.0-bookworm@sha256:5cd3e3ef34a5e35d25640f2eeba687e86581e253d52e19a002b169dc9f13bb9e AS builder
+FROM node:24.21.0-bookworm@sha256:64af3819f9275802414d7cdc38c27e9d82bd564dec4d4da87d008255d36c63b4 AS builder
 
 # Install Go (multi-architecture support)
 ARG TARGETARCH{{ if .defaultTargetArch }}={{ .defaultTargetArch }}{{ end }}
