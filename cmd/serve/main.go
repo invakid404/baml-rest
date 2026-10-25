@@ -334,24 +334,8 @@ var serveCmd = &cobra.Command{
 
 		logger.Info().Int("size", workerPool.Stats().TotalWorkers).Msg("Worker pool initialized")
 
-		// Create Fiber app
-		//
-		// ErrorHandler maps framework-emitted *fiber.Error values into
-		// the apierror response shape so framework-level failures
-		// (BodyLimit/413 in particular, but also 404 / 405 / etc.)
-		// surface as the same coded JSON envelope our handlers emit
-		// instead of Fiber's default text/plain body. Without this,
-		// a 413 from BodyLimit bypassed writeFiberJSONErrorWithCode
-		// and clients lost the request_too_large code that the chi
-		// path already produces via writeChiBodyReadError. Non-
-		// *fiber.Error errors (uncaught from a handler) default to
-		// 500 internal_error.
-		app := fiber.New(fiber.Config{
-			JSONEncoder:  sonic.Marshal,
-			JSONDecoder:  sonic.Unmarshal,
-			BodyLimit:    maxRequestBodyBytes,
-			ErrorHandler: fiberErrorHandler,
-		})
+		// Create Fiber app (encoder, body limit and error handler: see fiberAppConfig).
+		app := fiber.New(fiberAppConfig())
 
 		// Set global panic recovery handler to use structured logging
 		recovery.ErrorHandler = func(err error) {
@@ -437,46 +421,8 @@ var serveCmd = &cobra.Command{
 
 			logger.Info().Str("prompt", methodName).Msg("Registering prompt")
 
-			makeCallHandler := func(streamMode bamlutils.StreamMode) fiber.Handler {
-				return func(c fiber.Ctx) error {
-					// Use c.Context() rather than c.RequestCtx(): fasthttp's
-					// RequestCtx.Done() is server-shutdown-scoped (shared s.done
-					// channel), so deriving from it cancels the worker call the
-					// instant Fiber.Shutdown starts — before the pool can drain.
-					ctx, cancel := context.WithCancel(c.Context())
-					defer cancel()
-
-					result, err := workerPool.Call(ctx, methodName, c.Body(), streamMode)
-					// Surface routing observability headers even on the
-					// error path. Pool.Call now preserves accumulated
-					// planned/outcome metadata in the result on error
-					// tails so X-BAML-Path / X-BAML-Path-Reason still
-					// reach the client when the request fails after the
-					// orchestrator emitted planned metadata. Pre-fix the
-					// 500 path returned with no headers, which made
-					// invalid-runtime-options diagnoses invisible.
-					if result != nil {
-						setBAMLHeaders(fiberHeaderSetter(c), decodeMetadataJSON(result.Planned), decodeMetadataJSON(result.Outcome))
-					}
-					if err != nil {
-						logger.Error().Err(err).Str("method", methodName).Msg("worker call failed")
-						return writeFiberWorkerError(c, err)
-					}
-					c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
-					if streamMode.NeedsRaw() {
-						return c.Status(fiber.StatusOK).JSON(CallWithRawResponse{
-							Data:      result.Data,
-							Raw:       result.Raw,
-							Reasoning: result.Reasoning,
-						})
-					}
-
-					return c.Status(fiber.StatusOK).Send(result.Data)
-				}
-			}
-
-			app.Post(fmt.Sprintf("/call/%s", methodName), makeCallHandler(bamlutils.StreamModeCall))
-			app.Post(fmt.Sprintf("/call-with-raw/%s", methodName), makeCallHandler(bamlutils.StreamModeCallWithRaw))
+			app.Post(fmt.Sprintf("/call/%s", methodName), makeFiberCallHandler(workerPool, methodName, bamlutils.StreamModeCall, logger))
+			app.Post(fmt.Sprintf("/call-with-raw/%s", methodName), makeFiberCallHandler(workerPool, methodName, bamlutils.StreamModeCallWithRaw, logger))
 
 			makeStreamHandler := func(streamMode bamlutils.StreamMode) fiber.Handler {
 				return func(c fiber.Ctx) error {
@@ -849,6 +795,65 @@ func main() {
 	if err := rootCmd.Execute(); err != nil {
 		logger := zerolog.New(os.Stderr).With().Timestamp().Logger()
 		logger.Fatal().Err(err).Msg("Command failed")
+	}
+}
+
+// fiberAppConfig is the public Fiber app's configuration: the Sonic JSON encoder/decoder,
+// the request body limit, and the app-wide error handler, which maps framework-emitted
+// *fiber.Error values into the apierror response shape so framework-level failures
+// (BodyLimit/413 in particular, but also 404 / 405 / etc.) surface as the same coded JSON
+// envelope our handlers emit instead of Fiber's default text/plain body. Without it, a 413
+// from BodyLimit bypassed writeFiberJSONErrorWithCode and clients lost the
+// request_too_large code that the chi path already produces via writeChiBodyReadError.
+// Non-*fiber.Error errors (uncaught from a handler) default to 500 internal_error.
+func fiberAppConfig() fiber.Config {
+	return fiber.Config{
+		JSONEncoder:  sonic.Marshal,
+		JSONDecoder:  sonic.Unmarshal,
+		BodyLimit:    maxRequestBodyBytes,
+		ErrorHandler: fiberErrorHandler,
+	}
+}
+
+// makeFiberCallHandler is the Fiber handler for a static method's /call and /call-with-raw
+// routes: one worker call, then either the bare data bytes (/call) or the
+// CallWithRawResponse envelope (/call-with-raw). Errors take the classified worker-error
+// branch, never the success envelope.
+func makeFiberCallHandler(workerPool *pool.Pool, methodName string, streamMode bamlutils.StreamMode, logger zerolog.Logger) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		// Use c.Context() rather than c.RequestCtx(): fasthttp's
+		// RequestCtx.Done() is server-shutdown-scoped (shared s.done
+		// channel), so deriving from it cancels the worker call the
+		// instant Fiber.Shutdown starts — before the pool can drain.
+		ctx, cancel := context.WithCancel(c.Context())
+		defer cancel()
+
+		result, err := workerPool.Call(ctx, methodName, c.Body(), streamMode)
+		// Surface routing observability headers even on the
+		// error path. Pool.Call now preserves accumulated
+		// planned/outcome metadata in the result on error
+		// tails so X-BAML-Path / X-BAML-Path-Reason still
+		// reach the client when the request fails after the
+		// orchestrator emitted planned metadata. Pre-fix the
+		// 500 path returned with no headers, which made
+		// invalid-runtime-options diagnoses invisible.
+		if result != nil {
+			setBAMLHeaders(fiberHeaderSetter(c), decodeMetadataJSON(result.Planned), decodeMetadataJSON(result.Outcome))
+		}
+		if err != nil {
+			logger.Error().Err(err).Str("method", methodName).Msg("worker call failed")
+			return writeFiberWorkerError(c, err)
+		}
+		c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+		if streamMode.NeedsRaw() {
+			return c.Status(fiber.StatusOK).JSON(CallWithRawResponse{
+				Data:      result.Data,
+				Raw:       result.Raw,
+				Reasoning: result.Reasoning,
+			})
+		}
+
+		return c.Status(fiber.StatusOK).Send(result.Data)
 	}
 }
 
