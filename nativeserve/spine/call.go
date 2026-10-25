@@ -111,7 +111,8 @@ func (e *UnaryExecutor) Call(ctx context.Context, method string, input any) (res
 
 // CallWithOracle performs one unary final call for an admitted method through the
 // ExecBridge-U1c LIVE-oracle composite: a live BAML `Request.<Method>` no-send
-// plan-compare admission before the claim, exactly one provider RoundTrip, and the
+// plan-compare admission before the claim, exactly one provider send through the
+// request's ordinary llmhttp Client (runOrdinaryClaimedAttempt), and the
 // raw-aware same-response reference oracle over that ONE response
 // (staticoracle.ResolveReference: BAML's extraction of the ORIGINAL provider body and its
 // `Parse.<Method>` of that text, compared facet-for-facet against native) — returning
@@ -119,9 +120,10 @@ func (e *UnaryExecutor) Call(ctx context.Context, method string, input any) (res
 // The SAME policy serves /call and /call-with-raw: inv.Raw only reaches admission, which
 // admits it on this lane alone, because the reference envelope is the whole flag-off
 // /call-with-raw body. It shares the SAME immutable
-// registry, exact transport, claim boundary, panic discipline, and atomic counters as
-// [UnaryExecutor.Call]; they differ ONLY in policy (live-vs-frozen oracle claim and
-// carrier-vs-canonical-JSON output). The native-only Call stays frozen + terminal and
+// registry, claim boundary, panic discipline, and atomic counters as [UnaryExecutor.Call];
+// they differ in policy (live-vs-frozen oracle claim and carrier-vs-canonical-JSON
+// output) and in the send: Call has no BAML path to match and uses the exact executor,
+// this lane sends through the BAML path's own client. The native-only Call stays frozen + terminal and
 // never learns about this method.
 //
 // Ownership discipline is identical: a pre-socket DECLINE certifies zero RoundTrips and
@@ -185,6 +187,12 @@ func (e *UnaryExecutor) CallWithOracle(ctx context.Context, inv bamlutils.Native
 	if inv.BAMLOnlyParse == nil {
 		return e.declinedOracle(errNoBAMLParse, stageAdmission, reasonNoBAMLParse)
 	}
+	// The send client must be present too: this lane sends through the request's ordinary
+	// llmhttp Client (see runOrdinaryClaimedAttempt), and without it the claimed send could
+	// not be the BAML path's. Production codegen always supplies it.
+	if inv.HTTPClient == nil {
+		return e.declinedOracle(errNoOrdinaryClient, stageAdmission, reasonNoOrdinaryClient)
+	}
 
 	claim, aerr := e.admitClaimOracle(ctx, e.oracleStaticInput(rm, inv))
 	if aerr != nil {
@@ -230,14 +238,11 @@ func (e *UnaryExecutor) CallWithOracle(ctx context.Context, inv bamlutils.Native
 	obs.PlanMatched = true
 	obs.SocketOpened = true
 
-	res, rerr := e.runClaimedAttempt(ctx, claim, inv.IncludeReasoning, inv.SendHeartbeat)
-	obs.SocketResponded = res != nil
-	if res == nil {
-		// No response body exists, so there is nothing for the reference oracle to read:
-		// surface the failure as the ordinary transport's error for it (see
-		// ordinaryTransportError) — still terminal, still the one send.
-		rerr = ordinaryTransportError(rerr, claim.Prepared.Method, claim.Prepared.URL)
-	}
+	res, rerr := e.runOrdinaryClaimedAttempt(ctx, claim, inv)
+	// A non-2xx is the client's *HTTPError (no body for the response side), but the
+	// provider DID respond.
+	var httpErr *llmhttp.HTTPError
+	obs.SocketResponded = res != nil || errors.As(rerr, &httpErr)
 	// The raw-aware reference oracle resolves the claimed response. The reference envelope
 	// is what BAML's serving path produces from the ORIGINAL provider body with the SAME
 	// provider + reasoning preference; native wins only on a full facet match (assistant,
@@ -299,7 +304,8 @@ func mapStaticServeOutcome(o staticoracle.Outcome) bamlutils.NativeStaticServeOu
 }
 
 // runClaimedAttempt performs the ONE exact provider RoundTrip + native static SAP over
-// the claimed plan, shared by Call and CallWithOracle. The SAP parser is a
+// the claimed plan for the BAML-free Call (CallWithOracle sends through the request's
+// ordinary client instead — runOrdinaryClaimedAttempt). The SAP parser is a
 // SCHEMA-NEUTRAL closure capturing the stored Return Bundle: execute never learns about
 // Bundles, and internal/debaml owns the parse (debaml.ParseStaticBundleUnaryCall — the
 // same predicate that gated registration and gates direct parse). No generated BAML, no
@@ -322,26 +328,34 @@ func (e *UnaryExecutor) runClaimedAttempt(ctx context.Context, claim *admission.
 	})
 }
 
-// ordinaryTransportError is the live-oracle lane's transport-error contract. The native
-// attempt runs on the exact executor; flag-off sends the same byte-matched plan through
-// the request's ordinary llmhttp Client, whose public error for a send that fails before
-// a complete response (an oversized or truncated body, a connection closed or refused, a
-// deadline) has its own wording and shape — the exact lane's "exact ..." wording would
-// otherwise reach the public error body verbatim. A failure that carries the exact
-// executor's transport facts is re-expressed, without any send, as the error the ordinary
-// Client returns for the same failure of the same request on the backend it dispatches to
-// (llmhttp.ExactTransportFailure.Ordinary; the backend is the worker's configured client
-// mode applied to the URL, the same environment the worker's Client is built from). The
-// result keeps every typed cause — TransportError category, ErrTransportFlake,
-// *url.Error, the underlying error, context sentinels — exactly as flag-off reports it.
-// Any other error (a pre-socket guard, a decline the executor raised) is returned
-// unchanged.
-func ordinaryTransportError(err error, method, rawURL string) error {
-	var f *llmhttp.ExactTransportFailure
-	if !errors.As(err, &f) {
-		return err
-	}
-	return f.Ordinary(llmhttp.OrdinaryUnaryBackend(llmhttp.ClientModeFromEnv(), rawURL), method, rawURL)
+// runOrdinaryClaimedAttempt is CallWithOracle's ONE send. It sends the claimed,
+// plan-matched request through inv.HTTPClient — the request's ordinary llmhttp Client,
+// with the request's context and first-2xx callback, the call the BAML path makes for
+// this child — rather than through the exact executor the BAML-free Call uses. Flag-off
+// is this lane's parity authority and it sends through that client, so the transport is
+// flag-off's by construction instead of by emulation: the backend it selects (fasthttp
+// or net/http, including its ALPN probe), how leniently it frames a response, how much of
+// a body it reads, and every error it returns — an oversized or truncated body, a
+// connection closed or refused, a deadline, a non-2xx's *HTTPError — reach the response
+// oracle (or the caller, unchanged) exactly as they reach the BAML path. The native parse
+// and the response oracle run on the bytes that client returned. The live plan compare
+// already proved the request equals BAML's; nothing here re-sends.
+func (e *UnaryExecutor) runOrdinaryClaimedAttempt(ctx context.Context, claim *admission.StaticClaim, inv bamlutils.NativeStaticInvocation) (*execute.AttemptResult, error) {
+	bundle := claim.Bundle
+	return execute.RunOrdinaryAttempt(ctx, execute.OrdinaryAttemptConfig{
+		Client:     claim.Client(),
+		Prepared:   claim.Prepared,
+		HTTPClient: inv.HTTPClient,
+		ParseResponse: func(pctx context.Context, rawText string) ([]byte, error) {
+			parsed, perr := debaml.ParseStaticBundleUnaryCall(pctx, bundle, rawText)
+			if perr != nil {
+				return nil, perr
+			}
+			return parsed.JSON, nil
+		},
+		IncludeReasoning: inv.IncludeReasoning,
+		SendHeartbeat:    inv.SendHeartbeat,
+	})
 }
 
 // oracleFailStageReason maps a terminal reference-oracle outcome onto the executor's
@@ -509,8 +523,12 @@ func (e *UnaryExecutor) oracleStaticInput(rm *registeredMethod, inv bamlutils.Na
 	in.HasFallbackChain = inv.HasFallbackChain
 	in.HasRoundRobin = inv.HasRoundRobin
 	in.HasRequestRetryOverride = inv.HasRequestRetryOverride
-	if inv.WouldRewriteOrProxy != nil {
+	switch {
+	case inv.WouldRewriteOrProxy != nil:
 		in.WouldRewriteOrProxy = inv.WouldRewriteOrProxy
+	case inv.HTTPClient != nil:
+		// The rewrite/proxy gate must judge the client the claimed request is SENT through.
+		in.WouldRewriteOrProxy = inv.HTTPClient.WouldRewriteOrProxy
 	}
 	in.BuildBAMLRequest = inv.BuildBAMLRequest
 	return in

@@ -155,9 +155,18 @@ func rawProofCorpus() []rawProofRow {
 	}
 }
 
-// rawProofTransportRows are sends that fail before a complete response exists — the
-// ordinary transport's error envelope, not a response oracle, decides these bytes.
-func rawProofTransportRows() []rawProofRow {
+// rawProofTransportRows are provider behaviors the ordinary transport — not a response
+// oracle — decides: sends that fail before a complete response exists, a truncation past
+// any fixed read cap, and a response only a lenient backend delivers. netHTTP selects the
+// winner for the backend the worker is configured with: the fasthttp backend (auto mode,
+// plain http) delivers a chunked body that closes without its terminating chunk, so the
+// native lane must SERVE it; net/http rejects it, so the native lane must fail exactly as
+// flag-off does.
+func rawProofTransportRows(netHTTP bool) []rawProofRow {
+	lenientWinner := "native"
+	if netHTTP {
+		lenientWinner = "failure"
+	}
 	return []rawProofRow{
 		{name: "body_over_the_size_cap", status: http.StatusOK, body: strings.Repeat(" ", llmhttp.MaxResponseBodyBytes+1), wantWinner: "failure"},
 		{name: "2xx_body_truncated", wantWinner: "failure", raw: func(w *bufio.Writer) {
@@ -166,7 +175,14 @@ func rawProofTransportRows() []rawProofRow {
 		{name: "non_2xx_body_truncated", wantWinner: "failure", raw: func(w *bufio.Writer) {
 			w.WriteString("HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: 200\r\n\r\n{\"error\":{\"message\":")
 		}},
+		{name: "non_2xx_body_truncated_past_64KiB", wantWinner: "failure", raw: func(w *bufio.Writer) {
+			fmt.Fprintf(w, "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: 200000\r\nConnection: close\r\n\r\n%s", strings.Repeat("e", 100000))
+		}},
 		{name: "closed_before_the_first_response_byte", wantWinner: "failure", raw: func(*bufio.Writer) {}},
+		{name: "chunked_2xx_usable_chunk_no_terminating_chunk", wantWinner: lenientWinner, raw: func(w *bufio.Writer) {
+			body := rawProofMessage(map[string]any{"role": "assistant", "content": `{"a":1}`})
+			fmt.Fprintf(w, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n%x\r\n%s\r\n", len(body), body)
+		}},
 	}
 }
 
@@ -175,7 +191,7 @@ func rawProofTransportRows() []rawProofRow {
 func rawProofRows(t *testing.T, names ...string) []rawProofRow {
 	t.Helper()
 	byName := map[string]rawProofRow{}
-	for _, r := range append(rawProofCorpus(), rawProofTransportRows()...) {
+	for _, r := range append(rawProofCorpus(), rawProofTransportRows(false)...) {
 		byName[r.name] = r
 	}
 	out := make([]rawProofRow, 0, len(names))
@@ -362,10 +378,10 @@ func requireStaticArtifact(t *testing.T) {
 func TestBootedArtifactDefaultServesTheExactJSONStaticCallWithRaw(t *testing.T) {
 	requireStaticArtifact(t)
 	provider := newRawProofProvider(t, staticFixtureLoopbackAddr)
-	rows := append(rawProofCorpus(), rawProofTransportRows()...)
+	rows := append(rawProofCorpus(), rawProofTransportRows(false)...)
 	stock := rawProofLeg(t, provider, false, bamlutils.StreamModeCallWithRaw, rows)
 	native := rawProofLeg(t, provider, true, bamlutils.StreamModeCallWithRaw, rows)
-	assertRawProofLegsMatch(t, rows, stock, native)
+	assertRawProofLegsMatch(t, rows, stock, native, bamlutils.StreamModeCallWithRaw)
 
 	// The encoders really are different: chi's stream encoder frames with a trailing
 	// newline, Fiber's Marshal does not. A proof that compared the two servers to each other
@@ -389,33 +405,36 @@ func TestBootedArtifactDefaultServesTheExactJSONStaticCallWithRaw(t *testing.T) 
 	}
 }
 
-// TestBootedArtifactCallWithRawTransportFailuresUnderNetHTTP re-runs the transport rows
-// with the worker's llmhttp client forced to net/http (BAML_REST_HTTP_CLIENT=nethttp),
-// the backend an https/HTTP-2 provider is served on. The two ordinary backends word
-// these failures differently — fasthttp reads the body inside Do ("request failed"),
-// net/http reports a body-read failure ("failed to read response body") and turns a
-// truncated non-2xx into the provider error with the bytes it read — and the native lane
-// must reproduce whichever one the worker is configured with.
-func TestBootedArtifactCallWithRawTransportFailuresUnderNetHTTP(t *testing.T) {
+// TestBootedArtifactTransportRowsUnderNetHTTP re-runs the transport rows on BOTH routes
+// with the worker's llmhttp client forced to net/http (BAML_REST_HTTP_CLIENT=nethttp), the
+// backend an HTTP/2 provider is served on. The two ordinary backends behave differently
+// on exactly these rows — fasthttp reads the body inside Do ("request failed") and
+// delivers an unterminated chunked body, net/http reports a body-read failure ("failed to
+// read response body"), rejects that chunked body, and turns a truncated non-2xx into the
+// provider error with the bytes it read — and the native lane must land wherever the
+// configured backend lands.
+func TestBootedArtifactTransportRowsUnderNetHTTP(t *testing.T) {
 	requireStaticArtifact(t)
 	t.Setenv(llmhttp.EnvVarClientMode, "nethttp")
 	provider := newRawProofProvider(t, staticFixtureLoopbackAddr)
-	rows := append(rawProofRows(t, "map"), rawProofTransportRows()...)
-	stock := rawProofLeg(t, provider, false, bamlutils.StreamModeCallWithRaw, rows)
-	native := rawProofLeg(t, provider, true, bamlutils.StreamModeCallWithRaw, rows)
-	assertRawProofLegsMatch(t, rows, stock, native)
-	// The backend really is different: the truncated non-2xx is a provider error here.
-	if body := rowAt(t, rows, stock["chi"], "non_2xx_body_truncated").resp.body; !strings.Contains(body, `"provider_error"`) {
-		t.Errorf("under nethttp the truncated non-2xx should be the provider error with the bytes read; stock body %q", body)
+	rows := append(rawProofRows(t, "map"), rawProofTransportRows(true)...)
+	for _, mode := range []bamlutils.StreamMode{bamlutils.StreamModeCallWithRaw, bamlutils.StreamModeCall} {
+		stock := rawProofLeg(t, provider, false, mode, rows)
+		native := rawProofLeg(t, provider, true, mode, rows)
+		assertRawProofLegsMatch(t, rows, stock, native, mode)
+		// The backend really is different: the truncated non-2xx is a provider error here.
+		if body := rowAt(t, rows, stock["chi"], "non_2xx_body_truncated").resp.body; !strings.Contains(body, `"provider_error"`) {
+			t.Errorf("under nethttp the truncated non-2xx should be the provider error with the bytes read; stock body %q", body)
+		}
 	}
 }
 
 // assertRawProofLegsMatch is the per-row, per-server assertion set: the stock leg is
 // stock BAML with zero native activity; the native leg owns exactly one native socket
-// and one provider request with the row's winner and a call_with_raw serve outcome
-// (asserted separately from the bytes); and within each server the complete HTTP
-// response is the stock leg's.
-func assertRawProofLegsMatch(t *testing.T, rows []rawProofRow, stock, native map[string][]rawProofObservation) {
+// and one provider request with the row's winner and a serve outcome recorded under the
+// route's real mode (asserted separately from the bytes); and within each server the
+// complete HTTP response is the stock leg's.
+func assertRawProofLegsMatch(t *testing.T, rows []rawProofRow, stock, native map[string][]rawProofObservation, mode bamlutils.StreamMode) {
 	t.Helper()
 	for _, server := range []string{"chi", "fiber"} {
 		for i, row := range rows {
@@ -434,8 +453,12 @@ func assertRawProofLegsMatch(t *testing.T, rows []rawProofRow, stock, native map
 			if len(n.winners) != 1 || n.winners[row.wantWinner] != 1 {
 				t.Errorf("%s: native leg winners=%v, want exactly {%s:1}", label, n.winners, row.wantWinner)
 			}
-			if n.rawModeAttempts != 1 {
-				t.Errorf("%s: attempts{mode=call_with_raw} moved by %v, want 1 — the serve outcome must be recorded under the request's real mode", label, n.rawModeAttempts)
+			wantRawAttempts := 0.0
+			if mode.NeedsRaw() {
+				wantRawAttempts = 1
+			}
+			if n.rawModeAttempts != wantRawAttempts {
+				t.Errorf("%s: attempts{mode=call_with_raw} moved by %v, want %v — the serve outcome must be recorded under the request's real mode", label, n.rawModeAttempts, wantRawAttempts)
 			}
 			// BYTES: the complete HTTP response is stock BAML's, within this server.
 			if n.resp != s.resp {
@@ -458,30 +481,17 @@ func assertRawProofLegsMatch(t *testing.T, rows []rawProofRow, stock, native map
 	}
 }
 
-// TestBootedArtifactCallRouteUnchangedAlongsideCallWithRaw is the /call regression control on
-// the same booted artifact and both servers: the bare data body stays byte-identical across
-// the flags, and the flag-on leg is still native-owned with the serve outcome recorded under
-// mode=call (zero call_with_raw attempts).
+// TestBootedArtifactCallRouteUnchangedAlongsideCallWithRaw is the /call control on the same
+// booted artifact and both servers, at PARITY with the /call-with-raw corpus: success,
+// coercion, native-failure recovery, extraction failure, and every transport row. The bare
+// data body (or error body) stays byte-identical across the flags, and the flag-on leg is
+// native-owned with the serve outcome recorded under mode=call (zero call_with_raw attempts).
 func TestBootedArtifactCallRouteUnchangedAlongsideCallWithRaw(t *testing.T) {
 	requireStaticArtifact(t)
 	provider := newRawProofProvider(t, staticFixtureLoopbackAddr)
-	rows := rawProofRows(t, "map", "float_to_int", "lone_surrogate", "malformed_json", "body_over_the_size_cap", "2xx_body_truncated")
+	rows := append(rawProofRows(t, "map", "float_to_int", "plain_text_decline", "lone_surrogate", "refusal", "malformed_json", "provider_429"),
+		rawProofTransportRows(false)...)
 	stock := rawProofLeg(t, provider, false, bamlutils.StreamModeCall, rows)
 	native := rawProofLeg(t, provider, true, bamlutils.StreamModeCall, rows)
-	for _, server := range []string{"chi", "fiber"} {
-		for i, row := range rows {
-			s, n := stock[server][i], native[server][i]
-			label := server + "/" + row.name
-			if n.resp != s.resp {
-				t.Errorf("%s: /call response differs from stock BAML:\n  stock:  %+v\n  native: %+v", label, s.resp, n.resp)
-			}
-			if n.providerRequests != 1 || n.nativeSockets != 1 || n.winners[row.wantWinner] != 1 {
-				t.Errorf("%s: /call native leg requests=%d sockets=%v winners=%v, want one native socket and winner %s",
-					label, n.providerRequests, n.nativeSockets, n.winners, row.wantWinner)
-			}
-			if n.rawModeAttempts != 0 {
-				t.Errorf("%s: a /call request moved attempts{mode=call_with_raw} by %v", label, n.rawModeAttempts)
-			}
-		}
-	}
+	assertRawProofLegsMatch(t, rows, stock, native, bamlutils.StreamModeCall)
 }

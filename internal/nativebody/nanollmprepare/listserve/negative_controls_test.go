@@ -171,6 +171,7 @@ func TestRequestScopedNearMissesDeclinePreClaim(t *testing.T) {
 		{"provider_not_openai", func(i *bamlutils.NativeStaticInvocation) { i.Provider = "anthropic" }},
 		{"rewrite_or_proxy_target", func(i *bamlutils.NativeStaticInvocation) { i.WouldRewriteOrProxy = rewrites }},
 		{"no_baml_plan_builder", func(i *bamlutils.NativeStaticInvocation) { i.BuildBAMLRequest = nil }},
+		{"no_ordinary_send_client", func(i *bamlutils.NativeStaticInvocation) { i.HTTPClient = nil }},
 		{"baml_plan_build_fails", func(i *bamlutils.NativeStaticInvocation) {
 			i.BuildBAMLRequest = func(context.Context) (*llmhttp.Request, error) { return nil, errPlanUnavailable }
 		}},

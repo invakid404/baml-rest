@@ -208,7 +208,9 @@ func installNativeStaticCall(
 ) {
 	// The effective send client (the exact client BAML would send through), whose
 	// WouldRewriteOrProxy applies rewrites/proxying at execution time; nil falls back
-	// to the default client, matching the observe seam + the BuildRequest route.
+	// to the default client, matching the observe seam + the BuildRequest route. It is
+	// also carried on the invocation: the live-oracle spine lane sends its plan-matched
+	// request through this same client, so its transport behavior is BAML's.
 	httpClient := adapter.HTTPClient()
 	if httpClient == nil {
 		httpClient = llmhttp.DefaultClient
@@ -247,6 +249,7 @@ func installNativeStaticCall(
 			Raw:                       raw,
 			IncludeReasoning:          att.IncludeReasoning,
 			WouldRewriteOrProxy:       httpClient.WouldRewriteOrProxy,
+			HTTPClient:                httpClient,
 			BuildBAMLRequest:          att.BuildBAMLRequest,
 			BAMLOnlyParse:             bamlOnlyParse,
 			SendHeartbeat:             att.SendHeartbeat,

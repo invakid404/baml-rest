@@ -292,40 +292,52 @@ func newRawFixtureServer(t *testing.T, write func(w *bufio.Writer)) *rawFixtureS
 
 func (rs *rawFixtureServer) close() { _ = rs.ln.Close() }
 
-// transportFailureRows are sends that fail before a complete response exists. Flag-off
-// surfaces the ordinary llmhttp Client's error for each; the claimed native lane must
-// surface the same bytes (never the exact executor's own wording) after its one send.
-func transportFailureRows() []struct {
+// transportRows are provider behaviors the transport — not the response oracle — decides:
+// sends that fail before a complete response exists, a response only a lenient backend
+// accepts, and a truncation past any fixed read cap. Flag-off ends wherever the ordinary
+// llmhttp Client ends; the claimed native lane must end in the same place. (Deadlines are
+// pinned at the spine boundary, nativeserve/spine's transport rows: once the request
+// context is done the orchestrator publishes no frame on either leg, so a deadline row
+// here would compare two empty outcomes.)
+type transportRow struct {
 	name  string
 	write func(w *bufio.Writer)
-} {
-	return []struct {
-		name  string
-		write func(w *bufio.Writer)
-	}{
-		{"body_over_the_size_cap", func(w *bufio.Writer) {
+}
+
+func transportRows() []transportRow {
+	return []transportRow{
+		{name: "body_over_the_size_cap", write: func(w *bufio.Writer) {
 			fmt.Fprintf(w, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
 				llmhttp.MaxResponseBodyBytes+1, strings.Repeat(" ", llmhttp.MaxResponseBodyBytes+1))
 		}},
-		{"2xx_body_truncated", func(w *bufio.Writer) {
+		{name: "2xx_body_truncated", write: func(w *bufio.Writer) {
 			w.WriteString("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 200\r\n\r\n{\"choices\":[{\"message\":")
 		}},
-		{"non_2xx_body_truncated", func(w *bufio.Writer) {
+		{name: "non_2xx_body_truncated", write: func(w *bufio.Writer) {
 			w.WriteString("HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: 200\r\n\r\n{\"error\":{\"message\":")
 		}},
-		{"closed_before_the_first_response_byte", func(*bufio.Writer) {}},
+		{name: "non_2xx_body_truncated_past_64KiB", write: func(w *bufio.Writer) {
+			fmt.Fprintf(w, "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: 200000\r\nConnection: close\r\n\r\n%s", strings.Repeat("e", 100000))
+		}},
+		{name: "closed_before_the_first_response_byte", write: func(*bufio.Writer) {}},
+		{name: "chunked_2xx_usable_chunk_no_terminating_chunk", write: func(w *bufio.Writer) {
+			body := `{"choices":[{"message":{"role":"assistant","content":"{\"weather\":\"sunny\"}"}}]}`
+			fmt.Fprintf(w, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n%x\r\n%s\r\n", len(body), body)
+		}},
 	}
 }
 
-// TestSpineComposite_CallWithRawTransportFailuresMatchStockBAML runs every transport
-// failure through the generated adapter flag-off (stock BAML over the ordinary Client)
-// and flag-on (the claimed native lane), under both client modes the worker can be
-// configured with, on /call-with-raw AND /call, and requires the identical public error
-// text and details.raw — with the flag-on leg's one claimed socket and single provider
-// request asserted separately.
-func TestSpineComposite_CallWithRawTransportFailuresMatchStockBAML(t *testing.T) {
+// TestSpineComposite_TransportMatchesStockBAML runs every transport row through the
+// generated adapter flag-off (stock BAML over the ordinary Client) and flag-on (the
+// claimed native lane), under both client modes the worker can be configured with, on
+// /call-with-raw AND /call, and requires the identical public outcome — the served
+// final/raw/reasoning, or the error text and details.raw — with the flag-on leg's one
+// claimed socket and single provider request asserted separately. A row the ordinary
+// Client delivers must be SERVED by the native lane (never failed where flag-off
+// succeeds), and its winner must be native.
+func TestSpineComposite_TransportMatchesStockBAML(t *testing.T) {
 	for _, mode := range []string{"auto", "nethttp"} {
-		for _, row := range transportFailureRows() {
+		for _, row := range transportRows() {
 			for _, streamMode := range []bamlutils.StreamMode{bamlutils.StreamModeCallWithRaw, bamlutils.StreamModeCall} {
 				t.Run(fmt.Sprintf("%s/%s/%v", mode, row.name, streamMode.NeedsRaw()), func(t *testing.T) {
 					t.Setenv(llmhttp.EnvVarClientMode, mode)
@@ -341,17 +353,21 @@ func TestSpineComposite_CallWithRawTransportFailuresMatchStockBAML(t *testing.T)
 					stock, stockCalls, stockHits, _ := leg(false)
 					native, calls, hits, claims := leg(true)
 
-					if stock.err == "" {
-						t.Fatalf("stock leg did not fail (%+v); the row does not exercise a transport failure", stock)
-					}
 					if stockCalls != 0 || stockHits != 1 {
 						t.Fatalf("stock leg: serve seam ran %d times, provider saw %d requests; want 0 and 1", stockCalls, stockHits)
+					}
+					if stock.err == "" && stock.data == "" {
+						t.Fatalf("the stock leg produced no outcome at all; the row compares nothing")
 					}
 					if calls != 1 || claims != 1 || hits != 1 {
 						t.Fatalf("flag-on: serve seam %d, claims %d, provider requests %d; want 1, 1, 1 — the native lane must own the one send", calls, claims, hits)
 					}
-					if native.err != stock.err || native.errRaw != stock.errRaw {
-						t.Errorf("failure differs from stock BAML:\n  stock:  err=%q raw=%q\n  native: err=%q raw=%q", stock.err, stock.errRaw, native.err, native.errRaw)
+					if stock.err == "" && stock.data != "" && native.winner != bamlutils.NativeStaticServeEngineNative {
+						t.Errorf("flag-off served %s; the native lane must serve it too (winner %q, err %q)", stock.data, native.winner, native.err)
+					}
+					stock.winner, native.winner = "", ""
+					if native != stock {
+						t.Errorf("outcome differs from stock BAML:\n  stock:  %+v\n  native: %+v", stock, native)
 					}
 					if strings.Contains(native.err, "exact") {
 						t.Errorf("the exact lane's wording reached the public error: %q", native.err)

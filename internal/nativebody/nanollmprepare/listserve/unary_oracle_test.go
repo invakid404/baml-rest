@@ -27,6 +27,7 @@ import (
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/internal/nativespine"
 	"github.com/invakid404/baml-rest/internal/nativespinelistfixture"
 	"github.com/invakid404/baml-rest/nativeserve/testutil"
@@ -56,6 +57,8 @@ func unaryInv(t *testing.T, leg *bamlLeg, r argRow) bamlutils.NativeStaticInvoca
 			return json.Marshal(v)
 		},
 		DecodeNativeFinal: nativespinelistfixture.Binding().DecodeFinal,
+		// The worker's ordinary send client, which the live-oracle lane sends through.
+		HTTPClient: llmhttp.NewDefaultClientWithOptions(llmhttp.ClientOptions{Mode: llmhttp.ClientModeFromEnv()}),
 	}
 }
 

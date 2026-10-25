@@ -50,6 +50,7 @@ func TestCallWithOracle_PreSocketDeclines(t *testing.T) {
 				Method:           "NoSuchMethod",
 				BuildBAMLRequest: okBuildBAMLRequest,
 				BAMLOnlyParse:    okBAMLOnlyParse,
+				HTTPClient:       llmhttp.DefaultClient,
 			},
 			wantStage: "registry",
 		},
@@ -94,12 +95,23 @@ func TestCallWithOracle_PreSocketDeclines(t *testing.T) {
 			wantStage: "admission",
 		},
 		{
+			name: "missing ordinary send client",
+			ctx:  context.Background(),
+			inv: bamlutils.NativeStaticInvocation{
+				Method:           jsonAliasMethod,
+				BuildBAMLRequest: okBuildBAMLRequest,
+				BAMLOnlyParse:    okBAMLOnlyParse,
+			},
+			wantStage: "admission",
+		},
+		{
 			name: "cancelled context",
 			ctx:  cancelled,
 			inv: bamlutils.NativeStaticInvocation{
 				Method:           jsonAliasMethod,
 				BuildBAMLRequest: okBuildBAMLRequest,
 				BAMLOnlyParse:    okBAMLOnlyParse,
+				HTTPClient:       llmhttp.DefaultClient,
 			},
 			wantStage: "preflight",
 		},
@@ -154,6 +166,7 @@ func TestCallWithOracle_ForwardsTruthfulNearMissFactsAndDeclines(t *testing.T) {
 			SingleLeaf:    true,
 			Values:        values,
 			BAMLOnlyParse: okBAMLOnlyParse,
+			HTTPClient:    llmhttp.DefaultClient,
 		}
 	}
 	// The bounded admission stage/reason tokens each near-miss gate emits (the exact wire
@@ -244,6 +257,7 @@ func TestCallWithOracle_CallWithRawReachesTheLivePlanCompare(t *testing.T) {
 					return nil, nil
 				},
 				BAMLOnlyParse: okBAMLOnlyParse,
+				HTTPClient:    llmhttp.DefaultClient,
 			})
 			if res.Disposition != bamlutils.NativeSpineDeclinedPreSocket {
 				t.Fatalf("disposition = %v (stage %q reason %q), want declined_pre_socket at the plan stage", res.Disposition, res.Stage, res.Reason)

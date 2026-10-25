@@ -183,6 +183,16 @@ type NativeStaticInvocation struct {
 	// that carry no send client.
 	WouldRewriteOrProxy func(effectiveURL string) bool
 
+	// HTTPClient is the request's EFFECTIVE ordinary send client — the exact
+	// llmhttp.Client the BAML path sends this child through (the adapter's client,
+	// else llmhttp.DefaultClient), the same client WouldRewriteOrProxy is bound to.
+	// The ExecBridge-U1c live-oracle spine lane sends its plan-matched request
+	// through it, so transport behavior — backend selection (including the ALPN
+	// probe), response framing, read caps, and every transport error — is the
+	// BAML path's by construction. That lane declines pre-claim when it is nil.
+	// Nil in the observe-only callers, which never send.
+	HTTPClient *llmhttp.Client
+
 	// BuildBAMLRequest builds BAML's request plan for THIS selected static child
 	// WITHOUT sending — the same generated `Request.<Method>` no-send closure. The
 	// observer calls it to obtain BAML's plan for the strict plan-compare

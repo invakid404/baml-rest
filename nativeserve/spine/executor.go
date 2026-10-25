@@ -65,6 +65,7 @@ const (
 	reasonDynamicSchema     = "dynamic_output_schema_present"
 	reasonNoBAMLPlan        = "no_baml_plan_closure"
 	reasonNoBAMLParse       = "no_baml_parse_closure"
+	reasonNoOrdinaryClient  = "no_ordinary_client"
 	reasonPlannerError      = "planner_error"
 	reasonPlanExpired       = "plan_expired"
 	reasonPanic             = "panic"
@@ -78,13 +79,14 @@ const (
 )
 
 var (
-	errPlanExpired    = errors.New("nativespine: prepared plan expired before the socket")
-	errMalformed2xx   = errors.New("nativespine: provider returned a 2xx body the translator could not parse")
-	errParseDecline   = errors.New("nativespine: native final parser declined the response shape (no BAML fallback on this cohort)")
-	errClientRegistry = errors.New("nativespine: request carries a client_registry; the exact cohort serves only the descriptor's default client")
-	errDynamicSchema  = errors.New("nativespine: request carries a dynamic output schema; the exact cohort is static-only")
-	errNoBAMLPlan     = errors.New("nativespine: oracle call requires a BAML no-send plan closure; the standard composite must supply BuildBAMLRequest before the claim")
-	errNoBAMLParse    = errors.New("nativespine: oracle call requires a BAML-only parse closure; the standard composite must supply BAMLOnlyParse before the claim")
+	errPlanExpired      = errors.New("nativespine: prepared plan expired before the socket")
+	errMalformed2xx     = errors.New("nativespine: provider returned a 2xx body the translator could not parse")
+	errParseDecline     = errors.New("nativespine: native final parser declined the response shape (no BAML fallback on this cohort)")
+	errClientRegistry   = errors.New("nativespine: request carries a client_registry; the exact cohort serves only the descriptor's default client")
+	errDynamicSchema    = errors.New("nativespine: request carries a dynamic output schema; the exact cohort is static-only")
+	errNoBAMLPlan       = errors.New("nativespine: oracle call requires a BAML no-send plan closure; the standard composite must supply BuildBAMLRequest before the claim")
+	errNoBAMLParse      = errors.New("nativespine: oracle call requires a BAML-only parse closure; the standard composite must supply BAMLOnlyParse before the claim")
+	errNoOrdinaryClient = errors.New("nativespine: oracle call requires the request's ordinary send client; the standard composite must supply HTTPClient before the claim")
 	// errPanicBeforeClaim / errPanicAfterClaim are BOUNDED, secret-free panic sentinels.
 	// The recovered value is NEVER interpolated into them: on the standard default path the
 	// adapter propagates the terminal error to the outer policy, so an arbitrary/sensitive

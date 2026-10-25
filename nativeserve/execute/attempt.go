@@ -365,6 +365,104 @@ func RunAttempt(ctx context.Context, cfg AttemptConfig) (*AttemptResult, error) 
 	}, resp.StatusCode, resp.Body)
 }
 
+// OrdinaryAttemptConfig is the input to RunOrdinaryAttempt: the request-scoped nanollm
+// client and the fresh admitted plan (as for RunAttempt), the ORDINARY llmhttp Client the
+// plan is sent through, and the response-side inputs.
+type OrdinaryAttemptConfig struct {
+	Client   *nanollm.Client
+	Prepared *nanollm.PreparedRequest
+	// HTTPClient is the ordinary llmhttp Client the BAML serving path sends this request
+	// through (the request adapter's client, else llmhttp.DefaultClient).
+	HTTPClient *llmhttp.Client
+
+	ParseResponse    ParseResponseFunc
+	IncludeReasoning bool
+	// SendHeartbeat is the first-2xx liveness callback, handed to the client exactly as
+	// the BAML send path hands it (ExecuteBorrowed's onSuccess); nil becomes a no-op.
+	SendHeartbeat func()
+}
+
+// RunOrdinaryAttempt performs exactly one native unary attempt like RunAttempt, but sends
+// the plan through cfg.HTTPClient with the same call the BAML serving path makes for a
+// child — ExecuteBorrowed with the request's context and first-2xx callback — instead of
+// the exact executor. Every transport behavior is therefore that client's own: backend
+// selection (fasthttp or net/http, including its ALPN probe), response framing and its
+// leniency, body caps, and every error it returns.
+//
+// Contract:
+//
+//   - an expired plan, a parity-decline, and invalid config are rejected BEFORE the send
+//     (Go error; nothing is sent);
+//   - any error the client returns — an *llmhttp.HTTPError for a non-2xx, a transport or
+//     body-read failure, an oversized body, cancellation — is returned UNCHANGED as
+//     (nil, err): it is exactly the error the BAML path surfaces for the same response,
+//     and no response body exists for a caller to consume;
+//   - a 2xx body is copied out of the client's (possibly pooled) buffer before release and
+//     consumed by ConsumeResponse, exactly as RunAttempt consumes the exact executor's.
+func RunOrdinaryAttempt(ctx context.Context, cfg OrdinaryAttemptConfig) (*AttemptResult, error) {
+	if cfg.Client == nil {
+		return nil, fmt.Errorf("nativeserve: nil nanollm client")
+	}
+	if cfg.Prepared == nil {
+		return nil, fmt.Errorf("nativeserve: nil prepared request")
+	}
+	if cfg.HTTPClient == nil {
+		return nil, fmt.Errorf("nativeserve: nil ordinary HTTP client")
+	}
+	parseResp, perr := resolveParse(cfg.ParseResponse, nil, nil)
+	if perr != nil {
+		return nil, perr
+	}
+	prep := cfg.Prepared
+	if prep.Expired() {
+		return nil, ErrPlanExpired
+	}
+	if err := supportDecision(prep); err != nil {
+		return nil, err
+	}
+
+	// The BAML path ALWAYS hands the client a first-2xx callback (RunCallOrchestration's
+	// sendHeartbeat), and the callback is part of how the client picks its read path: with
+	// none, a deadline-only context takes fasthttp's buffered lane, which frames a response
+	// differently from the streamed-header lane the BAML path uses. A nil heartbeat is
+	// therefore a no-op, never absent, so this call has the BAML path's shape.
+	onSuccess := cfg.SendHeartbeat
+	if onSuccess == nil {
+		onSuccess = func() {}
+	}
+	resp, err := cfg.HTTPClient.ExecuteBorrowed(ctx, &llmhttp.Request{
+		Method:  prep.Method,
+		URL:     prep.URL,
+		Headers: headerMap(prep.Headers),
+		Body:    string(prep.Body),
+	}, onSuccess)
+	if err != nil {
+		return nil, err
+	}
+	status := resp.StatusCode
+	// []byte(string) copies, so the body is owned before the client's buffer is released.
+	body := []byte(resp.BodyString())
+	resp.Release()
+
+	return ConsumeResponse(ctx, ConsumeConfig{
+		Client:           cfg.Client,
+		Alias:            prep.Meta.ModelAlias,
+		ParseResponse:    parseResp,
+		IncludeReasoning: cfg.IncludeReasoning,
+	}, status, body)
+}
+
+// headerMap folds the plan's ordered header pairs into the ordinary Client's header map.
+// The live plan compare rejects a plan with a repeated header name (its snapshot refuses
+// duplicates), so an admitted plan loses nothing here.
+func headerMap(pairs [][2]string) map[string]string {
+	out := make(map[string]string, len(pairs))
+	for _, p := range pairs {
+		out[p[0]] = p[1]
+	}
+	return out
+}
+
 // ConsumeResponse runs the SAME-response native pipeline —
 // TranslateResponse(attempted alias) -> assistant/raw/reasoning extraction ->
 // native SAP — over an ALREADY-COMPLETED (status, body) that some OTHER agent

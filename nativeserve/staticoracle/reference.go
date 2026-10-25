@@ -79,9 +79,9 @@ var errNoAttemptResult = errors.New("nativeserve/staticoracle: native attempt re
 func ResolveReference(ctx context.Context, bundle *schema.Bundle, res *execute.AttemptResult, aerr error, ref Reference, onOracle func()) Result {
 	// No usable response: a transport failure before any body, or caller cancellation
 	// racing the post-response pipeline. Terminal, and the error is returned UNCHANGED so
-	// errors.Is/As hold for the outer policy. A caller that re-expressed a body-read
-	// failure on a non-2xx as the ordinary transport's *HTTPError (which reports that
-	// case as the provider error with the bytes it read) is a provider error.
+	// errors.Is/As hold for the outer policy. A caller whose send went through the
+	// ordinary llmhttp Client receives a non-2xx as that Client's *HTTPError, with no
+	// response body: that is a provider error.
 	if aerr != nil && (res == nil || isContextErr(aerr)) {
 		var httpErr *llmhttp.HTTPError
 		if res == nil && errors.As(aerr, &httpErr) {

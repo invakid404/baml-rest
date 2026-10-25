@@ -258,6 +258,9 @@ func TestMaybeWriteDeBAMLStaticHelper_WritesWhenEmitted(t *testing.T) {
 		"Raw:                     raw",
 		"HasRequestRetryOverride: hasRetry",
 		"WouldRewriteOrProxy:     httpClient.WouldRewriteOrProxy",
+		// The serve invocation carries the SAME effective send client the BAML path sends
+		// through, which the live-oracle spine lane sends its claimed request with.
+		"HTTPClient:                httpClient,",
 		"bamlutils.NativeStaticModeFinal",
 		"bamlutils.NativeStaticModeParseOnly",
 	} {
