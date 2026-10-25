@@ -166,7 +166,6 @@ func TestCallWithOracle_ForwardsTruthfulNearMissFactsAndDeclines(t *testing.T) {
 		wantStage  string
 		wantReason string
 	}{
-		{"call-with-raw", func(in *bamlutils.NativeStaticInvocation) { in.Raw = true }, "mode", "call_with_raw_unproven"},
 		{"non-final mode", func(in *bamlutils.NativeStaticInvocation) { in.Mode = bamlutils.NativeStaticModeStream }, "mode", "mode_not_final"},
 		{"not single leaf", func(in *bamlutils.NativeStaticInvocation) { in.SingleLeaf = false }, "strategy", "not_single_leaf"},
 		{"fallback chain", func(in *bamlutils.NativeStaticInvocation) { in.HasFallbackChain = true }, "strategy", "fallback_chain"},
@@ -203,6 +202,60 @@ func TestCallWithOracle_ForwardsTruthfulNearMissFactsAndDeclines(t *testing.T) {
 			}
 			if snap := e.Metrics().Snapshot(); snap.Sockets != 0 || snap.Claims != 0 {
 				t.Errorf("near-miss opened a socket: sockets=%d claims=%d", snap.Sockets, snap.Claims)
+			}
+		})
+	}
+}
+
+// TestCallWithOracle_CallWithRawReachesTheLivePlanCompare is the lane-scoped raw admission
+// proof at the executor boundary: on THIS lane a truthful inv.Raw passes the mode gate and
+// reaches the live BAML plan builder EXACTLY once, exactly as the same request without
+// raw does (the control row) — so raw changes nothing about admission here except that it
+// is no longer refused. The spy returns no plan, so both rows still decline PRE-SOCKET at
+// the plan stage, which keeps this proof socket-free. Reverting the lane gate (declining
+// every raw request at the mode gate) fails the raw row: it declines at mode /
+// call_with_raw_unproven with the plan builder never run. Every OTHER lane still refuses
+// raw — see nativeserve/admission's lane matrix test.
+func TestCallWithOracle_CallWithRawReachesTheLivePlanCompare(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		raw, includeReas bool
+	}{
+		{name: "call control", raw: false},
+		{name: "call-with-raw", raw: true},
+		{name: "call-with-raw with reasoning", raw: true, includeReas: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, err := newExec(t, jsonAliasProject(t), jsonAliasBinding())
+			if err != nil {
+				t.Fatalf("newExec: %v", err)
+			}
+			planBuilds := 0
+			res := e.CallWithOracle(context.Background(), bamlutils.NativeStaticInvocation{
+				Method:           jsonAliasMethod,
+				Mode:             bamlutils.NativeStaticModeFinal,
+				Raw:              tc.raw,
+				IncludeReasoning: tc.includeReas,
+				Provider:         "openai",
+				SingleLeaf:       true,
+				Values:           jsonAliasValues(t),
+				BuildBAMLRequest: func(context.Context) (*llmhttp.Request, error) {
+					planBuilds++
+					return nil, nil
+				},
+				BAMLOnlyParse: okBAMLOnlyParse,
+			})
+			if res.Disposition != bamlutils.NativeSpineDeclinedPreSocket {
+				t.Fatalf("disposition = %v (stage %q reason %q), want declined_pre_socket at the plan stage", res.Disposition, res.Stage, res.Reason)
+			}
+			if res.Stage != "prepare" || res.Reason != "baml_plan_build_failed" {
+				t.Errorf("declined at %q/%q, want prepare/baml_plan_build_failed — raw must pass the mode gate on the live-oracle lane", res.Stage, res.Reason)
+			}
+			if planBuilds != 1 {
+				t.Errorf("plan builder ran %d times, want exactly 1 (the request reached the live plan compare)", planBuilds)
+			}
+			if snap := e.Metrics().Snapshot(); snap.Sockets != 0 || snap.Claims != 0 {
+				t.Errorf("a plan-stage decline opened a socket: sockets=%d claims=%d", snap.Sockets, snap.Claims)
 			}
 		})
 	}

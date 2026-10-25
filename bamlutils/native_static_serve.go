@@ -156,9 +156,12 @@ type NativeStaticInvocation struct {
 	// ClientConfig declines at the static-client gate.
 	ClientOverride string
 	// Raw reports whether this is a call-with-raw request (the caller opted into the
-	// owned raw/reasoning channels). The native static raw envelope is not proven in
-	// 8B, so a true value declines at the mode gate BEFORE any render/Prepare — it is
-	// carried so the observation is truthful, never to claim a raw route.
+	// owned raw/reasoning channels). Every static lane WITHOUT a raw-envelope oracle
+	// (the observer, the legacy static serve, the native-only spine) declines a true
+	// value at the mode gate BEFORE any render/Prepare. Only the ExecBridge-U1c
+	// live-oracle spine lane admits it, because its oracle compares and, on drift,
+	// substitutes the whole raw/reasoning envelope BAML's serving path extracts from
+	// the original provider body. It MUST be truthful either way.
 	Raw bool
 
 	// SingleLeaf reports the orchestration plan resolves exactly one leaf.

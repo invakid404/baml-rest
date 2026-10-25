@@ -176,8 +176,9 @@ type StaticInput struct {
 	HasFallbackChain        bool
 	HasRoundRobin           bool
 	HasRequestRetryOverride bool
-	// Raw reports a call-with-raw request; the native static raw envelope is not
-	// proven in 8B, so it declines at the mode gate before any render/Prepare.
+	// Raw reports a call-with-raw request. It declines at the mode gate before any
+	// render/Prepare on every lane except the live-oracle spine lane, whose caller owns
+	// the raw-envelope oracle (see staticUnaryLane.admitsCallWithRaw).
 	Raw            bool
 	ClientOverride string
 	Provider       string
@@ -261,7 +262,7 @@ func (p *staticPrepared) close() {
 // proven no-send static chain (SupportsStatic -> RenderStatic -> NormalizeStaticClient
 // -> BuildOpenAIChat -> nanollm Prepare -> BAML Request.<Method> compare) elsewhere.
 func AdmitStatic(ctx context.Context, in StaticInput) StaticObservation {
-	prep, dec := admitStaticThroughPrepare(ctx, in, false)
+	prep, dec := admitStaticThroughPrepare(ctx, in, laneLegacyStatic)
 	if dec != nil {
 		return *dec
 	}
@@ -279,7 +280,7 @@ func AdmitStatic(ctx context.Context, in StaticInput) StaticObservation {
 // (the engine is closed before returning), so the caller runs BAML for the same
 // call in the same request — the exact tri-state pre-claim boundary.
 func AdmitStaticClaim(ctx context.Context, in StaticInput) (*StaticClaim, error) {
-	prep, dec := admitStaticThroughPrepare(ctx, in, false)
+	prep, dec := admitStaticThroughPrepare(ctx, in, laneLegacyStatic)
 	if dec != nil {
 		return nil, staticDeclineFromObs(*dec)
 	}
@@ -348,7 +349,7 @@ func AdmitStaticClaim(ctx context.Context, in StaticInput) (*StaticClaim, error)
 // nanollm engine alive for exactly one RoundTrip; every decline returns a typed
 // *StaticDecline.
 func AdmitStaticSpineClaim(ctx context.Context, in StaticInput) (*StaticClaim, error) {
-	prep, dec := admitSpineThroughTotality(ctx, in)
+	prep, dec := admitSpineThroughTotality(ctx, in, laneSpineStatic)
 	if dec != nil {
 		return nil, dec
 	}
@@ -370,12 +371,18 @@ func AdmitStaticSpineClaim(ctx context.Context, in StaticInput) (*StaticClaim, e
 // rewrite/proxy, a snapshot error) closes the engine and returns a typed *StaticDecline
 // guaranteeing NO socket occurred, so the outer composite falls back to BAML.
 //
+// It is also the ONLY unary lane that admits a /call-with-raw request
+// ([staticUnaryLane.admitsCallWithRaw]): its sole caller resolves the claimed response
+// through the raw-aware reference oracle (staticoracle.ResolveReference), which compares
+// native's raw/reasoning channels byte-for-byte against the ones BAML's serving path
+// extracts from the ORIGINAL provider body and substitutes that whole envelope on drift.
+//
 // The fork from AdmitStaticSpineClaim is deliberately TWO named exported functions, not
 // a boolean on StaticInput: a caller-controlled bit could accidentally bypass the
-// compare, so the enrollment-gate bypass (spineLane) and the live-vs-frozen oracle
-// choice are both internal to the lane, never caller-settable.
+// compare, so the enrollment-gate bypass, the raw admission and the live-vs-frozen
+// oracle choice are all internal to the lane, never caller-settable.
 func AdmitStaticSpineOracleClaim(ctx context.Context, in StaticInput) (*StaticClaim, error) {
-	prep, dec := admitSpineThroughTotality(ctx, in)
+	prep, dec := admitSpineThroughTotality(ctx, in, laneSpineStaticOracle)
 	if dec != nil {
 		return nil, dec
 	}
@@ -407,11 +414,12 @@ func AdmitStaticSpineOracleClaim(ctx context.Context, in StaticInput) (*StaticCl
 }
 
 // admitSpineThroughTotality is the shared exact-spine pre-claim portion both spine
-// admission entries run: layers 1-6 (admitStaticThroughPrepare with the spine-lane
-// cohort-gate bypass), the MANDATORY fail-closed rewrite/proxy gate, and the ONE
-// root-owned U1 totality cut. On success it returns the kept-alive *staticPrepared
-// (the caller decides frozen-claim vs live-oracle-claim); on any decline it closes the
-// engine (NO socket) and returns a typed *StaticDecline.
+// admission entries run: layers 1-6 (admitStaticThroughPrepare under the caller's spine
+// lane, which bypasses the cohort gate and decides raw admission), the MANDATORY
+// fail-closed rewrite/proxy gate, and the ONE root-owned U1 totality cut. On success it
+// returns the kept-alive *staticPrepared (the caller decides frozen-claim vs
+// live-oracle-claim); on any decline it closes the engine (NO socket) and returns a typed
+// *StaticDecline.
 //
 // The rewrite/proxy gate is MANDATORY and TOTAL at this boundary, not optional-on-nil:
 // the spine lane is cohort-gate-EXEMPT, so a caller reaching a spine admission entry
@@ -422,8 +430,8 @@ func AdmitStaticSpineOracleClaim(ctx context.Context, in StaticInput) (*StaticCl
 // PRE-CLAIM exactly as a positive rewrite/proxy verdict would. UnaryExecutor.Call always
 // supplies a non-nil predicate (llmhttp.DefaultClient), so this only bites a direct
 // caller that omitted it.
-func admitSpineThroughTotality(ctx context.Context, in StaticInput) (*staticPrepared, *StaticDecline) {
-	prep, dec := admitStaticThroughPrepare(ctx, in, true)
+func admitSpineThroughTotality(ctx context.Context, in StaticInput, lane staticUnaryLane) (*staticPrepared, *StaticDecline) {
+	prep, dec := admitStaticThroughPrepare(ctx, in, lane)
 	if dec != nil {
 		return nil, staticDeclineFromObs(*dec)
 	}
@@ -474,14 +482,58 @@ func staticClaimFrom(prep *staticPrepared) *StaticClaim {
 	}
 }
 
+// staticUnaryLane is the UNEXPORTED admission-lane policy for the static UNARY entry
+// points that share admitStaticThroughPrepare — the unary twin of [staticStreamLane]. The
+// cohort-gate exemption and /call-with-raw admission are properties of the LANE (each lane
+// has its own exported entry point), never a caller-settable StaticInput field, so a
+// caller of one entry cannot borrow another lane's policy:
+//
+//	entry                          | cohort gate | call-with-raw | BAML plan compare | owner
+//	-------------------------------|-------------|---------------|-------------------|-------------------------------
+//	AdmitStatic / AdmitStaticClaim | yes         | declines      | yes               | observer / legacy static serve
+//	AdmitStaticSpineClaim          | no          | declines      | no                | BAML-free native-only spine
+//	AdmitStaticSpineOracleClaim    | no          | admitted      | yes               | ExecBridge-U1c standard composite
+type staticUnaryLane uint8
+
+const (
+	// laneLegacyStatic is the observer (AdmitStatic) and the legacy static serve
+	// (AdmitStaticClaim): default-deny cohort gate, raw declined.
+	laneLegacyStatic staticUnaryLane = iota
+	// laneSpineStatic is the frozen-evidence native-only spine lane. It has no BAML leg at
+	// all, so it can never compare a raw envelope: raw declined.
+	laneSpineStatic
+	// laneSpineStaticOracle is the live-oracle standard-worker spine lane — the one lane
+	// whose caller owns a raw-aware reference oracle.
+	laneSpineStaticOracle
+)
+
+// skipsCohortGate reports whether this lane bypasses the layer-1b default-deny cohort
+// admission. Both spine lanes do: their admission is the registration-time root-owned
+// totality gate over the emitted exact-JSON cohort, and consulting the dynamic-rollout
+// manifest would either widen it or deny a structurally-admitted method.
+func (l staticUnaryLane) skipsCohortGate() bool {
+	return l == laneSpineStatic || l == laneSpineStaticOracle
+}
+
+// admitsCallWithRaw reports whether this lane may claim a /call-with-raw request. Only the
+// live-oracle spine lane may: its caller (nativeserve/spine CallWithOracle) resolves the
+// claimed response through staticoracle.ResolveReference, which establishes BAML's own
+// raw/reasoning channels from the ORIGINAL provider body, compares native's byte-for-byte,
+// and serves the whole reference envelope on any drift. The observer measures no raw
+// envelope, the legacy serve's same-bytes oracle keeps native's channels, and the
+// native-only spine has no BAML leg, so each keeps declining at the mode gate.
+func (l staticUnaryLane) admitsCallWithRaw() bool {
+	return l == laneSpineStaticOracle
+}
+
 // admitStaticThroughPrepare runs the static predicate layers 1-6 (build/flag/route,
 // mode, orchestration plan, descriptor envelope + arg binder, Return-Bundle
 // lower/support, static prompt render, client normalize + canonical body, nanollm
-// New/Prepare). On success it returns a *staticPrepared whose engine is KEPT ALIVE
-// (the caller decides whether to close or claim it); on any gate decline it returns
-// a *StaticObservation and leaves NO engine open. It performs NO plan compare and
-// opens NO socket.
-func admitStaticThroughPrepare(ctx context.Context, in StaticInput, spineLane bool) (*staticPrepared, *StaticObservation) {
+// New/Prepare) under the given lane's policy. On success it returns a *staticPrepared
+// whose engine is KEPT ALIVE (the caller decides whether to close or claim it); on any
+// gate decline it returns a *StaticObservation and leaves NO engine open. It performs NO
+// plan compare and opens NO socket.
+func admitStaticThroughPrepare(ctx context.Context, in StaticInput, lane staticUnaryLane) (*staticPrepared, *StaticObservation) {
 	decline := func(family bamlutils.NativeStaticObserveFamily, stage Stage, reason Reason) (*staticPrepared, *StaticObservation) {
 		o := declineStatic(family, stage, reason)
 		return nil, &o
@@ -516,9 +568,11 @@ func admitStaticThroughPrepare(ctx context.Context, in StaticInput, spineLane bo
 	if in.Mode != bamlutils.NativeStaticModeFinal {
 		return decline(bamlutils.NativeStaticFamilyClient, StageMode, reasonModeNotFinal)
 	}
-	// Call-with-raw's native static envelope is not proven; decline it at the mode
-	// gate (truthful — the generated seam forwards adapter.StreamMode().NeedsRaw()).
-	if in.Raw {
+	// Call-with-raw is admitted ONLY on a lane whose caller compares and substitutes the
+	// whole raw envelope (see staticUnaryLane.admitsCallWithRaw); every other lane declines
+	// it at the mode gate. in.Raw is truthful — the generated seam forwards
+	// adapter.StreamMode().NeedsRaw() — and is never rewritten here.
+	if in.Raw && !lane.admitsCallWithRaw() {
 		return decline(bamlutils.NativeStaticFamilyClient, StageMode, reasonCallWithRawUnprove)
 	}
 
@@ -529,7 +583,7 @@ func admitStaticThroughPrepare(ctx context.Context, in StaticInput, spineLane bo
 	// evaluate it. It runs before the orchestration-plan, descriptor, render,
 	// client-normalize and nanollm New/Prepare work below, so a non-enrolled static
 	// configuration costs ZERO native work and provably opens no socket. The surface
-	// is the LANE's constant (the internal spineLane parameter), never a caller field.
+	// is the LANE's constant (the internal lane parameter), never a caller field.
 	// It only NARROWS.
 	//
 	// The bounded observe FAMILY is `capability`: like the flag/route/build rows just
@@ -542,7 +596,7 @@ func admitStaticThroughPrepare(ctx context.Context, in StaticInput, spineLane bo
 	// the dynamic cohort manifest. cohort stays CohortNone, carried out for telemetry.
 	// Every non-spine caller keeps the gate exactly.
 	cohort := CohortNone
-	if !spineLane {
+	if !lane.skipsCohortGate() {
 		c, cd := admitCohort(SurfaceStaticCall, in.Cohort)
 		if cd != nil {
 			return decline(bamlutils.NativeStaticFamilyCapability, cd.Stage, cd.Reason)

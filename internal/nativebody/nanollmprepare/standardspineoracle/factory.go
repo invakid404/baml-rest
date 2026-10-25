@@ -1,7 +1,9 @@
 // Package standardspineoracle is the ExecBridge-U1c STANDARD-ONLY composite: the thin
 // adapter that attaches the generated U1 spine to the BAML+nanollm serve worker as its
-// static unary /call factory, default-selecting the exact structural population through a
-// LIVE BAML plan-compare oracle + same-bytes safety parse.
+// static unary /call and /call-with-raw factory, default-selecting the exact structural
+// population through a LIVE BAML plan-compare oracle + the raw-aware same-response
+// reference oracle (BAML's extraction of the original provider body and its parse of that
+// text).
 //
 // It owns only three things:
 //
@@ -16,7 +18,7 @@
 //     label: the U1 lane is a code-owned totality, not a rollout.
 //
 // It is BAML-AWARE but does NOT import BoundaryML/BAML: the live plan builder and
-// same-bytes parser are the NEUTRAL closures the already-BAML-linked standard generated
+// BAML-only parser are the NEUTRAL closures the already-BAML-linked standard generated
 // method captured (NativeStaticInvocation.BuildBAMLRequest / BAMLOnlyParse). This is
 // both lower-coupling and a stronger isolation proof than a direct BAML import here.
 //
@@ -150,8 +152,17 @@ func adaptOracleResult(res bamlutils.NativeSpineUnaryOracleResult) bamlutils.Nat
 // code-owned totality with NO enrollment, so it never fabricates a productionEnrollments()
 // row. The observations are carried even across a post-claim panic, so the plan-match /
 // one-socket / same-response / drift evidence the scope requires is never absent.
+//
+// No response-compare cell is a hard-coded match: each one is either a comparison the
+// reference oracle actually made or, where native produced nothing to compare (a decline
+// or a post-response failure), a recorded mismatch. The serve outcome is recorded under the
+// request's actual mode (call or call_with_raw), read from the truthful invocation fact.
 func recordOracle(m *admission.Metrics, pop *prometheus.CounterVec, inv bamlutils.NativeStaticInvocation, res bamlutils.NativeSpineUnaryOracleResult) {
 	surface, cohort := admission.SurfaceStaticCall, admission.CohortNone
+	mode := admission.ModeCall
+	if inv.Raw {
+		mode = admission.ModeCallWithRaw
+	}
 	obs := res.Observations
 
 	// Population + phase(claimed)/winner.
@@ -192,22 +203,33 @@ func recordOracle(m *admission.Metrics, pop *prometheus.CounterVec, inv bamlutil
 		}
 		m.RecordNativeSocket(outcome)
 	}
-	// Same-response per-facet compares (mirroring the canary path exactly).
+	// Same-response per-facet compares. The error facet is a mismatch when either leg
+	// errored: the reference leg (BAML's extraction + parse of the original body, terminal)
+	// or the native leg after the response (recovered by the reference).
 	if obs.ErrorCompareRecorded {
 		recordResponse(m, obs.ErrorCompareMatch, admission.ResponseCompareFieldError)
 	}
-	if obs.StructuredBranchServed {
-		recordResponse(m, true, admission.ResponseCompareFieldTranslate)
-		recordResponse(m, true, admission.ResponseCompareFieldAssistant)
-		recordResponse(m, true, admission.ResponseCompareFieldRaw)
-		recordResponse(m, true, admission.ResponseCompareFieldReasoning)
-		recordResponse(m, obs.StructuredMatch, admission.ResponseCompareFieldStructured)
-		recordResponse(m, obs.OrderMatch, admission.ResponseCompareFieldOrder)
-	}
-	if obs.ParseDeclineServed {
-		recordResponse(m, true, admission.ResponseCompareFieldTranslate)
-		recordResponse(m, false, admission.ResponseCompareFieldStructured)
-		recordResponse(m, false, admission.ResponseCompareFieldOrder)
+	// The native-vs-reference facets exist only for a SERVED result (a reference failure is
+	// terminal before native is compared). translate: native produced comparable channels.
+	// assistant/raw/reasoning: native's channels vs the reference's, byte for byte — only
+	// when native extracted them. structured/order/canonical_bytes: native's structured
+	// claim vs BAML's parse of the reference, or a mismatch when native produced none
+	// (parse-decline / post-response failure).
+	served := obs.StructuredBranchServed || obs.ParseDeclineServed || obs.NativeFailureRecovered
+	if served {
+		recordResponse(m, obs.ChannelsCompared, admission.ResponseCompareFieldTranslate)
+		if obs.ChannelsCompared {
+			recordResponse(m, obs.AssistantMatch, admission.ResponseCompareFieldAssistant)
+			recordResponse(m, obs.RawMatch, admission.ResponseCompareFieldRaw)
+			recordResponse(m, obs.ReasoningMatch, admission.ResponseCompareFieldReasoning)
+		}
+		structured, order, canonical := false, false, false
+		if obs.StructuredBranchServed {
+			structured, order, canonical = obs.StructuredMatch, obs.OrderMatch, obs.CanonicalBytesMatch
+		}
+		recordResponse(m, structured, admission.ResponseCompareFieldStructured)
+		recordResponse(m, order, admission.ResponseCompareFieldOrder)
+		recordResponse(m, canonical, admission.ResponseCompareFieldCanonicalBytes)
 	}
 	if obs.Fallback {
 		m.RecordFallback(admission.FallbackParseOnly)
@@ -217,9 +239,9 @@ func recordOracle(m *admission.Metrics, pop *prometheus.CounterVec, inv bamlutil
 	// unknown disposition that adaptOracleResult fails closed — records internal_error, so a
 	// fail-closed terminal is never silently unobserved on attempts_total.
 	if outcome, ok := mapServeOutcome(obs.ServeOutcome); ok {
-		m.RecordServeOutcome(admission.ModeCall, inv.Provider, outcome)
+		m.RecordServeOutcome(mode, inv.Provider, outcome)
 	} else if res.Disposition != bamlutils.NativeSpineDeclinedPreSocket && res.Disposition != bamlutils.NativeSpineSucceeded {
-		m.RecordServeOutcome(admission.ModeCall, inv.Provider, admission.OutcomeInternalError)
+		m.RecordServeOutcome(mode, inv.Provider, admission.OutcomeInternalError)
 	}
 }
 
@@ -272,6 +294,6 @@ func oracleWinner(engine string) admission.Winner {
 func registerPopulationCounter(reg prometheus.Registerer) (*prometheus.CounterVec, error) {
 	return registerCounterVec(reg, prometheus.CounterOpts{
 		Name: "debaml_native_static_population_total",
-		Help: "Count of static /call requests routed through the ExecBridge-U1c structural population lane, by bounded population and disposition. Structural, not an enrollment cohort.",
+		Help: "Count of static /call and /call-with-raw requests routed through the ExecBridge-U1c structural population lane, by bounded population and disposition. Structural, not an enrollment cohort.",
 	}, []string{"population", "disposition"})
 }

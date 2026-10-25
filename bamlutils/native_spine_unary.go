@@ -160,9 +160,10 @@ func FailedAfterClaimSpineResult(err error, stage, reason string) NativeSpineUna
 // ExecBridge-U1c — the NEUTRAL OPTIONAL oracle-capable extension to the spine unary
 // executor. It is the concrete form of the "outer injected composite" the base
 // contract documents: a standard SERVE worker can construct BAML's no-send plan and
-// same-bytes parse (the neutral closures carried on a [NativeStaticInvocation]), so it
-// drives the exact-U1 population through a LIVE BAML plan-compare oracle + same-bytes
-// safety parse and receives canonical JSON for the standard generated decoder. The
+// BAML-only parse (the neutral closures carried on a [NativeStaticInvocation]), so it
+// drives the exact-U1 population through a LIVE BAML plan-compare oracle + a same-response
+// reference oracle (BAML's extraction of the original provider body and its parse of that
+// text) and receives canonical JSON for the standard generated decoder. The
 // base [NativeSpineUnaryExecutor.Call]/[NativeSpineUnaryExecutor.Parse] are UNCHANGED:
 // a native-only emitted BuildMethod names neither this interface nor its result, and
 // nothing on the emitted/runtime native-only path can construct the BAML closures it
@@ -170,8 +171,9 @@ func FailedAfterClaimSpineResult(err error, stage, reason string) NativeSpineUna
 
 // NativeSpineUnaryOracleExecutor is the optional oracle-capable spine executor. It
 // extends the base neutral executor with CallWithOracle: one unary final call for an
-// admitted method through a LIVE BAML plan-compare admission + a same-bytes BAML parse
-// oracle over the ONE provider response, returning canonical JSON. The exact-U1
+// admitted method through a LIVE BAML plan-compare admission + a same-response BAML
+// reference oracle over the ONE provider response (BAML's extraction of the ORIGINAL body
+// plus its parse of that text), returning canonical JSON. The exact-U1
 // population is decided structurally at construction — CallWithOracle is a policy over
 // the SAME immutable registry Call serves, never a second population.
 type NativeSpineUnaryOracleExecutor interface {
@@ -256,21 +258,41 @@ type NativeSpineUnaryOracleObservations struct {
 	// SocketResponded: the socket returned a response (vs a transport failure).
 	SocketOpened    bool
 	SocketResponded bool
-	// SameResponseOracleRan: the structured same-response BAML oracle was ENTERED. It is set
+	// SameResponseOracleRan: the same-response BAML reference oracle was ENTERED. It is set
 	// before the parser runs, so a parser panic does not lose the phase.
 	SameResponseOracleRan bool
-	// ErrorCompareRecorded / ErrorCompareMatch: the FieldError response-compare and its result.
+	// ErrorCompareRecorded / ErrorCompareMatch: the FieldError response-compare and its result —
+	// a mismatch when the reference leg failed (terminal) or the native leg failed after the
+	// response (NativeFailureRecovered).
 	ErrorCompareRecorded bool
 	ErrorCompareMatch    bool
-	// StructuredBranchServed: a served structured result (translate/assistant/raw/reasoning =
-	// true, structured/order = the compare booleans below).
+	// ChannelsCompared: the native leg extracted its assistant/raw/reasoning channels, so
+	// AssistantMatch / RawMatch / ReasoningMatch are REAL exact-byte comparisons against the
+	// reference channels BAML's serving path extracts from the ORIGINAL provider body. False
+	// when native failed before extraction (translate / malformed-body / extraction failure);
+	// the translate facet is then a mismatch.
+	ChannelsCompared bool
+	AssistantMatch   bool
+	RawMatch         bool
+	ReasoningMatch   bool
+	// StructuredBranchServed: a native structured claim was compared against the reference and
+	// a result was served; structured/order/canonical-bytes are the compare booleans below.
 	StructuredBranchServed bool
 	StructuredMatch        bool
 	OrderMatch             bool
+	// CanonicalBytesMatch: native's canonical final JSON is LITERALLY byte-identical to the
+	// json.Marshal of BAML's parse of the reference text — the bytes the generated decoder and
+	// the HTTP encoder would otherwise receive from the BAML leg.
+	CanonicalBytesMatch bool
 	// ParseDeclineServed: a served parse-decline result (translate = true, structured/order =
 	// false).
 	ParseDeclineServed bool
-	// Fallback: the served final came from the same-bytes BAML parse (drift / parse-decline).
+	// NativeFailureRecovered: the native leg failed AFTER the provider response (translate,
+	// extraction, or a claimed native parse error) and the independently established reference
+	// envelope was served from that same response — no resend.
+	NativeFailureRecovered bool
+	// Fallback: the served envelope came from the reference leg (drift / parse-decline / native
+	// failure).
 	Fallback bool
 	// ServeOutcome: the bounded serve-outcome classification for RecordServeOutcome.
 	ServeOutcome NativeStaticServeOutcome

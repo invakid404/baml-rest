@@ -197,20 +197,42 @@ func TestRecordOracle(t *testing.T) {
 	resp := func(field, result string) map[string]string {
 		return map[string]string{"field": field, "result": result}
 	}
-	att := func(outcome string) map[string]string {
-		return map[string]string{"mode": "call", "engine": "native", "provider": "openai", "outcome": outcome}
+	attMode := func(mode, outcome string) map[string]string {
+		return map[string]string{"mode": mode, "engine": "native", "provider": "openai", "outcome": outcome}
 	}
+	att := func(outcome string) map[string]string { return attMode("call", outcome) }
 	fb := map[string]string{"kind": "parse_only"}
-	// respBranch is the 7-cell response-compare map for a served structured branch: the four
-	// native-owned facets + error always match; structured/order vary per scenario.
-	respBranch := func(structured, order string) map[string]float64 {
+	mr := func(match bool) string {
+		if match {
+			return "match"
+		}
+		return "mismatch"
+	}
+	// respBranch is the 9-cell response-compare map for a served structured branch: error +
+	// translate match (native extracted its channels and the reference leg succeeded); every
+	// other facet is the REAL comparison the scenario's observations carry.
+	type facetSet struct{ assistant, raw, reasoning, structured, order, canonical bool }
+	allMatch := facetSet{true, true, true, true, true, true}
+	respBranch := func(f facetSet) map[string]float64 {
 		return map[string]float64{
-			cellKey(resp("translate", "match")): 1, cellKey(resp("assistant", "match")): 1,
-			cellKey(resp("raw", "match")): 1, cellKey(resp("reasoning", "match")): 1,
-			cellKey(resp("error", "match")):         1,
-			cellKey(resp("structured", structured)): 1, cellKey(resp("order", order)): 1,
+			cellKey(resp("error", "match")): 1, cellKey(resp("translate", "match")): 1,
+			cellKey(resp("assistant", mr(f.assistant))): 1, cellKey(resp("raw", mr(f.raw))): 1,
+			cellKey(resp("reasoning", mr(f.reasoning))): 1, cellKey(resp("structured", mr(f.structured))): 1,
+			cellKey(resp("order", mr(f.order))): 1, cellKey(resp("canonical_bytes", mr(f.canonical))): 1,
 		}
 	}
+	// structuredObs is the observation set CallWithOracle carries for a compared structured
+	// claim with the given facet outcomes.
+	structuredObs := func(f facetSet, fallback bool) bamlutils.NativeSpineUnaryOracleObservations {
+		return bamlutils.NativeSpineUnaryOracleObservations{
+			PlanCompareRan: true, PlanMatched: true, SocketOpened: true, SocketResponded: true,
+			SameResponseOracleRan: true, ErrorCompareRecorded: true, ErrorCompareMatch: true,
+			ChannelsCompared: true, AssistantMatch: f.assistant, RawMatch: f.raw, ReasoningMatch: f.reasoning,
+			StructuredBranchServed: true, StructuredMatch: f.structured, OrderMatch: f.order, CanonicalBytesMatch: f.canonical,
+			Fallback: fallback, ServeOutcome: bamlutils.NativeStaticOutcomeSuccess,
+		}
+	}
+
 	one := func(labels map[string]string) map[string]float64 { return map[string]float64{cellKey(labels): 1} }
 
 	succ := func(engine string, obs bamlutils.NativeSpineUnaryOracleObservations) bamlutils.NativeSpineUnaryOracleResult {
@@ -231,47 +253,138 @@ func TestRecordOracle(t *testing.T) {
 
 	// want is the COMPLETE non-zero cell map per family; an absent family means "no cell".
 	type want map[string]map[string]float64
+	claimedPhases := map[string]float64{cellKey(sc("claimed")): 1, cellKey(sc("postclaim_terminal")): 1, cellKey(sc("same_response_oracle")): 1}
+	// fallbackWant is the complete cell set for a SERVED reference-envelope fallback whose
+	// response-compare cells are resp, under the given mode.
+	fallbackWant := func(mode, outcome string, resp map[string]float64) want {
+		return want{
+			mPop:      one(popl(dispSucceeded)),
+			mPhase:    claimedPhases,
+			mWinner:   one(scw("baml_parse_same_response")),
+			mPlan:     one(plan("match")),
+			mSocket:   one(sock("responded")),
+			mResp:     resp,
+			mFallback: one(fb),
+			mAttempts: one(attMode(mode, outcome)),
+		}
+	}
 	scenarios := []struct {
 		name string
+		raw  bool
 		res  bamlutils.NativeSpineUnaryOracleResult
 		want want
 	}{
 		{
 			name: "native win match",
-			res: succ(bamlutils.NativeStaticServeEngineNative, bamlutils.NativeSpineUnaryOracleObservations{
-				PlanCompareRan: true, PlanMatched: true, SocketOpened: true, SocketResponded: true,
-				SameResponseOracleRan: true, ErrorCompareRecorded: true, ErrorCompareMatch: true,
-				StructuredBranchServed: true, StructuredMatch: true, OrderMatch: true,
-				ServeOutcome: bamlutils.NativeStaticOutcomeSuccess,
-			}),
+			res:  succ(bamlutils.NativeStaticServeEngineNative, structuredObs(allMatch, false)),
 			want: want{
 				mPop:      one(popl(dispSucceeded)),
-				mPhase:    {cellKey(sc("claimed")): 1, cellKey(sc("postclaim_terminal")): 1, cellKey(sc("same_response_oracle")): 1},
+				mPhase:    claimedPhases,
 				mWinner:   one(scw("native")),
 				mPlan:     one(plan("match")),
 				mSocket:   one(sock("responded")),
-				mResp:     respBranch("match", "match"),
+				mResp:     respBranch(allMatch),
 				mAttempts: one(att("success")),
 			},
 		},
 		{
-			name: "same-bytes drift",
+			// The SAME native win on /call-with-raw: identical cells, but the serve outcome is
+			// recorded under the request's real mode.
+			name: "call-with-raw native win match",
+			raw:  true,
+			res:  succ(bamlutils.NativeStaticServeEngineNative, structuredObs(allMatch, false)),
+			want: want{
+				mPop:      one(popl(dispSucceeded)),
+				mPhase:    claimedPhases,
+				mWinner:   one(scw("native")),
+				mPlan:     one(plan("match")),
+				mSocket:   one(sock("responded")),
+				mResp:     respBranch(allMatch),
+				mAttempts: one(attMode("call_with_raw", "success")),
+			},
+		},
+		{
+			name: "structured drift",
+			res:  succ(bamlutils.NativeStaticServeEngineBAMLParse, structuredObs(facetSet{true, true, true, false, true, false}, true)),
+			want: fallbackWant("call", "success", respBranch(facetSet{true, true, true, false, true, false})),
+		},
+		{
+			name: "call-with-raw assistant-only drift",
+			raw:  true,
+			res:  succ(bamlutils.NativeStaticServeEngineBAMLParse, structuredObs(facetSet{false, true, true, true, true, true}, true)),
+			want: fallbackWant("call_with_raw", "success", respBranch(facetSet{false, true, true, true, true, true})),
+		},
+		{
+			name: "call-with-raw raw-only drift",
+			raw:  true,
+			res:  succ(bamlutils.NativeStaticServeEngineBAMLParse, structuredObs(facetSet{true, false, true, true, true, true}, true)),
+			want: fallbackWant("call_with_raw", "success", respBranch(facetSet{true, false, true, true, true, true})),
+		},
+		{
+			name: "call-with-raw reasoning-only drift",
+			raw:  true,
+			res:  succ(bamlutils.NativeStaticServeEngineBAMLParse, structuredObs(facetSet{true, true, false, true, true, true}, true)),
+			want: fallbackWant("call_with_raw", "success", respBranch(facetSet{true, true, false, true, true, true})),
+		},
+		{
+			name: "call-with-raw canonical-bytes-only drift",
+			raw:  true,
+			res:  succ(bamlutils.NativeStaticServeEngineBAMLParse, structuredObs(facetSet{true, true, true, true, true, false}, true)),
+			want: fallbackWant("call_with_raw", "success", respBranch(facetSet{true, true, true, true, true, false})),
+		},
+		{
+			// Native declined the parse: its channels were compared, it produced no structured
+			// value, and the reference envelope was served.
+			name: "parse decline",
+			raw:  true,
 			res: succ(bamlutils.NativeStaticServeEngineBAMLParse, bamlutils.NativeSpineUnaryOracleObservations{
 				PlanCompareRan: true, PlanMatched: true, SocketOpened: true, SocketResponded: true,
 				SameResponseOracleRan: true, ErrorCompareRecorded: true, ErrorCompareMatch: true,
-				StructuredBranchServed: true, StructuredMatch: false, OrderMatch: true, Fallback: true,
-				ServeOutcome: bamlutils.NativeStaticOutcomeSuccess,
+				ChannelsCompared: true, AssistantMatch: true, RawMatch: true, ReasoningMatch: true,
+				ParseDeclineServed: true, Fallback: true, ServeOutcome: bamlutils.NativeStaticOutcomeParseDecline,
 			}),
-			want: want{
-				mPop:      one(popl(dispSucceeded)),
-				mPhase:    {cellKey(sc("claimed")): 1, cellKey(sc("postclaim_terminal")): 1, cellKey(sc("same_response_oracle")): 1},
-				mWinner:   one(scw("baml_parse_same_response")),
-				mPlan:     one(plan("match")),
-				mSocket:   one(sock("responded")),
-				mResp:     respBranch("mismatch", "match"),
-				mFallback: one(fb),
-				mAttempts: one(att("success")),
-			},
+			want: fallbackWant("call_with_raw", "parse_decline", map[string]float64{
+				cellKey(resp("error", "match")): 1, cellKey(resp("translate", "match")): 1,
+				cellKey(resp("assistant", "match")): 1, cellKey(resp("raw", "match")): 1, cellKey(resp("reasoning", "match")): 1,
+				cellKey(resp("structured", "mismatch")): 1, cellKey(resp("order", "mismatch")): 1,
+				cellKey(resp("canonical_bytes", "mismatch")): 1,
+			}),
+		},
+		{
+			// Native failed BEFORE extraction (a translate failure) and the reference was served:
+			// the error facet is a mismatch (the native leg errored), translate is a mismatch,
+			// no channel facet is recorded (none was compared), and the structured facets are
+			// mismatches (native produced nothing).
+			name: "native translate failure recovered",
+			res: succ(bamlutils.NativeStaticServeEngineBAMLParse, bamlutils.NativeSpineUnaryOracleObservations{
+				PlanCompareRan: true, PlanMatched: true, SocketOpened: true, SocketResponded: true,
+				SameResponseOracleRan: true, ErrorCompareRecorded: true, ErrorCompareMatch: false,
+				NativeFailureRecovered: true, Fallback: true, ServeOutcome: bamlutils.NativeStaticOutcomeSuccess,
+			}),
+			want: fallbackWant("call", "success", map[string]float64{
+				cellKey(resp("error", "mismatch")): 1, cellKey(resp("translate", "mismatch")): 1,
+				cellKey(resp("structured", "mismatch")): 1, cellKey(resp("order", "mismatch")): 1,
+				cellKey(resp("canonical_bytes", "mismatch")): 1,
+			}),
+		},
+		{
+			// A CLAIMED native parse error recovered by the reference: native's channels were
+			// extracted and compared (here: matching), but the native leg errored — so the error
+			// facet is a mismatch, which is what distinguishes it from a structured value drift.
+			name: "claimed native parse error recovered",
+			raw:  true,
+			res: succ(bamlutils.NativeStaticServeEngineBAMLParse, bamlutils.NativeSpineUnaryOracleObservations{
+				PlanCompareRan: true, PlanMatched: true, SocketOpened: true, SocketResponded: true,
+				SameResponseOracleRan: true, ErrorCompareRecorded: true, ErrorCompareMatch: false,
+				ChannelsCompared: true, AssistantMatch: true, RawMatch: true, ReasoningMatch: true,
+				NativeFailureRecovered: true, Fallback: true, ServeOutcome: bamlutils.NativeStaticOutcomeSuccess,
+			}),
+			want: fallbackWant("call_with_raw", "success", map[string]float64{
+				cellKey(resp("error", "mismatch")): 1, cellKey(resp("translate", "match")): 1,
+				cellKey(resp("assistant", "match")): 1, cellKey(resp("raw", "match")): 1, cellKey(resp("reasoning", "match")): 1,
+				cellKey(resp("structured", "mismatch")): 1, cellKey(resp("order", "mismatch")): 1,
+				cellKey(resp("canonical_bytes", "mismatch")): 1,
+			}),
 		},
 		{
 			name: "provider fault",
@@ -375,9 +488,9 @@ func TestRecordOracle(t *testing.T) {
 	// Every family is checked in every scenario, so an unexpected cell in a family a scenario
 	// does not populate (e.g. a stray fe_v1 winner, or a fallback on a non-drift path) fails.
 	families := []string{mPop, mPhase, mWinner, mPlan, mSocket, mResp, mFallback, mAttempts}
-	inv := bamlutils.NativeStaticInvocation{Provider: "openai"}
 	for _, s := range scenarios {
 		t.Run(s.name, func(t *testing.T) {
+			inv := bamlutils.NativeStaticInvocation{Provider: "openai", Raw: s.raw}
 			reg := prometheus.NewRegistry()
 			m, err := admission.NewMetrics(reg)
 			if err != nil {

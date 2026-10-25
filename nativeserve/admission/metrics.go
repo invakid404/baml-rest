@@ -280,6 +280,9 @@ const (
 //   - order:      the structured output's schema field order matched;
 //   - raw:        the /call-with-raw raw channel matched;
 //   - reasoning:  the /call-with-raw reasoning channel matched;
+//   - canonical_bytes: the native canonical final JSON was LITERALLY byte-identical to
+//     the json.Marshal of BAML's parse of the same response (no reserialization or key
+//     reordering before the compare);
 //   - error:      the comparison pipeline itself errored (native or BAML leg) — a
 //     catch-all recorded as a mismatch so a broken oracle leg is observable, never
 //     silently counted as a match.
@@ -299,6 +302,12 @@ const (
 	// type and compared, proving the typed decode (not just the canonical bytes) is
 	// BAML-equivalent over BAML's captured bytes.
 	ResponseCompareFieldTyped ResponseCompareField = "typed"
+	// ResponseCompareFieldCanonicalBytes is the live-oracle static spine's literal
+	// canonical-byte facet: native's canonical final JSON vs the json.Marshal of BAML's
+	// parse of the reference text, compared byte-for-byte. The structured/order facets
+	// compare reserialized, order-normalized values; this one compares the exact bytes the
+	// generated decoder receives, which is what makes the served HTTP body byte-identical.
+	ResponseCompareFieldCanonicalBytes ResponseCompareField = "canonical_bytes"
 )
 
 // NewMetrics constructs the collectors and registers them on reg. It fails if a
@@ -765,7 +774,7 @@ func normalizeResponseCompareField(f ResponseCompareField) string {
 	switch f {
 	case ResponseCompareFieldTranslate, ResponseCompareFieldAssistant, ResponseCompareFieldStructured,
 		ResponseCompareFieldOrder, ResponseCompareFieldRaw, ResponseCompareFieldReasoning,
-		ResponseCompareFieldError, ResponseCompareFieldTyped:
+		ResponseCompareFieldError, ResponseCompareFieldTyped, ResponseCompareFieldCanonicalBytes:
 		return string(f)
 	default:
 		return labelInvalid

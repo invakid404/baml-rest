@@ -34,6 +34,7 @@ import (
 	"sync/atomic"
 
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/bamlutils/projectdescriptor"
 	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
@@ -41,6 +42,7 @@ import (
 	"github.com/invakid404/baml-rest/internal/debaml"
 	"github.com/invakid404/baml-rest/internal/schema"
 	"github.com/invakid404/baml-rest/nativeserve/admission"
+	"github.com/invakid404/baml-rest/nativeserve/staticoracle"
 )
 
 // Bounded, secret-free stage/reason tokens for the neutral tri-state result.
@@ -82,7 +84,7 @@ var (
 	errClientRegistry = errors.New("nativespine: request carries a client_registry; the exact cohort serves only the descriptor's default client")
 	errDynamicSchema  = errors.New("nativespine: request carries a dynamic output schema; the exact cohort is static-only")
 	errNoBAMLPlan     = errors.New("nativespine: oracle call requires a BAML no-send plan closure; the standard composite must supply BuildBAMLRequest before the claim")
-	errNoBAMLParse    = errors.New("nativespine: oracle call requires a BAML same-bytes parse closure; the standard composite must supply BAMLOnlyParse before the claim")
+	errNoBAMLParse    = errors.New("nativespine: oracle call requires a BAML-only parse closure; the standard composite must supply BAMLOnlyParse before the claim")
 	// errPanicBeforeClaim / errPanicAfterClaim are BOUNDED, secret-free panic sentinels.
 	// The recovered value is NEVER interpolated into them: on the standard default path the
 	// adapter propagates the terminal error to the outer policy, so an arbitrary/sensitive
@@ -170,6 +172,13 @@ type UnaryExecutor struct {
 	// deterministically; every production constructor leaves the defaults.
 	admitClaim       func(ctx context.Context, in admission.StaticInput) (*admission.StaticClaim, error)
 	admitClaimOracle func(ctx context.Context, in admission.StaticInput) (*admission.StaticClaim, error)
+	// extractReference is the BAML serving path's response extractor CallWithOracle's
+	// reference oracle runs over the ORIGINAL provider body, defaulting to
+	// buildrequest.ExtractResponseContentBytes — the extractor the generated orchestrator
+	// injects. A field only so gated tests can inject a channel-specific drift (an
+	// assistant-only or reasoning-only divergence a real OpenAI body cannot produce in
+	// isolation); every production constructor leaves the default.
+	extractReference staticoracle.ReferenceExtract
 }
 
 // compile-time assertion the executor also satisfies the optional oracle-capable
@@ -232,6 +241,7 @@ func newExecutor(proj projectdescriptor.Project, candidates []candidateRegistrat
 		metrics:          &Metrics{},
 		admitClaim:       admission.AdmitStaticSpineClaim,
 		admitClaimOracle: admission.AdmitStaticSpineOracleClaim,
+		extractReference: buildrequest.ExtractResponseContentBytes,
 	}
 	byName := make(map[string]projectdescriptor.Method, len(proj.Methods))
 	for _, m := range proj.Methods {

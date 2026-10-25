@@ -152,7 +152,9 @@ func TestOutOfCohortCorporaProduceAnEmptyServingPopulation(t *testing.T) {
 // TestRequestScopedNearMissesDeclinePreClaim is the REQUEST half: the population is
 // the admitted list-input method and the plan matches, so native WOULD win (that
 // control is TestUnaryComposite_NativeWinsOnEveryScalarListRow). Each row flips
-// exactly ONE request-scoped fact and must decline before any socket.
+// exactly ONE request-scoped fact and must decline before any socket. The raw fact is
+// not a near-miss on this lane: /call-with-raw is admitted and served
+// (TestUnaryComposite_CallWithRawNativeWinsOnEveryScalarListRow).
 func TestRequestScopedNearMissesDeclinePreClaim(t *testing.T) {
 	rewrites := func(string) bool { return true }
 	cases := []struct {
@@ -167,7 +169,6 @@ func TestRequestScopedNearMissesDeclinePreClaim(t *testing.T) {
 		{"client_registry_override", func(i *bamlutils.NativeStaticInvocation) { i.HasClientRegistryOverride = true }},
 		{"dynamic_output_schema", func(i *bamlutils.NativeStaticInvocation) { i.HasDynamicOutputSchema = true }},
 		{"provider_not_openai", func(i *bamlutils.NativeStaticInvocation) { i.Provider = "anthropic" }},
-		{"call_with_raw_mode", func(i *bamlutils.NativeStaticInvocation) { i.Raw = true }},
 		{"rewrite_or_proxy_target", func(i *bamlutils.NativeStaticInvocation) { i.WouldRewriteOrProxy = rewrites }},
 		{"no_baml_plan_builder", func(i *bamlutils.NativeStaticInvocation) { i.BuildBAMLRequest = nil }},
 		{"baml_plan_build_fails", func(i *bamlutils.NativeStaticInvocation) {
