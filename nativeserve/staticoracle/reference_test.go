@@ -238,6 +238,22 @@ func TestResolveReference_NoResponseAndCancellationAreTerminal(t *testing.T) {
 	}
 }
 
+// TestResolveReference_SurfacedHTTPErrorWithoutAResponseIsProviderError: a failure the
+// caller re-expressed as the ordinary transport's *HTTPError (a non-2xx whose body read
+// failed) is returned unchanged and classified as a provider error, not a transport one;
+// any other no-response failure stays a transport error.
+func TestResolveReference_SurfacedHTTPErrorWithoutAResponseIsProviderError(t *testing.T) {
+	httpErr := &llmhttp.HTTPError{StatusCode: 429, Body: `{"error":`}
+	r := ResolveReference(context.Background(), nil, nil, httpErr, ref(parse(`1`, nil)), nil)
+	if r.Served || r.Outcome != OutcomeProviderError || r.Err != error(httpErr) {
+		t.Fatalf("result = %+v, want the *HTTPError unchanged as a provider error", r)
+	}
+	other := errors.New("llmhttp: request failed: unexpected EOF")
+	if r := ResolveReference(context.Background(), nil, nil, other, ref(parse(`1`, nil)), nil); r.Outcome != OutcomeTransportError || r.Err != other {
+		t.Fatalf("result = %+v, want a transport error returned unchanged", r)
+	}
+}
+
 // TestResolveReference_OriginalNon2xxIsProviderError: the ORIGINAL status classifies, and the
 // reference leg never runs on a non-2xx.
 func TestResolveReference_OriginalNon2xxIsProviderError(t *testing.T) {

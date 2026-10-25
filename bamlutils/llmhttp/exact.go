@@ -41,6 +41,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/valyala/fasthttp"
 )
 
 // HeaderField is a single ordered request header pair. Unlike the legacy
@@ -105,6 +107,186 @@ func (e *ExactDeclineError) Error() string {
 }
 
 func (e *ExactDeclineError) Unwrap() error { return ErrExactDeclined }
+
+// ExactFailureStage names where a SENT exact attempt failed before a complete
+// response existed.
+type ExactFailureStage uint8
+
+const (
+	// ExactFailureRoundTrip: RoundTrip itself failed — no status line was read
+	// (dial, TLS, a connection closed before the first response byte, a malformed
+	// status line, cancellation/deadline).
+	ExactFailureRoundTrip ExactFailureStage = iota + 1
+	// ExactFailureBodyRead: the status line and headers arrived, then reading the
+	// body failed (a truncated body, a reset, cancellation/deadline).
+	ExactFailureBodyRead
+	// ExactFailureBodyTooLarge: a 2xx body exceeded MaxResponseBodyBytes.
+	ExactFailureBodyTooLarge
+)
+
+// ExactTransportFailure is the error ExecuteWithHeartbeat returns when a SENT
+// attempt fails before a complete response exists. It carries the facts the
+// ordinary Client's envelope for the same failure is built from — the stage, the
+// received status and the bytes read before a body-read failure, and the raw,
+// unclassified transport cause — while Error and Unwrap delegate to the exact
+// lane's own error value, so this lane's messages and errors.Is/As chains
+// (TransportError categories, ErrTransportFlake, the underlying cause) are
+// unchanged. A caller that must surface what the ordinary Client would have
+// returned for the same request asks [ExactTransportFailure.Ordinary].
+//
+// SENSITIVE: Partial is provider output; treat it like the response body.
+type ExactTransportFailure struct {
+	Stage ExactFailureStage
+	// StatusCode is the received status for ExactFailureBodyRead and
+	// ExactFailureBodyTooLarge; 0 for ExactFailureRoundTrip.
+	StatusCode int
+	// Partial is the (owned) body read before an ExactFailureBodyRead failure.
+	Partial []byte
+	// Cause is the raw transport error, before any classification or wrap; nil for
+	// ExactFailureBodyTooLarge.
+	Cause error
+
+	err error
+}
+
+func (f *ExactTransportFailure) Error() string { return f.err.Error() }
+
+func (f *ExactTransportFailure) Unwrap() error { return f.err }
+
+// OrdinaryBackend names the ordinary Client unary backend a request dispatches to.
+type OrdinaryBackend uint8
+
+const (
+	// OrdinaryBackendNetHTTP is the net/http backend (executeBorrow's Do path).
+	OrdinaryBackendNetHTTP OrdinaryBackend = iota
+	// OrdinaryBackendFastHTTP is the fasthttp backend (executeFast).
+	OrdinaryBackendFastHTTP
+)
+
+// OrdinaryUnaryBackend reports the backend a Client constructed with mode
+// dispatches a unary request for rawURL to, for a request no proxy applies to (the
+// caller must have proven that — a proxied origin always pins net/http). It needs no
+// network I/O: ClientModeFastHTTP and ClientModeNetHTTP force their backend, and in
+// ClientModeAuto a plain-http origin routes to fasthttp. An https origin in Auto mode
+// is decided by the protocol cache's ALPN probe; this reports net/http — the decision
+// for every origin that negotiates HTTP/2 and the probe's own failure default — so an
+// HTTP/1.1-only https origin, which the probe routes to fasthttp, is not covered.
+func OrdinaryUnaryBackend(mode ClientMode, rawURL string) OrdinaryBackend {
+	switch mode {
+	case ClientModeFastHTTP:
+		return OrdinaryBackendFastHTTP
+	case ClientModeNetHTTP:
+		return OrdinaryBackendNetHTTP
+	}
+	if u, err := url.Parse(rawURL); err == nil && strings.EqualFold(u.Scheme, "http") {
+		return OrdinaryBackendFastHTTP
+	}
+	return OrdinaryBackendNetHTTP
+}
+
+// Ordinary returns the error the ordinary Client's unary path returns for the same
+// failure of the same request (method + rawURL) on backend — the same constructor,
+// prefix, classification and wrapped cause, so the message is byte-identical and
+// errors.Is/As (TransportError category, ErrTransportFlake, *url.Error, *HTTPError,
+// context sentinels, the underlying cause) answer exactly as they would for it. It
+// never sends anything.
+//
+// The ordinary backends differ, and each is reproduced as it is:
+//
+//   - net/http wraps a RoundTrip failure in the *url.Error http.Client.Do builds
+//     ("request failed"), wraps a 2xx body-read failure as "failed to read response
+//     body", and turns a non-2xx whose body read fails into an *HTTPError carrying the
+//     bytes read (capped at MaxErrorBodyBytes) — it ignores that read error.
+//   - fasthttp reads the body inside Do, so a body-read failure is a "request failed"
+//     for every status; a connection closed before the first response byte is
+//     fasthttp.ErrConnectionClosed; cancellation and deadlines surface as the bare
+//     context error.
+//   - Both report an oversized 2xx body with the same size-limit message.
+//
+// Not reproducible from a net/http RoundTripper's failure, and left with fasthttp's
+// "request failed" prefix around the net/http cause: fasthttp's own wording for a
+// dial, TLS, or malformed-header failure, and a fasthttp read that tolerates a framing
+// error net/http rejects (an unterminated chunked body, which fasthttp returns as a
+// success).
+func (f *ExactTransportFailure) Ordinary(backend OrdinaryBackend, method, rawURL string) error {
+	switch f.Stage {
+	case ExactFailureBodyTooLarge:
+		return fmt.Errorf("llmhttp: response body exceeds maximum size (%d bytes)", MaxResponseBodyBytes)
+	case ExactFailureRoundTrip:
+		if backend == OrdinaryBackendFastHTTP {
+			if ctxErr := contextSentinel(f.Cause); ctxErr != nil {
+				return ctxErr
+			}
+			cause := f.Cause
+			if errors.Is(cause, io.EOF) {
+				cause = fasthttp.ErrConnectionClosed
+			}
+			return ordinaryTransportWrap(cause, "llmhttp: request failed", true)
+		}
+		return ordinaryTransportWrap(&url.Error{Op: urlErrorOp(method), URL: redactedURLForError(rawURL), Err: f.Cause}, "llmhttp: request failed", true)
+	case ExactFailureBodyRead:
+		if backend == OrdinaryBackendFastHTTP {
+			if ctxErr := contextSentinel(f.Cause); ctxErr != nil {
+				return ctxErr
+			}
+			return ordinaryTransportWrap(f.Cause, "llmhttp: request failed", true)
+		}
+		if f.StatusCode < 200 || f.StatusCode >= 300 {
+			body := f.Partial
+			if len(body) > MaxErrorBodyBytes {
+				body = body[:MaxErrorBodyBytes]
+			}
+			return &HTTPError{StatusCode: f.StatusCode, Body: string(body)}
+		}
+		return ordinaryTransportWrap(f.Cause, "llmhttp: failed to read response body", false)
+	default:
+		return f
+	}
+}
+
+// ordinaryTransportWrap is the ordinary Client's wrap at every unary transport site:
+// a classified *TransportError, else the cause behind the same prefix.
+func ordinaryTransportWrap(cause error, prefix string, staleConnTeardownAcceptable bool) error {
+	if te := classifyTransportErr(cause, prefix, staleConnTeardownAcceptable); te != nil {
+		return te
+	}
+	return fmt.Errorf("%s: %w", prefix, cause)
+}
+
+// contextSentinel returns the context sentinel err carries (what fasthttp's
+// awaitCtxIfPastDeadline / ctx.Done paths return), or nil.
+func contextSentinel(err error) error {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return context.Canceled
+	case errors.Is(err, context.DeadlineExceeded):
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+// urlErrorOp is http.Client's *url.Error Op for a method: the first byte kept, the
+// rest lower-cased ("Post" for POST), "Get" for an empty method.
+func urlErrorOp(method string) string {
+	if method == "" {
+		return "Get"
+	}
+	return method[:1] + strings.ToLower(method[1:])
+}
+
+// redactedURLForError is the URL string http.Client puts in its *url.Error: the
+// request URL with a userinfo password replaced by "***".
+func redactedURLForError(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	if _, passSet := u.User.Password(); passSet {
+		return strings.Replace(u.String(), u.User.String()+"@", u.User.Username()+":***@", 1)
+	}
+	return u.String()
+}
 
 // exactControlledHeaders are request headers the transport itself frames, or
 // that carry ambiguous connection/framing semantics the exact lane refuses to
@@ -290,10 +472,8 @@ func (e *ExactExecutor) ExecuteWithHeartbeat(ctx context.Context, req *ExactAtte
 		// flake — pass staleConnTeardownAcceptable=true, as Client.Execute does
 		// at its Do site. Cancellation/deadline stay reachable via errors.Is on
 		// the wrapped chain regardless.
-		if te := classifyTransportErr(err, "llmhttp: exact roundtrip failed", true); te != nil {
-			return nil, te
-		}
-		return nil, fmt.Errorf("llmhttp: exact roundtrip failed: %w", err)
+		return nil, &ExactTransportFailure{Stage: ExactFailureRoundTrip, Cause: err,
+			err: ordinaryTransportWrap(err, "llmhttp: exact roundtrip failed", true)}
 	}
 	defer resp.Body.Close()
 
@@ -320,14 +500,13 @@ func (e *ExactExecutor) ExecuteWithHeartbeat(ctx context.Context, req *ExactAtte
 		// gated stale-conn-teardown family must NOT be treated as an acceptable
 		// flake here (staleConnTeardownAcceptable=false) — same contract as
 		// Client.Execute's body read.
-		if te := classifyTransportErr(err, "llmhttp: exact response read failed", false); te != nil {
-			return nil, te
-		}
-		return nil, fmt.Errorf("llmhttp: exact response read failed: %w", err)
+		return nil, &ExactTransportFailure{Stage: ExactFailureBodyRead, StatusCode: resp.StatusCode, Partial: body, Cause: err,
+			err: ordinaryTransportWrap(err, "llmhttp: exact response read failed", false)}
 	}
 	if int64(len(body)) > limit {
 		if success {
-			return nil, fmt.Errorf("llmhttp: exact response body exceeds maximum size (%d bytes)", MaxResponseBodyBytes)
+			return nil, &ExactTransportFailure{Stage: ExactFailureBodyTooLarge, StatusCode: resp.StatusCode,
+				err: fmt.Errorf("llmhttp: exact response body exceeds maximum size (%d bytes)", MaxResponseBodyBytes)}
 		}
 		body = body[:limit]
 	}

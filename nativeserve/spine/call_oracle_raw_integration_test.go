@@ -15,11 +15,16 @@ package spine
 // asserted separately and a native-win test FAILS on a fallback.
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -373,4 +378,145 @@ func TestCallWithOracle_LiveOracle_CallWithRawProviderFaultIsTerminal(t *testing
 		t.Errorf("the reference parse ran on a non-2xx (captured %q)", captured)
 	}
 	assertOneClaimedSend(t, e, lb)
+}
+
+// rawFailureLoopback is a loopback provider that answers every request with the exact
+// bytes write produces and then closes the connection — the only way to produce a
+// truncated body, a connection closed before the first response byte, or a body over
+// the size cap.
+type rawFailureLoopback struct {
+	ln   net.Listener
+	hits atomic.Int64
+}
+
+func newRawFailureLoopback(t *testing.T, write func(w *bufio.Writer)) *rawFailureLoopback {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	lb := &rawFailureLoopback{ln: ln}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				br := bufio.NewReader(c)
+				req, err := http.ReadRequest(br)
+				if err != nil {
+					return
+				}
+				_, _ = io.Copy(io.Discard, req.Body)
+				lb.hits.Add(1)
+				w := bufio.NewWriter(c)
+				write(w)
+				_ = w.Flush()
+			}(c)
+		}
+	}()
+	return lb
+}
+
+func (lb *rawFailureLoopback) baseURL() string { return "http://" + lb.ln.Addr().String() + "/v1" }
+
+// TestCallWithOracle_LiveOracle_TransportFailuresCarryTheOrdinaryEnvelope pins the lane's
+// transport-error contract with a REAL failing provider: a send that fails before a
+// complete response surfaces exactly the error flag-off's ordinary Client returns for
+// the same failure of the same request — read here from that real Client against the
+// same server, under BOTH client modes the worker can run (auto, which routes a
+// plain-http origin to fasthttp, and nethttp) — for /call and /call-with-raw alike,
+// terminal after the one native send, never the exact lane's own "exact ..." wording.
+func TestCallWithOracle_LiveOracle_TransportFailuresCarryTheOrdinaryEnvelope(t *testing.T) {
+	failures := []struct {
+		name  string
+		write func(w *bufio.Writer)
+	}{
+		{"body over the size cap", func(w *bufio.Writer) {
+			fmt.Fprintf(w, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+				llmhttp.MaxResponseBodyBytes+1, strings.Repeat(" ", llmhttp.MaxResponseBodyBytes+1))
+		}},
+		{"2xx body truncated", func(w *bufio.Writer) {
+			w.WriteString("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"choices\":")
+		}},
+		{"non-2xx body truncated", func(w *bufio.Writer) {
+			w.WriteString("HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"error\":")
+		}},
+		{"closed before the first response byte", func(*bufio.Writer) {}},
+	}
+	for _, mode := range []string{"auto", "nethttp"} {
+		for _, fc := range failures {
+			for _, raw := range []bool{false, true} {
+				name := fmt.Sprintf("%s/%s/%s", mode, fc.name, map[bool]string{false: "call", true: "call-with-raw"}[raw])
+				t.Run(name, func(t *testing.T) {
+					t.Setenv(llmhttp.EnvVarClientMode, mode)
+					lb := newRawFailureLoopback(t, fc.write)
+					e, buildBAML := liveOracle(t, lb.baseURL())
+					plan, err := buildBAML(context.Background())
+					if err != nil {
+						t.Fatalf("plan: %v", err)
+					}
+
+					// What flag-off's ordinary Client reports for this request, from the real
+					// Client the worker builds for this mode, called as the orchestrator calls it.
+					want := func() error {
+						ctx, cancel := context.WithCancel(context.Background())
+						defer cancel()
+						c := llmhttp.NewDefaultClientWithOptions(llmhttp.ClientOptions{Mode: llmhttp.ClientModeFromEnv()})
+						resp, err := c.ExecuteBorrowed(ctx, plan, func() {})
+						if resp != nil {
+							resp.Release()
+						}
+						if err == nil {
+							t.Fatal("the ordinary Client succeeded; the scenario does not fail the request")
+						}
+						return err
+					}()
+					before := lb.hits.Load()
+
+					var captured string
+					inv := liveInv(t, buildBAML, `"never"`, &captured)
+					inv.Raw = raw
+					res := e.CallWithOracle(context.Background(), inv)
+					if res.Disposition != bamlutils.NativeSpineFailedAfterClaim {
+						t.Fatalf("disposition = %v (err %v), want failed_after_claim", res.Disposition, res.Err)
+					}
+					if got := lb.hits.Load() - before; got != 1 {
+						t.Errorf("native leg provider hits = %d, want exactly 1 (no resend)", got)
+					}
+					if snap := e.Metrics().Snapshot(); snap.Claims != 1 || snap.Sockets != 1 {
+						t.Errorf("executor counters = %+v, want one claim and one socket", snap)
+					}
+					if res.Err == nil || res.Err.Error() != want.Error() {
+						t.Fatalf("error:\n  flag-off: %q\n  native:   %v", want.Error(), res.Err)
+					}
+					if strings.Contains(res.Err.Error(), "exact") {
+						t.Errorf("the exact lane's wording reached the public error: %q", res.Err.Error())
+					}
+					var wantHTTP, gotHTTP *llmhttp.HTTPError
+					if errors.As(want, &wantHTTP) != errors.As(res.Err, &gotHTTP) ||
+						errors.Is(want, llmhttp.ErrTransportFlake) != errors.Is(res.Err, llmhttp.ErrTransportFlake) ||
+						errors.Is(want, io.ErrUnexpectedEOF) != errors.Is(res.Err, io.ErrUnexpectedEOF) {
+						t.Errorf("typed causes differ: flag-off %T / native %T", want, res.Err)
+					}
+					if captured != "" {
+						t.Errorf("the reference parse ran on a failure with no body (captured %q)", captured)
+					}
+					// The serve outcome follows the surfaced class: the ordinary transport reports a
+					// non-2xx whose body read failed as the provider error, everything else here as
+					// a transport failure.
+					wantOutcome := bamlutils.NativeStaticOutcomeTransportError
+					if wantHTTP != nil {
+						wantOutcome = bamlutils.NativeStaticOutcomeProviderError
+					}
+					if got := res.Observations.ServeOutcome; got != wantOutcome {
+						t.Errorf("serve outcome = %v, want %v", got, wantOutcome)
+					}
+				})
+			}
+		}
+	}
 }

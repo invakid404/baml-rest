@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/bamlutils/trustedclients"
 	"github.com/invakid404/baml-rest/pool"
 )
@@ -47,7 +49,9 @@ import (
 // an error row). On the flag-off leg nothing native happens at all.
 
 // rawProofProvider is a fixed-address loopback OpenAI provider whose unary response is
-// swapped per row. The handler reads the current response under the mutex.
+// swapped per row. The handler reads the current response under the mutex. A row with a
+// raw writer takes over the connection and writes exactly those bytes before closing it —
+// how a truncated body or a connection closed before the first response byte is served.
 type rawProofProvider struct {
 	srv   *httptest.Server
 	calls atomic.Int64
@@ -55,6 +59,7 @@ type rawProofProvider struct {
 	mu     sync.Mutex
 	status int
 	body   []byte
+	raw    func(w *bufio.Writer)
 }
 
 func newRawProofProvider(t *testing.T, addr string) *rawProofProvider {
@@ -64,8 +69,23 @@ func newRawProofProvider(t *testing.T, addr string) *rawProofProvider {
 		p.calls.Add(1)
 		_, _ = io.Copy(io.Discard, r.Body)
 		p.mu.Lock()
-		status, body := p.status, p.body
+		status, body, raw := p.status, p.body, p.raw
 		p.mu.Unlock()
+		if raw != nil {
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				http.Error(w, "the proof provider cannot take over the connection", http.StatusInternalServerError)
+				return
+			}
+			conn, buf, err := hj.Hijack()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+			raw(buf.Writer)
+			_ = buf.Writer.Flush()
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = w.Write(body)
@@ -80,10 +100,10 @@ func newRawProofProvider(t *testing.T, addr string) *rawProofProvider {
 	return p
 }
 
-func (p *rawProofProvider) respond(status int, body []byte) {
+func (p *rawProofProvider) respond(row rawProofRow) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.status, p.body = status, body
+	p.status, p.body, p.raw = row.status, []byte(row.body), row.raw
 }
 
 // rawProofRow is one provider response plus the request's reasoning preference and the
@@ -96,6 +116,9 @@ type rawProofRow struct {
 	// wantWinner: "native", "baml_parse_same_response" (native declined/failed, the
 	// claimed lane served the reference), or "failure" (BAML itself fails on the response).
 	wantWinner string
+	// raw, when set, replaces status/body: the provider writes exactly these bytes on the
+	// connection and closes it.
+	raw func(w *bufio.Writer)
 }
 
 func rawProofMessage(msg map[string]any) string {
@@ -132,12 +155,27 @@ func rawProofCorpus() []rawProofRow {
 	}
 }
 
+// rawProofTransportRows are sends that fail before a complete response exists — the
+// ordinary transport's error envelope, not a response oracle, decides these bytes.
+func rawProofTransportRows() []rawProofRow {
+	return []rawProofRow{
+		{name: "body_over_the_size_cap", status: http.StatusOK, body: strings.Repeat(" ", llmhttp.MaxResponseBodyBytes+1), wantWinner: "failure"},
+		{name: "2xx_body_truncated", wantWinner: "failure", raw: func(w *bufio.Writer) {
+			w.WriteString("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 200\r\n\r\n{\"choices\":[{\"message\":")
+		}},
+		{name: "non_2xx_body_truncated", wantWinner: "failure", raw: func(w *bufio.Writer) {
+			w.WriteString("HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: 200\r\n\r\n{\"error\":{\"message\":")
+		}},
+		{name: "closed_before_the_first_response_byte", wantWinner: "failure", raw: func(*bufio.Writer) {}},
+	}
+}
+
 // rawProofRows selects corpus rows by name, failing on an unknown name so a renamed row
 // cannot silently drop out of a control.
 func rawProofRows(t *testing.T, names ...string) []rawProofRow {
 	t.Helper()
 	byName := map[string]rawProofRow{}
-	for _, r := range rawProofCorpus() {
+	for _, r := range append(rawProofCorpus(), rawProofTransportRows()...) {
 		byName[r.name] = r
 	}
 	out := make([]rawProofRow, 0, len(names))
@@ -285,7 +323,7 @@ func rawProofLeg(t *testing.T, provider *rawProofProvider, flagOn bool, mode bam
 	out := map[string][]rawProofObservation{}
 	for _, server := range []string{"chi", "fiber"} {
 		for _, row := range rows {
-			provider.respond(row.status, []byte(row.body))
+			provider.respond(row)
 			reqBody := `{"topic":"the deployed static route"}`
 			if row.includeReasoning {
 				reqBody = `{"topic":"the deployed static route","__baml_options__":{"include_reasoning":true}}`
@@ -324,10 +362,61 @@ func requireStaticArtifact(t *testing.T) {
 func TestBootedArtifactDefaultServesTheExactJSONStaticCallWithRaw(t *testing.T) {
 	requireStaticArtifact(t)
 	provider := newRawProofProvider(t, staticFixtureLoopbackAddr)
-	rows := rawProofCorpus()
+	rows := append(rawProofCorpus(), rawProofTransportRows()...)
 	stock := rawProofLeg(t, provider, false, bamlutils.StreamModeCallWithRaw, rows)
 	native := rawProofLeg(t, provider, true, bamlutils.StreamModeCallWithRaw, rows)
+	assertRawProofLegsMatch(t, rows, stock, native)
 
+	// The encoders really are different: chi's stream encoder frames with a trailing
+	// newline, Fiber's Marshal does not. A proof that compared the two servers to each other
+	// (rather than each to itself across the flags) would be blind to that.
+	chiMap, fiberMap := rowAt(t, rows, stock["chi"], "map"), rowAt(t, rows, stock["fiber"], "map")
+	if chiMap.resp.body == fiberMap.resp.body || !strings.HasSuffix(chiMap.resp.body, "\n") {
+		t.Errorf("chi %q vs fiber %q: the two-server proof is not exercising two encoders", chiMap.resp.body, fiberMap.resp.body)
+	}
+	// The envelope really is the raw envelope: data/raw present, reasoning only when opted in.
+	for _, server := range []string{"chi", "fiber"} {
+		var env map[string]json.RawMessage
+		on := rowAt(t, rows, native[server], "reasoning_opted_in").resp.body
+		if err := json.Unmarshal([]byte(on), &env); err != nil || env["reasoning"] == nil || env["raw"] == nil || env["data"] == nil {
+			t.Errorf("%s: the reasoning row's envelope %q lacks data/raw/reasoning (%v)", server, on, err)
+		}
+		env = nil
+		off := rowAt(t, rows, native[server], "reasoning_not_opted_in").resp.body
+		if err := json.Unmarshal([]byte(off), &env); err != nil || env["reasoning"] != nil || env["raw"] == nil {
+			t.Errorf("%s: the not-opted-in row's envelope %q must carry raw and omit reasoning (%v)", server, off, err)
+		}
+	}
+}
+
+// TestBootedArtifactCallWithRawTransportFailuresUnderNetHTTP re-runs the transport rows
+// with the worker's llmhttp client forced to net/http (BAML_REST_HTTP_CLIENT=nethttp),
+// the backend an https/HTTP-2 provider is served on. The two ordinary backends word
+// these failures differently — fasthttp reads the body inside Do ("request failed"),
+// net/http reports a body-read failure ("failed to read response body") and turns a
+// truncated non-2xx into the provider error with the bytes it read — and the native lane
+// must reproduce whichever one the worker is configured with.
+func TestBootedArtifactCallWithRawTransportFailuresUnderNetHTTP(t *testing.T) {
+	requireStaticArtifact(t)
+	t.Setenv(llmhttp.EnvVarClientMode, "nethttp")
+	provider := newRawProofProvider(t, staticFixtureLoopbackAddr)
+	rows := append(rawProofRows(t, "map"), rawProofTransportRows()...)
+	stock := rawProofLeg(t, provider, false, bamlutils.StreamModeCallWithRaw, rows)
+	native := rawProofLeg(t, provider, true, bamlutils.StreamModeCallWithRaw, rows)
+	assertRawProofLegsMatch(t, rows, stock, native)
+	// The backend really is different: the truncated non-2xx is a provider error here.
+	if body := rowAt(t, rows, stock["chi"], "non_2xx_body_truncated").resp.body; !strings.Contains(body, `"provider_error"`) {
+		t.Errorf("under nethttp the truncated non-2xx should be the provider error with the bytes read; stock body %q", body)
+	}
+}
+
+// assertRawProofLegsMatch is the per-row, per-server assertion set: the stock leg is
+// stock BAML with zero native activity; the native leg owns exactly one native socket
+// and one provider request with the row's winner and a call_with_raw serve outcome
+// (asserted separately from the bytes); and within each server the complete HTTP
+// response is the stock leg's.
+func assertRawProofLegsMatch(t *testing.T, rows []rawProofRow, stock, native map[string][]rawProofObservation) {
+	t.Helper()
 	for _, server := range []string{"chi", "fiber"} {
 		for i, row := range rows {
 			s, n := stock[server][i], native[server][i]
@@ -360,27 +449,11 @@ func TestBootedArtifactDefaultServesTheExactJSONStaticCallWithRaw(t *testing.T) 
 			if s.resp.status != wantStatus {
 				t.Errorf("%s: stock status %d, want %d — the row no longer exercises what it names (%s)", label, s.resp.status, wantStatus, s.resp.body)
 			}
-		}
-	}
-
-	// The encoders really are different: chi's stream encoder frames with a trailing
-	// newline, Fiber's Marshal does not. A proof that compared the two servers to each other
-	// (rather than each to itself across the flags) would be blind to that.
-	chiMap, fiberMap := rowAt(t, rows, stock["chi"], "map"), rowAt(t, rows, stock["fiber"], "map")
-	if chiMap.resp.body == fiberMap.resp.body || !strings.HasSuffix(chiMap.resp.body, "\n") {
-		t.Errorf("chi %q vs fiber %q: the two-server proof is not exercising two encoders", chiMap.resp.body, fiberMap.resp.body)
-	}
-	// The envelope really is the raw envelope: data/raw present, reasoning only when opted in.
-	for _, server := range []string{"chi", "fiber"} {
-		var env map[string]json.RawMessage
-		on := rowAt(t, rows, native[server], "reasoning_opted_in").resp.body
-		if err := json.Unmarshal([]byte(on), &env); err != nil || env["reasoning"] == nil || env["raw"] == nil || env["data"] == nil {
-			t.Errorf("%s: the reasoning row's envelope %q lacks data/raw/reasoning (%v)", server, on, err)
-		}
-		env = nil
-		off := rowAt(t, rows, native[server], "reasoning_not_opted_in").resp.body
-		if err := json.Unmarshal([]byte(off), &env); err != nil || env["reasoning"] != nil || env["raw"] == nil {
-			t.Errorf("%s: the not-opted-in row's envelope %q must carry raw and omit reasoning (%v)", server, off, err)
+			if row.raw != nil || row.wantWinner == "failure" {
+				if strings.Contains(n.resp.body, "exact") {
+					t.Errorf("%s: the exact lane's wording reached the public error: %q", label, n.resp.body)
+				}
+			}
 		}
 	}
 }
@@ -392,7 +465,7 @@ func TestBootedArtifactDefaultServesTheExactJSONStaticCallWithRaw(t *testing.T) 
 func TestBootedArtifactCallRouteUnchangedAlongsideCallWithRaw(t *testing.T) {
 	requireStaticArtifact(t)
 	provider := newRawProofProvider(t, staticFixtureLoopbackAddr)
-	rows := rawProofRows(t, "map", "float_to_int", "lone_surrogate", "malformed_json")
+	rows := rawProofRows(t, "map", "float_to_int", "lone_surrogate", "malformed_json", "body_over_the_size_cap", "2xx_body_truncated")
 	stock := rawProofLeg(t, provider, false, bamlutils.StreamModeCall, rows)
 	native := rawProofLeg(t, provider, true, bamlutils.StreamModeCall, rows)
 	for _, server := range []string{"chi", "fiber"} {

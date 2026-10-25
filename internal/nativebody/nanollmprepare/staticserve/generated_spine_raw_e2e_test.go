@@ -21,11 +21,18 @@ package staticserve
 // response native reads identically; the reference parse where native declines or fails).
 
 import (
+	"bufio"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 
 	fixture "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/staticserve_fixture/generated"
 	fwadapter "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/staticserve_fixture/generated/adapter"
@@ -245,5 +252,112 @@ func TestSpineComposite_CallWithRawCorpusIsNotVacuous(t *testing.T) {
 	}
 	if nativeRows < 10 || coercing < 3 || reasoningRows != 1 {
 		t.Fatalf("corpus native-win rows=%d coercing rows=%d reasoning rows=%d; the differential would prove too little", nativeRows, coercing, reasoningRows)
+	}
+}
+
+// rawFixtureServer is a fixture-port loopback that answers every request with the exact
+// bytes write produces and then closes the connection — how a truncated body, a
+// connection closed before the first response byte, or an oversized body is produced.
+type rawFixtureServer struct {
+	ln    net.Listener
+	count atomic.Int64
+}
+
+func newRawFixtureServer(t *testing.T, write func(w *bufio.Writer)) *rawFixtureServer {
+	t.Helper()
+	rs := &rawFixtureServer{ln: listenFixturePort(t)}
+	go func() {
+		for {
+			c, err := rs.ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				br := bufio.NewReader(c)
+				req, err := http.ReadRequest(br)
+				if err != nil {
+					return
+				}
+				_, _ = io.Copy(io.Discard, req.Body)
+				rs.count.Add(1)
+				w := bufio.NewWriter(c)
+				write(w)
+				_ = w.Flush()
+			}(c)
+		}
+	}()
+	return rs
+}
+
+func (rs *rawFixtureServer) close() { _ = rs.ln.Close() }
+
+// transportFailureRows are sends that fail before a complete response exists. Flag-off
+// surfaces the ordinary llmhttp Client's error for each; the claimed native lane must
+// surface the same bytes (never the exact executor's own wording) after its one send.
+func transportFailureRows() []struct {
+	name  string
+	write func(w *bufio.Writer)
+} {
+	return []struct {
+		name  string
+		write func(w *bufio.Writer)
+	}{
+		{"body_over_the_size_cap", func(w *bufio.Writer) {
+			fmt.Fprintf(w, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+				llmhttp.MaxResponseBodyBytes+1, strings.Repeat(" ", llmhttp.MaxResponseBodyBytes+1))
+		}},
+		{"2xx_body_truncated", func(w *bufio.Writer) {
+			w.WriteString("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 200\r\n\r\n{\"choices\":[{\"message\":")
+		}},
+		{"non_2xx_body_truncated", func(w *bufio.Writer) {
+			w.WriteString("HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: 200\r\n\r\n{\"error\":{\"message\":")
+		}},
+		{"closed_before_the_first_response_byte", func(*bufio.Writer) {}},
+	}
+}
+
+// TestSpineComposite_CallWithRawTransportFailuresMatchStockBAML runs every transport
+// failure through the generated adapter flag-off (stock BAML over the ordinary Client)
+// and flag-on (the claimed native lane), under both client modes the worker can be
+// configured with, on /call-with-raw AND /call, and requires the identical public error
+// text and details.raw — with the flag-on leg's one claimed socket and single provider
+// request asserted separately.
+func TestSpineComposite_CallWithRawTransportFailuresMatchStockBAML(t *testing.T) {
+	for _, mode := range []string{"auto", "nethttp"} {
+		for _, row := range transportFailureRows() {
+			for _, streamMode := range []bamlutils.StreamMode{bamlutils.StreamModeCallWithRaw, bamlutils.StreamModeCall} {
+				t.Run(fmt.Sprintf("%s/%s/%v", mode, row.name, streamMode.NeedsRaw()), func(t *testing.T) {
+					t.Setenv(llmhttp.EnvVarClientMode, mode)
+					leg := func(flagOn bool) (rawOutcome, int, int64, int64) {
+						serveFn, exec, calls := fixtureBamlSrcSpineServe(t)
+						server := newRawFixtureServer(t, row.write)
+						defer server.close()
+						a := buildFixtureAdapterWithServe(t, serveFn, flagOn)
+						a.(*fwadapter.BamlAdapter).SetStreamMode(streamMode)
+						out := driveCallWithRaw(t, a)
+						return out, *calls, server.count.Load(), int64(exec.Metrics().Snapshot().Claims)
+					}
+					stock, stockCalls, stockHits, _ := leg(false)
+					native, calls, hits, claims := leg(true)
+
+					if stock.err == "" {
+						t.Fatalf("stock leg did not fail (%+v); the row does not exercise a transport failure", stock)
+					}
+					if stockCalls != 0 || stockHits != 1 {
+						t.Fatalf("stock leg: serve seam ran %d times, provider saw %d requests; want 0 and 1", stockCalls, stockHits)
+					}
+					if calls != 1 || claims != 1 || hits != 1 {
+						t.Fatalf("flag-on: serve seam %d, claims %d, provider requests %d; want 1, 1, 1 — the native lane must own the one send", calls, claims, hits)
+					}
+					if native.err != stock.err || native.errRaw != stock.errRaw {
+						t.Errorf("failure differs from stock BAML:\n  stock:  err=%q raw=%q\n  native: err=%q raw=%q", stock.err, stock.errRaw, native.err, native.errRaw)
+					}
+					if strings.Contains(native.err, "exact") {
+						t.Errorf("the exact lane's wording reached the public error: %q", native.err)
+					}
+				})
+			}
+		}
 	}
 }

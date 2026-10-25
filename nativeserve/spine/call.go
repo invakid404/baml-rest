@@ -232,6 +232,12 @@ func (e *UnaryExecutor) CallWithOracle(ctx context.Context, inv bamlutils.Native
 
 	res, rerr := e.runClaimedAttempt(ctx, claim, inv.IncludeReasoning, inv.SendHeartbeat)
 	obs.SocketResponded = res != nil
+	if res == nil {
+		// No response body exists, so there is nothing for the reference oracle to read:
+		// surface the failure as the ordinary transport's error for it (see
+		// ordinaryTransportError) — still terminal, still the one send.
+		rerr = ordinaryTransportError(rerr, claim.Prepared.Method, claim.Prepared.URL)
+	}
 	// The raw-aware reference oracle resolves the claimed response. The reference envelope
 	// is what BAML's serving path produces from the ORIGINAL provider body with the SAME
 	// provider + reasoning preference; native wins only on a full facet match (assistant,
@@ -314,6 +320,28 @@ func (e *UnaryExecutor) runClaimedAttempt(ctx context.Context, claim *admission.
 		IncludeReasoning: includeReasoning,
 		SendHeartbeat:    sendHeartbeat,
 	})
+}
+
+// ordinaryTransportError is the live-oracle lane's transport-error contract. The native
+// attempt runs on the exact executor; flag-off sends the same byte-matched plan through
+// the request's ordinary llmhttp Client, whose public error for a send that fails before
+// a complete response (an oversized or truncated body, a connection closed or refused, a
+// deadline) has its own wording and shape — the exact lane's "exact ..." wording would
+// otherwise reach the public error body verbatim. A failure that carries the exact
+// executor's transport facts is re-expressed, without any send, as the error the ordinary
+// Client returns for the same failure of the same request on the backend it dispatches to
+// (llmhttp.ExactTransportFailure.Ordinary; the backend is the worker's configured client
+// mode applied to the URL, the same environment the worker's Client is built from). The
+// result keeps every typed cause — TransportError category, ErrTransportFlake,
+// *url.Error, the underlying error, context sentinels — exactly as flag-off reports it.
+// Any other error (a pre-socket guard, a decline the executor raised) is returned
+// unchanged.
+func ordinaryTransportError(err error, method, rawURL string) error {
+	var f *llmhttp.ExactTransportFailure
+	if !errors.As(err, &f) {
+		return err
+	}
+	return f.Ordinary(llmhttp.OrdinaryUnaryBackend(llmhttp.ClientModeFromEnv(), rawURL), method, rawURL)
 }
 
 // oracleFailStageReason maps a terminal reference-oracle outcome onto the executor's
