@@ -258,13 +258,16 @@ type NativeSpineUnaryOracleObservations struct {
 	// provider answered it (a response, including a non-2xx, vs a transport failure).
 	SocketOpened    bool
 	SocketResponded bool
-	// ProviderRequests is how many requests the ONE claimed attempt made visible to the
-	// provider: its first request plus every redirect hop the send client followed — the
-	// same requests the BAML path's send makes for the same responses — and never a
-	// transport retry of a request whose write left nothing on the wire. A send that
-	// reached no provider at all (a dial or TLS failure) still counts as its one attempt.
-	// It is the honest physical-send count; "one claim, and no BAML send after it" is the
-	// anti-resend invariant, not "one physical request".
+	// ProviderRequests is the ONE claimed attempt's attempted-request count, floored at
+	// one: its first request plus every redirect hop the send client followed — the same
+	// requests the BAML path's send makes for the same responses — and never a transport
+	// retry of a request whose write left nothing on the wire. It is a bounded
+	// approximation of what the provider received, not an exact wire count: a send that
+	// reached no provider (a dial or TLS failure, a write failure on a fresh connection)
+	// still counts as its one attempt, and a transport retry of a request the provider
+	// received but never answered (for example a redirected GET whose reused connection
+	// closed before the first response byte) is not counted. "One claim, and no BAML send after it" is the anti-resend invariant,
+	// not "one physical request".
 	ProviderRequests int
 	// SameResponseOracleRan: the same-response BAML reference oracle was ENTERED. It is set
 	// before the parser runs, so a parser panic does not lose the phase.

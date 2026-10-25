@@ -246,10 +246,14 @@ func (e *UnaryExecutor) CallWithOracle(ctx context.Context, inv bamlutils.Native
 	// provider DID respond.
 	var httpErr *llmhttp.HTTPError
 	obs.SocketResponded = res != nil || errors.As(rerr, &httpErr)
-	// Honest send accounting: the claim above counted the attempt's first request; every
-	// further provider-visible request (a redirect hop the client followed, exactly as the
-	// BAML path's send follows it) is counted too — a followed 307 is two sockets, a
-	// nothing-written transport retry is not a second one (execute.providerRequestCount).
+	// Send accounting: the claim above counted the attempt's first request; every further
+	// counted request (a redirect hop the client followed, exactly as the BAML path's send
+	// follows it) is added too — a followed 307 is two sockets, a nothing-written transport
+	// retry is not a second one. The count is execute's attempted-request approximation,
+	// not an exact wire count: at most one more than the provider received, and one fewer
+	// for each transport retry of a request the provider received but never answered
+	// (execute.providerRequestCount; issue #583). It drives only these observations and
+	// metrics, never the serving outcome.
 	obs.ProviderRequests = max(1, int(sent.Load()))
 	if extra := obs.ProviderRequests - 1; extra > 0 {
 		e.metrics.sockets.Add(int64(extra))
@@ -361,8 +365,8 @@ func (e *UnaryExecutor) runClaimedAttempt(ctx context.Context, claim *admission.
 // it (the orchestrator's NativeCallFailed branch is terminal, and the cohort admits no
 // retry or fallback policy). It is not "one physical HTTP request": refusing to follow a
 // redirect flag-off follows would fail a request flag-off serves. onProviderRequests
-// receives the attempt's provider-visible request count, so the socket accounting reports
-// the real number.
+// receives the attempt's attempted-request count, so the socket accounting includes the
+// redirect hops.
 func (e *UnaryExecutor) runOrdinaryClaimedAttempt(ctx context.Context, claim *admission.StaticClaim, inv bamlutils.NativeStaticInvocation, onProviderRequests func(n int)) (*execute.AttemptResult, error) {
 	bundle := claim.Bundle
 	return execute.RunOrdinaryAttempt(ctx, execute.OrdinaryAttemptConfig{

@@ -384,39 +384,53 @@ type OrdinaryAttemptConfig struct {
 	SendHeartbeat func()
 
 	// OnProviderRequests, when non-nil, receives — once, as soon as the send returns, on
-	// success or failure — how many requests the attempt made visible to the provider
-	// (see providerRequestCount): its first request, every redirect hop the client
-	// followed, never a nothing-written transport retry, and at least the one attempt.
+	// success or failure — the attempt's attempted-request count (see
+	// providerRequestCount): its first request and every redirect hop the client
+	// followed, at least the one attempt. It is a bounded approximation of what the
+	// provider received, not an exact count.
 	OnProviderRequests func(n int)
 }
 
-// providerRequestCount counts the requests ONE attempt made visible to the provider. It
-// is fed by two observe-only httptrace events the net/http backend emits — never by
-// WroteRequest, which HTTP/1 reports from Request.write BEFORE persistConn's buffered
-// flush, so a flush that then fails with nothing written (and is retried on a fresh
-// connection) would read as a second request:
+// providerRequestCount is ONE attempt's attempted-request count: a best-effort, bounded
+// approximation of how many requests the provider received, floored at one — not an
+// exact wire-send count. It is fed by two observe-only httptrace events the net/http
+// backend emits:
 //
 //   - GotConn fires each time the transport hands the request to a live connection — an
 //     idle-connection reuse or a successful dial, never a failed dial — so once per
-//     transport attempt: the original, the re-attempt after a nothing-written failure on a
-//     reused connection, each redirect hop http.Client follows, and HTTP/2's retry of a
-//     stream the server never processed.
-//   - GotFirstResponseByte fires once per request the provider answered (HTTP/1: a first
-//     response byte is readable; HTTP/2: the stream's first HEADERS). An answered request
-//     is never re-sent: net/http retries a POST only when nothing was written, and HTTP/2
-//     only a stream the server refused before processing it.
+//     transport attempt: the original, each transport retry, and each redirect hop
+//     http.Client follows.
+//   - GotFirstResponseByte fires once per attempt the provider answered (HTTP/1: a first
+//     response byte is readable; HTTP/2: the stream's first HEADERS).
 //
-// Every answered request was provider-visible. Each attempt that obtained a connection
-// and was NOT answered is followed either by another attempt (a nothing-written retry, or
-// an unprocessed HTTP/2 stream) or by the end of the send; only the LAST such attempt can
-// have reached the provider — sent, then a close, reset, or deadline before any response
-// byte — so it counts once. Hence count = answered + (last connection unanswered ? 1 : 0),
-// floored at one: a send that obtained no connection at all (a dial or TLS failure) is
-// still the one claimed attempt.
+// count = answered + (the last connection was never answered ? 1 : 0), floored at one.
+// Every answered attempt reached the provider. Of the unanswered attempts only the last
+// counts: it may have reached the provider (sent, then a close, reset or deadline before
+// any response byte), and nothing re-sends it. Every earlier unanswered attempt was
+// followed by a transport retry and is taken not to have reached the provider. That holds
+// for a write that left nothing on a reused HTTP/1 connection and for an HTTP/2 stream the
+// server did not process (REFUSED_STREAM, GOAWAY, an unusable connection). WroteRequest
+// is not used: HTTP/1 reports it from Request.write before persistConn's buffered flush,
+// so a nothing-written retry would read as two.
+//
+// The count is one short for each retry of an attempt the provider received but never
+// answered, which these two events cannot tell from a nothing-written retry:
+//
+//   - HTTP/1: a replayable request — the GET a 301/302/303 redirect turns the POST into,
+//     or a request carrying an Idempotency-Key or X-Idempotency-Key header — written to a
+//     reused connection that closed or failed before the first response byte;
+//   - HTTP/2: a stream the peer reset with PROTOCOL_ERROR, which Go 1.26's transport
+//     retries.
+//
+// It can also be one more than the provider received: the last unanswered attempt, and
+// the floor, count when nothing reached the provider (a write failure on a fresh
+// connection, a dial or TLS failure). Either way only this count is affected: the
+// requests, retries, redirects and response are the ordinary client's own, the same as
+// the BAML path's. The residual is tracked in the de-BAML teardown ledger, issue #583.
 //
 // The fasthttp backend emits no httptrace events and makes at most one request per call:
 // HostClient.Do follows no redirect, and its default retry predicate admits GET/HEAD/PUT,
-// never the admitted POST. The floor counts that one request exactly.
+// never the admitted POST. The floor counts that one attempt.
 type providerRequestCount struct {
 	mu         sync.Mutex
 	answered   int
@@ -457,10 +471,10 @@ func (c *providerRequestCount) count() int {
 // the BAML path's identical call makes for the same responses: on the net/http backend a
 // 3xx is followed under http.Client's default redirect policy (a 301/302/303 re-sent as a
 // GET without the body, a 307/308 re-sent with it) — as flag-off follows it — while the
-// fasthttp backend follows no redirect. Neither backend re-sends a POST that was written:
-// fasthttp retries only GET/HEAD/PUT, and net/http retries a POST only when nothing was
-// written. The attempt's provider-visible request count is reported through
-// OnProviderRequests.
+// fasthttp backend follows no redirect. Transport retries are the backend's own as well:
+// fasthttp retries only GET/HEAD/PUT, never the POST, and net/http re-sends only what its
+// transport deems safe to replay (see providerRequestCount). The attempt's
+// attempted-request count is reported through OnProviderRequests.
 //
 // Contract:
 //

@@ -141,7 +141,10 @@ func unaryCandidate(b bamlutils.NativeSpineUnaryBinding) candidateRegistration {
 // sent. On the exact-executor lanes the two move together (one request per claim). On
 // CallWithOracle's ordinary-client send a claim is one attempt whose requests include
 // every redirect hop the client followed — exactly the BAML path's requests for the same
-// responses — so sockets can exceed claims there, and that is the honest count.
+// responses — so sockets can exceed claims there. That lane's sockets are execute's
+// attempted-request approximation: at most one more than the provider received, and one
+// fewer for each transport retry of a request the provider received but never answered
+// (issue #583).
 type Metrics struct {
 	declines  atomic.Int64
 	claims    atomic.Int64

@@ -26,6 +26,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"sync"
@@ -917,7 +918,9 @@ func closeWithoutResponse(w http.ResponseWriter) {
 // outcome, identical provider-received count, and the native ProviderRequests and socket
 // counter equal to what the provider received. The fasthttp backend (auto) follows no
 // redirect and never retries a POST, so its rows are single sends — and the dialer fault,
-// which only the net/http transport uses, is inert there.
+// which only the net/http transport uses, is inert there. The case the count is known to
+// miss (a retried request the provider received but never answered) is pinned separately,
+// by TestCallWithOracle_LiveOracle_DocumentedResidualRedirectedGETRetryIsUndercounted.
 func TestCallWithOracle_LiveOracle_ProviderRequestCountIsWhatTheProviderReceived(t *testing.T) {
 	refused := func() string {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -1044,5 +1047,110 @@ func TestCallWithOracle_LiveOracle_ProviderRequestCountIsWhatTheProviderReceived
 				})
 			}
 		}
+	}
+}
+
+// TestCallWithOracle_LiveOracle_DocumentedResidualRedirectedGETRetryIsUndercounted is a
+// DOCUMENTED-RESIDUAL GUARD (issue #583); the count it pins is the known shortfall, not
+// the correct number. A 302 turns the POST into a GET, the provider reads that GET in full
+// on the reused keep-alive connection and closes it without answering, and net/http
+// retries the replayable GET on a fresh connection. The provider receives three requests.
+// The attempted-request count (execute.providerRequestCount) sees the unanswered GET
+// exactly as it sees a nothing-written retry, so it reports two.
+//
+// Everything other than the count holds as on every row: native's request sequence is
+// flag-off's, native serves the response under one claim, and nothing is sent after it.
+// When the count equals what the provider received, counting has become exact here:
+// update providerRequestCount's contract and the docs that cite #583, close that ledger
+// entry, and move this case into
+// TestCallWithOracle_LiveOracle_ProviderRequestCountIsWhatTheProviderReceived.
+func TestCallWithOracle_LiveOracle_DocumentedResidualRedirectedGETRetryIsUndercounted(t *testing.T) {
+	t.Setenv(llmhttp.EnvVarClientMode, "nethttp")
+	const content = `{"weather":"sunny"}`
+	for _, raw := range []bool{false, true} {
+		t.Run(map[bool]string{false: "call", true: "call-with-raw"}[raw], func(t *testing.T) {
+			var mu sync.Mutex
+			var seq []sentRequest
+			var gets atomic.Int64
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				mu.Lock()
+				seq = append(seq, sentRequest{method: r.Method, path: r.URL.Path, body: string(body)})
+				mu.Unlock()
+				if r.URL.Path != "/redirected" {
+					// Keep-alive with an empty body, so the GET goes out on this connection.
+					gets.Store(0)
+					w.Header().Set("Location", "/redirected")
+					w.Header().Set("Content-Length", "0")
+					w.WriteHeader(http.StatusFound)
+					return
+				}
+				if gets.Add(1) == 1 {
+					closeWithoutResponse(w)
+					return
+				}
+				okJSONContent(w, content)
+			}))
+			t.Cleanup(srv.Close)
+			take := func() []sentRequest {
+				mu.Lock()
+				defer mu.Unlock()
+				out := seq
+				seq = nil
+				return out
+			}
+
+			e, buildBAML := liveOracle(t, srv.URL+"/v1")
+			plan, err := buildBAML(context.Background())
+			if err != nil {
+				t.Fatalf("plan: %v", err)
+			}
+			planURL, err := url.Parse(plan.URL)
+			if err != nil {
+				t.Fatalf("plan URL: %v", err)
+			}
+			newClient := func() *llmhttp.Client {
+				return llmhttp.NewDefaultClientWithOptions(llmhttp.ClientOptions{Mode: llmhttp.ClientModeFromEnv()})
+			}
+			want := callOrdinary(newClient(), plan, 0)
+			offSeq := take()
+			var captured string
+			inv := liveInv(t, buildBAML, content, &captured)
+			inv.Raw = raw
+			inv.HTTPClient = newClient()
+			res := e.CallWithOracle(context.Background(), inv)
+			onSeq := take()
+
+			// The scenario ran, and native's requests are flag-off's.
+			wantSeq := []sentRequest{
+				{method: http.MethodPost, path: planURL.Path, body: plan.Body},
+				{method: http.MethodGet, path: "/redirected"},
+				{method: http.MethodGet, path: "/redirected"},
+			}
+			if !reflect.DeepEqual(offSeq, wantSeq) || !reflect.DeepEqual(onSeq, offSeq) {
+				t.Fatalf("provider-request sequences:\n  want:     %+v\n  flag-off: %+v\n  native:   %+v", wantSeq, offSeq, onSeq)
+			}
+			// Native serves it, as flag-off does.
+			if want.err != nil || want.status != http.StatusOK {
+				t.Fatalf("flag-off outcome = %d %v, want the retried GET's 200", want.status, want.err)
+			}
+			if res.Disposition != bamlutils.NativeSpineSucceeded || res.WinnerEngine != bamlutils.NativeStaticServeEngineNative {
+				t.Fatalf("native disposition/winner = %v/%q (err %v), want native to serve it", res.Disposition, res.WinnerEngine, res.Err)
+			}
+			if string(res.FinalJSON) != content || (raw && res.Raw != content) {
+				t.Errorf("served (%s, %q), want (%s, %q)", res.FinalJSON, res.Raw, content, content)
+			}
+			snap := e.Metrics().Snapshot()
+			if snap.Claims != 1 {
+				t.Errorf("claims = %d, want 1", snap.Claims)
+			}
+			// The documented residual: one fewer counted than received.
+			received := len(onSeq)
+			if res.Observations.ProviderRequests != received-1 || snap.Sockets != int64(received-1) {
+				t.Errorf("documented residual (issue #583) changed: ProviderRequests=%d sockets=%d with %d received, pinned at %d; "+
+					"if the count is now exact, close the #583 entry and make this an exact-count row",
+					res.Observations.ProviderRequests, snap.Sockets, received, received-1)
+			}
+		})
 	}
 }

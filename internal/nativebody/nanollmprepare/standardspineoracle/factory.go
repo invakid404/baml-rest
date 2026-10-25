@@ -195,9 +195,13 @@ func recordOracle(m *admission.Metrics, pop *prometheus.CounterVec, inv bamlutil
 		}
 		m.RecordPlanCompare(result, admission.PlanCompareFieldMeta)
 	}
-	// One native socket per provider request the claimed attempt sent: its redirect hops
-	// (each of which answered with the 3xx the client followed) and then the final request,
-	// whose outcome is the attempt's. A single-request attempt records exactly one.
+	// One native socket per counted request of the claimed attempt (ProviderRequests): each
+	// earlier one was answered (a redirect the client followed), and the last carries the
+	// attempt's outcome; a single-request attempt records exactly one. ProviderRequests is
+	// the attempted-request approximation, so these cells are too: at most one more than
+	// the provider received, and one fewer for each transport retry of a request the
+	// provider received but never answered (issue #583). The served bytes do not depend on
+	// it.
 	if obs.SocketOpened {
 		for hop := 1; hop < obs.ProviderRequests; hop++ {
 			m.RecordNativeSocket(admission.NativeSocketResponded)

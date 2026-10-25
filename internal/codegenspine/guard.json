@@ -2,8 +2,8 @@
   "note": "Pin/tar-independence baseline for the codegen-spine slice: the packaged native-worker tar, the five first-party pseudo-version pins, and the byte content of the three collision-path trees. A codegen-spine (M/P) slice must leave every value here untouched. It is NOT a freeze on master: a sanctioned change to a guarded path — the /parse union burn-down (#689), the /parse union-residual batch 2, ExecBridge-U1's spine serve lane under nativeserve, ExecBridge-U1b's native-only packaged worker, ExecBridge-U1c's live-oracle standard composite, M3e-A's spine STREAM substrate, a post-squash first-party re-pin — legitimately moves these, and MUST re-run the update flag in the same change, or this guard stays red for everyone. First frozen at M0; re-frozen after #689 + the post-squash re-pin to 062871154d95, again for the /parse union-residual batch 2 (post-squash re-pin to master commit 7c7bed8291b6), again for ExecBridge-U1 — the production native unary executor/population bridge that adds a BAML-free spine serve lane under nativeserve (post-squash re-pin to master commit 7ddbb39fd3db), and again for ExecBridge-U1b — the native-only packaged worker that adds the reusable nativeserve/spine.NewWorkerRuntime factory + population classifier and the BAML-free nanollmprepare nativeonlyboot / cmd/worker-nativeonly (post-squash re-pin to master commit 8fe27577082c), and again for ExecBridge-U1c — the live-oracle standard composite that adds nativeserve/spine.CallWithOracle + the live-oracle admission entry AdmitStaticSpineOracleClaim + the factored nativeserve/staticoracle same-response core, and the nanollmprepare standardspineoracle composite + generated NewExecutor (post-squash re-pin to master commit 56d5473a1bdb), and again for M3e-A — the spine STREAM substrate that adds nativeserve/spine.StreamExecutor + StreamRegistration + the stream-native NewWorkerRuntime and nativeserve/admission.AdmitStaticSpineStreamClaim, plus the stream-capable nanollmprepare native-only worker (post-squash re-pin to master commit 0ed769e091fd), and again for ExecBridge-U1s — the standard-worker default-SERVE streaming lane that adds nativeserve/spine.StreamWithOracle on the shared claimed-stream core plus NewPopulationStreamExecutor, the nativeserve/streamoracle per-prefix/final decision matrix and nativeserve/admission.AdmitStaticSpineStreamOracleClaim, plus the nanollmprepare standard stream composite and the cmd/worker static-stream factory swap (post-squash re-pin to master commit 5d1a7d8b1d0b), and again for the required scalar-LIST input widening — the one-predicate widening of nativeserve/spine's registration input cohort to admit required single-level lists of required primitives alongside the existing required scalars, keeping the exact five-arm JSON return (post-squash re-pin to master commit 880a3c4d693e), and again for the /call-with-raw widening — the live-oracle spine lane's lane-scoped raw admission in nativeserve/admission plus the raw-aware nativeserve/staticoracle.ResolveReference oracle that nativeserve/spine.CallWithOracle and the nanollmprepare standardspineoracle composite now drive for /call and /call-with-raw, with that lane's one send made through the request's ordinary llmhttp Client (nativeserve/execute.RunOrdinaryAttempt) so its transport is the BAML path's (post-squash re-pin to master commit TODO(orchestrator re-pin)). Regenerate with: go test ./internal/codegenspine/ -run TestSourceGuard -update-codegenspine-guard",
   "native_worker_tar": {
     "path": "cmd/build/nativeworker_module.tar",
-    "size_bytes": 1074688,
-    "sha256": "2b240c8381aa28a7c6384ffe14231f7fa3e0d501f733a7b4326a2f68dd682445"
+    "size_bytes": 1076224,
+    "sha256": "e1adb3f6f39da96d65bdf0ec772ee5dcda5feeb1a6b8a68aa43974ae3a78fc84"
   },
   "first_party_pins": [
     {
@@ -41,12 +41,12 @@
     {
       "prefix": "nativeserve",
       "file_count": 125,
-      "sha256": "f7e596c29353876c653846a9e6914233e7e492261fbec95b24cf379724276b70"
+      "sha256": "81f578011412bdd0568ed4bcd73261be81ca3b6d851e8fe2fa61a9c39c723a83"
     },
     {
       "prefix": "internal/nativebody/nanollmprepare",
       "file_count": 95,
-      "sha256": "2860d2132a33bd691a97e03803896b79ceed3998288bb9a4cdbb1991449dd569"
+      "sha256": "941e8e196faaac869d785f448e3f3b2a3a42981ce3b207e55f11939c0590812f"
     }
   ]
 }
