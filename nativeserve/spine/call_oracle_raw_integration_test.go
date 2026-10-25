@@ -30,6 +30,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -507,11 +508,15 @@ func assertNativeMatchesOrdinary(t *testing.T, e *UnaryExecutor, hits func() int
 	ctx, cancel := rowContext(timeout)
 	defer cancel()
 	res := e.CallWithOracle(ctx, inv)
-	if got := hits() - before; got != 1 {
-		t.Errorf("native leg provider hits = %d, want exactly 1 (no resend)", got)
+	received := hits() - before
+	if received != 1 {
+		t.Errorf("native leg provider hits = %d, want exactly 1 (no resend)", received)
 	}
-	if snap := e.Metrics().Snapshot(); snap.Claims != 1 || snap.Sockets != 1 {
-		t.Errorf("executor counters = %+v, want one claim and one socket", snap)
+	if snap := e.Metrics().Snapshot(); snap.Claims != 1 || snap.Sockets != received {
+		t.Errorf("executor counters = %+v, want one claim and sockets == provider-received (%d)", snap, received)
+	}
+	if got := int64(res.Observations.ProviderRequests); got != received {
+		t.Errorf("observations.ProviderRequests = %d, provider received %d", got, received)
 	}
 	if want.err == nil {
 		if res.Disposition != bamlutils.NativeSpineSucceeded {
@@ -802,6 +807,239 @@ func TestCallWithOracle_LiveOracle_RedirectsAreTheBAMLPathsRequests(t *testing.T
 					}
 					if res.Disposition != bamlutils.NativeSpineFailedAfterClaim || res.Err == nil || res.Err.Error() != want.err.Error() {
 						t.Fatalf("flag-off error %q; native disposition %v err %v", want.err.Error(), res.Disposition, res.Err)
+					}
+				})
+			}
+		}
+	}
+}
+
+// writeFaultDialer dials REAL TCP connections and, when armed, makes the next Write on the
+// most recently dialed connection return (0, EPIPE) — no byte leaves. On a warmed,
+// reused keep-alive connection that is exactly net/http's stale-connection condition: its
+// HTTP/1 writeLoop sees nothing written and retries the rewindable POST on a fresh
+// connection. Nothing in net/http's transport or retry logic is replaced.
+type writeFaultDialer struct {
+	mu       sync.Mutex
+	conns    []*faultConn
+	dials    int
+	injected int
+}
+
+type faultConn struct {
+	net.Conn
+	d        *writeFaultDialer
+	failNext bool
+}
+
+func (c *faultConn) Write(b []byte) (int, error) {
+	c.d.mu.Lock()
+	fail := c.failNext
+	c.failNext = false
+	if fail {
+		c.d.injected++
+	}
+	c.d.mu.Unlock()
+	if fail {
+		return 0, syscall.EPIPE
+	}
+	return c.Conn.Write(b)
+}
+
+func (d *writeFaultDialer) dial(ctx context.Context, network, addr string) (net.Conn, error) {
+	conn, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+	if err != nil {
+		return nil, err
+	}
+	fc := &faultConn{Conn: conn, d: d}
+	d.mu.Lock()
+	d.dials++
+	d.conns = append(d.conns, fc)
+	d.mu.Unlock()
+	return fc, nil
+}
+
+// armLast fails the next Write on the most recently dialed (now idle) connection.
+func (d *writeFaultDialer) armLast() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.conns[len(d.conns)-1].failNext = true
+}
+
+func (d *writeFaultDialer) stats() (dials, injected int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.dials, d.injected
+}
+
+// countingProvider is a keep-alive OpenAI provider that counts the requests that reached
+// its handler — the provider-visible count the native accounting must equal. A path can
+// be made to close the connection before any response byte.
+type countingProvider struct {
+	srv      *httptest.Server
+	received atomic.Int64
+}
+
+func newCountingProvider(t *testing.T, handle func(w http.ResponseWriter, r *http.Request)) *countingProvider {
+	t.Helper()
+	p := &countingProvider{}
+	p.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		p.received.Add(1)
+		handle(w, r)
+	}))
+	t.Cleanup(p.srv.Close)
+	return p
+}
+
+// closeWithoutResponse takes over the connection and closes it before any response byte.
+func closeWithoutResponse(w http.ResponseWriter) {
+	if hj, ok := w.(http.Hijacker); ok {
+		if conn, _, err := hj.Hijack(); err == nil {
+			_ = conn.Close()
+		}
+	}
+}
+
+// TestCallWithOracle_LiveOracle_ProviderRequestCountIsWhatTheProviderReceived pins the
+// accounting against the provider's OWN count across the cases where a naive counter goes
+// wrong, under both client modes and on both routes:
+//
+//   - zero-byte retry: a warmed keep-alive connection whose next write fails with nothing
+//     written; net/http retries on a fresh connection and the provider receives ONE request
+//     (a counter keyed on WroteRequest counts two);
+//   - redirect, then the target closes before the first response byte: TWO requests reached
+//     the provider (a counter keyed only on responses counts one);
+//   - redirect to an unreachable target: ONE request reached the provider (a counter that
+//     adds one for any final transport failure counts two).
+//
+// Each row compares the native leg with a flag-off leg built the same way: identical
+// outcome, identical provider-received count, and the native ProviderRequests and socket
+// counter equal to what the provider received. The fasthttp backend (auto) follows no
+// redirect and never retries a POST, so its rows are single sends — and the dialer fault,
+// which only the net/http transport uses, is inert there.
+func TestCallWithOracle_LiveOracle_ProviderRequestCountIsWhatTheProviderReceived(t *testing.T) {
+	refused := func() string {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen: %v", err)
+		}
+		addr := ln.Addr().String()
+		_ = ln.Close()
+		return "http://" + addr + "/gone"
+	}()
+	type rowCase struct {
+		name       string
+		handle     func(w http.ResponseWriter, r *http.Request)
+		zeroByte   bool
+		down       bool  // the provider address refuses connections
+		wantNet    int64 // provider-received requests under nethttp
+		wantNetSrv bool  // nethttp outcome is a success
+	}
+	ok := func(w http.ResponseWriter, _ *http.Request) { okJSONContent(w, `{"weather":"sunny"}`) }
+	rows := []rowCase{
+		{name: "zero-byte write on a reused connection", handle: ok, zeroByte: true, wantNet: 1, wantNetSrv: true},
+		{name: "redirect, then the target closes before the first response byte", handle: func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/closing" {
+				closeWithoutResponse(w)
+				return
+			}
+			w.Header().Set("Location", "/closing")
+			w.WriteHeader(http.StatusTemporaryRedirect)
+		}, wantNet: 2},
+		{name: "redirect to an unreachable target", handle: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Location", refused)
+			w.WriteHeader(http.StatusTemporaryRedirect)
+		}, wantNet: 1},
+		// Nothing reaches the provider: the accounting reports the one claimed attempt
+		// (the floor), the provider's count is zero.
+		{name: "connection refused", handle: ok, down: true, wantNet: 0},
+	}
+	for _, mode := range []string{"auto", "nethttp"} {
+		for _, row := range rows {
+			for _, raw := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/%s", mode, row.name, map[bool]string{false: "call", true: "call-with-raw"}[raw]), func(t *testing.T) {
+					t.Setenv(llmhttp.EnvVarClientMode, mode)
+					p := newCountingProvider(t, row.handle)
+					base := p.srv.URL + "/v1"
+					if row.down {
+						base = strings.TrimSuffix(refused, "/gone") + "/v1"
+					}
+					e, buildBAML := liveOracle(t, base)
+					plan, err := buildBAML(context.Background())
+					if err != nil {
+						t.Fatalf("plan: %v", err)
+					}
+					// One leg: a fresh client over a fault-injecting real dialer, warmed by one
+					// successful exchange when the row needs a reused connection.
+					leg := func(send func(*llmhttp.Client) error) (received int64, err error, dialer *writeFaultDialer) {
+						dialer = &writeFaultDialer{}
+						client := llmhttp.NewClientWithOptions(llmhttp.ClientOptions{
+							Mode:          llmhttp.ClientModeFromEnv(),
+							NetHTTPClient: &http.Client{Transport: &http.Transport{DialContext: dialer.dial}},
+						})
+						if row.zeroByte {
+							warm := &llmhttp.Request{Method: http.MethodPost, URL: plan.URL, Headers: plan.Headers, Body: plan.Body}
+							resp, werr := client.ExecuteBorrowed(context.Background(), warm, func() {})
+							if werr != nil {
+								t.Fatalf("warm-up: %v", werr)
+							}
+							resp.Release()
+							if mode == "nethttp" {
+								dialer.armLast()
+							}
+						}
+						before := p.received.Load()
+						err = send(client)
+						return p.received.Load() - before, err, dialer
+					}
+
+					offReceived, offErr, offDialer := leg(func(c *llmhttp.Client) error {
+						return callOrdinary(c, plan, 0).err
+					})
+					var res bamlutils.NativeSpineUnaryOracleResult
+					var captured string
+					onReceived, _, onDialer := leg(func(c *llmhttp.Client) error {
+						inv := liveInv(t, buildBAML, `{"weather":"sunny"}`, &captured)
+						inv.Raw = raw
+						inv.HTTPClient = c
+						res = e.CallWithOracle(context.Background(), inv)
+						return res.Err
+					})
+
+					// The scenario really ran: the fault fired once and forced a second dial.
+					if row.zeroByte && mode == "nethttp" {
+						for _, d := range []*writeFaultDialer{offDialer, onDialer} {
+							if dials, injected := d.stats(); injected != 1 || dials != 2 {
+								t.Fatalf("zero-byte fault: injected=%d dials=%d, want 1 and 2 — the retry path was not exercised", injected, dials)
+							}
+						}
+					}
+					want := int64(1)
+					if mode == "nethttp" || row.down {
+						want = row.wantNet
+					}
+					if offReceived != want || onReceived != want {
+						t.Fatalf("provider received flag-off=%d native=%d, want %d each", offReceived, onReceived, want)
+					}
+					// THE accounting property: counted == what the provider received — with the
+					// one-attempt floor when nothing reached it.
+					wantCounted := max(1, onReceived)
+					if got := int64(res.Observations.ProviderRequests); got != wantCounted {
+						t.Errorf("observations.ProviderRequests = %d, want %d (provider received %d)", got, wantCounted, onReceived)
+					}
+					if snap := e.Metrics().Snapshot(); snap.Claims != 1 || snap.Sockets != wantCounted {
+						t.Errorf("executor counters = %+v, want claims=1 sockets=%d", snap, wantCounted)
+					}
+					// Same outcome as flag-off.
+					if (offErr == nil) != (res.Disposition == bamlutils.NativeSpineSucceeded) {
+						t.Fatalf("flag-off err=%v, native disposition=%v err=%v", offErr, res.Disposition, res.Err)
+					}
+					if offErr != nil && (res.Err == nil || res.Err.Error() != offErr.Error()) {
+						t.Errorf("error: flag-off %q, native %v", offErr.Error(), res.Err)
+					}
+					if mode == "nethttp" && row.wantNetSrv && res.Disposition != bamlutils.NativeSpineSucceeded {
+						t.Errorf("the retried request should be served: %v", res.Err)
 					}
 				})
 			}

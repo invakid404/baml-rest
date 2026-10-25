@@ -39,6 +39,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http/httptrace"
+	"sync"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
@@ -382,14 +383,67 @@ type OrdinaryAttemptConfig struct {
 	// the BAML send path hands it (ExecuteBorrowed's onSuccess); nil becomes a no-op.
 	SendHeartbeat func()
 
-	// OnRequestWritten, when non-nil, is called once for EVERY request the client writes
-	// to the provider during the attempt — the first request and each redirect hop it
-	// follows — so a caller can count the attempt's real provider requests. It observes
-	// only (an httptrace hook on the request context) and never changes the client's
-	// behavior. It fires on the net/http backend; the fasthttp backend is untraced, and
-	// it sends at most one request per call (it follows no redirect and never retries a
-	// POST), so a caller counting with this hook floors the attempt at one request.
-	OnRequestWritten func()
+	// OnProviderRequests, when non-nil, receives — once, as soon as the send returns, on
+	// success or failure — how many requests the attempt made visible to the provider
+	// (see providerRequestCount): its first request, every redirect hop the client
+	// followed, never a nothing-written transport retry, and at least the one attempt.
+	OnProviderRequests func(n int)
+}
+
+// providerRequestCount counts the requests ONE attempt made visible to the provider. It
+// is fed by two observe-only httptrace events the net/http backend emits — never by
+// WroteRequest, which HTTP/1 reports from Request.write BEFORE persistConn's buffered
+// flush, so a flush that then fails with nothing written (and is retried on a fresh
+// connection) would read as a second request:
+//
+//   - GotConn fires each time the transport hands the request to a live connection — an
+//     idle-connection reuse or a successful dial, never a failed dial — so once per
+//     transport attempt: the original, the re-attempt after a nothing-written failure on a
+//     reused connection, each redirect hop http.Client follows, and HTTP/2's retry of a
+//     stream the server never processed.
+//   - GotFirstResponseByte fires once per request the provider answered (HTTP/1: a first
+//     response byte is readable; HTTP/2: the stream's first HEADERS). An answered request
+//     is never re-sent: net/http retries a POST only when nothing was written, and HTTP/2
+//     only a stream the server refused before processing it.
+//
+// Every answered request was provider-visible. Each attempt that obtained a connection
+// and was NOT answered is followed either by another attempt (a nothing-written retry, or
+// an unprocessed HTTP/2 stream) or by the end of the send; only the LAST such attempt can
+// have reached the provider — sent, then a close, reset, or deadline before any response
+// byte — so it counts once. Hence count = answered + (last connection unanswered ? 1 : 0),
+// floored at one: a send that obtained no connection at all (a dial or TLS failure) is
+// still the one claimed attempt.
+//
+// The fasthttp backend emits no httptrace events and makes at most one request per call:
+// HostClient.Do follows no redirect, and its default retry predicate admits GET/HEAD/PUT,
+// never the admitted POST. The floor counts that one request exactly.
+type providerRequestCount struct {
+	mu         sync.Mutex
+	answered   int
+	unanswered bool
+}
+
+func (c *providerRequestCount) gotConn() {
+	c.mu.Lock()
+	c.unanswered = true
+	c.mu.Unlock()
+}
+
+func (c *providerRequestCount) gotFirstResponseByte() {
+	c.mu.Lock()
+	c.answered++
+	c.unanswered = false
+	c.mu.Unlock()
+}
+
+func (c *providerRequestCount) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := c.answered
+	if c.unanswered {
+		n++
+	}
+	return max(1, n)
 }
 
 // RunOrdinaryAttempt performs one native unary attempt like RunAttempt, but sends the plan
@@ -405,7 +459,8 @@ type OrdinaryAttemptConfig struct {
 // GET without the body, a 307/308 re-sent with it) — as flag-off follows it — while the
 // fasthttp backend follows no redirect. Neither backend re-sends a POST that was written:
 // fasthttp retries only GET/HEAD/PUT, and net/http retries a POST only when nothing was
-// written. The attempt's real request count is observable through OnRequestWritten.
+// written. The attempt's provider-visible request count is reported through
+// OnProviderRequests.
 //
 // Contract:
 //
@@ -448,25 +503,23 @@ func RunOrdinaryAttempt(ctx context.Context, cfg OrdinaryAttemptConfig) (*Attemp
 	if onSuccess == nil {
 		onSuccess = func() {}
 	}
-	sendCtx := ctx
-	if cfg.OnRequestWritten != nil {
-		// A context VALUE only: it adds no deadline or Done channel, so the client's
-		// cancellability-dependent lane choice is the same as for ctx.
-		onWritten := cfg.OnRequestWritten
-		sendCtx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
-			WroteRequest: func(info httptrace.WroteRequestInfo) {
-				if info.Err == nil {
-					onWritten()
-				}
-			},
-		})
-	}
+	// A context VALUE only: it adds no deadline or Done channel, so the client's
+	// cancellability-dependent lane choice is the same as for ctx, and the hooks only
+	// record — they never change what the client does.
+	var sent providerRequestCount
+	sendCtx := httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		GotConn:              func(httptrace.GotConnInfo) { sent.gotConn() },
+		GotFirstResponseByte: sent.gotFirstResponseByte,
+	})
 	resp, err := cfg.HTTPClient.ExecuteBorrowed(sendCtx, &llmhttp.Request{
 		Method:  prep.Method,
 		URL:     prep.URL,
 		Headers: headerMap(prep.Headers),
 		Body:    string(prep.Body),
 	}, onSuccess)
+	if cfg.OnProviderRequests != nil {
+		cfg.OnProviderRequests(sent.count())
+	}
 	if err != nil {
 		return nil, err
 	}

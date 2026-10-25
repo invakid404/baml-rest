@@ -33,6 +33,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
@@ -543,4 +544,199 @@ func TestSpineComposite_LaneSendsThroughTheOrchestratorsClient(t *testing.T) {
 			t.Errorf("native ignored the adapter client's redirect policy:\n  stock:  %+v %+v\n  native: %+v %+v", stock, stockSeq, native, nativeSeq)
 		}
 	})
+}
+
+// faultDialer dials REAL TCP connections and, when armed, makes the next Write on the most
+// recently dialed connection return (0, EPIPE): net/http's stale-connection condition, in
+// which its HTTP/1 transport retries a rewindable POST on a fresh connection.
+type faultDialer struct {
+	mu       sync.Mutex
+	conns    []*faultingConn
+	dials    int
+	injected int
+}
+
+type faultingConn struct {
+	net.Conn
+	d        *faultDialer
+	failNext bool
+}
+
+func (c *faultingConn) Write(b []byte) (int, error) {
+	c.d.mu.Lock()
+	fail := c.failNext
+	c.failNext = false
+	if fail {
+		c.d.injected++
+	}
+	c.d.mu.Unlock()
+	if fail {
+		return 0, syscall.EPIPE
+	}
+	return c.Conn.Write(b)
+}
+
+func (d *faultDialer) dial(ctx context.Context, network, addr string) (net.Conn, error) {
+	conn, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+	if err != nil {
+		return nil, err
+	}
+	fc := &faultingConn{Conn: conn, d: d}
+	d.mu.Lock()
+	d.dials++
+	d.conns = append(d.conns, fc)
+	d.mu.Unlock()
+	return fc, nil
+}
+
+func (d *faultDialer) armLast() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.conns[len(d.conns)-1].failNext = true
+}
+
+// countingFixtureServer binds the fixture port and counts the requests that reach its
+// handler — the provider's own count.
+type countingFixtureServer struct {
+	srv      *httptest.Server
+	received atomic.Int64
+}
+
+func newCountingFixtureServer(t *testing.T, handle func(w http.ResponseWriter, r *http.Request)) *countingFixtureServer {
+	t.Helper()
+	cs := &countingFixtureServer{}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		cs.received.Add(1)
+		handle(w, r)
+	}))
+	_ = srv.Listener.Close()
+	srv.Listener = listenFixturePort(t)
+	srv.Start()
+	cs.srv = srv
+	return cs
+}
+
+// TestSpineComposite_ProviderRequestCountIsWhatTheProviderReceived runs the accounting
+// cases a naive counter gets wrong through the generated adapter, flag off (stock BAML over
+// the adapter's client) vs flag on (the claimed lane over the SAME client configuration),
+// under both client modes and on both routes: a zero-byte write on a reused connection that
+// net/http retries (ONE request reaches the provider), a redirect whose target closes before
+// the first response byte (TWO), a redirect to an unreachable target (ONE), and a refused
+// connection (NONE — counted as the one attempt). The provider's count must match across
+// the legs, the native socket counter must equal it (floored at the attempt), and the
+// public outcome must be identical.
+func TestSpineComposite_ProviderRequestCountIsWhatTheProviderReceived(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	unreachable := "http://" + ln.Addr().String() + "/gone"
+	_ = ln.Close()
+	ok := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(openAIJSONMap())
+	}
+	rows := []struct {
+		name     string
+		handle   func(w http.ResponseWriter, r *http.Request)
+		zeroByte bool
+		down     bool
+		wantNet  int64
+	}{
+		{name: "zero_byte_write_on_a_reused_connection", handle: ok, zeroByte: true, wantNet: 1},
+		{name: "redirect_then_target_closes_before_first_byte", handle: func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/closing" {
+				if hj, ok := w.(http.Hijacker); ok {
+					if conn, _, err := hj.Hijack(); err == nil {
+						_ = conn.Close()
+					}
+				}
+				return
+			}
+			w.Header().Set("Location", "/closing")
+			w.WriteHeader(http.StatusTemporaryRedirect)
+		}, wantNet: 2},
+		{name: "redirect_to_an_unreachable_target", handle: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Location", unreachable)
+			w.WriteHeader(http.StatusTemporaryRedirect)
+		}, wantNet: 1},
+		{name: "connection_refused", handle: ok, down: true, wantNet: 0},
+	}
+	for _, mode := range []string{"auto", "nethttp"} {
+		for _, row := range rows {
+			for _, streamMode := range []bamlutils.StreamMode{bamlutils.StreamModeCallWithRaw, bamlutils.StreamModeCall} {
+				t.Run(fmt.Sprintf("%s/%s/%v", mode, row.name, streamMode.NeedsRaw()), func(t *testing.T) {
+					t.Setenv(llmhttp.EnvVarClientMode, mode)
+					leg := func(flagOn bool) (rawOutcome, int64, spine.MetricsSnapshot, *faultDialer) {
+						serveFn, exec, _ := fixtureBamlSrcSpineServe(t)
+						var server *countingFixtureServer
+						if !row.down {
+							server = newCountingFixtureServer(t, row.handle)
+							defer server.srv.Close()
+						}
+						dialer := &faultDialer{}
+						client := llmhttp.NewClientWithOptions(llmhttp.ClientOptions{
+							Mode:          llmhttp.ClientModeFromEnv(),
+							NetHTTPClient: &http.Client{Transport: &http.Transport{Proxy: nil, DialContext: dialer.dial}},
+						})
+						if row.zeroByte {
+							resp, werr := client.ExecuteBorrowed(context.Background(), &llmhttp.Request{
+								Method: http.MethodPost, URL: "http://" + fixtureLoopbackAddr + "/v1/chat/completions",
+								Headers: map[string]string{"Content-Type": "application/json"}, Body: "{}",
+							}, func() {})
+							if werr != nil {
+								t.Fatalf("warm-up: %v", werr)
+							}
+							resp.Release()
+							if mode == "nethttp" {
+								dialer.armLast()
+							}
+						}
+						var before int64
+						if server != nil {
+							before = server.received.Load()
+						}
+						a := buildFixtureAdapterWithServe(t, serveFn, flagOn)
+						ba := a.(*fwadapter.BamlAdapter)
+						ba.SetHTTPClient(client)
+						ba.SetStreamMode(streamMode)
+						out := driveCallWithRaw(t, a)
+						var received int64
+						if server != nil {
+							received = server.received.Load() - before
+						}
+						return out, received, exec.Metrics().Snapshot(), dialer
+					}
+					stock, stockReceived, _, stockDialer := leg(false)
+					native, nativeReceived, snap, nativeDialer := leg(true)
+
+					if row.zeroByte && mode == "nethttp" {
+						for _, d := range []*faultDialer{stockDialer, nativeDialer} {
+							if d.injected != 1 || d.dials != 2 {
+								t.Fatalf("zero-byte fault injected=%d dials=%d, want 1 and 2 — the retry path was not exercised", d.injected, d.dials)
+							}
+						}
+					}
+					want := int64(1)
+					if mode == "nethttp" || row.down {
+						want = row.wantNet
+					}
+					if stockReceived != want || nativeReceived != want {
+						t.Fatalf("provider received stock=%d native=%d, want %d each", stockReceived, nativeReceived, want)
+					}
+					if snap.Claims != 1 || snap.Sockets != max(1, nativeReceived) {
+						t.Errorf("native counters = %+v, want claims=1 sockets=%d (what the provider received, floored at the attempt)", snap, max(1, nativeReceived))
+					}
+					if stock.err == "" && native.winner != bamlutils.NativeStaticServeEngineNative {
+						t.Errorf("flag-off served %s; the native lane must serve it too (winner %q, err %q)", stock.data, native.winner, native.err)
+					}
+					stock.winner, native.winner = "", ""
+					if native != stock {
+						t.Errorf("outcome differs from stock BAML:\n  stock:  %+v\n  native: %+v", stock, native)
+					}
+				})
+			}
+		}
+	}
 }

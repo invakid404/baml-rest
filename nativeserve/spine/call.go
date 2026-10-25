@@ -240,16 +240,17 @@ func (e *UnaryExecutor) CallWithOracle(ctx context.Context, inv bamlutils.Native
 	obs.PlanMatched = true
 	obs.SocketOpened = true
 
-	var written atomic.Int64
-	res, rerr := e.runOrdinaryClaimedAttempt(ctx, claim, inv, func() { written.Add(1) })
+	var sent atomic.Int64
+	res, rerr := e.runOrdinaryClaimedAttempt(ctx, claim, inv, func(n int) { sent.Store(int64(n)) })
 	// A non-2xx is the client's *HTTPError (no body for the response side), but the
 	// provider DID respond.
 	var httpErr *llmhttp.HTTPError
 	obs.SocketResponded = res != nil || errors.As(rerr, &httpErr)
 	// Honest send accounting: the claim above counted the attempt's first request; every
-	// further request it wrote (a redirect hop the client followed, exactly as the BAML
-	// path's send follows it) is counted too, so a 307 is two sockets, never one.
-	obs.ProviderRequests = max(1, int(written.Load()))
+	// further provider-visible request (a redirect hop the client followed, exactly as the
+	// BAML path's send follows it) is counted too — a followed 307 is two sockets, a
+	// nothing-written transport retry is not a second one (execute.providerRequestCount).
+	obs.ProviderRequests = max(1, int(sent.Load()))
 	if extra := obs.ProviderRequests - 1; extra > 0 {
 		e.metrics.sockets.Add(int64(extra))
 	}
@@ -359,9 +360,10 @@ func (e *UnaryExecutor) runClaimedAttempt(ctx context.Context, claim *admission.
 // second request there too, and the fasthttp backend follows none; and NO BAML send after
 // it (the orchestrator's NativeCallFailed branch is terminal, and the cohort admits no
 // retry or fallback policy). It is not "one physical HTTP request": refusing to follow a
-// redirect flag-off follows would fail a request flag-off serves. onRequestWritten counts
-// every request the attempt writes, so the socket accounting reports the real number.
-func (e *UnaryExecutor) runOrdinaryClaimedAttempt(ctx context.Context, claim *admission.StaticClaim, inv bamlutils.NativeStaticInvocation, onRequestWritten func()) (*execute.AttemptResult, error) {
+// redirect flag-off follows would fail a request flag-off serves. onProviderRequests
+// receives the attempt's provider-visible request count, so the socket accounting reports
+// the real number.
+func (e *UnaryExecutor) runOrdinaryClaimedAttempt(ctx context.Context, claim *admission.StaticClaim, inv bamlutils.NativeStaticInvocation, onProviderRequests func(n int)) (*execute.AttemptResult, error) {
 	bundle := claim.Bundle
 	return execute.RunOrdinaryAttempt(ctx, execute.OrdinaryAttemptConfig{
 		Client:     claim.Client(),
@@ -374,9 +376,9 @@ func (e *UnaryExecutor) runOrdinaryClaimedAttempt(ctx context.Context, claim *ad
 			}
 			return parsed.JSON, nil
 		},
-		IncludeReasoning: inv.IncludeReasoning,
-		SendHeartbeat:    inv.SendHeartbeat,
-		OnRequestWritten: onRequestWritten,
+		IncludeReasoning:   inv.IncludeReasoning,
+		SendHeartbeat:      inv.SendHeartbeat,
+		OnProviderRequests: onProviderRequests,
 	})
 }
 
