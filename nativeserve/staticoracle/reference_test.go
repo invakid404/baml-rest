@@ -271,20 +271,26 @@ func TestResolveReference_OriginalNon2xxIsProviderError(t *testing.T) {
 }
 
 // TestResolveReference_HookFiresBeforeExtractorAndParserPanics: the phase hook precedes both
-// the extractor and the parser, so a panic in either keeps the same-response phase.
+// the extractor and the parser, so a panic in either keeps the same-response phase. Each
+// injected callback marks that it ran, so a panic raised anywhere else cannot satisfy it.
 func TestResolveReference_HookFiresBeforeExtractorAndParserPanics(t *testing.T) {
 	res := nativeStructured(openAIBody(`1`, ""), `1`, "", `1`)
+	var invoked bool
 	for name, rf := range map[string]Reference{
-		"extractor": {Provider: "openai", Extract: func(string, []byte, bool) (string, string, string, error) { panic("x") }, Parse: parse(`1`, nil)},
-		"parser":    ref(func(context.Context, string) ([]byte, error) { panic("y") }),
+		"extractor": {Provider: "openai", Extract: func(string, []byte, bool) (string, string, string, error) { invoked = true; panic("x") }, Parse: parse(`1`, nil)},
+		"parser":    ref(func(context.Context, string) ([]byte, error) { invoked = true; panic("y") }),
 	} {
 		t.Run(name, func(t *testing.T) {
 			entered := false
+			invoked = false
 			func() {
 				defer func() { _ = recover() }()
 				ResolveReference(context.Background(), nil, res, nil, rf, func() { entered = true })
 				t.Error("ResolveReference returned despite a panic")
 			}()
+			if !invoked {
+				t.Errorf("the injected %s never ran: the panic came from elsewhere", name)
+			}
 			if !entered {
 				t.Error("the phase hook did not fire before the panic")
 			}
