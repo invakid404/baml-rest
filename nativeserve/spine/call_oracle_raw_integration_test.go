@@ -26,7 +26,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -686,5 +688,123 @@ func TestCallWithOracle_LiveOracle_LenientFramingIsServed(t *testing.T) {
 	}
 	if res.Raw != `{"weather":"sunny"}` || captured != `{"weather":"sunny"}` {
 		t.Errorf("raw/reference parseable = %q/%q, want the delivered assistant text", res.Raw, captured)
+	}
+}
+
+// sentRequest is one request a provider received: what the send client put on the wire.
+type sentRequest struct{ method, path, body string }
+
+// redirectProvider answers the admitted chat-completions path with a redirect of the given
+// status to /redirected, and /redirected (any method) with a complete OpenAI response. It
+// records every request it receives, in order, so two legs' provider-request SEQUENCES can
+// be compared — the redirect hop, its method, and whether the body was replayed.
+type redirectProvider struct {
+	srv *httptest.Server
+	mu  sync.Mutex
+	seq []sentRequest
+}
+
+func newRedirectProvider(t *testing.T, status int) *redirectProvider {
+	t.Helper()
+	p := &redirectProvider{}
+	p.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		p.mu.Lock()
+		p.seq = append(p.seq, sentRequest{method: r.Method, path: r.URL.Path, body: string(body)})
+		p.mu.Unlock()
+		if r.URL.Path == "/redirected" {
+			okJSONContent(w, `{"weather":"sunny"}`)
+			return
+		}
+		w.Header().Set("Location", "/redirected")
+		w.Header().Set("Connection", "close")
+		w.WriteHeader(status)
+	}))
+	t.Cleanup(p.srv.Close)
+	return p
+}
+
+func (p *redirectProvider) baseURL() string { return p.srv.URL + "/v1" }
+
+// take returns the requests recorded so far and resets the log.
+func (p *redirectProvider) take() []sentRequest {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := p.seq
+	p.seq = nil
+	return out
+}
+
+// TestCallWithOracle_LiveOracle_RedirectsAreTheBAMLPathsRequests pins the lane's send
+// invariant on the multi-request class: for every redirect status, under both client modes
+// the worker can run, on /call and /call-with-raw, the ONE claimed native attempt's
+// provider-request sequence (method, path, body — so the 301/302/303 GET-without-body
+// rewrite and the 307/308 body replay are both checked) EQUALS the one flag-off's
+// identically configured ordinary Client produces, the outcome is the same, and the socket
+// accounting reports the real number of requests (two for a followed redirect, never one).
+// The fasthttp backend (auto, plain http) follows no redirect, so there the 3xx itself is
+// the outcome on both legs.
+func TestCallWithOracle_LiveOracle_RedirectsAreTheBAMLPathsRequests(t *testing.T) {
+	for _, mode := range []string{"auto", "nethttp"} {
+		for _, status := range []int{http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+			for _, raw := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%d/%s", mode, status, map[bool]string{false: "call", true: "call-with-raw"}[raw]), func(t *testing.T) {
+					t.Setenv(llmhttp.EnvVarClientMode, mode)
+					p := newRedirectProvider(t, status)
+					e, buildBAML := liveOracle(t, p.baseURL())
+					plan, err := buildBAML(context.Background())
+					if err != nil {
+						t.Fatalf("plan: %v", err)
+					}
+					newClient := func() *llmhttp.Client {
+						return llmhttp.NewDefaultClientWithOptions(llmhttp.ClientOptions{Mode: llmhttp.ClientModeFromEnv()})
+					}
+					want := callOrdinary(newClient(), plan, 0)
+					offSeq := p.take()
+
+					var captured string
+					inv := liveInv(t, buildBAML, `{"weather":"sunny"}`, &captured)
+					inv.Raw = raw
+					inv.HTTPClient = newClient()
+					res := e.CallWithOracle(context.Background(), inv)
+					onSeq := p.take()
+
+					// The load-bearing property: native sends exactly what flag-off sends.
+					if !reflect.DeepEqual(onSeq, offSeq) {
+						t.Fatalf("provider-request sequence differs:\n  flag-off: %+v\n  native:   %+v", offSeq, onSeq)
+					}
+					// Sanity on what the sequence IS, per backend, so the row exercises its class.
+					followed := mode == "nethttp"
+					if wantLen := map[bool]int{false: 1, true: 2}[followed]; len(onSeq) != wantLen {
+						t.Fatalf("sequence %+v has %d request(s), want %d for %s", onSeq, len(onSeq), wantLen, mode)
+					}
+					if followed {
+						hop := onSeq[1]
+						replays := status == http.StatusTemporaryRedirect || status == http.StatusPermanentRedirect
+						if hop.path != "/redirected" || (replays && (hop.method != http.MethodPost || hop.body != plan.Body)) ||
+							(!replays && (hop.method != http.MethodGet || hop.body != "")) {
+							t.Errorf("redirect hop %+v does not follow net/http's policy for %d", hop, status)
+						}
+					}
+					// Honest accounting: one claim, one socket per request actually sent.
+					if snap := e.Metrics().Snapshot(); snap.Claims != 1 || snap.Sockets != int64(len(onSeq)) {
+						t.Errorf("executor counters = %+v, want claims=1 sockets=%d", snap, len(onSeq))
+					}
+					if got := res.Observations.ProviderRequests; got != len(onSeq) {
+						t.Errorf("observations.ProviderRequests = %d, want %d", got, len(onSeq))
+					}
+					// Same outcome as flag-off.
+					if want.err == nil {
+						if res.Disposition != bamlutils.NativeSpineSucceeded || res.WinnerEngine != bamlutils.NativeStaticServeEngineNative {
+							t.Fatalf("flag-off delivered %d; native disposition/winner = %v/%q (err %v)", want.status, res.Disposition, res.WinnerEngine, res.Err)
+						}
+						return
+					}
+					if res.Disposition != bamlutils.NativeSpineFailedAfterClaim || res.Err == nil || res.Err.Error() != want.err.Error() {
+						t.Fatalf("flag-off error %q; native disposition %v err %v", want.err.Error(), res.Disposition, res.Err)
+					}
+				})
+			}
+		}
 	}
 }

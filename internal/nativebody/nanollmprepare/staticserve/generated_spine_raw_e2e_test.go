@@ -22,17 +22,22 @@ package staticserve
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
+	"github.com/invakid404/baml-rest/nativeserve/spine"
 
 	fixture "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/staticserve_fixture/generated"
 	fwadapter "github.com/invakid404/baml-rest/internal/nativeprompt/testdata/staticserve_fixture/generated/adapter"
@@ -376,4 +381,166 @@ func TestSpineComposite_TransportMatchesStockBAML(t *testing.T) {
 			}
 		}
 	}
+}
+
+// fixtureSentRequest is one request the fixture provider received.
+type fixtureSentRequest struct{ method, path, body string }
+
+// redirectFixtureServer binds the fixture port, answers the admitted chat-completions path
+// with a redirect of the given status to /redirected, and /redirected (any method) with a
+// complete OpenAI response; it records the request sequence.
+type redirectFixtureServer struct {
+	srv *httptest.Server
+	mu  sync.Mutex
+	seq []fixtureSentRequest
+}
+
+func newRedirectFixtureServer(t *testing.T, status int) *redirectFixtureServer {
+	t.Helper()
+	rs := &redirectFixtureServer{}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		rs.mu.Lock()
+		rs.seq = append(rs.seq, fixtureSentRequest{method: r.Method, path: r.URL.Path, body: string(body)})
+		rs.mu.Unlock()
+		if r.URL.Path == "/redirected" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(openAIJSONMap())
+			return
+		}
+		w.Header().Set("Location", "/redirected")
+		w.Header().Set("Connection", "close")
+		w.WriteHeader(status)
+	}))
+	_ = srv.Listener.Close()
+	srv.Listener = listenFixturePort(t)
+	srv.Start()
+	rs.srv = srv
+	return rs
+}
+
+func (rs *redirectFixtureServer) close() { rs.srv.Close() }
+
+func (rs *redirectFixtureServer) sequence() []fixtureSentRequest {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	return append([]fixtureSentRequest(nil), rs.seq...)
+}
+
+// TestSpineComposite_RedirectsMatchStockBAML is the generated-adapter redirect
+// differential: every redirect status, under both client modes, on /call-with-raw and
+// /call. Stock BAML (flag off) and the claimed native lane (flag on) must put the SAME
+// provider-request sequence on the wire — the redirect hop, its method and body included —
+// and produce the identical public outcome; the native leg's socket accounting equals
+// that sequence's length, and its claim count is one (so no BAML send followed it: the
+// native leg's sequence equals the stock leg's, which is BAML's only).
+func TestSpineComposite_RedirectsMatchStockBAML(t *testing.T) {
+	for _, mode := range []string{"auto", "nethttp"} {
+		for _, status := range []int{http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+			for _, streamMode := range []bamlutils.StreamMode{bamlutils.StreamModeCallWithRaw, bamlutils.StreamModeCall} {
+				t.Run(fmt.Sprintf("%s/%d/%v", mode, status, streamMode.NeedsRaw()), func(t *testing.T) {
+					t.Setenv(llmhttp.EnvVarClientMode, mode)
+					leg := func(flagOn bool) (rawOutcome, []fixtureSentRequest, int, spine.MetricsSnapshot) {
+						serveFn, exec, calls := fixtureBamlSrcSpineServe(t)
+						server := newRedirectFixtureServer(t, status)
+						defer server.close()
+						a := buildFixtureAdapterWithServe(t, serveFn, flagOn)
+						a.(*fwadapter.BamlAdapter).SetStreamMode(streamMode)
+						out := driveCallWithRaw(t, a)
+						return out, server.sequence(), *calls, exec.Metrics().Snapshot()
+					}
+					stock, stockSeq, stockCalls, _ := leg(false)
+					native, nativeSeq, calls, snap := leg(true)
+
+					if stockCalls != 0 || calls != 1 || snap.Claims != 1 {
+						t.Fatalf("serve seam stock=%d native=%d, native claims=%d; want 0, 1, 1", stockCalls, calls, snap.Claims)
+					}
+					if !reflect.DeepEqual(nativeSeq, stockSeq) || len(stockSeq) == 0 {
+						t.Fatalf("provider-request sequence differs from stock BAML:\n  stock:  %+v\n  native: %+v", stockSeq, nativeSeq)
+					}
+					if snap.Sockets != int64(len(nativeSeq)) {
+						t.Errorf("native sockets = %d, want %d — one per provider request actually sent", snap.Sockets, len(nativeSeq))
+					}
+					if mode == "nethttp" && len(nativeSeq) != 2 {
+						t.Errorf("net/http must follow the %d: sequence %+v", status, nativeSeq)
+					}
+					if mode == "auto" && len(nativeSeq) != 1 {
+						t.Errorf("fasthttp follows no redirect: sequence %+v", nativeSeq)
+					}
+					if stock.err == "" && native.winner != bamlutils.NativeStaticServeEngineNative {
+						t.Errorf("flag-off served %s; the native lane must serve it too (winner %q, err %q)", stock.data, native.winner, native.err)
+					}
+					stock.winner, native.winner = "", ""
+					if native != stock {
+						t.Errorf("outcome differs from stock BAML:\n  stock:  %+v\n  native: %+v", stock, native)
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestSpineComposite_LaneSendsThroughTheOrchestratorsClient pins the premise the lane's
+// transport parity rests on: the client the generated seam hands the live-oracle lane IS
+// the client the orchestrator sends the BAML path through — the same instance, so the same
+// redirect, retry, timeout and backend policy — for an adapter that carries its own client
+// and for one that does not (both fall back to llmhttp.DefaultClient). The behavioral half
+// configures the adapter's client to REFUSE redirects: flag-off then surfaces the 307
+// itself, and the native lane must too — it would follow it if it sent through any other
+// client.
+func TestSpineComposite_LaneSendsThroughTheOrchestratorsClient(t *testing.T) {
+	t.Run("same instance", func(t *testing.T) {
+		for _, withClient := range []bool{true, false} {
+			inner, _, _ := fixtureBamlSrcSpineServe(t)
+			var seen *llmhttp.Client
+			serveFn := func(ctx context.Context, inv bamlutils.NativeStaticInvocation) bamlutils.NativeStaticServeResult {
+				seen = inv.HTTPClient
+				return inner(ctx, inv)
+			}
+			server := newFixtureServer(t, http.StatusOK, openAIJSONMap())
+			a := buildFixtureAdapterWithServe(t, serveFn, true)
+			ba := a.(*fwadapter.BamlAdapter)
+			want := llmhttp.DefaultClient
+			if withClient {
+				want = llmhttp.NewClient(&http.Client{Transport: &http.Transport{Proxy: nil}})
+				ba.SetHTTPClient(want)
+			} else {
+				ba.SetHTTPClient(nil)
+			}
+			_ = driveCallWithRaw(t, a)
+			server.close()
+			if seen == nil || seen != want {
+				t.Errorf("adapter client set=%v: the lane received %p, want the orchestrator's client %p", withClient, seen, want)
+			}
+		}
+	})
+	t.Run("the adapter client's redirect policy governs the native send", func(t *testing.T) {
+		t.Setenv(llmhttp.EnvVarClientMode, "nethttp")
+		noRedirect := func() *llmhttp.Client {
+			return llmhttp.NewClientWithOptions(llmhttp.ClientOptions{
+				Mode: llmhttp.ClientModeNetHTTP,
+				NetHTTPClient: &http.Client{
+					Transport:     &http.Transport{Proxy: nil},
+					CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+				},
+			})
+		}
+		leg := func(flagOn bool) (rawOutcome, []fixtureSentRequest) {
+			serveFn, _, _ := fixtureBamlSrcSpineServe(t)
+			server := newRedirectFixtureServer(t, http.StatusTemporaryRedirect)
+			defer server.close()
+			a := buildFixtureAdapterWithServe(t, serveFn, flagOn)
+			a.(*fwadapter.BamlAdapter).SetHTTPClient(noRedirect())
+			a.(*fwadapter.BamlAdapter).SetStreamMode(bamlutils.StreamModeCallWithRaw)
+			return driveCallWithRaw(t, a), server.sequence()
+		}
+		stock, stockSeq := leg(false)
+		native, nativeSeq := leg(true)
+		if len(stockSeq) != 1 || stock.err == "" {
+			t.Fatalf("stock leg did not stop at the 307 (%+v, %+v); the client policy is not exercised", stock, stockSeq)
+		}
+		if !reflect.DeepEqual(nativeSeq, stockSeq) || native.err != stock.err {
+			t.Errorf("native ignored the adapter client's redirect policy:\n  stock:  %+v %+v\n  native: %+v %+v", stock, stockSeq, native, nativeSeq)
+		}
+	})
 }

@@ -254,10 +254,17 @@ type NativeSpineUnaryOracleObservations struct {
 	// (which is why the attempt CLAIMED). A plan-mismatch decline sets ran=true, matched=false.
 	PlanCompareRan bool
 	PlanMatched    bool
-	// SocketOpened: the single provider RoundTrip was attempted (== claimed);
-	// SocketResponded: the socket returned a response (vs a transport failure).
+	// SocketOpened: the claimed attempt's send was made (== claimed); SocketResponded: the
+	// provider answered it (a response, including a non-2xx, vs a transport failure).
 	SocketOpened    bool
 	SocketResponded bool
+	// ProviderRequests is how many HTTP requests the ONE claimed attempt sent to the
+	// provider: its first request plus every redirect hop the send client followed — the
+	// same requests the BAML path's send makes for the same responses. A send that failed
+	// before any request was written still counts as its one attempt. It is the honest
+	// physical-send count; "one claim, and no BAML send after it" is the anti-resend
+	// invariant, not "one physical request".
+	ProviderRequests int
 	// SameResponseOracleRan: the same-response BAML reference oracle was ENTERED. It is set
 	// before the parser runs, so a parser panic does not lose the phase.
 	SameResponseOracleRan bool

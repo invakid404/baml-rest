@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
@@ -111,8 +112,9 @@ func (e *UnaryExecutor) Call(ctx context.Context, method string, input any) (res
 
 // CallWithOracle performs one unary final call for an admitted method through the
 // ExecBridge-U1c LIVE-oracle composite: a live BAML `Request.<Method>` no-send
-// plan-compare admission before the claim, exactly one provider send through the
-// request's ordinary llmhttp Client (runOrdinaryClaimedAttempt), and the
+// plan-compare admission before the claim, exactly one claimed send through the
+// request's ordinary llmhttp Client (runOrdinaryClaimedAttempt — whose provider requests,
+// redirect hops included, are the BAML path's, and are counted), and the
 // raw-aware same-response reference oracle over that ONE response
 // (staticoracle.ResolveReference: BAML's extraction of the ORIGINAL provider body and its
 // `Parse.<Method>` of that text, compared facet-for-facet against native) — returning
@@ -238,11 +240,19 @@ func (e *UnaryExecutor) CallWithOracle(ctx context.Context, inv bamlutils.Native
 	obs.PlanMatched = true
 	obs.SocketOpened = true
 
-	res, rerr := e.runOrdinaryClaimedAttempt(ctx, claim, inv)
+	var written atomic.Int64
+	res, rerr := e.runOrdinaryClaimedAttempt(ctx, claim, inv, func() { written.Add(1) })
 	// A non-2xx is the client's *HTTPError (no body for the response side), but the
 	// provider DID respond.
 	var httpErr *llmhttp.HTTPError
 	obs.SocketResponded = res != nil || errors.As(rerr, &httpErr)
+	// Honest send accounting: the claim above counted the attempt's first request; every
+	// further request it wrote (a redirect hop the client followed, exactly as the BAML
+	// path's send follows it) is counted too, so a 307 is two sockets, never one.
+	obs.ProviderRequests = max(1, int(written.Load()))
+	if extra := obs.ProviderRequests - 1; extra > 0 {
+		e.metrics.sockets.Add(int64(extra))
+	}
 	// The raw-aware reference oracle resolves the claimed response. The reference envelope
 	// is what BAML's serving path produces from the ORIGINAL provider body with the SAME
 	// provider + reasoning preference; native wins only on a full facet match (assistant,
@@ -339,8 +349,19 @@ func (e *UnaryExecutor) runClaimedAttempt(ctx context.Context, claim *admission.
 // connection closed or refused, a deadline, a non-2xx's *HTTPError — reach the response
 // oracle (or the caller, unchanged) exactly as they reach the BAML path. The native parse
 // and the response oracle run on the bytes that client returned. The live plan compare
-// already proved the request equals BAML's; nothing here re-sends.
-func (e *UnaryExecutor) runOrdinaryClaimedAttempt(ctx context.Context, claim *admission.StaticClaim, inv bamlutils.NativeStaticInvocation) (*execute.AttemptResult, error) {
+// already proved the request equals BAML's.
+//
+// The send invariant this lane holds is ANTI-RESEND, stated precisely: ONE claimed
+// attempt (one ExecuteBorrowed call — the client is the same instance the orchestrator
+// sends through, so its redirect, retry, timeout and backend policy are the BAML path's,
+// not a copy of them); the provider requests that attempt makes are exactly the ones the
+// BAML path's send makes for the same responses — a 3xx the net/http backend follows is a
+// second request there too, and the fasthttp backend follows none; and NO BAML send after
+// it (the orchestrator's NativeCallFailed branch is terminal, and the cohort admits no
+// retry or fallback policy). It is not "one physical HTTP request": refusing to follow a
+// redirect flag-off follows would fail a request flag-off serves. onRequestWritten counts
+// every request the attempt writes, so the socket accounting reports the real number.
+func (e *UnaryExecutor) runOrdinaryClaimedAttempt(ctx context.Context, claim *admission.StaticClaim, inv bamlutils.NativeStaticInvocation, onRequestWritten func()) (*execute.AttemptResult, error) {
 	bundle := claim.Bundle
 	return execute.RunOrdinaryAttempt(ctx, execute.OrdinaryAttemptConfig{
 		Client:     claim.Client(),
@@ -355,6 +376,7 @@ func (e *UnaryExecutor) runOrdinaryClaimedAttempt(ctx context.Context, claim *ad
 		},
 		IncludeReasoning: inv.IncludeReasoning,
 		SendHeartbeat:    inv.SendHeartbeat,
+		OnRequestWritten: onRequestWritten,
 	})
 }
 

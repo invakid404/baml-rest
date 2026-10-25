@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -56,10 +57,25 @@ type rawProofProvider struct {
 	srv   *httptest.Server
 	calls atomic.Int64
 
-	mu     sync.Mutex
-	status int
-	body   []byte
-	raw    func(w *bufio.Writer)
+	mu       sync.Mutex
+	status   int
+	body     []byte
+	raw      func(w *bufio.Writer)
+	redirect int
+	seq      []rawProofSent
+}
+
+// rawProofSent is one request the provider received — the redirect hop, its method, and
+// whether the body was replayed are all part of a leg's provider-request sequence.
+type rawProofSent struct{ method, path, body string }
+
+// takeSequence returns the requests received since the last call and resets the log.
+func (p *rawProofProvider) takeSequence() []rawProofSent {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := p.seq
+	p.seq = nil
+	return out
 }
 
 func newRawProofProvider(t *testing.T, addr string) *rawProofProvider {
@@ -67,10 +83,24 @@ func newRawProofProvider(t *testing.T, addr string) *rawProofProvider {
 	p := &rawProofProvider{status: http.StatusOK}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p.calls.Add(1)
-		_, _ = io.Copy(io.Discard, r.Body)
+		reqBody, _ := io.ReadAll(r.Body)
 		p.mu.Lock()
-		status, body, raw := p.status, p.body, p.raw
+		status, body, raw, redirect := p.status, p.body, p.raw, p.redirect
+		p.seq = append(p.seq, rawProofSent{method: r.Method, path: r.URL.Path, body: string(reqBody)})
 		p.mu.Unlock()
+		if redirect != 0 {
+			// The admitted path redirects; the target (any method) answers the row's body.
+			if r.URL.Path != "/redirected" {
+				w.Header().Set("Location", "/redirected")
+				w.Header().Set("Connection", "close")
+				w.WriteHeader(redirect)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = w.Write(body)
+			return
+		}
 		if raw != nil {
 			hj, ok := w.(http.Hijacker)
 			if !ok {
@@ -103,7 +133,7 @@ func newRawProofProvider(t *testing.T, addr string) *rawProofProvider {
 func (p *rawProofProvider) respond(row rawProofRow) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.status, p.body, p.raw = row.status, []byte(row.body), row.raw
+	p.status, p.body, p.raw, p.redirect = row.status, []byte(row.body), row.raw, row.redirect
 }
 
 // rawProofRow is one provider response plus the request's reasoning preference and the
@@ -119,6 +149,9 @@ type rawProofRow struct {
 	// raw, when set, replaces status/body: the provider writes exactly these bytes on the
 	// connection and closes it.
 	raw func(w *bufio.Writer)
+	// redirect, when set, makes the admitted path answer with this 3xx and Location
+	// /redirected; status/body are then the redirect target's response.
+	redirect int
 }
 
 func rawProofMessage(msg map[string]any) string {
@@ -167,7 +200,7 @@ func rawProofTransportRows(netHTTP bool) []rawProofRow {
 	if netHTTP {
 		lenientWinner = "failure"
 	}
-	return []rawProofRow{
+	rows := []rawProofRow{
 		{name: "body_over_the_size_cap", status: http.StatusOK, body: strings.Repeat(" ", llmhttp.MaxResponseBodyBytes+1), wantWinner: "failure"},
 		{name: "2xx_body_truncated", wantWinner: "failure", raw: func(w *bufio.Writer) {
 			w.WriteString("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 200\r\n\r\n{\"choices\":[{\"message\":")
@@ -184,6 +217,21 @@ func rawProofTransportRows(netHTTP bool) []rawProofRow {
 			fmt.Fprintf(w, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n%x\r\n%s\r\n", len(body), body)
 		}},
 	}
+	// Redirects: net/http follows them (a 301/302/303 as a GET without the body, a 307/308
+	// with the body replayed) and the target answers 200, so both legs serve it after TWO
+	// provider requests; fasthttp follows none, so both legs fail on the 3xx itself.
+	redirectWinner := "failure"
+	if netHTTP {
+		redirectWinner = "native"
+	}
+	for _, code := range []int{http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		rows = append(rows, rawProofRow{
+			name: fmt.Sprintf("redirect_%d", code), status: http.StatusOK, redirect: code,
+			body:       rawProofMessage(map[string]any{"role": "assistant", "content": `{"a":1}`}),
+			wantWinner: redirectWinner,
+		})
+	}
+	return rows
 }
 
 // rawProofRows selects corpus rows by name, failing on an unknown name so a renamed row
@@ -227,6 +275,7 @@ type rawProofResponse struct {
 // rawProofObservation is one row's response plus the booted worker's per-row deltas.
 type rawProofObservation struct {
 	resp             rawProofResponse
+	sequence         []rawProofSent
 	providerRequests int64
 	nativeSockets    float64
 	winners          map[string]float64
@@ -345,6 +394,7 @@ func rawProofLeg(t *testing.T, provider *rawProofProvider, flagOn bool, mode bam
 				reqBody = `{"topic":"the deployed static route","__baml_options__":{"include_reasoning":true}}`
 			}
 			w0, s0, a0 := rawProofMetrics(t, workerPool)
+			provider.takeSequence()
 			before := provider.calls.Load()
 			resp := servers[server](reqBody)
 			w1, s1, a1 := rawProofMetrics(t, workerPool)
@@ -356,6 +406,7 @@ func rawProofLeg(t *testing.T, provider *rawProofProvider, flagOn bool, mode bam
 			}
 			out[server] = append(out[server], rawProofObservation{
 				resp:             resp,
+				sequence:         provider.takeSequence(),
 				providerRequests: provider.calls.Load() - before,
 				nativeSockets:    s1 - s0,
 				winners:          deltas,
@@ -440,15 +491,21 @@ func assertRawProofLegsMatch(t *testing.T, rows []rawProofRow, stock, native map
 		for i, row := range rows {
 			s, n := stock[server][i], native[server][i]
 			label := server + "/" + row.name
-			// The stock leg is stock BAML: one BAML send, nothing native.
-			if s.providerRequests != 1 || s.nativeSockets != 0 || len(s.winners) != 0 {
-				t.Errorf("%s: stock leg requests=%d sockets=%v winners=%v, want 1 BAML send and zero native activity",
-					label, s.providerRequests, s.nativeSockets, s.winners)
+			// The stock leg is stock BAML: its one send (plus any redirect hop its client
+			// follows), nothing native.
+			if int(s.providerRequests) != len(s.sequence) || len(s.sequence) == 0 || s.nativeSockets != 0 || len(s.winners) != 0 {
+				t.Errorf("%s: stock leg requests=%d sequence=%d sockets=%v winners=%v, want BAML's send(s) only and zero native activity",
+					label, s.providerRequests, len(s.sequence), s.nativeSockets, s.winners)
 			}
-			// OWNERSHIP on the flag-on leg, asserted separately from the bytes.
-			if n.providerRequests != 1 || n.nativeSockets != 1 {
-				t.Errorf("%s: native leg requests=%d sockets=%v, want exactly one native socket and one provider request",
-					label, n.providerRequests, n.nativeSockets)
+			// SEND PARITY, asserted separately from the bytes: the native leg put EXACTLY the
+			// stock leg's provider-request sequence on the wire (method, path, body — redirect
+			// hops included, nothing resent after), and counted one native socket per request.
+			if !reflect.DeepEqual(n.sequence, s.sequence) {
+				t.Errorf("%s: provider-request sequence differs:\n  stock:  %+v\n  native: %+v", label, s.sequence, n.sequence)
+			}
+			if int(n.providerRequests) != len(n.sequence) || n.nativeSockets != float64(len(n.sequence)) {
+				t.Errorf("%s: native leg requests=%d sockets=%v, want %d of each (one native socket per provider request)",
+					label, n.providerRequests, n.nativeSockets, len(n.sequence))
 			}
 			if len(n.winners) != 1 || n.winners[row.wantWinner] != 1 {
 				t.Errorf("%s: native leg winners=%v, want exactly {%s:1}", label, n.winners, row.wantWinner)

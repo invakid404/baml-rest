@@ -136,6 +136,12 @@ func unaryCandidate(b bamlutils.NativeSpineUnaryBinding) candidateRegistration {
 // Metrics is a minimal, bounded observability counter set for the executor. Every
 // counter uses a bounded label (the disposition), never a content-derived value. It
 // is atomic so the executor may be driven concurrently.
+//
+// claims counts claimed attempts; sockets counts the provider requests those attempts
+// sent. On the exact-executor lanes the two move together (one request per claim). On
+// CallWithOracle's ordinary-client send a claim is one attempt whose requests include
+// every redirect hop the client followed — exactly the BAML path's requests for the same
+// responses — so sockets can exceed claims there, and that is the honest count.
 type Metrics struct {
 	declines  atomic.Int64
 	claims    atomic.Int64

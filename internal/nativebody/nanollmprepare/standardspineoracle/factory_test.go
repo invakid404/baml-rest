@@ -304,6 +304,43 @@ func TestRecordOracle(t *testing.T) {
 			},
 		},
 		{
+			// A redirect the send client followed: the ONE claimed attempt sent two provider
+			// requests (the 3xx hop and the final request), so two native sockets are
+			// recorded — never one for two physical sends.
+			name: "redirected native win",
+			raw:  true,
+			res: succ(bamlutils.NativeStaticServeEngineNative, func() bamlutils.NativeSpineUnaryOracleObservations {
+				o := structuredObs(allMatch, false)
+				o.ProviderRequests = 2
+				return o
+			}()),
+			want: want{
+				mPop:      one(popl(dispSucceeded)),
+				mPhase:    claimedPhases,
+				mWinner:   one(scw("native")),
+				mPlan:     one(plan("match")),
+				mSocket:   map[string]float64{cellKey(sock("responded")): 2},
+				mResp:     respBranch(allMatch),
+				mAttempts: one(attMode("call_with_raw", "success")),
+			},
+		},
+		{
+			// A redirect hop that responded, then a final request that failed in transport.
+			name: "redirected transport fault",
+			res: fail(bamlutils.NativeSpineUnaryOracleObservations{
+				PlanCompareRan: true, PlanMatched: true, SocketOpened: true, SocketResponded: false,
+				ProviderRequests: 2, ServeOutcome: bamlutils.NativeStaticOutcomeTransportError,
+			}),
+			want: want{
+				mPop:      one(popl(dispFailed)),
+				mPhase:    {cellKey(sc("claimed")): 1, cellKey(sc("postclaim_terminal")): 1},
+				mWinner:   one(scw("failure")),
+				mPlan:     one(plan("match")),
+				mSocket:   map[string]float64{cellKey(sock("responded")): 1, cellKey(sock("transport_error")): 1},
+				mAttempts: one(att("transport_error")),
+			},
+		},
+		{
 			name: "structured drift",
 			res:  succ(bamlutils.NativeStaticServeEngineBAMLParse, structuredObs(facetSet{true, true, true, false, true, false}, true)),
 			want: fallbackWant("call", "success", respBranch(facetSet{true, true, true, false, true, false})),

@@ -195,8 +195,13 @@ func recordOracle(m *admission.Metrics, pop *prometheus.CounterVec, inv bamlutil
 		}
 		m.RecordPlanCompare(result, admission.PlanCompareFieldMeta)
 	}
-	// Exactly-one native socket.
+	// One native socket per provider request the claimed attempt sent: its redirect hops
+	// (each of which answered with the 3xx the client followed) and then the final request,
+	// whose outcome is the attempt's. A single-request attempt records exactly one.
 	if obs.SocketOpened {
+		for hop := 1; hop < obs.ProviderRequests; hop++ {
+			m.RecordNativeSocket(admission.NativeSocketResponded)
+		}
 		outcome := admission.NativeSocketTransportError
 		if obs.SocketResponded {
 			outcome = admission.NativeSocketResponded

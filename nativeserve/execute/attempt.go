@@ -38,6 +38,7 @@ import (
 	stdjson "encoding/json"
 	"errors"
 	"fmt"
+	"net/http/httptrace"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
@@ -380,14 +381,31 @@ type OrdinaryAttemptConfig struct {
 	// SendHeartbeat is the first-2xx liveness callback, handed to the client exactly as
 	// the BAML send path hands it (ExecuteBorrowed's onSuccess); nil becomes a no-op.
 	SendHeartbeat func()
+
+	// OnRequestWritten, when non-nil, is called once for EVERY request the client writes
+	// to the provider during the attempt — the first request and each redirect hop it
+	// follows — so a caller can count the attempt's real provider requests. It observes
+	// only (an httptrace hook on the request context) and never changes the client's
+	// behavior. It fires on the net/http backend; the fasthttp backend is untraced, and
+	// it sends at most one request per call (it follows no redirect and never retries a
+	// POST), so a caller counting with this hook floors the attempt at one request.
+	OnRequestWritten func()
 }
 
-// RunOrdinaryAttempt performs exactly one native unary attempt like RunAttempt, but sends
-// the plan through cfg.HTTPClient with the same call the BAML serving path makes for a
-// child — ExecuteBorrowed with the request's context and first-2xx callback — instead of
-// the exact executor. Every transport behavior is therefore that client's own: backend
+// RunOrdinaryAttempt performs one native unary attempt like RunAttempt, but sends the plan
+// through cfg.HTTPClient with the same call the BAML serving path makes for a child —
+// ExecuteBorrowed with the request's context and first-2xx callback — instead of the
+// exact executor. Every transport behavior is therefore that client's own: backend
 // selection (fasthttp or net/http, including its ALPN probe), response framing and its
-// leniency, body caps, and every error it returns.
+// leniency, body caps, redirect following, and every error it returns.
+//
+// ONE attempt is one ExecuteBorrowed call, and its provider requests are exactly the ones
+// the BAML path's identical call makes for the same responses: on the net/http backend a
+// 3xx is followed under http.Client's default redirect policy (a 301/302/303 re-sent as a
+// GET without the body, a 307/308 re-sent with it) — as flag-off follows it — while the
+// fasthttp backend follows no redirect. Neither backend re-sends a POST that was written:
+// fasthttp retries only GET/HEAD/PUT, and net/http retries a POST only when nothing was
+// written. The attempt's real request count is observable through OnRequestWritten.
 //
 // Contract:
 //
@@ -430,7 +448,20 @@ func RunOrdinaryAttempt(ctx context.Context, cfg OrdinaryAttemptConfig) (*Attemp
 	if onSuccess == nil {
 		onSuccess = func() {}
 	}
-	resp, err := cfg.HTTPClient.ExecuteBorrowed(ctx, &llmhttp.Request{
+	sendCtx := ctx
+	if cfg.OnRequestWritten != nil {
+		// A context VALUE only: it adds no deadline or Done channel, so the client's
+		// cancellability-dependent lane choice is the same as for ctx.
+		onWritten := cfg.OnRequestWritten
+		sendCtx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+			WroteRequest: func(info httptrace.WroteRequestInfo) {
+				if info.Err == nil {
+					onWritten()
+				}
+			},
+		})
+	}
+	resp, err := cfg.HTTPClient.ExecuteBorrowed(sendCtx, &llmhttp.Request{
 		Method:  prep.Method,
 		URL:     prep.URL,
 		Headers: headerMap(prep.Headers),
