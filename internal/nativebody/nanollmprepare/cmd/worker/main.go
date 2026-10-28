@@ -20,9 +20,10 @@
 // serve/stream/observe lanes it is also gated by ENROLLMENT: the shipped
 // admission.ProductionCohortGate enrolls only the fe-v1 dynamic-call cohort, so those
 // surfaces decline pre-socket with `cohort_not_enrolled` for every other configuration.
-// The static unary /call lane is DIFFERENT since ExecBridge-U1c: its factory
-// (standardspineoracle.NewStaticServe) DEFAULT-SELECTS the exact U1 structural population
-// through the generated spine + a live BAML plan-compare oracle, with NO enrollment — the
+// The static unary /call and /call-with-raw lane is DIFFERENT since ExecBridge-U1c: its
+// factory (standardspineoracle.NewStaticServe) DEFAULT-SELECTS the exact U1 structural
+// population through the generated spine + a live BAML plan-compare oracle and the
+// raw-aware same-response reference oracle, with NO enrollment — the
 // spine lane is cohort-gate-exempt and its admission is a code-owned totality gate over
 // the deployment's generated registry. Every static near-miss still declines pre-socket
 // to BAML. The umbrella flag below remains the one global revert for all lanes.
@@ -134,12 +135,12 @@ func serveProfileOptions() workerboot.Options {
 		// when the flag is off), so the static observer is hard-off and 100% BAML then.
 		NativeStaticObserveFactory: nativeserve.NewStaticObserve,
 		// The STATIC SERVE factory (ExecBridge-U1c oracle composite): returns the neutral
-		// bamlutils.NativeStaticServeFunc the generated static /call seam installs — it
-		// DEFAULT-SELECTS the exact U1 structural population (the direct five-arm JSON
-		// alias, required scalar and required scalar-LIST inputs, literal-OpenAI default
-		// client) through the generated spine, wrapped in a LIVE BAML plan-compare
-		// admission + same-bytes parse oracle, and serves it natively (one exact
-		// RoundTrip); every near-miss declines
+		// bamlutils.NativeStaticServeFunc the generated static /call and /call-with-raw seam
+		// installs — it DEFAULT-SELECTS the exact U1 structural population (the direct
+		// five-arm JSON alias, required scalar and required scalar-LIST inputs,
+		// literal-OpenAI default client) through the generated spine, wrapped in a LIVE BAML
+		// plan-compare admission + the raw-aware same-response reference oracle, and serves
+		// it natively (one exact RoundTrip); every near-miss declines
 		// PRE-SOCKET to BAML. Selection is STRUCTURAL, decided at boot by the spine's U1
 		// classifier over the deployment's generated registry — there is NO enrollment, no
 		// trusted-client seal, no cohort manifest row. It supersedes the legacy

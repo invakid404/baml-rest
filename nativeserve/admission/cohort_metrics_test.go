@@ -174,7 +174,7 @@ func allowedLabelValues(gate *CohortGate) map[string]bool {
 	add(string(ResponseCompareMatch), string(ResponseCompareMismatch))
 	add(string(ResponseCompareFieldTranslate), string(ResponseCompareFieldAssistant), string(ResponseCompareFieldStructured),
 		string(ResponseCompareFieldOrder), string(ResponseCompareFieldRaw), string(ResponseCompareFieldReasoning),
-		string(ResponseCompareFieldError), string(ResponseCompareFieldTyped))
+		string(ResponseCompareFieldError), string(ResponseCompareFieldTyped), string(ResponseCompareFieldCanonicalBytes))
 	add(string(SocketFlagOn), string(SocketFlagOff))
 	add(string(NativeSocketResponded), string(NativeSocketTransportError))
 	add(string(FallbackParseOnly))

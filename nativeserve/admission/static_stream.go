@@ -69,9 +69,9 @@ type StaticStreamInput struct {
 	// admits exactly those two; a unary/unknown mode declines.
 	Mode bamlutils.NativeStreamMode
 	// NeedsRaw reports a /stream-with-raw request. Unlike the unary call-with-raw
-	// envelope (which declines), stream-with-raw's raw/reasoning channels are owned by
-	// the native-only parser in the orchestrator, so it is admitted at the transport
-	// layer here.
+	// envelope (which declines on every unary lane without a raw-envelope oracle),
+	// stream-with-raw's raw/reasoning channels are owned by the native-only parser in the
+	// orchestrator, so it is admitted at the transport layer here.
 	NeedsRaw bool
 
 	// Whole orchestration plan + selected-child facts (layer 2).

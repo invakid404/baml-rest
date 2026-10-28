@@ -146,6 +146,73 @@ func TestAdmitStaticEarlyDeclines(t *testing.T) {
 	}
 }
 
+// TestStaticUnaryLaneRawAdmission pins the LANE-SCOPED /call-with-raw admission as a matrix
+// over every unary entry point that shares admitStaticThroughPrepare. A truthful Raw
+// declines at the mode gate (mode / call_with_raw_unproven) on the observer, the legacy
+// static serve and the frozen native-only spine — none of which owns a raw-envelope oracle
+// — and passes it ONLY on the live-oracle spine. The input is deliberately not single-leaf,
+// so the gate right after the mode gate (strategy / not_single_leaf) is where an admitted
+// raw request stops: every Raw=false control row reaches exactly that gate, so each raw row
+// measures the mode gate and nothing else. Opening raw on any other lane, or closing it on
+// the oracle lane, fails a row.
+func TestStaticUnaryLaneRawAdmission(t *testing.T) {
+	ctx := context.Background()
+	base := StaticInput{
+		WorkerCapable: true, RequestAPIPresent: true, OnBuildRequestRoute: true, FlagEnabled: true,
+		RouteKind: RouteKindStatic, Mode: bamlutils.NativeStaticModeFinal, SingleLeaf: false, Method: "M",
+		Cohort: testIdentity(t),
+	}
+	declineOf := func(t *testing.T, err error) (string, string) {
+		t.Helper()
+		d, ok := err.(*StaticDecline)
+		if !ok {
+			t.Fatalf("err = %v (%T), want a *StaticDecline", err, err)
+		}
+		return d.Stage, d.Reason
+	}
+	entries := []struct {
+		name        string
+		admit       func(*testing.T, StaticInput) (stage, reason string)
+		rawAdmitted bool
+	}{
+		{"AdmitStatic", func(_ *testing.T, in StaticInput) (string, string) {
+			obs := AdmitStatic(ctx, in)
+			return obs.Stage, obs.Reason
+		}, false},
+		{"AdmitStaticClaim", func(t *testing.T, in StaticInput) (string, string) {
+			_, err := AdmitStaticClaim(ctx, in)
+			return declineOf(t, err)
+		}, false},
+		{"AdmitStaticSpineClaim", func(t *testing.T, in StaticInput) (string, string) {
+			_, err := AdmitStaticSpineClaim(ctx, in)
+			return declineOf(t, err)
+		}, false},
+		{"AdmitStaticSpineOracleClaim", func(t *testing.T, in StaticInput) (string, string) {
+			_, err := AdmitStaticSpineOracleClaim(ctx, in)
+			return declineOf(t, err)
+		}, true},
+	}
+	for _, e := range entries {
+		t.Run(e.name, func(t *testing.T) {
+			if stage, reason := e.admit(t, base); stage != string(StageStrategy) || reason != string(ReasonNotSingleLeaf) {
+				t.Fatalf("control (Raw=false) declined at %s/%s, want strategy/%s — the matrix input must reach the gate after the mode gate", stage, reason, ReasonNotSingleLeaf)
+			}
+			raw := base
+			raw.Raw = true
+			stage, reason := e.admit(t, raw)
+			if e.rawAdmitted {
+				if stage != string(StageStrategy) || reason != string(ReasonNotSingleLeaf) {
+					t.Errorf("Raw=true declined at %s/%s, want it to pass the mode gate and stop at strategy/%s like the control", stage, reason, ReasonNotSingleLeaf)
+				}
+				return
+			}
+			if stage != string(StageMode) || reason != string(reasonCallWithRawUnprove) {
+				t.Errorf("Raw=true declined at %s/%s, want mode/%s — this lane has no raw-envelope oracle", stage, reason, reasonCallWithRawUnprove)
+			}
+		})
+	}
+}
+
 // TestAdmitStaticParseEarlyDeclines pins the parse-only predicate's pre-FFI gates:
 // a non-static route kind declines (capability) and an absent descriptor declines
 // (descriptor_envelope), without reaching any bundle lowering that would need a

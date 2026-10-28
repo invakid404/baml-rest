@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
@@ -111,12 +112,20 @@ func (e *UnaryExecutor) Call(ctx context.Context, method string, input any) (res
 
 // CallWithOracle performs one unary final call for an admitted method through the
 // ExecBridge-U1c LIVE-oracle composite: a live BAML `Request.<Method>` no-send
-// plan-compare admission before the claim, exactly one provider RoundTrip, and the
-// same-bytes BAML `Parse.<Method>` safety oracle over that ONE response — returning
-// canonical JSON for the standard generated decoder. It shares the SAME immutable
-// registry, exact transport, claim boundary, panic discipline, and atomic counters as
-// [UnaryExecutor.Call]; they differ ONLY in policy (live-vs-frozen oracle claim and
-// carrier-vs-canonical-JSON output). The native-only Call stays frozen + terminal and
+// plan-compare admission before the claim, exactly one claimed send through the
+// request's ordinary llmhttp Client (runOrdinaryClaimedAttempt — whose provider requests,
+// redirect hops included, are the BAML path's, and are counted), and the
+// raw-aware same-response reference oracle over that ONE response
+// (staticoracle.ResolveReference: BAML's extraction of the ORIGINAL provider body and its
+// `Parse.<Method>` of that text, compared facet-for-facet against native) — returning
+// canonical JSON plus the served raw/reasoning pair for the standard generated decoder.
+// The SAME policy serves /call and /call-with-raw: inv.Raw only reaches admission, which
+// admits it on this lane alone, because the reference envelope is the whole flag-off
+// /call-with-raw body. It shares the SAME immutable
+// registry, claim boundary, panic discipline, and atomic counters as [UnaryExecutor.Call];
+// they differ in policy (live-vs-frozen oracle claim and carrier-vs-canonical-JSON
+// output) and in the send: Call has no BAML path to match and uses the exact executor,
+// this lane sends through the BAML path's own client. The native-only Call stays frozen + terminal and
 // never learns about this method.
 //
 // Ownership discipline is identical: a pre-socket DECLINE certifies zero RoundTrips and
@@ -124,7 +133,8 @@ func (e *UnaryExecutor) Call(ctx context.Context, method string, input any) (res
 // serves the same call); from the claim onward every terminal condition is SUCCEEDED or
 // FAILED-AFTER-CLAIM. The panic guard tracks the same local `claimed` boolean: a panic
 // before the claim (in BuildBAMLRequest during admission, say) is a decline; a panic
-// after it (response translation, native parse, BAMLOnlyParse, compare) is terminal.
+// after it (response translation, native parse, the reference extraction, BAMLOnlyParse,
+// compare) is terminal.
 func (e *UnaryExecutor) CallWithOracle(ctx context.Context, inv bamlutils.NativeStaticInvocation) (result bamlutils.NativeSpineUnaryOracleResult) {
 	claimed := false
 	// obs accumulates the bounded metric observations INCREMENTALLY, so a post-claim panic
@@ -170,7 +180,7 @@ func (e *UnaryExecutor) CallWithOracle(ctx context.Context, inv bamlutils.Native
 		return e.declinedOracle(errDynamicSchema, stageAdmission, reasonDynamicSchema)
 	}
 	// Both BAML oracle callbacks MUST be present BEFORE the claim. A missing no-send
-	// plan builder or same-bytes parser discovered after the provider response is safe
+	// plan builder or BAML-only parser discovered after the provider response is safe
 	// from double-send but violates the default-on safety promise, so decline pre-claim
 	// (§4). Production codegen always supplies both; this bites only a direct caller.
 	if inv.BuildBAMLRequest == nil {
@@ -178,6 +188,12 @@ func (e *UnaryExecutor) CallWithOracle(ctx context.Context, inv bamlutils.Native
 	}
 	if inv.BAMLOnlyParse == nil {
 		return e.declinedOracle(errNoBAMLParse, stageAdmission, reasonNoBAMLParse)
+	}
+	// The send client must be present too: this lane sends through the request's ordinary
+	// llmhttp Client (see runOrdinaryClaimedAttempt), and without it the claimed send could
+	// not be the BAML path's. Production codegen always supplies it.
+	if inv.HTTPClient == nil {
+		return e.declinedOracle(errNoOrdinaryClient, stageAdmission, reasonNoOrdinaryClient)
 	}
 
 	claim, aerr := e.admitClaimOracle(ctx, e.oracleStaticInput(rm, inv))
@@ -224,20 +240,50 @@ func (e *UnaryExecutor) CallWithOracle(ctx context.Context, inv bamlutils.Native
 	obs.PlanMatched = true
 	obs.SocketOpened = true
 
-	res, rerr := e.runClaimedAttempt(ctx, claim, inv.IncludeReasoning, inv.SendHeartbeat)
-	obs.SocketResponded = res != nil
-	// The SHARED same-bytes oracle resolves the claimed response: on a structured/order
-	// match native's canonical JSON wins; on drift or a native parse-decline the BAML
-	// parse of the SAME bytes wins; every fault is terminal. It opens no socket. The
-	// onStructuredOracle hook sets SameResponseOracleRan BEFORE the parser, so a parser
-	// panic still carries the phase out.
-	r := staticoracle.Resolve(ctx, claim.Bundle, res, rerr, inv.BAMLOnlyParse, func() { obs.SameResponseOracleRan = true })
+	var sent atomic.Int64
+	res, rerr := e.runOrdinaryClaimedAttempt(ctx, claim, inv, func(n int) { sent.Store(int64(n)) })
+	// A non-2xx is the client's *HTTPError (no body for the response side), but the
+	// provider DID respond.
+	var httpErr *llmhttp.HTTPError
+	obs.SocketResponded = res != nil || errors.As(rerr, &httpErr)
+	// Send accounting: the claim above counted the attempt's first request; every further
+	// counted request (a redirect hop the client followed, exactly as the BAML path's send
+	// follows it) is added too — a followed 307 is two sockets, a nothing-written transport
+	// retry is not a second one. The count is execute's attempted-request approximation,
+	// not an exact wire count: at most one more than the provider received, and one fewer
+	// for each transport retry of a request the provider received but never answered
+	// (execute.providerRequestCount; issue #583). It drives only these observations and
+	// metrics, never the serving outcome.
+	obs.ProviderRequests = max(1, int(sent.Load()))
+	if extra := obs.ProviderRequests - 1; extra > 0 {
+		e.metrics.sockets.Add(int64(extra))
+	}
+	// The raw-aware reference oracle resolves the claimed response. The reference envelope
+	// is what BAML's serving path produces from the ORIGINAL provider body with the SAME
+	// provider + reasoning preference; native wins only on a full facet match (assistant,
+	// raw, reasoning, structured, order, literal canonical bytes), and every drift, native
+	// decline or native post-response failure serves the WHOLE reference envelope. A
+	// reference extraction/parse failure is terminal. It opens no socket. The hook sets
+	// SameResponseOracleRan BEFORE the extractor and parser, so a panic in either still
+	// carries the phase out.
+	r := staticoracle.ResolveReference(ctx, claim.Bundle, res, rerr, staticoracle.Reference{
+		Provider:         inv.Provider,
+		IncludeReasoning: inv.IncludeReasoning,
+		Extract:          e.extractReference,
+		Parse:            inv.BAMLOnlyParse,
+	}, func() { obs.SameResponseOracleRan = true })
 	obs.ErrorCompareRecorded = r.ErrorCompareRecorded
 	obs.ErrorCompareMatch = r.ErrorCompareMatch
+	obs.ChannelsCompared = r.ChannelsCompared
+	obs.AssistantMatch = r.AssistantMatch
+	obs.RawMatch = r.RawMatch
+	obs.ReasoningMatch = r.ReasoningMatch
 	obs.StructuredBranchServed = r.StructuredBranchServed
 	obs.StructuredMatch = r.StructuredMatch
 	obs.OrderMatch = r.OrderMatch
+	obs.CanonicalBytesMatch = r.CanonicalBytesMatch
 	obs.ParseDeclineServed = r.ParseDeclineServed
+	obs.NativeFailureRecovered = r.NativeFailureRecovered
 	obs.Fallback = r.Fallback
 	obs.ServeOutcome = mapStaticServeOutcome(r.Outcome)
 	if r.Served {
@@ -273,7 +319,8 @@ func mapStaticServeOutcome(o staticoracle.Outcome) bamlutils.NativeStaticServeOu
 }
 
 // runClaimedAttempt performs the ONE exact provider RoundTrip + native static SAP over
-// the claimed plan, shared by Call and CallWithOracle. The SAP parser is a
+// the claimed plan for the BAML-free Call (CallWithOracle sends through the request's
+// ordinary client instead — runOrdinaryClaimedAttempt). The SAP parser is a
 // SCHEMA-NEUTRAL closure capturing the stored Return Bundle: execute never learns about
 // Bundles, and internal/debaml owns the parse (debaml.ParseStaticBundleUnaryCall — the
 // same predicate that gated registration and gates direct parse). No generated BAML, no
@@ -296,7 +343,50 @@ func (e *UnaryExecutor) runClaimedAttempt(ctx context.Context, claim *admission.
 	})
 }
 
-// oracleFailStageReason maps a terminal same-bytes oracle outcome onto the executor's
+// runOrdinaryClaimedAttempt is CallWithOracle's ONE send. It sends the claimed,
+// plan-matched request through inv.HTTPClient — the request's ordinary llmhttp Client,
+// with the request's context and first-2xx callback, the call the BAML path makes for
+// this child — rather than through the exact executor the BAML-free Call uses. Flag-off
+// is this lane's parity authority and it sends through that client, so the transport is
+// flag-off's by construction instead of by emulation: the backend it selects (fasthttp
+// or net/http, including its ALPN probe), how leniently it frames a response, how much of
+// a body it reads, and every error it returns — an oversized or truncated body, a
+// connection closed or refused, a deadline, a non-2xx's *HTTPError — reach the response
+// oracle (or the caller, unchanged) exactly as they reach the BAML path. The native parse
+// and the response oracle run on the bytes that client returned. The live plan compare
+// already proved the request equals BAML's.
+//
+// The send invariant this lane holds is ANTI-RESEND, stated precisely: ONE claimed
+// attempt (one ExecuteBorrowed call — the client is the same instance the orchestrator
+// sends through, so its redirect, retry, timeout and backend policy are the BAML path's,
+// not a copy of them); the provider requests that attempt makes are exactly the ones the
+// BAML path's send makes for the same responses — a 3xx the net/http backend follows is a
+// second request there too, and the fasthttp backend follows none; and NO BAML send after
+// it (the orchestrator's NativeCallFailed branch is terminal, and the cohort admits no
+// retry or fallback policy). It is not "one physical HTTP request": refusing to follow a
+// redirect flag-off follows would fail a request flag-off serves. onProviderRequests
+// receives the attempt's attempted-request count, so the socket accounting includes the
+// redirect hops.
+func (e *UnaryExecutor) runOrdinaryClaimedAttempt(ctx context.Context, claim *admission.StaticClaim, inv bamlutils.NativeStaticInvocation, onProviderRequests func(n int)) (*execute.AttemptResult, error) {
+	bundle := claim.Bundle
+	return execute.RunOrdinaryAttempt(ctx, execute.OrdinaryAttemptConfig{
+		Client:     claim.Client(),
+		Prepared:   claim.Prepared,
+		HTTPClient: inv.HTTPClient,
+		ParseResponse: func(pctx context.Context, rawText string) ([]byte, error) {
+			parsed, perr := debaml.ParseStaticBundleUnaryCall(pctx, bundle, rawText)
+			if perr != nil {
+				return nil, perr
+			}
+			return parsed.JSON, nil
+		},
+		IncludeReasoning:   inv.IncludeReasoning,
+		SendHeartbeat:      inv.SendHeartbeat,
+		OnProviderRequests: onProviderRequests,
+	})
+}
+
+// oracleFailStageReason maps a terminal reference-oracle outcome onto the executor's
 // bounded stage/reason tokens for the failed-after-claim oracle result. The typed Err
 // carries the real error class; these are secret-free observability tokens only.
 func oracleFailStageReason(o staticoracle.Outcome) (stage, reason string) {
@@ -443,12 +533,14 @@ func (e *UnaryExecutor) staticInput(rm *registeredMethod, values []promptdescrip
 // inv.Values); every OTHER admission fact is the request's TRUTHFUL selected-route fact,
 // forwarded from the invocation the generated seam populated. Forwarding them (rather than
 // synthesizing fixed final/single-leaf/no-override facts) is load-bearing: a request-scoped
-// near-miss OUTSIDE the exact U1 population — call-with-raw, a non-default client override,
-// a fallback / round-robin / retry strategy, or a non-openai resolved leaf — MUST decline
-// PRE-SOCKET at the shared admission gates, never claim on a plan match. In particular
-// /call-with-raw is explicitly outside U1, and the strategy gates are the barrier that
-// keeps a post-claim failure out of the outer fallback loop. A client-registry /
-// dynamic-schema request already declined in CallWithOracle before this point.
+// near-miss OUTSIDE the exact U1 population — a non-final mode, a non-default client
+// override, a fallback / round-robin / retry strategy, or a non-openai resolved leaf — MUST
+// decline PRE-SOCKET at the shared admission gates, never claim on a plan match; the
+// strategy gates are the barrier that keeps a post-claim failure out of the outer fallback
+// loop. inv.Raw is forwarded truthfully too: this lane's admission entry is the one that
+// admits /call-with-raw (its resolver owns the raw envelope), while every other lane given
+// the same fact declines it. A client-registry / dynamic-schema request already declined
+// in CallWithOracle before this point.
 func (e *UnaryExecutor) oracleStaticInput(rm *registeredMethod, inv bamlutils.NativeStaticInvocation) admission.StaticInput {
 	in := e.baseStaticInput(rm, inv.Values)
 	in.Mode = inv.Mode
@@ -459,8 +551,12 @@ func (e *UnaryExecutor) oracleStaticInput(rm *registeredMethod, inv bamlutils.Na
 	in.HasFallbackChain = inv.HasFallbackChain
 	in.HasRoundRobin = inv.HasRoundRobin
 	in.HasRequestRetryOverride = inv.HasRequestRetryOverride
-	if inv.WouldRewriteOrProxy != nil {
+	switch {
+	case inv.WouldRewriteOrProxy != nil:
 		in.WouldRewriteOrProxy = inv.WouldRewriteOrProxy
+	case inv.HTTPClient != nil:
+		// The rewrite/proxy gate must judge the client the claimed request is SENT through.
+		in.WouldRewriteOrProxy = inv.HTTPClient.WouldRewriteOrProxy
 	}
 	in.BuildBAMLRequest = inv.BuildBAMLRequest
 	return in

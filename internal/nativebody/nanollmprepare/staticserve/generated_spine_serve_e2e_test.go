@@ -134,11 +134,10 @@ func driveStaticRecursiveAliasJSON(t *testing.T, a bamlutils.Adapter, topic stri
 	return final, drainErr
 }
 
-// TestSpineComposite_MatchingPlanNativeWins is the POSITIVE control for the near-miss below:
-// with the fixture's own baml_src baked into the spine, the live BAML plan compare MATCHES,
-// so the exact-U1 request CLAIMS and native serves the one socket (no BAML fallback). This is
-// what makes the call-with-raw near-miss discriminating — proving native WOULD win absent the
-// one flipped fact.
+// TestSpineComposite_MatchingPlanNativeWins is the POSITIVE /call control: with the fixture's
+// own baml_src baked into the spine, the live BAML plan compare MATCHES, so the exact-U1
+// request CLAIMS and native serves the one socket (no BAML fallback). The /call-with-raw twin
+// below flips only the stream mode.
 func TestSpineComposite_MatchingPlanNativeWins(t *testing.T) {
 	serveFn, exec, calls := fixtureBamlSrcSpineServe(t)
 	server := newFixtureServer(t, http.StatusOK, openAIJSONMap())
@@ -163,32 +162,38 @@ func TestSpineComposite_MatchingPlanNativeWins(t *testing.T) {
 	}
 }
 
-// TestSpineComposite_CallWithRawNearMissDeclinesToBAML drives a call-with-raw NEAR-MISS
-// through the REAL generated seam (installNativeStaticCall reads adapter.StreamMode().
-// NeedsRaw() -> inv.Raw, adapter-authoritative). Even though the baked plan MATCHES (native
-// would otherwise win, per the positive control), the forwarded raw fact declines at the MODE
-// gate PRE-SOCKET, and BAML serves the one request. This BITES the pre-fix synthesizing code,
-// which dropped inv.Raw, reached the matching plan, CLAIMED, and opened a native socket.
-func TestSpineComposite_CallWithRawNearMissDeclinesToBAML(t *testing.T) {
+// TestSpineComposite_CallWithRawServesNatively drives /call-with-raw through the REAL
+// generated seam (installNativeStaticCall reads adapter.StreamMode().NeedsRaw() -> inv.Raw,
+// adapter-authoritative). The ONLY change vs the /call control above is the stream mode: the
+// live-oracle lane admits the truthful raw fact, CLAIMS the one socket, and native owns the
+// whole envelope — the decoded final AND the raw channel, which is the provider's exact
+// assistant text. The full stock-BAML byte differential over a response corpus is
+// TestSpineComposite_CallWithRawMatchesStockBAML.
+func TestSpineComposite_CallWithRawServesNatively(t *testing.T) {
 	serveFn, exec, calls := fixtureBamlSrcSpineServe(t)
 	server := newFixtureServer(t, http.StatusOK, openAIJSONMap())
 	defer server.close()
 	a := buildFixtureAdapterWithServe(t, serveFn, true)
-	// The ONLY change vs the native-win control: the adapter reports /call-with-raw.
 	a.(*fwadapter.BamlAdapter).SetStreamMode(bamlutils.StreamModeCallWithRaw)
 
-	_, drainErr := driveStaticRecursiveAliasJSON(t, a, "weather")
-	if drainErr != nil {
-		t.Fatalf("call-with-raw through the spine composite errored: %v", drainErr)
+	out := driveCallWithRaw(t, a)
+	if out.err != "" {
+		t.Fatalf("call-with-raw through the spine composite errored: %s", out.err)
 	}
 	if *calls != 1 {
 		t.Fatalf("spine serve func invoked %d times, want exactly 1", *calls)
 	}
-	if snap := exec.Metrics().Snapshot(); snap.Sockets != 0 || snap.Claims != 0 || snap.Declines != 1 {
-		t.Errorf("spine metrics = %+v; want a pre-socket MODE-gate decline (sockets=0 claims=0 declines=1). A native socket here means the raw fact was NOT forwarded — the pre-fix defect.", snap)
+	if snap := exec.Metrics().Snapshot(); snap.Claims != 1 || snap.Sockets != 1 || snap.Successes != 1 || snap.Declines != 0 {
+		t.Errorf("spine metrics = %+v; want a native claim (claims=1 sockets=1 successes=1 declines=0) — call-with-raw is admitted on the live-oracle lane", snap)
 	}
 	if got := server.count.Load(); got != 1 {
-		t.Fatalf("provider saw %d requests, want exactly 1 (raw near-miss declined pre-socket; BAML served)", got)
+		t.Fatalf("provider saw %d requests, want exactly 1 (native's single socket, no BAML resend)", got)
+	}
+	if out.winner != bamlutils.NativeStaticServeEngineNative {
+		t.Errorf("winner = %q, want native", out.winner)
+	}
+	if out.data != `{"weather":"sunny"}` || out.raw != `{"weather":"sunny"}` || out.reasoning != "" {
+		t.Errorf("served envelope = (%s, %q, %q), want the decoded JSON plus the exact assistant text", out.data, out.raw, out.reasoning)
 	}
 }
 

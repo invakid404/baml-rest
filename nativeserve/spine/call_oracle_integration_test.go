@@ -117,6 +117,8 @@ func liveInv(t *testing.T, buildBAML func(context.Context) (*llmhttp.Request, er
 			*captured = raw
 			return []byte(bamlJSON), nil
 		},
+		// The worker's ordinary send client, as workerboot builds it for the configured mode.
+		HTTPClient: llmhttp.NewDefaultClientWithOptions(llmhttp.ClientOptions{Mode: llmhttp.ClientModeFromEnv()}),
 	}
 }
 
@@ -315,6 +317,7 @@ func TestCallWithOracle_LiveOracle_PostClaimPanicIsBoundedAndKeepsPhase(t *testi
 		SingleLeaf:       true,
 		BuildBAMLRequest: buildBAML,
 		BAMLOnlyParse:    func(context.Context, string) ([]byte, error) { panic("parse panic: " + secretPayload) },
+		HTTPClient:       llmhttp.DefaultClient,
 	})
 	if res.Disposition != bamlutils.NativeSpineFailedAfterClaim {
 		t.Fatalf("disposition = %v, want failed_after_claim (a post-claim parser panic is terminal)", res.Disposition)

@@ -38,6 +38,8 @@ import (
 	stdjson "encoding/json"
 	"errors"
 	"fmt"
+	"net/http/httptrace"
+	"sync"
 
 	"github.com/invakid404/baml-rest/bamlutils"
 	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
@@ -363,6 +365,200 @@ func RunAttempt(ctx context.Context, cfg AttemptConfig) (*AttemptResult, error) 
 		ParseResponse:    parseResp,
 		IncludeReasoning: cfg.IncludeReasoning,
 	}, resp.StatusCode, resp.Body)
+}
+
+// OrdinaryAttemptConfig is the input to RunOrdinaryAttempt: the request-scoped nanollm
+// client and the fresh admitted plan (as for RunAttempt), the ORDINARY llmhttp Client the
+// plan is sent through, and the response-side inputs.
+type OrdinaryAttemptConfig struct {
+	Client   *nanollm.Client
+	Prepared *nanollm.PreparedRequest
+	// HTTPClient is the ordinary llmhttp Client the BAML serving path sends this request
+	// through (the request adapter's client, else llmhttp.DefaultClient).
+	HTTPClient *llmhttp.Client
+
+	ParseResponse    ParseResponseFunc
+	IncludeReasoning bool
+	// SendHeartbeat is the first-2xx liveness callback, handed to the client exactly as
+	// the BAML send path hands it (ExecuteBorrowed's onSuccess); nil becomes a no-op.
+	SendHeartbeat func()
+
+	// OnProviderRequests, when non-nil, receives — once, as soon as the send returns, on
+	// success or failure — the attempt's attempted-request count (see
+	// providerRequestCount): its first request and every redirect hop the client
+	// followed, at least the one attempt. It is a bounded approximation of what the
+	// provider received, not an exact count.
+	OnProviderRequests func(n int)
+}
+
+// providerRequestCount is ONE attempt's attempted-request count: a best-effort, bounded
+// approximation of how many requests the provider received, floored at one — not an
+// exact wire-send count. It is fed by two observe-only httptrace events the net/http
+// backend emits:
+//
+//   - GotConn fires each time the transport hands the request to a live connection — an
+//     idle-connection reuse or a successful dial, never a failed dial — so once per
+//     transport attempt: the original, each transport retry, and each redirect hop
+//     http.Client follows.
+//   - GotFirstResponseByte fires once per attempt the provider answered (HTTP/1: a first
+//     response byte is readable; HTTP/2: the stream's first HEADERS).
+//
+// count = answered + (the last connection was never answered ? 1 : 0), floored at one.
+// Every answered attempt reached the provider. Of the unanswered attempts only the last
+// counts: it may have reached the provider (sent, then a close, reset or deadline before
+// any response byte), and nothing re-sends it. Every earlier unanswered attempt was
+// followed by a transport retry and is taken not to have reached the provider. That holds
+// for a write that left nothing on a reused HTTP/1 connection and for an HTTP/2 stream the
+// server did not process (REFUSED_STREAM, GOAWAY, an unusable connection). WroteRequest
+// is not used: HTTP/1 reports it from Request.write before persistConn's buffered flush,
+// so a nothing-written retry would read as two.
+//
+// The count is one short for each retry of an attempt the provider received but never
+// answered, which these two events cannot tell from a nothing-written retry:
+//
+//   - HTTP/1: a replayable request — the GET a 301/302/303 redirect turns the POST into,
+//     or a request carrying an Idempotency-Key or X-Idempotency-Key header — written to a
+//     reused connection that closed or failed before the first response byte;
+//   - HTTP/2: a stream the peer reset with PROTOCOL_ERROR, which Go 1.26's transport
+//     retries.
+//
+// It can also be one more than the provider received: the last unanswered attempt, and
+// the floor, count when nothing reached the provider (a write failure on a fresh
+// connection, a dial or TLS failure). Either way only this count is affected: the
+// requests, retries, redirects and response are the ordinary client's own, the same as
+// the BAML path's. The residual is tracked in the de-BAML teardown ledger, issue #583.
+//
+// The fasthttp backend emits no httptrace events and makes at most one request per call:
+// HostClient.Do follows no redirect, and its default retry predicate admits GET/HEAD/PUT,
+// never the admitted POST. The floor counts that one attempt.
+type providerRequestCount struct {
+	mu         sync.Mutex
+	answered   int
+	unanswered bool
+}
+
+func (c *providerRequestCount) gotConn() {
+	c.mu.Lock()
+	c.unanswered = true
+	c.mu.Unlock()
+}
+
+func (c *providerRequestCount) gotFirstResponseByte() {
+	c.mu.Lock()
+	c.answered++
+	c.unanswered = false
+	c.mu.Unlock()
+}
+
+func (c *providerRequestCount) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := c.answered
+	if c.unanswered {
+		n++
+	}
+	return max(1, n)
+}
+
+// RunOrdinaryAttempt performs one native unary attempt like RunAttempt, but sends the plan
+// through cfg.HTTPClient with the same call the BAML serving path makes for a child —
+// ExecuteBorrowed with the request's context and first-2xx callback — instead of the
+// exact executor. Every transport behavior is therefore that client's own: backend
+// selection (fasthttp or net/http, including its ALPN probe), response framing and its
+// leniency, body caps, redirect following, and every error it returns.
+//
+// ONE attempt is one ExecuteBorrowed call, and its provider requests are exactly the ones
+// the BAML path's identical call makes for the same responses: on the net/http backend a
+// 3xx is followed under http.Client's default redirect policy (a 301/302/303 re-sent as a
+// GET without the body, a 307/308 re-sent with it) — as flag-off follows it — while the
+// fasthttp backend follows no redirect. Transport retries are the backend's own as well:
+// fasthttp retries only GET/HEAD/PUT, never the POST, and net/http re-sends only what its
+// transport deems safe to replay (see providerRequestCount). The attempt's
+// attempted-request count is reported through OnProviderRequests.
+//
+// Contract:
+//
+//   - an expired plan, a parity-decline, and invalid config are rejected BEFORE the send
+//     (Go error; nothing is sent);
+//   - any error the client returns — an *llmhttp.HTTPError for a non-2xx, a transport or
+//     body-read failure, an oversized body, cancellation — is returned UNCHANGED as
+//     (nil, err): it is exactly the error the BAML path surfaces for the same response,
+//     and no response body exists for a caller to consume;
+//   - a 2xx body is copied out of the client's (possibly pooled) buffer before release and
+//     consumed by ConsumeResponse, exactly as RunAttempt consumes the exact executor's.
+func RunOrdinaryAttempt(ctx context.Context, cfg OrdinaryAttemptConfig) (*AttemptResult, error) {
+	if cfg.Client == nil {
+		return nil, fmt.Errorf("nativeserve: nil nanollm client")
+	}
+	if cfg.Prepared == nil {
+		return nil, fmt.Errorf("nativeserve: nil prepared request")
+	}
+	if cfg.HTTPClient == nil {
+		return nil, fmt.Errorf("nativeserve: nil ordinary HTTP client")
+	}
+	parseResp, perr := resolveParse(cfg.ParseResponse, nil, nil)
+	if perr != nil {
+		return nil, perr
+	}
+	prep := cfg.Prepared
+	if prep.Expired() {
+		return nil, ErrPlanExpired
+	}
+	if err := supportDecision(prep); err != nil {
+		return nil, err
+	}
+
+	// The BAML path ALWAYS hands the client a first-2xx callback (RunCallOrchestration's
+	// sendHeartbeat), and the callback is part of how the client picks its read path: with
+	// none, a deadline-only context takes fasthttp's buffered lane, which frames a response
+	// differently from the streamed-header lane the BAML path uses. A nil heartbeat is
+	// therefore a no-op, never absent, so this call has the BAML path's shape.
+	onSuccess := cfg.SendHeartbeat
+	if onSuccess == nil {
+		onSuccess = func() {}
+	}
+	// A context VALUE only: it adds no deadline or Done channel, so the client's
+	// cancellability-dependent lane choice is the same as for ctx, and the hooks only
+	// record — they never change what the client does.
+	var sent providerRequestCount
+	sendCtx := httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		GotConn:              func(httptrace.GotConnInfo) { sent.gotConn() },
+		GotFirstResponseByte: sent.gotFirstResponseByte,
+	})
+	resp, err := cfg.HTTPClient.ExecuteBorrowed(sendCtx, &llmhttp.Request{
+		Method:  prep.Method,
+		URL:     prep.URL,
+		Headers: headerMap(prep.Headers),
+		Body:    string(prep.Body),
+	}, onSuccess)
+	if cfg.OnProviderRequests != nil {
+		cfg.OnProviderRequests(sent.count())
+	}
+	if err != nil {
+		return nil, err
+	}
+	status := resp.StatusCode
+	// []byte(string) copies, so the body is owned before the client's buffer is released.
+	body := []byte(resp.BodyString())
+	resp.Release()
+
+	return ConsumeResponse(ctx, ConsumeConfig{
+		Client:           cfg.Client,
+		Alias:            prep.Meta.ModelAlias,
+		ParseResponse:    parseResp,
+		IncludeReasoning: cfg.IncludeReasoning,
+	}, status, body)
+}
+
+// headerMap folds the plan's ordered header pairs into the ordinary Client's header map.
+// The live plan compare rejects a plan with a repeated header name (its snapshot refuses
+// duplicates), so an admitted plan loses nothing here.
+func headerMap(pairs [][2]string) map[string]string {
+	out := make(map[string]string, len(pairs))
+	for _, p := range pairs {
+		out[p[0]] = p[1]
+	}
+	return out
 }
 
 // ConsumeResponse runs the SAME-response native pipeline —

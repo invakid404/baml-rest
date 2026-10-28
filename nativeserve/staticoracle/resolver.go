@@ -10,12 +10,21 @@
 // BAML parse) or a typed terminal error, plus bounded compare-facet observations.
 //
 // It has NO transport method and therefore CANNOT re-send: the only BAML input is
-// [Result]-shaping over the assistant text the ONE request already returned. Both the
-// rollout-named nativeserve/canary static serve path AND the deletion-oriented
-// nativeserve/spine oracle Call delegate to it, so there is exactly ONE oracle
-// algorithm and neither can drift. It records NOTHING itself — every caller replays
-// the bounded facet observations into its own metrics — so this package depends on no
-// metrics/admission type and stays a pure function.
+// [Result]-shaping over the bytes the ONE request already returned. It holds the two
+// static same-response policies, sharing one [Result] shape and one set of terminal
+// envelopes:
+//
+//   - [Resolve], for the rollout-named nativeserve/canary static serve path, parses the
+//     assistant text native extracted and keeps native's raw/reasoning channels. That lane
+//     never admits /call-with-raw.
+//   - [ResolveReference], for the deletion-oriented nativeserve/spine live-oracle Call,
+//     establishes BAML's own channels from the ORIGINAL provider body, compares every
+//     facet (including the raw envelope and the literal canonical bytes), and serves the
+//     whole reference envelope on any drift or native failure.
+//
+// It records NOTHING itself — every caller replays the bounded facet observations into
+// its own metrics — so this package depends on no metrics/admission type and stays a pure
+// function.
 //
 // SENSITIVE: the completed attempt's Structured/AssistantText/Raw/Reasoning and the
 // BAML parse of them are parsed provider output; [Result] carries owned byte/string
@@ -79,8 +88,9 @@ const (
 // the facet fields are bounded observations a caller may replay into its own metrics.
 type Result struct {
 	// Served reports a served final. FinalJSON is the winning flattened canonical JSON
-	// (native SAP output or the same-bytes BAML parse), Raw/Reasoning are the
-	// native-owned /call-with-raw channels, and Winner is the bounded engine token
+	// (native SAP output or the BAML parse), Raw/Reasoning are the served /call-with-raw
+	// channels (native's under [Resolve]; native's on a full match, else the reference
+	// channels, under [ResolveReference]), and Winner is the bounded engine token
 	// (bamlutils.NativeStaticServeEngineNative / NativeStaticServeEngineBAMLParse).
 	Served    bool
 	FinalJSON []byte
@@ -98,26 +108,47 @@ type Result struct {
 
 	// --- bounded compare-facet observations (a caller decides whether to record) ---
 
-	// SameResponseOracleRan reports the structured branch was entered (the strict
-	// same-response BAML oracle ran or was about to). It is the phase the canary path
-	// records as PhaseSameResponseOracle. It is NOT set on the parse-decline branch.
+	// SameResponseOracleRan reports the same-response BAML oracle was entered (it ran or
+	// was about to). It is the phase the canary path records as PhaseSameResponseOracle.
+	// [Resolve] sets it on the structured branch only (NOT on parse-decline);
+	// [ResolveReference] sets it for every complete 2xx response, before the extractor.
 	SameResponseOracleRan bool
 	// ErrorCompareRecorded / ErrorCompareMatch: whether a FieldError response-compare
-	// was made and its result (match on a clean BAML parse, mismatch on a nil/errored
-	// BAML parse).
+	// was made and its result — a mismatch whenever a comparison leg errored (a nil/
+	// errored BAML extraction or parse; under [ResolveReference] also a native
+	// post-response failure the reference recovered), a match otherwise.
 	ErrorCompareRecorded bool
 	ErrorCompareMatch    bool
-	// StructuredBranchServed: a served structured result (translate/assistant/raw/
-	// reasoning facets = true, structured/order facets = the compare booleans below).
+	// StructuredBranchServed: a native structured claim was compared and a result served.
+	// Under [Resolve] the caller records translate/assistant/raw/reasoning as matches (it
+	// compares none of them); under [ResolveReference] they are the real *Match facets
+	// below. StructuredMatch/OrderMatch are the compare booleans.
 	StructuredBranchServed bool
 	StructuredMatch        bool
 	OrderMatch             bool
 	// ParseDeclineServed: a served parse-decline result (translate = true, structured =
 	// false, order = false).
 	ParseDeclineServed bool
-	// Fallback: the served final came from the same-bytes BAML parse (drift or
-	// parse-decline), recorded as FallbackParseOnly.
+	// Fallback: the served final came from the BAML parse rather than native (drift,
+	// parse-decline, or — under [ResolveReference] — a recovered native failure),
+	// recorded as FallbackParseOnly.
 	Fallback bool
+
+	// --- reference-envelope facets (set by [ResolveReference] only; [Resolve] leaves
+	// them false) ---
+
+	// ChannelsCompared: native extracted its assistant/raw/reasoning channels, so the three
+	// *Match booleans below are REAL exact-byte comparisons against the reference channels.
+	ChannelsCompared bool
+	AssistantMatch   bool
+	RawMatch         bool
+	ReasoningMatch   bool
+	// CanonicalBytesMatch: native's canonical final JSON is literally byte-identical to the
+	// BAML parse of the reference text (meaningful only with StructuredBranchServed).
+	CanonicalBytesMatch bool
+	// NativeFailureRecovered: native failed after the response (translate / extraction /
+	// claimed parse error) and the reference envelope was served from the same response.
+	NativeFailureRecovered bool
 }
 
 // Resolve maps one COMPLETED native static attempt's (result, error) onto the closed

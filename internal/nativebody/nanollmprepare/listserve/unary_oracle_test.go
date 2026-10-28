@@ -21,11 +21,13 @@ package listserve
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/internal/nativespine"
 	"github.com/invakid404/baml-rest/internal/nativespinelistfixture"
 	"github.com/invakid404/baml-rest/nativeserve/testutil"
@@ -55,6 +57,8 @@ func unaryInv(t *testing.T, leg *bamlLeg, r argRow) bamlutils.NativeStaticInvoca
 			return json.Marshal(v)
 		},
 		DecodeNativeFinal: nativespinelistfixture.Binding().DecodeFinal,
+		// The worker's ordinary send client, which the live-oracle lane sends through.
+		HTTPClient: llmhttp.NewDefaultClientWithOptions(llmhttp.ClientOptions{Mode: llmhttp.ClientModeFromEnv()}),
 	}
 }
 
@@ -125,6 +129,94 @@ func TestUnaryComposite_NativeWinsOnEveryScalarListRow(t *testing.T) {
 				t.Errorf("public final bytes: native=%s baml=%s", res.FinalJSON, bamlBytes)
 			}
 		})
+	}
+}
+
+// newReasoningJSONServer answers every request with an OpenAI chat completion whose
+// assistant message carries content and, when reasoning is non-nil, a reasoning_content
+// channel — both verbatim.
+func newReasoningJSONServer(t *testing.T, content string, reasoning *string) *captureServer {
+	t.Helper()
+	return startCaptureServer(t, func(cs *captureServer, w http.ResponseWriter, r *http.Request) {
+		cs.record(r)
+		msg := map[string]any{"role": "assistant", "content": content}
+		if reasoning != nil {
+			msg["reasoning_content"] = *reasoning
+		}
+		env, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": msg}}})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(env)
+	})
+}
+
+// TestUnaryComposite_CallWithRawNativeWinsOnEveryScalarListRow is the /call-with-raw twin of
+// the headline unary proof, over the SAME typed cross-product and the REAL standard
+// composite, with the request's raw fact set the way the generated seam sets it and the
+// reasoning channel both opted out and opted in. Per row it requires, SEPARATELY:
+//
+//   - OWNERSHIP: the live plan compare matched (claims=1), exactly one provider request,
+//     and NATIVE won — a row that only fell back to BAML is not admission evidence;
+//   - BYTES: the final JSON equals stock BAML's own Parse of the response, and the raw and
+//     reasoning channels equal what BAML's serving path extracts from the ORIGINAL body:
+//     raw is the pre-coercion assistant text (here deliberately different from the
+//     coerced final), reasoning is the provider's text only when opted in.
+func TestUnaryComposite_CallWithRawNativeWinsOnEveryScalarListRow(t *testing.T) {
+	// A coercing answer: BAML's JSON-alias coercion turns null into [] and sorts the keys,
+	// so the served data can never be reconstructed from raw (or vice versa).
+	const content = "{\"z\":[1,\"x\",true],\"a\":null}\n"
+	reasoning := "list reasoning \"quoted\"\nline two ☕"
+	for _, r := range argRows() {
+		for _, withReasoning := range []bool{false, true} {
+			name := r.name + map[bool]string{false: "/reasoning_off", true: "/reasoning_on"}[withReasoning]
+			t.Run(name, func(t *testing.T) {
+				server := newReasoningJSONServer(t, content, &reasoning)
+				leg := newBAMLLeg(t, server.baseURL())
+				serve, exec := unaryComposite(t, server.baseURL())
+
+				inv := unaryInv(t, leg, r)
+				inv.Raw = true
+				inv.IncludeReasoning = withReasoning
+				res := serve(context.Background(), inv)
+
+				if res.Disposition != bamlutils.NativeStaticServeSucceeded {
+					t.Fatalf("disposition = %v (stage=%q reason=%q err=%v); /call-with-raw must be SERVED natively for the scalar-list cohort",
+						res.Disposition, res.Stage, res.Reason, res.Err)
+				}
+				if res.WinnerEngine != bamlutils.NativeStaticServeEngineNative {
+					t.Fatalf("winner = %q, want %q — native and BAML disagreed on a facet of the same response",
+						res.WinnerEngine, bamlutils.NativeStaticServeEngineNative)
+				}
+				if snap := exec.Metrics().Snapshot(); snap.Claims != 1 || snap.Sockets != 1 || snap.Successes != 1 || snap.Declines != 0 {
+					t.Fatalf("executor counters = %+v, want claims=1 sockets=1 successes=1 declines=0", snap)
+				}
+				if got := server.hits.Load(); got != 1 {
+					t.Fatalf("the provider saw %d request(s), want exactly 1", got)
+				}
+
+				bamlValue, err := leg.parse(context.Background(), t, r, content)
+				if err != nil {
+					t.Fatalf("stock BAML Parse of the captured response failed: %v", err)
+				}
+				bamlBytes, err := json.Marshal(bamlValue)
+				if err != nil {
+					t.Fatalf("marshal BAML's parsed value: %v", err)
+				}
+				if string(res.FinalJSON) != string(bamlBytes) {
+					t.Errorf("public final bytes: native=%s baml=%s", res.FinalJSON, bamlBytes)
+				}
+				if string(bamlBytes) == content {
+					t.Fatal("the coercing answer was not coerced; raw-vs-data independence is not exercised")
+				}
+				wantReasoning := ""
+				if withReasoning {
+					wantReasoning = reasoning
+				}
+				if res.Raw != content || res.Reasoning != wantReasoning {
+					t.Errorf("raw/reasoning = %q/%q, want %q/%q (BAML's extraction of the original body)", res.Raw, res.Reasoning, content, wantReasoning)
+				}
+			})
+		}
 	}
 }
 

@@ -34,6 +34,7 @@ import (
 	"sync/atomic"
 
 	"github.com/invakid404/baml-rest/bamlutils"
+	"github.com/invakid404/baml-rest/bamlutils/buildrequest"
 	"github.com/invakid404/baml-rest/bamlutils/llmhttp"
 	"github.com/invakid404/baml-rest/bamlutils/projectdescriptor"
 	"github.com/invakid404/baml-rest/bamlutils/promptdescriptor"
@@ -41,6 +42,7 @@ import (
 	"github.com/invakid404/baml-rest/internal/debaml"
 	"github.com/invakid404/baml-rest/internal/schema"
 	"github.com/invakid404/baml-rest/nativeserve/admission"
+	"github.com/invakid404/baml-rest/nativeserve/staticoracle"
 )
 
 // Bounded, secret-free stage/reason tokens for the neutral tri-state result.
@@ -63,6 +65,7 @@ const (
 	reasonDynamicSchema     = "dynamic_output_schema_present"
 	reasonNoBAMLPlan        = "no_baml_plan_closure"
 	reasonNoBAMLParse       = "no_baml_parse_closure"
+	reasonNoOrdinaryClient  = "no_ordinary_client"
 	reasonPlannerError      = "planner_error"
 	reasonPlanExpired       = "plan_expired"
 	reasonPanic             = "panic"
@@ -76,13 +79,14 @@ const (
 )
 
 var (
-	errPlanExpired    = errors.New("nativespine: prepared plan expired before the socket")
-	errMalformed2xx   = errors.New("nativespine: provider returned a 2xx body the translator could not parse")
-	errParseDecline   = errors.New("nativespine: native final parser declined the response shape (no BAML fallback on this cohort)")
-	errClientRegistry = errors.New("nativespine: request carries a client_registry; the exact cohort serves only the descriptor's default client")
-	errDynamicSchema  = errors.New("nativespine: request carries a dynamic output schema; the exact cohort is static-only")
-	errNoBAMLPlan     = errors.New("nativespine: oracle call requires a BAML no-send plan closure; the standard composite must supply BuildBAMLRequest before the claim")
-	errNoBAMLParse    = errors.New("nativespine: oracle call requires a BAML same-bytes parse closure; the standard composite must supply BAMLOnlyParse before the claim")
+	errPlanExpired      = errors.New("nativespine: prepared plan expired before the socket")
+	errMalformed2xx     = errors.New("nativespine: provider returned a 2xx body the translator could not parse")
+	errParseDecline     = errors.New("nativespine: native final parser declined the response shape (no BAML fallback on this cohort)")
+	errClientRegistry   = errors.New("nativespine: request carries a client_registry; the exact cohort serves only the descriptor's default client")
+	errDynamicSchema    = errors.New("nativespine: request carries a dynamic output schema; the exact cohort is static-only")
+	errNoBAMLPlan       = errors.New("nativespine: oracle call requires a BAML no-send plan closure; the standard composite must supply BuildBAMLRequest before the claim")
+	errNoBAMLParse      = errors.New("nativespine: oracle call requires a BAML-only parse closure; the standard composite must supply BAMLOnlyParse before the claim")
+	errNoOrdinaryClient = errors.New("nativespine: oracle call requires the request's ordinary send client; the standard composite must supply HTTPClient before the claim")
 	// errPanicBeforeClaim / errPanicAfterClaim are BOUNDED, secret-free panic sentinels.
 	// The recovered value is NEVER interpolated into them: on the standard default path the
 	// adapter propagates the terminal error to the outer policy, so an arbitrary/sensitive
@@ -132,6 +136,15 @@ func unaryCandidate(b bamlutils.NativeSpineUnaryBinding) candidateRegistration {
 // Metrics is a minimal, bounded observability counter set for the executor. Every
 // counter uses a bounded label (the disposition), never a content-derived value. It
 // is atomic so the executor may be driven concurrently.
+//
+// claims counts claimed attempts; sockets counts the provider requests those attempts
+// sent. On the exact-executor lanes the two move together (one request per claim). On
+// CallWithOracle's ordinary-client send a claim is one attempt whose requests include
+// every redirect hop the client followed — exactly the BAML path's requests for the same
+// responses — so sockets can exceed claims there. That lane's sockets are execute's
+// attempted-request approximation: at most one more than the provider received, and one
+// fewer for each transport retry of a request the provider received but never answered
+// (issue #583).
 type Metrics struct {
 	declines  atomic.Int64
 	claims    atomic.Int64
@@ -170,6 +183,13 @@ type UnaryExecutor struct {
 	// deterministically; every production constructor leaves the defaults.
 	admitClaim       func(ctx context.Context, in admission.StaticInput) (*admission.StaticClaim, error)
 	admitClaimOracle func(ctx context.Context, in admission.StaticInput) (*admission.StaticClaim, error)
+	// extractReference is the BAML serving path's response extractor CallWithOracle's
+	// reference oracle runs over the ORIGINAL provider body, defaulting to
+	// buildrequest.ExtractResponseContentBytes — the extractor the generated orchestrator
+	// injects. A field only so gated tests can inject a channel-specific drift (an
+	// assistant-only or reasoning-only divergence a real OpenAI body cannot produce in
+	// isolation); every production constructor leaves the default.
+	extractReference staticoracle.ReferenceExtract
 }
 
 // compile-time assertion the executor also satisfies the optional oracle-capable
@@ -232,6 +252,7 @@ func newExecutor(proj projectdescriptor.Project, candidates []candidateRegistrat
 		metrics:          &Metrics{},
 		admitClaim:       admission.AdmitStaticSpineClaim,
 		admitClaimOracle: admission.AdmitStaticSpineOracleClaim,
+		extractReference: buildrequest.ExtractResponseContentBytes,
 	}
 	byName := make(map[string]projectdescriptor.Method, len(proj.Methods))
 	for _, m := range proj.Methods {

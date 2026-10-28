@@ -156,9 +156,12 @@ type NativeStaticInvocation struct {
 	// ClientConfig declines at the static-client gate.
 	ClientOverride string
 	// Raw reports whether this is a call-with-raw request (the caller opted into the
-	// owned raw/reasoning channels). The native static raw envelope is not proven in
-	// 8B, so a true value declines at the mode gate BEFORE any render/Prepare — it is
-	// carried so the observation is truthful, never to claim a raw route.
+	// owned raw/reasoning channels). Every static lane WITHOUT a raw-envelope oracle
+	// (the observer, the legacy static serve, the native-only spine) declines a true
+	// value at the mode gate BEFORE any render/Prepare. Only the ExecBridge-U1c
+	// live-oracle spine lane admits it, because its oracle compares and, on drift,
+	// substitutes the whole raw/reasoning envelope BAML's serving path extracts from
+	// the original provider body. It MUST be truthful either way.
 	Raw bool
 
 	// SingleLeaf reports the orchestration plan resolves exactly one leaf.
@@ -179,6 +182,16 @@ type NativeStaticInvocation struct {
 	// strategy gate before a native plan is prepared. Nil in lightweight callers
 	// that carry no send client.
 	WouldRewriteOrProxy func(effectiveURL string) bool
+
+	// HTTPClient is the request's EFFECTIVE ordinary send client — the exact
+	// llmhttp.Client the BAML path sends this child through (the adapter's client,
+	// else llmhttp.DefaultClient), the same client WouldRewriteOrProxy is bound to.
+	// The ExecBridge-U1c live-oracle spine lane sends its plan-matched request
+	// through it, so transport behavior — backend selection (including the ALPN
+	// probe), response framing, read caps, and every transport error — is the
+	// BAML path's by construction. That lane declines pre-claim when it is nil.
+	// Nil in the observe-only callers, which never send.
+	HTTPClient *llmhttp.Client
 
 	// BuildBAMLRequest builds BAML's request plan for THIS selected static child
 	// WITHOUT sending — the same generated `Request.<Method>` no-send closure. The
