@@ -21,9 +21,9 @@ go 1.26.5
 require (
 	github.com/boundaryml/baml v0.223.0
 	github.com/invakid404/baml-rest v0.0.48
-	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20260907202119-880a3c4d693e
+	github.com/invakid404/baml-rest/bamlutils v0.0.49-0.20261028122515-707ac0119657
 	github.com/invakid404/baml-rest/dynclient v0.0.0-00010101000000-000000000000
-	github.com/invakid404/baml-rest/worker v0.0.49-0.20260907202119-880a3c4d693e
+	github.com/invakid404/baml-rest/worker v0.0.49-0.20261028122515-707ac0119657
 	github.com/invakid404/baml-rest/workerplugin v0.0.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
@@ -167,18 +167,19 @@ require (
 // it to cf03786a1fac (#692 re-pinned to the 062871154d95 tip). Every one of these was a
 // branch-pin-then-re-pin, the precedent THIS U1 bump repeats.
 //
-// RIGHT NOW they are MASTER-DURABLE: all five name 880a3c4d693e, the MASTER squash-merge
-// commit of PR #719 that carries the scalar-LIST input widening. nanollmprepare
+// RIGHT NOW they are MASTER-DURABLE: all five name 707ac0119657, the MASTER squash-merge
+// commit of PR #721 that carries the /call-with-raw widening. nanollmprepare
 // directory-replaces root/bamlutils/worker/nativeserve, so only
 // the version STRINGS reach MVS, and they must move in lockstep with nativeserve's so the
-// out-of-work packaging build resolves the widening source (nativeserve/spine's
-// registration input predicate, which now admits a required single-level list of required
-// primitives alongside the existing required primitives, and THIS module's cmd/worker +
-// standardspineoracle cohort documentation). So nativeserve/pin_followup.md reads
+// out-of-work packaging build resolves the widening source (nativeserve's lane-scoped raw
+// admission, raw-aware reference oracle and ordinary-client spine send, the bamlutils
+// fields nativeserve/spine links, and THIS module's standardspineoracle composite and
+// cmd/worker documentation). So nativeserve/pin_followup.md reads
 // STATUS: RESOLVED and the post-squash re-pin to the merged master commit — the
 // MANDATORY, IMMEDIATE follow-up after the PR merged — has been PERFORMED. The
-// branch-only c44e054441e6 these five named during #719's review is HISTORICAL, as is
-// the ExecBridge-U1s master squash 5d1a7d8b1d0b it superseded. Do not treat
+// scalar-list widening master squash 880a3c4d693e these five named before is HISTORICAL,
+// as are the branch-only c44e054441e6 named during #719's review and the ExecBridge-U1s
+// master squash 5d1a7d8b1d0b it superseded. Do not treat
 // this comment as the authority — nativeserve/pin_followup.md is the tracked record, and
 // cmd/build's TestFirstPartyPinFollowupIsTracked is what holds the two together: it
 // parses that record and the require directives above on every ordinary
