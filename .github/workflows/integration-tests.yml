@@ -19,7 +19,7 @@ jobs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Build version matrix
         id: set-matrix
@@ -90,7 +90,7 @@ jobs:
       rust-alias: ${{ steps.rust.outputs.alias }}
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Log in to Docker Hub
         # Authenticated Docker Hub pulls get a much higher rate limit than
@@ -296,7 +296,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Free runner disk before Docker image load
         # This job runs TestBamlfuzzStaticOracle, which builds a fresh
@@ -386,7 +386,7 @@ jobs:
       latest: ${{ steps.read.outputs.latest }}
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Read latest BAML version
         id: read
@@ -426,7 +426,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Free runner disk before Docker image load
         # This job runs TestBamlfuzzStaticOracle, which builds a fresh
@@ -538,7 +538,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Free runner disk before Docker image load
         # This job runs TestBamlfuzzStaticOracle, which builds a fresh
@@ -647,7 +647,7 @@ jobs:
       commit: ${{ steps.baml-source.outputs.commit }}
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Free runner disk before Docker image load
         # This job loads warm images AND may run a cold full cargo release build
@@ -691,7 +691,7 @@ jobs:
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
       - name: Checkout BAML Source
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
         with:
           repository: BoundaryML/baml
           ref: ${{ steps.baml-source.outputs.commit }}
@@ -827,7 +827,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Free runner disk before Docker image load
         # The observed ENOSPC job: builds BAML from source per cell (#459).
@@ -869,7 +869,7 @@ jobs:
         run: integration/mockllm/ci-use-warm-bases.sh
 
       - name: Checkout BAML Source
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
         with:
           repository: BoundaryML/baml
           ref: ${{ needs.build-baml-cffi.outputs.commit }}
